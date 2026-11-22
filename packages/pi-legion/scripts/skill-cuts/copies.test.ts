@@ -71,10 +71,12 @@ import {
 // - acme/skills, a made-up repository: the F6-madeup files, plus files made here, each following
 //   a real file: `.claude-plugin/marketplace.json` (F6-contents-marketplace.json's shape, and F3's
 //   made-up acme-market marketplace of CAPTURE.md), SKILL.md files in each frontmatter shape,
-//   `packages/acme-envoy/package.json` (F6-contents-pi-envoy-package.json's `omp.skills`), a
-//   symbolic link `packages/acme-envoy/skills/beta` (as packages/claude-envoy/skills/* link to
-//   skills/* in cybermonklabs/legion), a draft skill under the excluded `pipeline/candidates/`,
-//   and a guide naming skills.
+//   `packages/acme-envoy/package.json` (F6-contents-pi-envoy-package.json's `omp.skills`,
+//   `dist/skills`, which the prepack script `scripts/pi-plugin-prepack.sh` fills with copies of
+//   skills/<name>, `cp -R`, as cybermonklabs/legion's fills packages/pi-envoy's), a symbolic link
+//   `packages/acme-envoy/skills/beta` (as packages/claude-envoy/skills/* link to skills/* in
+//   cybermonklabs/legion, for the Claude Code plugin of the same npm package), a draft skill under
+//   the excluded `pipeline/candidates/`, and a guide naming skills.
 // - acme/old-skills, a made-up archived fork of acme/skills holding one skill, read in the files
 //   its made-up compare with acme/skills lists (in the shape of GitHub's compare answer: a
 //   `merge_base_commit`, and `files` each with `filename`, `status` and a renamed file's
@@ -249,7 +251,24 @@ const ACME_FILES: MadeFile[] = [
   },
   {
     path: "packages/acme-envoy/package.json",
-    text: `${JSON.stringify({ name: "@acme/acme-envoy", version: "1.0.0", omp: { skills: ["skills"] } }, null, 2)}\n`,
+    text: `${JSON.stringify({ name: "@acme/acme-envoy", version: "1.0.0", omp: { skills: ["dist/skills"] } }, null, 2)}\n`,
+  },
+  {
+    path: "scripts/pi-plugin-prepack.sh",
+    text: [
+      "#!/usr/bin/env bash",
+      "# A made-up prepack script: stages the Envoy package's skills, as copies, into dist/skills.",
+      "plugin() {",
+      '  case "$1" in',
+      "  @acme/acme-envoy)",
+      "    skills=( beta )",
+      "    ;;",
+      "  esac",
+      "}",
+      'cp -R "$root/skills/$skill" "$dest/$skill"',
+      "stage_skills dist/skills",
+      "",
+    ].join("\n"),
   },
   { path: "packages/acme-envoy/skills/beta", text: "../../../skills/beta", mode: "120000" },
   {
@@ -538,14 +557,17 @@ class World {
       const type = this.users.get(user[1] ?? "");
       return type === undefined ? fail("gh: Not Found (HTTP 404)") : ok({ login: user[1], type });
     }
+    // A repository's commit at main (`commits`, by repository), or at another ref (by
+    // `<repository>@<ref>`), as a pinned read asks for it.
     const commits =
-      /^repos\/([^/]+\/[^/]+)\/commits\?sha=main&until=2026-11-20T00%3A00%3A00Z&per_page=1$/.exec(
+      /^repos\/([^/]+\/[^/]+)\/commits\?sha=([^&]+)&until=2026-11-20T00%3A00%3A00Z&per_page=1$/.exec(
         endpoint
       );
     if (commits !== null) {
-      const found = this.commits.get(commits[1] ?? "");
+      const ref = decodeURIComponent(commits[2] ?? "");
+      const found = this.commits.get(ref === "main" ? (commits[1] ?? "") : `${commits[1]}@${ref}`);
       return found === undefined
-        ? fail("gh: No commit found for SHA: main (HTTP 422)")
+        ? fail(`gh: No commit found for SHA: ${ref} (HTTP 422)`)
         : answer(found);
     }
     const info = /^repos\/([^/]+\/[^/]+)$/.exec(endpoint);
@@ -944,7 +966,7 @@ describe("skill pools an Oh My Pi extension reads from skills-sources.json", () 
     parent: "",
     name: path.posix.basename(dir),
     nameFrom: "frontmatter",
-    description: "",
+    description: "Use when a made-up pool's skill is needed.",
     descriptionBytes: 0,
     fault: "",
   });
@@ -1001,6 +1023,405 @@ describe("skill pools an Oh My Pi extension reads from skills-sources.json", () 
     expect(notes([sources, extension])).toEqual([
       "no installer of the repository links omp/extensions/skill-pools.ts into Oh My Pi, so it installs nothing",
     ]);
+  });
+});
+
+// An Oh My Pi plugin package's skills, as Oh My Pi 18.18.6 scans them (copies.ts's parsePackage):
+// made-up packages of the made-up repository acme/pkgs, each package.json in the shape of a real
+// plugin package's (F6-contents-pi-envoy-package.json's `omp`, and a `pi` field of that shape).
+describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () => {
+  const repository = "acme/pkgs";
+  const packageAt = (dir: string, manifest: Record<string, unknown>): Manifest => {
+    const file = `${dir}/package.json`;
+    return {
+      repository,
+      path: file,
+      kind: "omp-package",
+      source: "tree",
+      ...parseManifest("omp-package", file, JSON.stringify(manifest)),
+      error: "",
+      rows: 0,
+    };
+  };
+  const copyAt = (dir: string): SkillCopy => ({
+    repository,
+    path: dir,
+    file: `${dir}/SKILL.md`,
+    blob: sha1(dir),
+    fork: false,
+    archived: false,
+    parent: "",
+    name: path.posix.basename(dir),
+    nameFrom: "frontmatter",
+    description: "Use when a made-up package's skill is needed.",
+    descriptionBytes: 45,
+    fault: "",
+  });
+  /** Each `ships` row of `manifest`'s package, as `<skill> <copy path>`. */
+  const ships = (manifest: Manifest, dirs: readonly string[]) =>
+    resolveInstallers([manifest], new CopyIndex(dirs.map(copyAt)))
+      .rows.filter((row) => row.action === "ships")
+      .map((row) => `${row.unit} ${row.skill} ${row.copyPath ?? "-"}`);
+
+  test("a package whose pi manifest declares skills ships them, under node_modules/<package>/", () => {
+    const manifest = packageAt("packages/pi-only", {
+      name: "@acme/pi-only",
+      pi: { extensions: ["./extensions/pi-only.ts"], skills: ["./skills"] },
+    });
+    expect(manifest.says).toBe("package @acme/pi-only: pi.skills skills");
+    expect(manifest.ofKind).toBe(true);
+    expect(ships(manifest, ["packages/pi-only/skills/pi-one"])).toEqual([
+      "package:@acme/pi-only pi-one packages/pi-only/skills/pi-one",
+    ]);
+    const index = new CopyIndex([copyAt("packages/pi-only/skills/pi-one")]);
+    expect(resolveInstallers([manifest], index).prefixes.map((row) => row.prefix)).toEqual([
+      "**/node_modules/@acme/pi-only/skills/pi-one/",
+    ]);
+  });
+
+  test("omp wins over pi: its skills when it declares them, else skills/, never pi's", () => {
+    const both = packageAt("packages/both", {
+      name: "@acme/both",
+      omp: { skills: ["omp-skills"] },
+      pi: { skills: ["pi-skills"] },
+    });
+    expect(
+      ships(both, ["packages/both/omp-skills/o-one", "packages/both/pi-skills/p-one"])
+    ).toEqual(["package:@acme/both o-one packages/both/omp-skills/o-one"]);
+    // An omp field that declares no skills still wins over pi's: Oh My Pi falls back to skills/.
+    const ompFirst = packageAt("packages/omp-first", {
+      name: "@acme/omp-first",
+      omp: { extensions: ["./extensions/omp-first.ts"] },
+      pi: { skills: ["pi-skills"] },
+    });
+    expect(ompFirst.says).toBe("package @acme/omp-first: omp declares no skills, so skills/");
+    expect(
+      ships(ompFirst, ["packages/omp-first/skills/f-one", "packages/omp-first/pi-skills/p-two"])
+    ).toEqual(["package:@acme/omp-first f-one packages/omp-first/skills/f-one"]);
+  });
+
+  test("a package whose manifest declares no skills falls back to the skills of skills/, and one with neither omp nor pi is no plugin", () => {
+    const fallback = packageAt("packages/fallback", {
+      name: "@acme/fallback",
+      pi: { extensions: ["./extensions/fallback.ts"] },
+    });
+    // skills/ is a directory of skills only: a SKILL.md in skills/ itself is no skill of it.
+    expect(
+      ships(fallback, ["packages/fallback/skills", "packages/fallback/skills/fallback-one"])
+    ).toEqual(["package:@acme/fallback fallback-one packages/fallback/skills/fallback-one"]);
+    const plain = packageAt("packages/plain", { name: "@acme/plain" });
+    expect(plain.ofKind).toBe(false);
+    expect(plain.says).toBe("package @acme/plain: no omp or pi manifest, so no Oh My Pi plugin");
+    expect(ships(plain, ["packages/plain/skills/plain-one"])).toEqual([]);
+  });
+
+  test("a skills entry that leaves the package is skipped, as Oh My Pi skips it, and a skills field that is no list declares none", () => {
+    const out = packageAt("packages/out", {
+      name: "@acme/out",
+      omp: { skills: ["skills", "../shared-skills", "/srv/skills"] },
+    });
+    expect(out.says).toBe(
+      "package @acme/out: omp.skills skills; ../shared-skills, /srv/skills outside the package, which Oh My Pi skips"
+    );
+    expect(ships(out, ["packages/out/skills/in-one", "packages/shared-skills/out-one"])).toEqual([
+      "package:@acme/out in-one packages/out/skills/in-one",
+    ]);
+    // Only outside entries: the unit ships nothing, and says why.
+    const away = packageAt("packages/away", { name: "@acme/away", omp: { skills: ["../x"] } });
+    expect(
+      resolveInstallers([away], new CopyIndex([copyAt("packages/x/x-one")])).rows.map(
+        (row) => `${row.unit} ${row.copyPath ?? "-"} ${row.note}`
+      )
+    ).toEqual([
+      "package:@acme/away - omp.skills ../x leaves the package, so Oh My Pi skips it, and no prepack script stages it",
+    ]);
+    const single = packageAt("packages/single", {
+      name: "@acme/single",
+      omp: { skills: "skills" },
+    });
+    expect(ships(single, ["packages/single/skills/s-one"])).toEqual([]);
+  });
+
+  /** The `<skill> <path inside the unit>` of each skill `manifests` ship into Oh My Pi, over the
+   *  copies at `dirs`, those of `untold` with no description. */
+  const shipped = (manifests: Manifest[], dirs: readonly string[], untold: string[] = []) =>
+    resolveInstallers(
+      manifests,
+      new CopyIndex(
+        dirs.map((dir) => ({
+          ...copyAt(dir),
+          description: untold.includes(dir) ? "" : copyAt(dir).description,
+        }))
+      )
+    ).rows.filter((row) => row.action === "ships" && row.copyPath !== undefined);
+
+  test("a declared directory is scanned as Oh My Pi scans it: no skill through a link out of the package, none without a description, and a namespace's skills one level deeper", () => {
+    // A link out of the package: Oh My Pi lists it from the skills/ fallback, never from a
+    // declared directory (helpers.ts lines 579-594).
+    const link = (dir: string): Manifest => ({
+      repository,
+      path: `${dir}/skills/far`,
+      kind: "skill-link",
+      source: "tree",
+      ...parseManifest("skill-link", `${dir}/skills/far`, "../../shared/far"),
+      error: "",
+      rows: 0,
+    });
+    const declared = packageAt("packages/linked", {
+      name: "@acme/linked",
+      omp: { skills: ["skills"] },
+    });
+    expect(
+      shipped(
+        [declared, link("packages/linked")],
+        ["packages/linked/skills/near", "packages/shared/far"]
+      ).map((row) => row.skill)
+    ).toEqual(["near"]);
+    const fallback = packageAt("packages/open", { name: "@acme/open", omp: { extensions: [] } });
+    expect(
+      shipped(
+        [fallback, link("packages/open")],
+        ["packages/open/skills/near", "packages/shared/far"]
+      ).map((row) => row.skill)
+    ).toEqual(["far", "near"]);
+    // No description: left out, and the unit says so.
+    const quiet = packageAt("packages/quiet", { name: "@acme/quiet", pi: { skills: ["skills"] } });
+    const rows = shipped(
+      [quiet],
+      ["packages/quiet/skills/told", "packages/quiet/skills/untold"],
+      ["packages/quiet/skills/untold"]
+    );
+    expect(rows.map((row) => row.skill)).toEqual(["told"]);
+    expect(rows[0]?.note).toBe("Oh My Pi lists no skill of it without a description: untold");
+    // A namespace (an entry holding no SKILL.md) is read one level deeper, and no further.
+    const nest = packageAt("packages/nest", { name: "@acme/nest", pi: { skills: ["skills"] } });
+    const index = new CopyIndex(
+      ["packages/nest/skills/group/inner", "packages/nest/skills/group/x/too-deep"].map(copyAt)
+    );
+    expect(
+      resolveInstallers([nest], index).prefixes.map((row) => `${row.prefix} ${row.name}`)
+    ).toEqual(["**/node_modules/@acme/nest/skills/group/inner/ inner"]);
+  });
+
+  test("a pool's skills less those an installer's `find … -exec rm` removes from its clone", () => {
+    const dots = "acme/pkgs";
+    const sources = {
+      repository: dots,
+      path: "skills-sources.json",
+      kind: "omp-skill-sources" as const,
+      source: "tree" as const,
+      ...parseManifest(
+        "omp-skill-sources",
+        "skills-sources.json",
+        JSON.stringify({ sources: [{ root: "vendor/pack" }] })
+      ),
+      error: "",
+      rows: 0,
+    };
+    const manifestOf = (file: string, kind: ManifestKind, text: string): Manifest => ({
+      repository: dots,
+      path: file,
+      kind,
+      source: "tree",
+      ...parseManifest(kind, file, text),
+      error: "",
+      rows: 0,
+    });
+    const installer = manifestOf(
+      "installers/omp.sh",
+      "installer-script",
+      [
+        OMP_INSTALLER_TEXT.trimEnd(),
+        "ensure_vendor https://github.com/acme/pack.git pack",
+        "# The pack ships many dd-* skills; only dd-keep is wanted.",
+        `find "\${DOTFILES_DIR}/vendor/pack/skills" -mindepth 1 -maxdepth 1 -type d -name 'dd-*' ! -name 'dd-keep' -exec rm -rf {} +`,
+        "",
+      ].join("\n")
+    );
+    expect(installer.says).toContain(
+      "removes each entry of vendor/pack/skills named dd-* but dd-keep"
+    );
+    const extension = manifestOf("omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT);
+    const copies = ["skills/dd-drop", "skills/dd-keep", "skills/other"].map((dir) => ({
+      ...copyAt(dir),
+      repository: "acme/pack",
+    }));
+    const rows = resolveInstallers([sources, extension, installer], new CopyIndex(copies)).rows;
+    expect(
+      rows.map((row) => `${row.action} ${row.unit} ${row.skill} ${row.copyRepository}`)
+    ).toEqual([
+      "installs pool:vendor/pack dd-keep acme/pack",
+      "installs pool:vendor/pack other acme/pack",
+    ]);
+    expect(rows[0]?.note).toContain("installers/omp.sh removes dd-drop from it");
+  });
+});
+
+// An omp-plugins `github:` dependency and an `ensure_vendor` clone, each read at the ref it names:
+// acme/dots, a made-up repository in the shape of a dotfiles repository (its
+// omp/plugins/package.json, skills-sources.json, omp/extensions/dotfiles-skills.ts and
+// installers/omp.sh and installers/lib.sh, each made up here); other/powers, a made-up repository
+// of an owner the configuration does not name, at the tag its dependency names; and acme/pack,
+// listed at main, cloned at a pinned commit.
+describe("repositories an installer pins", () => {
+  const PACK_PIN = sha1("pinned acme/pack");
+  const DOTS_FILES: MadeFile[] = [
+    {
+      path: "omp/plugins/package.json",
+      text: `${JSON.stringify(
+        {
+          name: "omp-plugins",
+          private: true,
+          dependencies: {
+            "@acme/registry-one": "1.0.0",
+            "acme-powers": "github:other/powers#v1.2.0",
+          },
+        },
+        null,
+        2
+      )}\n`,
+    },
+    {
+      path: "skills-sources.json",
+      text: `${JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }, null, 2)}\n`,
+    },
+    { path: "omp/extensions/skill-pools.ts", text: EXTENSION_TEXT },
+    {
+      path: "installers/omp.sh",
+      text: [
+        OMP_INSTALLER_TEXT.trimEnd(),
+        "# The made-up pool is cloned at a pinned commit.",
+        `ensure_vendor https://github.com/acme/pack.git acme-pack ${PACK_PIN}`,
+        "",
+      ].join("\n"),
+    },
+    {
+      path: "installers/lib.sh",
+      text: [
+        "#!/bin/bash",
+        "# A made-up installer library: the clone helper, whose own body names no clone.",
+        "ensure_vendor() {",
+        '    local url="$1" name="$2" ref="${3:-}"',
+        '    git clone --depth 1 "$url" "vendor/${name}"',
+        "}",
+        "",
+      ].join("\n"),
+    },
+  ];
+  const POWERS_FILES: MadeFile[] = [
+    {
+      path: "package.json",
+      text: `${JSON.stringify(
+        { name: "powers-of-acme", version: "1.2.0", pi: { skills: ["./skills"] } },
+        null,
+        2
+      )}\n`,
+    },
+    {
+      path: "skills/power-one/SKILL.md",
+      text: skill("name: power-one\ndescription: Use when a made-up power is needed."),
+    },
+  ];
+  const PACK_MAIN: MadeFile[] = [
+    {
+      path: "skills/pack-later/SKILL.md",
+      text: skill("name: pack-later\ndescription: A made-up skill added after the pin."),
+    },
+  ];
+  const PACK_PINNED: MadeFile[] = [
+    {
+      path: "skills/pack-one/SKILL.md",
+      text: skill("name: pack-one\ndescription: Use when the made-up pack's first step is due."),
+    },
+  ];
+  /** `repository` at `ref` holding `files`, its commit and root tree made up from both. */
+  const addAt = (w: World, repository: string, ref: string, files: readonly MadeFile[]) => {
+    const commit = sha1(`commit ${repository} ${ref}`);
+    const root = sha1(`root ${repository} ${ref}`);
+    const entries = treeOf(repository, files);
+    w.addFiles(files);
+    w.commits.set(`${repository}@${ref}`, [{ sha: commit, commit: { tree: { sha: root } } }]);
+    w.trees.set(`${repository} ${root} recursive`, { sha: root, tree: entries, truncated: false });
+    w.addFilesAt(repository, commit, entries);
+    return commit;
+  };
+  const pinnedWorld = () => {
+    const w = world();
+    const listing = (name: string) => ({
+      nameWithOwner: name,
+      isFork: false,
+      isArchived: false,
+      defaultBranchRef: { name: "main" },
+      parent: null,
+    });
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      listing("acme/dots"),
+      listing("acme/pack"),
+    ]);
+    w.addFiles(DOTS_FILES);
+    w.addRepository("acme/dots", treeOf("acme/dots", DOTS_FILES));
+    w.addFiles(PACK_MAIN);
+    w.addRepository("acme/pack", treeOf("acme/pack", PACK_MAIN));
+    w.repositoryInfo.set("other/powers", {
+      full_name: "other/powers",
+      default_branch: "main",
+      fork: false,
+      archived: false,
+      parent: null,
+    });
+    return w;
+  };
+  const only = ["--only", "acme/dots", "--only", "acme/pack", "--max-search-calls", "0"];
+  const targets = { targets: [...CONFIG.targets, "acme/dots", "acme/pack", "other/powers"] };
+
+  test("an omp-plugins github: dependency is a unit: its repository at the ref it names, outside the owners too, its package read by Oh My Pi's rule and installed under the dependency's name", async () => {
+    const w = pinnedWorld();
+    const powers = addAt(w, "other/powers", "v1.2.0", POWERS_FILES);
+    addAt(w, "acme/pack", PACK_PIN, PACK_PINNED);
+    const r = await run(w, only, targets);
+    expect(r.code).toBe(0);
+    const read = r.table("repositories.tsv").find((row) => row.repository === "other/powers");
+    expect(read).toMatchObject({ branch: "v1.2.0", commit: powers, error: "" });
+    expect(installerRows(r, "other/powers", "package.json")).toEqual([
+      "ships package:acme-powers power-one other/powers skills/power-one",
+    ]);
+    expect(installerRows(r, "acme/dots", "omp/plugins/package.json")).toContain(
+      "installs package:acme-powers power-one other/powers skills/power-one"
+    );
+    expect(r.text("prefix-table.tsv")).toContain(
+      "**/node_modules/acme-powers/skills/power-one/\tother/powers\tskills/power-one\tpower-one\tpackage:acme-powers (other/powers:package.json)"
+    );
+    expect(r.text("skill-copies.md")).toContain("- other/powers at ");
+  });
+
+  test("an ensure_vendor clone's pool is a unit: the cloned repository at the ref the installer pins, in place of its listed read", async () => {
+    const w = pinnedWorld();
+    addAt(w, "other/powers", "v1.2.0", POWERS_FILES);
+    const pack = addAt(w, "acme/pack", PACK_PIN, PACK_PINNED);
+    const r = await run(w, only, targets);
+    expect(r.code).toBe(0);
+    const read = r.table("repositories.tsv").filter((row) => row.repository === "acme/pack");
+    expect(read).toEqual([expect.objectContaining({ branch: PACK_PIN, commit: pack, error: "" })]);
+    // Its copies are those of the pinned commit, not of main.
+    expect(
+      r
+        .table("skill-copies.tsv")
+        .filter((row) => row.repository === "acme/pack")
+        .map((row) => row.path)
+    ).toEqual(["skills/pack-one"]);
+    expect(installerRows(r, "acme/dots", "skills-sources.json")).toEqual([
+      "installs pool:vendor/acme-pack pack-one acme/pack skills/pack-one",
+    ]);
+    expect(r.text("prefix-table.tsv")).toContain(
+      "**/vendor/acme-pack/skills/pack-one/\tacme/pack\tskills/pack-one\tpack-one\tpool:vendor/acme-pack (acme/dots:skills-sources.json)"
+    );
+    const manifests = r.table("manifests.tsv");
+    expect(manifests.find((row) => row.path === "installers/omp.sh")?.says).toContain(
+      `clones acme/pack into vendor/acme-pack at ${PACK_PIN}`
+    );
+    // The helper's own body names no clone, so the library is no installer of its kind.
+    expect(manifests.some((row) => row.path === "installers/lib.sh")).toBe(false);
   });
 });
 
@@ -1232,7 +1653,9 @@ describe("the full run over the owners", () => {
       "**/plugins/cache/acme-market/acme-tools/*/skills/tool-loop-alpha/ -> acme/skills plugins/acme-tools/skills/tool-loop-alpha",
       // An npm-sourced marketplace plugin and its package, through a link.
       "**/plugins/cache/acme-market/acme-envoy/*/skills/beta/ -> acme/skills skills/beta",
-      "**/node_modules/@acme/acme-envoy/skills/beta/ -> acme/skills skills/beta",
+      // Its Oh My Pi package ships the copy its prepack script stages in dist/skills.
+      "**/node_modules/@acme/acme-envoy/dist/skills/beta/ -> acme/skills skills/beta",
+      "/opt/legion/acme-envoy/dist/skills/beta/ -> acme/skills skills/beta",
       "**/plugins/cache/acme-market/acme-claude/*/skills/alpha/ -> acme/skills skills/alpha",
       // An installer's links into each host's user skills.
       "**/.omp/agent/skills/beta/ -> acme/skills skills/beta",

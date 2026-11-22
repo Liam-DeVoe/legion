@@ -77,6 +77,8 @@ const F1 = path.join(
 const F1_SKILLS = "/legion/scratch/tmp/acme-1/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
 const PART_CHARS = 200;
 const SHA = "0123456789abcdef0123456789abcdef01234567";
+/** The commit acme/dots's installer pins acme/pack at (`ensure_vendor`). */
+const PACK_PIN = "4444444444444444444444444444444444444444";
 const LINE = "2. Write each step's result on one line.";
 const scratch = temporaryDirectory("skill-cuts-build", { real: true });
 
@@ -200,6 +202,13 @@ function readFirst(id: string, url: string, header: string, text: string) {
  *  marketplace old-market (`plugins/cache/plugins/<marketplace>___<plugin>___<version>/`). */
 const OLD_MARKET_ZETA =
   "/home/dev/.omp/plugins/cache/plugins/old-market___zeta-tools___0.1.0/skills/zeta/SKILL.md";
+
+/** Where the pinned-units session reads power-one and pack-one: a dev box's Oh My Pi plugins
+ *  directory, which holds acme/powers under the dependency's name acme-powers, and the clone of
+ *  acme/pack in its dotfiles checkout's vendor/acme-pack. */
+const POWERS_ONE =
+  "/home/dev/.dotfiles/omp/plugins/node_modules/acme-powers/skills/power-one/SKILL.md";
+const PACK_ONE = "/home/dev/.dotfiles/vendor/acme-pack/skills/pack-one/SKILL.md";
 
 const SECRET_TOKEN = fixtureSecret("tok");
 const PEM_BODY = fixtureSecret("pem");
@@ -337,6 +346,16 @@ const SESSIONS: Record<
   "renamed-plugin": {
     store: "store_a",
     change: readFirst("2e7a000", "skill://zeta", OLD_MARKET_ZETA, "# zeta\n"),
+  },
+  // A dev-box session that reads, before alpha, a skill of the package acme/dots's plugin list
+  // installs from acme/powers as acme-powers (a `github:` dependency), and a skill of the pool
+  // acme/dots's installer clones from acme/pack into vendor/acme-pack.
+  "pinned-units": {
+    store: "store_a",
+    change: (lines) => {
+      readFirst("90e0000", "skill://power-one", POWERS_ONE, "# power-one\n")(lines);
+      readFirst("9ac0000", "skill://pack-one", PACK_ONE, "# pack-one\n")(lines);
+    },
   },
   secret: {
     store: "store_a",
@@ -902,7 +921,12 @@ const SLOT_RULE =
  *  in agents/agentvm/. acme/dual holds .claude/CLAUDE.md, AGENTS.md and CLAUDE.md at its root.
  *  acme/big holds its own skill omega in `.claude/skills/` and an AGENTS.md, and the stand-in gh
  *  cuts its whole tree short (TRUNCATED), as GitHub cuts the tree of a repository of too many
- *  files. */
+ *  files. acme/dots is made in the shape of a dotfiles repository: its Oh My Pi plugins
+ *  package.json installs acme/powers as a `github:` dependency named acme-powers, and its installer
+ *  clones acme/pack into vendor/acme-pack at PACK_PIN, a pool its skills-sources.json feeds to Oh
+ *  My Pi through its extension. acme/powers holds a package whose `pi` manifest declares its
+ *  skills/ (power-one and power-two); acme/pack holds pack-one and pack-later at SHA, and pack-one
+ *  and pack-two at PACK_PIN (PINNED). */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -980,7 +1004,62 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "data/runs/0001.json": "{}\n",
     "data/runs/0002.json": "{}\n",
   },
+  "acme/powers": {
+    "package.json": JSON.stringify({ name: "powers-of-acme", pi: { skills: ["./skills"] } }),
+    "skills/power-one/SKILL.md": skillMd("power-one"),
+    "skills/power-two/SKILL.md": skillMd("power-two"),
+  },
+  "acme/dots": {
+    "omp/plugins/package.json": JSON.stringify({
+      name: "omp-plugins",
+      dependencies: { "acme-powers": "github:acme/powers#v1.2.0" },
+    }),
+    "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }),
+    "omp/extensions/skill-pools.ts": [
+      'import * as fs from "node:fs";',
+      "export default function (pi) {",
+      '  pi.on("resources_discover", async () => ({',
+      '    skillPaths: JSON.parse(fs.readFileSync("skills-sources.json", "utf8")).sources.map(',
+      '      (source) => source.root + "/skills"',
+      "    ),",
+      "  }));",
+      "}",
+      "",
+    ].join("\n"),
+    "installers/omp.sh": [
+      "#!/usr/bin/env bash",
+      'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
+      'ln -sfn "$REPO_DIR/omp/extensions/skill-pools.ts" "$HOME/.omp/agent/extensions/skill-pools.ts"',
+      `ensure_vendor https://github.com/acme/pack.git acme-pack ${PACK_PIN}`,
+      "",
+    ].join("\n"),
+  },
+  "acme/pack": {
+    "skills/pack-one/SKILL.md": skillMd("pack-one"),
+    "skills/pack-later/SKILL.md": skillMd("pack-later"),
+  },
 };
+
+/** The made-up repositories at a commit other than SHA, by `<repository>@<ref>`: the commit the
+ *  stand-in gh gives for that ref, and the files there. acme/dots's installer pins acme/pack at
+ *  PACK_PIN; the copies output read it later at another ref (repositories.tsv's branch), which
+ *  the stand-in answers with SHA. */
+const PINNED: Record<string, { sha: string; files: Record<string, string> }> = {
+  [`acme/pack@${PACK_PIN}`]: {
+    sha: PACK_PIN,
+    files: {
+      "skills/pack-one/SKILL.md": skillMd("pack-one"),
+      "skills/pack-two/SKILL.md": skillMd("pack-two"),
+    },
+  },
+};
+/** The files of `repository` at the commit `id`: SHA's, or a PINNED commit's. */
+const filesAt = (repository: string, id: string): Record<string, string> | undefined =>
+  id === SHA
+    ? REPOSITORIES[repository]
+    : Object.entries(PINNED).find(
+        ([key, at]) => key.startsWith(`${repository}@`) && at.sha === id
+      )?.[1].files;
 
 /** The blob id the stand-in gives a file's text. */
 const blobId = (text: string) => createHash("sha1").update(text).digest("hex");
@@ -1024,10 +1103,11 @@ function treeLevel(repo: string, id: string): Record<string, unknown>[] | undefi
 /** The gh calls the stand-in took. */
 const ghCalls: string[][] = [];
 
-/** The stand-in gh: GET reads of commits, default branches, acme/infra's
- *  legion/projects/10-ACME.yaml, each file of a made-up repository at SHA, the tree of each made-up
- *  repository at SHA (whole, cut short for TRUNCATED's, or one directory a read by its tree id) and
- *  its blobs; and GraphQL reads of blobs in a batch. The clock is the real one. */
+/** The stand-in gh: GET reads of commits (SHA, or a PINNED ref's commit), default branches,
+ *  acme/infra's legion/projects/10-ACME.yaml, each file of a made-up repository at SHA, the tree
+ *  of each made-up repository at SHA or at a PINNED commit (whole, cut short for TRUNCATED's, or
+ *  one directory a read by its tree id) and its blobs; and GraphQL reads of blobs in a batch. The
+ *  clock is the real one. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -1038,7 +1118,13 @@ const io = (lines: string[]): BuildIo => ({
     if (args[1] === "graphql") {
       const field = (name: string) =>
         args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
-      const texts = Object.values(REPOSITORIES[`${field("owner")}/${field("name")}`] ?? {});
+      const owner = `${field("owner")}/${field("name")}`;
+      const texts = [
+        ...Object.values(REPOSITORIES[owner] ?? {}),
+        ...Object.entries(PINNED).flatMap(([key, at]) =>
+          key.startsWith(`${owner}@`) ? Object.values(at.files) : []
+        ),
+      ];
       const blobs = [...field("query").matchAll(/(b\d+): object\(oid: "([0-9a-f]{40})"\)/g)].map(
         ([, alias, id]) => {
           const text = texts.find((each) => blobId(each) === id);
@@ -1050,7 +1136,12 @@ const io = (lines: string[]): BuildIo => ({
       return ok(JSON.stringify({ data: { repository: Object.fromEntries(blobs) } }));
     }
     if (/^repos\/[^/]+\/[^/]+$/.test(route)) return ok("main\n");
-    if (route.endsWith("/commits")) return ok(`${SHA}\n`);
+    const commits = /^(repos\/[^/]+\/[^/]+)\/commits\?(.*)$/.exec(route);
+    if (commits !== null) {
+      const ref = new URLSearchParams(commits[2]).get("sha");
+      const repo = (commits[1] ?? "").slice("repos/".length);
+      return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
+    }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
       return ok("key: ACME\ninstructions: acme.md\n");
     }
@@ -1060,17 +1151,17 @@ const io = (lines: string[]): BuildIo => ({
     const [, repository = "", kind = "", id = ""] =
       /^repos\/([^/]+\/[^/]+)\/git\/(trees|blobs)\/([0-9a-f]{40})(?:\?recursive=1)?$/.exec(route) ??
       [];
-    const files = Object.entries(REPOSITORIES[repository] ?? {});
+    const files = Object.entries(filesAt(repository, id) ?? REPOSITORIES[repository] ?? {});
     if (kind === "trees" && !route.endsWith("?recursive=1")) {
       const level = treeLevel(repository, id);
       if (level !== undefined)
         return ok(JSON.stringify({ sha: id, truncated: false, tree: level }));
     }
-    if (kind === "trees" && id === SHA && files.length > 0) {
+    if (kind === "trees" && filesAt(repository, id) !== undefined && files.length > 0) {
       const cut = Object.hasOwn(TRUNCATED, repository);
       return ok(
         JSON.stringify({
-          sha: SHA,
+          sha: id,
           truncated: cut,
           tree: files.slice(0, cut ? 1 : files.length).map(([file, text]) => ({
             path: file,
@@ -1193,6 +1284,8 @@ beforeAll(() => {
   const otherSkills = "user-skills:omp (acme/other:installers/skills.sh)";
   const pkg = "package:@acme/pi-acme (acme/skills:packages/pi-acme/package.json)";
   const market = "plugin:zeta-tools@new-market (acme/market:.claude-plugin/marketplace.json)";
+  const powers = "package:acme-powers (acme/powers:package.json)";
+  const pack = "pool:vendor/acme-pack (acme/dots:skills-sources.json)";
   writeFileSync(
     path.join(copiesDir, "prefix-table.tsv"),
     tsv(PREFIX_TABLE_COLUMNS, [
@@ -1218,6 +1311,22 @@ beforeAll(() => {
         "zeta",
         market,
       ],
+      // As copies.ts gives them: acme/powers' package under its dependency's name, and the pool
+      // of acme/dots's clone of acme/pack at the later ref the copies output read it at.
+      ...["power-one", "power-two"].map((name) => [
+        `**/node_modules/acme-powers/skills/${name}/`,
+        "acme/powers",
+        `skills/${name}`,
+        name,
+        powers,
+      ]),
+      ...["pack-one", "pack-later"].map((name) => [
+        `**/vendor/acme-pack/skills/${name}/`,
+        "acme/pack",
+        `skills/${name}`,
+        name,
+        pack,
+      ]),
     ])
   );
   const installer = (
@@ -1315,6 +1424,29 @@ beforeAll(() => {
         "zeta",
         "skills/zeta"
       ),
+      ...["power-one", "power-two"].map((name) =>
+        installer(
+          "acme/powers",
+          "package.json",
+          "omp-package",
+          "ships",
+          "package:acme-powers",
+          name,
+          `skills/${name}`
+        )
+      ),
+      ...["pack-one", "pack-later"].map((name) => [
+        "acme/dots",
+        "skills-sources.json",
+        "omp-skill-sources",
+        "installs",
+        "pool:vendor/acme-pack",
+        "omp",
+        name,
+        "acme/pack",
+        `skills/${name}`,
+        "read by omp/extensions/skill-pools.ts",
+      ]),
     ])
   );
   writeFileSync(
@@ -1340,6 +1472,10 @@ beforeAll(() => {
       ["acme/market", "main", SHA, "no", "no", "", 10, "recursive", 1, ""],
       ["acme/proj", "main", SHA, "no", "no", "", 10, "recursive", 8, ""],
       ["acme/dual", "main", SHA, "no", "no", "", 10, "recursive", 0, ""],
+      ["acme/powers", "v1.2.0", SHA, "no", "no", "", 3, "whole", 2, ""],
+      ["acme/dots", "main", SHA, "no", "no", "", 4, "whole", 0, ""],
+      // Read later at another ref than PACK_PIN, which the stand-in answers with SHA.
+      ["acme/pack", "5".repeat(40), SHA, "no", "no", "", 2, "whole", 2, ""],
     ])
   );
   writeFileSync(
@@ -1352,6 +1488,10 @@ beforeAll(() => {
       ["acme/skills", "skills/newer", "newer", 10, "no", "no", "", "", ""],
       ["forker/skills", "skills/alpha", "alpha", 10, "yes", "no", "acme/skills", "", ""],
       ["acme/market", "skills/zeta", "zeta", 10, "no", "no", "", "", ""],
+      ["acme/powers", "skills/power-one", "power-one", 10, "no", "no", "", "", ""],
+      ["acme/powers", "skills/power-two", "power-two", 10, "no", "no", "", "", ""],
+      ["acme/pack", "skills/pack-one", "pack-one", 10, "no", "no", "", "", ""],
+      ["acme/pack", "skills/pack-later", "pack-later", 10, "no", "no", "", "", ""],
     ])
   );
   writeFileSync(path.join(copiesDir, "loaders.tsv"), tsv(LOADERS_COLUMNS, []));
@@ -1491,7 +1631,8 @@ describe("build-cases over every made-up session", () => {
   /** The requests the stand-in gateway took for this build. */
   let requests: RecordedRequest[] = [];
   beforeAll(async () => {
-    const names = [...Object.keys(SESSIONS), "missing"];
+    // pinned-units, whose pool is held at another commit than SHA, has a build of its own below.
+    const names = [...Object.keys(SESSIONS).filter((name) => name !== "pinned-units"), "missing"];
     const sessions = sessionsFile("all.jsonl", names, ["good", "missing"]);
     const from = recorder.requests.length;
     code = await main(buildArgs(sessions, out, "7"), io(printed));
@@ -1704,8 +1845,8 @@ describe("build-cases over every made-up session", () => {
         expect(REPOSITORIES[skill.repo]?.[`${skill.path}/SKILL.md`]).toBeDefined();
       }
     }
-    const commitCall = ghCalls.find((args) => args.includes("repos/acme/skills/commits"));
-    expect(commitCall).toContain("until=2026-11-20T01:59:41.780Z");
+    const commitCall = ghCalls.flat().find((arg) => arg.startsWith("repos/acme/skills/commits?"));
+    expect(commitCall).toContain("until=2026-11-20T01%3A59%3A41.780Z");
     expect(ghCalls.every((args) => args[0] === "api" && !args.includes("POST"))).toBe(true);
     // A repository's files are read in one batch; the one the batch gives cut short is read alone.
     expect(ghCalls.some((args) => args[1] === "graphql")).toBe(true);
@@ -2484,7 +2625,8 @@ describe("build-cases over every made-up session", () => {
       "not-in-store": 1,
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
-    expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
+    // Every session but pinned-units, and the missing one.
+    expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length - 1 + 1);
     expect(summary.casesBuilt).toBe(21);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
@@ -2550,6 +2692,42 @@ describe("build-cases over every made-up session", () => {
     );
     expect(good?.pulls).toBeGreaterThan(1);
   });
+});
+
+test("a dev-box session that read a skill of a github: dependency's package and one of a cloned pool gets a profile that holds each unit's skills, the pool's at the commit its installer pins at the session's start", async () => {
+  const out = path.join(scratch, "pinned-units", "cases.jsonl");
+  const lines: string[] = [];
+  const sessions = sessionsFile("pinned-units.jsonl", ["pinned-units"]);
+  expect(await main(buildArgs(sessions, out, "1"), io(lines))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  expect(c?.context).toBe("devbox");
+  expect(
+    c?.profile.skills
+      .map((skill) => `${skill.name} ${skill.repo} ${skill.path} ${skill.commit}`)
+      .sort()
+  ).toEqual([
+    `alpha acme/skills skills/alpha ${SHA}`,
+    `beta acme/skills skills/beta ${SHA}`,
+    `older acme/skills skills/older ${SHA}`,
+    `pack-one acme/pack skills/pack-one ${PACK_PIN}`,
+    `pack-two acme/pack skills/pack-two ${PACK_PIN}`,
+    `power-one acme/powers skills/power-one ${SHA}`,
+    `power-two acme/powers skills/power-two ${SHA}`,
+  ]);
+  // The package at its repository's root is named as Oh My Pi installs it.
+  expect(c?.profile.plugins).toContainEqual({
+    repo: "acme/powers",
+    commit: SHA,
+    path: ".",
+    name: "acme-powers",
+  });
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence[`commit ${PACK_PIN} of acme/pack`]).toStartWith(
+    `the last commit of ${PACK_PIN}, the ref acme/dots:installers/omp.sh pins at the session's start`
+  );
+  expect(evidence["left out: skill pack-later (acme/pack skills/pack-later)"]).toContain(
+    "does not ship it at the session's start"
+  );
 });
 
 test("the seed fixes the order the sessions are taken in, and --max stops at that many cases", async () => {
@@ -4269,9 +4447,9 @@ test.each([
       // The first commit read fails with `error`; every other call goes to the stand-in.
       gh: async (args) => {
         const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
-        if (failed !== undefined || !route.endsWith("/commits")) return standin.gh(args);
+        if (failed !== undefined || !route.includes("/commits?")) return standin.gh(args);
         ghCalls.push([...args]);
-        failed = `Get "https://api.github.com/${route}?per_page=1": ${error}`;
+        failed = `Get "https://api.github.com/${route}": ${error}`;
         return { code: 1, stdout: "", stderr: `${failed}\n` };
       },
       sleep: async (ms) => void waits.push(ms),

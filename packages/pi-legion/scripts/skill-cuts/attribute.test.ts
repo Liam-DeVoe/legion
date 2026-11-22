@@ -34,13 +34,19 @@ import {
 } from "./attribute";
 import { loadConfig, parseConfig } from "./config";
 import {
+  CopyIndex,
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
   MANIFESTS_COLUMNS,
+  type Manifest,
+  type ManifestKind,
   PREFIX_TABLE_COLUMNS,
+  parseManifest,
   parseTsv,
   REPOSITORIES_COLUMNS,
+  resolveInstallers,
   SKILL_COPIES_COLUMNS,
+  type SkillCopy,
   tsv,
 } from "./copies";
 
@@ -431,6 +437,128 @@ test.each([
   );
   // The context installs one alpha (acme/skills'), whose sessions stay H1's and H2's.
   expect(countOf(attribution, ALPHA).sessions).toBe(2);
+});
+
+// The prefix rows copies.ts gives a `github:` dependency of a plugins package.json and a pool an
+// `ensure_vendor` clone holds, from made-up manifests in the shape of a dotfiles repository's
+// (acme/dots) over made-up copies: acme/powers' power-one, acme/pack's pack-one, and a copy of
+// power-one in acme/skills, which a read of the dependency's must not be counted for.
+test("a read under node_modules/<package>/skills/<name>/ of a github: dependency, or under vendor/<pool>/skills/<name>/ of a cloned pool, goes to the pinned copy by the prefix table when its repository is a target", () => {
+  const manifest = (
+    repository: string,
+    file: string,
+    kind: ManifestKind,
+    text: string
+  ): Manifest => ({
+    repository,
+    path: file,
+    kind,
+    source: "tree",
+    ...parseManifest(kind, file, text),
+    error: "",
+    rows: 0,
+  });
+  const manifests = [
+    manifest(
+      "acme/dots",
+      "omp/plugins/package.json",
+      "omp-plugins",
+      JSON.stringify({
+        name: "omp-plugins",
+        dependencies: { "acme-powers": "github:acme/powers#v1" },
+      })
+    ),
+    manifest(
+      "acme/powers",
+      "package.json",
+      "omp-package",
+      JSON.stringify({ name: "powers-of-acme", pi: { skills: ["./skills"] } })
+    ),
+    manifest(
+      "acme/dots",
+      "skills-sources.json",
+      "omp-skill-sources",
+      JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] })
+    ),
+    manifest(
+      "acme/dots",
+      "omp/extensions/skill-pools.ts",
+      "omp-extension",
+      'export const manifest = readFileSync("skills-sources.json", "utf8");\n'
+    ),
+    manifest(
+      "acme/dots",
+      "installers/omp.sh",
+      "installer-script",
+      [
+        'ln -sfn "$REPO_DIR/omp/extensions/skill-pools.ts" "$HOME/.omp/agent/extensions/skill-pools.ts"',
+        "ensure_vendor https://github.com/acme/pack.git acme-pack v2",
+        "",
+      ].join("\n")
+    ),
+  ];
+  const copyAt = (repository: string, dir: string): SkillCopy => ({
+    repository,
+    path: dir,
+    file: `${dir}/SKILL.md`,
+    blob: "",
+    fork: false,
+    archived: false,
+    parent: "",
+    name: path.posix.basename(dir),
+    nameFrom: "frontmatter",
+    description: "Use when a made-up skill is needed.",
+    descriptionBytes: 35,
+    fault: "",
+  });
+  const copies = [
+    copyAt("acme/pack", "skills/pack-one"),
+    copyAt("acme/powers", "skills/power-one"),
+    copyAt("acme/skills", "skills/power-one"),
+  ];
+  const resolved = resolveInstallers(manifests, new CopyIndex(copies));
+  const targets = new Set(["acme/pack", "acme/powers", "acme/skills"]);
+  const world: R4Tables = {
+    copies: copies.map((copy) => copyRow(copy.repository, copy.path, copy.name)),
+    installers: resolved.rows.map((row) => ({
+      manifest_repository: row.manifestRepository,
+      manifest_path: row.manifestPath,
+      kind: row.kind,
+      action: row.action,
+      unit: row.unit,
+      host: row.host,
+      skill: row.skill,
+      copy_repository: row.copyRepository,
+      copy_path: row.copyPath ?? "",
+      note: row.note,
+    })),
+    prefixes: resolved.prefixes
+      .filter((row) => targets.has(row.repository))
+      .map((row) => ({ ...row })),
+    loaders: [],
+    repositories: [...targets, "acme/dots"].map(repositoryRow),
+  };
+  const powersRead =
+    "/home/acme/.dotfiles/omp/plugins/node_modules/acme-powers/skills/power-one/SKILL.md";
+  const packRead = "/home/acme/.dotfiles/vendor/acme-pack/skills/pack-one/SKILL.md";
+  const reads = query("store_a", "2026-11-22", [
+    { skill: "power-one", copy: powersRead, hashes: [H4] },
+    { skill: "pack-one", copy: packRead, hashes: [H4] },
+  ]);
+  const attribution = attribute(CONFIG, [reads], world);
+  expect(attribution.mappedPrefixes.get(copyPrefix(powersRead, "power-one"))).toEqual(
+    new Set(["acme/powers skills/power-one"])
+  );
+  expect(attribution.mappedPrefixes.get(copyPrefix(packRead, "pack-one"))).toEqual(
+    new Set(["acme/pack skills/pack-one"])
+  );
+  const sessions = (repository: string, dir: string) =>
+    attribution.copies.find((count) => count.repository === repository && count.path === dir)
+      ?.sessions;
+  expect(sessions("acme/powers", "skills/power-one")).toBe(1);
+  expect(sessions("acme/pack", "skills/pack-one")).toBe(1);
+  // Not counted for the same-named copy of another repository.
+  expect(sessions("acme/skills", "skills/power-one")).toBe(0);
 });
 
 test("the checkout rule takes the longest skill directory, and names no directory for skill://", () => {

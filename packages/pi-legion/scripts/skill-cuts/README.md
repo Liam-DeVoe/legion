@@ -301,6 +301,29 @@ for one repository and 8 in all. It prints one line per repository read (`copies
 <owner/repo>: <entries> entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25
 searches, so the log gives the rate.
 
+Three install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
+the list, read as Oh My Pi 18.18.6 reads it:
+
+- An Oh My Pi plugin package (a `package.json` whose `omp` or `pi` field is set; `pi` counts only
+  when `omp` is absent): the skill directories its manifest's `skills` list declares, each inside
+  the package, else its `skills/`, each scanned as Oh My Pi scans a skill directory (an entry
+  holding no `SKILL.md` is read one level deeper, a skill with no description is left out, and a
+  declared directory lists no skill through a link that leads out of the package). It is
+  installed at `node_modules/<name>/`.
+- A `github:<owner>/<name>#<ref>` dependency of an Oh My Pi plugins `package.json`: the package
+  at the root of that repository, at that ref, installed under the dependency's name, whatever
+  the repository's owner.
+- An `ensure_vendor <url> <name> <ref>` clone of an installer script, which a `skills-sources.json`
+  pool under `vendor/<name>/` feeds to Oh My Pi: the cloned repository at that ref, less each
+  entry the installer's `find … -name … -exec rm` removes from the pool.
+
+Each repository a pin names (the dependency's, the clone's) is read at the pin's ref, in place of
+its default branch's commit when an owner's listing holds it too; `repositories.tsv`'s `branch`
+names the ref. A repository with no pinned ref is read at its default branch. The prefix rows of
+these units reach the table only when the configuration's `targets` name their repositories.
+`build-cases` and `build-tasks` read a pinned repository at the ref its installer names at the
+session's start.
+
 ### `attribute`
 
 ```
