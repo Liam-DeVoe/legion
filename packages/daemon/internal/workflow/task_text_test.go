@@ -354,26 +354,8 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 // and a merge after its last step, or the agent of a first step not told the work its task starts
 // from (its control: the steps line that always ends with the retro and the merge).
 func TestTheFirstStepOfATaskWithNeedsNamesThem(t *testing.T) {
-	// told is the daemon's lines of the task of the agent of task of key's plan at place, in the
-	// phase that place derives (issuePhaseOf).
-	told := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, place record.TaskPlace) string {
-		t.Helper()
-		var lines string
-		onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-			w.State, w.Place = record.TaskRunning, place
-			view.Phase = issuePhaseOf(w, place, record.TaskRunning)
-			at, err := engine.standingPart(ctx, tx, view, w)
-			lines = at.lines
-			return err
-		})
-		return lines
-	}
-	ends := func(t *testing.T, who, lines, want string) {
-		t.Helper()
-		if !strings.HasSuffix(lines, want) {
-			t.Fatalf("the %s's task = %q,\nwant it to end %q", who, lines, want)
-		}
-	}
+	told := stepLines
+	ends := endsWith
 
 	t.Run("the example plan a to e", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -387,7 +369,8 @@ func TestTheFirstStepOfATaskWithNeedsNamesThem(t *testing.T) {
 			planTask{id: "e", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"d"}, state: record.TaskWaiting})
 
 		ends(t, "first step of d", told(t, pool, engine, root.Key, "d", atStep(1)),
-			" Task: d. Step 1 of 2: implementer:cd. Steps: 1 implementer:cd, 2 reviewer:r. This task starts from the joined work of tasks a, c, which are done.")
+			" Task: d. Step 1 of 2: implementer:cd. Steps: 1 implementer:cd, 2 reviewer:r. This task starts from the joined work of tasks a, c, which are done."+
+				" Open the pull request of this task against legion/LEGION-208.join: gh pr create --base legion/LEGION-208.join.")
 		second := told(t, pool, engine, root.Key, "d", atStep(2))
 		ends(t, "second step of d", second, " Task: d. Step 2 of 2: reviewer:r. Steps: 1 implementer:cd, 2 reviewer:r.")
 		lacks(t, "second step of d", second, "starts from")
@@ -412,6 +395,139 @@ func TestTheFirstStepOfATaskWithNeedsNamesThem(t *testing.T) {
 			" Working copy: branch legion/LEGION-208, directory /work/LEGION-208. Task: a. Step 1 of 2: implementer. Steps: 1 implementer, 2 reviewer then Legion's retro and merge."; lines != want {
 			t.Fatalf("the first step's task of a plan of one task = %q,\nwant %q", lines, want)
 		}
+	})
+}
+
+// stepLines is the daemon's lines of the task of the agent of task of key's plan at place, in the
+// phase that place derives (issuePhaseOf), as the engine composes them (standingPart) on the walk
+// of the task as Engine.view reads it, with the task running at place.
+func stepLines(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, place record.TaskPlace) string {
+	t.Helper()
+	var lines string
+	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
+		w.State, w.Place = record.TaskRunning, place
+		view.Phase = issuePhaseOf(w, place, record.TaskRunning)
+		at, err := engine.standingPart(ctx, tx, view, w)
+		lines = at.lines
+		return err
+	})
+	return lines
+}
+
+// endsWith fails the test unless the lines of who's task end with want.
+func endsWith(t *testing.T, who, lines, want string) {
+	t.Helper()
+	if !strings.HasSuffix(lines, want) {
+		t.Fatalf("the %s's task = %q,\nwant it to end %q", who, lines, want)
+	}
+}
+
+// seedBranches gives each of tasks of key's plan its branch as the starts of a plan give them:
+// the first task the issue's own branch, each other legion/<KEY>.<id> (seedTaskBranch).
+func seedBranches(t *testing.T, pool *pgxpool.Pool, key string, tasks ...string) {
+	t.Helper()
+	for i, task := range tasks {
+		branch := "legion/" + key
+		if i > 0 {
+			branch += "." + task
+		}
+		seedTaskBranch(t, pool, key, task, branch)
+	}
+}
+
+// The first step of a task whose join GitHub refused as a conflict is told to repair it, right
+// after the sentence that names the tasks it starts from: of tasks a and c, which are done, d
+// needs both, and the join of c into d's branch conflicted. d's first step is told that GitHub
+// could not join the work of task c, the commands that join c's branch in d's working copy, and the
+// branch to push; d's second step is not told it. A task whose join conflicted on two needs names
+// both, each with its branch. A task whose join ended with no conflict is told nothing of a join.
+//
+// The fault it catches is a conflict the agent of the first step is not told (its control: the
+// conflict sentence dropped, under which d's first step names no join to repair).
+func TestTheFirstStepOfATaskWhoseJoinConflictedIsToldToRepairIt(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "d", steps: []string{"implementer:d", "reviewer:r"}, agents: []claim.Agent{"impl-d", "rev-d"}, needs: []string{"a", "c"},
+			state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "f", steps: []string{"tester:f"}, agents: []claim.Agent{"test-f"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "g", steps: []string{"tester:g"}, agents: []claim.Agent{"test-g"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "z", steps: []string{"implementer:z"}, agents: []claim.Agent{"impl-z"}, needs: []string{"d", "f", "g"}, state: record.TaskWaiting})
+	seedBranches(t, pool, root.Key, "a", "c", "d", "f", "g")
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		store := record.NewStore()
+		if err := store.SetJoinConflicts(t.Context(), tx, root.Key, root.Generation, "d", []string{"c"}); err != nil {
+			return err
+		}
+		return store.SetJoinConflicts(t.Context(), tx, root.Key, root.Generation, "f", []string{"a", "c"})
+	})
+
+	first := stepLines(t, pool, engine, root.Key, "d", atStep(1))
+	const repair = " This task starts from the joined work of tasks a, c, which are done." +
+		" GitHub could not join the work of task c into this branch: their changes conflict." +
+		" Before your own work, join it in your working copy: `jj -R /work/LEGION-208.d git fetch`," +
+		" then `jj -R /work/LEGION-208.d new @- legion/LEGION-208.c@origin -m \"LEGION-208: join the work of task c\"`," +
+		" repair each path that `jj -R /work/LEGION-208.d resolve --list` lists, `jj -R /work/LEGION-208.d squash`," +
+		" and push the branch legion/LEGION-208.d. That join is the first commit of your step."
+	if !strings.Contains(first, repair) {
+		t.Fatalf("the first step of d's task = %q,\nwant it to hold %q", first, repair)
+	}
+	lacks(t, "second step of d", stepLines(t, pool, engine, root.Key, "d", atStep(2)), "GitHub could not join")
+
+	const both = " GitHub could not join the work of task a, task c into this branch: their changes conflict." +
+		" Before your own work, join it in your working copy: `jj -R /work/LEGION-208.f git fetch`," +
+		" then `jj -R /work/LEGION-208.f new @- legion/LEGION-208@origin legion/LEGION-208.c@origin -m \"LEGION-208: join the work of task a, task c\"`," +
+		" repair each path that `jj -R /work/LEGION-208.f resolve --list` lists, `jj -R /work/LEGION-208.f squash`," +
+		" and push the branch legion/LEGION-208.f. That join is the first commit of your step."
+	if f := stepLines(t, pool, engine, root.Key, "f", atStep(1)); !strings.Contains(f, both) {
+		t.Fatalf("the first step of f's task = %q,\nwant it to hold %q", f, both)
+	}
+	lacks(t, "first step of g", stepLines(t, pool, engine, root.Key, "g", atStep(1)), "GitHub could not join")
+}
+
+// An implementation step of a task whose pull request has a base other than the issue's default
+// branch (record.StoredPlan.BaseOf) is told that base, and the command that opens the pull request
+// against it: of a and b, which are done, c needs b, d needs a and c, and z, which needs d, is the
+// task that merges. c's implementer is told b's branch, and d's implementer d's join branch, while
+// c's reviewer is told no base. a, which needs nothing, z, the task that merges, and a step of a
+// plan of one task are told none.
+//
+// The fault it catches is an implementer that opens its pull request against the default branch,
+// so the review of its task reads the work of its needs (its control: the base sentence dropped,
+// under which c's implementer is told no base).
+func TestAnImplementationStepNamesItsPullRequestsBase(t *testing.T) {
+	const opens = "Open the pull request of this task against"
+	t.Run("a plan of several tasks", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := textEngine()
+		root := stepRoot(t, pool, phase.Implementing)
+		seedTasks(t, pool, root.Key, root.Generation,
+			planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskRunning, place: atStep(1)},
+			planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskDone, place: atStep(1)},
+			planTask{id: "c", steps: []string{"implementer:c", "reviewer:r"}, agents: []claim.Agent{"impl-c", "rev-c"}, needs: []string{"b"},
+				state: record.TaskRunning, place: atStep(1)},
+			planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskWaiting},
+			planTask{id: "z", steps: []string{"implementer:z"}, agents: []claim.Agent{"impl-z"}, needs: []string{"d"}, state: record.TaskWaiting})
+		seedBranches(t, pool, root.Key, "a", "b", "c", "d", "z")
+
+		endsWith(t, "implementer of c", stepLines(t, pool, engine, root.Key, "c", atStep(1)),
+			" Open the pull request of this task against legion/LEGION-208.b: gh pr create --base legion/LEGION-208.b.")
+		lacks(t, "reviewer of c", stepLines(t, pool, engine, root.Key, "c", atStep(2)), opens)
+		endsWith(t, "implementer of d", stepLines(t, pool, engine, root.Key, "d", atStep(1)),
+			" Open the pull request of this task against legion/LEGION-208.d.join: gh pr create --base legion/LEGION-208.d.join.")
+		lacks(t, "implementer of a", stepLines(t, pool, engine, root.Key, "a", atStep(1)), opens)
+		lacks(t, "implementer of z", stepLines(t, pool, engine, root.Key, "z", atStep(1)), opens)
+	})
+
+	t.Run("a plan of one task", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := textEngine()
+		root := stepRoot(t, pool, phase.Implementing)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+		lacks(t, "implementer of a", stepLines(t, pool, engine, root.Key, "a", atStep(1)), opens)
 	})
 }
 
@@ -458,7 +574,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		Line:  []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +624,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
 		after, there := issue, w
 		after.Phase, there.Place = p, place
-		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows)
+		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows, planTold{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -539,7 +655,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{})
 	if err != nil {
 		t.Fatal(err)
 	}

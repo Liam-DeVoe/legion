@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,18 +28,13 @@ func startCountOf(t *testing.T, rig *taskBranchRig, issue string) int {
 	return starts
 }
 
-// The first step of a task waits for the end of its join, through the outbox: tasks a and c are
-// done, and their branches each change line 1 of x.txt, so the join of c into d's branch, which
-// starts at a's head, conflicts; d needs a and c. The first step of the work (the gate's opening)
-// starts d (startReady): d runs at its first step, its step waits for its join, its task_branch
-// row is queued, and no start of d is. The runner runs that row: GitHub refuses c's merge (409),
-// and the end of the join, applied through the real workflow engine, writes c as d's join
-// conflict and raises d's entry in one transaction: d's start row is queued, and its step waits
-// for nothing.
-//
-// The fault it catches is a first step whose task is composed before its join ended (its control:
-// the workflow's start without the join's check, so d's start row is queued before its row ran).
-func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
+// seedConflictingJoin is the rig of a plan whose join conflicts, through the outbox: tasks a and c
+// are done, and their branches each change line 1 of x.txt, so the join of c into d's branch,
+// which starts at a's head, conflicts; d needs a and c. The first step of the work (the gate's
+// opening), applied through the real workflow engine, starts d (startReady), which queues d's
+// task_branch row. It answers the rig and the issue.
+func seedConflictingJoin(t *testing.T) (*taskBranchRig, record.Issue) {
+	t.Helper()
 	ctx := context.Background()
 	rig := &taskBranchRig{pool: isolatedOutboxPool(t), records: record.NewStore(), github: githubtest.GitRepository(t, "acme", "widgets", "main")}
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -96,13 +92,14 @@ func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
 		t.Fatalf("open the gate of %s: %v", issue.Key, err)
 	}
 	committed()
+	return rig, issue
+}
 
-	if d := rig.task(t, "d"); d.State != record.TaskRunning || d.StepWait != record.StepWaitJoin {
-		t.Fatalf("task d after the first step is %s, its step waiting for %q, want running and waiting for its join", d.State, d.StepWait)
-	}
-	if starts := startCountOf(t, rig, issue.Key); starts != 0 {
-		t.Fatalf("the start rows of %s before d's join ended = %d, want none: d's step waits for its join", issue.Key, starts)
-	}
+// runJoinOfD runs d's task_branch row, the one the rig's outbox holds for issue, through the
+// runner, which fails the test where the row is not d's at the issue's generation.
+func runJoinOfD(t *testing.T, rig *taskBranchRig, issue record.Issue) {
+	t.Helper()
+	ctx := context.Background()
 	var id int64
 	var payload record.TaskBranch
 	if err := rig.pool.QueryRow(ctx, `select id, payload from outbox where issue = $1 and kind = 'task_branch'`, issue.Key).Scan(&id, &payload); err != nil {
@@ -111,12 +108,33 @@ func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
 	if payload != (record.TaskBranch{Generation: issue.Generation, Task: "d"}) {
 		t.Fatalf("the task_branch row = %+v, want d's at generation %d", payload, issue.Generation)
 	}
-
 	row := mustOutboxRow(t, issue.Key, payload, time.Now())
 	row.ID = id
 	if err := rig.runner.execute(ctx, row); err != nil {
 		t.Fatalf("execute d's task_branch row: %v", err)
 	}
+}
+
+// The first step of a task waits for the end of its join, through the outbox
+// (seedConflictingJoin): after the gate's opening d runs at its first step, its step waits for its
+// join, its task_branch row is queued, and no start of d is. The runner runs that row: GitHub
+// refuses c's merge (409), and the end of the join, applied through the real workflow engine,
+// writes c as d's join conflict and raises d's entry in one transaction: d's start row is queued,
+// and its step waits for nothing.
+//
+// The fault it catches is a first step whose task is composed before its join ended (its control:
+// the workflow's start without the join's check, so d's start row is queued before its row ran).
+func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
+	rig, issue := seedConflictingJoin(t)
+
+	if d := rig.task(t, "d"); d.State != record.TaskRunning || d.StepWait != record.StepWaitJoin {
+		t.Fatalf("task d after the first step is %s, its step waiting for %q, want running and waiting for its join", d.State, d.StepWait)
+	}
+	if starts := startCountOf(t, rig, issue.Key); starts != 0 {
+		t.Fatalf("the start rows of %s before d's join ended = %d, want none: d's step waits for its join", issue.Key, starts)
+	}
+
+	runJoinOfD(t, rig, issue)
 
 	d := rig.task(t, "d")
 	if d.StepWait != record.StepWaitNone || !slices.Equal(d.JoinConflicts, []string{"c"}) {
@@ -124,5 +142,32 @@ func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
 	}
 	if starts := startCountOf(t, rig, issue.Key); starts != 1 {
 		t.Fatalf("the start rows of %s after d's join ended = %d, want d's one", issue.Key, starts)
+	}
+}
+
+// The agent of the first step of a task whose join conflicted is told so in the task its start
+// delivers, through the outbox (seedConflictingJoin): GitHub refuses c's merge into d's branch,
+// and the start row the end of the join queues tells d's agent that GitHub could not join the work
+// of task c, with c's branch to join and d's branch to push, since the task is composed when the
+// entry is raised, after the join ended.
+//
+// The fault it catches is a conflict the agent of the first step is not told (its control: the
+// conflict sentence dropped from the step's task, under which the start row names no join).
+func TestAJoinThatConflictsIsInTheFirstStepsText(t *testing.T) {
+	rig, issue := seedConflictingJoin(t)
+	runJoinOfD(t, rig, issue)
+
+	var start record.SuperviseRequest
+	if err := rig.pool.QueryRow(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
+		issue.Key).Scan(&start); err != nil {
+		t.Fatalf("read d's start row: %v", err)
+	}
+	c := rig.task(t, "c").BranchOf(issue.Key)
+	d := rig.task(t, "d").BranchOf(issue.Key)
+	for _, want := range []string{" GitHub could not join the work of task c into this branch: their changes conflict.", " " + c + "@origin ",
+		"and push the branch " + d + "."} {
+		if !strings.Contains(start.Task, want) {
+			t.Fatalf("the task of d's start row = %q,\nwant it to hold %q", start.Task, want)
+		}
 	}
 }

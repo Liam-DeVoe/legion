@@ -88,10 +88,12 @@ func ownersText(text string) string {
 // with that one line, and the prompts read a task with no `Task:` line as such an issue's. An
 // issue with plan rows names the task of the worker's step: a step's worker is told
 // ` Task: <id>. Step <i> of <n>: <role>.`, the task's steps (stepsLine), at the first step of a task
-// that needs other tasks the work it starts from (startsFrom), the report of each step before its
-// own (reportsBefore), and, last of its task, the text of the task's block inside a fence
-// (ownersText). The retro and the merge run no step of the task, so their worker is told
-// ` Task: <id>.` and the task's steps alone: the merger reads from them whether the task has a
+// that needs other tasks the work it starts from (startsFrom) and the join it repairs where GitHub
+// refused one as a conflict (joinToRepair), at a step of the type implementation the base of its
+// task's pull request where that is not the issue's default branch (pullRequestBase), the report of
+// each step before its own (reportsBefore), and, last of its task, the text of the task's block
+// inside a fence (ownersText). The retro and the merge run no step of the task, so their worker is
+// told ` Task: <id>.` and the task's steps alone: the merger reads from them whether the task has a
 // review step, and each reads the runs of the steps and their reports from Dispatch
 // (`dispatch steps`), which keeps every run, the failed ones too.
 //
@@ -102,19 +104,59 @@ func ownersText(text string) string {
 // with no plan rows.
 func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
 	var rows []record.PhaseRow
-	var err error
+	var told planTold
 	if place, _ := w.placeIn(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
+		var err error
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
 		}
+		stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+		if err != nil {
+			return Standing{}, err
+		}
+		told = planToldOf(issue, stored, w.Task)
 	}
-	return standingText(issue, e.cfg.WorkspaceDir, w, rows)
+	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told)
+}
+
+// planTold is what a step's task is told from its issue's plan beside the walk of its task
+// (standingPart reads it): base, the base of the task's pull request where the plan gives one other
+// than the issue's default branch (record.StoredPlan.BaseOf), and "" where it gives that branch;
+// and conflicts, each need whose join into the task's branch GitHub refused as a conflict
+// (record.PlanTask.JoinConflicts), with its branch, in the order the row holds them.
+type planTold struct {
+	base      string
+	conflicts []joinConflict
+}
+
+// joinConflict is a need of a task whose join GitHub refused as a conflict, and the need's branch.
+type joinConflict struct {
+	task, branch string
+}
+
+// planToldOf is planTold of task of stored, the plan of issue's run, and nothing for no plan.
+func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) planTold {
+	if stored == nil {
+		return planTold{}
+	}
+	var told planTold
+	if base, _ := stored.BaseOf(issue, task); base != issue.DefaultBranch {
+		told.base = base
+	}
+	byID := make(map[string]record.PlanTask, len(stored.Tasks))
+	for _, row := range stored.Tasks {
+		byID[row.Task] = row
+	}
+	for _, need := range byID[task].JoinConflicts {
+		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: byID[need].BranchOf(issue.Key)})
+	}
+	return told
 }
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its
-// run, the directory dir gives each working copy, and its phases rows, which only a step's text
-// reads.
-func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow) (Standing, error) {
+// run, the directory dir gives each working copy, its phases rows and what its plan tells its
+// step, which only a step's text reads.
+func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow, told planTold) (Standing, error) {
 	if !w.Stored {
 		return WorkingCopy(issue, dir), nil
 	}
@@ -133,7 +175,14 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), words[place.Position-1])
 	lines += stepsLine(words, merges)
 	if place.Position == 1 {
-		lines += startsFrom(w.Needs)
+		where := ""
+		if dir != nil {
+			where = dir(issue, w.Branch)
+		}
+		lines += startsFrom(w.Needs) + joinToRepair(issue.Key, w.Branch, where, told.conflicts)
+	}
+	if w.Steps[place.Position-1].Type == plan.TypeImplementation {
+		lines += pullRequestBase(told.base)
 	}
 	lines += reportsBefore(rows, w, words, place.Position)
 	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
@@ -169,6 +218,43 @@ func startsFrom(needs []string) string {
 		return fmt.Sprintf(" This task starts from the work of task %s, which is done.", needs[0])
 	}
 	return fmt.Sprintf(" This task starts from the joined work of tasks %s, which are done.", strings.Join(needs, ", "))
+}
+
+// joinToRepair is what the first step of a task is told where GitHub refused the join of some of
+// its needs into the task's branch as a conflict (planTold.conflicts): that sentence, then how its
+// agent joins them in the task's working copy, at where, the directory the runtime places it at
+// (`jj` with no `-R` where none is known), with a commit that names each need, and pushes the
+// task's branch, before its own work. Nothing for a join with no conflict.
+func joinToRepair(key, branch, where string, conflicts []joinConflict) string {
+	if len(conflicts) == 0 {
+		return ""
+	}
+	jj := "jj"
+	if where != "" {
+		jj = "jj -R " + where
+	}
+	tasks := make([]string, len(conflicts))
+	heads := make([]string, len(conflicts))
+	for i, conflict := range conflicts {
+		tasks[i] = "task " + conflict.task
+		heads[i] = conflict.branch + "@origin"
+	}
+	named := strings.Join(tasks, ", ")
+	return fmt.Sprintf(" GitHub could not join the work of %s into this branch: their changes conflict."+
+		" Before your own work, join it in your working copy: `%s git fetch`, then `%s new @- %s -m \"%s: join the work of %s\"`,"+
+		" repair each path that `%s resolve --list` lists, `%s squash`, and push the branch %s. That join is the first commit of your step.",
+		named, jj, jj, strings.Join(heads, " "), key, named, jj, jj, branch)
+}
+
+// pullRequestBase is what a step of the type implementation is told of the base of its task's
+// pull request, base, where the plan gives one other than the issue's default branch
+// (planTold.base): the branch to open it against, and the command that does, so the review of the
+// task reads its own work alone. Nothing where base is "", the issue's default branch.
+func pullRequestBase(base string) string {
+	if base == "" {
+		return ""
+	}
+	return fmt.Sprintf(" Open the pull request of this task against %s: gh pr create --base %s.", base, base)
 }
 
 // reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
