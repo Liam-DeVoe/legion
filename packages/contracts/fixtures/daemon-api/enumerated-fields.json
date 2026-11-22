@@ -604,6 +604,10 @@
         "since": 46
       },
       {
+        "value": "caches",
+        "since": 213
+      },
+      {
         "value": "configuration",
         "since": 46
       }
@@ -1977,47 +1981,47 @@
     "values": [
       {
         "value": "failed",
-        "since": 215
+        "since": 221
       },
       {
         "value": "idle",
-        "since": 215
+        "since": 221
       },
       {
         "value": "launch_uncertain",
-        "since": 215
+        "since": 221
       },
       {
         "value": "launching",
-        "since": 215
+        "since": 221
       },
       {
         "value": "queued",
-        "since": 215
+        "since": 221
       },
       {
         "value": "ready",
-        "since": 215
+        "since": 221
       },
       {
         "value": "registered",
-        "since": 215
+        "since": 221
       },
       {
         "value": "retired",
-        "since": 215
+        "since": 221
       },
       {
         "value": "shim_connected",
-        "since": 215
+        "since": 221
       },
       {
         "value": "suspended",
-        "since": 215
+        "since": 221
       },
       {
         "value": "working",
-        "since": 215
+        "since": 221
       }
     ]
   },
@@ -2027,31 +2031,31 @@
     "values": [
       {
         "value": "architect",
-        "since": 215
+        "since": 221
       },
       {
         "value": "controller",
-        "since": 215
+        "since": 221
       },
       {
         "value": "daemon",
-        "since": 215
+        "since": 221
       },
       {
         "value": "exit",
-        "since": 215
+        "since": 221
       },
       {
         "value": "operator",
-        "since": 215
+        "since": 221
       },
       {
         "value": "released",
-        "since": 215
+        "since": 221
       },
       {
         "value": "unknown",
-        "since": 215
+        "since": 221
       }
     ]
   },
@@ -2061,31 +2065,31 @@
     "values": [
       {
         "value": "architect",
-        "since": 215
+        "since": 221
       },
       {
         "value": "controller",
-        "since": 215
+        "since": 221
       },
       {
         "value": "daemon",
-        "since": 215
+        "since": 221
       },
       {
         "value": "exit",
-        "since": 215
+        "since": 221
       },
       {
         "value": "operator",
-        "since": 215
+        "since": 221
       },
       {
         "value": "released",
-        "since": 215
+        "since": 221
       },
       {
         "value": "unknown",
-        "since": 215
+        "since": 221
       }
     ]
   }

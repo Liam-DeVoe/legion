@@ -2832,11 +2832,10 @@ package api
 // answers without this path. Read the base's own number and every open pull request again at the next
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. A renumber moves `shapedAnswersContract` in shaping.go with it, and that one constant
-// alone: it is the number the three keys of this entry are served down below, it is what
-// answers.go gives the two answers this change adds as their arrival, and it is the last number
-// of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.)
+// says. Until it landed, a renumber moved `shapedAnswersContract` in shaping.go with it, and that
+// one constant alone: it is the number the three keys of this entry are served down below, it is
+// what answers.go gives the two answers this change adds as their arrival, and it was then the
+// last number of answers.go's SupportedContracts.)
 //
 // 199: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
@@ -3019,7 +3018,84 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 215: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// 213: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
+// /legion/v1/state` gains a row, `repository-cache-room`, and with it a third word of a capability
+// row's `source`, `caches` (capabilities.SourceCaches): what the repository caches' last health
+// reads said of their room, which is where that row is measured from. The row is present while no
+// cache that reports its room carries a failure for lack of space, open while one does, its detail
+// naming each such cache's repository, volume, claim, available bytes and clone and where room
+// comes from, and decided where `capabilities.decided.repository-cache-room` records a reason
+// (capabilities.Deployment.cacheRoom). A capability `name` is a plain non-empty string to every
+// schema already published, so the row parses there, as `claude-code` did; its `source` does
+// not. A plugin from 25 through 212 reads `source` with a `z.enum` of the two words before it,
+// `configuration` and `boot`, which refuses a word it does not name and with it the whole state
+// body: the controller's `read_state` and, from a plugin before 193, which reads an issue's record
+// out of the whole state, every role's `read_record` and claude-envoy's own reads of the state.
+// `caches` is a value added to an enumerated field and no key, so it is served down by
+// value, as 193's value strips are: answers.go's `capabilitySources` records it as arriving at
+// this contract, and a row of shaping.go's valueStrips (`withoutUnadmittedCapabilitySources`)
+// serves every capability row whose `source` the caller does not admit without its `source`,
+// which that schema takes as optional, wherever the value arrived above the contract the caller
+// states, else the lowest its pod records. The row itself stays, its name, status, detail,
+// decision and config line as they are, because a controller on an older plugin still has the
+// right to see the gap, and no band of stateNarrowings is owed, since no key moves. The records
+// under `packages/contracts/fixtures/daemon-api/contract-shapes.json` keep every contract below
+// this one as it was and add this contract's own, whose domain of `capabilities.*.source` names
+// `caches`. The room fields the repository cache's own `/healthz` gains beside this
+// (repocache.Health) are read by the daemon alone and by no plugin, so they are no part of this
+// number. One other surface this contract names moves: the Sandbox worker container's environment
+// (manifest.go's `mainEnvironment`) gains four GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pairs,
+// GIT_CONFIG_KEY_5 to GIT_CONFIG_KEY_8 with their values, which carry the four pack settings of
+// workspace's packWindowConfig after the five pairs before them (sandbox's gitConfigPairs), and
+// GIT_CONFIG_COUNT goes from 5 to 9. git reads them and no plugin does: no source under
+// packages/pi-legion, packages/pi-shared, packages/contracts or packages/claude-envoy reads a
+// GIT_CONFIG variable, so they move no plugin's reader and nothing is served down for them. The new
+// names are the runtime's own (runtimeOwned), so CheckPod refuses one in
+// `runtime.kubernetes.pod.env` when the configuration loads, and ValidateSpawnSpec refuses one in a
+// spawn spec's `Env` at that spawn's launch: a pair that would replace one of the four settings is
+// refused, naming it, rather than replacing that setting with no word.
+// The bump relaunches every registered claim onto the new plugin, as every bump does (the
+// stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
+// at its own time, so for the length of the wave some pods still run a plugin below 213: a
+// process of 193 or later states its contract in `Legion-Plugin-Contract` and is served by it,
+// and an older one is placed by the lowest contract its pod records. Those are the callers the
+// strip serves.
+// A renumber moves `cachesSourceContract` in shaping.go with it, and that one constant alone: it
+// is the arrival answers.go's `capabilitySources` records for `caches`, and answers.go's
+// SupportedContracts names the constant rather than its number for that reason.
+// (This entry first took 197, the lowest number above main's 189 that no open pull request
+// declared when the merge of 2026-11-20 brought main in at f21107b285, and took 201 at the merge
+// that brought main in at 193 (8a9540682d, #3659 having declared 193): a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 297 open pull requests, made between
+// 2026-11-20T21:53:59Z and 21:58:14Z, found 194 declared by #4030, 195 by #4590, 196 by #3993,
+// #4173, #4180, #4193, #4273, #4392, #4432, #4493, #4580, #4592 and #4596, 197 by #4578 as well as
+// by this change's own head before this merge, 198 by #4175 and #4589, 199 by #3831, #4495 and
+// #4661, 200 by #4065, and no open head declaring 201. It took 203 at the merge that brought
+// main in at 199 (0d3786da5367, #4495 having declared 199): a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 327 open pull requests, made between
+// 2026-11-21T00:43:25Z and 00:47:21Z, found 200 declared by #4049 and #4065, 201 by #4611 as well
+// as by this change's own head before this merge, 202 by #4273, #4432, #4493, #4580 and #4590,
+// and no open head declaring 203. It took 209 at the merge that brought main in at 202
+// (3c59c0cc27ab, #4493 having declared 202): a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 357 open pull requests, made between 2026-11-21T05:29:23Z
+// and 05:34:35Z, found 203 declared by #2230, #4065, #4175, #4596 and #4661 as well as by this
+// change's own head before this merge, 204 by #3831, 205 by #3712, #4539 and #4573, 206 by #4540,
+// 207 by #3993, #4030, #4392, #4432, #4590 and #4592, 208 by #4611, and no open head declaring
+// 209. It takes 213 at the merge that brought main in at 7477b87ed556, main still at 202: a
+// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 408 open pull
+// requests, made between 2026-11-21T12:50:26Z and 13:12:31Z, found 203 declared by #4175, 204 by
+// #4173 and #4193, 205 by #4573, 206 by #3712 and #4539, 207 by #3831, #3993, #4030, #4273,
+// #4392, #4432, #4590, #4596, #4682, #4723 and #4805, 208 by #2230, 209 by #4049, #4540 and #4580
+// as well as by this change's own head before this merge, 210 by #4661, 211 by #4611, 212 by
+// #4065, #4592 and #4771, and no open head declaring 213. It keeps 213 at the merge that brought
+// main in at dbebeb309b5d, main at 205 (#4573 having declared 205): a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 430 open pull requests, made between
+// 2026-11-22T01:42:47Z and 01:45:01Z, found 206 declared by #3712, 207 by #3993, #4432 and #4805,
+// 208 by #4175, 209 by #4049, 210 by #4661, 211 by #2230, 212 by #4030, #4392, #4540 and #4580,
+// and no open head but this change's own declaring 213. Read the base's own number and every open
+// pull request again at the next merge rather than from this line.)
+//
+// 221: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
@@ -3106,7 +3182,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 215 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 221 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's
 // are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
@@ -3120,10 +3196,10 @@ package api
 // `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
 // five routes' request records start at this contract
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
-// other answer moved, so this contract's records of every other answer are 205's, under its own
+// other answer moved, so this contract's records of every other answer are 213's, under its own
 // number. agentActionsContract is now the last number of answers.go's SupportedContracts,
-// after shapedAnswersContract, 199, repositoriesLiveContract and childRouteRemovedContract, and a
-// renumber of this entry moves that constant with it.
+// after shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract and
+// cachesSourceContract, and a renumber of this entry moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
@@ -3200,6 +3276,10 @@ package api
 // of all 411 open pull requests, 2026-11-21T18:33:51Z to 18:38:25Z). The merge of main
 // `98987d3f`, which declares 205 (#4573), keeps 215: 206 to 214 are other open pull requests',
 // and no other declares 215 (read at refs/pull/<n>/head of all 420 open pull requests,
-// 2026-11-21T22:30:48Z to 22:33:44Z). Read the base's own number and every open head again at
-// the next merge rather than from this line.)
-const DaemonAPIVersion = 215
+// 2026-11-21T22:30:48Z to 22:33:44Z). The merge of main `83b91235`, which declares 213
+// (INFRA-4036), moves it from 215 to 221: 214 is #4592's and #4918's, 215 is #4596's as well as
+// this change's own, 216 to 220 are other open pull requests', and no open head declares 221
+// (read at refs/pull/<n>/head of all 444 open pull requests, 2026-11-22T11:23:08Z to
+// 11:25:58Z). Read the base's own number and every open head again at the next merge rather than
+// from this line.)
+const DaemonAPIVersion = 221

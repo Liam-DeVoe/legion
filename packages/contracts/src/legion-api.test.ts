@@ -164,12 +164,12 @@ const schemas: Record<string, z.ZodType> = {
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
   // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
-  // resume (contract 215): the claim's state after each, and who holds a suspension over the agent.
+  // resume (contract 221): the claim's state after each, and who holds a suspension over the agent.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,
   "agent-resume.json": LegionAgentActionResponse,
-  // The controller's request for the replacement of one issue's pod (contract 215): the update
+  // The controller's request for the replacement of one issue's pod (contract 221): the update
   // round over it, its reasons, and whether the request opened it.
   "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -449,7 +449,7 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
-  // resume (contract 215): the claim's `state`, and who holds a suspension over it.
+  // resume (contract 221): the claim's `state`, and who holds a suspension over it.
   "agent-action": LegionAgentActionResponse,
 };
 
@@ -2186,8 +2186,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2232,18 +2234,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2594,7 +2612,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // no other key. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2611,7 +2631,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
@@ -2635,7 +2664,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: four of the six agent actions of the controller and of an
  * architect (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume_agent lifts it. The
- * reason the guard exists does not reach them: they arrived with contract 215, so only a plugin at
+ * reason the guard exists does not reach them: they arrived with contract 221, so only a plugin at
  * that contract or later calls them, and no reader of these bodies predates the key. The schema
  * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
  * names a suspender still fails the walk below. */
@@ -2687,7 +2716,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 215, to the four agent
+// `suspendedBy` is served to the operator's bearer and, from contract 221, to the four agent
 // actions of the controller and of an architect (agentActionSchemas), and nowhere else; this
 // holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
@@ -2730,7 +2759,7 @@ test("no session-facing response carries suspendedBy", () => {
   }
 });
 
-// An architect's suspension is a source of its own (contract 215, #4065): the
+// An architect's suspension is a source of its own (contract 221, #4065): the
 // agent actions' answer names it, landed or held, while the state, which the walk above holds
 // to no suspender at all, still names none.
 test("the agent actions name an architect's suspension", () => {
