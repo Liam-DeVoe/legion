@@ -61,6 +61,7 @@ func TestTheDaemonCreatorNamesAsTheFamilyTable(t *testing.T) {
 		Metadata: func(logical string) map[string]string {
 			return map[string]string{consumernames.LogicalMetadataKey: logical}
 		},
+		CreateBound: createBound,
 	})
 	consumer := func(name string, metadata map[string]string) *jetstream.ConsumerInfo {
 		return &jetstream.ConsumerInfo{Name: name, Config: jetstream.ConsumerConfig{Durable: name, Metadata: metadata}}

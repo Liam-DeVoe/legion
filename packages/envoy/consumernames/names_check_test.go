@@ -12,7 +12,7 @@ import (
 // that holds the name, and every record the creator serves, check passes. The rows are the ones
 // TestARecordNamesOnlyItsOwnFamilysConsumers runs through the creator, and a retired name that is
 // the key's fixed name. The control is a copy of check that skips the prefix test and asks only
-// for a ~<nuid> name: it passes another family's names, so it disagrees with the creator.
+// for a ~<random> name: it passes another family's names, so it disagrees with the creator.
 func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 	const key = "ses-1"
 	rows := []struct {
@@ -22,7 +22,7 @@ func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 		{"a current of the daemon's durable", "session", "current", Record{Current: "legion-go-p-dispatch~AAAAAAAAAAAAAAAAAAAAAA", Start: 3}},
 		{"a current of the listener's durable", "session", "current", Record{Current: "listener-m~AAAAAAAAAAAAAAAAAAAAAA", Start: 3}},
 		{"a current that is the fixed name", "session", "current", Record{Current: "s-ses-1", Start: 3}},
-		{"a current of the prefix with no nuid", "session", "current", Record{Current: "session~", Start: 3}},
+		{"a current of the prefix with no suffix", "session", "current", Record{Current: "session~", Start: 3}},
 		{"a current of the prefix and more", "session", "current", Record{Current: "session-x~AAAA", Start: 3}},
 		{"a retired name of the daemon's durable", "session", "retired name", Record{Current: "session~A", Start: 3, Retired: []string{"legion-go-p-dispatch"}}},
 		{"a retired name that is the fixed name", "session", "retired name", Record{Current: "session~A", Start: 3, Retired: []string{"s-ses-1"}}},
@@ -34,11 +34,11 @@ func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 		{"a durable's own current", "listener-m", "", Record{Current: "listener-m~A", Start: 3}},
 	}
 	// skipPrefix is the control: check with no prefix test, asking each name only for '~' and a
-	// NUID's characters after it.
+	// fresh suffix's characters after it.
 	skipPrefix := func(_ *Names, logical string, record Record) error {
 		fresh := func(name string) bool {
-			_, nuid, ok := strings.Cut(name, "~")
-			return ok && nuid != "" && !strings.ContainsFunc(nuid, func(r rune) bool {
+			_, suffix, ok := strings.Cut(name, "~")
+			return ok && suffix != "" && !strings.ContainsFunc(suffix, func(r rune) bool {
 				return !('0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
 			})
 		}

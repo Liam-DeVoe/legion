@@ -20,11 +20,11 @@ func (n *Names) fixed(logical string) string {
 	return n.cfg.Fixed(logical)
 }
 
-// freshOf reports whether name is a fresh name of logical: Prefix(logical), '~', and a NUID's
-// characters ([0-9A-Za-z]) alone (FreshName).
+// freshOf reports whether name is a fresh name of logical: Prefix(logical), '~', and a suffix of
+// [0-9A-Za-z] alone (FreshName).
 func (n *Names) freshOf(logical, name string) bool {
-	nuid, ok := strings.CutPrefix(name, n.cfg.Prefix(logical)+"~")
-	return ok && nuid != "" && !strings.ContainsFunc(nuid, func(r rune) bool {
+	suffix, ok := strings.CutPrefix(name, n.cfg.Prefix(logical)+"~")
+	return ok && suffix != "" && !strings.ContainsFunc(suffix, func(r rune) bool {
 		return !('0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
 	})
 }
@@ -42,7 +42,7 @@ func (n *Names) freshOf(logical, name string) bool {
 // own fence on every record it reads (read), and a reader's by the family's naming (CheckFamily).
 func (n *Names) check(logical string, record Record) error {
 	refuse := func(field, name string) error {
-		return fmt.Errorf("%w: the key %s's %s %q is no %s~<nuid> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))
+		return fmt.Errorf("%w: the key %s's %s %q is no %s~<random> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))
 	}
 	if record.Current != "" && !n.freshOf(logical, record.Current) {
 		return refuse("current", record.Current)
@@ -57,7 +57,7 @@ func (n *Names) check(logical string, record Record) error {
 			return refuse("candidate", op.Candidate)
 		}
 		if op.Old != "" && op.Old != n.fixed(logical) && !n.freshOf(logical, op.Old) {
-			return fmt.Errorf("%w: the key %s's old name %q is neither a %s~<nuid> name nor its fixed name %s", ErrMalformedRecord, logical, op.Old, n.cfg.Prefix(logical), n.fixed(logical))
+			return fmt.Errorf("%w: the key %s's old name %q is neither a %s~<random> name nor its fixed name %s", ErrMalformedRecord, logical, op.Old, n.cfg.Prefix(logical), n.fixed(logical))
 		}
 	}
 	return nil

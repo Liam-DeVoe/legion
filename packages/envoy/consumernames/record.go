@@ -3,6 +3,7 @@ package consumernames
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"unicode"
 
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nuid"
 )
 
 // LogicalMetadataKey is the consumer metadata every physical consumer carries, naming its logical
@@ -83,8 +83,21 @@ type Record struct {
 	LastFloor *Floor `json:"last_floor,omitempty"`
 	// Retired are names never selected again; cleanup deletes only these (Names.Cleanup).
 	Retired []string `json:"retired,omitempty"`
+	// Abandoned are the retired candidates whose create may still have been in flight when they
+	// were retired (Step 0's or a retry's), each with the time until which it can still land: the
+	// retirement and the create's own bound (Op.CreateWithin). Cleanup drops one the server does not
+	// hold only once it reads it absent at or after that time, so a create that lands after the
+	// candidate was retired leaves a consumer the record still names, which the next cleanup
+	// deletes. Each is also in Retired.
+	Abandoned []Abandoned `json:"abandoned,omitempty"`
 	// Restore is a rollback in progress, which the rollback command writes; Names never writes it.
 	Restore *Restore `json:"restore,omitempty"`
+}
+
+// Abandoned is a retired candidate whose create may still land until Until.
+type Abandoned struct {
+	Name  string    `json:"name"`
+	Until time.Time `json:"until"`
 }
 
 // Op is an operation in flight.
@@ -98,6 +111,15 @@ type Op struct {
 	Old string `json:"old,omitempty"`
 	// FloorRecorded is set once a delete wrote Old's floor into Record.Start.
 	FloorRecorded bool `json:"floor_recorded,omitempty"`
+	// StartPending marks a replace reserved with no start (Names.Replace at start 0): its start is
+	// read from Old's floor after the reservation (saveReplaceStart), and until then Record.Start is
+	// still the start the record held before, which a call that closes the replace without creating
+	// keeps.
+	StartPending bool `json:"start_pending,omitempty"`
+	// CreateWithin is how long the reserving process's create of Candidate can run (its
+	// Config.CreateBound): a process that retires the candidate without seeing its create end
+	// keeps it named for that long after (Record.Abandoned).
+	CreateWithin time.Duration `json:"create_within,omitempty"`
 	// Native is the native policy the candidate's create keeps, for a native first create, whose
 	// Record.Start is then the numeric boundary recovery creates at instead, or 0 where the first
 	// create read no stream (Config.NativeFirstCreate): a retry then keeps the native policy too.
@@ -136,6 +158,7 @@ func (r Record) clone() Record {
 		c.Restore = &restore
 	}
 	c.Retired = slices.Clone(r.Retired)
+	c.Abandoned = slices.Clone(r.Abandoned)
 	return c
 }
 
@@ -147,6 +170,54 @@ func (r Record) retire(names ...string) Record {
 		}
 	}
 	return r
+}
+
+// abandon is r with candidate retired (retire) and kept until until, the time its create can no
+// longer land (Record.Abandoned).
+func (r Record) abandon(candidate string, until time.Time) Record {
+	if candidate == "" {
+		return r
+	}
+	r = r.retire(candidate)
+	r.Abandoned = append(slices.DeleteFunc(slices.Clone(r.Abandoned), func(a Abandoned) bool { return a.Name == candidate }),
+		Abandoned{Name: candidate, Until: until})
+	return r
+}
+
+// DropRetired is r with name, one of its retired names, dropped from Retired and Abandoned
+// together: the one rule Names.Cleanup drops a retired name by, for a reader that deletes retired
+// names itself (the operator's cleanup), so the record it writes stays one the stores read (each
+// abandoned name is also retired). deleted says the caller deleted the consumer, else it read the
+// name absent. An abandoned candidate read absent while now is before its until (Abandoned.Until)
+// can still land, and the consumer it makes must stay named, so it is kept: the answer is then r
+// as it was and false, as it is for a name r does not retire. r itself is never changed.
+func (r Record) DropRetired(name string, deleted bool, now time.Time) (Record, bool) {
+	if !slices.Contains(r.Retired, name) {
+		return r, false
+	}
+	if until, ok := r.abandonedUntil(name); ok && !deleted && now.Before(until) {
+		return r, false
+	}
+	r.Retired = slices.DeleteFunc(slices.Clone(r.Retired), func(retired string) bool { return retired == name })
+	if len(r.Retired) == 0 {
+		r.Retired = nil
+	}
+	r.Abandoned = slices.DeleteFunc(slices.Clone(r.Abandoned), func(a Abandoned) bool { return a.Name == name })
+	if len(r.Abandoned) == 0 {
+		r.Abandoned = nil
+	}
+	return r, true
+}
+
+// abandonedUntil is the time until which r's retired name can still land, and false for a name
+// no create of which was in flight when it was retired.
+func (r Record) abandonedUntil(name string) (time.Time, bool) {
+	for _, a := range r.Abandoned {
+		if a.Name == name {
+			return a.Until, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // The families a store's sentinel names (StoreState.Family): the session family's bucket,
@@ -444,6 +515,11 @@ func (r Record) check(key string) error {
 			return fmt.Errorf("its retired name %q names no consumer", name)
 		}
 	}
+	for _, a := range r.Abandoned {
+		if !slices.Contains(r.Retired, a.Name) || a.Until.IsZero() {
+			return fmt.Errorf("its abandoned candidate %+v is no retired name with a time", a)
+		}
+	}
 	if r.Restore != nil && (!consumerName(r.Restore.Target) || r.Restore.Phase == "") {
 		return fmt.Errorf("its restore %+v names no target or no phase", *r.Restore)
 	}
@@ -456,6 +532,8 @@ func (op Op) check() error {
 		return fmt.Errorf("its %s operation was reserved at no time", op.Kind)
 	case op.Native != "" && op.Native != NativeNew && op.Native != NativeAll:
 		return fmt.Errorf("its operation keeps the native policy %q, which is none", op.Native)
+	case op.CreateWithin < 0:
+		return fmt.Errorf("its operation's create bound %s is negative", op.CreateWithin)
 	}
 	switch op.Kind {
 	case OpCreate:
@@ -573,16 +651,46 @@ func CheckKey(logical string) error {
 	return nil
 }
 
-// FreshName is a physical name never made before: prefix, '~' and a NUID. A '~' is no character
-// of a fixed name's family prefix, so no fresh name is a fixed one.
+// FreshName is a physical name never made before: prefix, '~' and a random suffix (freshSuffix).
+// A '~' is no character of a fixed name's family prefix, so no fresh name is a fixed one.
 func FreshName(prefix string) string {
-	return prefix + "~" + nuid.Next()
+	return prefix + "~" + freshSuffix()
+}
+
+// freshAlphabet is the characters of a fresh name's suffix, the ones freshOf takes: [0-9A-Za-z].
+const freshAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// freshSuffixLength is how many characters a fresh name's suffix holds: 22 of freshAlphabet, about
+// 131 bits, the length a NUID had, so no name grows.
+const freshSuffixLength = 22
+
+// freshSuffix is freshSuffixLength characters of freshAlphabet, each drawn uniformly from
+// crypto/rand: a byte of 248 or more (4 × 62) is drawn again, so every character is equally likely.
+// No suffix says anything of another, so a principal that sees one process's names or reply
+// inboxes cannot predict its next candidate and create that name first.
+func freshSuffix() string {
+	var suffix [freshSuffixLength]byte
+	var random [32]byte
+	for n := 0; n < len(suffix); {
+		// crypto/rand's Read never returns an error, and always fills the buffer.
+		_, _ = rand.Read(random[:])
+		for _, b := range random {
+			if b >= 4*byte(len(freshAlphabet)) {
+				continue
+			}
+			suffix[n] = freshAlphabet[int(b)%len(freshAlphabet)]
+			if n++; n == len(suffix) {
+				break
+			}
+		}
+	}
+	return string(suffix[:])
 }
 
 // LogicalOf is the logical name of a physical one, for a family whose Config.Prefix is the logical
 // name itself, such as a durable's (the listener's durable, Dispatch's and a daemon's): the name cut
 // at its last '~', or the name itself when it holds none (a fixed name). It does not hold for the
-// session family, whose prefix is the constant "session": LogicalOf("session~<nuid>") is
+// session family, whose prefix is the constant "session": LogicalOf("session~<random>") is
 // "session", and a session consumer's logical name is its LogicalMetadataKey metadata.
 func LogicalOf(physical string) string {
 	if i := strings.LastIndexByte(physical, '~'); i >= 0 {

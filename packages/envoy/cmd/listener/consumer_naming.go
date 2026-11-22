@@ -147,26 +147,37 @@ func sentinelRefusal(err error) (reason string, ok bool) {
 
 // startingSelectionHealth is /healthz's answer while the listener has not bound its durable
 // (healthzHandler, before main publishes its deps): in the fresh mode, a start whose selection
-// bucket's sentinel is absent, of another family or malformed binds nothing however long it
-// retries, so the answer is 503 not_ready naming the bucket, the key and why, read within ctx.
-// nil with no client yet, in the fixed mode, or when the sentinel refuses nothing.
+// state refuses every call binds nothing however long it retries, so the answer is 503 not_ready
+// naming the bucket and why, read within ctx: the bucket missing ("missing"), its sentinel absent,
+// of another family or malformed (sentinelRefusal), or the cutover not run or rolled back ("cutover
+// not done", consumernames.Admit), the last two naming the sentinel's key too. nil with no client
+// yet, in the fixed mode, for a read that tells nothing (no answer, a timeout: the bind retries
+// it), and over an admitted sentinel.
 func startingSelectionHealth(ctx context.Context, client *bus.Client) map[string]interface{} {
 	if client == nil || client.ConsumerNames() != consumernames.ModeFresh {
 		return nil
 	}
-	_, err := client.SelectionStore().State(ctx)
-	reason, ok := sentinelRefusal(err)
-	if !ok {
-		return nil
-	}
-	return map[string]interface{}{
+	state, err := client.SelectionStore().State(ctx)
+	body := map[string]interface{}{
 		"status":         "not_ready",
-		"error":          dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err),
 		"bucket":         consumernames.SessionBucket,
-		"key":            consumernames.SentinelKey,
-		"reason":         reason,
 		"consumer_names": string(consumernames.ModeFresh),
 	}
+	switch reason, refused := sentinelRefusal(err); {
+	case errors.Is(err, consumernames.ErrNoStore):
+		body["reason"] = "missing"
+	case refused:
+		body["reason"], body["key"] = reason, consumernames.SentinelKey
+	case err != nil:
+		return nil
+	default:
+		if err = consumernames.Admit(state); err == nil {
+			return nil
+		}
+		body["reason"], body["key"], body["cutover"] = "cutover not done", consumernames.SentinelKey, state.Cutover
+	}
+	body["error"] = dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err)
+	return body
 }
 
 // hookStallHealth is /healthz's answer for the bus's reconnect hooks stalled for stall, past

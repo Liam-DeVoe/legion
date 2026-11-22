@@ -1,6 +1,6 @@
 // The listener's own durable in the fresh consumer naming mode: a fourth family of the selection
 // record. Its logical name is the durable's, bus.ListenerDurable(machine id); each creation gets the
-// physical name <durable>~<nuid> (consumernames.FreshName); and its record is kept in the session
+// physical name <durable>~<random> (consumernames.FreshName); and its record is kept in the session
 // consumers' selection bucket under consumernames.DurableKey(durable), a key no session's is. In the
 // fixed mode, the default, the durable is named as before and nothing here runs.
 
@@ -82,8 +82,11 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			return info.Config.Metadata[bus.StreamIDMetadataKey], nil
 		},
 		CheckKey: naming.CheckKey,
-		Metadata: naming.Metadata,
-		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
+		// Every call on the durable's names runs within durableNamesTimeout (boundedContext), its
+		// creates among them: the bound a create's candidate is kept named for once retired.
+		CreateBound: durableNamesTimeout,
+		Metadata:    naming.Metadata,
+		Owner:       fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 		// The candidate as the server answers it, against the whole configuration the durable's
 		// create gives (durableCreateConfig, bus.Client.ConsumerAdoptable): one that differs in a
 		// setting no update changes, a push consumer delivering to a reply inbox, explicit acks,
@@ -93,7 +96,7 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 		// (errListenerDurableRefused), since no retry gets past a candidate only an operator can
 		// repair.
 		Adopt: func(ctx context.Context, _ string, adopted *jetstream.ConsumerInfo) error {
-			create, err := jetstreamConfig(durableCreateConfig(adopted.Name, durable, nil))
+			create, err := jetstreamConfig(durableCreateConfig(client, adopted.Name, durable, nil))
 			if err != nil {
 				return err
 			}
@@ -115,12 +118,12 @@ func durableMetadata(durable string) map[string]string {
 }
 
 // durableCreateConfig is the whole configuration the fresh mode creates consumer name of the
-// listener's durable named durable with, on subjects, but its start: listenerDurableConfig's,
-// carrying the durable's metadata. The create sends it with its start (ensureFreshDurable), the
-// adoption check compares a candidate with it, and the correction writes it (jetstreamConfig,
-// bus.CorrectedConfig).
-func durableCreateConfig(name, durable string, subjects []string) nats.ConsumerConfig {
-	config := listenerDurableConfig(name, subjects)
+// listener's durable named durable with, on client's connection and subjects, but its start:
+// listenerDurableConfig's, carrying the durable's metadata. The create sends it with its start
+// (ensureFreshDurable), the adoption check compares a candidate with it, and the correction writes
+// it (jetstreamConfig, bus.CorrectedConfig).
+func durableCreateConfig(client *bus.Client, name, durable string, subjects []string) nats.ConsumerConfig {
+	config := listenerDurableConfig(client, name, subjects)
 	config.Metadata = durableMetadata(durable)
 	return config
 }
@@ -216,7 +219,7 @@ func natsInfo(info *jetstream.ConsumerInfo) (*nats.ConsumerInfo, error) {
 
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
 // through its record, brought in place to the whole configuration the durable's create gives, or a
-// fresh <durable>~<nuid> at the record's start, and for a durable with no record at deliver policy
+// fresh <durable>~<random> at the record's start, and for a durable with no record at deliver policy
 // all, today's first create. A current the server no longer holds is created again at the start its
 // record proves. A current Names adopted rather than this call created (Step 0, a create whose
 // outcome was unknown) is corrected in place like any other before it is bound
@@ -230,7 +233,7 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	var createdHere string
 	sel, created, err := names.Ensure(ctx, key, consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
-			config := durableCreateConfig(name, durable, subjects)
+			config := durableCreateConfig(client, name, durable, subjects)
 			switch start.Native {
 			case consumernames.NativeAll:
 				config.DeliverPolicy = nats.DeliverAllPolicy
@@ -272,7 +275,7 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	if err != nil {
 		return "", err
 	}
-	create, err := jetstreamConfig(durableCreateConfig(current, durable, subjects))
+	create, err := jetstreamConfig(durableCreateConfig(client, current, durable, subjects))
 	if err != nil {
 		return "", err
 	}

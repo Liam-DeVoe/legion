@@ -160,8 +160,9 @@ are in [`consumernames/README.md`](consumernames/README.md).
 
 - **Names.** In the fixed mode a session's consumer is `s-<session id>` and the listener's durable
   is `listener-<machine id>`. In the fresh mode each creation gets a name never made before:
-  `session~<nuid>`, carrying the metadata `envoy.logical` and `envoy.session_id`, and
-  `listener-<machine id>~<nuid>`, carrying `envoy.logical`. Their records live in the KV bucket
+  `session~<random>`, carrying the metadata `envoy.logical` and `envoy.session_id`, and
+  `listener-<machine id>~<random>`, carrying `envoy.logical`, where `<random>` is 22 characters
+  drawn from `crypto/rand`. Their records live in the KV bucket
   `envoy_session_consumers`. The start's bind, the monitor's rebuild, the probe, the bound wait and
   `/healthz` all read the durable through its record. The sweep lists only `session~` names that
   carry `envoy.session_id`.
@@ -185,20 +186,27 @@ are in [`consumernames/README.md`](consumernames/README.md).
     `503 consumer_error` naming the marker.
   - At the start, a marker the listener cannot read makes the start wait rather than run fixed
     names unread.
+  - A read the listener's user may not make is no marker, so the gate opens: the listener beside
+    Dispatch holds no read of the bucket in this build. So the session family's convert, which
+    replaces that listener's `listener-<machine id>` too, runs only once that listener's grant
+    reads the bucket; until then a fixed listener there would create the converted name again.
 - **The fresh mode** refuses every session-consumer call until the bucket's sentinel says the
   cutover is done. A registration over lost or unproven selection state is answered
   `503 consumer_error`. A key holding no record of its own is answered naming the key and the
   bucket, for that session alone. An open operation's candidate that is not as the listener creates
   it is answered naming the consumer. A registration whose NATS user may not read the bucket is
-  answered `503 no_grant`. The listener's grant (`natsgrant.KVWriteExisting("envoy_session_consumers")`)
-  holds the bucket's reads and key writes, and no create or update of its stream.
+  answered `503 no_grant`. The listener's grant (`natsgrant.KVRecordStore("envoy_session_consumers")`)
+  holds the bucket's leader read and key writes, the two calls the store makes, and no create or
+  update of its stream.
 - **`/healthz`:**
   - The healthy answer carries `consumer_names` (`fixed` or `fresh`). When the durable's read
     fails, it is `UNKNOWN`, with `consumer_names_unknown` naming the failed read and the
     configured mode.
-  - In the fresh mode, while the start has not bound its durable over a sentinel that is absent,
-    malformed or of another family, the answer is `503` `not_ready`, with `bucket`, `key` and
-    `reason` (`absent`, `another family` or `malformed`). The start logs that state once per change.
+  - In the fresh mode, while the start has not bound its durable over a selection state that
+    refuses every call, the answer is `503` `not_ready`, with `bucket` and `reason`: `missing` (no
+    bucket), or, with `key` `envoy.bucket` too, `cutover not done` (with the sentinel's `cutover`,
+    none or `rolled_back`), `absent`, `another family` or `malformed`. The start logs a sentinel's
+    state once per change.
   - Once serving, a missing bucket, sentinel or cutover marker, or a session's lost key, is
     `200 degraded` naming `session consumer selection bucket envoy_session_consumers`, with every
     field of the healthy answer kept. A refusal clears once a call is admitted.

@@ -274,6 +274,9 @@ func newHarness() *harness {
 	return &harness{store: newMemStore(), server: newFakeServer(), clock: &fakeClock{now: time.Unix(1_700_000_000, 0)}}
 }
 
+// testCreateBound is the create bound of the test families' Configs (Config.CreateBound).
+const testCreateBound = 10 * time.Second
+
 // names is a process's Names over the row's store and server.
 func (h *harness) names(owner string) *Names {
 	return New(Config{
@@ -286,10 +289,11 @@ func (h *harness) names(owner string) *Names {
 		StreamID: func(context.Context) (string, error) {
 			return "stream-1", nil
 		},
-		Owner:     owner,
-		Now:       h.clock.Now,
-		SettleAge: 2 * time.Second,
-		Poll:      time.Millisecond,
+		Owner:       owner,
+		Now:         h.clock.Now,
+		SettleAge:   2 * time.Second,
+		Poll:        time.Millisecond,
+		CreateBound: testCreateBound,
 	})
 }
 
