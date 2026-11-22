@@ -223,3 +223,21 @@ func onTimeWithin(t *testing.T, meter *stallMeter, what string, start time.Time,
 		what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	return took
 }
+
+// spanOnTime is onTimeWithin for a span whose two ends were recorded as they happened, from to to,
+// the meter read at each (heldFrom, heldTo), rather than for code that ended just now: it takes off
+// only the time this process was held up within the span. slack is lateSlack for code in this
+// process, commandLateSlack for a command in another.
+func spanOnTime(t *testing.T, what string, from, to time.Time, heldFrom, heldTo, deadline, slack time.Duration) time.Duration {
+	t.Helper()
+	took := to.Sub(from)
+	held := heldTo - heldFrom
+	late := took - deadline - held
+	if late > slack {
+		t.Fatalf("%s ended %s after it started, past its %s deadline; this process was held up %s of that, so the code was %s late on its own, more than %s",
+			what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
+	}
+	t.Logf("on time: %s took %s against its %s deadline, %s held up, %s late on its own (slack %s)",
+		what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
+	return took
+}
