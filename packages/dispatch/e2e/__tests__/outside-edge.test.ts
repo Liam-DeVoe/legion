@@ -688,6 +688,169 @@ describe("the controls, against an outside origin stand-in", () => {
     rowLimit({ atOnce: ["short", "short"] })
   );
 
+  // `grants` judges what a restricted member reaches of other sessions' credential grants by who
+  // answered: the list PASS only holding the person's own grants alone (the operator matched
+  // whatever its letter case), the revoke PASS only on Dispatch's own 403 RESTRICTED_MEMBER; the
+  // broker's 403 NOT_APPROVER (Dispatch relayed it) and a 2xx are FAIL, every other answer
+  // UNKNOWN, and with no probe id, one that is no UUID or no cookie, nothing is revoked.
+  test(
+    "grants passes only on a list of the person's own grants and Dispatch's own refusal of the revoke",
+    async () => {
+      const probe = "0b9f6a3e-6f1d-4c55-9a51-2f6c1b7d8e90";
+      const own = { id: "5d1e2c4b-8a7f-4e3d-9c2b-1a0f9e8d7c6b", operator: "Carol@Outside.Example" };
+      const fixed = startOriginStandIn({
+        grants: [own],
+        grantRevoke: { status: 403, code: "RESTRICTED_MEMBER" },
+      });
+      const relayed = startOriginStandIn({
+        grants: [own, { id: probe, operator: "" }],
+        grantRevoke: { status: 403, code: "NOT_APPROVER" },
+      });
+      const through = startOriginStandIn({ grants: [], grantRevoke: { status: 200 } });
+      const other = startOriginStandIn({ grantRevoke: { status: 404, code: "NOT_FOUND" } });
+      const noProbe = startOriginStandIn({ grants: [] });
+      const badProbe = startOriginStandIn({ grants: [] });
+      const noCookie = startOriginStandIn({ grants: [] });
+      const origins = [fixed, relayed, through, other, noProbe, badProbe, noCookie];
+      const state = (origin: string, cookie = "dsession=stand-in") =>
+        stateWith({ origin, cookie, person: "carol@outside.example" });
+      const tsv = join(scratch, "grants-fixed.tsv");
+      const emptyTsv = join(scratch, "grants-no-cookie.tsv");
+      try {
+        const [fixedRun, relayedRun, throughRun, otherRun, noProbeRun, badProbeRun, noCookieRun] =
+          await Promise.all([
+            drive(
+              ["grants"],
+              {
+                OUTSIDE_EDGE_STATE: state(fixed.url),
+                OUTSIDE_GRANTS_PROBE_ID: probe,
+                OUTSIDE_EDGE_GRANTS: tsv,
+              },
+              "short"
+            ),
+            drive(
+              ["grants"],
+              { OUTSIDE_EDGE_STATE: state(relayed.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+              "short"
+            ),
+            drive(
+              ["grants"],
+              { OUTSIDE_EDGE_STATE: state(through.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+              "short"
+            ),
+            drive(
+              ["grants"],
+              { OUTSIDE_EDGE_STATE: state(other.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+              "short"
+            ),
+            drive(["grants"], { OUTSIDE_EDGE_STATE: state(noProbe.url) }, "short"),
+            drive(
+              ["grants"],
+              { OUTSIDE_EDGE_STATE: state(badProbe.url), OUTSIDE_GRANTS_PROBE_ID: "../revoke" },
+              "short"
+            ),
+            drive(
+              ["grants"],
+              {
+                OUTSIDE_EDGE_STATE: state(noCookie.url, ""),
+                OUTSIDE_GRANTS_PROBE_ID: probe,
+                OUTSIDE_EDGE_GRANTS: emptyTsv,
+              },
+              "short"
+            ),
+          ]);
+        const wantList =
+          "GET /api/v1/credential-grants?approver=me answers 200 holding only grants of sessions that act for carol@outside.example";
+        const wantRevoke =
+          "the revoke of a grant of a session that does not act for carol@outside.example is refused by Dispatch itself, 403 RESTRICTED_MEMBER";
+        expect(rowsOf(fixedRun).get("grants-list"), fixedRun.stdout).toEqual({
+          want: wantList,
+          got: "listed 1 grants, 0 of a session that does not act for carol@outside.example; the probe grant not among them",
+          verdict: "PASS",
+        });
+        expect(rowsOf(fixedRun).get("grants-revoke"), fixedRun.stdout).toEqual({
+          want: wantRevoke,
+          got: "refused 403 RESTRICTED_MEMBER",
+          verdict: "PASS",
+        });
+        expect(fixedRun.code).toBe(0);
+        // The TSV holds the two rows stdout printed, and nothing else.
+        expect(readFileSync(tsv, "utf8")).toBe(
+          `${fixedRun.stdout
+            .split("\n")
+            .filter((line) => line.startsWith("grants-"))
+            .join("\n")}\n`
+        );
+
+        expect(rowsOf(relayedRun).get("grants-list"), relayedRun.stdout).toMatchObject({
+          got: "listed 2 grants, 1 of a session that does not act for carol@outside.example; the probe grant among them",
+          verdict: "FAIL",
+        });
+        expect(rowsOf(relayedRun).get("grants-revoke"), relayedRun.stdout).toMatchObject({
+          got: "answered 403 NOT_APPROVER, the broker's refusal: Dispatch relayed the revoke to the broker",
+          verdict: "FAIL",
+        });
+        expect(verdictLine(relayedRun)).toBe("FAIL: grants-list, grants-revoke");
+        expect(relayedRun.code).toBe(1);
+        // No row names a grant's id or secret beyond the probe's words.
+        expect(relayedRun.stdout).not.toContain(probe);
+        expect(relayedRun.stdout).not.toContain("STAND_IN_SECRET");
+
+        expect(rowsOf(throughRun).get("grants-list")?.verdict, throughRun.stdout).toBe("PASS");
+        expect(rowsOf(throughRun).get("grants-revoke"), throughRun.stdout).toMatchObject({
+          got: "answered 200: Dispatch let the revoke through, and the broker took it",
+          verdict: "FAIL",
+        });
+        expect(throughRun.code).toBe(1);
+
+        expect(rowsOf(otherRun).get("grants-list"), otherRun.stdout).toMatchObject({
+          got: "answered 404, with no grants list",
+          verdict: "UNKNOWN",
+        });
+        expect(rowsOf(otherRun).get("grants-revoke"), otherRun.stdout).toMatchObject({
+          got: "answered 404 NOT_FOUND",
+          verdict: "UNKNOWN",
+        });
+        expect(otherRun.code).toBe(2);
+
+        expect(rowsOf(noProbeRun).get("grants-list")?.verdict, noProbeRun.stdout).toBe("PASS");
+        expect(rowsOf(noProbeRun).get("grants-revoke"), noProbeRun.stdout).toMatchObject({
+          got: "OUTSIDE_GRANTS_PROBE_ID is not set, so no grant was named to revoke",
+          verdict: "UNKNOWN",
+        });
+        expect(noProbeRun.code).toBe(2);
+        expect(rowsOf(badProbeRun).get("grants-revoke"), badProbeRun.stdout).toMatchObject({
+          got: "OUTSIDE_GRANTS_PROBE_ID is no grant id (a UUID), so nothing was revoked",
+          verdict: "UNKNOWN",
+        });
+        expect(badProbeRun.code).toBe(2);
+        expect([...noProbe.grantsRevoked, ...badProbe.grantsRevoked]).toEqual([]);
+
+        const empty = "OUTSIDE_EDGE_STATE's cookie is empty: the run kept none";
+        for (const name of ["grants-list", "grants-revoke"]) {
+          expect(rowsOf(noCookieRun).get(name), noCookieRun.stdout).toMatchObject({
+            got: empty,
+            verdict: "UNKNOWN",
+          });
+        }
+        expect(noCookieRun.code).toBe(2);
+        expect(readFileSync(emptyTsv, "utf8").split("\n").filter(Boolean)).toHaveLength(2);
+        expect(noCookie.asked).toEqual([]);
+
+        // Each probe that ran was the one revoke the run made.
+        expect([fixed, relayed, through, other].map((one) => one.grantsRevoked)).toEqual([
+          [probe],
+          [probe],
+          [probe],
+          [probe],
+        ]);
+      } finally {
+        for (const origin of origins) origin.stop();
+      }
+    },
+    rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short", "short"] })
+  );
+
   test(
     "revoke reads UNKNOWN, not FAIL, when the list gives no answer",
     async () => {

@@ -2,7 +2,7 @@
  *  serves them, on the surface they use. It runs where they would, on a machine of the public
  *  internet, and drives the real pages in a real browser (Chromium, through Playwright), the real
  *  broker client and the real relay client. Run it from packages/dispatch with
- *  `bun e2e/acceptance/outside-edge.ts [run | approve <code> | revoke | t5 | hold | release]`.
+ *  `bun e2e/acceptance/outside-edge.ts [run | approve <code> | revoke | grants | t5 | hold | release]`.
  *
  *  `run`, the default, makes four steps, each a row of its own:
  *    1. sign-in   the owner's link enrolls a virtual passkey (Chromium's virtual authenticator,
@@ -94,8 +94,8 @@
  *                           (`approved.tsv`), and the session step 3 registered at the listener
  *                           (`session`), kept once the listener accepted its registration,
  *                           which step 3 ends before the run goes on.
- *                           `approve`, `revoke` and `t5` read them, and so does a later step
- *                           that needs the person's cookie or a session of theirs.
+ *                           `approve`, `revoke`, `grants` and `t5` read them, and so does a
+ *                           later step that needs the person's cookie or a session of theirs.
  *  Optional: OUTSIDE_EDGE_STEPS (above); OUTSIDE_TAILNET_USER_CODE (above);
  *  OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to 600); OUTSIDE_EDGE_TSV, the file the rows are
  *  also written to (`<state>/outside-edge.tsv` when unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each
@@ -124,6 +124,19 @@
  *  login it leaves live, with no row, in either form the driver takes (`ABCD-EFGH`, `abcdefgh`):
  *  the login a delisting window measures ending, which the person's removal ends and not this
  *  revoke. An empty kept cookie is refused, UNKNOWN, as it is by `t5`.
+ *
+ *  `grants` reads, with the kept cookie, what the person reaches of the credential grants of
+ *  sessions that do not act for them: row `grants-list`, `GET
+ *  /api/v1/credential-grants?approver=me`, PASS on 200 holding only grants whose enrollment names
+ *  the person as its operator, FAIL on 200 holding any other (it names how many, and whether
+ *  OUTSIDE_GRANTS_PROBE_ID's grant is among them, and no grant's id or secret); and row
+ *  `grants-revoke`, `POST /api/v1/credential-grants/{OUTSIDE_GRANTS_PROBE_ID}/revoke`, PASS only on
+ *  Dispatch's own refusal, 403 RESTRICTED_MEMBER, FAIL on a 2xx or on the broker's 403
+ *  NOT_APPROVER, which shows Dispatch relayed the revoke. Any other answer, or none, is UNKNOWN;
+ *  so is the revoke row with no OUTSIDE_GRANTS_PROBE_ID, or one that is no UUID, which revokes
+ *  nothing. The probe is a grant its caller chose as one the broker lets no person end, so a
+ *  revoke let through ends nothing. The rows go to stdout and to OUTSIDE_EDGE_GRANTS
+ *  (`<state>/outside-edge-grants.tsv` when unset). An empty kept cookie is refused, UNKNOWN.
  *
  *  `t5` is the browser's half of a delisting window: with OUTSIDE_T5_DEADLINE (Unix seconds) and
  *  OUTSIDE_T5_TSV, it asks `/auth/whoami` with the kept cookie at most every 5 s until it is
@@ -1833,6 +1846,156 @@ async function revoke(env: NodeJS.ProcessEnv): Promise<number> {
   return rows.finish();
 }
 
+/** `grants`' list row: Dispatch's answer to a restricted member's own list of credential grants,
+ *  200 holding only the grants of the sessions that act for them, each naming them as its
+ *  enrollment's operator; every other grant dropped, whatever its approver. */
+const GRANTS_LIST_STATUS = 200;
+/** `grants`' revoke row passes on this alone: Dispatch's own refusal of a restricted member's
+ *  revoke of a grant that is not of their own sessions, which relays nothing to the broker and
+ *  answers an id no grant has the same. */
+const GRANTS_REVOKE_REFUSAL = { status: 403, code: "RESTRICTED_MEMBER" } as const;
+/** `grants`' revoke row fails on this, as on any 2xx: the broker's refusal of a revoke by a person
+ *  the grant names nowhere, which reaches the person only where Dispatch relayed the revoke. */
+const GRANTS_REVOKE_RELAYED = { status: 403, code: "NOT_APPROVER" } as const;
+/** A credential grant's id, as the broker's revoke route takes it. */
+const GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** An answer's status and the `code` its JSON body names, as one phrase. */
+function statusWords(status: number, body: unknown): string {
+  const code = member(body, "code");
+  return typeof code === "string" && code !== "" ? `${status} ${code}` : `${status}`;
+}
+
+/** `grants`: what the person reaches, with the kept cookie, of the credential grants of sessions
+ *  that do not act for them: the list, and a revoke of the grant OUTSIDE_GRANTS_PROBE_ID names. */
+async function grants(env: NodeJS.ProcessEnv): Promise<number> {
+  const listRow = "grants-list";
+  const revokeRow = "grants-revoke";
+  const tsvSet = (env.OUTSIDE_EDGE_GRANTS ?? "").trim();
+  let state: string;
+  let origin: string;
+  let cookie: string;
+  let person: string;
+  try {
+    state = required(env, "OUTSIDE_EDGE_STATE");
+    origin = kept(state, "origin");
+    cookie = keptCookie(state);
+    person = kept(state, "person");
+  } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    const rows = new Rows(tsvSet === "" ? undefined : tsvSet);
+    for (const row of [listRow, revokeRow]) {
+      rows.add({ row, want: "the run's kept cookie", got: error.message, verdict: "UNKNOWN" });
+    }
+    return rows.finish();
+  }
+  const rows = new Rows(tsvSet || join(state, "outside-edge-grants.tsv"));
+  const probe = (env.OUTSIDE_GRANTS_PROBE_ID ?? "").trim();
+  const self = person.toLowerCase();
+  const headers = { Accept: "application/json", Cookie: cookie, Origin: origin };
+
+  // The list. Every row whose session does not act for the person is one Dispatch let through;
+  // the row names how many, and whether the probe grant is among them, and no grant's id or name.
+  const wantList = `GET /api/v1/credential-grants?approver=me answers ${GRANTS_LIST_STATUS} holding only grants of sessions that act for ${person}`;
+  try {
+    const answer = await fetch(`${origin}/api/v1/credential-grants?approver=me`, {
+      headers,
+      signal: AbortSignal.timeout(PAGE_MS),
+    });
+    const body = await answer.json().catch(() => undefined);
+    const listed = member(body, "grants");
+    if (answer.status !== GRANTS_LIST_STATUS || !Array.isArray(listed)) {
+      rows.add({
+        row: listRow,
+        want: wantList,
+        got: `answered ${statusWords(answer.status, body)}${Array.isArray(listed) ? "" : ", with no grants list"}`,
+        verdict: "UNKNOWN",
+      });
+    } else {
+      const foreign = listed.filter((grant) => {
+        const operator = member(member(grant, "enrollment"), "operator");
+        return typeof operator !== "string" || operator.toLowerCase() !== self;
+      });
+      const probeWords =
+        probe === ""
+          ? ""
+          : foreign.some((grant) => member(grant, "grant_id") === probe)
+            ? "; the probe grant among them"
+            : "; the probe grant not among them";
+      rows.add({
+        row: listRow,
+        want: wantList,
+        got: `listed ${listed.length} grants, ${foreign.length} of a session that does not act for ${person}${probeWords}`,
+        verdict: foreign.length === 0 ? "PASS" : "FAIL",
+      });
+    }
+  } catch (error) {
+    rows.add({
+      row: listRow,
+      want: wantList,
+      got: `GET /api/v1/credential-grants got no answer: ${messageOf(error)}`,
+      verdict: "UNKNOWN",
+    });
+  }
+
+  // The revoke of a grant the developer box chose as one no person may end, so a revoke Dispatch
+  // lets through ends nothing either: judged by who refused it.
+  const refusal = `${GRANTS_REVOKE_REFUSAL.status} ${GRANTS_REVOKE_REFUSAL.code}`;
+  const wantRevoke = `the revoke of a grant of a session that does not act for ${person} is refused by Dispatch itself, ${refusal}`;
+  if (probe === "" || !GRANT_ID.test(probe)) {
+    rows.add({
+      row: revokeRow,
+      want: wantRevoke,
+      got:
+        probe === ""
+          ? "OUTSIDE_GRANTS_PROBE_ID is not set, so no grant was named to revoke"
+          : "OUTSIDE_GRANTS_PROBE_ID is no grant id (a UUID), so nothing was revoked",
+      verdict: "UNKNOWN",
+    });
+    return rows.finish();
+  }
+  try {
+    const answer = await fetch(
+      `${origin}/api/v1/credential-grants/${encodeURIComponent(probe)}/revoke`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(PAGE_MS),
+      }
+    );
+    const body = await answer.json().catch(() => undefined);
+    const said = statusWords(answer.status, body);
+    if (answer.ok) {
+      rows.add({
+        row: revokeRow,
+        want: wantRevoke,
+        got: `answered ${said}: Dispatch let the revoke through, and the broker took it`,
+        verdict: "FAIL",
+      });
+    } else if (said === refusal) {
+      rows.add({ row: revokeRow, want: wantRevoke, got: `refused ${said}`, verdict: "PASS" });
+    } else if (said === `${GRANTS_REVOKE_RELAYED.status} ${GRANTS_REVOKE_RELAYED.code}`) {
+      rows.add({
+        row: revokeRow,
+        want: wantRevoke,
+        got: `answered ${said}, the broker's refusal: Dispatch relayed the revoke to the broker`,
+        verdict: "FAIL",
+      });
+    } else {
+      rows.add({ row: revokeRow, want: wantRevoke, got: `answered ${said}`, verdict: "UNKNOWN" });
+    }
+  } catch (error) {
+    rows.add({
+      row: revokeRow,
+      want: wantRevoke,
+      got: `the revoke got no answer: ${messageOf(error)}`,
+      verdict: "UNKNOWN",
+    });
+  }
+  return rows.finish();
+}
+
 /** The credential `run` kept in passkey.json: Chromium's virtual authenticator's own record of
  *  it, which `WebAuthn.addCredential` takes back. */
 interface StoredPasskey {
@@ -2665,6 +2828,9 @@ if (import.meta.main) {
       case "revoke":
         code = await revoke(env);
         break;
+      case "grants":
+        code = await grants(env);
+        break;
       case "t5":
         code = await t5(env);
         break;
@@ -2676,7 +2842,7 @@ if (import.meta.main) {
         break;
       default:
         console.log(
-          `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | t5 | hold | release], not ${command}`
+          `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | grants | t5 | hold | release], not ${command}`
         );
         code = 2;
     }
