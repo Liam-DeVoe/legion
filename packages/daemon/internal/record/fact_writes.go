@@ -20,8 +20,7 @@ type issueWrites struct {
 }
 
 // WithIssueWrites answers ctx in which the store keeps each issue a write touches — its record
-// (PutIssue), its pull request (PutPullRequest) or its hand-over fence (PutHandover,
-// DeleteHandover, DeleteHandoverAt), the inputs of the end of a step's run the store writes —
+// (PutIssue) or its pull request (PutPullRequest), the inputs of the end of a step's run the store writes —
 // which IssuesWritten answers. A ctx that keeps them already is answered as it is, so the writes of
 // one transaction are kept once whoever asks for them.
 func WithIssueWrites(ctx context.Context) context.Context {

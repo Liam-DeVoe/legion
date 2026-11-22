@@ -159,7 +159,7 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // above. At admitted that is the one above, since the child's own architect has not started yet or
 // a leave suspended or retired it, unless a person set the child back to todo while it ran or was
 // held: that re-entry starts and stops nothing, so a child's own architect that held its role
-// still holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's
+// still holds it (workflow's backInWork). Every site that starts, resumes or reports a phase's
 // worker skips the architect, so it skips both phases (workflow's start, admit's
 // startMidPhaseMembers, workflow's booted and Stranded).
 //

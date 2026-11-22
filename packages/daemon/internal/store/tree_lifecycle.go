@@ -71,7 +71,7 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // issue this project records nothing of keeps the tree the operator named; and its tree epoch is
 // the epoch that tree's lifecycle stands at, 0 where the tree has none, whatever state its row is
 // in, since only the issue's lifecycle admits or refuses the claim. The record is the project's
-// own (lower(project) = project, the token), as IssueSandboxHome reads it: another project's record
+// own (lower(project) = project, the token), as IssueLive reads it: another project's record
 // of the same key is no record of this one's.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
 	var queued bool

@@ -47,8 +47,8 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // It reads its mergers from the suspended owners of the project's unfinished phases in running
 // trees (suspendedPhaseOwners), the read booted starts its owners from, so the repair and the
 // boot's resume by rule pick an owner by one rule. By that rule the issue is in the workflow; its
-// tree runs (record.RunningRoots), since a lingering tree's claims wait for its re-admission and
-// a queued root's members for its promotion, each of which starts every mid-phase member (admit's
+// tree runs (record.RunningRoots), since the claims of an issue out of Legion's work wait for its
+// return and a queued root's issues for its promotion, each of which starts every mid-phase member (admit's
 // startMidPhaseMembers); its phase is not finished (PhaseFinished), since a merged pull request's
 // merge closes the issue and leaves the merger nothing to do; and the owner's claim at the issue's
 // generation stands suspended. Of those owners it selects each merger the old build left so, by

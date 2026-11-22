@@ -1151,8 +1151,8 @@ const statusWriteReads = 3
 // What this read never does is reach the engine. Dispatch's read says what the issue is now and
 // never who wrote it, so the engine would have to take every change it shows for a person's, and
 // two of the daemon's own rows exist precisely because a change was not a person's: a session's
-// own close or park, which the re-assert undoes, would be taken for a person ending the tree,
-// lingering it and freeing its slot. A change Dispatch recorded reaches the engine through its
+// own close or park, which the re-assert undoes, would be taken for a person's move of the issue
+// out of Legion's work, freeing its slot. A change Dispatch recorded reaches the engine through its
 // own event, with its actor (dispatch://INFRA-714/spec R4); this read decides one thing, whether
 // to write.
 //
@@ -2554,7 +2554,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 //     the daemon's and a root's own exit among them;
 //  3. a failure;
 //  4. a retirement;
-//  5. the issue leaving the workflow, a lingering tree included: a released claim is owed only
+//  5. the issue leaving Legion's work: a released claim is owed only
 //     while its issue can be woken (wakeableIssue), as the workflow's wake of a released role
 //     reads it (workflow.wakeReleased).
 //
@@ -3189,7 +3189,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		case supervise.StateSuspended:
 			// The role owns the issue's phase this start is for: the rule resumes it, unless an
 			// operator suspended it meanwhile, when the task's delivery below waits instead. A check
-			// start resumes the role the check records the close or the linger suspended, in a Sandbox the
+			// start resumes the role the check records the close or a pending look suspended, in a Sandbox the
 			// resume relaunches (runtime/sandbox's relaunch).
 			reason := fmt.Sprintf("start row %d of %s (phase %q)", row.ID, issue.Key, payload.Phase)
 			if payload.CheckLook > 0 {
@@ -3213,10 +3213,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:
-			// A retired claim was closed with its issue (a child closed as done) or with its tree
-			// (whose linger also removed the workspace), its agent reported its own exit (a phase
+			// A retired claim was closed with its issue (an issue closed as done, or one whose
+			// retention ended, which also removed its workspace), its agent reported its own exit (a phase
 			// worker or a child's own architect, which supervise's exit retires), or an operator
-			// stopped it. So the workspace is provisioned, which brings back one a linger removed,
+			// stopped it. So the workspace is provisioned, which brings back one the end of a retention removed,
 			// before the kept session relaunches (a new one once supervise's Machine.forgetSession
 			// has dropped it).
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
@@ -3287,10 +3287,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			gave = true
 		}
 		// A start that finds an architect running is a return of its issue while its session
-		// lived on: a tree's re-admission for a root's architect; for a child's own, the tree's
-		// re-admission while the child stands past admitted (admit's startMidPhaseMembers) or the
-		// child's next first phase start (a rerun, or a person's move back to todo). The linger
-		// suspends every claim of the tree, and a child's leave suspends or closes the child's
+		// lived on: the issue's return to Legion's work, or, for a child's own, a start of the child's
+		// mid-phase work (admit's startMidPhaseMembers) or the child's next first phase start (a
+		// rerun, or a person's move back to todo). A stop suspends every claim of its issue, and a
+		// child's leave suspends or closes the child's
 		// architect. After either, this happens only when the claim was mid-launch when the
 		// suspend ran (the machine ignores a suspend while launching), or the start ran before
 		// it. A running child that a person sets back to todo goes through no leave, so its
@@ -3337,7 +3337,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
-		// A linger, a park, a hand-over and a close all stop a claim through this one row, and
+		// A stop suspends a claim through this one row, as a close retires one through issue_close, and
 		// each takes a released claim over: the machine re-stamps the suspension's source and
 		// this drops the backstop the release left that role, so no later backstop acts on a
 		// claim this suspension now owns. Another role's backstop stays (decision 17 of
@@ -3875,7 +3875,7 @@ func (r *outbox) issueSandboxName(issue string) string {
 // now is a row its lane runs later, where a resume held in memory alone was lost with the
 // daemon that was running it, and the mark it had already deleted said nothing was owed.
 //
-// A cancel whose issue has left the workflow, or whose tree lingers, queues no resume and
+// A cancel whose issue has left the workflow queues no resume and
 // deletes the mark all the same (store.CancelIssueRelease): that pod is a close's to stop, and a
 // resume queued above the close's own rows would supersede them and leave the roles of a done
 // issue running in a Sandbox nothing deletes.
@@ -4086,7 +4086,7 @@ func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, pay
 	// gate above any version Dispatch wrote (a daemon that registered the caller's version unchecked
 	// could record one), so the seed resets the gate to Dispatch's version with what it read there
 	// (intake.GateAboveDispatch). A review also names its reviewer, since the seed is not fenced on
-	// the tree's linger and its review may meet a parked tree.
+	// the issue's own run and its review may meet a parked tree.
 	fact := intake.DispatchArtifact{Key: row.Issue, ArtifactID: payload.ArtifactID, Kind: intake.DispatchArtifactVersion, Version: approval.LatestVersion,
 		RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent"}
 	review := record.EventMark{Seq: approval.Seq, At: approval.At}
@@ -4394,7 +4394,7 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // none: its issue's production check is open, the one the row names (record.ProductionCheck.NamedBy),
 // at the look the row names, with that look open, and the issue out of the workflow. A check closed
 // since (a report, its last look), a check a later merge replaced, a look its bound or a hold ended,
-// a later look's start, or an issue running again (reopened inside its linger since the row was
+// a later look's start, or an issue running again (reopened since the row was
 // queued: a look would resume the check's own role and relaunch the Sandbox under the run; the look ends
 // at its own bound) leave the row nothing to start, and it finishes without acting, logged with why.
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {

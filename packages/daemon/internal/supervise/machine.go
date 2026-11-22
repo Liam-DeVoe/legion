@@ -99,8 +99,7 @@ const (
 	SuspendedByUnknown SuspendSource = "unknown"
 	// SuspendedByOperator: the operator's suspend route.
 	SuspendedByOperator SuspendSource = "operator"
-	// SuspendedByDaemon: the workflow's own suspend — the issue left the workflow, or its tree
-	// lingers.
+	// SuspendedByDaemon: the workflow's own suspend — the issue left Legion's work.
 	SuspendedByDaemon SuspendSource = "daemon"
 	// SuspendedByExit: the tree root's agent reported its own exit, which suspends a root.
 	SuspendedByExit SuspendSource = "exit"
@@ -1014,10 +1013,10 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
-	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
-	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
-	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
-	// next runs — which can be after a park, a hand back to `todo` or a linger, generations later.
+	// RootHears says whether the root of c's tree has an architect to hear d now: it holds its own
+	// design gate, it is in Legion's work and it does not wait in `todo` for an admission slot. A
+	// root architect's task of a run names no phase, so no phase ever drops it, and it waits on the
+	// claim until that claim next runs — which can be after a park or a hand back to `todo`, generations later.
 	// Such a task names a person's decisions, which its own confirmation tells (daemon's
 	// settleKept, the claim store's putDelivery), so it is held rather than dropped: false keeps it
 	// pending, unsent and uncharged, and the start of the root's next run sends it (StartedBy,
@@ -1038,7 +1037,7 @@ type Deps struct {
 	RootTask func(ctx context.Context, c Claim, d Delivery) (task string, kept []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
-	// than a refusal. It is asked for the operator's own close — the workflow's linger close is its
+	// than a refusal. It is asked for the operator's own close — the workflow's close is its
 	// own decision — and here rather than by the caller, so the answer and the stop it decides are
 	// one decision rather than two round trips apart; and by a refused stop of the tree's root,
 	// whose refusal then names that close. It is not a lock on what it reads: an issue recorded for
@@ -2187,7 +2186,7 @@ func (c Claim) ServingEntry() int64 {
 // check has left is held to it and refused by the engine (CHECK_LOOK_NOT_OPEN).
 //
 // A task of a phase is the one task that takes a look back rather than leaving it: a worker
-// handed phase work again — a root reopened inside its linger, whose check still stands — is back
+// handed phase work again — an issue back in Legion's work while its check still stands — is back
 // in the workflow, and the completion of that phase is no report on production. Every other task
 // of no look (an operator's own, a resume) leaves the look the claim is serving alone, as it
 // leaves the run and the entry.
@@ -2396,7 +2395,7 @@ func (m *Machine) stoppingProcess() func() {
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
 // comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
-// ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
+// and ReadProcess; the sections that take mu without it are Claim, OnDurableState, Wait,
 // compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
 // added later has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {

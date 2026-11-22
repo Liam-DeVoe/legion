@@ -709,7 +709,7 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 
 // dispatchArtifact applies an artifact event to the gates registered on that document: the root
 // that owns it, by whose key Dispatch sends its events, takes every event (applyArtifact), and each
-// copy a hand-over carried to a child of its tree, now a root of its own (admit's readmit), takes
+// copy a hand-over of the release before carried to a child of its tree, now a root of its own, takes
 // only an approval that opens it or keeps it open (copyTakes). register_gate refuses a document of
 // another issue, so no other gate names it as its own.
 //
@@ -844,10 +844,10 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // "The walk", step 3) repeats this decision in prose to skip the approvals it queues: a change to
 // what queues changes that step too.
 //
-// dispatchArtifact ties its skip of the root's own gate to this decision rather than to the tree
-// being live: a lingering root that is not parked — closed as done, or still in triage — queues
-// nothing and keeps today's behaviour, its gate taking the event, so a reopen inside the linger
-// sees the approvals given while it lingered.
+// dispatchArtifact ties its skip of the root's own gate to this decision rather than to the root
+// being in Legion's work: a root out of it that is not parked — closed as done, or still in triage —
+// queues nothing and keeps today's behaviour, its gate taking the event, so its return to work
+// sees the approvals given while it was out.
 func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (bool, error) {
 	view := fact.Issue
 	if view == nil || !fact.PersonApproval() {

@@ -2391,11 +2391,11 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
 // and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
-// workflow, its tree running and its root not lingering, while an issue past its review is in
+// workflow and its tree running, while an issue past its review is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
 // every record that is not done, a parked one included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
-// record.TreeRuns over the pass's lifecycles and gates, which carries the lingering root with
+// record.TreeRuns over the pass's chains and gates, which carries the root out of Legion's work with
 // it. Without them the repair's bound would be the retired-claim skip further down rather than
 // the rule: a parked issue in its retro, or one whose tree left the workflow, would have its
 // worker started again. The three sibling passes carry the same guard
@@ -2653,11 +2653,11 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// A retired claim was stopped, and two stops reach this repair: an operator's `legion
 		// claims stop`, and an agent's own report of its exit, which retires a worker's claim in
 		// the same way (api's exit, supervise's table) though no shipped agent sends one. The
-		// workflow's own retires never reach it: it retires a claim at its tree's close and at
-		// its issue's close, and each of those takes the issue out of the live records or
-		// lingers its root, which the loop above passes over already. Starting the phase again
+		// workflow's own retires never reach it: it retires a claim at its issue's close, which
+		// takes the issue out of the live records, which the loop above passes over already.
+		// Starting the phase again
 		// here would hand the operator back, a second later, the worker they stopped. The ways
-		// back are the workflow's own starts — the held phase's retry, the tree's re-admission —
+		// back are the workflow's own starts — the held phase's retry, the issue's return to work —
 		// and this skip touches none of them; no operator command starts a retired phase worker
 		// at this head, and INFRA-956 is where one is added. What it costs: the issue keeps its
 		// admission slot with no worker in it until one of those starts or a person moves the
@@ -2715,8 +2715,8 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // work for and can tell it: the two readings the sweep's send (architectReached) and the first
 // stall arm (architectTookNothing) both stand on. Its architect must be able to hear
 // (workflow.ArchitectHearsSlotted, the slotted form of the daemon's one reading of that
-// question, workflow.ArchitectHears: a root that lingers, one Dispatch has taken out of the
-// workflow, and an issue that is not its tree's root, which is what leaves a child's own
+// question, workflow.ArchitectHears: a root Dispatch has taken out of Legion's work, and an
+// issue that holds no gate of its own, which is what leaves a child's own
 // sub-architect claim outside the rule, since its start, which the child's first phase start
 // queues (workflow's gateOpened), carries no task and raises no entry). The slotted form
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass

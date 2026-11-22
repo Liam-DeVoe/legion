@@ -54,7 +54,7 @@ const (
 	PausePodHoldResumed PausePodHoldEnd = "resumed"
 	// PausePodHoldReady: a role of the pod became ready.
 	PausePodHoldReady PausePodHoldEnd = "ready"
-	// PausePodHoldDeleted: a close, a park, a linger, a production check's look or a teardown
+	// PausePodHoldDeleted: a close, a stop, a production check's look or the issue's cleanup
 	// deleted the pod.
 	PausePodHoldDeleted PausePodHoldEnd = "deleted"
 )

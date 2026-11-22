@@ -228,7 +228,7 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // hear it now (ArchitectHears), naming everything that tree is owed and nothing claims, for the
 // launch its architect claim stands at (Store.ArchitectLaunchesOf), so a failed forward of an older
 // catch-up is not queued again behind it. A tree with no architect to hear it — no record, no
-// tree root, lingering, out of the workflow, or waiting in `todo` for its slot — is written
+// gate root, out of Legion's work, or waiting in `todo` for its slot — is written
 // nothing, and what it is owed waits KEPT for its next start or ready to name, since a catch-up
 // queued for nobody would only be dropped by the ready that follows. No catch-up of a hand-over
 // is paced: it answers a person who is waiting, and it reaches an architect the daemon did not

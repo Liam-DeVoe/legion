@@ -1172,14 +1172,14 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
 // run names no phase, so no phase ever drops it, and it waits on the claim until that claim next
-// runs — which a park, a hand back to `todo` or a linger can put generations later. The decisions
+// runs — which a park or a hand back to `todo` can put generations later. The decisions
 // such a task names are held by its delivery and told when the turn that takes it starts
 // (store's holdKeptDecisions, tellKeptDecisions), so sending it while the tree has nobody to act on
 // it would spend a person's decision on an architect no run of the root owns. The answer is the
 // workflow's one reading of that question
 // (workflow.ArchitectHears), which the hand-over of a released decision reads too, in a short
-// read-only transaction of its own: a root that hears is one that is its tree's root, runs, does
-// not linger and does not wait in `todo` for its slot.
+// read-only transaction of its own: a root that hears is one that holds its own design gate on the
+// Dispatch chain, is in Legion's work and does not wait in `todo` for its slot.
 //
 // A claim on an issue the daemon does not record hears, as it holds for the phase: there is no
 // record only for a claim the workflow never made.
@@ -1205,8 +1205,8 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // at the moment it is about to be sent. Such a task names the decisions a person made while nobody
 // in the root's tree could hear them, and holds those rows on its own delivery until the turn that
 // takes it confirms (the claim store's putDelivery, 20261101163106_parked_decisions). An issue it names can
-// have moved while the task waited — a child a person took out of the claim's issue, a parked
-// child a person's todo orphaned, a grandchild handed over beside its parent — and the gate root
+// have moved while the task waited — a child a person took out of the claim's issue, an issue
+// moved under another in Dispatch — and the gate root
 // it stands under on the Dispatch chain now (record.Chains.StateTree, R18 of
 // dispatch://INFRA-3320) is the one that owes the person an answer, not the claim's issue.
 //

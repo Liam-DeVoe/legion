@@ -155,7 +155,7 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 // (admit's TestAFactReadsAsManyRowsWhateverNumberOfFinishedRecordsTheProjectKeeps, which the tick
 // is one of the facts of). The repair selects the same issues from either list: every issue it can
 // act on is short of phase done, which LiveIssues holds, and a root LiveIssues leaves out is one
-// whose own record is done and holds no slot, whose tree has closed and lingers — so the issue
+// whose own record is done and holds no slot, which runs nothing — so an issue
 // under it is passed over either way, by the missing root rather than by the tree-runs rule. The
 // boot reads the whole table once for its resume and hands the repair that list (booted).
 func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result, error) {

@@ -185,8 +185,8 @@ func claimContendedWait(issue string) error {
 // one batch of the records, because the pass runs inside the boot's serialized transaction,
 // holding the fact lock every boot fact waits on (intake.SerializeFacts), where a read per issue
 // would be hundreds of round trips. Whether the issue stopped is the record's to say and never
-// the listing's, because an unslotted root and a lingering root both keep an active Dispatch
-// status (workflow.Engine.LeaveUnslotted leaves the root at the status it stood at). An issue the
+// the listing's, because an unslotted root keeps an active Dispatch status
+// (workflow.Engine.LeaveUnslotted leaves the root at the status it stood at). An issue the
 // daemon does not record is left alone with nothing logged: it could attribute no claim of it.
 //
 // The pass attributes no claim itself. The row's executor re-reads Dispatch, the record and the

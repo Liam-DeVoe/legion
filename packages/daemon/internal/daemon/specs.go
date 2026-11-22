@@ -218,8 +218,8 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	}
 	spec.IssueTrailer = s.issueTrailer(spec.Repository, c.Issue)
 	// Every launch, not only a claim's first: a claim resumed, relaunched or recovered on this host
-	// may have no workspace here — its issue ran in another runtime's pods before, or its tree's
-	// linger removed it — and a pane cannot start without one. Provisioning checks out the issue's
+	// may have no workspace here — its issue ran in another runtime's pods before, or the end of
+	// its retention removed it (retentionEnd) — and a pane cannot start without one. Provisioning checks out the issue's
 	// branch legion/<KEY> when GitHub has it, so whatever the claim pushed is there.
 	if s.hostWorkspaces && s.ensureWorkspace != nil && !spec.Repository.IsZero() {
 		if err := s.ensureWorkspace(ctx, c.Issue, spec.Repository, spec.DefaultBranch); err != nil {

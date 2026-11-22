@@ -773,8 +773,8 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 //     when it finds one.
 //
 // A completion the workflow refuses whatever GitHub shows reads nothing: the route calls this only
-// for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
-// not linger and whose handoff record is not the one the implementer named for its previous phase
+// for one that is not already applied (eventID, its key, read with intake.Applied), whose issue is
+// in Legion's work and whose handoff record is not the one the implementer named for its previous phase
 // (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer.
 func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, recorded *record.PullRequest, eventID string) bool {
 	ctx := r.Context()

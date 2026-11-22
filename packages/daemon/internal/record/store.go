@@ -1236,11 +1236,11 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 // answers false, so the one row decides who tells. That architect is the root's own for a root.
 // For a child it is the architect above it, since the child's own starts only with that first
 // phase, unless a person set the child back to todo while it ran or was held: that re-entry starts
-// and stops nothing (workflow's ReenterChild), so a child's own architect that held its role still
-// holds it and is the one told. The tree is part of the key because the generation is the root's
-// and only names a run within one tree: an issue handed over as a root of its own waits in a tree
-// of its own, at a generation of its own numbering (admit's readmit), and is told there again. at
-// is the moment the pass ran, kept for a reader of the table alone.
+// and stops nothing (workflow's backInWork), so a child's own architect that held its role still
+// holds it and is the one told. The key's tree is the issue itself and its generation the issue's
+// own run (admit's tellChildrenFirst, R17 of dispatch://INFRA-3320), so a new run of the issue is
+// told again, and a change of its Dispatch parent neither tells it again nor keeps it from being
+// told. at is the moment the pass ran, kept for a reader of the table alone.
 func (s *Postgres) TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, `insert into children_first_notices (issue, tree, generation, told_at) values ($1, $2, $3, $4)
 		on conflict (issue, tree, generation) do nothing`, issue, tree, int64(generation), at)

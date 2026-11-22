@@ -555,17 +555,17 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerWithNoRecordsRelaunchesIt(t *testi
 }
 
 // heldRetrier stands in for the workflow's retry_or_escalate: a retry decision on a held issue
-// restores the phase it was held from, unless lingers says the tree lingers, where the workflow
-// does nothing. Every fact is recorded first.
+// restores the phase it was held from, unless outOfWork says the issue is out of Legion's work,
+// where the workflow does nothing (workflow's retryOrEscalate). Every fact is recorded first.
 type heldRetrier struct {
 	factRecorder
-	lingers bool
+	outOfWork bool
 }
 
 func (r *heldRetrier) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	result, err := r.factRecorder.Apply(ctx, tx, fact)
 	retry, ok := fact.(intake.RetryOrEscalate)
-	if err != nil || result.Refusal != nil || !ok || retry.Decision != intake.RetryDecision || r.lingers {
+	if err != nil || result.Refusal != nil || !ok || retry.Decision != intake.RetryDecision || r.outOfWork {
 		return result, err
 	}
 	records := record.NewStore()
@@ -654,16 +654,16 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerOnAHeldIssueRetriesThePhase(t *tes
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict, "LEGION-209 is not held")
 }
 
-// A retry the workflow applies but that leaves the issue held relaunched nothing — a lingering
-// tree's members stay where they stood — so the operator is answered 409 naming the issue, the
-// phase and the claim, never 202.
+// A retry the workflow applies but that leaves the issue held relaunched nothing — the workflow
+// retries no phase of an issue out of Legion's work — so the operator is answered 409 naming the
+// issue, the phase and the claim, never 202.
 func TestTheOperatorsRetryOfAHeldPhaseThatStaysHeldIsRefused(t *testing.T) {
-	facts := &heldRetrier{lingers: true}
+	facts := &heldRetrier{outOfWork: true}
 	h, workerToken := failedImplementer(t, facts)
 	heldIssue(t, h, phase.Implementing)
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict,
-		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": its tree lingers, and a lingering tree's members stay where they stood")
+		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": the issue is out of Legion's work, where a retry starts nothing, and a todo on LEGION-209 brings it back and releases its hold")
 	if applied := facts.recorded(); len(applied) != 1 {
 		t.Errorf("the retry applied %#v, want the held phase's retry alone", applied)
 	}
@@ -869,17 +869,17 @@ func TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied
 }
 
 // A refused retry has forgotten the session all the same, and that is what this order costs: the
-// forget runs before the fact, so an issue the retry leaves held because its tree lingers is
-// answered 409 by a claim that records no session. Only the claim's record goes — the session
-// stands, and the route logs the id — and the claim keeps its state and its task, so the
+// forget runs before the fact, so an issue the retry leaves held because it is out of Legion's
+// work is answered 409 by a claim that records no session. Only the claim's record goes — the
+// session stands, and the route logs the id — and the claim keeps its state and its task, so the
 // operator retries it again.
 func TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession(t *testing.T) {
-	facts := &heldRetrier{lingers: true}
+	facts := &heldRetrier{outOfWork: true}
 	h, workerToken := stoppedImplementer(t, facts)
 	heldIssue(t, h, phase.Implementing)
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", RetryRequest{FreshSession: true}), http.StatusConflict,
-		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": its tree lingers, and a lingering tree's members stay where they stood")
+		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": the issue is out of Legion's work, where a retry starts nothing, and a todo on LEGION-209 brings it back and releases its hold")
 	after := h.stored(workerToken)
 	if after.Session != "" || after.SessionFile != "" {
 		t.Errorf("the refused fresh-session retry left session %q (%q) on the claim, want both forgotten before the fact", after.Session, after.SessionFile)

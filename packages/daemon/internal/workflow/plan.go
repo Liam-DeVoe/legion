@@ -83,9 +83,9 @@ func defaultPlan(issue record.Issue) record.PlanRecord {
 }
 
 // WritePlan queues the plan issue's run carries out, the default plan (defaultPlan), where the
-// run's work starts: at the run's move out of admitted (transition's TriggerGateOpened), and at a
-// hand-over's carry, which re-admits an orphan at a new generation in the phase it ran in
-// elsewhere (admit's readmit), so that run never leaves admitted. A record key that is no issue
+// run's work starts: at the run's move out of admitted (transition's TriggerGateOpened), and at
+// the first boot's conversion of a root a hand-over of the release before made, which carried its
+// run in at the phase it ran in elsewhere (the daemon's tree conversion), so that run never leaves admitted. A record key that is no issue
 // key writes nothing (recordsSteps).
 func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {

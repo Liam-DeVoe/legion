@@ -17,9 +17,9 @@ import (
 // First, the upgrade's sweep (sweepMerged): an issue of this project that awaits its merge on a
 // pull request already merged is one the migration moved out of production_check, and the merge
 // that would have closed it will never come again, so the boot closes it as the merge would have
-// (closeMerged) — unless an issue beneath it is still in the workflow, which leaves it where it
-// is to close when the last of them leaves (leave's closeAwaitingMerge), so the deploy suspends no
-// running child under a mass of lingers.
+// (closeMerged) — unless a Dispatch child of it is not done, which leaves it where it is to close
+// when the last of them is done (leave's closeAwaitingMerge, WriteDueClose), since Dispatch closes a
+// parent only once each of its children is done.
 //
 // Second, the status repair (correctStatuses): every issue the daemon works whose recorded
 // Dispatch status is not the status of its phase gets the Dispatch status write that corrects it,
@@ -61,7 +61,7 @@ import (
 // for the issue's admission slot in a phase up to the review and for none past it. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
+// The sweep runs first so the resume reads the issues it closed as out of Legion's work. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
@@ -152,7 +152,7 @@ type phaseOwners struct {
 // else the one above. At admitted that is the one above, since the child's own has not started
 // yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
 // or was held: that re-entry starts and stops nothing, so a child's own architect that held its
-// role still holds it (ReenterChild). An owner is answered only while its claim at the issue's
+// role still holds it (backInWork). An owner is answered only while its claim at the issue's
 // generation stands suspended, whatever the source: which sources a start may act on is each
 // caller's to judge.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
@@ -252,8 +252,8 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
 // (booted). Each is re-read before its close: a child's close may have closed the merged issues
-// above it (closeAwaitingMerge), and a root's close lingers the tree its children then close
-// under. A root whose tree still runs is left where it stands by closeMerged, which owns that
+// above it (closeAwaitingMerge). A merged issue with a Dispatch child that is not done
+// is left where it stands by closeMerged, which owns that
 // rule, and the sweep tells nobody of the wait: a restart must not repeat the architect's
 // notice, and a root can now wait for days across many boots.
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {

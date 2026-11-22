@@ -2208,8 +2208,8 @@ func sortedRepositories(named map[string]ghrepo.Repository) []ghrepo.Repository 
 
 // heardRepositories is what GitHub intake hears: every repository a record of the project names,
 // as tx reads the records, and every configured rename's partner of those
-// (`repository_renames`), once each, sorted. A record is heard whatever its tree's state, since a
-// root that lingers or closed comes back, by re-admission, a hand-over or an orphan's carry, on
+// (`repository_renames`), once each, sorted. A record is heard whatever its state, since an
+// issue out of Legion's work or closed comes back, by its return to work or a new run, on
 // the repository it keeps, with no refresh between; a fact from a repository an issue is recorded
 // on reaches only that issue (workflow's issueForBranch and ownPullRequest). A record that keeps
 // no GitHub spelling of its repository, which its backfill has not filled yet (backfillLater), is

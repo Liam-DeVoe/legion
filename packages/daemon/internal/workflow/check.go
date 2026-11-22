@@ -47,9 +47,9 @@ func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 // that bound, then the look (startLook). A project whose `production_check` is off has no role to
 // work a check (checkRole), and opens nothing at all: no record, no bound row and no look, only
 // the line saying the close had nothing to check.
-// wake is only how the open is logged: a lingering tree's member has its claims suspended,
-// so the look's start row is a wake of the checking role's claim, where a running tree's is a task
-// handed to that role's live session; the rows are the same, since the start resumes either. One check
+// wake is only how the open is logged: a checking role whose claim is suspended between looks has
+// the look's start row as a wake of that claim, where a live claim's is a task handed to that
+// role's live session; the rows are the same, since the start resumes either. One check
 // per issue: a second merge of the same issue — a rerun's, after a re-entry closed the first —
 // replaces the earlier record, whose bound row the new check then defers to its own bound
 // (checkBound); the same merge seen again — a done child a person parks and sets done again, each
@@ -438,7 +438,7 @@ func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.Chec
 //     (record.ProductionCheck.NamedBy), and whose look 1 this row's would otherwise be taken for.
 //   - a row of a look the check has left, or one whose look is open already: the bound started
 //     the last look, or a report or a retry started another.
-//   - an issue back in the workflow — a root reopened inside its linger, whose implementer now
+//   - an issue back in the workflow — one reopened after its close, whose implementer now
 //     works the new run — keeps the wake rather than dropping it: no look can run while the run
 //     holds the issue's claims and its pod, so the row is queued again a look bound out
 //     (lookRetry, clamped by clampWake, so no row is ever queued past the check's bound), and a
@@ -491,8 +491,8 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 // bound_at). A closed check, or one whose last look has started, changes nothing. A row that comes
 // due before the check's bound is an earlier check's of the same issue, replaced by a later merge
 // (openCheck), and is deferred to this check's bound. A look open at the bound defers it by the
-// look bound: the look's own bound ends the look first. An issue back in the workflow — a root
-// reopened inside its linger — closes the check as not run, since no look can run while its
+// look bound: the look's own bound ends the look first. An issue back in the workflow — one
+// reopened after its close — closes the check as not run, since no look can run while its
 // implementer works the new run, and the run's own merge opens its own. Otherwise the last look
 // starts, told that it is the last and the check's own bound (BoundAt less OpenedAt, which a later
 // change of the project's bound leaves alone) counted from the issue's close, which opened the

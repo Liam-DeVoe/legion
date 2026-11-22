@@ -219,7 +219,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // the send-time narrowing of the held task of that entry (NarrowRootTask). Before each of those
 // the claim has retired no confirmed task of that entry: the raise makes the entry new, a claim
 // that retired its confirmed task was given the entry and is owed nothing (OwedEntry), and a task
-// a let-go took back is not retired. An entry is never reset (record.Store.ClearTreeGeneration
+// a let-go took back is not retired. An entry is never reset (record.Store.ClearGeneration
 // keeps it), so a served entry is one of an earlier generation, or the 1 that the upgrade to this
 // release gives every architect claim of the release before it
 // (20261113182000_architect_entry_upgrade), whose tasks carried no entry. That is the reading

@@ -999,7 +999,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
 // tree's architect (it stopped with its finished tree, or its claim ended), or a person's answer,
 // resolution or reply (one that leaves the turn with the agent, or one under a closed ask) on an ask
-// of an issue whose tree lingers or has closed. Its issue is where the decision was made, Root the
+// of an issue whose root is out of Legion's work. Its issue is where the decision was made, Root the
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
@@ -1290,16 +1290,16 @@ type SuperviseRequest struct {
 	// to the claim's retry, which forgets the session inside that one decision (supervise's
 	// RequestRetry), so a start that never ran leaves the session where it was.
 	FreshSession bool `json:"freshSession,omitempty"`
-	// Linger is the root generation whose linger a tree close expires. A member keeps its
-	// generation across re-admission, so the close acts only while its tree lingers at that root
-	// generation: never in the tree's next run, nor in a later linger of it.
+	// Linger is the root generation whose linger a tree close of the release before expires: this
+	// release queues no tree close, and the first boot's conversion finishes or cancels each such
+	// row the release before left (decision 21 of dispatch://INFRA-4730).
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
-	// A check start runs after the close, where the issue has no phase and its tree may linger, so
+	// A check start runs after the close, where the issue is out of Legion's work, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
-	// open at that look with the look open) instead of on the generation and the lingering tree.
+	// open at that look with the look open) instead of on the generation.
 	CheckLook int `json:"checkLook,omitempty"`
 	// CheckOpenedAt is the check instance the look belongs to (ProductionCheck.OpenedAt, its ID):
 	// a later merge of the same issue replaces the check and counts its looks from one again, so a
@@ -1436,7 +1436,9 @@ type ReparentStep struct {
 	Pending      bool       `json:"pending,omitempty"`
 }
 
-// LingerClose records the issue generation whose linger should close.
+// LingerClose is the release before's close of a tree at its linger's end, by the issue generation
+// whose linger it closes. This release queues none, and the first boot's conversion finishes or
+// cancels each such row the release before left.
 type LingerClose struct {
 	Generation uint64 `json:"generation"`
 }
@@ -1506,15 +1508,15 @@ type IssueRelease struct {
 
 func (IssueRelease) OutboxKind() OutboxKind { return OutboxKindIssueRelease }
 
-// WorkspaceRemove removes the workspace named by the row's issue.
+// WorkspaceRemove removes the workspace named by the row's issue: a row of the release before,
+// queued at a tree's linger. This release queues none, and the first boot's conversion finishes or
+// cancels each such row the release before left.
 type WorkspaceRemove struct {
-	// Linger is the root generation whose linger the removal expires. Like a tree close, it acts
-	// only while the tree lingers at that root generation: once re-admission moves the root on, the
-	// workspace there is the tree's next run's, whatever generation the issue itself keeps.
+	// Linger is the root generation whose linger the removal expires: it acted only while the tree
+	// lingered at that root generation.
 	Linger uint64 `json:"linger"`
-	// Tree is the tree whose linger queued the removal. An issue adopted into another tree since
-	// (workflow.Engine.Adopt) works there now, so the removal finishes without acting. A row queued
-	// by an earlier release has none, and is fenced by Linger against the issue's current tree.
+	// Tree is the tree whose linger queued the removal. A row queued by an earlier release has
+	// none.
 	Tree string `json:"tree,omitempty"`
 }
 
@@ -2004,7 +2006,7 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // queue. While the root's design gate is closed it neither wakes nor tells a released merger, which
 // could enqueue the pull request again against the gate, and it waits for the gate to open; a
 // merger whose session holds its role is told at once. The row ends undelivered when the issue has
-// left merging at Head (its phase is not merging, it is out of the workflow, its tree lingers, or
+// left merging at Head (its phase is not merging, it is out of the workflow, or
 // its pull request is not open at Head), and when the merger's claim is failed or retired. A merger
 // with no claim yet is no end: the row waits for it.
 type MergeQueueRemoval struct {

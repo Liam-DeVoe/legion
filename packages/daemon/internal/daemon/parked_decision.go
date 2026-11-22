@@ -103,7 +103,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 // the write that records the delivery's confirmation tells them — or, if the delivery was retired
 // first, left them KEPT for the next start or catch-up of each one's own tree to name.
 //
-// A row neither says reached no claim — an earlier generation, a phase left, a lingering tree, a
+// A row neither says reached no claim — an earlier generation, a phase left, an issue out of Legion's work, a
 // claim that never took the task — and hands what it claimed over (workflow.HandOverKept), so no
 // release leaves a decision unclaimed while the tree it is owed to has an architect to tell.
 //

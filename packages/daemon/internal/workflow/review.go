@@ -920,7 +920,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 //
 // A review moves the commit only when it is of the entry that stands. The reviewer's row holds the
 // task of an entry, which a new generation's clear empties until the next entry is raised
-// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review's footer names that
+// (record.Store.ClearGeneration, StartPromotedWorker), and the review's footer names that
 // entry (intake.PullRequestReview.LegionEntry), the number every task the reviewer is given in
 // reviewing ends with (reviewround.EntryLabel). The number is never reset and each entry raises it, so a
 // review of an earlier entry - submitted before a re-admission and applied after it, however

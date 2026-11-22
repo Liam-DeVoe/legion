@@ -280,8 +280,8 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // row waits on its backoff, and its next attempt reads the park.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
-// notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
-// the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
+// notice that backs off for ten minutes resumes the claim once. A claim of an issue out of
+// Legion's work is not woken (wakeableIssue): that pod is a stop's or a close's to end. An outbox
 // with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to
 // read a claim's state from.
 //
@@ -476,9 +476,9 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 }
 
 // dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
+// saved: the issue is done, or the retention a linger of the release before left it has ended, so
+// nothing will restore that bundle and nothing should. A stop keeps it, because its issue comes
+// back. A runner with no tree store does nothing, as takeOverRelease says.
 func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {

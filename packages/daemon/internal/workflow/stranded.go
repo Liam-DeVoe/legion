@@ -71,8 +71,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 }
 
 // Stranded is every claim of s's issues that nothing will wake, by issue and then role. A claim
-// is stranded when its issue's tree runs — its lifecycle stands open under the workflow, the root
-// does not linger and the root is not itself waiting in the line, the rule record.TreeRuns applies
+// is stranded when its issue's tree runs — the root is in Legion's work and is not itself
+// waiting in the line, the rule record.TreeRuns applies
 // — nothing will wake it, and it is suspended, failed or retired and one of:
 //
 //   - A worker of its issue's phase: the role phase.RoleFor gives the phase its worker works
@@ -129,8 +129,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // (StartFirstPhase, reviveArchitect); others come from elsewhere, an operator's retry or the
 // controller's fresh_session among them. One that its own exit retired gets no worker-died, and
 // nothing reports it, this report included.
-// A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
-// moved out by a person, always lingers first (leave) — whose members its re-admission starts
+// A tree that is not running is one whose root is out of Legion's work — closed, or moved out
+// by a person (leave) — whose claims its return to work starts
 // again, and a root that never ran, whose architect receives its first task only when the line
 // reaches it. A claim of a running tree whose issue waits for a slot is not stranded: its start is
 // already queued, held unclaimable until the issue's slot comes

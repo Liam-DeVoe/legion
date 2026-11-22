@@ -298,7 +298,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 // a pod was kept where nothing was kept.
 //
 // IdleHoldUnownedTreeNotLive, the fourth, is the one of the six whose pod can stand with nobody
-// in it: the issue or its tree root has left the workflow, or one of them lingers, and the close
+// in it: the issue itself has left the workflow, and the close
 // that stops that pod has not finished. The idle rule reports no such pod either — it decides
 // the issues that have a live claim (IdlePods) and this rule the issues that have none
 // (UnownedPods), so the two candidate sets are disjoint and no pod this rule reads is ever

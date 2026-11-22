@@ -459,7 +459,7 @@ func firstQueued(held record.RoleClaim) time.Time {
 // new session): a
 // controller woken for that claim would take `fresh_session`, which discards the session that
 // start resumes, and the mark the wake writes would leave a real failure later in the run waking
-// nobody. Every re-admission of a closed tree makes that shape, since the linger's end retires the
+// nobody. Every new run of a closed root makes that shape, since its close retires the
 // architect's claim and the promotion queues its start in the same pass that reads this arm. A
 // claim whose start has run against it and failed, or whose start has stood owed past the bound,
 // is the failure no further send cures, which R7's second arm names (the architect's reading of R7

@@ -72,7 +72,7 @@ const (
 	// reached a role of the pod.
 	ReleaseCauseOvertaken
 	// ReleaseCauseUnauthorized: the run the release was taken against has moved on, the issue has
-	// left the workflow, its tree lingers, or its cleanup is reserved. None of those is a
+	// left the workflow, or its cleanup is reserved. None of those is a
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
 	// ReleaseCausePaused: the project is paused at the release's save. The pause saves no
@@ -185,7 +185,7 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //   - a live claim in a turn, starting, or whose launch is not yet known — the states the idle
 //     rule refuses to release a pod in (workflow's idleStateReleasable);
 //   - a claim this release suspended that is no longer suspended as `released`: something
-//     resumed it or took its suspension over — an operator's resume, a close, a linger — which
+//     resumed it or took its suspension over — an operator's resume, a stop, a close — which
 //     leaves no wake of its own to read.
 //
 // A claim the release itself suspended and still holds is none of those, so the release's own

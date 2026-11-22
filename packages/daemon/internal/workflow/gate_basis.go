@@ -476,7 +476,7 @@ type RestingRoot struct {
 // ancestor now, standing or pending, on the root's own row or on the row a hand-over carried to a
 // child) and that is still in the workflow, by the predicate the sign-off's hold on the issues
 // beneath it reads of each of them (record.InWorkflow), in key order. A root that is done, on the
-// backlog, in icebox or triage, or lingering holds nothing. Its record is read by key, whatever
+// backlog, in icebox or triage holds nothing. Its record is read by key, whatever
 // project or tree it is in.
 func RestingRoots(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) ([]RestingRoot, error) {
 	gates, err := store.GatesRestingOn(ctx, tx, ancestor)

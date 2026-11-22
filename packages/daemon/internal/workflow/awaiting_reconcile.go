@@ -334,7 +334,7 @@ type awaitDecision struct {
 
 // decideAwait is the rule for whether a root waits on a person, checked cheapest first:
 //
-//  0. a root not at admitted, lingering, out of the workflow, or one that holds no admission
+//  0. a root not at admitted, out of Legion's work, or one that holds no admission
 //     slot — one the daemon has not started, or one that gave its slot back to wait on another
 //     issue (record.CanWaitOnPerson) — stays;
 //  1. one whose architect handed nothing back since it was last given work (DeclaredSeq) stays;
@@ -358,7 +358,7 @@ type awaitDecision struct {
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
 // its first slot holds none, so it starts no wait however its architect's hand-back stands —
-// a re-admitted root the old architect declared on again before the linger's suspend ran is
+// a root back from a stop whose architect declared again before the stop's suspend ran is
 // kept out by this rule, not by rule 1. The boot's catch-up of the roots this pass can move
 // calls the same predicate (the daemon's catchesUp).
 //
@@ -371,7 +371,7 @@ type awaitDecision struct {
 func decideAwait(v awaitView) awaitDecision {
 	root := v.Root
 	switch {
-	// Rule 0 is record.CanWaitOnPerson alone: it tests the phase, the linger and the workflow,
+	// Rule 0 is record.CanWaitOnPerson alone: it tests the phase and Legion's work,
 	// and through AtWork that the issue is a tree root whose design gate has never opened, so
 	// every standing a second case here could reject it rejects already. Only what to say of a
 	// rejection is decided here, and whether the daemon started the root is what divides the

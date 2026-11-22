@@ -321,7 +321,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		// No copy carries a catch-up's claims on now, so what it named is handed over rather than
 		// left to the row's deletion (spentKept): while the root has an architect to hear it, a
 		// fresh catch-up of that architect's launch claims and names it; while it has none
-		// (lingering, out of the workflow, waiting for its slot), nothing is written and the
+		// (out of Legion's work, waiting for its slot), nothing is written and the
 		// decisions wait KEPT for the root's next start or ready to name (CatchUpTheTreesOwed).
 		if notice.CatchUp != nil && notice.CatchUp.Kept != nil {
 			return r.spentKept(ctx, issue, reported.claims, key)

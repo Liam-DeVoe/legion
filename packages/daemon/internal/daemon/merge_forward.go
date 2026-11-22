@@ -25,10 +25,10 @@ import (
 // deliverHeld delivers a held message: a released role is woken, and the row waits until a session
 // holds the role.
 //
-// Each attempt first reads the issue, its pull request and whether its tree lingers in one
+// Each attempt first reads the issue and its pull request in one
 // transaction, and finishes the row undelivered, with one log line naming why, once the message is
 // no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt): the
-// record holds no such issue, the issue has left the workflow, its tree lingers, the record holds
+// record holds no such issue, the issue has left the workflow, the record holds
 // no pull request or one that is not open, it holds no merge forward or one of another head, or the
 // row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
 // the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for

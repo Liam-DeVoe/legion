@@ -42,7 +42,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
-// inside that turn, or an architect's own sign-off moving its tree into linger. Stopping the
+// inside that turn, or a person's move of its issue out of Legion's work. Stopping the
 // process at once would cut that call off before Oh My Pi writes its result, and a session resumed
 // from that transcript holds a report with no answer. So the suspension is held:
 //
@@ -50,8 +50,8 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     (TimerSuspend, suspendAtTimeout). The operator's suspension has one at the stop timeout from
 //     its arrival: an operator stopping the process — to drain the daemon, say — needs the stop
 //     bounded. The daemon's own suspension has none unless it names one
-//     (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's linger
-//     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
+//     (RequestSuspend.Deadline), and waits for the turn however long it takes: the issue's
+//     close as done ends the process otherwise. Asked again meanwhile, it is
 //     the same hold, under one rule: a request can only move the deadline earlier, and the
 //     operator's also takes the hold over, from then on the operator's. Until the deadline the
 //     agent keeps its process and its capability.
@@ -146,7 +146,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 
 // holdSuspendUntilReady retains a suspend that reaches a rule-resuming launch after the rule
 // changed the claim to launching. The old table ignored it, returning a conflict to an operator and
-// dropping a daemon's linger or leave row. The hold survives launch and is run as soon as the agent
+// dropping a daemon's leave row. The hold survives launch and is run as soon as the agent
 // says ready (ready), before the claim is published ready or takes a task. It answers
 // ErrSuspendHeld so the operator sees 202 and a daemon row retries across a restart, except to a
 // suspension that may not be held (RequestSuspend.NeverHold), which it refuses before it records
@@ -245,8 +245,8 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // source changes under it (Claim.SuspendedBy). A source takes the claim over only when it
 // outranks the one that holds it (suspensionRank): an operator's suspend of a claim the daemon
 // suspended, so the rule resumes it no more until the operator does, and a daemon's or an
-// operator's suspend of a claim whose idle pod was released, so the linger, park, close or
-// hand-over that asked for it owns the claim and no later wake acts on it. Anything else changes
+// operator's suspend of a claim whose idle pod was released, so the stop, close or operator's
+// suspend that asked for it owns the claim and no later wake acts on it. Anything else changes
 // nothing, and an operator's suspension is never taken over.
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
@@ -264,7 +264,7 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
 // claim's suspension is the weakest, because the release ended no phase and every wake may
-// resume it; the daemon's is stronger, since it is a linger, a park or a close; the operator's is
+// resume it; the daemon's is stronger, since it is a stop or a close; the operator's is
 // strongest and nothing takes it over. An exit's is the root's own and is left where it is.
 func suspensionRank(source SuspendSource) int {
 	switch source {
@@ -344,7 +344,7 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 		return RequestSuspend{}, fmt.Errorf("suspend %s for pause %d: %w", m.claim.Token, request.Pause, ErrPauseEnded)
 	}
 	// An operator's held suspension wins everywhere — launching, registered, ready while its
-	// stop retries, and working — until it completes. A later daemon linger/leave request must
+	// stop retries, and working — until it completes. A later daemon leave request must
 	// use that same source rather than changing a deliberate operator hold into a rule-resumable
 	// daemon suspension.
 	if m.held != nil && m.held.By == SuspendedByOperator && request.By != SuspendedByOperator {

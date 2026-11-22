@@ -42,7 +42,7 @@ func AcceptedStatus(status string) bool {
 // here moves every reader of the rule with it.
 //
 // The list is exported because one reader cannot call the predicate at all. The pod gate is
-// deliberately one statement of "still the workflow's to run" (pods.InWorkflowNotLingering),
+// deliberately one statement of "still the workflow's to run" (pods.Standing.InWorkflow),
 // and it takes the status rule as a parameter rather than restating it; a `select` cannot call
 // a Go predicate, so the store answer that must read that same rule over every issue of a
 // project at once — the candidate list of the release of a pod no claim owns
@@ -118,8 +118,8 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
-// will run — a root reopened inside its linger (admit's readmit) stands in admitted with no
-// role's phase until its architect reaches planning, and is running again from the reopen. It is
+// will run — a root a person handed back to Legion stands in admitted with no role's phase until
+// its architect reaches planning, and is running from then on. It is
 // the production check's "runs again" predicate (workflow's check.go) and the outbox's
 // (checkLookHolds): a look of an issue that runs again would resume the checking role and
 // relaunch its Sandbox under the run, so none starts.
@@ -130,9 +130,8 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 // refusals among them — and internal/workflow, where it used to live, is the one package
 // several of those may not read.
 //
-// The rule itself is pods.Standing.InWorkflow, which the pod gate reads with the issue's linger
-// (pods.InWorkflowNotLingering) and this reads without it: one statement, so a terminal phase
-// added to it moves admission, the linger, the production check and the release gate together.
+// The rule itself is pods.Standing.InWorkflow, which the pod gate reads too: one statement, so a
+// terminal phase added to it moves admission, the production check and the release gate together.
 func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
 }
@@ -228,8 +227,8 @@ func Accepted(issue Issue) bool {
 // mirror of Dispatch's issues or in its record of the ancestor; the daemon records it in its retro
 // or its merge (Accepted); or the daemon has queued its close (closeQueued). Where neither the
 // mirror nor the record knows the ancestor, nothing the daemon holds says that it is accepted. A
-// root a person moved to the backlog or to icebox stands at phase done while its tree lingers
-// (workflow's beginLinger), and R1 counts backlog and icebox as not accepted, so the phase alone
+// root a person moved to the backlog or to icebox keeps the phase it stood in (R20 of
+// dispatch://INFRA-3320), and R1 counts backlog and icebox as not accepted, so the phase alone
 // says nothing: a real close is the status Dispatch shows, or the close the daemon queued, which
 // the daemon's own close of a root (workflow's closeRoot, through writeClose) marks on the record
 // (PendingClose) in the transaction that queues the status write to Dispatch, so a reader inside a
@@ -354,7 +353,7 @@ const (
 	LineAnswered
 	// LineQueuedRoot is a root (Chains.IsRoot) a person handed to Legion whose first start has
 	// still to come: one that never ran, one a person handed back to Legion after it finished,
-	// and one handed over from another tree. Its promotion opens its lifecycle and starts its
+	// and one a hand-over of the release before made. Its promotion opens its lifecycle and starts its
 	// architect.
 	LineQueuedRoot
 	// LineFirstPhase is an issue standing at admitted, in Legion's work, whose first phase can
@@ -962,8 +961,7 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // queue again for the slot it had just been given.
 //
 // Whether the issue is in the workflow at all is InWorkflow's one statement, which this reads
-// rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
-// the slot rule either, and NeedsSlot asks the tree's own terms beside this.
+// rather than writing a second copy of, and NeedsSlot asks the tree's own terms beside this.
 func KeepsSlot(issue Issue) bool {
 	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
 }
@@ -1406,7 +1404,7 @@ func WaitingIssues(line []LineEntry) []Issue {
 }
 
 // QueuedRoot says whether issue, a root, is one a person handed to Legion that waits in the line
-// for its first start: one that never ran, a re-admitted one and a handed-over one, each standing
+// for its first start: one that never ran, one handed back after it finished and one a hand-over of the release before made, each standing
 // in todo, not waiting on a person (whose answer resumes it where it stands) and with a record
 // that does not already say this generation runs (ran). Whether the issue is a root is the
 // chain's question (Chains.IsRoot), which the caller holding a pass's facts asks with it

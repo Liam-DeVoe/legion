@@ -89,9 +89,8 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     decision to relay (RelayNoPerson).
 //   - What is kept is kept under issue, the issue it was decided on, never under a root: the tree
 //     that owes the person an answer is the tree that issue stands in whenever a start or a
-//     catch-up names it, so a child handed over into a tree of its own, a parked child a person
-//     orphans and a queued root adopted into a live tree take what was decided on them with them,
-//     with nothing to move. It is kept until the start or catch-up that named it reached an
+//     catch-up names it, so an issue whose Dispatch parent changed takes what was decided on it
+//     with it, and nothing has to move. It is kept until the start or catch-up that named it reached an
 //     architect of that tree (Store.ForgetKeptDecisions, or the confirmation of the delivery
 //     holding it); one that reached none hands it over to a fresh catch-up
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to

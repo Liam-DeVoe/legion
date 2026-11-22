@@ -954,7 +954,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	// happened, and the work is not new to the record. The fact that made it so is the one that
 	// raised the entry, and that fact marked the issue where it raised it: a transition's phase
 	// write (Engine.transition) and its start, which comes through here as news, and a
-	// promotion's (admit's promoteHolds and readmit) with its start of a mid-phase member. It is
+	// promotion's (admit's promoteHolds) with its start of a mid-phase member. It is
 	// the case of the pod wake (wake.go's wakeRow), whose start brings a woken role back to work
 	// it already holds and is enqueued directly, so it marks nothing either. The reason is what
 	// the mark is for: the quiet time measures a tree that has stopped, and these sends are the

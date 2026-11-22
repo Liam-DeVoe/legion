@@ -134,15 +134,19 @@ const RoleTopicPrefix = "notifications.role."
 // to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
 // every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
 // triage handed to Legion (admission), a root that keeps its admission slot while its architect
-// waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
-// the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
-// releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
+// waits on a person (`awaiting-person`, workflow's enterAwaiting), a root waiting on a person that
+// admission took out of Legion's work because its label or a foreign Dispatch claim makes a resume
+// unsafe and nothing would ever start it (`unslotted`, admit's releaseUnslotted), a person's
+// decision on a tree Legion is not running (`parked-decision`, the
 // outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
 // cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
 // ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
 // tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
 // stall), a root whose own architect is not taking the work the daemon states it is owed
-// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), and
+// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), the
+// first refusal in a daemon run of the daemon's own token by Dispatch's status scope or its check
+// of a publication of role holders (`status-scope`, the daemon's outbox, which no architect is
+// told, since no architect can give the daemon a token), and
 // the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,

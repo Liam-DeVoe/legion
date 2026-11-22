@@ -158,27 +158,20 @@ type Issue struct {
 	Hold            *Hold
 	LastDispatchSeq int64
 	// HandedOver is whether the issue carried LegionLabel when Dispatch last showed it: what hands
-	// a root, or an orphan admitted as one, to Legion. A child running under its tree needs none.
+	// a root to Legion. An issue under a parent in Legion's work needs none (R19 of dispatch://INFRA-3320).
 	HandedOver bool
 	// TakenBack is whether the issue's run has stood in a phase of its own — one that carries a run
-	// (CarriesRun's rule: neither phase.Admitted nor phase.Done) — as part of the tree it now roots or
-	// belongs to. It is a fact about the run, not about the issue's history. Promotion reads it
-	// because the spec exempts a tree Legion takes back after it finished and lingered: both that the
-	// issue ran and that the tree coming back is its own, since re-admission leaves such a root at
-	// phase.Admitted carrying no run, the same shape as a waiting root that only left the line and
-	// returned, or a child handed over from a finished tree as a root of its own, both of which are
-	// checked (blockers.Exempt).
+	// (CarriesRun's rule: neither phase.Admitted nor phase.Done). It is a fact about the run, not
+	// about the issue's history (decision 19 of dispatch://INFRA-4730, R17 of dispatch://INFRA-3320):
+	// promotion reads it so that a run that came back starts again whatever its links say, though
+	// it waits at admitted (blockers.Exempt).
 	//
 	// The workflow's transition writes the mark as the issue moves into such a phase
-	// (workflow.Engine.transition), the only way an issue first leaves phase.Admitted for one. It
-	// lasts through that phase's end and its root's leave into a linger, and re-admission keeps it
-	// when the root's own tree comes back, the work that earned it. Every other path that opens a run
-	// starts the run clean: a child's re-entry into its tree records its new generation without it
-	// (workflow.Engine.enterChild), and re-admission clears it when another tree's work reaches a root
-	// of its own without its run (admit.Admission.readmit), what that child ran being its old tree's.
-	// An orphan that carries its run keeps the mark with it, the run being its new tree's from then
-	// on. So no issue is exempt from the blocker check unless the run it is exempt for is the run it
-	// arrived with. Nothing else writes it.
+	// (workflow.Engine.transition), the only way an issue first leaves phase.Admitted for one. A
+	// return to work keeps it, since it resumes the same run at a new entry, and a new run clears it
+	// (workflow.Engine.NewRun). The first boot's conversion sets it on a root a hand-over of the
+	// release before carried in with its run, and no change of parent writes it. So no issue is
+	// exempt from the blocker check unless the run it is exempt for is the run it stands in.
 	TakenBack bool
 	// DispatchStatus is the status Dispatch showed at the newest event or boot listing applied to the
 	// record (LastDispatchSeq's), whatever the daemon has queued since: every event carries the whole
@@ -186,9 +179,9 @@ type Issue struct {
 	DispatchStatus string
 	// Repo is the GitHub repository (owner/name) the issue targets, and DefaultBranch that
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
-	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
-	// orphan's admission). Neither changes after that: a carried child, a re-admission and a
-	// hand-over keep them, and a later edit of the issue's repository in Dispatch is not applied.
+	// the daemon first recorded the issue (a root's admission, or the recording of an issue under a
+	// parent in Legion's work). Neither changes after that: a return to work, a new run and a change
+	// of parent keep them, and a later edit of the issue's repository in Dispatch is not applied.
 	// This release makes one exception, once: its rename pass writes a configured rename's new
 	// name, in GitHub's spelling, over its old one on Repo and GitHubRepo once GitHub shows the
 	// transfer, while no pod of the issue is live, under tmux while no workspace directory of it
@@ -210,35 +203,25 @@ type Issue struct {
 	// (heardRepositories), and every GitHub call the daemon makes for the record addresses the
 	// repository GitHub serves it under now (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
-	// Ancestry is the keys of a root's Dispatch parent chain, from its parent upward to the top,
-	// stopping only at a repeated key or back at the root, as the newest Dispatch observation
-	// applied to the record was prepared with (intake's DispatchIssue.Ancestry), or as the
-	// preparation of an event of an issue on that chain read it again (intake's
-	// DispatchIssue.Reread): kept for a labelled todo root under a parent unrecorded or recorded as
-	// a root, such as a child of a live tree that tree's architect has not released. Such a root
-	// is held under that unreleased child (the ancestry hold) and waits for no slot while any live
-	// root is on its chain (Waiting), exactly while that root's release would reach it; it is not
-	// the hold on Dispatch blocked-by links (blockers.WaitsOn). Empty for every other record, for a
-	// root that ran as a tree of its own (workflow's RanAsRoot), which no release adopts, and
-	// cleared when adoption takes the record into a tree.
+	// Ancestry is the keys of a root's Dispatch parent chain as the release before wrote them for
+	// its ancestry hold. This release writes it no more and decides nothing on it (R15 and R22 of
+	// dispatch://INFRA-3320): every chain is read from the copy of Dispatch's issues (Chains), and
+	// the release before writes the column again for each listed todo issue at its own boot after a
+	// rollback.
 	Ancestry []string
-	// HandedOverFrom is the key of the tree the issue left when it became a root of its own, while
-	// the tree of its own has still to be opened: re-admission (admit.Admission.readmit) writes it
-	// whenever it moves a member of another tree into a tree of its own, a child its finished tree
-	// handed over (carrying its run or not) or an orphan a person admitted, and the promotion that
-	// opens that tree clears it (admit's promoteHolds), because the run the record carries is this
-	// tree's own from then on and the waiting line reads the mark as a tree still to be opened
-	// (QueuedRoot, ran). Such a root stays its own tree whether or not the mark is still set
-	// (workflow's RanAsRoot, which reads the opened lifecycle too): no admission sweep or release
-	// of children adopts it, into the tree it left or any other, and no ancestry hold holds it.
+	// HandedOverFrom is the key of the tree a hand-over of the release before moved the issue out
+	// of, while the tree of its own had still to be opened: the release before decides on it, and
+	// this release reads it for no decision (decision 15 of dispatch://INFRA-4730). This release
+	// writes no new value, since it hands nothing over, and clears it at the promotion that opens
+	// an issue's run (admit's promoteHolds), as the release before does, so a promoted root never
+	// reads to that release as a tree still to be opened. The rollback step writes it for a root
+	// the first boot's conversion made of a hand-over that had landed (docs/kubernetes.md).
 	// Empty for every other record.
 	HandedOverFrom string
-	// ToldParent is the Dispatch parent the issue was last told it stays its own tree under: a root
-	// that ran as a tree of its own, which no release of children and no admission sweep adopts
-	// (workflow's RanAsRoot), that a person has made a child of a live tree. The telling is one
-	// message on the issue and one notice to that tree's architect, sent once per parent value
-	// (workflow's tellReparented), so every later event under the same parent repeats nothing while
-	// a move under another live tree is told anew. Empty for every other record and for one never
+	// ToldParent is the Dispatch parent the issue in Legion's work was last told of in R18's notice
+	// of a change of parent (dispatch://INFRA-3320; workflow's tellParentChange): the once-mark, so a
+	// listing or an event that repeats the same parent tells nobody again, while a move to another
+	// parent, or back to an earlier one, is told anew. Empty for every other record and for one never
 	// told.
 	ToldParent string
 	// Awaiting is what a root in phase awaiting_person waits on, nil in every other phase: the two
@@ -293,8 +276,8 @@ type Issue struct {
 	// ViewOf is the ancestor whose requirement blocks the issue's spec is a view on (the view
 	// fact of dispatch://INFRA-3320 R4): the nearest reviewed ancestor that marks requirement
 	// blocks, written at each registration of the issue's spec step, "" where there is none. It
-	// belongs to the issue whose documents were read, so a step a hand-over carries to a child
-	// carries none.
+	// belongs to the issue whose documents were read, so a step a hand-over of the release before
+	// carried to a child carries none.
 	ViewOf string
 	// ChildrenWait is the phase start a parent held when it entered awaiting_children, nil in every
 	// other phase: the two change together, as Awaiting and awaiting_person do.
@@ -760,9 +743,9 @@ type PhaseRow struct {
 	// no entry, or another one, decides its round and leaves the commit where it stands, so the
 	// next round reads more: from an older commit, or the whole change. A new generation clears it
 	// (ClearGeneration), and the clear empties the entry's task until the next start raises an
-	// entry, so the first review of a re-admitted root, of a child run again and of an adopted
-	// member reads the whole change, and a review of an entry before the clear moves nothing,
-	// however late it is applied; a carried hand-over keeps its rows, and the commit with them.
+	// entry, so the first review of a new run reads the whole change, and a review of an entry
+	// before the clear moves nothing, however late it is applied; a root a hand-over of the release
+	// before carried in keeps its rows, and the commit with them.
 	// Empty until such a review, and on every row the release before the column wrote.
 	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
@@ -1507,8 +1490,8 @@ func (m MergeState) Mergeable() bool {
 // ProductionCheck is an issue's production check: the work after the close in which the role the
 // project's `production_check` named at the open, which Role records, drives the merged change in
 // production and reports what it saw. There is one record
-// per issue, opened at the merge; a later merge of the same issue — a rerun's, after a re-entry or
-// a reopen inside the linger closed the first — replaces it (workflow.openCheck) and counts its
+// per issue, opened at the merge; a later merge of the same issue — a new run's, after a reopen of
+// the issue the first merge closed — replaces it (workflow.openCheck) and counts its
 // looks from one again, so OpenedAt is the check instance's identity (ID): what tells the two
 // checks' looks apart in the events their rows and reports are recorded under. It copies the
 // repository, the pull request's number and the merge commit, and is fenced on itself (the issue,
@@ -1704,8 +1687,8 @@ type DesignGate struct {
 	// reads exactly like one that never opened. Under the children-first rule a root stays at
 	// admitted while its children run, which is the state the later rule must tell from a root
 	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because ClearTreeGeneration deletes the gate when a root is re-admitted, and a re-admitted
-	// root's architect writes its spec again: the mark belongs to the generation whose approval it
+	// because ClearGeneration deletes the gate when an issue opens a new run, and the architect of
+	// a new run writes its spec again: the mark belongs to the generation whose approval it
 	// records.
 	EverOpened bool
 	// Basis is the ancestor's approval the step stands open on (OnBasis), or, while its Pending is
@@ -2308,11 +2291,11 @@ type Store interface {
 	// it, and reports whether this call is the telling. That architect is the root's own for a
 	// root. For a child it is the architect above it, since the child's own starts only with that
 	// first phase, unless a person set the child back to todo while it ran or was held: that
-	// re-entry starts and stops nothing (workflow's ReenterChild), so a child's own architect that
+	// re-entry starts and stops nothing (workflow's backInWork), so a child's own architect that
 	// held its role still holds it and is the one told. The wait itself is never stored, so that a
 	// stale mirror row costs one pass; the telling is, so that the pass every fact, tick, hold
-	// release and boot runs does not tell it again. A re-admission opens a new generation of the
-	// tree and so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
+	// release and boot runs does not tell it again. A new run of the issue opens a new generation
+	// and so tells it anew; a change of its Dispatch parent neither tells it again nor keeps it from being told.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
 	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
 	// for the run its generation names of its tree, and answers, at each index of stalls,
