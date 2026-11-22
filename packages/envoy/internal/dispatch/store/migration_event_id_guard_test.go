@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
@@ -8,8 +9,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/eventidtest"
 )
 
-// migrationEventIDOffences reads a whole migration with PostgreSQL's parser. It names both the
-// migration and the parsed statement that calls a sequence function or runs unreadable SQL.
+// migrationEventIDOffences reads a whole migration with PostgreSQL's parser. Each offence names the
+// migration and the line of the call, or of the statement that holds it (a routine's body, a
+// constant EXECUTE), with that statement's text. A sequence call that draws no event id
+// (eventidtest.Finding.Safe: store.LatestEventID's pg_catalog.currval read, a nextval or setval of
+// one plain literal naming another sequence) is no offence, as it is none in the Go guard.
 func migrationEventIDOffences(path, sql string) []string {
 	analysis, err := eventidtest.Analyze(sql)
 	if err != nil {
@@ -17,15 +21,17 @@ func migrationEventIDOffences(path, sql string) []string {
 	}
 	var offences []string
 	for _, finding := range analysis.Findings {
-		statement := finding.Statement
-		if statement == "" {
-			statement = sql
-		}
+		at := fmt.Sprintf("%s:%d: ", path, 1+strings.Count(sql[:min(max(finding.Location, 0), len(sql))], "\n"))
 		switch finding.Kind {
 		case eventidtest.SequenceCall:
-			offences = append(offences, path+": calls "+finding.Name+" outside the broker's event insert path: "+statement)
+			if finding.Safe {
+				continue
+			}
+			offences = append(offences, at+"calls "+finding.Name+" outside the broker's event insert path: "+finding.Statement)
+		case eventidtest.SequenceAlter:
+			offences = append(offences, at+finding.Name+" of the events id sequence or default: "+finding.Statement)
 		case eventidtest.DynamicSQL:
-			offences = append(offences, path+": runs SQL a static guard cannot read ("+finding.Name+"): "+statement)
+			offences = append(offences, at+"runs SQL a static guard cannot read ("+finding.Name+"): "+finding.Statement)
 		}
 	}
 	return offences
@@ -56,10 +62,27 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"PL function", `create function f() returns void language plpgsql as $$ begin execute 'select nextval(''events_id_seq'')'; end $$`, 1},
 			{"prepared execute", `prepare read_events as select 1; execute read_events`, 0},
 			{"trigger execute", `create trigger events_before before insert on events for each row execute function f()`, 0},
+			{"the latest event id read", `select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))`, 0},
+			{"another sequence by literal", `select nextval('other_seq'); select setval('other_seq', 1)`, 0},
+			{"another table's sequence default", `create table others (id bigint primary key default nextval('others_id_seq'))`, 0},
+			{"a bare currval", `select currval('events_id_seq')`, 1},
+			{"a restart of the sequence", `alter sequence events_id_seq restart with 1;`, 1},
+			{"a negative increment", `alter sequence public.events_id_seq increment by -1;`, 1},
+			{"ts_stat of a draw", `select ts_stat('select nextval(''events_id_seq'')::text::tsvector');`, 1},
+			{"a static return query", `create function f() returns setof integer language plpgsql as $$ begin return query select 1; end $$`, 0},
+			{"a static open", `create function f() returns void language plpgsql as $$ declare c refcursor; begin open c for select 1; end $$`, 0},
 		} {
 			if got := migrationEventIDOffences("m.sql", row.sql); len(got) != row.want {
 				t.Errorf("%s: %d offences %q, want %d", row.name, len(got), got, row.want)
 			}
+		}
+	})
+
+	t.Run("an offence names the migration's line and its own statement", func(t *testing.T) {
+		const sql = "-- a header\nselect 1;\n\ncreate function f() returns void language plpgsql as $$\nbegin\n  perform nextval('events_id_seq');\nend $$;\n"
+		got := migrationEventIDOffences("m.sql", sql)
+		if len(got) != 1 || !strings.HasPrefix(got[0], "m.sql:4: calls nextval") || strings.Contains(got[0], "event-id guard") {
+			t.Fatalf("offences = %q, want one at m.sql:4 naming the create function statement, with none of the guard's own wrapping", got)
 		}
 	})
 

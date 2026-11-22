@@ -3,7 +3,9 @@ package eventidtest
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 
 	pgparser "github.com/wasilibs/go-pgquery/parser"
 )
@@ -13,6 +15,7 @@ type FindingKind string
 
 const (
 	SequenceCall              FindingKind = "sequence call"
+	SequenceAlter             FindingKind = "sequence alter"
 	DynamicSQL                FindingKind = "dynamic SQL"
 	EventInsertWithoutColumns FindingKind = "event insert without columns"
 	EventInsertExplicitID     FindingKind = "event insert explicit id"
@@ -20,12 +23,18 @@ const (
 )
 
 // Finding is one unsafe SQL construct. Name identifies a called function where there is one, and
-// Statement is the parsed statement that contains it.
+// Statement is the top-level statement of the analysed text that contains it, with Location its
+// byte offset in that text: a sequence function's own call where the call is in that statement's
+// text, else the statement's start, so a finding inside a routine body, a constant EXECUTE or a
+// ts_stat query names the statement that holds it. Safe is a sequence call that draws no event id:
+// the one pg_catalog.currval read of the latest event id (store.LatestEventID), or a nextval or
+// setval of one plain string literal naming another sequence.
 type Finding struct {
 	Kind      FindingKind
 	Name      string
 	Safe      bool
 	Statement string
+	Location  int
 }
 
 // Analysis is the parser's account of SQL relevant to the event-id guards.
@@ -56,7 +65,7 @@ func Analyze(sql string) (analysis Analysis, err error) {
 	}
 	walker := sqlWalker{seen: map[Finding]bool{}}
 	for _, statement := range statements {
-		walker.statement = statementText(sql, statement)
+		walker.statement, walker.location = statementText(sql, statement)
 		walker.walkSQLValue(statement.stmt)
 	}
 	return Analysis{
@@ -91,7 +100,9 @@ func parseStatements(sql string) ([]parsedStatement, error) {
 	return statements, nil
 }
 
-func statementText(sql string, statement parsedStatement) string {
+// statementText is a parsed statement's text, trimmed, and the byte offset in sql where that
+// trimmed text starts.
+func statementText(sql string, statement parsedStatement) (string, int) {
 	start := statement.location
 	if start < 0 || start >= len(sql) {
 		start = 0
@@ -100,11 +111,14 @@ func statementText(sql string, statement parsedStatement) string {
 	if statement.length > 0 && start+statement.length <= len(sql) {
 		end = start + statement.length
 	}
-	return strings.TrimSpace(sql[start:end])
+	text := sql[start:end]
+	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	return strings.TrimSpace(trimmed), start + len(text) - len(trimmed)
 }
 
 type sqlWalker struct {
 	statement              string
+	location               int
 	findings               []Finding
 	seen                   map[Finding]bool
 	eventInserts           int
@@ -112,7 +126,7 @@ type sqlWalker struct {
 }
 
 func (w *sqlWalker) add(kind FindingKind, name string) {
-	w.addFinding(Finding{Kind: kind, Name: name, Statement: w.statement})
+	w.addFinding(Finding{Kind: kind, Name: name, Statement: w.statement, Location: w.location})
 }
 
 func (w *sqlWalker) addFinding(finding Finding) {
@@ -122,8 +136,13 @@ func (w *sqlWalker) addFinding(finding Finding) {
 	}
 }
 
+// addAnalysis takes in the findings of SQL nested in the statement being walked (a routine body,
+// a constant EXECUTE, a ts_stat query, a PL/pgSQL expression). Their statement and location are
+// the nested text's, which a reader of the guard's message cannot find, and for an expression
+// they carry the guard's own wrapping, so each is named by the statement that holds it.
 func (w *sqlWalker) addAnalysis(analysis Analysis) {
 	for _, finding := range analysis.Findings {
+		finding.Statement, finding.Location = w.statement, w.location
 		w.addFinding(finding)
 	}
 	w.eventInserts += analysis.EventInserts
@@ -149,6 +168,10 @@ func (w *sqlWalker) walkSQLValue(raw json.RawMessage) {
 				w.readForeignTable(body)
 			case "AlterTableStmt":
 				w.readAlterTable(body)
+			case "AlterSeqStmt":
+				w.readAlterSequence(body, "sequence")
+			case "RenameStmt", "AlterObjectSchemaStmt":
+				w.readAlterSequence(body, "relation")
 			case "DoStmt":
 				w.readRoutine(body, true)
 			case "CreateFunctionStmt", "CreateProcedureStmt":
@@ -175,13 +198,59 @@ func (w *sqlWalker) readFunction(raw json.RawMessage) {
 	if !ok {
 		return
 	}
+	location := w.location
+	if at := rawInt(fields["location"]); at > location {
+		location = at
+	}
 	switch name {
 	case "nextval", "setval":
-		w.add(SequenceCall, name)
+		w.addFinding(Finding{Kind: SequenceCall, Name: name, Safe: otherSequenceLiteral(fields, name), Statement: w.statement, Location: location})
 	case "currval":
-		w.addFinding(Finding{Kind: SequenceCall, Name: name, Safe: safeLatestEventID(fields), Statement: w.statement})
+		w.addFinding(Finding{Kind: SequenceCall, Name: name, Safe: safeLatestEventID(fields), Statement: w.statement, Location: location})
 	case "query_to_xml", "query_to_xmlschema", "query_to_xml_and_xmlschema", "cursor_to_xml", "cursor_to_xmlschema":
 		w.add(DynamicSQL, name)
+	case "ts_stat":
+		// ts_stat(sqlquery text [, weights text]) runs its first argument.
+		w.readQueryArgument(fields, 0, name)
+	case "ts_rewrite":
+		// ts_rewrite(query, select) runs its second argument; ts_rewrite(query, target,
+		// substitute) takes three tsqueries and runs nothing.
+		if args, _ := rawList(fields["args"]); len(args) != 3 {
+			w.readQueryArgument(fields, 1, name)
+		}
+	}
+}
+
+// readQueryArgument reads the argument at index of a function that runs it as SQL text, as a
+// constant EXECUTE is read: a string constant is parsed and walked, and anything else is SQL the
+// guard cannot read.
+func (w *sqlWalker) readQueryArgument(fields map[string]json.RawMessage, index int, name string) {
+	args, _ := rawList(fields["args"])
+	if index >= len(args) {
+		w.add(DynamicSQL, name)
+		return
+	}
+	query, ok := plainStringConstant(args[index])
+	if !ok {
+		w.add(DynamicSQL, name)
+		return
+	}
+	analysis, err := Analyze(query)
+	if err != nil {
+		w.add(DynamicSQL, "unreadable "+name)
+		return
+	}
+	w.addAnalysis(analysis)
+}
+
+// readAlterSequence reports an ALTER SEQUENCE, a rename or a move to another schema of
+// events_id_seq, whose relation is the field named field: a restart or a negative increment hands
+// out ids at or below a proven horizon, as a setval would, and a renamed or moved sequence is one
+// the guards no longer read by name.
+func (w *sqlWalker) readAlterSequence(raw json.RawMessage, field string) {
+	fields, ok := objectFields(raw)
+	if ok && eventIDSequenceRelation(fields[field]) {
+		w.add(SequenceAlter, "alter sequence")
 	}
 }
 
@@ -248,6 +317,10 @@ func (w *sqlWalker) readAlterTable(raw json.RawMessage) {
 	if !ok {
 		return
 	}
+	// ALTER SEQUENCE ... OWNER TO, and ALTER TABLE run on a sequence, parse as an ALTER TABLE.
+	if eventIDSequenceRelation(fields["relation"]) {
+		w.add(SequenceAlter, "alter sequence")
+	}
 	commands, ok := rawList(fields["cmds"])
 	if !ok {
 		return
@@ -269,6 +342,12 @@ func (w *sqlWalker) readAlterTable(raw json.RawMessage) {
 		case "AT_AttachPartition":
 			if eventRelation(fields["relation"]) {
 				w.add(DerivedEventTable, "")
+			}
+		case "AT_ColumnDefault", "AT_AddIdentity", "AT_SetIdentity", "AT_DropIdentity":
+			// A new default or identity for events.id draws its ids from something other
+			// than events_id_seq's one counter.
+			if eventRelation(fields["relation"]) && strings.EqualFold(rawString(commandFields["name"]), "id") {
+				w.add(SequenceAlter, "alter events.id default")
 			}
 		}
 	}
@@ -369,13 +448,19 @@ func (w *sqlWalker) readDynamicExecution(raw json.RawMessage) {
 	}
 }
 
+// readDynamicField reads the field named name of a PL/pgSQL statement as the SQL text it runs. A
+// RETURN QUERY or an OPEN of a static query carries no dynquery: its query is an ordinary
+// expression, which the walk of the statement's other fields reads, so a field that is absent is
+// no dynamic SQL.
 func (w *sqlWalker) readDynamicField(raw json.RawMessage, name string) {
 	fields, ok := objectFields(raw)
 	if !ok {
 		w.add(DynamicSQL, "unreadable execute")
 		return
 	}
-	w.readDynamicExpression(fields[name])
+	if value, present := fields[name]; present && string(value) != "null" {
+		w.readDynamicExpression(value)
+	}
 	for field, value := range fields {
 		if field != name {
 			w.walkPLValue(value)
@@ -542,6 +627,9 @@ func safeLatestEventID(fields map[string]json.RawMessage) bool {
 	return ok && len(args) == 2 && stringConstant(args[0]) == "events" && stringConstant(args[1]) == "id"
 }
 
+// functionIs reports whether a function name's parts are exactly want. The parser has already
+// folded each unquoted part to lower case, so a quoted part in another case ("PG_CATALOG") names
+// another schema and is not matched.
 func functionIs(raw json.RawMessage, want ...string) bool {
 	parts, ok := rawList(raw)
 	if !ok || len(parts) != len(want) {
@@ -553,27 +641,90 @@ func functionIs(raw json.RawMessage, want ...string) bool {
 			return false
 		}
 		fields, ok := objectFields(body)
-		if !ok || !strings.EqualFold(rawString(fields["sval"]), want[index]) {
+		if !ok || rawString(fields["sval"]) != want[index] {
 			return false
 		}
 	}
 	return true
 }
 
-func stringConstant(raw json.RawMessage) string {
+// sequenceNameLiteral is a regclass literal naming one relation: an optional schema and a name,
+// each a plain or a double-quoted identifier, holding nothing a sequence's name does not need. A
+// literal of digits alone is an OID, and a backslash, a quote or any other character can spell
+// events_id_seq under standard_conforming_strings off or name it some other way, so none of them
+// is matched.
+var sequenceNameLiteral = regexp.MustCompile(`^\s*(?:("[\w.$\s\x{80}-\x{10FFFF}]*"|[a-zA-Z_\x{80}-\x{10FFFF}][\w$\x{80}-\x{10FFFF}]*)\s*\.\s*)?("[\w.$\s\x{80}-\x{10FFFF}]*"|[a-zA-Z_\x{80}-\x{10FFFF}][\w$\x{80}-\x{10FFFF}]*)\s*$`)
+
+// otherSequenceLiteral reports a call of Postgres's own nextval or setval, bare or as
+// pg_catalog's, whose sequence is one plain string literal naming a sequence other than
+// events_id_seq: such a call draws no event id. A sequence named any other way (a cast, an
+// expression, a parameter, an OID) is not one the guard can read, and a function of that name in
+// another schema can draw in its body, so neither is safe.
+func otherSequenceLiteral(fields map[string]json.RawMessage, name string) bool {
+	if !functionIs(fields["funcname"], name) && !functionIs(fields["funcname"], "pg_catalog", name) {
+		return false
+	}
+	args, ok := rawList(fields["args"])
+	if !ok || len(args) == 0 {
+		return false
+	}
+	literal, ok := plainStringConstant(args[0])
+	if !ok {
+		return false
+	}
+	parts := sequenceNameLiteral.FindStringSubmatch(literal)
+	if parts == nil {
+		return false
+	}
+	sequence := parts[2]
+	if strings.HasPrefix(sequence, `"`) {
+		sequence = strings.Trim(sequence, `"`)
+	} else {
+		sequence = asciiLower(sequence)
+	}
+	return sequence != "events_id_seq"
+}
+
+// asciiLower folds A to Z alone, as Postgres folds an unquoted identifier in a multibyte encoding.
+func asciiLower(identifier string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, identifier)
+}
+
+// plainStringConstant is a string constant with no cast around it.
+func plainStringConstant(raw json.RawMessage) (string, bool) {
 	body, ok := namedNode(raw, "A_Const")
 	if !ok {
-		return ""
+		return "", false
 	}
 	fields, ok := objectFields(body)
 	if !ok {
-		return ""
+		return "", false
 	}
 	value, ok := objectFields(fields["sval"])
 	if !ok {
-		return ""
+		return "", false
 	}
-	return rawString(value["sval"])
+	return rawString(value["sval"]), true
+}
+
+func stringConstant(raw json.RawMessage) string {
+	value, _ := plainStringConstant(raw)
+	return value
+}
+
+// eventIDSequenceRelation reports a relation named events_id_seq, in any schema and either case.
+func eventIDSequenceRelation(raw json.RawMessage) bool {
+	body, ok := namedNode(raw, "RangeVar")
+	if !ok {
+		body = raw
+	}
+	fields, ok := objectFields(body)
+	return ok && strings.EqualFold(rawString(fields["relname"]), "events_id_seq")
 }
 
 func eventRelation(raw json.RawMessage) bool {
