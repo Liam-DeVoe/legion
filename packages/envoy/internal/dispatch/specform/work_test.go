@@ -171,7 +171,9 @@ func workRows(race bool) []workRow {
 // sentences that cost little else: many findings, each beside ten sentences that hold none. Its n
 // was found in the same way, on the machine of 288 cores at a load average of about 1,000: that
 // walk, written into holding, first passed the bound at 1,024 (33.5; 24.8 at 512), so its n is
-// 1,448, where the smaller window lasts about 10 s unbroken, the longest of the table.
+// 1,448, where the smaller window lasts about 10 s unbroken, the longest of the table. At 1,448
+// that walk failed the row in 5 of 5 runs, 37.0 times or more, and the row grows 16.4 times
+// unbroken.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
