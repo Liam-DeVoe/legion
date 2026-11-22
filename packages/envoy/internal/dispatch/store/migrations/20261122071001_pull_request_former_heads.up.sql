@@ -52,8 +52,12 @@
 --                              result recorded before this release. verified is false on a
 --                              candidate, a commit of the results of the pull request's issue
 --                              (below), which no read of the pull request's commits has confirmed
---                              yet: the settler computes no state there until one does. No foreign
---                              key, and only the settler writes it.
+--                              yet: the settler computes no state there until one does.
+--                              incarnation is drawn from pull_request_former_heads_order at the
+--                              row's insert and again at each update of it (a trigger of its own,
+--                              pull_request_former_heads_incarnation), so a row replaced or changed
+--                              since a read of it is told apart from the row that read saw. No
+--                              foreign key, and only the settler writes it.
 --   pull_request_former_heads_moves
 --                              the writers' record: one row for each write of pull_request_heads
 --                              that can move a pull request's history, with its place in
@@ -80,12 +84,26 @@
 --   pull_request_former_heads_reads
 --                              one row per pull request whose candidates a settle is reading
 --                              GitHub about now, by its identity, which is the same under every
---                              issue it moves to and every name it is stored under, and until when
---                              the claim holds. The settle that holds it makes the one read; a
---                              settle of any other issue leaves the candidates to it
---                              (api/check_states.go, verifyFormerHeads). The settle deletes the row
---                              once it wrote the answer; one its process left on stopping is taken
---                              over once its time has passed.
+--                              issue it moves to and every name it is stored under, with until
+--                              when the claim holds and its token, drawn from
+--                              pull_request_former_heads_order by the claim that took it. The
+--                              settle that holds it makes the one read; a settle of any other
+--                              issue leaves the candidates to it (api/check_states.go,
+--                              verifyFormerHeads). The answer gives the row back by its token; one
+--                              a stopped process left is taken over, with a new token, once its
+--                              time has passed.
+--
+-- A settle applies GitHub's answer about a pull request's candidates through one operation,
+-- pull_request_former_heads_answer, and through no other path. The claim
+-- (pull_request_former_heads_claim) answers what the read is about: the claim's token, the pull
+-- request's generation, a snapshot of its open rows (pull_request_former_heads_snapshot: each row's
+-- name, number, head and base branch), and each candidate with its incarnation. The answer brings
+-- all of them back with each member and each commit shown outside, and, under the pull request's
+-- lock, applies only where the claim with that token is still live, the generation and the
+-- snapshot are still the pull request's, and each candidate still has the incarnation the read saw;
+-- a positive answer marks it verified, a negative one deletes it. Any other answer, about a claim
+-- that ran out or was taken over, about a lifecycle that ended, about heads or a base branch since
+-- moved, or about a candidate since replaced, applies nothing, and its candidates are read again.
 --
 -- pull_request_former_heads_keep() records each insert of an open row, each update that moves a
 -- row's key, head or state while it is or becomes open, and each delete, by an insert, an update
@@ -230,8 +248,19 @@ create table pull_request_former_heads (
     left_at timestamptz not null default now(),
     verified boolean not null default true,
     since bigint default nextval('pull_request_former_heads_order'),
+    incarnation bigint not null default nextval('pull_request_former_heads_order'),
     primary key (pull, head_sha)
 );
+
+-- A row of pull_request_former_heads changed in any way is a new incarnation of it (above), by
+-- whichever statement of the settler changes it.
+create function pull_request_former_heads_incarnation() returns trigger language plpgsql as $$
+begin
+  new.incarnation := nextval('pull_request_former_heads_order');
+  return new;
+end $$;
+create trigger pull_request_former_heads_incarnation before update on pull_request_former_heads
+  for each row execute function pull_request_former_heads_incarnation();
 
 create table pull_request_former_heads_moves (
     seq bigint not null default nextval('pull_request_former_heads_order'),
@@ -272,7 +301,8 @@ create table pull_request_former_heads_rows (
 
 create table pull_request_former_heads_reads (
     pull integer primary key,
-    until timestamptz not null
+    until timestamptz not null,
+    token bigint not null
 );
 
 -- The canonical name of a repository's name: the expression of refs.CanonicalRepoSQL, over
@@ -530,6 +560,100 @@ begin
       where alias.pull = $1 and head.state = 'open' and head.head_sha = candidate.commit_sha)
   on conflict (pull, head_sha) do nothing;
   return found;
+end $$;
+
+-- The snapshot of the pull request of an identity that GitHub's answer about its commits depends
+-- on: each open row of it, by name and number, with its head and its base branch, in one order.
+-- It reads only.
+create function pull_request_former_heads_snapshot(integer) returns text language sql stable as $$
+  select coalesce(string_agg(lower(head.repo) || '#' || head.number || '@' || head.head_sha || ' onto ' || head.base_ref,
+    ', ' order by lower(head.repo), head.number), '')
+  from pull_request_heads head
+  join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+  where alias.pull = $1 and head.state = 'open'
+$$;
+
+-- Claims the read of the candidates of the pull request of an identity for $2 seconds, where no
+-- live claim holds it, and answers what that read is about (above): the claim's token, the pull
+-- request's generation and snapshot, and each candidate with its incarnation, in commit order. It
+-- answers no row where another claim holds the read. The claim commits with the caller's
+-- statement, so a settle of another issue sees it at once.
+create function pull_request_former_heads_claim(integer, double precision)
+returns table (token bigint, generation integer, snapshot text, candidates text[], incarnations bigint[])
+language plpgsql as $$
+#variable_conflict use_column
+declare
+  taken bigint;
+begin
+  insert into pull_request_former_heads_reads as claim (pull, until, token)
+  values ($1, now() + make_interval(secs => $2), nextval('pull_request_former_heads_order'))
+  on conflict (pull) do update set until = excluded.until, token = excluded.token
+  where claim.until <= now()
+  returning claim.token into taken;
+  if taken is null then
+    return;
+  end if;
+  return query
+  select taken, pulls.generation, pull_request_former_heads_snapshot($1),
+    coalesce(array_agg(former.head_sha order by former.head_sha) filter (where former.head_sha is not null), '{}'),
+    coalesce(array_agg(former.incarnation order by former.head_sha) filter (where former.head_sha is not null), '{}')
+  from pull_request_former_heads_pulls pulls
+  left join pull_request_former_heads former on former.pull = pulls.pull and not former.verified
+  where pulls.pull = $1
+  group by pulls.generation;
+end $$;
+
+-- The one application of GitHub's answer about the candidates of the pull request of an identity
+-- (above): $2 the claim's token, $3 the generation and $4 the snapshot the claim answered, $5 and
+-- $6 each member and the incarnation the claim read it at, $7 and $8 each commit GitHub showed is
+-- not one and its incarnation, $9 the issue settling. Under the pull request's lock it gives the
+-- claim back by its token, and applies only where that claim was still live and the generation and
+-- the snapshot are still the pull request's: it marks each member verified and deletes each commit
+-- shown outside, each only where it is still a candidate of the incarnation read, and marks owed
+-- each other issue an open row of the pull request is at where a candidate became a former head.
+-- Answers whether it applied, and how many candidates it kept, dropped and issues it marked owed.
+create function pull_request_former_heads_answer(integer, bigint, integer, text, text[], bigint[], text[], bigint[], text)
+returns table (applied boolean, kept integer, dropped integer, owed integer)
+language plpgsql as $$
+#variable_conflict use_column
+declare
+  live boolean;
+  standing integer;
+  kept_count integer := 0;
+  dropped_count integer := 0;
+  owed_count integer := 0;
+begin
+  perform pull_request_former_heads_lock($1);
+  select exists (select 1 from pull_request_former_heads_reads claim where claim.pull = $1 and claim.token = $2 and claim.until > now())
+  into live;
+  delete from pull_request_former_heads_reads claim where claim.pull = $1 and claim.token = $2;
+  select pulls.generation into standing from pull_request_former_heads_pulls pulls where pulls.pull = $1;
+  if not live or standing is distinct from $3 or pull_request_former_heads_snapshot($1) <> $4 then
+    return query select false, 0, 0, 0;
+    return;
+  end if;
+  with confirmed as (
+    update pull_request_former_heads former set verified = true
+    from unnest($5, $6) as member (head_sha, incarnation)
+    where former.pull = $1 and not former.verified and former.head_sha = member.head_sha and former.incarnation = member.incarnation
+    returning 1
+  ) select count(*) into kept_count from confirmed;
+  with refuted as (
+    delete from pull_request_former_heads former
+    using unnest($7, $8) as outsider (head_sha, incarnation)
+    where former.pull = $1 and not former.verified and former.head_sha = outsider.head_sha and former.incarnation = outsider.incarnation
+    returning 1
+  ) select count(*) into dropped_count from refuted;
+  if kept_count > 0 then
+    with owing as (
+      select check_states_owe(holder.issue_key) from (
+        select distinct head.issue_key from pull_request_heads head
+        join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+        where alias.pull = $1 and head.state = 'open' and head.issue_key <> $9
+      ) holder
+    ) select count(*) into owed_count from owing;
+  end if;
+  return query select true, kept_count, dropped_count, owed_count;
 end $$;
 
 -- A result recorded, a role's or a CI job's, whose settle an issue reads: its commit is pending

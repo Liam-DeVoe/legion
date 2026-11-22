@@ -28,7 +28,16 @@ body: |-
     by two comparisons (only an answer about a commit drops it; any failed read keeps the commits it
     would have decided and a mark after the backoff), one read for a pull request whichever issue
     it moves to, since a settle claims the read by the pull request's identity
-    (`pull_request_former_heads_reads`) and a settle of another issue leaves it to that claim, so
+    (`pull_request_former_heads_claim`, `pull_request_former_heads_reads`) and a settle of another
+    issue leaves it to that claim; the answer, positive or negative, is applied by one statement
+    and no other path (`pull_request_former_heads_answer`), which under the pull request's lock
+    gives the claim back by its token and applies only where the claim is still live, the pull
+    request's generation and its snapshot of heads and base branches are as the claim read them,
+    and each candidate keeps the incarnation read (`pull_request_former_heads.incarnation`, drawn
+    anew at each change of the row), so an answer about a claim that ran out or was taken over, an
+    ended lifecycle, a moved head or a replaced candidate applies nothing and the candidates are
+    read again; a verification's log line counts its HTTP requests apart from its pages
+    (`requests`), and each settle's line its verifications and their requests; so
     a head left before the release where a result was recorded publishes its states,
     and one with no result is not known and needs none. A result recorded later at a commit that is
     no head of such a pull request and no head it is known to have left is a candidate too: an
