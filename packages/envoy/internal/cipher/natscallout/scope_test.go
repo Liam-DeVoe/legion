@@ -445,7 +445,6 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 // The control drops newHeldAccess's skip of an edge listener's entry: the refresh then asks
 // Dispatch about EDGE.
 func TestAnEdgeListenersEntryAsksDispatchNothing(t *testing.T) {
-	const edgeAccount = "system:serviceaccount:example-ns:example-edge-listener"
 	now := time.Now()
 	services := []config.NATSService{
 		{Kind: config.NATSDaemon, Account: pubDaemonAccount},
