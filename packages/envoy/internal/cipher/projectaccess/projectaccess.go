@@ -26,7 +26,6 @@ package projectaccess
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -744,7 +743,9 @@ func (c *Client) sweepLocked() {
 // whose body names no code, or one of outageCodes, and a 500 whose body names no code or
 // internalCode, are errUnavailable, Dispatch not answering now (Unanswered); one naming any other
 // code is Dispatch's answer. Every other status, a transport failure and a body it could not read
-// or decode are errors naming what failed and never the token.
+// or decode are errors naming what failed and never the token. The code is decided on as it came
+// and named as the rule reads it (dispatchread.RefusalCode), and the body decodes through
+// redact.Answer.Decode, so a box into holds carries the record of the call.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
@@ -752,24 +753,25 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	}
 	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
+		shown := dispatchread.Clip(code.String())
 		switch answer.Status {
 		case http.StatusNotFound:
-			if code == projectNotFoundCode {
+			if code.Equal(projectNotFoundCode) {
 				return http.StatusNotFound, nil
 			}
-			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, shown)
 		case http.StatusInternalServerError:
-			if code == "" || code == internalCode {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			if code.IsEmpty() || code.Equal(internalCode) {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			if code == "" || slices.Contains(outageCodes, code) {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			if code.IsEmpty() || slices.ContainsFunc(outageCodes, code.Equal) {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		}
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, code)
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, shown)
 	}
-	if err := json.Unmarshal(answer.Body, into); err != nil {
+	if err := answer.Body.Decode(into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
 	}
 	return http.StatusOK, nil

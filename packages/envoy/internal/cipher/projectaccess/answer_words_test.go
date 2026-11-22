@@ -52,3 +52,37 @@ func TestAnUnknownMemberKindNamesDispatchsWordsAsTheRuleReadsThem(t *testing.T) 
 		})
 	}
 }
+
+// TestARefusalCodeNamesDispatchsWordsAsTheRuleReadsThem: Dispatch, or whatever answers in its
+// place, refuses a question 503 with a code that echoes the broker's account token the question
+// carried and quotes a credential's URL. The error names the code as the rule reads it, the token
+// redacted, since the code is read from the answer with the record of the question; a plain code
+// still prints as it came, quoted. Captures projectaccess.answer-words/code-<case>.
+func TestARefusalCodeNamesDispatchsWordsAsTheRuleReadsThem(t *testing.T) {
+	account := githubtest.InstallationToken(t.Name())
+	for _, c := range []struct {
+		name string
+		code func(echoed string) string
+		want string
+	}{
+		{"echo", func(echoed string) string { return "token " + echoed + " refused" }, `"token [redacted] refused"`},
+		{"plain", func(string) string { return "INDEX_REBUILDING" }, `"INDEX_REBUILDING"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				echoed := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": c.code(echoed), "error": "unavailable"})
+			}))
+			t.Cleanup(server.Close)
+			client := projectaccess.New(server.URL, projectaccesstest.StaticAccount(account), nil)
+			_, err := client.Access(t.Context(), "PRIV", "carol@example.com")
+			// Control: the refusal is the one that names Dispatch's code.
+			if err == nil || !strings.Contains(err.Error(), "with the code "+c.want) {
+				t.Fatalf("Access = %v, want an error naming the code %s", err, c.want)
+			}
+			redacttest.RequireNoPiece(t, "projectaccess.answer-words/code-"+c.name, err.Error(), account)
+		})
+	}
+}

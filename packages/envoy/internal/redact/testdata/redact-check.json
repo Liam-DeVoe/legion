@@ -5054,6 +5054,20 @@
       "production": "projectaccess Client.MemberKind: an unknown member_kind held as redact.RemoteText, decoded with the question's record, so ErrUnknownMemberKind names it as the rule reads it"
     },
     {
+      "id": "projectaccess-refusal-code-words",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/projectaccess",
+      "test": "TestARefusalCodeNamesDispatchsWordsAsTheRuleReadsThem",
+      "production": "projectaccess Client.get: a refusal's code is decided on as it came and named as the rule reads it (dispatchread.RefusalCode, read through redact.ReadAnswer)"
+    },
+    {
+      "id": "projectrepos-answer-words",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/projectrepos",
+      "test": "TestARefusedRepositoryAnswerNamesDispatchsWordsAsTheRuleReadsThem",
+      "production": "projectrepos readAnswer and Repositories: a key, a value and a refusal code Dispatch answers are named as the rule reads them (dispatchread.Answer.Said, RefusalCode)"
+    },
+    {
       "id": "projectaccess-answer-words-member-kind-plain",
       "requirement": "r4-unchanged",
       "package": "./internal/cipher/projectaccess",
@@ -8795,6 +8809,11 @@
       "site": "workflow mergeability: the head a dropped merge-state read answered for, logged as GitHub wrote it",
       "source": "the class search of round 5's deep review",
       "guard": "workflow-answer-words-dropped-head"
+    },
+    {
+      "site": "main's dispatchread reader: Dispatch's body read raw, its code and the repository answer's keys and values printed as they came, the member kind decoded with no record",
+      "source": "the merge of main into the pull request",
+      "guard": "projectrepos-answer-words"
     }
   ]
 }

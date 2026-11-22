@@ -6,17 +6,17 @@
 // call, the headers, the bounded read of the body, which failures are that token's and not
 // Dispatch's (ErrBrokerRefused), and which are Dispatch giving no answer at all (ErrNoAnswer). It
 // decodes no answer: each client reads its own route's body, so no field of one answer reaches a
-// reader of the other.
+// reader of the other. The body is read through redact.ReadAnswer, so whatever answers in
+// Dispatch's place, which can echo the broker's account token, is read with the record of the call
+// it answers: a code, a key or a value an error names prints as the rule reads it.
 package dispatchread
 
 import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ErrBrokerRefused is the broker's own account token not working: Dispatch answering 401 or 403 to
@@ -65,10 +66,23 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client, t
 	return Reader{base: strings.TrimRight(baseURL, "/"), account: account, http: httpClient, timeout: timeout, limit: limit}
 }
 
-// Answer is what Dispatch answered one call: its status, and its whole body.
+// Answer is what Dispatch answered one call: its status, and its whole body, held with the record
+// of the call (redact.Answer): a caller decodes it (Answer.Decode) or reads its bytes to decide
+// (StreamTo), and names what it holds only through Said or a box it decoded.
 type Answer struct {
 	Status int
-	Body   []byte
+	Body   redact.Answer
+	said   func(text string) redact.RemoteText
+}
+
+// Said is text this answer holds, a key or a value a caller read from its bytes, as Dispatch's
+// words with the record of the call: it prints as the rule reads it, with the broker's account
+// token redacted, and compares as it came. The zero Answer says text with no record.
+func (a Answer) Said(text string) redact.RemoteText {
+	if a.said == nil {
+		return redact.NewRemoteText("")
+	}
+	return a.said(text)
 }
 
 // Get asks path, with query when it holds any, and answers Dispatch's status and body for the
@@ -106,18 +120,18 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 		return Answer{}, fmt.Errorf("%w to %s: %w", ErrNoAnswer, path, err)
 	}
 	defer response.Body.Close()
+	answer, err := redact.ReadAnswer(response, int64(r.limit))
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		code, _ := io.ReadAll(io.LimitReader(response.Body, int64(r.limit)))
-		return Answer{}, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, RefusalCode(code))
+		return Answer{}, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, Clip(RefusalCode(answer).String()))
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, int64(r.limit)+1))
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return Answer{}, fmt.Errorf("dispatchread: dispatch's answer to %s is over %d bytes", path, r.limit)
+	}
 	if err != nil {
 		return Answer{}, fmt.Errorf("%w to %s: read its body: %w", ErrNoAnswer, path, err)
 	}
-	if len(body) > r.limit {
-		return Answer{}, fmt.Errorf("dispatchread: dispatch's answer to %s is over %d bytes", path, r.limit)
-	}
-	return Answer{Status: response.StatusCode, Body: body}, nil
+	said := func(text string) redact.RemoteText { return redact.NewRemoteText(text).WithoutTokens(bearer) }
+	return Answer{Status: response.StatusCode, Body: answer, said: said}, nil
 }
 
 // transportAnswers reports whether err, a call that failed before Dispatch's status arrived, is
@@ -138,15 +152,18 @@ func transportAnswers(err error) bool {
 	return errors.As(err, &name) && (name.IsNotFound || !name.IsTimeout && !name.IsTemporary)
 }
 
-// RefusalCode is the code a refusal's body names, cut by Clip, and empty for a body that is cut
-// short, holds more than one value or names none: the status has already decided what the answer
-// is, and the code only adds to its error.
-func RefusalCode(body []byte) string {
+// RefusalCode is the code a refusal's body names, as Dispatch wrote it (redact.RemoteText, decoded
+// with the record of the call, so it prints as the rule reads it and compares as it came), and
+// empty for a body that is cut short, holds more than one value or names none: the status has
+// already decided what the answer is, and the code only adds to its error.
+func RefusalCode(answer redact.Answer) redact.RemoteText {
 	var refusal struct {
-		Code string `json:"code"`
+		Code redact.RemoteText `json:"code"`
 	}
-	_ = json.Unmarshal(body, &refusal)
-	return Clip(refusal.Code)
+	if answer.Decode(&refusal) != nil {
+		return redact.NewRemoteText("")
+	}
+	return refusal.Code
 }
 
 // MaxQuoted bounds how much of a string from Dispatch's answer an error quotes, so that a code, a
