@@ -439,9 +439,13 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 // granted again between that release's read and its delete stands after the release, which names
 // no role and answers no error, and the next release, which reads that grant, frees it - at the
 // edge, the session's next registration. It meets the same race whether the role claim copy names
-// the role or, while the copy cannot be served, the scan of the role bucket does. Control: with
-// the delete freeing whatever the session holds (the force before grant ids decided it), the first
-// release frees the new grant and names the role.
+// the role or, while the copy cannot be served, the scan of the role bucket does, and also where
+// the session's stored row names the role while the copy cannot be served: the release of the
+// row's role is then the one read of that role, and the scan that follows leaves the role alone
+// rather than read the new grant as its own. Controls: with the delete freeing whatever the
+// session holds (the force before grant ids decided it), the first release frees the new grant
+// and names the role on every path; with the scan reading again a role the row's release weighed,
+// it does so where the row names the role.
 func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *testing.T) {
 	const (
 		role   = "legion-infra-infra-9-reviewer"
@@ -451,6 +455,7 @@ func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *test
 	for _, path := range []claimReleasePath{
 		{name: "the role claim copy names the role", viewed: true},
 		{name: "the scan while the copy cannot be served"},
+		{name: "the stored row names the role while the copy cannot be served", handsBack: true},
 	} {
 		t.Run(path.name, func(t *testing.T) {
 			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)

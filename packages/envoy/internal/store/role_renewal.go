@@ -152,7 +152,10 @@ func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanc
 // answer that the session holds none, and a claim whose lane topic the row does not carry is then
 // in neither source. So a refusal of the copy is answered as a deregistration answers it
 // (releaseAllRoleClaims): the roles of the row are released, and then the role bucket itself is
-// read (releaseRefusedRoleClaimsByScan).
+// read (releaseRefusedRoleClaimsByScan) for the roles the row does not name. A role the row named
+// was read once already, so the scan leaves it alone, whatever that release did: a grant made
+// since that read is the next registration's, as it is where the copy names the role, and a
+// release that failed is already the error.
 //
 // Every release that failed is the error, joined and each naming its role: a claim that could
 // not be read or deleted stands, and nothing else frees it while its holder is live (the role
@@ -169,12 +172,13 @@ func (r *Registry) ReleaseRefusedRoleClaims(ctx context.Context, sessionID strin
 		topics = row.Topics
 	}
 	set, viewErr := r.weighedRoles(sessionID, topics)
-	var released []string
+	var weighed, released []string
 	var failures []error
 	for _, role := range set {
 		if holds(role) {
 			continue
 		}
+		weighed = append(weighed, role)
 		freed, err := r.releaseHeldRoleClaim(ctx, sessionID, role)
 		if err != nil {
 			failures = append(failures, err)
@@ -187,7 +191,7 @@ func (r *Registry) ReleaseRefusedRoleClaims(ctx context.Context, sessionID strin
 	// weighedRoles returns only RolesHeldBy's refusal, so any refusal is the copy that could not
 	// say which roles the session holds, and the scan is its answer.
 	if viewErr != nil {
-		scanned, err := r.releaseRefusedRoleClaimsByScan(ctx, sessionID, holds, viewErr)
+		scanned, err := r.releaseRefusedRoleClaimsByScan(ctx, sessionID, holds, weighed, viewErr)
 		released = append(released, scanned...)
 		failures = append(failures, err)
 		slices.Sort(released)
@@ -201,11 +205,14 @@ func (r *Registry) ReleaseRefusedRoleClaims(ctx context.Context, sessionID strin
 // releaseAllRoleClaimsByScan's does): every claim of sessionID the role bucket holds of a role
 // holds refuses, read from one scan of the bucket (roleClaimsUntil, bounded by ctx), is freed from
 // the record the scan delivered (releaseReadRoleClaim, forced as releaseHeldRoleClaim forces it),
-// and the roles freed are answered. A key the bus refuses and a record no build can decode name
-// no holder, and are left as they stand: the copy decodes each record it holds, so neither is a
-// claim a servable copy would have named either. A listing that did not answer and a release that
-// failed are the error, each naming what failed, and the caller refuses the registration.
-func (r *Registry) releaseRefusedRoleClaimsByScan(ctx context.Context, sessionID string, holds func(role string) bool, viewErr error) ([]string, error) {
+// and the roles freed are answered. A role of weighed, which the caller's release of the row's
+// roles read already, is left alone: reading it again here would take a grant made since that
+// read for the claim this release read, and free it. A key the bus refuses and a record no build
+// can decode name no holder, and are left as they stand: the copy decodes each record it holds,
+// so neither is a claim a servable copy would have named either. A listing that did not answer
+// and a release that failed are the error, each naming what failed, and the caller refuses the
+// registration.
+func (r *Registry) releaseRefusedRoleClaimsByScan(ctx context.Context, sessionID string, holds func(role string) bool, weighed []string, viewErr error) ([]string, error) {
 	r.logger().Info("role registry fell back to a scan of the role bucket to release a session's claims of roles it may not hold; its claim view cannot be served",
 		slog.String("session_id", sessionID),
 		slog.String("reason", viewErr.Error()),
@@ -217,7 +224,7 @@ func (r *Registry) releaseRefusedRoleClaimsByScan(ctx context.Context, sessionID
 	var released []string
 	var failures []error
 	for _, scanned := range claims {
-		if scanned.Err != nil || scanned.Claim.HolderSessionID != sessionID || holds(scanned.Role) || r.roles().RefusesRead(scanned.Role) != nil {
+		if scanned.Err != nil || scanned.Claim.HolderSessionID != sessionID || holds(scanned.Role) || slices.Contains(weighed, scanned.Role) || r.roles().RefusesRead(scanned.Role) != nil {
 			continue
 		}
 		stands, err := r.releaseReadRoleClaim(ctx, sessionID, scanned.Role, scanned.Claim, RoleReleaseAuthority{Force: true})
