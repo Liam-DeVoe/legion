@@ -22,6 +22,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { jump, onFakeClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -2425,9 +2426,7 @@ function sendButton(name = "Send"): HTMLButtonElement {
 /** Whether Send is held, as a pending switch holds it: `aria-disabled`, never `disabled`, so a
  *  Send the reader pressed keeps the focus, and a press of it sends nothing. */
 function sendHeld(): boolean {
-  const send = sendButton();
-  if (send.disabled) throw new Error("Send is disabled, not held");
-  return send.getAttribute("aria-disabled") === "true";
+  return heldNotDisabled(sendButton(), "Send");
 }
 
 /** Waits for the session list to settle the delivery mode on `expected`, then returns the

@@ -1943,11 +1943,11 @@ test("a press whose re-read is still held past the write deadline stays live unt
 
 // (cs) A hold on what answers a press keeps it live past the write deadline until the hold ends,
 // and at the latest until `SEND_DEADLINE_MS + REQUEST_DEADLINE_MS` after its release, the longest
-// a write and its re-read can take. So a hold that never ends - an update the press waits for that
-// never comes - keeps the press live no longer than that. A row taken away a second short of that
-// bound is the reader's doing, and the focus goes to the control now at the row's place, as in
-// (ar). A row taken away once the bound has passed is no doing of the reader's: the focus stays on
-// the page, in no row (ag).
+// a write that lands within its deadline, and then its re-read, can take. So a hold that never
+// ends - an update the press waits for that never comes - keeps the press live no longer than
+// that. A row taken away a second short of that bound is the reader's doing, and the focus goes
+// to the control now at the row's place, as in (ar). A row taken away once the bound has passed
+// is no doing of the reader's: the focus stays on the page, in no row (ag).
 test("a press whose answer hold never ends is live until the write and request deadlines have passed after its release, and no longer", async () => {
   jest.useFakeTimers();
   try {

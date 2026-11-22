@@ -15,6 +15,7 @@ import { MemoryRouter } from "react-router-dom";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { RescuedMain } from "../../__tests__/focus-rescue";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
@@ -119,40 +120,47 @@ interface ComposerOptions {
   onSent?: () => void;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
+  rescued?: boolean;
 }
 
 /** Renders the composer, and hands back `rerender` for a host that changes its props on the live
- *  instance - an Agents row's owner and seed when the reader picks an issue. */
+ *  instance - an Agents row's owner and seed when the reader picks an issue. `rescued` draws it in
+ *  the shell's main content with the page's focus rescue mounted (`RescuedMain`). */
 function renderComposer(options: ComposerOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const composer = (props: ComposerOptions) => (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={queryClient}>
-        <MentionComposer
-          agents={props.agents}
-          anchor={props.anchor}
-          closed={props.closed}
-          edit={props.edit}
-          kind={props.kind}
-          seedMentions={props.seedMentions}
-          onCancelReply={props.onCancelReply}
-          onClose={() => {}}
-          onKindChange={props.onKindChange}
-          onSent={props.onSent ?? (() => {})}
-          owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
-          replyTo={
-            props.replyTo === null
-              ? null
-              : props.replyTo === undefined
-                ? undefined
-                : { ...props.replyTo, parentKind: props.replyTo.parentKind ?? "comment" }
-          }
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const composer = (props: ComposerOptions) => {
+    const field = (
+      <MentionComposer
+        agents={props.agents}
+        anchor={props.anchor}
+        closed={props.closed}
+        edit={props.edit}
+        kind={props.kind}
+        seedMentions={props.seedMentions}
+        onCancelReply={props.onCancelReply}
+        onClose={() => {}}
+        onKindChange={props.onKindChange}
+        onSent={props.onSent ?? (() => {})}
+        owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
+        replyTo={
+          props.replyTo === null
+            ? null
+            : props.replyTo === undefined
+              ? undefined
+              : { ...props.replyTo, parentKind: props.replyTo.parentKind ?? "comment" }
+        }
+      />
+    );
+    return (
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <QueryClientProvider client={queryClient}>
+          {props.rescued ? <RescuedMain>{field}</RescuedMain> : field}
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const view = render(composer(options));
   return { queryClient, rerender: (next: ComposerOptions) => view.rerender(composer(next)), view };
 }
@@ -163,8 +171,7 @@ function composerHeld(): boolean {
   const controls = screen.getByRole("form", { name: "Comment composer" }).querySelector("fieldset");
   if (!(controls instanceof HTMLFieldSetElement))
     throw new Error("expected composer control fieldset");
-  if (controls.disabled) throw new Error("the composer's control fieldset is disabled, not held");
-  return controls.getAttribute("aria-disabled") === "true";
+  return heldNotDisabled(controls, "the composer's control fieldset");
 }
 
 /** What holds the focus, as a failed check prints it: a control's accessible label or its text. */
@@ -2283,6 +2290,67 @@ test("the box Ctrl+Enter sent from keeps the focus through the send, and no key 
   }
 });
 
+// While a send holds the box, a key the hold stops reaches no handler of the composer's, and the
+// browser keeps its own action for every key the composer neither acts on nor types with: Ctrl+C
+// copies from the held draft, Ctrl+F finds in the page and F5 reloads it. A character, Backspace,
+// Escape and Ctrl+Enter are the composer's, and the hold takes them from the browser too: the draft
+// takes no character, Escape raises no Discard prompt, and Ctrl+Enter sends nothing more.
+test("while a send is out, Ctrl+C, Ctrl+F and F5 in the box reach the browser, and a character, Escape and Ctrl+Enter do nothing", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answer = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const { view } = renderComposer();
+  // Each key but Control, read from the window's capture phase, before the composer's own capture
+  // can stop it. Whether a handler cancelled the browser's action is read once the press is over.
+  const pressed: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key !== "Control") pressed.push(event);
+  };
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Ship it.");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(composerHeld()).toBe(true);
+
+    window.addEventListener("keydown", record, true);
+    await user.keyboard(
+      "{Control>}c{/Control}{Control>}f{/Control}{F5}x{Backspace}{Escape}{Control>}{Enter}{/Control}"
+    );
+    await tick(20);
+    expect(
+      pressed.map(
+        (event) =>
+          `${event.ctrlKey ? "Ctrl+" : ""}${event.key}: ${event.defaultPrevented ? "taken" : "the browser's"}`
+      )
+    ).toEqual([
+      "Ctrl+c: the browser's",
+      "Ctrl+f: the browser's",
+      "F5: the browser's",
+      "x: taken",
+      "Backspace: taken",
+      "Escape: taken",
+      "Ctrl+Enter: taken",
+    ]);
+    expect(field.value).toBe("Ship it.");
+    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => answer.resolve(createdComment));
+    await tick(20);
+    expect(composerHeld()).toBe(false);
+  } finally {
+    window.removeEventListener("keydown", record, true);
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
 // Offline a send can be out longer than the page's focus rescue reads the press as the reader's,
 // which is the write deadline (`SEND_DEADLINE_MS`, `focus-place.ts`). The box the reader sent
 // from never loses the focus, so the rescue has nothing to answer: the focus is on the box past
@@ -2294,22 +2362,7 @@ test("offline, the box a send went from keeps the focus while the send is out pa
   const restoreFocus = emulateChromiumFocusFixup();
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={queryClient}>
-        <RescuedMain>
-          <MentionComposer
-            onClose={() => {}}
-            onSent={() => {}}
-            owner={{ issueKey: "CORE-1", kind: "issue" }}
-          />
-        </RescuedMain>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { queryClient, view } = renderComposer({ rescued: true });
 
   try {
     act(() => onlineManager.setOnline(false));

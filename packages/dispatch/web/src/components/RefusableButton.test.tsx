@@ -25,7 +25,9 @@ function SaveForm({ onSave }: { onSave: () => void }): ReactNode {
   );
 }
 
-/** A button whose press starts a write that stays out, and which reads `Removing…` while it is. */
+/** A button whose press starts a write that stays out, and which reads `Removing…` while it is.
+ *  It is refused too while the write is out, so a press the busy hold let through to the refusal
+ *  would be a refused press. */
 function RemoveButton({
   onRefusedPress,
   onRemove,
@@ -42,7 +44,7 @@ function RemoveButton({
         setRemoving(true);
       }}
       onRefusedPress={onRefusedPress}
-      refusal={null}
+      refusal={removing ? "The removal is still out." : null}
     >
       Remove
     </RefusableButton>

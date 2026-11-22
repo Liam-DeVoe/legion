@@ -1499,8 +1499,8 @@ function InboxBody({
   // too, in the commit that draws the column again, so it runs before the rescue's check a frame
   // later, which then finds the focus placed. A focus the column lost while it still shows the
   // same question - an editor a press opened in place - is the rescue's, and so is one that has
-  // gone somewhere by then. `focusLost`, not the body alone, since Firefox and WebKit still name
-  // the removed element as focused until their next rendering update.
+  // gone somewhere by then. `focusLost`, not the body alone, so an engine that names a removed
+  // element focused until its focus fixup is read the same way.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
     if (noted === null || noted.element.isConnected) return;

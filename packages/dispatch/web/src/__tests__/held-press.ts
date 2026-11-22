@@ -48,3 +48,13 @@ export async function pressHeld(
     stopFocusFixup();
   }
 }
+
+/** Whether `control` is held: `aria-disabled`. It throws where `control` is `disabled`, which
+ *  takes the focus off the control the reader pressed; `name` names it in that error. */
+export function heldNotDisabled(
+  control: Element & { readonly disabled: boolean },
+  name: string
+): boolean {
+  if (control.disabled) throw new Error(`${name} is disabled, not held`);
+  return control.getAttribute("aria-disabled") === "true";
+}

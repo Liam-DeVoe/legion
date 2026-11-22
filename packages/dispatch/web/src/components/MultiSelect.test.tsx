@@ -1184,9 +1184,9 @@ test("a focused row that its pick takes off the page gives the focus to the sear
   }
 });
 
-// WebKit and Firefox move the focus off a removed element only at their next rendering update, so
-// as the commit that answers the press ends, they still name the row its pick took off the page as
-// focused (`keepRemovedFocus`). That focus is lost all the same, and it goes to the search box.
+// As the commit that answers the press ends, an engine that names a removed element focused until
+// its focus fixup still names the row its pick took off the page as focused (`keepRemovedFocus`).
+// That focus is lost all the same, and it goes to the search box.
 test("where the engine still names a removed row focused, a focused row that its pick takes off the page gives the focus to the search box", async () => {
   const user = userEvent.setup();
   const restore = keepRemovedFocus();

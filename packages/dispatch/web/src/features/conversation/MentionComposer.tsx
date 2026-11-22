@@ -35,6 +35,7 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   badgeMed,
   borderDefault,
@@ -69,7 +70,6 @@ import {
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
-import { inputMethodKey } from "../issue-page/useNodeEditing";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { ReferencePicker } from "../refs/ReferencePicker";
@@ -479,6 +479,18 @@ const MOVING_KEYS: Readonly<Record<string, true>> = {
   PageUp: true,
   Tab: true,
 };
+
+/** Whether a key the send's hold stops (`stopHeldComposerKey`) is one the hold keeps from the
+ *  browser too, as one the composer acts on or one that would type: Enter, with a modifier or
+ *  none; Escape; Ctrl/Cmd+K; and, held with no Ctrl or Cmd, a character, Backspace or Delete.
+ *  Every other Ctrl/Cmd chord and every function key stay the browser's, so find, copy, select
+ *  all, reload, print and zoom still work while the send is out. */
+function heldFromBrowser(event: KeyboardEvent): boolean {
+  const { key } = event;
+  if (key === "Enter" || key === "Escape") return true;
+  if (event.ctrlKey || event.metaKey) return key.toLowerCase() === "k";
+  return key.length === 1 || key === "Backspace" || key === "Delete";
+}
 
 export function MentionComposer({
   agents: suppliedAgents,
@@ -1164,14 +1176,18 @@ export function MentionComposer({
    *  fieldset's capture stops every click, input, change, paste and drop bound for a control in
    *  it - so no file goes into a draft that is out, and no press acts - and every key but the
    *  ones that only move the focus or the caret (`stopHeldComposerKey`), so Escape raises no
-   *  Discard prompt and Ctrl+K opens no picker. */
+   *  Discard prompt and Ctrl+K opens no picker. A key it stops reaches no handler of the
+   *  composer's. The browser's own action for that key is cancelled only for a key the composer
+   *  acts on or one that would type (`heldFromBrowser`). */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
     event.stopPropagation();
   };
   const stopHeldComposerKey = (event: KeyboardEvent) => {
-    if (MOVING_KEYS[event.key] !== true) stopHeldComposerInput(event);
+    if (MOVING_KEYS[event.key] === true || !outgoing.sendingNow()) return;
+    event.stopPropagation();
+    if (heldFromBrowser(event)) event.preventDefault();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

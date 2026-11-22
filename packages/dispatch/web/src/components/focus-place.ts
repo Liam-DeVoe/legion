@@ -311,13 +311,12 @@ function countBefore(controls: readonly Element[], node: Node): number {
 
 /** Whether the keyboard focus is lost: on the body, or still on an element that has left the
  *  page. Chromium, Firefox and WebKit, as Playwright runs them, name the body at once when the
- *  focused element or a parent of it is removed (measured in round 23 of INFRA-3135: read at
- *  once, in a microtask, a task and a frame); an element hidden or disabled under the focus stays
- *  named until the task after the next frame. The element that has left the page is checked as
- *  well, so an engine that names it until its focus fixup is read the same way. The one check
- *  for a removed focus: the rescue below asks it, and so do a list closing over its own text box
- *  (`MultiSelect`) and the Inbox's hand-off of a focus its reading column's question took with
- *  it (`Inbox.tsx`). */
+ *  focused element or a parent of it is removed (measured: read at once, in a microtask, a task and
+ *  a frame); an element hidden or disabled under the focus stays named until the task after the
+ *  next frame. The element that has left the page is checked as well, so an engine that names it
+ *  until its focus fixup is read the same way. The one check for a removed focus: the rescue below
+ *  asks it, and so do a list closing over its own text box (`MultiSelect`) and the Inbox's hand-off
+ *  of a focus its reading column's question took with it (`Inbox.tsx`). */
 export function focusLost(): boolean {
   const focused = document.activeElement;
   return focused === null || focused === document.body || !focused.isConnected;
@@ -482,8 +481,10 @@ interface Press {
   /** The holds begun while the press is live that are still on (`beginAnswerHold`). */
   readonly answers: Set<object>;
   /** Reads again whether anything still keeps the press live (`keepLive`), at each change of the
-   *  page's writes and of `answers`, and, for a press watched on a control it holds, of the page
-   *  (`watchHold`), while that watch is on; else it does nothing. */
+   *  page's writes and of `answers`, and, for a press that started no write and that a hold on
+   *  what answers it or a control it holds keeps live, of the page (`watchHold`), while that watch
+   *  is on: up to the write deadline, and only while no hold on what answers the press is on.
+   *  Outside `keepLive` it does nothing. */
   changed: () => void;
   readonly heldBefore: ReadonlySet<Element>;
   live: boolean;
@@ -688,7 +689,8 @@ export function beginAnswerHold(): () => void {
 /** The longest a press's action keeps it live, counted from its release: the app's write
  *  deadline (`SEND_DEADLINE_MS`), the longest a press's write keeps it live, and then the request
  *  deadline (`REQUEST_DEADLINE_MS`), which bounds the hold through the re-read that answers the
- *  write (`useReadBound`). It is the longest a write and its re-read can take. */
+ *  write (`useReadBound`). It is the longest a write that lands within its deadline, and then its
+ *  re-read, can take. */
 const ACTION_BOUND_MS = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
 
 /**
@@ -735,9 +737,18 @@ function answerPress(press: Press): void {
  * `REQUEST_DEADLINE_MS` from the read's start) and can end after the write deadline. At
  * `ACTION_BOUND_MS` the watch ends whatever is still on, so a hold that never ends keeps no press
  * live past it, and the press ends a frame and a task later. `press.changed` reads again whether
- * anything still keeps the press live.
+ * anything still keeps the press live. `watch` starts and `unwatch` stops whatever has `kept` read
+ * again as the page changes (the page watch `watchHold` hands in). It runs only while `kept` alone
+ * can keep the press live: before the write deadline, with no hold on what answers the press on.
+ * A hold that begins or ends reads again at once (`beginAnswerHold`), against the page as it
+ * stands then, so a change of the page made while the watch was off is read all the same.
  */
-function keepLive(press: Press, kept: () => boolean, unwatch: () => void = () => undefined): void {
+function keepLive(
+  press: Press,
+  kept: () => boolean,
+  watch: () => void = () => undefined,
+  unwatch: () => void = () => undefined
+): void {
   /** What cancels the press's end, from the moment nothing keeps it live until the end runs. */
   let ending: (() => void) | null = null;
   /** Whether the write deadline has passed: from then on `kept` keeps the press live no longer. */
@@ -751,6 +762,8 @@ function keepLive(press: Press, kept: () => boolean, unwatch: () => void = () =>
     ending = null;
   };
   const read = () => {
+    if (press.answers.size > 0) unwatch();
+    else if (!late) watch();
     if (press.answers.size > 0 || (!late && kept())) {
       ending?.();
       ending = null;
@@ -788,8 +801,9 @@ function keepLive(press: Press, kept: () => boolean, unwatch: () => void = () =>
  * press ends then. A control already held when the press was made (`heldBefore`) - the pager's
  * Next on its last page, a select or a trigger held while an earlier write is out - took the press
  * without a write, so its hold keeps the press live no longer than a press on a control held by
- * nothing. The control's hold is watched rather than polled, up to the write deadline alone, so a
- * control that stays held keeps no watch over the page past it, and the watch ends at
+ * nothing. The control's hold is watched rather than polled, up to the write deadline alone and
+ * only while no hold on what answers the press is on (`keepLive`'s `watch`), so a control that
+ * stays held keeps no watch over the page past the deadline, and the watch ends at
  * `ACTION_BOUND_MS` from the release at the latest. A press past its watch is no cause, so an
  * update after it - a live update taking the row away, a refetch emptying the selection bar - is
  * a loss the reader did not cause.
@@ -813,12 +827,17 @@ function watchHold(press: Press): void {
   // The whole document is watched, so that the control going with a parent of it, a fieldset
   // around it enabled again, or the region the press landed in going, ends the hold too.
   const watcher = new MutationObserver(() => press.changed());
-  watcher.observe(document.body, {
-    attributeFilter: ["aria-disabled", "disabled"],
-    childList: true,
-    subtree: true,
-  });
-  keepLive(press, held, () => watcher.disconnect());
+  keepLive(
+    press,
+    held,
+    () =>
+      watcher.observe(document.body, {
+        attributeFilter: ["aria-disabled", "disabled"],
+        childList: true,
+        subtree: true,
+      }),
+    () => watcher.disconnect()
+  );
 }
 
 /** Ends `press` a frame and a task from now (`afterComponents`), unless `press.stop` cancels the
@@ -1484,23 +1503,22 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * among the page's `writes` while that write is out, and one that started none while a control it
  * reads as is held. A key, a `change` or an `input` that is no press neither starts a press nor
  * ends the live one (`notePress`). A loss the reader caused holds its place among the controls the
- * region draws too,
- * and where the element stood in the page: the parent it stood in and the siblings either side of
- * it, and the same for each parent of it up to the region (`spotsOf`). For a `focusout` they are
- * read there and then, while the element is still in the page; for a control taken away with no
- * `focusout`, the last record that took it - its parent and its siblings at that moment, since a
- * control the batch moved first was taken from there - is that spot, with the spots read as the
- * element took the focus behind it for a record whose parent has gone too. It holds each row around
- * the element, and the element's place among that row's controls (`rowPlacesOf`), and the item the
- * element was in (`itemOf`), read then too where the element is still in it, else the one noted as
- * it took the focus: the element has gone by the time the loss is answered, and one taken away
- * from inside the region that names its item has no item around it then. From the loss on, while
- * its check or its wait is out, the page's watcher notes every element the page adds (`arrived`),
- * but none it only moves - a keyed node React moves with `insertBefore`, which one batch reports
- * as its removal and its addition, stood in the page before; for a loss read off a removal, the
- * batch that took the element counts from that last record on. A loss the reader did not cause
- * is answered without any of these (`leaveUncaused`), so none of them is read for it. The focus
- * moving from one control to another in the same region is no loss. Nor is the reader leaving
+ * region draws too, and where the element stood in the page: the parent it stood in and the
+ * siblings either side of it, and the same for each parent of it up to the region (`spotsOf`). For
+ * a `focusout` they are read there and then, while the element is still in the page; for a control
+ * taken away with no `focusout`, the last record that took it - its parent and its siblings at that
+ * moment, since a control the batch moved first was taken from there - is that spot, with the spots
+ * read as the element took the focus behind it for a record whose parent has gone too. It holds
+ * each row around the element, and the element's place among that row's controls (`rowPlacesOf`),
+ * and the item the element was in (`itemOf`), read then too where the element is still in it, else
+ * the one noted as it took the focus: the element has gone by the time the loss is answered, and
+ * one taken away from inside the region that names its item has no item around it then. From the
+ * loss on, while its check or its wait is out, the page's watcher notes every element the page adds
+ * (`arrived`), but none it only moves - a keyed node React moves with `insertBefore`, which one
+ * batch reports as its removal and its addition, stood in the page before; for a loss read off a
+ * removal, the batch that took the element counts from that last record on. A loss the reader did
+ * not cause is answered without any of these (`leaveUncaused`), so none of them is read for it. The
+ * focus moving from one control to another in the same region is no loss. Nor is the reader leaving
  * a control: their Enter that commits a field with the page's own `blur()`, or their click on
  * the page's text, sends the focus to nothing from a control still enabled and drawn, and the
  * focus stays where that left it. Such a loss is marked left (`left`) when the control still
