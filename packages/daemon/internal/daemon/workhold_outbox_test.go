@@ -1618,6 +1618,61 @@ func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
 	}
 }
 
+// Spec step 7 ("The task says that the work hold stopped its turn, and names the version that
+// closed the gate. It carries today's open message.") and check a3d61f8e ("starts each held claim
+// ... with the resume task", the task the daemon composes for the opening, which starts with the
+// close message's sentences), for the stop made while the opening commits: the opening reads the
+// implementer live, the stop is written after it, and the daemon starts the implementer once the
+// read after the stop finds the hold ended. That start is the opening's start of a claim the hold
+// stopped, after a person's approval of version 4, and its task must say so: the close message's
+// sentences naming version 4, that the hold stopped the turn, today's open message naming the
+// person's approval of version 4, and the check of the turn. It must not tell the worker that the
+// deployment no longer holds the tree's work: the deployment still holds it under `work`.
+func TestWorkHoldStartsAStopMadeWhileTheOpeningCommitsWithTheOpeningsTask(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	token := r.token(claim.RoleImplementer)
+	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(slow.proceed) })
+	t.Cleanup(letGo)
+	r.sup.deps.Runtime = slow
+	machine := r.live(claim.RoleImplementer)
+	launched := r.launches(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+	r.clock.advance(time.Second)
+	r.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
+	endTurn(r.ctx, t, machine, token)
+
+	ran := r.inBackground(func() error { return r.runner.RunOnce(r.ctx) })
+	select {
+	case <-slow.stopping:
+	case err := <-ran:
+		t.Fatalf("the implementer's stop row returned %v before it stopped the process", err)
+	}
+	opened := r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-while-the-process-stops-task", r.approval(4, 12), r.engine, r.admission)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	t.Cleanup(letGo)
+	select {
+	case err := <-opened:
+		if err != nil {
+			t.Fatalf("apply the approval: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the opening still waits 20 s into the process stop")
+	}
+	letGo()
+	if err := <-ran; err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
+	r.drain()
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+}
+
 // Spec step 4, H22 to H24, check a3d61f8e: with the tester stopped by the hold and the implementer
 // in the turn its stop is held for, a task, a notice, a wake, a CI settlement, admission's slot
 // repair, and a daemon restart during the drain and after it leave every claim the hold stopped
