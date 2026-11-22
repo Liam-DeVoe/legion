@@ -96,6 +96,54 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 	}
 }
 
+// machineLoginsWithAPod is the broker's answer to GET /v1/launcher-credentials in
+// TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem: erin's own machine login,
+// the login of a pod the broker's BROKER_POD_OPERATORS maps to erin (its person field names her,
+// and no person approved it, as the broker lists a person's pod login), and a service's login.
+const machineLoginsWithAPod = `{"credentials":[
+	{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"Erin@Other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
+	{"credential_id":"cred-pod-erin","host":"agents/erin-pod","service":"erin-agent","subject":"system:serviceaccount:agents:erin-pod","person":"Erin@Other.example","approved_by":"","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
+	{"credential_id":"cred-service","host":"cluster.example","service":"legion-daemon","subject":null,"approved_by":"alice","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
+
+// TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem: Dispatch holds a restricted
+// member to the broker's own set for such a member (memberMachineLogins). erin's browser lists her
+// own machine's login and the login of the pod the broker maps to her, and her revoke of the pod's
+// login reaches the broker naming her; her revoke of a service's login is 403 RESTRICTED_MEMBER,
+// and no revoke reaches the broker, so the broker's own 404 for it is never reached.
+//
+// Control: under the filter before this rule (a login naming her as its approver and no service,
+// ownMachineLogins, in place of memberMachineLogins in listMachineLogins and revokeMachineLogin),
+// the pod's login is neither listed nor revocable, and this test fails on both.
+func TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, _ := newAccessServerWith(t, testServerOptions{
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL,
+	})
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	rig.bodyByRoute["GET /v1/launcher-credentials"] = machineLoginsWithAPod
+
+	listed := dispatchRequest(t, served, http.MethodGet, "/api/v1/machine-logins", nil, accessErin)
+	if listed.Code != http.StatusOK || !slices.Equal(credentialIDs(t, listed), []string{"cred-erin", "cred-pod-erin"}) {
+		t.Errorf("erin's browser on GET /api/v1/machine-logins = %d %s, want 200 listing cred-erin and cred-pod-erin", listed.Code, listed.Body.String())
+	}
+
+	rig.routes = nil
+	refused := dispatchRequest(t, served, http.MethodPost, "/api/v1/machine-logins/cred-service/revoke", nil, accessErin)
+	if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"RESTRICTED_MEMBER"`) || len(rig.revokes()) != 0 {
+		t.Errorf("erin's revoke of a service's login = %d %s with %v sent to the broker, want 403 RESTRICTED_MEMBER and no revoke", refused.Code, refused.Body.String(), rig.revokes())
+	}
+
+	rig.routes = nil
+	revoked := dispatchRequest(t, served, http.MethodPost, "/api/v1/machine-logins/cred-pod-erin/revoke", nil, accessErin)
+	if revoked.Code != http.StatusOK || !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-pod-erin/revoke-by-approver"}) ||
+		!strings.Contains(rig.lastBody, `"approver":"erin@other.example"`) {
+		t.Errorf("erin's revoke of her pod's login = %d %s, sent %v with body %s; want 200 and one revoke naming her", revoked.Code, revoked.Body.String(), rig.revokes(), rig.lastBody)
+	}
+}
+
 // TestARestrictedMembersTokensListAndRevokeNoMachineLogin: the list and the revoke of a restricted
 // member's own machine logins are their browser's alone. erin's personal token, and a broker token
 // acting for her, are each refused GET /api/v1/machine-logins and the revoke of her own login, and

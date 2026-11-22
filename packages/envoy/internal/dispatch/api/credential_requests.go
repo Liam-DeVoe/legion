@@ -45,7 +45,8 @@ import (
 // writes, withinReadScope for the read): the lookup of a machine login by the code its machine
 // shows and that login's approve and deny, and the list of their machine logins and the revoke of
 // one. Each handler then holds the member to a machine login of their own (ownMachineLogin for a
-// pending one, ownMachineLogins for an issued one). Through a token a restricted member is refused
+// pending one, memberMachineLogins, their own machines' and their pods', for an issued one).
+// Through a token a restricted member is refused
 // every one of them: 403 OAUTH_SCOPE_REQUIRED where the token lacks the row's scopes
 // (gateRouteScopes, which runs first), as their agent's named token holds none, and 403
 // RESTRICTED_MEMBER otherwise (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or
@@ -656,7 +657,8 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
 // login is the grant's approver or the person its enrollment acts for (an unmapped person's pod
 // acts for no one), or, for a grant the model judge approved in anyone's stead, anyone who may see
-// it. The browser's body carries nothing Dispatch reads.
+// it; and, as an approver, only for a person Dispatch does not call a restricted member. The
+// browser's body carries nothing Dispatch reads.
 func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -678,8 +680,8 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 // of the caller's own pods (pods whose Kubernetes account the broker's BROKER_POD_OPERATORS maps
 // to the caller, each row's person naming them), an expired one whose sessions still run among
 // them. Dispatch names the caller, so no one lists another person's machines or pods. A restricted
-// member, at their browser alone (restrictedOwnLoginRoutes), is answered their own machine logins
-// and no service's (ownMachineLogins).
+// member, at their browser alone (restrictedOwnLoginRoutes), is answered their own machines' and
+// their pods' logins and no service's (memberMachineLogins).
 func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -699,7 +701,7 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 		relayBrokerResponse(w, body, err)
 		return
 	}
-	own, err := ownMachineLogins(r.Context(), client, login)
+	own, err := memberMachineLogins(r.Context(), client, login)
 	if err != nil {
 		relayBrokerResponse(w, nil, err)
 		return
@@ -713,8 +715,9 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 // approved it, and for a person's pod login only when the caller is the person the broker's
 // BROKER_POD_OPERATORS maps the pod's account to. The browser's body carries nothing Dispatch
 // reads. A restricted member, at their browser alone (restrictedOwnLoginRoutes), revokes only a
-// machine login of their own (ownMachineLogins); any other id, a service's login's among them, is
-// 403 RESTRICTED_MEMBER and no revoke reaches the broker.
+// login of memberMachineLogins, their own machines' and their pods'; any other id, a service's
+// login's among them, is 403 RESTRICTED_MEMBER and no revoke reaches the broker, so the broker's
+// own 404 for a restricted member's revoke of a service's login is no answer this route gives.
 func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -731,14 +734,14 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	login, id := model.CanonicalLogin(actor.ID), r.PathValue("id")
 	if restricted {
-		own, err := ownMachineLogins(r.Context(), client, login)
+		own, err := memberMachineLogins(r.Context(), client, login)
 		if err != nil {
 			relayBrokerResponse(w, nil, err)
 			return
 		}
 		if !slices.ContainsFunc(own, func(credential wire.LauncherCredentialResp) bool { return credential.CredentialID == id }) {
 			writeError(w, codeRestrictedMember, http.StatusForbidden,
-				"a restricted member revokes only a machine login of their own, which names them as its approver and no service")
+				"a restricted member revokes only a machine login of their own, which names them as its approver and no service, or the login of a pod the secrets broker maps to them")
 			return
 		}
 	}
@@ -747,10 +750,30 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownMachineLogins is the machine logins the broker lists for person that are person's own: a
-// login whose approver is person and which names no service. The broker's list for a person holds
-// every service's login beside the person's own machines', which a restricted member neither lists
-// nor revokes, and the revocation a removal owes ends only these (revokeMachineLoginsOf).
+// login whose approver is person and which names no service. The revocation a removal owes ends
+// only these (revokeMachineLoginsOf): a pod login it ended would log in again with its token, so a
+// removal leaves the logins of the person's pods to the broker. A restricted member lists and
+// revokes memberMachineLogins, which holds these and their pods' logins.
 func ownMachineLogins(ctx context.Context, client *cipher.Client, person string) ([]wire.LauncherCredentialResp, error) {
+	return machineLoginsOf(ctx, client, person, func(login wire.LauncherCredentialResp) bool {
+		return namesNoService(login.Service) && model.CanonicalLogin(login.ApprovedBy) == person
+	})
+}
+
+// memberMachineLogins is the machine logins a restricted member lists and revokes: the broker's
+// own set for such a member (requests' restricted_approver.go), the logins of their own machines
+// (ownMachineLogins' rule) and the logins of the pods whose Kubernetes account the broker's
+// BROKER_POD_OPERATORS maps to them, whose person field names them. A service's login is in
+// neither, whoever approved it, so it is no restricted member's to list or revoke.
+func memberMachineLogins(ctx context.Context, client *cipher.Client, person string) ([]wire.LauncherCredentialResp, error) {
+	return machineLoginsOf(ctx, client, person, func(login wire.LauncherCredentialResp) bool {
+		return namesNoService(login.Service) && model.CanonicalLogin(login.ApprovedBy) == person ||
+			login.Person != nil && model.CanonicalLogin(*login.Person) == person
+	})
+}
+
+// machineLoginsOf is the machine logins the broker lists for person that keep holds of.
+func machineLoginsOf(ctx context.Context, client *cipher.Client, person string, keep func(wire.LauncherCredentialResp) bool) ([]wire.LauncherCredentialResp, error) {
 	listed, err := client.MachineLogins(ctx, person)
 	if err != nil {
 		return nil, err
@@ -759,13 +782,13 @@ func ownMachineLogins(ctx context.Context, client *cipher.Client, person string)
 	if err := json.Unmarshal(listed, &logins); err != nil {
 		return nil, fmt.Errorf("read %s's machine logins from the secrets broker: %w", person, err)
 	}
-	own := []wire.LauncherCredentialResp{}
+	kept := []wire.LauncherCredentialResp{}
 	for _, login := range logins.Credentials {
-		if namesNoService(login.Service) && model.CanonicalLogin(login.ApprovedBy) == person {
-			own = append(own, login)
+		if keep(login) {
+			kept = append(kept, login)
 		}
 	}
-	return own, nil
+	return kept, nil
 }
 
 // --- GET /api/v1/signins, POST .../{id}/revoke ---

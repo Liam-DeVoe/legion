@@ -16,16 +16,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The two revoke rows a person's own Settings offers: a grant they approved or whose session they
-// operate, and a sign-in of theirs.
+// The two revoke rows a person's own Settings offers: a grant whose session acts for them, and a
+// sign-in of theirs.
 const (
 	ownGrantRevoke  = "POST /api/v1/credential-grants/{id}/revoke"
 	ownSignInRevoke = "POST /api/v1/signins/{id}/revoke"
 )
 
 // ownRevokeBroker is a secrets broker that decides whose a grant or a sign-in is as the real one
-// does: a grant's revoke is its approver's or its enrollment's operator's (403 NOT_APPROVER for
-// anyone else), and a sign-in's is its person's (anyone else's is an unknown id, 404). It counts
+// does for a full member: a grant's revoke is its approver's or its enrollment's operator's (403
+// NOT_APPROVER for anyone else; the real broker ends a restricted member's revoke only of a grant
+// whose session acts for them, requests' restricted_approver.go), and a sign-in's is its person's
+// (anyone else's is an unknown id, 404). It counts
 // the revokes Dispatch sends it.
 type ownRevokeBroker struct {
 	server  *httptest.Server

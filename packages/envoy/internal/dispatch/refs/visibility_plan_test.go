@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -124,7 +123,7 @@ func TestTheVisibilityArmsProbeByIndex(t *testing.T) {
 			for index, id := range read.ids {
 				ends[index] = edgeRow{otherKind: read.kind, otherID: id}
 			}
-			recorder := &statementRecorder{inner: database.Pool}
+			recorder := &statementRecorder{Queryer: database.Pool}
 			if _, err := resolveNodes(ctx, recorder, reader, true, ends); err != nil {
 				t.Fatalf("read the %s nodes %v as %s: %v", read.scope, read.ids, caller.name, err)
 			}
@@ -214,27 +213,4 @@ func planStatement(t *testing.T, database *store.Store, statement recordedStatem
 		t.Fatalf("explain %s: %v", statement.sql, err)
 	}
 	return explaintest.OnePlan(t, raw)
-}
-
-// recordedStatement is one statement a read issued, with the arguments it bound.
-type recordedStatement struct {
-	sql  string
-	args []any
-}
-
-// statementRecorder is the Queryer a read runs on while a test records each statement it issues
-// and the arguments it binds, so the test plans what Postgres was asked rather than a copy of it.
-type statementRecorder struct {
-	inner      Queryer
-	statements []recordedStatement
-}
-
-func (r *statementRecorder) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	r.statements = append(r.statements, recordedStatement{sql: sql, args: args})
-	return r.inner.Query(ctx, sql, args...)
-}
-
-func (r *statementRecorder) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	r.statements = append(r.statements, recordedStatement{sql: sql, args: args})
-	return r.inner.QueryRow(ctx, sql, args...)
 }

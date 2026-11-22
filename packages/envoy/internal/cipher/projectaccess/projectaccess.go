@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -56,6 +57,14 @@ const (
 // project's access list goes on passing a check made here, beside the life of a token minted
 // before the removal (BROKER_ACCESS_TOKEN_SECONDS).
 const CacheTTL = 30 * time.Second
+
+// RelayedReadBound is how long a member-kind read made for a route Dispatch's server relays may
+// run: Dispatch waits 5 seconds for the broker's whole answer (internal/dispatch/cipher's
+// defaultTimeout), and one call to Dispatch may take requestTimeout, so a read with no bound of its
+// own could outlast the call it is made for, and the route would answer nobody rather than the
+// rows it lists without the read, the refusal, or the revoke that goes ahead. A caller bounds its
+// read with it (context.WithTimeout), and takes a read it cut short as one Dispatch did not answer.
+const RelayedReadBound = 2 * time.Second
 
 // requestTimeout bounds one call to Dispatch, the dial included.
 const requestTimeout = 10 * time.Second
@@ -113,7 +122,74 @@ var (
 	// read as not held, since during a roll such a Dispatch cannot say whether a newer one holds
 	// the person.
 	ErrNoHeldField = errors.New("projectaccess: dispatch's answer for a person names no held")
+	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 502, 503
+	// or 504 whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
+	// of it, or one that names a code Dispatch answers for its own outage (outageCodes); and a 500
+	// whose body names no code or names internalCode.
+	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
 )
+
+// outageCodes are the codes Dispatch answers its access routes with, beside a 503, for an outage
+// of its own that says nothing of the person or the project asked about: OIDC_ISSUER_UNAVAILABLE
+// while it cannot reach the issuer of the broker's own account token (internal/dispatch/api,
+// serviceTokenActor), and DATABASE_UNAVAILABLE, which only a Dispatch with no database configured
+// answers (readyPool, begin). A 502, 503 or 504 whose body names any other code, such as
+// FEATURE_OFF or GITHUB_APP_UNCONFIGURED, is Dispatch answering, and that answer lasts until
+// somebody fixes it.
+var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
+
+// internalCode is the code of Dispatch's 500 for a handler that failed (internal/dispatch/api,
+// writeHandlerError), which is how its access routes answer while its database fails: a query
+// that fails at once, in a failover or a restart, is that 500, not a 503. A 500 naming it, or
+// naming no code at all (a page in front of Dispatch), is Dispatch not answering now; a 500 naming
+// any other code of Dispatch's, such as IDENTITY_ERROR, is an answer that lasts until somebody
+// fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL reads as an outage while it
+// lasts, which lets only what an outage lets through: a revoke by the person a grant names as its
+// approver, which takes access away.
+const internalCode = "INTERNAL"
+
+// Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
+// that clears by itself once Dispatch answers again. That is the read's deadline passing, its
+// caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
+// answer arrived (dispatchread.ErrNoAnswer); a 502, 503 or 504 whose body names no code of
+// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); and a 500
+// whose body names no code or internalCode, the 500 Dispatch answers while its database fails.
+// Every other failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the
+// broker's own account (dispatchread.ErrBrokerRefused), answering a member kind this broker does
+// not know (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 500
+// naming any other code of Dispatch's, a 502, 503 or 504 naming any other code of Dispatch's, any
+// other status, or a body that does not decode; a certificate that does not verify and a name that
+// does not resolve (dispatchread.Reader.Get); and so is a read its caller gave up on
+// (context.Canceled), which says nothing of Dispatch. A caller that lets something through only
+// while Dispatch does not answer goes ahead on Unanswered alone
+// (requests.Machine.RevokeByApprover, for the grant's named approver).
+func Unanswered(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable)
+}
+
+// NoApprover is refusal, a caller's own refusal of a person who may not act as an approver there
+// (record.ErrNotApprover, say), for a person Dispatch calls a restricted member (MemberRestricted),
+// in words that say so first: "a person Dispatch calls a restricted member is no approver of " and
+// then of, which names what and says what such a person does instead, in the verb of what they did.
+// It is refusal, so whatever answers refusal answers it alike, while its words are these alone:
+// refusal's own would speak of whose the row is, and contradict a reader the row does name.
+func NoApprover(refusal error, of string) error {
+	return &restrictedRefusal{why: "a person Dispatch calls a restricted member is no approver of " + of, refusal: refusal}
+}
+
+// restrictedRefusal is NoApprover's refusal.
+type restrictedRefusal struct {
+	why     string
+	refusal error
+}
+
+func (e *restrictedRefusal) Error() string { return e.why }
+
+// Unwrap is the caller's own refusal.
+func (e *restrictedRefusal) Unwrap() error { return e.refusal }
 
 // NotVisibleError is Visible's refusal: the first project of a list its person may not see, or
 // that Dispatch does not hold. It is ErrNotVisible (errors.Is), and its Project is what a caller
@@ -157,15 +233,19 @@ func (e *MemberKindUncheckable) CallerEnded() bool { return errors.Is(e.Err, con
 // uncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
 // in words a refused caller may read: Dispatch refusing the broker's own account, which the
 // deployment fixes; Dispatch answering a kind this broker does not know, which a newer broker
-// fixes; and otherwise Dispatch not answering, which clears by itself.
+// fixes; the broker not asking Dispatch, while Dispatch does not answer (Unanswered) or the
+// caller went away; and otherwise Dispatch answering what the broker cannot read, an answer that
+// lasts until somebody fixes it.
 func uncheckableReason(err error) string {
 	switch {
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		return "Dispatch refused the broker's own account"
 	case errors.Is(err, ErrUnknownMemberKind):
 		return "Dispatch answered a member kind this broker does not know"
+	case Unanswered(err) || errors.Is(err, context.Canceled):
+		return "the broker could not ask Dispatch"
 	}
-	return "the broker could not ask Dispatch"
+	return "Dispatch answered what the broker cannot read"
 }
 
 // Restricted reports whether Dispatch calls person a restricted member (MemberRestricted), for a
@@ -359,19 +439,19 @@ func fresh(ctx context.Context) bool {
 }
 
 // askedNowKey marks a context whose member-kind reads take no failure an earlier read kept and
-// join no call already in flight (askedNow), though they still take a young answer from the
-// cache: a read whose failure lets something through, as ListAllowed's empty list does. It is a
-// context marker rather than a method, so an Access that hands the context on, a wrapper
-// included, keeps the rule.
+// join no call already in flight (AskedNow), though they still take a young answer from the
+// cache: a read whose failure lets something through, as ListAllowed's empty list does and an
+// approver's revoke does (requests.Machine.RevokeByApprover). It is a context marker rather than a
+// method, so an Access that hands the context on, a wrapper included, keeps the rule.
 type askedNowKey struct{}
 
-// askedNow is ctx for a member-kind read that is asked of Dispatch itself whenever the cache
+// AskedNow is ctx for a member-kind read that is asked of Dispatch itself whenever the cache
 // holds no young answer (askedNowKey).
-func askedNow(ctx context.Context) context.Context {
+func AskedNow(ctx context.Context) context.Context {
 	return context.WithValue(ctx, askedNowKey{}, true)
 }
 
-// isAskedNow reports whether ctx is one askedNow or Fresh made, or derived from one.
+// isAskedNow reports whether ctx is one AskedNow or Fresh made, or derived from one.
 func isAskedNow(ctx context.Context) bool {
 	marked, _ := ctx.Value(askedNowKey{}).(bool)
 	return marked || fresh(ctx)
@@ -463,10 +543,10 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 // wait; and a read that failed is the answer to that person's member-kind reads for failureTTL
 // from when it came back. So while Dispatch does not answer, a person's reads wait on one call at
 // a time, each for no longer than that call's requestTimeout, rather than each making a call of
-// its own. A read under Fresh, or one ListAllowed asks (askedNow), joins no call already in
-// flight, which may have been asked before the change it must see, and takes no kept failure: it
-// asks Dispatch itself (personAnswerNow). Under CachedOnly it answers a young cached answer or
-// ErrNotCached, and asks nothing.
+// its own. A read under Fresh, or one under AskedNow, joins no call already in flight, which may
+// have been asked before the change it must see, and takes no kept failure: it asks Dispatch
+// itself (personAnswerNow). Under CachedOnly it answers a young cached answer or ErrNotCached, and
+// asks nothing.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -557,7 +637,7 @@ func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error
 }
 
 // personAnswer is the cached answer for person, a canonical login, while it is younger than keep
-// says for it, and else the one a call of the person route answers. Under Fresh or askedNow it is
+// says for it, and else the one a call of the person route answers. Under Fresh or AskedNow it is
 // personAnswerNow. Under CachedOnly a cache that holds no young answer is ErrNotCached, and nothing
 // is asked. Where memberKind, a failure an earlier member-kind read kept for person within
 // failureTTL is the answer, with no call, and a failure of the call this read starts is kept for
@@ -607,10 +687,11 @@ func (c *Client) personAnswer(ctx context.Context, person string, memberKind boo
 // call of its own on ctx, settled as any other. A read under Fresh asks it, whatever CachedOnly
 // says (no caller marks both: the hold gate is the one caller that marks CachedOnly, and the
 // request machine's project reads, the ones that mark Fresh, never check a hold), and so does a
-// read whose failure lets something through (ListAllowed), so that what it lets through lasts no
-// longer than Dispatch does not answer. The call runs on the caller's own context, so a call that
-// failed because that context ended, its deadline passed or its caller cancelled, keeps no failure
-// for the person's next reads: that ending says nothing of Dispatch.
+// read whose failure lets something through (ListAllowed, and an approver's revoke,
+// requests.Machine.RevokeByApprover), so that what it lets through lasts no longer than Dispatch
+// does not answer. The call runs on the caller's own context, so a call that failed because that
+// context ended, its deadline passed or its caller cancelled, keeps no failure for the person's
+// next reads: that ending says nothing of Dispatch.
 func (c *Client) personAnswerNow(ctx context.Context, person string, memberKind bool, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
 	c.mu.Lock()
 	if cached, ok := c.people[person]; ok && !fresh(ctx) && c.now().Sub(cached.at) < keep(cached) {
@@ -775,24 +856,34 @@ func (c *Client) sweepLocked() {
 // (dispatchread.Reader.Get), which a caller never mints through. A 404 is an answer, returned as
 // its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
 // project route answers a project it does not hold with; any other 404 (a Dispatch that does not
-// serve the route, a wrong path behind an ingress) is a failure naming its code. Every other
-// status, a transport failure and a body it could not read or decode are errors naming what
-// failed and never the token.
+// serve the route, a wrong path behind an ingress) is a failure naming its code. A 502, 503 or 504
+// whose body names no code, or one of outageCodes, and a 500 whose body names no code or
+// internalCode, are errUnavailable, Dispatch not answering now (Unanswered); one naming any other
+// code is Dispatch's answer. Every other status, a transport failure and a body it could not read
+// or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
 		return 0, err
 	}
-	switch answer.Status {
-	case http.StatusOK:
-	case http.StatusNotFound:
+	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
-		if code == projectNotFoundCode {
-			return http.StatusNotFound, nil
+		switch answer.Status {
+		case http.StatusNotFound:
+			if code == projectNotFoundCode {
+				return http.StatusNotFound, nil
+			}
+			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+		case http.StatusInternalServerError:
+			if code == "" || code == internalCode {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			}
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			if code == "" || slices.Contains(outageCodes, code) {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			}
 		}
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
-	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, dispatchread.RefusalCode(answer.Body))
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, code)
 	}
 	if err := json.Unmarshal(answer.Body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
@@ -895,14 +986,14 @@ func (c *Client) clock() time.Time { return c.now() }
 // through either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it:
 // the entry's empty list is allowed while Dispatch cannot be reached, and the caller that goes on
 // logs that it did so unchecked. Because that failure lets the list through, the member kind is
-// asked afresh (askedNow, which any Access that hands the context on honours), never answered by
+// asked afresh (AskedNow, which any Access that hands the context on honours), never answered by
 // a failure an earlier read kept: the list goes through unchecked only while Dispatch does not
 // answer.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
-	kind, err := a.MemberKind(askedNow(ctx), person)
+	kind, err := a.MemberKind(AskedNow(ctx), person)
 	switch {
 	case errors.Is(err, dispatchread.ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err
