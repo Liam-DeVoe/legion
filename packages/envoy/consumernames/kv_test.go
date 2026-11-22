@@ -136,8 +136,10 @@ func TestTheKVStoreRefusesAMissingBucketAndAMissingSentinel(t *testing.T) {
 	if _, err := store.State(context.Background()); !errors.Is(err, ErrNoStore) {
 		t.Fatalf("State with no bucket = %v, want ErrNoStore", err)
 	}
-	if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 0); !errors.Is(err, ErrNoStore) {
-		t.Fatalf("Write with no bucket = %v, want ErrNoStore", err)
+	// A write to a missing bucket meets no responders, which tells nothing of the bucket: it is a
+	// failed write (TestAWriteNoServerAnswersIsNoMissingStore), and only the read finds it missing.
+	if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 0); !errors.Is(err, natsgo.ErrNoResponders) || IsSelectionStateLost(err) {
+		t.Fatalf("Write with no bucket = %v, want a failed write wrapping nats.ErrNoResponders", err)
 	}
 	live := newLiveStore(t, uri, nil)
 	if _, err := live.store.State(context.Background()); !errors.Is(err, ErrNoSentinel) {
@@ -167,6 +169,36 @@ func TestAReadNoServerAnswersIsNoMissingStore(t *testing.T) {
 	_, err = NewKVStore(ConnRequester{silent}).State(context.Background())
 	if !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, ErrNoStore) || IsSelectionStateLost(err) {
 		t.Fatalf("State that no server answered = %v, want a failed read wrapping nats.ErrNoResponders, no missing store", err)
+	}
+}
+
+// A write no server answers tells nothing of the bucket either, as a read: on a server with no
+// JetStream every request meets no responders, and the store's write (Write, WriteSentinel) is a
+// failed write wrapping nats.ErrNoResponders, never a missing store (IsSelectionStateLost false), so
+// the caller counts it as an error and retries rather than reporting the selection refused. The
+// control is the same write's answer on a JetStream server that holds the bucket: written.
+func TestAWriteNoServerAnswersIsNoMissingStore(t *testing.T) {
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, Boundary: 1})
+	if _, err := live.store.Write(context.Background(), "ses-1", Record{Start: 1}, 0); err != nil {
+		t.Fatalf("control: Write on a server holding the bucket = %v", err)
+	}
+	_, uri := testnats.StartConfig(t, "", nil, true)
+	silent, err := testnats.ConnectSeed(t, uri, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(silent.Close)
+	store := NewKVStore(ConnRequester{silent})
+	for name, write := range map[string]func() error{
+		"Write": func() error { _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 0); return err },
+		"WriteSentinel": func() error {
+			_, err := store.WriteSentinel(context.Background(), StoreState{Cutover: CutoverDone}, 0)
+			return err
+		},
+	} {
+		if err := write(); !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, ErrNoStore) || IsSelectionStateLost(err) {
+			t.Errorf("%s that no server answered = %v, want a failed write wrapping nats.ErrNoResponders, no missing store", name, err)
+		}
 	}
 }
 

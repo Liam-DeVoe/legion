@@ -203,7 +203,7 @@ missing marker cannot tell a store before its cutover from one whose state was l
 
 | State | Error |
 | --- | --- |
-| the bucket or table is missing | `ErrNoStore` (only the server's own "stream not found", 10059; a read no server answers is a failed read) |
+| the bucket or table is missing | `ErrNoStore` (only the server's own "stream not found", 10059; a read or a write no server answers is a failed read or write, wrapping `nats.ErrNoResponders`, as a timeout is, and never a refusal) |
 | the sentinel is absent (no row; in the bucket, no message or a delete or purge marker) | `ErrNoSentinel` |
 | the sentinel key holds anything but the store's own exact sentinel: malformed, another family's, under another key, or with a field this build does not know | `ErrMalformedSentinel` (`ErrSentinelFamily` too for another family's) |
 | the cutover has not run, or was rolled back | `ErrCutoverNotRun` |

@@ -302,7 +302,11 @@ func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) 
 	return response.Message.Data, response.Message.Seq, nil
 }
 
-// put publishes data on key if the key's last sequence is revision.
+// put publishes data on key if the key's last sequence is revision. A write no server answers (no
+// responders: no stream captures the key's subject yet, or no JetStream answers at all) tells
+// nothing of the bucket, as a read that meets none (last), so it is a failed write wrapping
+// nats.ErrNoResponders, never ErrNoStore: only a read's stream-not-found answer is the missing
+// store.
 func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uint64) (uint64, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
@@ -310,9 +314,6 @@ func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uin
 	msg.Header.Set(jetstream.ExpectedLastSubjSeqHeader, strconv.FormatUint(revision, 10))
 	reply, err := s.request.Request(ctx, msg)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoResponders) {
-			return 0, fmt.Errorf("%w: %s (%w)", ErrNoStore, s.stream(), err)
-		}
 		return 0, fmt.Errorf("consumer names: write %s to %s: %w", key, s.bucket, err)
 	}
 	var ack struct {
