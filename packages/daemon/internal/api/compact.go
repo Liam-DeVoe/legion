@@ -365,8 +365,8 @@ func boundReason(text string) string {
 // working because its session is being compacted rather than because a turn is
 // (supervise.Claim.Compacting), and the claim's role, which decides what a refusal may name as
 // starting it again (startsAgainName). by is the caller: the operator's suspension refuses the
-// controller's resume (supervise.Claim.HeldAgainst), and an agent that suspension holds, held or
-// landed, is named the operator's resume as what starts it (refuseHeldSuspension,
+// controller's resume_agent (supervise.Claim.HeldAgainst), and an agent that suspension holds,
+// held or landed, is named the operator's resume as what starts it (refuseHeldSuspension,
 // refuseNotRunning). A claim stored working is read once more, at the runtime and now, because
 // what stands behind it is the one thing neither the state nor the view says: that read is this
 // door's as much as the fresh session's, and it is a decision of the claim, which is why this is

@@ -4,22 +4,22 @@ Read this on a `provider-errors` wake, when an agent of your tree needs an actio
 
 ## An agent of your tree that needs an action
 
-The actions on an agent (stop, retry, suspend, resume, compact, and a start in a fresh session) are the project's controller's alone: your `legion` tool refuses each in an architect session, and the daemon refuses any grant but the controller's with `403 CONTROLLER_REQUIRED`. Your `retry_or_escalate` of a held phase stays yours (the `worker-died` row of `skill://legion-architect/references/wake-routing.md`).
+The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: your `legion` tool refuses each in an architect session, and the daemon refuses any grant but the controller's with `403 CONTROLLER_REQUIRED`. Your `retry_or_escalate` of a held phase stays yours (the `worker-died` row of `skill://legion-architect/references/wake-routing.md`).
 
 When an agent of your tree needs an action, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. `<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
 
 ```bash
 dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-controller' --body-file - <<'EOF'
 Action on an agent from <your role token>
-<KEY> <role>: <the action: stop, retry, suspend, resume, compact, or start in a fresh session>, because <what you observed, with the numbers and when>
+<KEY> <role>: <the action: stop, retry, suspend, resume the agent, compact, or start it in a fresh session>, because <what you observed, with the numbers and when>
 EOF
 ```
 
 - Take no action on the agent yourself, and send the controller no `envoy_publish` for it: Dispatch delivers the mention and retries it.
 - The controller replies under your comment with what it ran and the daemon's answer, or why it ran nothing. Wait for nothing: the rest of your tree's work goes on.
 - `provider-errors`: six turns of the agent in a row ended in a provider error, and the daemon keeps the task. The daemon tells the controller too, which compacts the agent or starts it in a fresh session: ask it for nothing. For a rate limit or an overload, do nothing. For a refusal of the content, ask the worker which step its turns end on and narrow that step, or move the issue back with `request_backward_move`.
-- An agent that the operator or the controller suspended starts again only at a resume: the operator's lifts either suspension, and the controller's only its own. Ask the operator with a `dispatch ask` on the root, and the controller with a comment as above.
-- While the project is paused, the daemon refuses every action that would start a turn of an agent: a retry, a resume, a compaction and a fresh session. Ask for none of them until the project's resume, which alone lifts the pause, and ask nobody to resume the project.
+- An agent that the operator or the controller suspended starts again only when one of them resumes the agent: the operator's resume lifts either suspension, and the controller's resume of the agent only its own. Ask the operator with a `dispatch ask` on the root, and the controller with a comment as above.
+- While the project is paused, the daemon refuses every action that would start a turn of an agent: a retry, a resume of the agent, a compaction and a fresh session. Ask for none of them until the project's resume, which alone lifts the pause, and ask nobody to resume the project.
 
 ## The token the secrets broker lends
 

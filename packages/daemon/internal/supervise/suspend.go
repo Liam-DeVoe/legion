@@ -250,9 +250,9 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // source changes under it (Claim.SuspendedBy). A source takes the agent over only when it
 // outranks the one that holds it (suspensionRank): an operator's or the controller's suspend of an
 // agent the daemon suspended, so the rule resumes it no more until a resume lifts it, an
-// operator's suspend of an agent the controller suspended, so the controller's resume lifts it no
-// more, and a daemon's, the controller's or an operator's suspend of an agent whose idle pod was
-// released, so the linger, park, close, hand-over or hold that asked for it owns the agent and no
+// operator's suspend of an agent the controller suspended, so the controller's resume_agent lifts
+// it no more, and a daemon's, the controller's or an operator's suspend of an agent whose idle pod
+// was released, so the linger, park, close, hand-over or hold that asked for it owns the agent and no
 // later wake acts on it. Anything else changes nothing, and the controller's suspend of an agent
 // the operator holds is refused before it gets here (suspendRequest, Claim.HeldAgainst).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {

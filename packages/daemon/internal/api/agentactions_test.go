@@ -452,8 +452,8 @@ func askAsArchitect(t *testing.T, h *harness, architect liveClaim, route, issue 
 	return h.request(http.MethodPost, route, ClaimRequest{GrantID: architect.grant(t), Issue: issue, Role: string(role)}, nil)
 }
 
-// An architect's grant opens none of the six agent actions — stop, retry, suspend, resume,
-// compact and fresh session — not even on an agent of an issue it owns: each refuses it 403
+// An architect's grant opens none of the six agent actions — stop, retry, suspend, resume_agent,
+// compact and fresh_session — not even on an agent of an issue it owns: each refuses it 403
 // CONTROLLER_REQUIRED, in the words its door gives every grant that is not the controller's,
 // before the claim is looked up, and nothing of the claim changes and nothing reaches the
 // runtime. Each row starts from an agent its action would change if the architect were served:

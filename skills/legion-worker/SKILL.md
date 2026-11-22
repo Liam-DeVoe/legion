@@ -29,7 +29,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - retro on the architect's answer to a defect it reported;
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
-- Another agent that needs an action (a stop, a retry, a suspension, a resume, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md#another-agent-that-needs-an-action`).
+- Another agent that needs an action (a stop, a retry, a suspension, a resume of the agent, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md#another-agent-that-needs-an-action`).
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
 - A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.

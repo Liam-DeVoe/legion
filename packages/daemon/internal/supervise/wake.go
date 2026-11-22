@@ -750,7 +750,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 //
 // The daemon's resume by rule is none of them: it meets a parked claim with "the claim runs:
 // nothing to resume" (nothingToDo), which is the truth — the wake the claim waits for is the
-// launch that rule would make. Nor is the controller's resume or retry, which the pacing makes
+// launch that rule would make. Nor is the controller's resume_agent or retry, which the pacing makes
 // wait (exemptWake): dropping the wake for it would park a wake of its own behind every turn the
 // queue holds, for the launch this claim already waits its turn for, so it reaches the agent while
 // its claim is parked launching, is refused because that claim is neither suspended nor failed,

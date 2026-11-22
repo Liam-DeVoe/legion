@@ -35,12 +35,12 @@ Apart from that reply, file nothing and wait for nothing. A production check's r
 
 ## Another agent that needs an action
 
-The actions on an agent (stop, retry, suspend, resume, compact, and a start in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. `<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
+The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. `<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
 
 ```bash
 dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-controller' --body-file - <<'EOF'
 Action on an agent from <your role token>
-<KEY> <role>: <the action: stop, retry, suspend, resume, compact, or start in a fresh session>, because <what you observed, with the numbers and when>
+<KEY> <role>: <the action: stop, retry, suspend, resume the agent, compact, or start it in a fresh session>, because <what you observed, with the numbers and when>
 EOF
 ```
 
