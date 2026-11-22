@@ -880,12 +880,13 @@ export function MentionComposer({
     replyTo,
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
-  // places there, as a phone thread's are - says how far up it reaches, so the shell's floating
-  // status sits above it rather than over its controls; a refusal's row grows it upward. One with
-  // neither lays out in the page.
+  // places there - is in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers
+  // and the elements in each), and publishes how far up it reaches so the layers above it ride
+  // above its controls; a refusal's row grows it upward. One with neither lays out in the page.
   useFootInset(
     frame === undefined ? formRef : frameRef,
-    !dormant && (docked || frame !== undefined)
+    !dormant && (docked || frame !== undefined),
+    "page"
   );
   // The margin sends a refused margin compose again itself, once it has written the mark it is
   // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the

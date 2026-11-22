@@ -1,3 +1,5 @@
+import type { Locator } from "@playwright/test";
+
 import type { Issue } from "../web/src/api/types";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import { setLiveSessions } from "./agents";
@@ -374,12 +376,18 @@ test("with a refused change pending, New epic from these and Clear selection sti
   }
 });
 
-// The row above, at every width the suite runs. On a desktop the selection bar and Pending
-// changes both sit at the bottom of the window, so the panel has to stand above the bar; on a
-// phone the bar sits at the top instead. At each width, every control of the bar and the panel's
-// own Retry and Discard must take a press. A trial press only checks that the control would take
-// it and presses nothing, so no dialog opens between one control and the next.
-test("with a refused change pending, every control of the selection bar and of Pending changes takes a press @phone", async ({
+// The selection bar from the sm width up, Pending changes and the update banner all sit at the
+// foot of the window, each in a layer of the foot (`web/src/hooks/useFootInset.ts`), so none
+// lies over another; below sm the bar sits under the header. In one page the row walks every
+// combination of the three that shows any. The banner comes first: a browser that focuses a new
+// page itself asks for the builds then, and the page asks again only a minute later, so the
+// answer that shows the banner has to be the one the page reads at its load. The banner is
+// dismissed once no combination left shows it, and the refused change is discarded for the last.
+// In each combination, at the project's own size and, from 640 px wide, at three desktop sizes,
+// every control of each element shown takes a press, and no two of the elements' boxes meet. A
+// trial press only checks that the control would take it and presses nothing, so no dialog opens
+// between one control and the next.
+test("the selection bar, Pending changes and the update banner, in every combination, each take every press and cover none of the others @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -395,45 +403,117 @@ test("with a refused change pending, every control of the selection bar and of P
         await route.fulfill({ status: 403, json: { error: "Move refused" } });
       else await route.continue();
     });
+    // Every live process now serves one build the page does not run (`deploymentChanged`).
+    await page.route("**/api/v1/dashboard/builds", (route) =>
+      route.fulfill({
+        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
+      })
+    );
     await page.goto("/projects/CORE/issues");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
-    const bar = page.getByRole("toolbar");
+    const toolbar = page.getByRole("toolbar");
+    const epics = toolbar.getByRole("combobox", { name: "Move to epic" });
     const pending = pendingWrites(page);
-    await select(refused.key).check();
-    await bar.getByRole("button", { name: "Take out of epic" }).click();
-    await expect(pending).toContainText(refused.key);
-    await select(refused.key).setChecked(false);
-    await select(other.key).check();
-    // Move takes a press only once an epic is picked, and picking one sends nothing.
-    const epics = bar.getByRole("combobox", { name: "Move to epic" });
-    await epics.selectOption(epic.key);
-    const buttons = bar.getByRole("button");
-    await expect(buttons).toHaveText([
-      /^Select all \d+ matching$/,
-      "Start next",
-      "Move",
-      "Take out of epic",
-      "New epic from these",
-      "Clear selection",
-    ]);
-    const controls = [
-      ...(await buttons.all()),
-      epics,
-      pending.getByRole("button", { name: "Retry", exact: true }),
-      pending.getByRole("button", { name: "Discard", exact: true }),
-    ];
+    const banner = page.getByRole("status", { name: "A new version is available" });
+    /** One element at the foot of the window: its name, its box, and every control it shows. */
+    type FootElement = { name: string; box: Locator; controls: () => Promise<Locator[]> };
+    const bar: FootElement = {
+      name: "the selection bar",
+      box: toolbar,
+      controls: async () => {
+        // Move takes a press only once an epic is picked, and picking one sends nothing.
+        await epics.selectOption(epic.key);
+        const buttons = toolbar.getByRole("button");
+        await expect(buttons).toHaveText([
+          /^Select all \d+ matching$/,
+          "Start next",
+          "Move",
+          "Take out of epic",
+          "New epic from these",
+          "Clear selection",
+        ]);
+        return [...(await buttons.all()), epics];
+      },
+    };
+    const pendingChanges: FootElement = {
+      name: "Pending changes",
+      box: pending,
+      controls: async () => [
+        pending.getByRole("button", { name: "Retry", exact: true }),
+        pending.getByRole("button", { name: "Discard", exact: true }),
+      ],
+    };
+    const update: FootElement = {
+      name: "the update banner",
+      box: banner,
+      controls: async () => [
+        banner.getByRole("button", { name: "Reload", exact: true }),
+        banner.getByRole("button", { name: "Dismiss update notice", exact: true }),
+      ],
+    };
     const own = page.viewportSize();
     if (!own) throw new Error("The project gave the page no viewport");
     const desktops = [
+      { width: 1280, height: 720 },
       { width: 1600, height: 1000 },
       { width: 1920, height: 1080 },
-    ];
-    for (const size of own.width >= 1024 ? [own, ...desktops] : [own]) {
-      await page.setViewportSize(size);
-      // A press that another element takes fails here, as in the row above.
-      for (const control of controls) await control.click({ trial: true, timeout: 5_000 });
-    }
+    ].filter((size) => size.width !== own.width || size.height !== own.height);
+    type Box = { x: number; y: number; width: number; height: number };
+    const meet = (a: Box, b: Box) =>
+      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+    const expectEachTakesEveryPress = async (shown: FootElement[]) => {
+      const controls: Locator[] = [];
+      for (const element of shown) controls.push(...(await element.controls()));
+      for (const size of own.width >= 640 ? [own, ...desktops] : [own]) {
+        await page.setViewportSize(size);
+        const at = `${size.width}x${size.height}`;
+        // A press that another element takes fails here, as in the row above.
+        for (const control of controls) await control.click({ trial: true, timeout: 5_000 });
+        await nextFrames(page);
+        const boxes: { name: string; box: Box }[] = [];
+        for (const { box, name } of shown) {
+          const found = await box.boundingBox();
+          if (found === null) throw new Error(`${name} has no box at ${at}`);
+          boxes.push({ box: found, name });
+        }
+        for (const [index, first] of boxes.entries()) {
+          for (const second of boxes.slice(index + 1)) {
+            expect(meet(first.box, second.box), `${first.name} meets ${second.name} at ${at}`).toBe(
+              false
+            );
+          }
+        }
+      }
+    };
+
+    await expect(banner).toBeVisible();
+    await expectEachTakesEveryPress([update]);
+
+    await select(refused.key).check();
+    await expectEachTakesEveryPress([bar, update]);
+
+    await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
+    await expect(pending).toContainText(refused.key);
+    await select(refused.key).setChecked(false);
+    await select(other.key).check();
+    await expectEachTakesEveryPress([bar, pendingChanges, update]);
+
+    await toolbar.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
+    await expect(toolbar).toHaveCount(0);
+    await expectEachTakesEveryPress([pendingChanges, update]);
+
+    await banner.getByRole("button", { name: "Dismiss update notice" }).click({ timeout: 5_000 });
+    await expect(banner).toHaveCount(0);
+    await expectEachTakesEveryPress([pendingChanges]);
+
+    await select(other.key).check();
+    await expectEachTakesEveryPress([bar, pendingChanges]);
+
+    await pending.getByRole("button", { name: "Discard", exact: true }).click({ timeout: 5_000 });
+    await expect(pending).toHaveCount(0);
+    await expectEachTakesEveryPress([bar]);
   } finally {
     await context.close();
   }

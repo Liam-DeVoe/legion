@@ -799,14 +799,15 @@ test("on a phone, the shell's status corner covers none of Jump to latest @phone
 
 // Both foot controls at once, which is the reader's ordinary case while the live socket is down:
 // the shell's status corner shows and the docked composer sits under it. `Jump to latest` is
-// placed above the reach the corner publishes (`--foot-status-inset`, `useFootInset`). That
-// reach was once measured only when the corner's own box or the screen changed size, never when
-// `--foot-composer-inset` moved the corner. So a corner shown before the composer published its
-// reach (the socket refused while the page loads, below), and one the composer's growth moved
-// afterwards (a refusal's Retry row), both left the pill placed against a reach the corner had
-// left: it dropped down the screen into the docked composer and took the taps meant for Send,
-// Retry and the draft. The hook's cascade measures every element it holds again whenever a
-// published value changes, and this row is what guards that fix.
+// placed above the top layer of the foot of the screen, which the corner publishes into
+// (`web/src/hooks/useFootInset.ts` lists the foot's layers). The corner's reach was once measured
+// only when the corner's own box or the screen changed size, never when the composer's layer
+// moved the corner. So a corner shown before the composer published its reach (the socket
+// refused while the page loads, below), and one the composer's growth moved afterwards (a
+// refusal's Retry row), both left the pill placed against a reach the corner had left: it
+// dropped down the screen into the docked composer and took the taps meant for Send, Retry and
+// the draft. The hook's cascade measures every element it holds again whenever a published value
+// changes, and this row is what guards that fix.
 test("on a phone, Jump to latest covers none of the docked composer while the status corner shows @phone", async ({
   browser,
 }) => {

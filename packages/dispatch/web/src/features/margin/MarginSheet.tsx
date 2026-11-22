@@ -2,6 +2,7 @@ import { type ReactNode, type RefObject, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -224,6 +225,12 @@ export function MarginSheet({
   });
   // What the margin's own tabs give way to: the rail it collapses to, or a phone margin thread.
   const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
+  // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
+  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so it
+  // publishes how far up it reaches and the layers above it ride above it. Expanded, it is a
+  // modal sheet over the page, and adds nothing.
+  const sheetRef = useRef<HTMLElement | null>(null);
+  useFootInset(sheetRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
 
   return (
     <>
@@ -255,6 +262,7 @@ export function MarginSheet({
         ref={(element) => {
           dialog.containerRef.current = element;
           marginRef.current = element;
+          sheetRef.current = element;
         }}
         role={sheet.expanded && compactSheet ? "dialog" : undefined}
       >
