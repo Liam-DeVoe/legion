@@ -1291,13 +1291,14 @@ func TestConsumeAppliesAPushToAnIssuesBranchAndToABase(t *testing.T) {
 	}
 }
 
-// A push to a branch that is legion/ followed by an issue key (claim.BranchIssue) decodes to the
-// Push the workflow applies to the pull request it records there; a push to a branch of any other
-// shape decodes to the BasePush that says a pull request's base may have moved, since that is the
-// shape of a branch pull requests sit on. A push to a ref that is no branch at all decodes to
-// neither. GitHub's deletion of an issue's branch, a push whose after is record.NoCommit, names no
-// head and decodes to no fact; the deletion of a base is still the BasePush that says the base
-// moved.
+// A push to an issue's branch, legion/ followed by an issue key, or to the branch of a task of its
+// plan, legion/<KEY>.<slug> (claim.BranchIssue), decodes to the Push the workflow applies to the
+// pull request it records there; a push to a branch of any other shape, legion/<KEY>. and
+// legion/<KEY>.join among them, decodes to the BasePush that says a pull request's base may have
+// moved, since that is the shape of a branch pull requests sit on. A push to a ref that is no
+// branch at all decodes to neither. GitHub's deletion of an issue's branch, a push whose after is
+// record.NoCommit, names no head and decodes to no fact; the deletion of a base is still the
+// BasePush that says the base moved.
 func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) {
 	captured := capturedGitHubEnvelope(t, "push.json")
 	for _, tc := range []struct {
@@ -1311,6 +1312,10 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 	}{
 		{ref: "refs/heads/legion/LEGION-208", branch: "legion/LEGION-208"},
 		{ref: "refs/heads/legion/ACME-19", branch: "legion/ACME-19"},
+		{ref: "refs/heads/legion/LEGION-208.d", branch: "legion/LEGION-208.d"},
+		{ref: "refs/heads/legion/LEGION-208.d.2", branch: "legion/LEGION-208.d.2"},
+		{ref: "refs/heads/legion/LEGION-208.", base: "legion/LEGION-208."},
+		{ref: "refs/heads/legion/LEGION-208.join", base: "legion/LEGION-208.join"},
 		{ref: "refs/heads/main", base: "main"},
 		{ref: "refs/heads/legion/main", base: "legion/main"},
 		{ref: "refs/heads/legion/legion-208", base: "legion/legion-208"},
@@ -1345,6 +1350,40 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 				t.Fatalf("fact = %#v, want a push to %s", decoded.Fact, tc.branch)
 			case tc.base != "" && (!isBase || basePush.Branch != tc.base || basePush.After != after):
 				t.Fatalf("fact = %#v, want a base push to %s at %s", decoded.Fact, tc.base, after)
+			}
+		})
+	}
+}
+
+// A pull request on the branch of a task of an issue's plan, legion/<KEY>.<slug>
+// (claim.BranchIssue), is the issue's as one on legion/<KEY> is: its opening decodes to the
+// PullRequestOpened the workflow records for the issue, never to the sighting of an outside pull
+// request, so legion-verdict on its head is decided as a Legion head's. A branch whose part after
+// the key is no task's is no issue's, and its opening is an outside pull request's.
+func TestDecodeAPullRequestOnATaskBranchIsTheIssues(t *testing.T) {
+	captured := capturedGitHubEnvelope(t, "pr-opened.json")
+	for _, tc := range []struct {
+		branch string
+		issue  bool
+	}{
+		{"legion/LEGION-208.d", true},
+		{"legion/LEGION-208.d.2", true},
+		{"legion/LEGION-208.", false},
+		{"legion/LEGION-208.join", false},
+	} {
+		t.Run(tc.branch, func(t *testing.T) {
+			data := bytes.ReplaceAll(captured, []byte("legion/LEGION-208"), []byte(tc.branch))
+			decoded, err := decodeMessage("notifications.github.sjawhar.legion.pr.42", "CAPTURE", capturedRepositories, data)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			opened, isOpened := decoded.Fact.(PullRequestOpened)
+			outside, isOutside := decoded.Fact.(OutsidePullRequest)
+			switch {
+			case tc.issue && (!isOpened || opened.Branch != tc.branch):
+				t.Fatalf("fact = %#v, want the issue's pull request opened on %s", decoded.Fact, tc.branch)
+			case !tc.issue && (!isOutside || outside.Branch != tc.branch):
+				t.Fatalf("fact = %#v, want an outside pull request on %s", decoded.Fact, tc.branch)
 			}
 		})
 	}
