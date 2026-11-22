@@ -170,10 +170,14 @@ calls as it reads a Messages reply's, so its request names no model, route or ar
 #### The arm of ours
 
 `--ours <dir>` is a skill of ours, whose frontmatter `name` (and directory name) may differ from
-the case's skill (`arms.ts`). Its profile is the case's with ours in place of their skill, under
-our name and description; where the profile already holds a skill of our name, the `--ours` text
-replaces that entry, so no name is installed twice (the context refuses a name installed twice),
-and the stage records that it replaced it (`ours.replacedOwn`). Each read of a file of their skill
+the case's skill (`arms.ts`). Its profile is the case's less every copy of their skill's source
+(the repository and path of the copy listed under their name, at any commit, under any
+namespace), as the arm with no skill leaves them out, with ours under our own name and
+description in place of the copy listed under theirs; a copy of another source that shares their
+skill's name stays as the profile has it. Where the profile already lists a skill of another
+source under our name, it keeps that entry, replaced by the `--ours` text, and adds no copy of
+theirs, so no name is installed twice (the context refuses a name installed twice), and the stage
+records that it replaced it (`ours.replacedOwn`). Each read of a file of their skill
 in the history becomes a read of `skill://<ours>/<the same path inside the skill>`, answered from
 our directory at our installed directory (theirs, with our name as its last part); where ours
 has no such file, the read call and its result are removed as the arm with no skill removes them,

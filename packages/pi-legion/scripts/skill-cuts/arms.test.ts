@@ -8,7 +8,7 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Arm, type ArmName, buildArm, skillFile } from "./arms";
+import { type Arm, type ArmName, buildArm, skillFile, unknownSkill } from "./arms";
 import { type Case, pathHash } from "./cases";
 
 // The arms of a case, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch profile with
@@ -452,6 +452,53 @@ test("old holds the profile's skills; ours holds them with ours in place of thei
   const same = withOurs(f1Case, "ours", { dir: renamedDir, name: "alpha" });
   expect(same.profileSkills).toEqual(f1Case.profile.skills);
   expect(same.ours?.replacedOwn).toBe(false);
+  expect(f1Case).toEqual(original);
+});
+
+// Catches: a namespaced copy of their skill's source kept in the arm of ours, where its old text
+// stays readable at another path, or ours listed twice.
+test("the ours arm leaves out every copy of their skill's source, a namespaced one too, and lists ours once under its own name", () => {
+  const [alpha, beta] = f1Case.profile.skills;
+  // Another repository's alpha, listed as tools/alpha: it stays as the profile has it.
+  const tools = {
+    repo: "acme/tools",
+    commit: "0123456789abcdef",
+    path: "skills/alpha",
+    name: "alpha",
+    namespace: "tools",
+  };
+  const copies = structuredClone(f1Case);
+  copies.profile.skills.push(
+    // acme/skills' alpha again at another commit, which Oh My Pi lists as pack/alpha.
+    {
+      repo: "acme/skills",
+      commit: "fedcba9876543210",
+      path: "skills/alpha",
+      name: "alpha",
+      namespace: "pack",
+    },
+    tools
+  );
+  const ours = withOurs(copies, "ours", RENAMED);
+  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, tools]);
+  expect(ours.ours?.replacedOwn).toBe(false);
+  // A read of theirs is answered with the names Oh My Pi lists, ours once under its own name.
+  expect(unknownSkill(ours, "alpha").text).toBe(
+    "Unknown skill: alpha\nAvailable: alpha-ours, beta, tools/alpha"
+  );
+
+  // A profile that lists a skill of another source under our name keeps it, the --ours text in
+  // its place, and no copy of theirs.
+  const incumbent = {
+    repo: "acme/dotfiles",
+    commit: "fedcba9876543210",
+    path: "skills/alpha-ours",
+    name: "alpha-ours",
+  };
+  copies.profile.skills.push(incumbent);
+  const bundled = withOurs(copies, "ours", RENAMED);
+  expect(bundled.profileSkills).toEqual([beta, tools, incumbent]);
+  expect(bundled.ours?.replacedOwn).toBe(true);
   expect(f1Case).toEqual(original);
 });
 
