@@ -2,6 +2,8 @@ package delivery
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -10,6 +12,44 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
+
+// The reads owed in one repository, which a read-through takes before its list read
+// (owedReadsIn), are the rows owed under each name whose canonical name is the repository's: the
+// name itself in any letter case and each name renamed to it (refs.NamesSQL). oldco/widgets is
+// renamed to acme/widgets; #1 is owed under acme/widgets, #2 under Acme/Widgets, #3 under
+// oldco/widgets and #4 under other/widgets. A read of acme/widgets takes #1, #2 and #3. A read of
+// oldco/widgets takes none: no repository is called that today, so nothing GitHub answers for it
+// settles a row. Where the names were the given name and the names renamed to it, with no test of
+// the given name's own canonical name, the read of oldco/widgets took #3.
+func TestTheReadsOwedInARepositoryAreTheRowsOfItsNames(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliveryProject(t, ctx, pool)
+	renameOldcoWidgets(t, ctx, pool)
+	for number, repo := range map[int]string{1: "acme/widgets", 2: "Acme/Widgets", 3: "oldco/widgets", 4: "other/widgets"} {
+		if _, err := pool.Exec(ctx, `insert into pull_request_reads_owed (repo, number, reason, revision)
+			values ($1, $2, 'failure', nextval('pull_request_reads_owed_revision_seq'))`, repo, number); err != nil {
+			t.Fatalf("owe the read of %s#%d: %v", repo, number, err)
+		}
+	}
+	read := func(repo string) string {
+		t.Helper()
+		owed := owedReadsIn(ctx, pool, repo)
+		var listed []string
+		for number, rows := range owed {
+			for _, row := range rows {
+				listed = append(listed, fmt.Sprintf("%s#%d", row.Repo, number))
+			}
+		}
+		slices.Sort(listed)
+		return fmt.Sprint(listed)
+	}
+	if got, want := read("acme/widgets"), "[Acme/Widgets#2 acme/widgets#1 oldco/widgets#3]"; got != want {
+		t.Errorf("the reads owed in acme/widgets are %s, want %s: its name in any case and the name renamed to it", got, want)
+	}
+	if got := read("oldco/widgets"); got != "[]" {
+		t.Errorf("the reads owed in oldco/widgets are %s, want none: it is renamed away, so it names no repository GitHub answers for", got)
+	}
+}
 
 // A read the intake makes settles the read a link owed in another letter case. A link by hand owes
 // the read of #4297 in the link's own letters, acme/widgets, while no head row of it is stored.

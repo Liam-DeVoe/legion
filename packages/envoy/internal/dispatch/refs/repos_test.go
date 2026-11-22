@@ -84,6 +84,59 @@ func TestTheCanonicalNameRuleRefusesAColumnTheCallersStatementDoesNotHave(t *tes
 	}
 }
 
+// NamesSQL is the exact inverse of the canonical name rule: over every pair of a set of names, x
+// is among the names of c (NamesSQL) exactly where c is x's canonical name in any case
+// (CanonicalRepoSQL). The set holds a renamed pair, a second old name of the same repository in
+// other letters, a repository never renamed, an unmapped name, and the canonical name in GitHub's
+// letters. A name renamed away is no name's canonical name, not even its own, so its names are
+// none: an inverse that took the given name itself whatever its row would answer it.
+func TestNamesSQLIsTheInverseOfTheCanonicalNameRule(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('REPO', 'Repository project', 'alice')`); err != nil {
+		t.Fatalf("create the project: %v", err)
+	}
+	for _, mapping := range []struct{ repo, renamedTo string }{
+		{repo: "acme/widgets"},
+		{repo: "acme/widgets-before", renamedTo: "acme/widgets"},
+		{repo: "Acme/Older", renamedTo: "Acme/Widgets"},
+		{repo: "zed/other"},
+	} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into repo_projects (repo, project, created_by, renamed_to)
+			values ($1, 'REPO', '{"kind":"system","id":"test"}'::jsonb, nullif($2, ''))
+		`, mapping.repo, mapping.renamedTo); err != nil {
+			t.Fatalf("map %s: %v", mapping.repo, err)
+		}
+	}
+	names := []string{"acme/widgets", "Acme/Widgets", "acme/widgets-before", "acme/older", "zed/other", "unmapped/x"}
+	rows, err := database.Pool.Query(ctx, `select c.n, x.n, lower(x.n) = any(`+NamesSQL("c.n")+`),
+			lower(`+CanonicalRepoSQL("x.n")+`) = lower(c.n)
+		from unnest($1::text[]) c(n) cross join unnest($1::text[]) x(n)`, names)
+	if err != nil {
+		t.Fatalf("read the names of each name: %v", err)
+	}
+	defer rows.Close()
+	pairs := 0
+	for rows.Next() {
+		var c, x string
+		var named, canonical bool
+		if err := rows.Scan(&c, &x, &named, &canonical); err != nil {
+			t.Fatalf("read a pair: %v", err)
+		}
+		pairs++
+		if named != canonical {
+			t.Errorf("%s among the names of %s: %v; %s's canonical name is %s in any case: %v", x, c, named, x, c, canonical)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the names of each name: %v", err)
+	}
+	if pairs != len(names)*len(names) {
+		t.Fatalf("read %d pairs, want %d", pairs, len(names)*len(names))
+	}
+}
+
 // A name is held to GitHub's bound as a GitHub path carries it, since the halves SplitGitHubRepo
 // answers go into the path as they are: a stored name that still ends in `.git` is up to 100
 // characters with its suffix, so `acme/<96 characters>.git` is taken and `acme/<97 characters>.git`
