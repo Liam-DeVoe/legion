@@ -297,6 +297,56 @@ test(
   rowLimit("short", "short")
 );
 
+// The guard is only as good as the config line that installs it: the rows above call
+// `guardChromiumLaunches` themselves, so they pass with that line gone. This one loads the config
+// in a child, as Playwright's processes load it, and then asks the Chromium `@playwright/test`
+// exports for a launch and a server naming an executable that does not exist. Where the network
+// is the browser's own, both must fail by the guard's name, before any browser starts; on the
+// host's network the guard stands aside, and the same calls fail by Playwright's own refusal of
+// the missing executable, which shows the child reached Playwright's launch at all.
+test(
+  "loading the config installs the launch guard: an unrouted launch or server fails by name there",
+  async () => {
+    const attempt = async (network: "own" | "host") => {
+      const run = await runBounded({
+        argv: [
+          process.execPath,
+          "-e",
+          [
+            'await import("./e2e/playwright.config.ts");',
+            'const { chromium } = await import("@playwright/test");',
+            'const missing = { executablePath: "/nonexistent/dispatch-e2e-chrome" };',
+            'const said = async (call) => call().then(() => "started", (error) => String(error.message).split("\\n")[0]);',
+            "console.log(JSON.stringify({ launch: await said(() => chromium.launch(missing)), launchServer: await said(() => chromium.launchServer(missing)) }));",
+          ].join("\n"),
+        ],
+        bound: "short",
+        cwd: new URL("../..", import.meta.url).pathname,
+        env: {
+          HOME: process.env.HOME,
+          PATH: process.env.PATH,
+          PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH,
+          [browserNetworkVariable]: network,
+        },
+        from: import.meta.url,
+      });
+      expect({ code: run.code, stderr: run.stderr }).toEqual({ code: 0, stderr: run.stderr });
+      return JSON.parse(run.stdout) as { launch: string; launchServer: string };
+    };
+    const guard =
+      'e2e: a Chromium launch did not start through e2e/browser-namespace.sh (executablePath "/nonexistent/dispatch-e2e-chrome") while DISPATCH_E2E_BROWSER_NETWORK is "own"';
+    const own = await attempt("own");
+    expect(own.launch).toContain(guard);
+    expect(own.launchServer).toContain(guard);
+    const onHost = await attempt("host");
+    for (const said of [onHost.launch, onHost.launchServer]) {
+      expect(said).not.toContain("did not start through");
+      expect(said).toContain("/nonexistent/dispatch-e2e-chrome");
+    }
+  },
+  rowLimit("short", "short")
+);
+
 test("the proxy resolves the names Chromium's own resolver rules map, and loopback alone", () => {
   const names = resolverMaps([
     "--headless",
