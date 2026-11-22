@@ -8,9 +8,10 @@ import (
 )
 
 // The tests in this file are more of the step's (jj_push_test.go): pushes of a revision argument
-// that a rewrite of the step can make name other commits than it named before the step, with the
-// helpers that only they use. As jj_push_test.go does, the file names nothing the step's change
-// adds, so it compiles and runs at the base too.
+// that a rewrite of the step can make name other commits than it named before the step, or that a
+// --config which jj drops for the push would make name other commits, with the helpers that only
+// they use. As jj_push_test.go does, the file names nothing the step's change adds, so it compiles
+// and runs at the base too.
 
 // offsets makes a divergent change of two commits on main, each a describe of one commit that the
 // reviewer made (diverge), with first's message and with second's, and answers the change's id and
@@ -105,8 +106,9 @@ func rolePushMineSends(ref string, m, p, a rolePushChange) (want, alone rolePush
 // renumbers, whether that commit is the argument's own or another argument's, on a short history
 // and on one whose commits' ids, joined, are over the bound of a revision the step gives as ids,
 // and an author revset whose author the rewrite gives other commits too, whether of the argument
-// or of the push's other commits, one of which names no commit before the step, each pushed by the
-// implementer.
+// or of the push's other commits, one of which names no commit before the step; and an alias that
+// names another commit under a --config that jj drops for the push, one in front of `git push`
+// beside one after it; each pushed by the implementer.
 func rolePushNamedRows() []rolePushNamedRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	return []rolePushNamedRow{
@@ -271,6 +273,31 @@ func rolePushNamedRows() []rolePushNamedRow {
 			}
 			return args, want, alone
 		}},
+		// The repository's configuration sets sendme to C's id, and the push's own --config in
+		// front of `git push` sets it to D's, beside a --config after the pair: jj keeps the one
+		// after the pair alone, so the push reads sendme as the repository's, C, which -r sends
+		// under c, and leaves d, on D, where track put it, the seed. The step reads sendme so too:
+		// it rewrites C alone, and since jj resolves sendme to the hidden C after that rewrite,
+		// the real push gets the id of the commit that replaced it.
+		{name: "-r sendme, the repository's alias of C, beside a --config in front of git push that sets it to D and one after git push", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+			f.track("c")
+			f.track("d")
+			c := f.commitOn(rev, impl, "main", rolePushMessage("C", "implementer"))
+			d := f.commitOn(rev, impl, "main", rolePushMessage("D", "implementer"))
+			f.bookmark("c", c.commit)
+			f.bookmark("d", d.commit)
+			f.jj(impl, "config", "set", "--repo", "revset-aliases.sendme", `"`+c.commit+`"`)
+			atSeed := rolePushRef{ref: "refs/heads/d"}
+			want := rolePushSends("c", c, "implementer", impl)
+			want.refs = append(want.refs, atSeed)
+			want.same = map[string]rolePushIdentity{d.commit: rev}
+			want.ids = []rolePushIDs{rolePushOneIDLine("sendme")}
+			alone := rolePushWant{
+				refs: []rolePushRef{{ref: "refs/heads/c", commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}}, atSeed},
+				same: map[string]rolePushIdentity{c.commit: rev, d.commit: rev},
+			}
+			return []string{"--config", `revset-aliases.sendme="` + d.commit + `"`, "git", "push", "-r", "sendme", "--config", "ui.color=never"}, want, alone
+		}},
 	}
 }
 
@@ -292,7 +319,9 @@ func rolePushNamedRows() []rolePushNamedRow {
 // push as the role wrote it, with no line. `-r ::<change>/1` on a history of more than 3,000
 // commits sends the rewritten commit alone, and the real push's revision, which a recording jj
 // ahead of the real one sees, is under the bound of 100,000 bytes, which the ids of the commits it
-// names are over. A -c of a change offset run twice has a test of its own,
+// names are over. `-r sendme`, which the repository's configuration sets to C's id and a --config
+// in front of `git push` to D's, beside a --config after `git push`, sends C, rewritten, as jj
+// alone sends C, and leaves D as it was. A -c of a change offset run twice has a test of its own,
 // TestAChangeOffsetPushRunAgainLeavesOriginAsItWas.
 func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
 	t.Parallel()

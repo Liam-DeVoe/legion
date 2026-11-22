@@ -1641,6 +1641,11 @@ func rolePushFormRows() []rolePushRow {
 		{name: "-c<commit id>", args: []string{"git", "push", "-c{commit:@-}"}, setup: byID(underChange)},
 		{name: "--named=nm=<commit id>", args: []string{"git", "push", "--named=nm={commit:@-}"}, setup: byID(named)},
 		{name: "-r<commit id>", args: []string{"git", "push", "-r{commit:@-}"}, setup: byID(onTracked)},
+		// The push's own --config in front of `git push`, which jj keeps where no --config
+		// follows the pair, defines the alias that -r names: the step's dry run reads it too.
+		{name: "-r <an alias of the push's own --config in front of git push>", args: []string{"--config", `revset-aliases.sendme="@-"`, "git", "push", "-r", "sendme"}, setup: onTracked},
+		// A `--` ends the options: the step's dry run puts its own words in front of it.
+		{name: "--bookmark, then --", args: []string{"git", "push", "--bookmark", "legion/K-1", "--"}, setup: onBookmark},
 		// A tag makes its commit immutable, so the step leaves it as it is and the push goes on. A
 		// jj with no --tag refuses the push itself, and the row expects that refusal.
 		{name: "--tag", args: []string{"git", "push", "--tag", "v1"}, setup: func(f *rolePushFixture) rolePushWant {
@@ -1677,11 +1682,13 @@ var rolePushTwoRemoteSecond = []string{"git", "push", "--bookmark", "legion/K-1"
 // Each form of a push sends the commits as the step left them: the remote's commits have their
 // trailers' authors, and no change is divergent. A commit id the step's rewrite hid is the
 // rewritten commit in the real push, in every spelling, and the step prints the one line of that
-// argument's id; each commit-id row names @-, a commit other than @. Where the step took its
-// snapshot, the real push runs with --ignore-working-copy as its first word, and elsewhere with
-// that flag as the role wrote it (a recording jj ahead of the real one sees it). A push to two
-// remotes sends the same rewritten commit to both, leaves the commit one remote already holds as
-// it is, and forces neither.
+// argument's id; each commit-id row names @-, a commit other than @. A -r of an alias that the
+// push's own --config in front of `git push` defines sends the rewritten commit too, as the step's
+// dry run reads that --config as the push does, and so does a push that ends with `--`, in front
+// of which the dry run puts its own words. Where the step took its snapshot, the real push runs
+// with --ignore-working-copy as its first word, and elsewhere with that flag as the role wrote it
+// (a recording jj ahead of the real one sees it). A push to two remotes sends the same rewritten
+// commit to both, leaves the commit one remote already holds as it is, and forces neither.
 func TestEveryPushFormSendsTheRewrittenCommit(t *testing.T) {
 	t.Parallel()
 	rolePushRun(t, rolePushFormRows())
@@ -2531,7 +2538,8 @@ func TestADryRunHelpOrAtOperationRunsNoStep(t *testing.T) {
 }
 
 // rolePushCannotReadRows are the dry runs the step cannot read, each with its recording jj's
-// behaviour, and the dry runs that a flag or the repository's configuration would silence.
+// behaviour, and the dry runs that a flag, the repository's configuration or the push's own
+// --config-file would silence.
 func rolePushCannotReadRows() []struct {
 	rolePushRow
 	behaviour string
@@ -2562,6 +2570,13 @@ func rolePushCannotReadRows() []struct {
 		{rolePushRow{name: "--quiet on the push", args: []string{"git", "push", "--quiet", "--bookmark", "legion/K-1"}, setup: reads}, ""},
 		{rolePushRow{name: "ui.quiet = true in the repository's configuration", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			f.jj(impl, "config", "set", "--repo", "ui.quiet", "true")
+			return reads(f)
+		}}, ""},
+		// The push's own --config-file sets ui.quiet = true after its own --config, both in front
+		// of `git push`: the dry run's --config goes after both. The file is in .jj, which jj never
+		// snapshots, and the push runs in the repository, so the row names it by a relative path.
+		{rolePushRow{name: "ui.quiet = true in the push's own --config-file, after its own --config", args: []string{"--config", "ui.color=never", "--config-file", ".jj/quiet.toml", "git", "push", "--bookmark", "legion/K-1"}, setup: func(f *rolePushFixture) rolePushWant {
+			f.writeFile(filepath.Join(f.repo, ".jj", "quiet.toml"), "ui.quiet = true\n")
 			return reads(f)
 		}}, ""},
 		// The bound on the step's loop over jj's refusal of a commit with no author: a metaedit
@@ -2621,8 +2636,9 @@ var rolePushCannotReadIDRows = []rolePushArgsRow{
 // its first word and takes no snapshot of its own. A metaedit that fills no author ends the step's
 // loop over jj's refusal of a commit with no author the same way, after the step's snapshot: one
 // line naming the commit, and the real push with --ignore-working-copy, which jj refuses. A
-// --quiet on the push and ui.quiet in the repository's configuration do not silence the step's dry
-// run: the remote's commit has the trailer's author.
+// --quiet on the push, ui.quiet in the repository's configuration and ui.quiet in the push's own
+// --config-file after its own --config do not silence the step's dry run: the remote's commit has
+// the trailer's author.
 func TestADryRunTheStepCannotReadChangesNothing(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushCannotReadRows() {

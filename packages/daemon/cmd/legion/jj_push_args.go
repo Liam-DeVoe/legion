@@ -19,9 +19,19 @@ type jjPush struct {
 	// one at an earlier operation (--at-op, --at-operation).
 	leave bool
 	// options are the words of the caller's -R/--repository, --config, --config-file and
-	// --config-toml, each with its value, in the order written: what every command of the step
-	// carries first, so it reads the repository and the configuration the push reads.
+	// --config-toml that jj keeps for the push, each with its value, in the order written
+	// (readJJPush): what every command of the step carries first, in front of its subcommand, so
+	// it reads the repository and the configuration the push reads.
 	options []string
+	// end is the index of the first `--`, which ends the options, as clap reads each word after it
+	// as a positional argument, or the number of words where there is none: readJJPush reads no
+	// word from it on, and the dry run's own words go in front of it (jjStep.dryRun).
+	end int
+	// configEnd is the index of the word in front of which the dry run's own --config goes
+	// (jjDryRunQuiet): the end of the level of the command line that holds the caller's kept
+	// --config (readJJPush), the first word of the subcommand pair for level 0 and its second for
+	// level 1, and end for level 2 and where the caller wrote no --config.
+	configEnd int
 	// pushOnly are the indexes of the words that stay on the real push alone: --quiet, --debug,
 	// --no-integrate-operation, --ignore-immutable, --ignore-working-copy, which the dry run's
 	// flags hold already (jjDryRunFlags) and which jj 0.38 refuses twice, and --color with its
@@ -82,16 +92,45 @@ var jjGlobalValues = []string{"-R", "--repository", "--at-operation", "--at-op",
 // jjPushValues are jj's global options and `jj git push`'s own whose value may be the next word.
 var jjPushValues = slices.Concat(jjGlobalValues, []string{"--remote", "-b", "--bookmark", "-t", "--tag", "-r", "--revision", "--revisions", "-c", "--change", "--named", "-o", "--option"})
 
+// jjOccurrence is one -R/--repository, --config, --config-file or --config-toml of a command line
+// (readJJPush): its option's name as written, the level of the command line it stands at, 0 in
+// front of the subcommand pair, 1 between its two words and 2 after them, and its words, from
+// first to last.
+type jjOccurrence struct {
+	name               string
+	level, first, last int
+}
+
 // readJJPush reads args, a jj command line. It finds the subcommand pair as the pod's wrapper
 // (packages/daemon/docker/jj) finds it: the first two words that are no option and no option's
 // value, jj's global options being the ones that take one. Past the pair it reads `git push`'s
 // options too, and each revision argument (jjRevision). An option takes its value as the next
 // word, after `=` (`--change=X`, `-c=X`), or attached to a short name (`-cX`), as clap reads each.
+// It reads no word from the first `--` on (end), each of which clap reads as a positional
+// argument.
+//
+// It records each -R/--repository, --config, --config-file and --config-toml with its level
+// (jjOccurrence), and keeps in options those jj keeps, in the order written: every
+// -R/--repository, the last of which names the repository, and, of each of --config,
+// --config-file and --config-toml apart, those at the deepest level that holds one. clap keeps
+// the values of each of these options only from the deepest level of the command line that holds
+// any, and jj layers what it keeps in the order written: measured with jj 0.45.1-sami and 0.38.0,
+// `jj --config 'templates.git_push_bookmark="\"zz-\" ++ change_id.short()"' git push -c @-
+// --dry-run` makes the bookmark `zz-<change>`, and the same command with `--config
+// ui.quiet=false` after `git push` makes `push-<change>`, as jj drops, unread, the --config in
+// front of the pair. The end of the level that holds the kept --config is configEnd.
 func readJJPush(args []string) jjPush {
-	p := jjPush{args: args, pushOnly: map[int]bool{}}
+	p := jjPush{args: args, pushOnly: map[int]bool{}, end: len(args)}
 	var pair []string
+	var pairAt [2]int
+	var occurrences []jjOccurrence
+	configLevel := -1
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			p.end = i
+			break
+		}
 		values := jjGlobalValues
 		if len(pair) == 2 {
 			values = jjPushValues
@@ -109,6 +148,7 @@ func readJJPush(args []string) jjPush {
 				p.pushOnly[i], p.noSnapshot = true, true
 			default:
 				if !strings.HasPrefix(arg, "-") && len(pair) < 2 {
+					pairAt[len(pair)] = i
 					pair = append(pair, arg)
 				}
 			}
@@ -124,7 +164,10 @@ func readJJPush(args []string) jjPush {
 		}
 		switch name {
 		case "-R", "--repository", "--config", "--config-file", "--config-toml":
-			p.options = append(p.options, args[first:at+1]...)
+			occurrences = append(occurrences, jjOccurrence{name: name, level: len(pair), first: first, last: at})
+			if name == "--config" {
+				configLevel = len(pair)
+			}
 		case "--at-operation", "--at-op":
 			p.leave = true
 		case "--color":
@@ -138,6 +181,18 @@ func readJJPush(args []string) jjPush {
 				p.revisions = append(p.revisions, jjRevision{index: at, offset: offset + eq + 1})
 			}
 		}
+	}
+	// jj drops an occurrence of --config, --config-file or --config-toml where a later one of the
+	// same option stands at a deeper level.
+	for k, o := range occurrences {
+		deeper := func(later jjOccurrence) bool { return later.name == o.name && later.level > o.level }
+		if o.name == "-R" || o.name == "--repository" || !slices.ContainsFunc(occurrences[k+1:], deeper) {
+			p.options = append(p.options, args[o.first:o.last+1]...)
+		}
+	}
+	p.configEnd = p.end
+	if configLevel == 0 || configLevel == 1 {
+		p.configEnd = pairAt[configLevel]
 	}
 	p.push = len(pair) == 2 && pair[0] == "git" && pair[1] == "push"
 	return p

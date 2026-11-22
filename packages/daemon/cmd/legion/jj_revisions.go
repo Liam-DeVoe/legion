@@ -199,14 +199,22 @@ func (s *jjStep) given(moved bool) []jjGiven {
 // each option's own spelling included; dry leaves out the words that stay on the real push alone
 // (jjPush.pushOnly).
 func (s *jjStep) words(given []jjGiven, dry bool) []string {
-	words := make([]string, 0, len(s.push.args))
+	return s.appendWords(make([]string, 0, len(s.push.args)), given, dry, 0, len(s.push.args))
+}
+
+// appendWords appends to words what words gives of the push's words from index from up to to,
+// and answers the slice: the dry run puts words of its own between such ranges (jjStep.dryRun).
+func (s *jjStep) appendWords(words []string, given []jjGiven, dry bool, from, to int) []string {
 	next := 0
-	for j, word := range s.push.args {
+	for next < len(s.push.revisions) && s.push.revisions[next].index < from {
+		next++
+	}
+	for j := from; j < to; j++ {
 		if dry && s.push.pushOnly[j] {
 			continue
 		}
 		if next == len(s.push.revisions) || s.push.revisions[next].index != j {
-			words = append(words, word)
+			words = append(words, s.push.args[j])
 			continue
 		}
 		for w := range s.push.revisionWords(next, given[next].words) {
@@ -449,12 +457,12 @@ func (s *jjStep) givenSize(i int, g jjGiven) int {
 
 // commandSize is the bytes that Linux counts against jjArgMax (jjSize) for the push with each
 // revision argument as given gives it. The arguments are next and the push's words, with the dry
-// run's flags (jjDryRunFlags), which its dry run has beside the same words and which hold the
-// --ignore-working-copy that the real push has after the step's snapshot (runJJ), and the
+// run's own (jjDryRunFlags, jjDryRunQuiet), which its dry run has beside the same words and which
+// hold the --ignore-working-copy that the real push has after the step's snapshot (runJJ), and the
 // environment is the step's (env) with wrappedJJStepped set to a digest (jjStepped), which the
 // real push has beside it; so each of the two commands counts that many bytes or fewer.
 func (s *jjStep) commandSize(given []jjGiven) int {
-	return jjSize(s.words(given, false)...) + jjSize(jjDryRunFlags...) + jjSize(s.env...) +
+	return jjSize(s.words(given, false)...) + jjSize(jjDryRunFlags...) + jjSize(jjDryRunQuiet...) + jjSize(s.env...) +
 		jjSize(s.next, wrappedJJStepped+"=") + hex.EncodedLen(sha256.Size)
 }
 

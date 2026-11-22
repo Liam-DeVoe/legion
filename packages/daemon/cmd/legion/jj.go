@@ -151,10 +151,24 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	return execWrapped("legion jj", next, words, withVariable(env, wrappedJJStepped, jjStepped(words)), nil, stderr)
 }
 
-// jjDryRunFlags are the words after those of a dry run of the push (dryRunFilled): --dry-run,
-// --ignore-working-copy, --color=never, and `--config ui.quiet=false` as the last configuration,
-// so that neither a flag nor the repository's configuration silences it.
-var jjDryRunFlags = []string{"--dry-run", "--ignore-working-copy", "--color=never", "--config", "ui.quiet=false"}
+// jjDryRunFlags are the words at the end of the options of a dry run of the push, in front of a
+// first `--` (jjStep.dryRun): --dry-run, --ignore-working-copy and --color=never.
+var jjDryRunFlags = []string{"--dry-run", "--ignore-working-copy", "--color=never"}
+
+// jjDryRunQuiet is the dry run's own configuration, `--config ui.quiet=false`, so that neither a
+// flag nor the repository's configuration silences it (jjStep.dryRun). jj keeps a --config only
+// from the deepest level of the command line that holds one (readJJPush), and layers what it
+// keeps, --config, --config-file and --config-toml alike, in the order written, the later winning:
+// at the end of the line, past a --config of the role's in front of `git push`, this one would
+// make jj drop the role's, which the push reads, and right after the role's last --config, it
+// would lose to a --config-file of the role's after it at that level. So it goes at the end of the
+// level that holds the role's kept --config (jjPush.configEnd), where jj keeps the role's --config
+// and this one alike and layers this one after each --config, --config-file and --config-toml it
+// keeps at that level or a shallower one; and after jjDryRunFlags where the role wrote no --config.
+// The one case it cannot win is a kept --config-file or --config-toml of the role's at a deeper
+// level than its --config that sets ui.quiet = true: the step then cannot read the dry run, prints
+// its one line, and the push runs as written.
+var jjDryRunQuiet = []string{"--config", "ui.quiet=false"}
 
 // jjStep is the step that runs before a push: it reads what the push sends from its dry run, and
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
@@ -361,10 +375,9 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 	bound, passes := -1, 0
 	for {
 		given := s.given(false)
-		// The dry run of the push with each revision argument as given gives it to this pass: the
-		// push's words without the ones that stay on the real push alone (jjStep.words), then
-		// jjDryRunFlags.
-		_, stderr, code, err := s.command(s.env, append(s.words(given, true), jjDryRunFlags...))
+		// The dry run of the push with each revision argument as given gives it to this pass
+		// (dryRun).
+		_, stderr, code, err := s.command(s.env, s.dryRun(given))
 		if err != nil {
 			return nil, err
 		}
@@ -407,6 +420,26 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 			seen = append(seen, f.commit)
 		}
 	}
+}
+
+// dryRun is the words of a pass of the dry run, with each revision argument as given gives it to
+// that pass: the push's words without the ones that stay on the real push alone (jjStep.words),
+// with jjDryRunQuiet in front of the word at configEnd, the end of the level that holds the role's
+// kept --config, and jjDryRunFlags in front of the first `--`, or at the end where there is none
+// (jjPush.end), then jjDryRunQuiet where configEnd is that place. So the dry run reads the
+// configuration the push reads, the role's --config in front of `git push` included, and the
+// words from a `--` on stay after every option, as the push has them.
+func (s *jjStep) dryRun(given []jjGiven) []string {
+	p := &s.push
+	words := s.appendWords(make([]string, 0, len(p.args)+len(jjDryRunFlags)+len(jjDryRunQuiet)), given, true, 0, p.configEnd)
+	if p.configEnd < p.end {
+		words = append(words, jjDryRunQuiet...)
+	}
+	words = append(s.appendWords(words, given, true, p.configEnd, p.end), jjDryRunFlags...)
+	if p.configEnd == p.end {
+		words = append(words, jjDryRunQuiet...)
+	}
+	return s.appendWords(words, given, true, p.end, len(p.args))
 }
 
 // readFillable reads, with jjCommitTemplate, the commits the step can fill:
@@ -564,9 +597,14 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 }
 
 // metaedit runs `jj metaedit --update-author` over commits under role's identity: the caller's
-// options first, then that identity as the command's last --config user.name and user.email,
-// each a TOML string (workspace.TOMLString), since a --config of the push's outranks JJ_USER and
-// JJ_EMAIL, which are set to the same. While the step's snapshot is due (snapshotDue) it runs no
+// options first, then that identity as --config user.name and user.email, each a TOML string
+// (workspace.TOMLString), in front of `metaedit`, at the level of the caller's, where jj keeps both
+// and the identity's, written later, wins over a --config of the push's, which outranks JJ_USER and
+// JJ_EMAIL, set to the same. jj keeps a --config only from the deepest level of the command line
+// that holds one (readJJPush): measured with jj 0.45.1-sami and 0.38.0, `jj --config
+// 'revset-aliases.sendme="@-"' --ignore-working-copy metaedit --update-author -r sendme --config
+// 'user.name="n"'` fails with `Revision sendme doesn't exist`, and with that last --config in
+// front of `metaedit` it runs. While the step's snapshot is due (snapshotDue) it runs no
 // command and answers errJJSnapshot, so that no metaedit of the step runs before that snapshot,
 // whichever caller asks for it. It reads the set of each revision argument first, before any
 // rewrite (revisionSets), and marks the step edited once its command has run. It runs in
@@ -597,7 +635,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 	for len(commits) > 0 {
 		in := map[string]bool{}
 		var hidden []string
-		args := []string{"metaedit", "--update-author"}
+		args := append(slices.Clone(config), "metaedit", "--update-author")
 		n, size := 0, fixed
 		for _, c := range commits {
 			if size += jjSize("-r", c.commit); n > 0 && size >= jjArgMax {
@@ -620,7 +658,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 				return err
 			}
 		}
-		_, err := s.jj(env, append(args, config...)...)
+		_, err := s.jj(env, args...)
 		made, line, exists := jjExistingCommit(err)
 		if !exists {
 			if err != nil {

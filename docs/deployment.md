@@ -357,9 +357,9 @@ itself carries `--ignore-working-copy`, every jj command of the step runs with
 `--ignore-working-copy`, so it takes no snapshot, and where it found nothing to change it adds no
 operation; a role's own `--ignore-working-copy` goes to the real push alone.
 Otherwise it first takes the one snapshot of the working copy that the push would take itself,
-with the push's own `-R`, `--config` and `--quiet` arguments, and passes on what that snapshot
-prints, then reads what the push sends again and acts on no commit id it read before the
-snapshot.
+with the push's own `-R` and `--quiet` arguments and the `--config` and `--config-file` arguments
+that jj keeps for the push, and passes on what that snapshot prints, then reads what the push
+sends again and acts on no commit id it read before the snapshot.
 Each of its other commands runs with `--ignore-working-copy`, and so does the real push, which
 then takes no second snapshot: every id the step reads after its snapshot, `@` and each
 descendant of `@` included, stays valid through the push, a warning that a snapshot prints, such
@@ -371,6 +371,14 @@ The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git id
 role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 221).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
 first `Legion-Role` trailer of each of those commits.
+jj keeps each of `--config` and `--config-file` only from the deepest of the three places of the
+command line that holds one, in front of `git push`, between its two words and after them, so
+every command of the step carries only those.
+The dry run's own `--config ui.quiet=false` goes at the end of the place that holds the push's
+kept `--config`, or after the dry run's flags where the push has none, in front of a `--`, so jj
+keeps both and reads it after each `--config-file` there or in front of it; only a
+`--config-file` at a deeper place that sets `ui.quiet = true` silences the dry run, which the step
+then cannot read.
 Where a commit's author is not the identity that the table gives the trailer's role, the step
 runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,
