@@ -17,6 +17,7 @@ import {
   displayChoice,
   filterPicker,
   listOf,
+  listTrigger,
   openDisplayMenu,
 } from "./filters";
 import { nextFrames } from "./frames";
@@ -96,7 +97,9 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.keyboard.press("Escape");
     await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();
     await expect(page.getByText(/next in queue #1/)).toBeVisible();
-    await page.getByRole("combobox", { name: "Rows per page" }).selectOption("25");
+    const perPage = listTrigger(page, "Rows per page");
+    await perPage.click();
+    await listOf(perPage).getByRole("option", { exact: true, name: "25 per page" }).click();
     await page.getByRole("button", { name: "Next ›", exact: true }).click();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(page.getByText("(continued)", { exact: true })).toBeVisible();
@@ -150,7 +153,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
 
     await chooseDisplay(page, "Group by", "");
     await page.keyboard.press("Escape");
-    await page.getByRole("combobox", { name: "Rows per page" }).selectOption("50");
+    await perPage.click();
+    await listOf(perPage).getByRole("option", { exact: true, name: "50 per page" }).click();
     const selected = rows[25];
     if (!selected) throw new Error("The queue seed did not create 26 issues");
     await page.getByRole("checkbox", { name: `Select ${selected.key}`, exact: true }).check();
@@ -691,7 +695,7 @@ test("compact windows give the table three full rows and let the page scroll @ph
         fullPage: true,
       });
       await page.getByTestId("issues-table-pager").scrollIntoViewIfNeeded();
-      await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeVisible();
+      await expect(listTrigger(page, "Rows per page")).toBeVisible();
     }
   } finally {
     await context.close();
@@ -737,7 +741,7 @@ test("a roomy window is filled by the box, which grows when the window does", as
     expect((await room())?.page).toBeLessThanOrEqual(1);
     await page.mouse.wheel(0, 400);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
-    await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeInViewport();
+    await expect(listTrigger(page, "Rows per page")).toBeInViewport();
     const short = (await room())?.box ?? 0;
     await page.setViewportSize({ width: 1400, height: 1200 });
     await expect.poll(async () => (await room())?.box ?? 0).toBeGreaterThan(short + 200);

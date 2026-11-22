@@ -9,9 +9,12 @@ import type {
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { openList, rows as optionsOf, pickNamed } from "../__tests__/list-picks";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
 import { selectedCardBg } from "../theme/classes";
+import type { ControlSize } from "./control-names";
 import {
   type ColumnFilterRenderer,
   DataTable,
@@ -148,6 +151,7 @@ function Deploys({
   renderFilter,
   rowHeight,
   rows = DEPLOYS,
+  size,
   stackColumn,
   trailingWidth,
 }: {
@@ -173,6 +177,8 @@ function Deploys({
   /** The one height this caller draws every row at. */
   rowHeight?: number;
   rows?: Deploy[];
+  /** The size the page draws its controls at, which the table hands its own. */
+  size?: ControlSize;
   stackColumn?: string;
   /** The width of the action cell each row draws after its columns. */
   trailingWidth?: number;
@@ -256,6 +262,7 @@ function Deploys({
           </tr>
         )}
         scrollTestId={`${layoutKey}-scroll`}
+        size={size}
         stackColumn={stackColumn}
         trailingWidth={trailingWidth}
       />
@@ -538,7 +545,7 @@ test("a table given no pager draws none", async () => {
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(listed(table)).toEqual(["d1", "d2", "d3"]);
   expect(screen.queryByTestId("deploys-pager")).toBeNull();
-  expect(screen.queryByRole("combobox", { name: "Rows per page" })).toBeNull();
+  expect(screen.queryByRole("button", { name: pickNamed("Rows per page") })).toBeNull();
   expect(screen.queryByRole("button", { name: "Next ›" })).toBeNull();
 });
 
@@ -786,6 +793,7 @@ test("a group's heading is the caller's node, with the caller's slot beside it",
 // The caller that asked for it: the evals tab counts evals over rows, the project List issues in
 // groups over rows, and each offers its own page sizes.
 test("the pager counts in the caller's nouns and offers the caller's page sizes", async () => {
+  const user = userEvent.setup();
   draw(
     <Deploys
       noun={{
@@ -802,11 +810,38 @@ test("the pager counts in the caller's nouns and offers the caller's page sizes"
   const pager = screen.getByTestId("deploys-pager");
   expect(within(pager).getByText("3 of 3 deploys")).toBeInTheDocument();
   expect(within(pager).getByText("Lines 1–3 of 3")).toBeInTheDocument();
-  const sizes = within(pager).getByRole("combobox", { name: "Lines per page" });
-  expect([...sizes.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
-    "5 per page",
-    "20 per page",
-  ]);
+  expect(optionsOf(await openList(user, "Lines per page"))).toEqual(["5 per page", "20 per page"]);
+});
+
+// The page's size reaches the controls the table draws and nothing else: the rows keep one
+// height at every size.
+test("a table hands its size to its pager and its header's filter, and draws its cells the same at both sizes", async () => {
+  const view = draw(<Deploys size="compact" />);
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  // Read from `md` up, where the two sizes part: each control's height, and the classes of a
+  // header cell and of a body cell, with the body cell's padding.
+  const read = () => {
+    const css = `${SIZE_CSS}${MOUSE_CSS}`;
+    const cell = within(table).getByText("billing").closest("td");
+    if (cell === null) throw new Error("billing is drawn in no cell");
+    return {
+      cell: `${cell.className} | ${sizeUnder(cell, css).padding}`,
+      controls: [
+        screen.getByRole("button", { name: "Next ›" }),
+        screen.getByRole("button", { name: pickNamed("Rows per page") }),
+        within(table).getByRole("button", { name: "Filter Service" }),
+      ].map((control) => sizeUnder(control, css).minHeight),
+      header: within(table).getByRole("columnheader", { name: /^Service/ }).className,
+    };
+  };
+  const compact = read();
+  expect(compact.controls).toEqual(["32px", "32px", "32px"]);
+  expect(compact.cell).toEndWith("| 8px 8px 8px 8px");
+  view.rerender(<Deploys size="comfortable" />);
+  const comfortable = read();
+  expect(comfortable.controls).toEqual(["44px", "44px", "44px"]);
+  expect(comfortable.cell).toBe(compact.cell);
+  expect(comfortable.header).toBe(compact.header);
 });
 
 /** A row of the priorities page of dispatch://INFRA-2947: a priority, who owns it and how much

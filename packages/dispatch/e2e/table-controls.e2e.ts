@@ -2106,7 +2106,9 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   await expect(pager).toContainText("60 of 60 issues");
   await pager.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/[?&]page=2/);
-  await pager.getByRole("combobox").selectOption("100");
+  const perPage = listTrigger(pager, "Rows per page");
+  await perPage.click();
+  await listOf(perPage).getByRole("option", { exact: true, name: "100 per page" }).click();
   await expect(page).toHaveURL(/[?&]size=100/);
 
   // The grouping, from the display menu.
@@ -4895,7 +4897,9 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
   await openIssuesTab(page, "CORE", "List");
   const pager = control(main, CONTROL.pager);
   await expect(pager).toContainText("120 of 120 issues");
-  await pager.getByRole("combobox").selectOption("250");
+  const perPage = listTrigger(pager, "Rows per page");
+  await perPage.click();
+  await listOf(perPage).getByRole("option", { exact: true, name: "250 per page" }).click();
   await expect(page).toHaveURL(/[?&]size=250/);
   const listBox = control(main, CONTROL.dataTable);
   const listRows = listBox.locator("[data-issue-row]");
@@ -6261,8 +6265,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // page's Default assignee of a project and the New project form's Default assignee
 // (`ProjectsSection`), and its Project and Source project (`ProjectSelect`). The short
 // fixed lists - Priority (`PriorityControl`), Snooze (`SnoozeControl`), the Inbox's bulk Snooze,
-// the issue header's Status, the Agents page's Delivery mode, a table pager's Rows per page
-// (`Pager`), and the Delivery page's Color merges by and Window (`DeliveryPage`,
+// the issue header's Status, the Agents page's Delivery mode, and the Delivery page's Color
+// merges by and Window (`DeliveryPage`,
 // `WindowControl`) - stay native selects by the architect's ruling of 2026-11-17, and the row
 // opens none of them. At each width each list is opened from its trigger: exactly one text box is
 // in the list's own panel - at 390 an `input` of 16 px, the size `styles.css` gives every input

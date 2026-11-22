@@ -294,6 +294,7 @@ export function PrioritiesTable({
           />
         )}
         scrollTestId="priorities-table-scroll"
+        size="compact"
         stackColumn="title"
       />
 

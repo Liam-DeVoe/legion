@@ -607,6 +607,7 @@ export function PRList({
         />
       )}
       scrollTestId="delivery-pr-list"
+      size="compact"
       stackColumn="title"
     />
   );
