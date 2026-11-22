@@ -163,10 +163,38 @@ v=$(ci_log_guard_stderr gh api repos/o/b) || exit 1
 ci_log_guard_stderr gh api repos/o/c > out.json 2>/dev/null
 ci_log_guard_stderr gh api repos/o/d &> both.txt
 ci_log_guard_stderr gh api repos/o/e 2>&1 >&2
+{ ci_log_guard_stderr gh api repos/o/p; } > out.json
+( ci_log_guard_stderr gh api repos/o/q ) > out.json
+ci_log_guard_stderr gh api repos/o/r | ci_log_guard cat
+v="$(ci_log_guard_stderr gh api repos/o/s)"
 SH
 )")
 run_check "$root"
 check "passes" "$(is "$status" 0)"
+
+# The third review's forms: a capture opened inside double quotes closes at its own `)`, so a call
+# after it on the line is no part of it; a quoted capture holding another, and one split across a
+# backslash continuation, close the same way. A comment's `>` redirects nothing, and stdout sent
+# into `>(…)` reaches the log through the command there.
+echo "case: a call after a quoted capture, after a comment's >, or into >(…), fails by name"
+root=$(fixture quoted-capture "$(cat <<'SH'
+v="$(date)"; ci_log_guard_stderr gh api repos/o/h
+[ -n "$(git rev-parse HEAD)" ] && ci_log_guard_stderr gh api repos/o/i
+cd "$(pwd)" && ci_log_guard_stderr gh api repos/o/j
+v="$(echo "$(date)")"; ci_log_guard_stderr gh api repos/o/k
+v="$(printf '%s' \
+  x)"; ci_log_guard_stderr gh api repos/o/l
+ci_log_guard_stderr gh api repos/o/m  # stdout -> the log
+ci_log_guard_stderr gh api repos/o/n > >(tee out.txt)
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in h i j k l m n; do
+  check "names the stderr guard of \`gh api repos/o/$found\`" \
+    "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr gh api repos/o/${found}[^\`]*.: ci_log_guard_stderr blocks only stderr")"
+done
+check "and counts seven problems" "$(contains "$out" '^::error::check-log-guard: 7 problem(s)$')"
 
 echo "case: a row with its reason allows its command, and only that one"
 root=$(fixture allowed 'docker pull ghcr.io/o/i' \

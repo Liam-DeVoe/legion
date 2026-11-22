@@ -119,90 +119,129 @@ def commands(run: str) -> list:
     return out
 
 
-def open_captures(line: str, upto: int) -> bool:
-    """Whether a `$(`, `<(` or backtick is still open at `upto` in the line, read quote-aware: a
-    command inside one has its stdout captured, not printed."""
+def _word_start(line: str, i: int) -> bool:
+    return i == 0 or line[i - 1] in " \t;&|(){}"
+
+
+def _scan(line: str, upto: int):
+    """The state of the line at `upto`: the frames still open, outermost first, each (kind, the
+    index it opened at, the quote it opened inside), the quote open in the innermost frame, and
+    whether the character at `upto` is escaped. A frame is a `capture` (`$(…)`, `<(…)`), a
+    backtick pair, a `procout` (`>(…)`), a `subshell` (`(…)`) or a `brace` group (`{ …; }`). Each
+    frame starts unquoted and keeps the quote it opened inside: a `$(` inside double quotes opens
+    a capture whose `)` closes it, and the outer quote resumes there, so `v="$(date)"; …` closes
+    its capture before the `;`."""
     stack, quote, i = [], None, 0
     while i < upto:
         ch, nxt = line[i], line[i + 1:i + 2]
         if quote == "'":
-            quote = None if ch == "'" else quote
+            if ch == "'":
+                quote = None
         elif ch == "\\":
             i += 1
         elif ch == "`":
-            if stack and stack[-1] == "`":
-                stack.pop()
+            if stack and stack[-1][0] == "`":
+                quote = stack.pop()[2]
             else:
-                stack.append("`")
-        elif ch in "$<" and nxt == "(":
-            stack.append("capture")
+                stack.append(("`", i, quote))
+                quote = None
+        elif ch == "$" and nxt == "(":
+            stack.append(("capture", i, quote))
+            quote = None
             i += 1
         elif quote == '"':
-            quote = None if ch == '"' else quote
+            if ch == '"':
+                quote = None
         elif ch in "'\"":
             quote = ch
+        elif ch in "<>" and nxt == "(":
+            stack.append(("capture" if ch == "<" else "procout", i, None))
+            i += 1
         elif ch == "(":
-            stack.append("group")
-        elif ch == ")" and stack and stack[-1] != "`":
+            stack.append(("subshell", i, None))
+        elif ch == ")" and stack and stack[-1][0] in ("capture", "procout", "subshell"):
+            quote = stack.pop()[2]
+        elif ch == "{" and _word_start(line, i) and nxt in (" ", "\t", ""):
+            stack.append(("brace", i, None))
+        elif ch == "}" and _word_start(line, i) and stack and stack[-1][0] == "brace":
             stack.pop()
         i += 1
-    return any(entry in ("capture", "`") for entry in stack)
+    return stack, quote, i > upto
 
 
-def stdout_safe(line: str, start: int) -> bool:
-    """Whether the command that starts at `start` redirects its stdout before it ends: at the first
-    unquoted `;`, `&&`, `||`, `|`, a lone `&`, or a `)` or backtick closing what encloses it. A `>`
-    with no file descriptor or with 1 before it, `>&…`, `>>`, `>|` and `&>` redirect stdout; `2>`
-    and `2>&1` do not."""
-    quote, depth, i = None, 0, start
-    while i < len(line):
+def frames_at(line: str, upto: int) -> list:
+    """The frames still open at `upto` (_scan), each as (kind, the index it opened at)."""
+    return [(kind, pos) for kind, pos, _ in _scan(line, upto)[0]]
+
+
+def _close_of(line: str, frame: tuple) -> int:
+    """The index just past the character that closes `frame`, or -1 when the line leaves it open."""
+    for j in range(frame[1] + 1, len(line) + 1):
+        if frame not in frames_at(line, j):
+            return j
+    return -1
+
+
+def stdout_safe(line: str, start: int, frames: list) -> bool:
+    """Whether the command that starts at `start`, inside `frames`, keeps its stdout out of the
+    log: it redirects stdout (`>`, `1>`, `>>`, `>|`, `>&…`, `&>`, but not `2>` and not into a
+    `>(…)`), it pipes into `ci_log_guard`, or it ends at an unquoted `;`, `&&`, `||`, a lone `&`,
+    a newline or its frame's close inside a group (`{ …; }`, `( … )`) whose own stdout is kept
+    so. A `#` at a word's start ends the line's code. Each character is read in the state _scan
+    gives it, so a quote, a nested capture or an escape hides it."""
+    for i in range(start, len(line)):
+        stack, quote, escaped = _scan(line, i)
+        if len(stack) < len(frames):
+            break
+        if quote or escaped or len(stack) > len(frames):
+            continue
         ch, nxt = line[i], line[i + 1:i + 2]
-        if quote == "'":
-            quote = None if ch == "'" else quote
-        elif ch == "\\":
-            i += 1
-        elif quote == '"':
-            quote = None if ch == '"' else quote
-        elif ch in "'\"":
-            quote = ch
-        elif ch in "$<" and nxt == "(":
-            depth += 1
-            i += 1
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            if depth == 0:
+        if ch == "#" and _word_start(line, i):
+            break
+        if ch in ";)`" or (ch == "}" and _word_start(line, i)):
+            break
+        if ch == "|":
+            if nxt == "|" or line[i - 1:i] == "|":
+                break
+            if line[i + 1:].lstrip(" \t").startswith("ci_log_guard "):
+                return True
+        elif ch == "&":
+            if nxt == ">":
+                return True
+            if line[i - 1:i] not in (">", "&") and nxt != "&":
+                break
+            if nxt == "&":
+                break
+        elif ch == ">":
+            before = line[i - 1:i]
+            if before in (">", "&"):
+                continue
+            if before.isdigit() and before != "1" and (i - 1 == start or line[i - 2:i - 1] in " \t"):
+                continue
+            if line[i + 1:].lstrip(" \t>|").startswith("("):
                 return False
-            depth -= 1
-        elif depth == 0:
-            if ch == "`" or ch == ";" or ch == "|":
-                return False
-            if ch == "&":
-                if nxt == ">":
-                    return True
-                if line[i - 1:i] != ">":
-                    return False
-            if ch == ">":
-                before = line[i - 1:i]
-                word_start = i == start or line[i - 2:i - 1] in ("", " ", "\t")
-                if before.isdigit() and word_start and before != "1":
-                    pass
-                else:
-                    return True
-        i += 1
-    return False
+            return True
+    groups = [f for f in frames if f[0] in ("brace", "subshell")]
+    if not groups or frames[-1][0] not in ("brace", "subshell"):
+        return False
+    group = groups[-1]
+    end = _close_of(line, group)
+    return end > 0 and stdout_safe(line, end, frames[:frames.index(group)])
 
 
 def loose_stderr_guards(run: str) -> list:
-    """Each ci_log_guard_stderr call whose stdout is neither captured nor redirected: that
-    command's stdout reaches the log outside the block. Read by the line, a backslash-continued
-    line joined to the next first, and each call by its own command alone."""
+    """Each ci_log_guard_stderr call whose stdout is neither captured nor kept out of the log:
+    that command's stdout reaches the log outside the block. Read by the line, a
+    backslash-continued line joined to the next first, and each call by its own command alone."""
     loose = []
     for line in EXPRESSION.sub("EXPR", run).replace("\\\n", " ").split("\n"):
         if line.lstrip(" \t").startswith("#"):
             continue
         for call in STDERR_CALL.finditer(line):
-            if not open_captures(line, call.start()) and not stdout_safe(line, call.end()):
+            frames = frames_at(line, call.start())
+            if any(kind in ("capture", "`") for kind, _ in frames):
+                continue
+            if not stdout_safe(line, call.end(), frames):
                 loose.append(line.strip(" \t"))
     return loose
 
@@ -223,8 +262,9 @@ RUNNERS = {
     "env": ({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}, 0),
     "command": (set(), 0),
     "time": (set(), 0),
-    # .github/scripts/gh-read.sh's two: each runs the command after it, and prints a refused call's
-    # stderr itself outside any block, so a step that calls one is read as calling the client.
+    # .github/scripts/gh-read.sh's two: each runs the command after it, and prints the stderr of
+    # every run it ends on itself (unless --stderr names a file), outside any block, so a step that
+    # calls one is read as calling the client.
     "gh_wait_reset": ({"--stderr"}, 0),
     "gh_read": ({"--stderr"}, 0),
 }
