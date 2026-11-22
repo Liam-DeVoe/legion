@@ -497,6 +497,7 @@ func main() {
 		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
+
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
 	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
