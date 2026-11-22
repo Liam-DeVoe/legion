@@ -2859,6 +2859,48 @@ test("a writer's keystroke on a description the editor cannot keep whole writes 
   }
 });
 
+// INFRA-2947 check 3bca8d03: another person's description that the server's parser does not take
+// whole - one holding an HTML block - lands while the reader's typing is still unwritten. Her text
+// is kept beside his, as it is beside any other text of another person's, and no write of hers
+// goes over his: a write that named his text as the one it replaced would put her edit, made on
+// the text before his, over a text she never saw.
+// SLOW(>=2s): a priority written, her typing held, his write, and the page's answer awaited.
+test("another person's description the editor cannot keep whole, landing while the reader types, is not written over", async ({
+  browser,
+}) => {
+  const plain = "## Plan\n\n- first host\n- second host";
+  const withHtml = "## Plan\n\n<div>held as HTML</div>\n\n- first host\n- second host";
+  const raced = await createPriority({ description: plain, owner: "alice", title: "Raced plan" });
+  const stored = async () =>
+    (await listPriorities()).priorities?.find((row) => row.id === raced.id)?.description;
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    // The page's own clock, held while she types (`pauseClock`): the half-second timer cannot
+    // write then, so her typing is still unwritten when his text lands.
+    await page.clock.install();
+    await page.goto(`/priorities/${raced.id}`);
+    const editor = page.getByRole("textbox", { exact: true, name: "Description" });
+    await expect(editor).toContainText("second host");
+    await pauseClock(page);
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type(" typed");
+    await patchPriority(raced.id, { description: withHtml }, { login: "bob" });
+    await page.clock.resume();
+    // His text is drawn, read-only, and hers is kept beside it for her to choose.
+    await expect(page.getByText("held as HTML").first()).toBeVisible();
+    await expect(
+      page.getByRole("alert", { name: "Description, changed by another person" })
+    ).toContainText("second host typed");
+    // No write of hers went over his: once the page has set her text beside his, the server
+    // still holds his.
+    expect(await stored()).toBe(withHtml);
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the seed, a description typed and the tab closed at once, and the server read.
 test("what a reader types into a priority's description is written as the tab closes", async ({
   browser,
