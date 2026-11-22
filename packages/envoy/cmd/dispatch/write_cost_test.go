@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The corpus, as c-write-cost states it. The two documents are a stated shape and not a guess:
@@ -826,9 +827,12 @@ func writeCostStoreWrite(t *testing.T, arm *costArm, nodes, relations int64) (ti
 	at := time.Now().UTC()
 	batch := make([]graphstore.Node, 0, nodes)
 	for index := range int(nodes) {
+		// Every block carries the supertag block alone, whatever its own type (refs.BlockSupertag):
+		// a type the store holds, as every node write reads before it writes (graphstore's
+		// queueSupertagCheck).
 		batch = append(batch, graphstore.Node{
-			Kind: "block", ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
-			Supertag: "paragraph", Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			Kind: refs.BlockNodeKind, ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
+			Supertag: refs.BlockSupertag, Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 			MadeAt: at, MadeBy: actor, SourceEvent: graphstore.NoEvent,
 		})
 	}
@@ -905,11 +909,16 @@ func requireWriteCostReachesTheStore(t *testing.T, head *costArm, corpus *writeC
 		comments, sessions)
 }
 
-// costStoreCounts is the store's own row counts, which only this child's arm holds.
+// costStoreCounts is the node and tuple store's own row counts on the arm's database, as the
+// corpus line prints them, or the words saying the arm holds no such store. Whether it does is
+// read off the database, never off which arm it is: the base build holds the store wherever
+// BASELINE_SHA names a commit holding cybermonklabs/legion#3178's graph_nodes and graph_tuples.
 func costStoreCounts(t *testing.T, arm *costArm) string {
 	t.Helper()
-	if !arm.head {
-		return ", and no node and tuple store, which the commit before this child has not got"
+	if held := arm.count(t, `
+		select count(*) from (values (to_regclass('graph_nodes')), (to_regclass('graph_tuples'))) as stored (relation)
+		where relation is not null`); held != 2 {
+		return ", and no node and tuple store, which " + arm.name + " has not got"
 	}
 	return fmt.Sprintf(", %d node(s) and %d tuple(s)",
 		arm.count(t, `select count(*) from graph_nodes`),
@@ -942,7 +951,7 @@ func createCostIssue(t *testing.T, arm *costArm, project, title string) string {
 
 // costUploadDocument writes one version of a document by name and answers its artifact id. A
 // second write of the same name is the next version of that document, which is the document
-// version write path.
+// version write path, and names the token of the version it replaces.
 func costUploadDocument(t *testing.T, arm *costArm, issue, name, content string) string {
 	t.Helper()
 	body := arm.server.documentUpload(t, issue, name, content, dispatchTestLogin)

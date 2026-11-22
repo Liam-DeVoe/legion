@@ -356,8 +356,30 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // statements that decide what a build of that rule marks (markingStatements), as TestGoldenDigest
 // (internal/broker/policy/load_test.go) pins its digest. A change to those statements is a change
 // of what a pass owes, which raises the rule and records the new digest here beside the old.
+//
+// Rule 1's digest was re-recorded when the node store's project columns joined these statements:
+// they read and write each comment's and each block's project beside what they read before
+// (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
+// refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
+// of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
+// re-recorded rather than raised.
+//
+// It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
+// `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
+// node's cause: the statement reads the same event id, only through events' primary key, so it
+// moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
+// text of LatestEventID the statements give the digest recorded before. Rule 2's digest was
+// re-recorded for the same reason: with the old text its statements give the one it recorded
+// before.
+//
+// Rule 2's statements are this branch's: a pass records the rule and the version it stated a
+// document by (stated_rule, stated_version), and the backfill and the tick mark a document no
+// pass of their rule has stated at its version (refs.UnstatedBlockIndexSQL) beside rule 1's test
+// of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already
+// standing. Rule 1's entry is the sibling branch's, as it records it.
 var markingStatementDigests = map[int]string{
-	1: "97bd4060ef80efd44ce39779a06e81b9a4707dae2c55ee8374ea0d11109ea81a",
+	1: "646218ee6bbd08e2be3542bf8d02a30c9d934a0191338816fcbb043054ee3c2e",
+	2: "73cde9ca52ffda818093f87269ec683b479ae7d22fabe8bd2e0311cf2331a953",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -407,7 +429,7 @@ func markingStatements(t *testing.T) []namedStatement {
 	statements = append(statements, namedStatement{"refs.CommentsNamingNoNode", read.sql[0]})
 	author := model.Actor{Kind: "user", ID: "alice"}
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1")
+	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1", "CORE", nil)
 	write := refs.CommentWrite{Nodes: []graphstore.Node{node}, Tuples: tuples}
 	if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, node.ID, author, at, 1); named {
 		write.Nodes = append(write.Nodes, authors...)

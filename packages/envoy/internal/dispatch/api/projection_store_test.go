@@ -27,7 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -143,14 +143,14 @@ var (
 
 // storeWriters are the store's own writers as a call names them: every function of graphstore a
 // write of graph_nodes and graph_tuples from outside it goes through
-// (graphstoretest.WriteFunctions), the one list graphstore's register of the store's write sites
+// (graphstorecopy.WriteFunctions), the one list graphstore's register of the store's write sites
 // reads too (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row
 // follows (Write, QueueWrite, QueueNodes), the append of what a write stated under its event
 // (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete
 // of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
 var storeWriters = func() []string {
 	var calls []string
-	for _, name := range graphstoretest.WriteFunctions() {
+	for _, name := range graphstorecopy.WriteFunctions() {
 		calls = append(calls, "func:graphstore."+name)
 	}
 	return calls
@@ -499,11 +499,10 @@ type runtimeTableSite struct {
 // naming that table is: its insert or delete to the store writer's call path, and its update
 // there too where it sets a column a tuple projects.
 var runtimeTableSites = map[string]runtimeTableSite{
-	// The one-time pin of a legacy quote anchor's block, over asks and then comments
-	// (BackfillAnchorBlocks): the anchor's block_id key alone, which keeps its artifact.
-	"packages/envoy/internal/dispatch/docs/anchor_blocks.go#docs.*Service.backfillAnchorBlock: update table": {
-		tables: []string{"comments"}, sets: []string{"the anchor's block_id key"},
-	},
+	// The one-time pin of a legacy quote anchor's block (BackfillAnchorBlocks), over an ask's
+	// anchor alone: a comment's pin is a statement of its own over comments, which states the
+	// anchored_in beside it (docs' pinCommentAnchorBlock), so the table this one builds is asks.
+	"packages/envoy/internal/dispatch/docs/anchor_blocks.go#docs.*Service.pinAnchorBlock: update table": {},
 	// A version's refresh of the anchors on its document, over asks and comments: the anchor's
 	// quote and orphaned keys alone, which keep its artifact.
 	"packages/envoy/internal/dispatch/docs/anchor_refresh.go#docs.*Service.refreshAnchors: update update.table": {
@@ -832,10 +831,10 @@ func receiverName(fields *ast.FieldList) string {
 // A statement whose table is built at runtime is held as the projected tables runtimeTableSites
 // says it reaches (runtimeTableWrites), and fails where the list does not name its site.
 //
-// The writers of comments are held to the five commentsRowWriters names, each by the function
-// the scan reports its statement in: a sixth function that makes, unmakes or sets a projected
+// The writers of comments are held to the seven commentsRowWriters names, each by the function
+// the scan reports its statement in: an eighth function that makes, unmakes or sets a projected
 // column of a comments row fails, even where a store write reaches it, and so does one of the
-// five the scan no longer finds there. The seed's is one of them, the one writer of comments
+// seven the scan no longer finds there. The seed's is one of them, the one writer of comments
 // outside internal/dispatch, so a scan that read less of the repository than it should fails
 // too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
@@ -896,13 +895,18 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 // column of it a tuple projects, by the file each is in and the function that issues the
 // statement, as the scan names a write: the comment create, the comment reply, the seed's
 // batches of comments, each beside the nodes the batch's rows project, the comment write of the
-// backfill and of the block-index tick, and the erase (c-projection-write, Verification v108).
+// backfill and of the block-index tick, and the erase (c-projection-write, Verification v108);
+// and this branch's two: the node an issue's filed_from names, written through graphstore.Write
+// before the comment's row names it (stateFiledFromNode), and the anchor block a comment's anchor
+// is pinned to, whose anchored_in the same write states (pinCommentAnchorBlock).
 var commentsRowWriters = []string{
 	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
 	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply",
+	"packages/envoy/internal/dispatch/api/issue_relations.go#api.stateFiledFromNode",
+	"packages/envoy/internal/dispatch/docs/anchor_blocks.go#docs.*Service.pinCommentAnchorBlock",
 }
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was
@@ -1474,7 +1478,8 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 		name:  "the comment write",
 		table: "comments",
 		write: func(ctx context.Context, tx pgx.Tx) error {
-			stored, err := commentStored(ctx, tx, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), nil, &run.projectID)
+			stored, err := commentStored(ctx, tx, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(),
+				graphstore.VisibilityProject, nil, &run.projectID, run.project, nil)
 			if err != nil {
 				return err
 			}
@@ -1508,7 +1513,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 		write: func(ctx context.Context, tx pgx.Tx) error {
 			markdown := "# Watched\n\nA watched passage.\n"
 			blocks := []model.ArtifactBlock{{ID: "watched", Type: "paragraph", From: 11, To: len(markdown) - 1}}
-			_, won, written, err := refs.IndexBlocks(ctx, tx, run.specID, blockVersion, time.Now().UTC(), markdown, blocks, nil, nil)
+			_, won, written, _, err := refs.IndexBlocks(ctx, tx, run.specID, refs.OneVersion(run.specID, blockVersion, time.Now().UTC()), markdown, blocks, nil, nil, refs.TypedFacts{})
 			if err != nil {
 				return err
 			}
@@ -1915,13 +1920,22 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 // requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
 // moves - the kinds the three projected tables of migration 20261109022248 name - less the
 // kinds the store holds of people and agents and the two its block schema writes, which no
-// projection backs.
+// projection backs, and the four kinds whose nodes name the project a read is limited by - an
+// issue, a document, an ask and a message, each written at its own create site, beside the rows it
+// writes. An issue's and a document's row names its node in the node columns migration
+// 20261116092210 added (dispatch://INFRA-1253); an ask's and a message's carries none. Beside them
+// stands the node of every version a write inserts (dispatch://INFRA-1253), which
+// artifact_versions projects with no node column of its own, and the two kinds of the lens
+// catalogue its migrations seed (20261116123354), a lens kind and the constraint that holds its
+// source.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	moved := []string{"block", "block_ref", "comment"}
 	allowed := append(slices.Clone(moved),
 		graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole, graphstore.KindPage,
-		"supertag", "attribute")
+		"supertag", "attribute",
+		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage, graphstore.KindVersion,
+		graphstore.KindLensKind, graphstore.KindConstraint)
 	for _, column := range []string{"select distinct kind from graph_nodes", "select distinct from_kind from graph_tuples"} {
 		kinds, err := readStrings(ctx, run.database.Pool, column+" order by 1")
 		if err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -592,7 +593,15 @@ func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
 
 	parent := createIssue("CORE", "The parent of the issue whose references are read", "", ":::requirement{#r1}\nThe parent's requirement.\n:::\n")
 	design := upload(parent.Key, "design.md", ":::requirement{#r2}\nThe parent's second requirement.\n:::\n")
+	// An issue born under a parent that holds requirements and is not done is a view on that
+	// parent's spec and holds no requirement of its own (REQUIREMENT_BELONGS_TO_ANCESTOR), so the
+	// parent is done while the issue, whose spec holds r1, is created under it; a spec holding a
+	// requirement makes the issue's spec its own, so it is no view after. The parent is then
+	// reopened, since its design document is edited below and a closed issue's documents take no
+	// edit (ISSUE_CLOSED).
+	succeeded(t, "close the parent", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+parent.Key, map[string]any{"status": "done"}, "alice"))
 	issue := createIssue("CORE", "The issue whose references are read", parent.Key, ":::requirement{#r1}\nThe issue's own requirement.\n:::\n")
+	succeeded(t, "reopen the parent", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+parent.Key, map[string]any{"status": "todo"}, "alice"))
 	issueRef, specRef := "dispatch://"+issue.Key, "dispatch://"+issue.Key+"/spec"
 	var specRefKey string
 	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, issue.PrimaryArtifactID).Scan(&specRefKey); err != nil {
@@ -877,6 +886,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		Kind: "ask", ID: ask.ID, IssueKey: &legionKey, Project: "LEGION", Ref: askRef,
 		MadeBy: []model.Actor{ask.Author}, MadeAt: &ask.CreatedAt, ChangedBy: []model.Actor{ask.Author}, ChangedAt: &ask.CreatedAt,
 		Parent: &model.NodeParent{Kind: "issue", ID: legion.Key, Ref: "dispatch://" + legion.Key},
+		State:  graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}); !reflect.DeepEqual(incoming.Node, want) {
 		t.Fatalf("queried node = %#v; want %#v", incoming.Node, want)
 	}
@@ -892,6 +902,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		Kind: "block", ID: "message/" + message.ID + "#b1", BlockID: "b1", IssueKey: &acmeKey, Project: "ACME", Ref: messageRef + "#b-b1",
 		MadeBy: []model.Actor{message.Author}, MadeAt: &message.CreatedAt, ChangedBy: []model.Actor{message.Author}, ChangedAt: &message.CreatedAt,
 		Parent: &model.NodeParent{Kind: "message", ID: message.ID, Ref: messageRef},
+		State:  graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}
 	if edge.Kind != "mentions" || edge.Direction != "in" || !reflect.DeepEqual(edge.Node, wantNode) {
 		t.Fatalf("backlink edge = %#v; want mentions in from %#v", edge, wantNode)
@@ -1475,10 +1486,13 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}
-	// Every document has a version (three, counting the two specs); the planted row from a message
-	// that does not exist is the one orphan. Each of the three is marked owed a block index, and
-	// the ask, the comment and the message are each marked owed a block index of their own parts.
-	if report != (refs.Rebuild{Documents: 3, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 3, ItemsOwed: 3}) {
+	// Every document has a version - the two project documents and the issue's spec - and so do
+	// the issue's tree, whose references an issue room's documents are indexed under, and its
+	// decisions query, each of which an issue born converted is made with: five. The planted row
+	// from a message that does not exist is the one orphan. Each doc is marked owed a block index -
+	// the four of them but the tree, whose room an owed mark on any of its documents reconciles -
+	// and the ask, the comment and the message are each marked owed a block index of their own parts.
+	if report != (refs.Rebuild{Documents: 5, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 4, ItemsOwed: 3}) {
 		t.Fatalf("rebuild report = %#v", report)
 	}
 	var documents, owed int
@@ -1489,7 +1503,7 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	`).Scan(&documents, &owed); err != nil {
 		t.Fatalf("read the block index of every document: %v", err)
 	}
-	if documents != 3 || owed != documents {
+	if documents != 4 || owed != documents {
 		t.Fatalf("after rebuild-refs %d of %d documents are owed a block index, want every one", owed, documents)
 	}
 	var items, owedItems int

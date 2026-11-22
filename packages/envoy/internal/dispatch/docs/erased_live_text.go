@@ -104,12 +104,26 @@ type ErasedReply struct {
 // rule or drops an open ask block each refuse the erase, naming the document: a document the
 // erase could not leave whole is one an operator repairs first, by its rebuild or a replacement
 // from markdown.
+//
+// An issue's tree names the issue room, whose history holds a fragment of each document converted
+// into it beside the tree's own (roomLayout, read under the owner row every join takes first). The
+// erased block is redacted inside the fragment that holds it, read and rendered as that fragment's
+// document, whose rendering is the live text the run names (Text); every other fragment is seeded
+// as it stands, so the seed takes nothing out of another document's text; and the ask blocks the
+// rules read are the whole room's, whose asks its tree artifact holds.
 func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope ErasedScope) (*ErasedLiveText, error) {
-	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
+	owner, _, err := lockArtifactOwner(ctx, tx, artifactID)
+	if err != nil {
 		return nil, err
 	}
 	if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
 		return nil, err
+	}
+	var layout roomLayout
+	if owner.Kind == "tree" {
+		if layout, err = readRoomLayout(ctx, tx, artifactID); err != nil {
+			return nil, err
+		}
 	}
 	erased := &ErasedLiveText{room: artifactID}
 	head, err := erased.versioned().head(ctx, tx, artifactID)
@@ -131,39 +145,78 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 	if doc == nil {
 		return nil, nil
 	}
-	tree, err := treeOf(doc)
-	if err != nil {
-		return nil, fmt.Errorf("read document %s: %w", artifactID, err)
-	}
-	markdown, offsets, err := documentMarkdownWithOffsets(tree)
-	if err != nil {
-		return nil, fmt.Errorf("render document %s: %w", artifactID, err)
-	}
-	redacted := redactedBlock(markdown, offsets, scope.BlockID, scope.Texts, scope.Marker)
-	seeded := tree
-	if redacted != markdown {
-		target, _, err := pmdoc.ParseWritten(redacted, tree)
-		if err != nil {
-			return nil, fmt.Errorf("read back the redacted text of document %s: %w", artifactID, err)
+	// Each fragment's tree, nil for a fragment of an issue room that holds nothing, which the seed
+	// leaves holding nothing; holding is the fragment that holds the erased block, the room's own
+	// where none does.
+	fragments := layout.fragments()
+	trees := make([]*pmdoc.Node, len(fragments))
+	holding := 0
+	for index, name := range fragments {
+		if len(fragments) > 1 && doc.GetXmlFragment(name).Len() == 0 {
+			continue
 		}
-		seeded = splicedBlock(tree, target, scope.BlockID)
+		if trees[index], _, err = treeOfFragments(doc, []string{name}); err != nil {
+			return nil, fmt.Errorf("read document %s: %w", artifactID, err)
+		}
+		if index > 0 && scope.BlockID != "" && blockPath(trees[index], scope.BlockID) != nil {
+			holding = index
+		}
+	}
+	tree := trees[holding]
+	seeds := slices.Clone(trees)
+	markdown, redacted := "", ""
+	if tree != nil {
+		var offsets []pmdoc.BlockOffset
+		if markdown, offsets, err = documentMarkdownWithOffsets(tree); err != nil {
+			return nil, fmt.Errorf("render document %s: %w", artifactID, err)
+		}
+		redacted = redactedBlock(markdown, offsets, scope.BlockID, scope.Texts, scope.Marker)
+		if redacted != markdown {
+			target, _, err := pmdoc.ParseWritten(redacted, tree)
+			if err != nil {
+				return nil, fmt.Errorf("read back the redacted text of document %s: %w", artifactID, err)
+			}
+			seeds[holding] = splicedBlock(tree, target, scope.BlockID)
+		}
+	}
+	seeded := seeds[0]
+	if len(fragments) > 1 {
+		seeded = joinedSeeds(seeds)
 	}
 	if err := validateStoredAskBlocks(seeded); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
-	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded); err != nil {
-		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
+	// The erase is an operator's (envoy-dispatch erase), no agent's write.
+	if err := refuseDroppedAskBlocksIn(ctx, tx, roomAsksOf(artifactID), seeded, dropper{person: true}); err != nil {
+		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, err)
 	}
 	margin, moved := keptMargin(marginOf(doc), scope)
-	if erased.seed, err = encodeDocumentSeed(seeded, tree, margin); err != nil {
+	if erased.seed, err = encodeDocumentSeed(fragments, seeds, trees, margin); err != nil {
 		return nil, fmt.Errorf("seed the redacted document %s: %w", artifactID, err)
 	}
 	erased.Held = redacted != markdown
-	erased.Left = erasedBytesLeft(tree, seeded, scope.BlockID, scope.Texts, scope.Marker, erased.seed)
-	erased.AnchorMarks = len(pmdoc.ListMarks(tree)) - len(pmdoc.ListMarks(seeded))
+	erased.Left = erasedBytesLeft(tree, seeds[holding], scope.BlockID, scope.Texts, scope.Marker, erased.seed)
+	if tree != nil {
+		erased.AnchorMarks = len(pmdoc.ListMarks(tree)) - len(pmdoc.ListMarks(seeds[holding]))
+	}
 	erased.MarginRecords = moved
 	erased.Text = markdown
 	return erased, nil
+}
+
+// joinedSeeds is the one tree an issue room's seed holds, every fragment's in the room's order
+// (joinFragments), a fragment that holds nothing read as no block: what the rules that read the
+// room's ask blocks read (ReadErasedLiveText).
+func joinedSeeds(seeds []*pmdoc.Node) *pmdoc.Node {
+	parts := make([]*pmdoc.Node, len(seeds))
+	for index, seed := range seeds {
+		parts[index] = seed
+		if seed == nil {
+			parts[index] = &pmdoc.Node{Type: "doc"}
+		}
+	}
+	joined, _ := joinFragments(parts)
+	return joined
 }
 
 // splicedBlock is the live tree with the block blockID names replaced by the block target, the
@@ -304,18 +357,30 @@ func holdsAnyText(value any, texts []string) bool {
 	return false
 }
 
-// encodeDocumentSeed writes tree and margin into a fresh document and returns its one durable
-// update, as encodeDocumentTreeHolding does for a tree alone: the erase's seed carries the
-// document's margin records as well as its text and its anchor marks. held is the live tree the
-// seed is cut from, whose elements the document already holds (pmdoc.UpdateHolding), so an
-// element a newer build wrote there is put back rather than refused.
-func encodeDocumentSeed(tree, held *pmdoc.Node, margin map[string]any) ([]byte, error) {
+// encodeDocumentSeed writes trees, each into the fragment of fragments beside it, and margin into a
+// fresh document and returns its one durable update, as encodeDocumentTreeHolding does for a tree
+// alone: the erase's seed carries the document's margin records as well as its text and its anchor
+// marks, and an issue room's carries every fragment of the room. A fragment whose tree is nil
+// holds nothing, and is left so. held is each live tree the seed is cut from, whose elements the
+// document already holds (pmdoc.UpdateHolding), so an element a newer build wrote there is put
+// back rather than refused.
+func encodeDocumentSeed(fragments []string, trees, held []*pmdoc.Node, margin map[string]any) ([]byte, error) {
 	doc := crdt.New()
-	fragment := doc.GetXmlFragment(fragmentName)
+	written := make([]*crdt.YXmlFragment, len(fragments))
+	for index, name := range fragments {
+		if trees[index] != nil {
+			written[index] = doc.GetXmlFragment(name)
+		}
+	}
 	marks := doc.GetMap(marksMapName)
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
-		if err := pmdoc.UpdateHolding(transaction, fragment, tree, held); err != nil {
-			return err
+		for index, fragment := range written {
+			if fragment == nil {
+				continue
+			}
+			if err := pmdoc.UpdateHolding(transaction, fragment, trees[index], held[index]); err != nil {
+				return err
+			}
 		}
 		for _, key := range slices.Sorted(maps.Keys(margin)) {
 			marks.Set(transaction, key, margin[key])

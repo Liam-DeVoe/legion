@@ -148,8 +148,10 @@ func (s *server) repairIssueAsksOnTick(ctx context.Context, markedSince *time.Ti
 // is decided again under its row. The withdrawals and restorations come first, so a pass cut
 // short by its time spends it on them rather than on the sweeps. A closed issue is swept when one
 // of its documents owes a settlement marked after $1, or at all when $1 is null or the issue is
-// one of $2, the issues the last pass did not repair. It also answers the database's clock as the
-// list was read.
+// one of $2, the issues the last pass did not repair. A pending settlement row is keyed by the
+// room its document is edited in - the document itself, or its issue room's tree artifact
+// (refs.DocumentRoomSQL) - so the rows are read among the issue's documents and its tree alike,
+// as reopenOwedAskDocuments reads them. It also answers the database's clock as the list was read.
 const issueAskRepairCandidates = `
 	select statement_timestamp(), array(
 		select key from (
@@ -168,7 +170,7 @@ const issueAskRepairCandidates = `
 			where i.closed_at is not null
 				and exists (
 					select 1 from artifacts d join doc_settlements_pending p on p.artifact_id = d.id
-					where d.issue_key = i.key and d.kind = 'doc'
+					where d.issue_key = i.key and d.kind in ('doc', 'tree')
 						and ($1::timestamptz is null or p.marked_at > $1 or i.key = any($2::text[]))
 				)
 		) candidates
@@ -244,7 +246,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 			count(*) filter (where `+withdrawnAsk+`),
 			exists (
 				select 1 from artifacts d join doc_settlements_pending p on p.artifact_id = d.id
-				where d.issue_key = $1 and d.kind = 'doc'
+				where d.issue_key = $1 and d.kind in ('doc', 'tree')
 			)
 		from asks a where a.issue_key = $1
 	`, issueKey).Scan(&open, &withdrawn, &owesSettlement); err != nil {
@@ -268,7 +270,8 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		// final sweep (sweepClosedIssueAsks) in the same write: the open asks' blocks and copies
 		// written resolved, while their rows still read open, beside the resolved and answered block
 		// asks' blocks and copies from their rows as they stand, and every unindexed block marked
-		// resolved. Every document write comes before the first event.
+		// resolved. Every document write comes before the first event, and each withdrawal is
+		// planned after them, as a close plans it (planWithdrawal).
 		openAsks, withdrawing, err := s.readOpenIssueAsks(documentCtx, tx, issueKey)
 		if err != nil {
 			return repair, err
@@ -278,8 +281,12 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 			return repair, err
 		}
 		repair.Swept = len(unindexed)
+		planned, err := planWithdrawal(documentCtx, tx, issueKey, openAsks, closer)
+		if err != nil {
+			return repair, err
+		}
 		var asks []model.Ask
-		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, issueKey, openAsks, closer)
+		asks, events, err = s.recordWithdrawnAsksTx(ledger, issueKey, planned, closer)
 		if err != nil {
 			return repair, err
 		}
@@ -306,7 +313,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, reopener); err != nil {
 			return repair, err
 		}
-		repair.Restored = len(restored)
+		repair.Restored = len(restored.asks)
 	default:
 		return repair, nil
 	}

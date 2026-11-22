@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -15,9 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -37,7 +41,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // `envoy-dispatch census --store --sizing` runs it, and returns everything it printed.
 func sizingCensus(t *testing.T, database *store.Store) string {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true, nil)
 	if err != nil {
 		t.Fatalf("take the store census with its growth pass: %v", err)
 	}
@@ -384,6 +388,19 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 	`, document, refKey+"#p-Added"); err != nil {
 		t.Fatalf("record the added paragraph's reference to CORE-1: %v", err)
 	}
+	// An image of CORE-1 uploaded in the window, whose one version holds its bytes: the write the
+	// version_bytes term counts, its mime, size and sha256 values on the image's node.
+	if _, err := database.Pool.Exec(ctx, `
+		with made as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', 'diagram-png', 'diagram.png', 'image', false, '{"kind":"user","id":"alice"}')
+			returning id
+		)
+		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors)
+		select made.id, 1, '\x89504e47'::bytea, 'image/png', 4, repeat('a', 64), '[{"kind":"user","id":"alice"}]' from made
+	`); err != nil {
+		t.Fatalf("upload the image: %v", err)
+	}
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (artifact_id, author, body, anchor)
@@ -427,8 +444,14 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 			('CORE-1', 5, 'ask.resolved', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
 			('CORE-1', 6, 'ask.asked_of', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
 			('CORE-1', 7, 'ask.follower_added', '{"kind":"session","id":"ses_sized"}',
-			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false, now())
-	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817"); err != nil {
+			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false, now()),
+			-- The removal of an untouched scratch document, which states its node gone.
+			('CORE-1', 8, 'artifact.removed', '{"kind":"user","id":"alice"}',
+			 jsonb_build_object('artifact', jsonb_build_object('id', $3::text)), false, now()),
+			-- A settlement's flag of a block of the spec that fails the strict read.
+			('CORE-1', 9, 'block.invalid', '{"kind":"user","id":"alice"}',
+			 jsonb_build_object('artifact_id', $4::text, 'block_id', 'box'), false, now())
+	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817", "7b1f6e5d-4c3b-4a20-9f8e-7d6c5b4a3928", document); err != nil {
 		t.Fatalf("write the events: %v", err)
 	}
 	// The comment's comment.created, as the API appends one for a person's comment on a document:
@@ -473,11 +496,14 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
 // table a term counts: a mention of the comment that resolved to a session and its attempt, which
 // the listener took, two body blocks of the comment of which one is removed, a link out of the
-// live one, a child issue that waits on its parent, a failed result with two screenshots and its
-// retraction, a Keep, two components of one imported snapshot, one under and depending on the
-// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, and her
-// snooze of an ask the session ses_asker opened before the window, so that inside the window
-// the snooze is the one write of it a term counts.
+// live one, the document's reference to CORE-1, which its added paragraph cites, a child issue
+// that waits on its parent, a failed result with two screenshots and its retraction, a Keep, two
+// components of one imported snapshot, one under and depending on the other, with CORE-1
+// affecting the first, alice's dismissal of the message's thread, her snooze of an ask the
+// session ses_asker opened before the window, so that inside the window the snooze is the one
+// write of it a term counts, a copy in the spec of an ask block of a document written before the
+// window, and an answered ask asked before the window whose block, Dropped, the spec's second
+// version took out.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -510,6 +536,9 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		{"write the body block's link", `
 			insert into comment_block_refs (comment_id, block_id, from_node, to_kind, to_id)
 			values ($1::uuid, 'b1', 'b1', 'issue', 'CORE-1')`, []any{comment}},
+		{"write the document's reference", `
+			insert into refs (from_kind, from_id, to_kind, to_id) values ('artifact', $1::text, 'issue', 'CORE-1')`,
+			[]any{document}},
 		{"write the child issue and its wait", `
 			with child as (
 				insert into issues (key, project_key, number, title, created_by, rank, parent_key)
@@ -530,6 +559,27 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		{"write the Keep", `
 			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
 			values ($1::uuid, 'box', 'x', 1, 'alice')`, []any{document}},
+		{"write a copy of another document's ask block", `
+			with source as (
+				insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+				values ('CORE-1', 'CORE', 'source', 'source.md', 'doc', false, '{"kind":"user","id":"alice"}',
+				        now() - interval '40 days')
+				returning id
+			), asked as (
+				insert into asks (issue_key, author, question, created_at, block_artifact_id, block_id)
+				select 'CORE-1', '{"kind":"user","id":"alice"}', 'Which store does the copy name?',
+				       now() - interval '40 days', id, 'copied' from source
+				returning id
+			)
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			select $1::uuid, 'copied', (select ref_key from artifacts where id = $1::uuid) || '#copied', 'ask', '',
+			       'Which store does the copy name?', 3, now() from asked`, []any{document}},
+		{"write the answered ask whose block the second version took out", `
+			insert into asks (issue_key, author, question, state, answer, created_at, block_artifact_id, block_id)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', 'Is Dropped kept?', 'answered',
+			        jsonb_build_object('user', 'bob', 'selected', jsonb_build_array(), 'text', 'No.',
+			                           'at', now() - interval '40 days'),
+			        now() - interval '40 days', $1::uuid, 'p-Dropped')`, []any{document}},
 		{"write the components", `
 			with source as (
 				insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -605,6 +655,57 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 	return terms
 }
 
+// resultWrite is every tuple the store states of one result a session recorded, naming no
+// screenshot (the result_screenshot term counts those), by its kind, as the store's own writer
+// appends them: graphstore.ResultFacts' nodes and tuples written through graphstore.Write in a
+// transaction of its own, which is rolled back, and the tuples that write appended read back in
+// the order it appended them - the visibility, state and project its node write states of the
+// result's node, and each tuple ResultFacts appends: its values, its part_of and result_of its
+// check, its authored_by with the alias_of a session's credential proves of its owner
+// (graphstore.AuthorFacts) and its run_session. The base attributes of the author's own nodes are
+// the session and person terms', and are left out. The result term is held to it, so a value or
+// a tuple the writer comes to state fails the sizing until its term counts and names it.
+func resultWrite(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	ctx := context.Background()
+	owner, session := "alice", "ses_sized"
+	recorder := model.Actor{Kind: "session", ID: session, Owner: &owner, Act: &model.ActorAct{Session: session, SessionProven: true}}
+	nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
+		ID: "00000000-0000-4000-8000-000000000001", Project: "CORE", Check: "CORE-1/verification-md#c-one",
+		Verdict: "fail", Surface: "cli", Run: "go test ./...", Observed: "FAIL", Commit: strings.Repeat("a", 40),
+		Role: "tester", Control: "Broke it and watched it fail.", Failed: 1, CheckVersion: 1, CheckSHA256: "x",
+		Session: session, Recorder: recorder, At: time.Now().UTC(), Event: graphstore.NoEvent,
+	})
+	if !ok || len(nodes) == 0 || nodes[0].Kind != graphstore.KindResult {
+		t.Fatalf("graphstore.ResultFacts states no result node for a session's result: %+v", nodes)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the result's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var before int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
+		t.Fatalf("read the highest tuple before the result's write: %v", err)
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("write the result through the store: %v", err)
+	}
+	rows, err := tx.Query(ctx, `
+		select kind from graph_tuples
+		where seq > $1 and (from_kind = $2 or not kind = any($3::text[]))
+		order by seq
+	`, before, graphstore.KindResult, graphstorecopy.BaseAttributes())
+	if err != nil {
+		t.Fatalf("read the tuples the result's write appended: %v", err)
+	}
+	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the tuples the result's write appended: %v", err)
+	}
+	return kinds
+}
+
 // writtenKind is one kind of tuple a drive of the store's writers appended: the drive, as its
 // StoreDrive names it, the kind of the node the tuple is out of, and the tuple's own kind.
 type writtenKind struct{ writer, from, kind string }
@@ -626,7 +727,15 @@ const (
 	busDeliveryDrive   = "outbox/publisher.go#recordBatch, the bus's delivery of comment.created"
 	receiptDrive       = "outbox/publisher.go#recordBatch, the receipt of the comment's mention"
 	fallbackDrive      = "outbox/mentions.go#recordFallbackCopies"
+	objectBatchDrive   = "graphcensus/projects_backfill.go#writeObjectBatch"
+	scopeBatchDrive    = "graphcensus/projects_backfill.go#writeScopeBatch"
+	orphanSweepDrive   = "graphcensus/orphans.go#StateOrphanedGone"
 )
+
+// sweptDocument is the address of the document the orphan sweep's drive states gone: one of
+// CORE-1 whose node stands behind no row, as a build before this one leaves the node of a
+// document it removes.
+const sweptDocument = "CORE-1/swept-md"
 
 // seededDrives are the drives of the store's writers over the history seedSizedHistory wrote, one
 // after another: the block index over the archive (refs.IndexBlocks, then graphstore.Caused, as a
@@ -649,21 +758,36 @@ func seededDrives(database *store.Store) []StoreDrive {
 			}
 		}
 	}
+	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T) {
+		return func(t *testing.T) {
+			t.Helper()
+			if _, err := pass(ctx, database); err != nil {
+				t.Fatalf("run a backfill pass: %v", err)
+			}
+		}
+	}
 	return []StoreDrive{{
 		// A version's blocks, as the index states them over the archive's three versions: the
 		// blocks it inserts afresh, each with its node's base attributes, its in_document and its
 		// part_of; the paragraph the second version drops, stated gone; the paragraph it moves out
 		// of the callout, its old parent retracted and its new one asserted; the dropped paragraph
 		// the third version brings back, stated live, with its in_document and at most a parent the
-		// restore moved; and the added paragraph's reference to CORE-1.
+		// restore moved; and the added paragraph's reference to CORE-1. Beside them, the values
+		// the index states of the blocks it places (refs' planBlockValues): a block's rank and its
+		// placement at its first row, its rank again where it moved among new siblings, and the
+		// text value of each row with a text.
 		Name: archiveIndexDrive, Sites: []string{"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Database: database, Drive: func(t *testing.T) { indexTheArchive(t, database) },
 		Counts: map[StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block", "block_restored", "block_gone"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
 			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block", "block_restored"},
 			{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block", "block_restored", movedParents},
 			{refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
+			{refs.BlockNodeKind, refs.AttributeRank}:             {"block_values", movedRanks},
+			{refs.BlockNodeKind, refs.AttributePlacement}:        {"block_values"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:       {"block_text"},
 		},
 	}, {
 		// The backfill's passes over the rows the build before the store wrote: the blocks of the
@@ -679,6 +803,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		Counts: map[StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
 			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		},
 	}, {
@@ -691,6 +816,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
@@ -715,6 +841,79 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
+	}, {
+		// The backfill's pass over the issues, documents, asks and messages the build before the
+		// store wrote: each one's node and its visibility, state and project, as its create states
+		// them, a document's part_of the issue that owns it, an issue's child_of its parent,
+		// CORE-2's of CORE-1, and the mentions of each refs row a document it names holds
+		// (nameArtifactNodes), which the term document_ref counts. The seeded history's are all in
+		// project CORE, so none states parties.
+		Name: objectBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeObjectBatch"},
+		Database: database, Drive: passes(backfillObjectNodes),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{graphstore.KindAsk, graphstore.AttributeVisibility}:      {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeState}:           {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeProject}:         {graphstore.KindAsk},
+			{graphstore.KindMessage, graphstore.AttributeVisibility}:  {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:       {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeProject}:     {graphstore.KindMessage},
+			{graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
+			{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}:       {"document_ref"},
+		},
+	}, {
+		// The backfill's fill of the project of a node an earlier build stored with none: the
+		// comment's, which the comment pass above wrote with its project, is put back as a build
+		// before the project stored it - no project on its row and no project tuple in its log, as
+		// the column is the projection of its tuples - and the fill states its project, in the lock
+		// and fill FillScopes runs as one batch of its own (store.RunWrite), which calls no other
+		// writer of the store, so the site is writeScopeBatch alone. The comment row stays, so the
+		// sized window holds the writes it held.
+		Name: scopeBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeScopeBatch"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, `delete from graph_tuples where from_kind = $1 and kind = $2`,
+					graphstore.KindComment, graphstore.AttributeProject); err != nil {
+					return err
+				}
+				tag, err := tx.Exec(ctx, `update graph_nodes set project_key = null where kind = $1`, graphstore.KindComment)
+				if err == nil && tag.RowsAffected() == 0 {
+					err = errors.New("no comment node to put back")
+				}
+				return err
+			}); err != nil {
+				t.Fatalf("put the comment node back to no project, as an earlier build stored it: %v", err)
+			}
+		},
+		Drive:  passes(backfillScopes),
+		Counts: map[StoredKind][]string{{graphstore.KindComment, graphstore.AttributeProject}: {"comment"}},
+	}, {
+		// The block-index tick's sweep of a document a build before this one removed, stating
+		// nothing: the node it leaves standing behind no row, stated gone as this build's removal
+		// states it, which the term artifact_removed counts.
+		Name: orphanSweepDrive, Sites: []string{"graphcensus/orphans.go#StateOrphanedGone"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				return graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(sweptDocument, "CORE", "",
+					model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC().Add(-time.Hour))}, nil)
+			}); err != nil {
+				t.Fatalf("write the node of %s as this build's create did, before a build before this one removed its row: %v", sweptDocument, err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			if err := StateOrphanedGone(ctx, database, sweptDocument); err != nil {
+				t.Fatalf("state the orphaned node of %s gone: %v", sweptDocument, err)
+			}
+		},
+		Counts: map[StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
 	}, {
 		// The outbox's record of the batch that delivers the comment's comment.created to the role
 		// sizer: the delivered_to of that delivery, which bus_delivery counts, and the holder of the
@@ -754,17 +953,21 @@ func seededDrives(database *store.Store) []StoreDrive {
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
-// (graphstoreDrives), the seed (seedRunDrives), and the drives of the sites whose packages import
-// this one, which this package's external test registers (ImportedDrives). It holds them to
-// driving every site the register of the store's writers lists (requireEveryListedSiteDriven).
-// Each drive is the writer itself and not a copy of what it writes. It answers how many tuples of
-// each kind each drive appended, read off graph_tuples by the sequences the drive's tuples took,
-// and the terms each drive says count each kind it appends; and it logs, for every listed site,
-// what each drive that runs it appended.
+// (graphstoreDrives), the lens catalogue's writer and the backfill's passes over a run and a
+// prevented_by (runAndCatalogueDrives), the boot step's ask passes (askBackfillDrives), the seed
+// (seedRunDrives), the backfill's other passes, the pointer's and the rebuild's writers and the
+// architecture import (internalDrives), and the drives of the sites whose packages import this
+// one, which this package's external test registers (ImportedDrives). It holds them to driving
+// every site the register of the store's writers lists (requireEveryListedSiteDriven). Each drive
+// is the writer itself and not a copy of what it writes. It answers how many tuples of each kind
+// each drive appended, read off graph_tuples by the sequences the drive's tuples took, and the
+// terms each drive says count each kind it appends; and it logs, for every listed site, what each
+// drive that runs it appended.
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
-	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), seedRunDrives(t))
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), runAndCatalogueDrives(t), askBackfillDrives(t),
+		seedRunDrives(t), internalDrives(t))
 	if ImportedDrives == nil {
 		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
 	} else {
@@ -860,8 +1063,8 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 		if err != nil {
 			t.Fatalf("begin the index of version %d: %v", version.number, err)
 		}
-		_, won, write, err := refs.IndexBlocks(ctx, tx, version.artifact, version.number, version.at, version.markdown,
-			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil)
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, version.artifact, refs.OneVersion(version.artifact, version.number, version.at), version.markdown,
+			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, refs.TypedFacts{})
 		if err == nil && !won {
 			err = fmt.Errorf("the pass lost the revision fence, so it wrote nothing")
 		}
@@ -991,6 +1194,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	appended, countedBy := writeTheStore(t, database)
 	printed := sizingCensus(t, database)
 	terms := sizedTerms(t, printed)
+	resultKinds := resultWrite(t, database)
 	for _, written := range slices.SortedFunc(maps.Keys(appended), compareWritten) {
 		counting, stated := countedBy[written]
 		if !stated {
@@ -1012,19 +1216,36 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		}
 	}
 	want := map[string]sizedTerm{
-		"comment": {tuples: 2, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
+		"comment": {tuples: 3, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
 		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1},
+		// The comment is anchored to the document.
+		"anchor_block": {tuples: 3, writes: 1},
 		// The mention's attempt to ses_sized, the comment.created the bus delivered to the role
 		// sizer, and the copy the fallback pass published to ses_copy.
 		"delivery": {tuples: 1, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
 		// Five blocks are new at version 1 and one at version 2; version 2 drops one and rewrites
 		// the callout, and version 3 brings the dropped one back, so eight rows of the window hold
 		// a text.
-		"block": {tuples: 4, writes: 6}, "block_restored": {tuples: 4, writes: 1}, "block_gone": {tuples: 1, writes: 1},
+		"block": {tuples: 5, writes: 6}, "block_restored": {tuples: 4, writes: 1}, "block_gone": {tuples: 1, writes: 1},
 		// Version 1 is the document's first indexed version, so it is compared with nothing,
-		// version 2 moved one paragraph out of the callout, and version 3 moved none.
-		movedParents: {tuples: 2, writes: 1, read: 3},
-		"block_ref":  {tuples: 2, writes: 1}, "block_text": {tuples: 2, writes: 8},
+		// version 2 moved one paragraph out of the callout, which takes a rank in its new place, and
+		// version 3 moved none.
+		movedParents: {tuples: 2, writes: 1, read: 3}, movedRanks: {tuples: 1, writes: 1},
+		// Eight rows hold a text, each a text value; six are a block's first, each a rank and a
+		// placement; one deleted a block, whose text value stays as the block's node goes gone.
+		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8}, "block_values": {tuples: 2, writes: 6},
+		// The document's reference to CORE-1 (seedSizedRelations). The document is CORE-1's spec,
+		// whose six first rows each take the one author their version lists.
+		"document_ref": {tuples: 2, writes: 1}, "block_author": {tuples: 1, writes: 6},
+		// Each of the window's four versions writes its node and six tuples
+		// (graphstore.VersionFacts): the window document's three, and the image's one, which
+		// states its three bytes on the image's node; both documents are an issue's, created
+		// inside the window. The window document is CORE-1's spec, so each of its three versions
+		// is taken to hold a definition_version.
+		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
+		"query_version": {tuples: 1, writes: 3},
+		// The scratch document removed in the window held one version; no table dates an erase.
+		"version_removed": {tuples: 1, writes: 1}, "erased_version": {tuples: 1, writes: sizingWindowDays / 7, assumed: true},
 		// The comment is alice's first, the delivery records ses_sized and the published copy
 		// ses_copy, and the message.created event is the first to address the role sizer, which
 		// takes a page with it.
@@ -1036,31 +1257,50 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// person it waits on.
 		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
 		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
-		"message": {tuples: 4, writes: 2}, "message_pointer": {tuples: 1, writes: 1}, "reply": {tuples: 2, writes: 1},
+		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
+		"reply": {tuples: 2, writes: 1},
 		// The mention is one tuple to its role and one to the session the role resolved to.
 		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
 		"ask_asked_of": {tuples: 4, writes: 1}, "body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
 		// The attempts are the mention's and the message's.
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
 		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.
-		"issue": {tuples: 2, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 1},
-		"document_version": {tuples: 2, writes: 3}, "criterion": {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
-		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
-		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
-		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
-		"ask": {tuples: 8, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
-		"ask_resolved": {tuples: 1, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
+		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 2},
+		// CORE-1 and CORE-2 are each taken to state a filed_from and a duplicate_of and to be born
+		// converted, each with its room and its decisions query; CORE-1's spec is a query node too.
+		"issue_origin": {tuples: 2, writes: 2}, "issue_room": {tuples: 21, writes: 2}, "query_node": {tuples: 4, writes: 3},
+		// The scratch document removed in the window.
+		"artifact_removed": {tuples: 1, writes: 1},
+		"criterion":        {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
+		"result":           {tuples: int64(len(resultKinds)), writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
+		// Each component's node is in its project. The leaf's part_of the root and its depends_on
+		// it, and CORE-1's affects of the root.
+		"component": {tuples: 3, writes: 2}, "component_relation": {tuples: 1, writes: 3},
+		// No table keeps a component an import dropped or a source's removal took.
+		"component_retired": {tuples: 3, writes: sizingWindowDays / 7, assumed: true},
+		// The ask's part_of the document holding its block beside its anchored_to, an answer's
+		// decided_by beside its answered_by, and a resolution's value and its retraction.
+		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 7, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 6, writes: 1},
+		"ask_resolved": {tuples: 3, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
+		// The copy of the source document's ask block, the spec's block the settlement flagged, and
+		// the version that took out the answered ask's block; no table dates a moved_to.
+		"ask_copy": {tuples: 1, writes: 1}, "ask_invalid": {tuples: 2, writes: 1},
+		"ask_removal": {tuples: 2, writes: 1}, "block_move": {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of the lenses child's yet, so each term reads the writes it
-		// is assumed at.
-		"interaction":  {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
-		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
-		"lens":         {tuples: 6, writes: 2 * sizingWindowDays, assumed: true},
-		"lens_finding": {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
-		"lens_kind":    {tuples: 8, writes: 11, assumed: true},
-		"constraint":   {tuples: 5, writes: 1 * sizingWindowDays, assumed: true},
-		"risk":         {tuples: 4, writes: 11 * sizingWindowDays, assumed: true},
+		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
+		"interaction":      {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
+		"frame":            {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
+		"interaction_gone": {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
+		"lens":             {tuples: 11, writes: 2 * sizingWindowDays, assumed: true},
+		"document_move":    {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},
+		"lens_finding":     {tuples: 8, writes: 10 * sizingWindowDays, assumed: true},
+		"lens_kind":        {tuples: 8, writes: 22, assumed: true},
+		"constraint":       {tuples: 11, writes: 1 * sizingWindowDays, assumed: true},
+		"risk":             {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
+		"node_state":       {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
+		"pointer_retarget": {tuples: 2, writes: 1 * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]
@@ -1069,6 +1309,17 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 			t.Errorf("the sizing prints no term %s, whose writer appends %d tuple(s) a write", name, want[name].tuples)
 		case got != want[name]:
 			t.Errorf("the sizing prints term %s as %+v, want %+v", name, got, want[name])
+		}
+	}
+	// The result term's driver names every kind of tuple its writer states (resultWrite), as the
+	// count above holds its tuples to that writer's.
+	resultDriver := regexp.MustCompile(`(?m)^census: sizing tuples-a-write kind=result .* driver=(.*)$`).FindStringSubmatch(printed)
+	if resultDriver == nil {
+		t.Fatalf("the sizing prints no driver of the result term:\n%s", printed)
+	}
+	for _, kind := range resultKinds {
+		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(kind) + `\b`).MatchString(resultDriver[1]) {
+			t.Errorf("the result term's driver %q names no %s, which graphstore.ResultFacts states of a session's result", resultDriver[1], kind)
 		}
 	}
 	// A term with no write adds nothing to the sum, so the sum below would read the same with the
@@ -1090,6 +1341,123 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		t.Errorf("the sizing projects graph_tuples at %v rows a day, want %s: the sum of every term's writes times its tuples, %d, over %d days\n%s",
 			match, wantADay, tuples, sizingWindowDays, printed)
 	}
+	// The history's seven versions, the window document's three, the image's one and the
+	// archive's three, were written before the store held a version node, so the version backfill
+	// owes each its node and six tuples once. No pass of this build's rule has stated a document
+	// of this store, so the backfill's marking owes every block of a document it would mark its
+	// rank, text and placement (unstatedBlocksOwed). The year projects every backfill's rows beside
+	// the rate: each table's backfill-rows line is the sum of the backfill lines' nodes or tuples.
+	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=7 nodes_a_row=1 tuples_a_row=6 nodes=7 tuples=42 "; !strings.Contains(printed, line) {
+		t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+	}
+	var backfillNodes, backfillTuples int64
+	for _, owed := range regexp.MustCompile(`(?m)^census: sizing backfill kind=\S+ .* nodes=(\d+) tuples=(\d+) `).FindAllStringSubmatch(printed, -1) {
+		nodes, _ := strconv.ParseInt(owed[1], 10, 64)
+		tuples, _ := strconv.ParseInt(owed[2], 10, 64)
+		backfillNodes, backfillTuples = backfillNodes+nodes, backfillTuples+tuples
+	}
+	for _, line := range []string{
+		fmt.Sprintf("census: sizing backfill-rows table=graph_tuples rows=%d\n", backfillTuples),
+		fmt.Sprintf("census: sizing backfill-rows table=graph_nodes rows=%d\n", backfillNodes),
+	} {
+		if !strings.Contains(printed, line) {
+			t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+		}
+	}
+}
+
+// The sizing counts what the backfill's marking (markStaleDocuments) owes the store once, beside
+// the rates: a rank, a text and a placement for every block of a document the marking would mark -
+// one whose row holds no mark and no pass of this build's rule has stated at its version - and for
+// every such block at the top of an issue's spec, Verification or plan document the retraction of
+// its part_of to the document and its part_of to the issue.
+//
+// Four documents are stored as the release before stored them: a spec of two top-level blocks and
+// one nested, and an upload of one, which no pass of this rule has stated; a plan of two top-level
+// blocks a pass of this rule stated at its version; and a Verification document of one top-level
+// block that holds the backfill's mark already. The sizing owes the spec's and the upload's four
+// blocks their values and the spec's two their top. Once a pass of this rule has stated the spec
+// it owes the upload's block its values and no top. On a database the migration that adds the two
+// columns of that record has not reached, which the sizing takes its readings on too, no row can
+// say it is stated, and the sizing owes every stored block: seven values and five tops.
+func TestTheSizingCountsWhatTheMarkingOwesEachUnstatedBlock(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank) values
+			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed issue CORE-1: %v", err)
+	}
+	documents := map[string]string{}
+	for _, document := range []struct {
+		slug                      string
+		primary                   bool
+		blocks                    [][2]string
+		statedVersion, statedRule *int
+		marked                    bool
+	}{
+		{slug: "spec", primary: true, blocks: [][2]string{{"outer", ""}, {"inner", "outer"}, {"after", ""}}},
+		{slug: "notes-md", blocks: [][2]string{{"note", ""}}},
+		{slug: "plan-md", blocks: [][2]string{{"step", ""}, {"next", ""}}, statedVersion: new(1), statedRule: new(refs.BlockIndexMarkingRule)},
+		{slug: "verification-md", blocks: [][2]string{{"check", ""}}, marked: true},
+	} {
+		var artifactID, refKey string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', $1, $1, 'doc', $2, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, document.slug, document.primary).Scan(&artifactID, &refKey); err != nil {
+			t.Fatalf("create document %s: %v", document.slug, err)
+		}
+		documents[document.slug] = artifactID
+		for _, block := range document.blocks {
+			var parent *string
+			if block[1] != "" {
+				parent = &block[1]
+			}
+			if _, err := database.Pool.Exec(ctx, `
+				insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, parent_block_id)
+				values ($1::uuid, $2, $3, 'paragraph', '', $2, 1, now(), $4)
+			`, artifactID, block[0], refKey+"#"+block[0], parent); err != nil {
+				t.Fatalf("write block %s of %s: %v", block[0], document.slug, err)
+			}
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, store_owed_at)
+			values ($1::uuid, 1, 1, $2, $3, case when $4 then now() end)
+		`, artifactID, document.statedVersion, document.statedRule, document.marked); err != nil {
+			t.Fatalf("write the block index row of %s: %v", document.slug, err)
+		}
+	}
+	owes := func(when string, values, tops int) {
+		t.Helper()
+		printed := sizingCensus(t, database)
+		for _, line := range []string{
+			fmt.Sprintf("census: sizing backfill kind=block_values moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=3 nodes=0 tuples=%d ",
+				movedWithBlocks, values, 3*values),
+			fmt.Sprintf("census: sizing backfill kind=block_top moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=2 nodes=0 tuples=%d ",
+				movedWithBlocks, tops, 2*tops),
+		} {
+			if !strings.Contains(printed, line) {
+				t.Errorf("%s the sizing prints no line %q:\n%s", when, line, printed)
+			}
+		}
+	}
+	owes("with the spec and the upload unstated,", 4, 2)
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set stated_version = version, stated_rule = $2 where artifact_id = $1::uuid
+	`, documents["spec"], refs.BlockIndexMarkingRule); err != nil {
+		t.Fatalf("state the spec by this build's rule: %v", err)
+	}
+	owes("with the spec stated,", 1, 0)
+	if _, err := database.Pool.Exec(ctx, `
+		alter table document_block_versions drop column stated_version, drop column stated_rule
+	`); err != nil {
+		t.Fatalf("take the stated record's columns out of the database: %v", err)
+	}
+	owes("before the migration that adds the stated record,", 7, 5)
 }
 
 // The sizing needs nothing of the store: R4 takes its readings before the branch's first
@@ -1110,7 +1478,7 @@ func TestTheSizingRunsOnADatabaseWithNoStore(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("take the store out of the database: %v", err)
 	}
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true, nil)
 	if err != nil {
 		t.Fatalf("take the sizing of a database with no store: %v", err)
 	}

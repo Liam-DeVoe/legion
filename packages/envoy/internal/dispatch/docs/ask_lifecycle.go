@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // BlockRef names one block of one document: the document's artifact id and the block's id.
@@ -41,9 +41,27 @@ func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 // hold.
 var errSettleJoined = errors.New("docs: an issue's documents settle outside every transaction")
 
-// issueDocumentIDs lists the documents of the issue $1, in id order: the order WriteIssueAskStates
-// writes them and SettleIssueDocuments settles them.
-const issueDocumentIDs = `select id::text from artifacts where issue_key = $1 and kind = 'doc' order by id`
+// holdsFragmentSQL is true of the artifact aliased alias, an issue's, while it holds a fragment of
+// a room: an issue room holds its tree's own fragment and one of each role document its
+// document_rooms rows name, and every other document of an issue, of an issue with no issue room
+// (no issue_trees row) and of a converted one alike, is its own room and holds that room's own
+// fragment (R5 of this branch's spec, version 112). The decisions query node of an issue born
+// converted, a doc row with no fragment and no document_rooms row (refs.DecisionsQuerySQL, D6 of
+// this branch's plan), holds none.
+func holdsFragmentSQL(alias string) string {
+	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
+}
+
+// issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the
+// tree of an issue room among them, in id order: the order WriteIssueAskStates writes them in, each
+// in its own fragment.
+var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` order by a.id`
+
+// issueRoomIDs lists the rooms the documents of the issue $1 are edited in (refs.DocumentRoomSQL),
+// each once, in id order: the order SettleIssueDocuments settles them in, an issue room's
+// settlement settling every fragment of the room.
+var issueRoomIDs = `select distinct (` + refs.DocumentRoomSQL("a.id") + `)::text as room
+	from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` order by room`
 
 type lifecycleWriteContextKey struct{}
 
@@ -68,14 +86,24 @@ func isLifecycleWrite(ctx context.Context) bool {
 }
 
 // WriteIssueAskStates writes the state of each of asks into the blocks that show it in every
-// document of issueKey, in the documents' id order: an ask's own block on its document, and every
-// block readCopiedAskSources classifies as a copy of one of asks on another, which keeps naming its
-// source (copied_from, copied_from_document). Each block gets the server attributes settlement
-// writes from the ask (setAskServerAttributes), so asks carry the state the caller wants shown:
-// resolved for an issue's close, open for its reopen. Every other block is left as it is - the
-// blocks of other asks, their copies, a block under one of asks' block ids that asks something
-// else - and so is a block settlement could not read. Classification reads the database as it
-// stands now: the caller writes the asks' rows after this for a close, and before it for a reopen.
+// document of issueKey, in the documents' id order, as the fleet stands (anotherBuildServes): an
+// ask's own block on its document, and every block readCopiedAskSources classifies as a copy of
+// one of asks on another. While another build serves, whose pages read an ask's state from its
+// block, each block gets the attributes settlement keeps in step with the ask through the roll
+// window (rollWindowAskAttributes), a copy still naming its source (copied_from,
+// copied_from_document); once the fleet is one build, each gets the ones a version keeps
+// (keptAskState), which the release before's readers of a stored version read its state from,
+// written from the ask's node as this transaction's commit leaves it (readIssueAskStateWrites), so
+// the settlement this write leaves owed writes a version showing it. So asks carry the state the
+// caller wants shown: resolved for an issue's close, open for its reopen, and on a fleet of one
+// build too each writes one version (R3), whose only change is those attributes: the close's
+// comes from a settlement on the closed issue, which moves no approval request and carries no
+// approval (versionWrite.closedIssue), so a standing approval reads stale until the reopen; the
+// reopen's settlement carries it by R10's case. Every other block is
+// left as it is - the blocks of other asks, their copies, a block under one of asks' block ids
+// that asks something else - and so is a block settlement could not read. Classification reads
+// the database as it stands now: the caller writes the asks' rows after this for a close, and
+// before it for a reopen.
 //
 // A document outside the Proof schema is left as it is, as settlement leaves it, and so is one
 // whose stored history does not load (ErrDocumentUnloadable): nothing can read or open it, so no
@@ -88,20 +116,24 @@ func isLifecycleWrite(ctx context.Context) bool {
 // rebuilding room's ErrServiceUnavailable and the database's included, is returned.
 //
 // An answered ask, which the close's final sweep passes, is written into its copies alone, never
-// into its own block: the answer route writes that block itself (SetBlockAttributes), and a write
-// from the row could put back an answer it left out for size. Each copy gets the ask's state,
-// answerer and time with the answer left out, as settlement writes a block whose document has no
-// room for its answer (withholdAnswers): no write here is weighed for size, so none adds an
-// answer's bytes to a document. A copy that already holds the answer in full is left as it is
-// (answeredCopyAttributes), and the document's next settlement, which this write leaves owed and
-// which runs whether or not the issue is closed, writes the answer into the rest as it writes any
-// copy (withholdAnswers).
+// into its own block, which settlement keeps in step with its row. While another build serves,
+// each copy gets the ask's state, answerer and time with the answer's words left out
+// (answeredCopyWrite), as settlement writes a block whose document has no room for them: applyLive
+// weighs no server attribute (pmdoc.Node.EqualOutsideServerState), so no write here is weighed for
+// size, and none adds an answer's bytes to a document. A copy that already holds the answer in full
+// is left as it is, and
+// the document's next settlement, which this write leaves owed and which runs whether or not the
+// issue is closed, writes the words into the rest where the document has room for them, as it
+// writes any copy (withholdAnswersWithoutRoom).
 //
-// With markUnindexed it also writes state="resolved" into every readable ask block that neither
-// has an ask of its own on its document nor is a copy of another document's ask: a block no
-// settlement has indexed yet, which no longer reads open once its issue has closed. A settlement
-// while the issue is closed keeps it resolved with no ask, and once the issue reopens, which marks
-// its document owed (MarkReopenOwedAskDocuments), a settlement indexes it as a new open ask.
+// With markUnindexed it also writes every readable ask block that neither has an ask of its own on
+// its document nor is a copy of another document's ask (unindexedAskResolution): a block no
+// settlement has indexed yet, which no longer reads open once its issue has closed. While another
+// build serves it is written state="resolved" for that build's pages; once the fleet is one build
+// it keeps none of the seven attributes a version can store, and the text routes answer it resolved
+// (textAsks). A settlement while the issue is closed keeps it so with no ask, and once the issue
+// reopens, which marks its document owed (MarkReopenOwedAskDocuments), a settlement indexes it as a
+// new open ask.
 // Once every document is written, it logs each such block it changed (logUnindexedAskBlocks), so
 // no caller logs them again, and returns them for a caller that counts them. Among these is every
 // readable ask block that repeats the id an earlier ask block of its document holds and does not
@@ -118,8 +150,9 @@ func isLifecycleWrite(ctx context.Context) bool {
 // reach a document whose room is flagged closed, and one no room holds, while every other write to
 // a closed issue's document is refused. A write credits no one (withLifecycleWrite): it adds no
 // pending author, leaves the authors already pending and the document's latest edit source as they
-// were, and writes no version: the settlement it leaves owed versions it, and none whose markdown
-// repeats the latest version is written. A document it changes nothing in is written nothing.
+// were, and writes no version itself: the settlement it leaves owed writes the one version of it,
+// and none whose markdown repeats the latest version is written. A document it changes nothing in
+// is written nothing.
 func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -127,6 +160,11 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 	}
 	if len(asks) == 0 && !markUnindexed {
 		return nil, nil
+	}
+	// kept for one release: roll-window-attributes
+	twoBuilds, err := anotherBuildServes(ctx, tx)
+	if err != nil {
+		return nil, err
 	}
 	given := make(map[string]model.Ask, len(asks))
 	for _, ask := range asks {
@@ -144,7 +182,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 	owner := artifactOwner{IssueKey: &issueKey}
 	var unindexed []BlockRef
 	for _, document := range documents {
-		marked, err := s.writeDocumentAskStates(ctx, tx, document, owner, given, actor, markUnindexed)
+		marked, err := s.writeDocumentAskStates(ctx, tx, document, owner, given, actor, markUnindexed, twoBuilds)
 		if err != nil {
 			return nil, fmt.Errorf("write the ask states of document %s: %w", document, err)
 		}
@@ -155,7 +193,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 }
 
 // writeDocumentAskStates is WriteIssueAskStates for one document, artifactID, in one live write,
-// and returns the unindexed blocks it marked resolved.
+// as the fleet stands (twoBuilds), and returns the unindexed blocks it marked resolved.
 func (s *Service) writeDocumentAskStates(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -163,21 +201,21 @@ func (s *Service) writeDocumentAskStates(
 	owner artifactOwner,
 	asks map[string]model.Ask,
 	actor model.Actor,
-	markUnindexed bool,
+	markUnindexed, twoBuilds bool,
 ) ([]BlockRef, error) {
 	given := func(row model.Ask) (model.Ask, bool) {
 		ask, wanted := asks[row.ID]
 		return ask, wanted
 	}
 	var writes *issueAskStateWrites
-	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err := s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		if current.Node() == nil {
 			// Settlement reads none of its ask blocks either (settleRoomWithin).
 			slog.Warn("dispatch: leave the ask blocks of a document outside Proof schema as they are", "artifact", artifactID)
 			return nil
 		}
 		var err error
-		writes, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, current.Node(), given, markUnindexed)
+		writes, err = readIssueAskStateWrites(ctx, tx, documentAsksOf(artifactID), owner, current.Node(), given, markUnindexed, twoBuilds)
 		if err != nil || writes.empty() {
 			return err
 		}
@@ -185,7 +223,7 @@ func (s *Service) writeDocumentAskStates(
 		// id, as settlement makes its repairs (repairLive), and each repeat on the block at its place
 		// (markRepeatedAskBlocks), all in one rewrite of the fork, whose tree is the one current read.
 		// A document none of them changes is left as it was, and applyLive writes nothing for it.
-		_, err = rewriteLive(doc, nil, writes.apply)
+		_, err = doc.rewrite(writes.apply)
 		return err
 	})
 	switch {
@@ -206,18 +244,21 @@ func (s *Service) writeDocumentAskStates(
 	return writes.marked, nil
 }
 
-// reopenOwedAskDocuments lists, in id order, the documents of the issue $1 whose ask blocks a
+// reopenOwedAskDocuments lists, in id order, the rooms of the issue $1 whose ask blocks a
 // settlement after the issue's reopen has to reconcile: one that holds an ask block no settlement
 // has indexed, the blocks doc_ask_block_authors keeps an author for, or will once the write phase
-// has run ($6, the documents whose authors the reopen's own writes queued); one that is the block
-// document (asks.block_artifact_id) of an open ask, the asks the reopen restores among them ($5,
-// whose rows the table still reads withdrawn); and one that is the block document of an ask a
-// settlement retracted. The retraction is settlementRetraction's rule in SQL, read off the stored
-// resolution: kind "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens with $4
+// has run ($6, the rooms whose authors the reopen's own writes queued); one that is the block room
+// (asks.block_artifact_id) of an open ask, the asks the reopen restores among them ($5, whose rows
+// the table still reads withdrawn); and one that is the block room of an ask a settlement
+// retracted. Each of those rows is keyed by the room its document is edited in, a document that is
+// its own room or an issue room's tree, which settles every fragment of the room, so the rooms are
+// read among the issue's documents and its tree alike. The retraction is settlementRetraction's
+// rule in SQL, read off the stored resolution: kind "retracted", and an actor $2 (kind) and $3
+// (id) or a reason that opens with $4
 // (SettlementActor, SettlementRetractionReason), so the two change together.
 const reopenOwedAskDocuments = `
 	select a.id::text from artifacts a
-	where a.issue_key = $1 and a.kind = 'doc'
+	where a.issue_key = $1 and a.kind in ('doc', 'tree')
 		and (exists (select from doc_ask_block_authors b where b.artifact_id = a.id)
 			or a.id = any($6::uuid[])
 			or exists (
@@ -413,30 +454,38 @@ type closedEditSource struct {
 	lastActor  []byte
 }
 
-// issueDocumentEditSources lists the documents of the issue $1 in id order, as issueDocumentIDs
-// does, each with its kept closed edit source (doc_closed_edit_sources), null for none.
-const issueDocumentEditSources = `
+// issueDocumentEditSources lists the documents of the issue $1 in id order, each with the closed
+// edit source (doc_closed_edit_sources) kept for the room it is edited in, the key its settlement
+// keeps it by (clearSettlementPending), null for none.
+var issueDocumentEditSources = `
 	select a.id::text, kept.last_actor
-	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = a.id
+	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = ` + refs.DocumentRoomSQL("a.id") + `
 	where a.issue_key = $1 and a.kind = 'doc'
 	order by a.id`
 
-// dropSettledClosedEditSources deletes the kept closed edit source of each document of the issue
-// $1 that owes no settlement (FollowClosedIssueVersions).
+// dropSettledClosedEditSources deletes the kept closed edit source of each room of the issue $1
+// that owes no settlement (FollowClosedIssueVersions): a document that is its own room, or an
+// issue room's tree, the keys a settlement keeps a source and a pending row by.
 const dropSettledClosedEditSources = `
 	delete from doc_closed_edit_sources kept
 	using artifacts a
-	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind = 'doc'
+	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind in ('doc', 'tree')
 		and not exists (select from doc_settlements_pending p where p.artifact_id = kept.artifact_id)`
 
 // followLatestVersion is FollowClosedIssueVersions for one document, artifactID, moving its
-// request in mover's name.
+// request in mover's name. Whether the document's stored updates are ahead of its latest version
+// is read on the room it is edited in, whose head a version records (doc_update_version), as
+// SnapshotVersion reads it.
 func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) error {
 	latest, err := latestVersion(ctx, tx, artifactID)
 	if err != nil {
 		return err
 	}
-	owed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+	room, err := roomOf(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	owed, err := contentChangedSinceVersion(ctx, tx, room, latest.docUpdateVersion)
 	if err != nil || owed {
 		return err
 	}
@@ -462,7 +511,7 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	if err != nil {
 		return skipUnreadableVersion(artifactID, latest.Number, err)
 	}
-	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, eventSink(ctx))
+	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, decisionStepCases{}, eventSink(ctx))
 }
 
 // issueAskStateWrites is what WriteIssueAskStates writes into one document of an issue, read off
@@ -478,32 +527,49 @@ type issueAskStateWrites struct {
 	marked []BlockRef
 }
 
-// readIssueAskStateWrites reads, in tx, the writes WriteIssueAskStates makes to tree, the document
-// artifactID of owner, an issue whose row the caller holds. For each readable ask block that an
-// ask of the document indexes, or that readCopiedAskSources classifies as a copy of an ask on
-// another document, wanted is handed that ask's row and answers the ask whose state the block is
-// to show and whether it is to be written at all. An answered ask's own block is never written,
-// and its copies are written with the answer left out (answeredCopyAttributes). With
-// markUnindexed, every other readable ask block, and every one repeating an earlier ask block's id
-// that does not read resolved, is marked resolved. It changes nothing in tree.
+// readIssueAskStateWrites reads, in tx, the writes WriteIssueAskStates makes to tree, the blocks of
+// holder (a document's own, or an issue room's whole tree for a rebuild) of owner, an issue whose
+// row the caller holds, as the fleet stands (twoBuilds, as anotherBuildServes read it). For each
+// readable ask block that an ask of holder indexes,
+// or that readCopiedAskSources classifies as a copy of an ask on another document, wanted is
+// handed that ask's row and answers the ask whose state the block is to show and whether it is to
+// be written at all. An answered ask's own block is never written; its copies are written as
+// settlement writes any copy (askReadableWrite), but while another build serves, a copy of an
+// answered ask gets its answer's words only where it already holds them (answeredCopyWrite). With
+// markUnindexed, every other readable ask block is written as settlement writes a closed issue's
+// block no row indexes (unindexedAskResolution), and while another build serves every one
+// repeating an earlier ask block's id that does not read resolved is marked resolved. So while another build serves, each
+// block gets the attributes the release before's pages read its state from
+// (rollWindowAskAttributes, resolveUnindexedAskBlock), and once the fleet is one build the ones a
+// version keeps (keptAskState), written from the node of the block's ask, or of a copy's source,
+// as this transaction's commit leaves it (askNodeAnswers, onItsNode), as settlement writes them.
+// wanted hands back the row as it stands for a block it shows as the store holds it - the close's
+// final sweep, a closed issue's rebuild - and that row can be ahead of its node where a process of
+// the release before wrote it, before the decisions step's catch-up states it. An ask wanted hands
+// back in another state than its row's is one whose change the caller plans after this write in
+// the same transaction - the close's withdrawal (api's planWithdrawal) - and is written as wanted
+// gives it. It changes nothing in tree.
+//
+// kept for one release: roll-window-attributes
 func readIssueAskStateWrites(
 	ctx context.Context,
 	tx pgx.Tx,
-	artifactID string,
+	holder askHolder,
 	owner artifactOwner,
 	tree *pmdoc.Node,
 	wanted func(row model.Ask) (model.Ask, bool),
-	markUnindexed bool,
+	markUnindexed, twoBuilds bool,
 ) (*issueAskStateWrites, error) {
+	artifactID := holder.id
 	found := &issueAskStateWrites{artifactID: artifactID}
 	blocks, repeats := readableAskBlocks(tree)
-	if markUnindexed {
+	if markUnindexed && twoBuilds {
 		found.repeats = repeats
 	}
 	if len(blocks) == 0 {
 		return found, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	rows, err := loadAskBlocks(ctx, tx, holder)
 	if err != nil {
 		return nil, err
 	}
@@ -513,30 +579,54 @@ func readIssueAskStateWrites(
 	if err != nil {
 		return nil, err
 	}
+	// kept for one release: stored-ask-state
+	var nodes map[string]askNodeAnswer
+	if !twoBuilds {
+		ids := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if row, indexed := rows[block.id]; indexed {
+				ids = append(ids, row.ID)
+			} else if source, copied := sources[block.id]; copied {
+				ids = append(ids, source.ask.ID)
+			}
+		}
+		if nodes, err = askNodeAnswers(ctx, tx, ids); err != nil {
+			return nil, err
+		}
+	}
+	shown := func(ask, row model.Ask) model.Ask {
+		if twoBuilds || ask.State != row.State {
+			return ask
+		}
+		return onItsNode(ask, nodes)
+	}
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
 			if ask, write := wanted(row); write && ask.State != "answered" {
-				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, askServerAttributes(ask, "", false)))
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, askReadableWrite(twoBuilds, shown(ask, row), "")))
 			}
 			continue
 		}
 		if source, copied := sources[block.id]; copied {
 			if ask, write := wanted(source.ask); write {
-				set := askServerAttributes(ask, source.document, false)
-				if ask.State == "answered" {
-					set = answeredCopyAttributes(ask, source.document)
+				copyWrite := askReadableWrite(twoBuilds, shown(ask, source.ask), source.document)
+				if twoBuilds && ask.State == "answered" {
+					copyWrite = answeredCopyWrite(ask, source.document)
 				}
-				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, set))
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, copyWrite))
 			}
 			continue
 		}
 		if markUnindexed {
 			ref := BlockRef{ArtifactID: artifactID, BlockID: block.id}
+			resolve := unindexedAskResolution(twoBuilds)
 			found.writes.repairs = append(found.writes.repairs, askRepair(block.id, func(node *pmdoc.Node) bool {
-				if !resolveUnindexedAskBlock(node) {
+				if !resolve(node) {
 					return false
 				}
-				found.marked = append(found.marked, ref)
+				if twoBuilds {
+					found.marked = append(found.marked, ref)
+				}
 				return true
 			}))
 		}
@@ -566,6 +656,26 @@ func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 	return row, row.State == "resolved" || row.State == "answered"
 }
 
+// answeredCopyWrite is the write the close's final sweep and a closed issue's rebuild make, while
+// another build serves, to a copy of ask, an answered ask, on the document whose address is copied
+// (readIssueAskStateWrites): the copy is made to agree with ask with the answer's words left out
+// (askReadableWriteWithheld), since neither write is weighed for size. A copy that already agrees
+// with ask, words and all, as a settlement before the close wrote it where its document had room,
+// is left as it is: leaving the words out would take from the closed issue's document an answer
+// its settlement weighed and kept.
+//
+// kept for one release: roll-window-attributes
+func answeredCopyWrite(ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	whole := askReadableWrite(true, ask, copied)
+	withheld := askReadableWriteWithheld(ask, copied)
+	return func(node *pmdoc.Node) bool {
+		if !whole(attributesOf(node)) {
+			return false
+		}
+		return withheld(node)
+	}
+}
+
 // resolveUnindexedAskBlock writes state="resolved" into node, a readable ask block that is no ask
 // yet - no ask row indexes it, or it repeats the id an earlier ask block of its document holds,
 // and it is no copy of another document's ask - and reports whether that changed it: the state
@@ -573,7 +683,11 @@ func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 // It is the one write of that state. The close's final sweep makes it (WriteIssueAskStates with
 // markUnindexed: readIssueAskStateWrites, markRepeatedAskBlocks), and so does a settlement of a
 // closed issue's document, which opens no ask for such a block (reconcileAskBlocks). The block
-// stays without a row, and a settlement after the issue reopens opens its ask.
+// stays without a row, and a settlement after the issue reopens opens its ask. Once the fleet is
+// one build, the close's sweep and settlement write unindexedAskResolution instead, which takes
+// every attribute a version can store off the block.
+//
+// kept for one release: roll-window-attributes
 func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 	if node.Attrs["state"] == "resolved" {
 		return false
@@ -582,28 +696,19 @@ func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 	return true
 }
 
-// answeredCopyAttributes is the write WriteIssueAskStates makes to a copy of ask, an answered ask,
-// whose source document's address is copied (copied_from_document): the copy's server attributes
-// are made to agree with ask with the answer left out (setAskServerAttributes with withholdAnswer).
-// A copy whose attributes already agree with ask, answer and all, as a settlement before the
-// issue's close wrote them, is left as it is: leaving its answer out would take from the closed
-// issue's document an answer its row still holds.
-func answeredCopyAttributes(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	return func(node *pmdoc.Node) bool {
-		if !changesAskBlock(node, askServerAttributes(ask, copied, false)) {
-			return false
-		}
-		changed, _ := setAskServerAttributes(node, ask, copied, true)
-		return changed
+// unindexedAskResolution is the write to a readable ask block that is no ask and no copy of one,
+// on a closed issue's document, as the fleet stands (twoBuilds): resolveUnindexedAskBlock while
+// another build serves, whose pages read the block's state from it, and once the fleet is one
+// build none of the seven attributes a version can store (withoutStoredAskAttributes), since a
+// block that has no ask row and is no copy keeps none of them (R10); the text routes answer it
+// resolved in their asks (textAsks). It reports whether it changed the block.
+//
+// kept for one release: roll-window-attributes
+func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
+	if twoBuilds {
+		return resolveUnindexedAskBlock
 	}
-}
-
-// changesAskBlock reports whether set, a write to an ask block's attributes, would change node,
-// by running it on a copy of node's attributes, which leaves node as it is.
-func changesAskBlock(node *pmdoc.Node, set func(*pmdoc.Node) bool) bool {
-	clone := &pmdoc.Node{Type: node.Type, Attrs: make(pmdoc.Attrs, len(node.Attrs)+len(askServerAttributeNames))}
-	maps.Copy(clone.Attrs, node.Attrs)
-	return set(clone)
+	return withoutStoredAskAttributes
 }
 
 // readableAskBlocks is every ask block of tree settlement reads (parseAskBlock), each id's first
@@ -656,7 +761,10 @@ type repeatedAskBlock struct {
 // document artifactID that readableAskBlocks read them from: into the ask block at the repeat's
 // place among live's ask blocks, while that block still carries the id the repeat names and does
 // not read resolved already. It returns a BlockRef, under the repeated id, for each block it
-// changed. repeats are in document order, as readableAskBlocks returns them.
+// changed. repeats are in document order, as readableAskBlocks returns them. Only the close's
+// sweep while another build serves hands it any (readIssueAskStateWrites).
+//
+// kept for one release: roll-window-attributes
 func markRepeatedAskBlocks(live *pmdoc.Node, artifactID string, repeats []repeatedAskBlock) []BlockRef {
 	if len(repeats) == 0 {
 		return nil
@@ -729,7 +837,7 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 	if ledgerFrom(ctx).inTransaction() {
 		return errSettleJoined
 	}
-	rooms, err := s.documentRooms(ctx, "the issue's documents", issueDocumentIDs, issueKey)
+	rooms, err := s.documentRooms(ctx, "the issue's rooms", issueRoomIDs, issueKey)
 	if err != nil {
 		return err
 	}

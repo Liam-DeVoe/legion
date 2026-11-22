@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -96,9 +97,11 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		about, args = `payload->>'id' = $1 or payload->>'comment_id' = $1`, []any{e.ID}
 	case read.document != nil:
 		// held is the test of whether the block stood in the version a payload names, read off
-		// the versions the run deletes ($4) and the block's own texts (blockStoodIn).
+		// the versions the run deletes ($4) and the block's own texts (blockStoodIn), which an
+		// issue room's block keeps under the room's tree artifact ($5, read.document) at the
+		// numbers of the document it stands in ($1, read.versioned), whose events these are.
 		held := func(version string) string {
-			return `((` + version + `) = any($4::int[]) or ` + blockStoodIn("$1::uuid", "("+version+")") + `)`
+			return `((` + version + `) = any($4::int[]) or ` + blockStoodIn("$5::uuid", "("+version+")") + `)`
 		}
 		about = `payload->>'artifact_id' = $1::text and (type like 'artifact.%' or type like 'block.%') and case
 			when type = 'artifact.version' and jsonb_typeof(payload->'version'->'number') = 'number'
@@ -111,7 +114,7 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 				then ` + held(`(payload->>'version')::int`) + `
 			else true
 		end`
-		args = []any{read.document.artifact, read.texts, read.blockID, read.numbers}
+		args = []any{read.versioned.artifact, read.texts, read.blockID, read.numbers, read.document.artifact}
 	default:
 		return nil
 	}
@@ -345,16 +348,27 @@ type redactedBlockText struct {
 	text    string
 }
 
+// redactedValue is one text value tuple of a block of the node's document, by its seq, as the
+// redaction leaves it: the tuple's whole text, which quotes the erased block's.
+type redactedValue struct {
+	seq     int64
+	blockID string
+	text    string
+}
+
 // redactedExcerpt is the excerpt of one block of the node's document, as the redaction leaves
 // it, with the node that block projects, which names it on the listing.
 type redactedExcerpt struct {
 	blockID, nodeID, excerpt string
 }
 
-// redactBlocks writes back the text and the excerpt of every block that holds the node's block
-// and quotes it, as the read under the run's locks left them (readAncestors). Those rows are
-// rewritten and not deleted because each projects a block node of its own, which the erase does
-// not remove, and a live node no row projects is a difference the store census reads (c-census).
+// redactBlocks writes back the text, the text values and the excerpt of every block that holds
+// the node's block and quotes it, as the read under the run's locks left them (readAncestors).
+// Those rows are rewritten and not deleted because each projects a block node of its own, which
+// the erase does not remove, and a live node no row projects is a difference the store census
+// reads (c-census). A text value is that node's own text, which document_block_texts projects,
+// so the two are rewritten alike, the value through the store's own writer
+// (graphstore.RedactValues).
 //
 // It writes the rows the listing named and no others: the redaction was computed from the same
 // read, so a block of the same document holding the erased words where the node's own block does
@@ -387,6 +401,17 @@ func (e *Erasure) redactBlocks(ctx context.Context, tx pgx.Tx, read erasedRead) 
 			return fmt.Errorf("redact the texts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
 		}
 		e.redacted("document_block_texts", tag.RowsAffected())
+	}
+	if len(read.blockValues) > 0 {
+		seqs := make([]int64, len(read.blockValues))
+		values := make([]string, len(read.blockValues))
+		for index, held := range read.blockValues {
+			seqs[index], values[index] = held.seq, held.text
+		}
+		if err := graphstore.RedactValues(ctx, tx, seqs, values); err != nil {
+			return fmt.Errorf("redact the text values of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+		}
+		e.redacted("graph_tuples", int64(len(seqs)))
 	}
 	if len(read.excerpts) > 0 {
 		blocks := make([]string, len(read.excerpts))

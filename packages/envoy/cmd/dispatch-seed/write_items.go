@@ -53,6 +53,34 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		followerNodes := make([]graphstore.Node, 0, to-from)
 		followed := map[string]struct{}{}
 		opened := make([][]any, 0, to-from)
+		// Each ask's node goes in before any row of the batch, in its project, as the server's
+		// ask create writes it; the seed records no event of it here, so it takes the sentinel.
+		// The owner lock of every ask of the batch comes first, in owner key order, as the
+		// store's lock order has it: the window write below takes each ask's owner lock
+		// (refs.WriteItemWindows), which a batch holding the asks' nodes would otherwise take
+		// after them.
+		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
+		for index := from; index < to; index++ {
+			ask := r.plan.asks[index]
+			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
+			var issueKey, artifactID *string
+			if ask.Issue >= 0 {
+				issueKey = &r.plan.issues[ask.Issue].Key
+			}
+			if ask.Document >= 0 {
+				artifactID = &r.plan.documents[ask.Document].ID
+			}
+			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+				owners = append(owners, *owner)
+			}
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the asks' owners: %w", err)
+		}
+		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+			return fmt.Errorf("the asks' nodes: %w", err)
+		}
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			mention := ""
@@ -201,6 +229,26 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 	})
 }
 
+// writeItemNodes writes the nodes of the asks or the messages one batch copies, before any row of
+// the batch, each in its project (seedRun.itemProject), at the sentinel, as every write of the
+// seed's is. The rows carry no foreign key into the store, so where they fall beside this moves no
+// lock of the store's order.
+func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	return graphstore.Write(ctx, tx, nodes, nil)
+}
+
+// itemProject is the project of an item of the plan: its issue's, or its document's where it
+// belongs to no issue.
+func (r *seedRun) itemProject(issue, document int) string {
+	if issue >= 0 {
+		return r.plan.projects[r.plan.issues[issue].Project].Key
+	}
+	if document >= 0 {
+		return r.plan.projects[r.plan.documents[document].Project].Key
+	}
+	return ""
+}
+
 // writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
 // that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
 // batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
@@ -314,11 +362,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			}
 			if comment.Anchored {
 				document := r.plan.documents[comment.Document]
-				block := firstParagraphBlock
-				if comment.TableRow {
-					block = r.tableRow
-				}
-				value := anchorJSON(document.ID, block, document.Versions, r.plan.vocabulary.phrase(r.random, 4))
+				value := anchorJSON(document.ID, r.commentAnchorBlock(comment), document.Versions, r.plan.vocabulary.phrase(r.random, 4))
 				anchor = &value
 			}
 			if comment.RepliesTo >= 0 {
@@ -385,8 +429,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each
 // comment's node - project-visible, live, made by the seed's author at the row's own time - and
 // the artifact the comment is anchored to and the artifact that owns it, each stated only where
-// the comment has one (graphstore.CommentFacts), and who wrote the comment. The node write states
-// the two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
+// the comment has one (graphstore.CommentFacts), the block an anchored comment's anchor names
+// (graphstore.AnchoredIn: a seeded document is its own room, so the block's node is the
+// document's ref_key, '#' and the block id), and who wrote the comment. The node write states the
+// two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
 // alone, so the batch can state it before it writes a row.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
@@ -416,7 +462,12 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 			}
 		}
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner)
+		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent,
+			anchor, owner, r.itemProject(comment.Issue, comment.Document), nil)
+		if anchor != "" {
+			tuples = append(tuples, graphstore.AnchoredIn(comment.ID, anchor+"#"+r.commentAnchorBlock(comment), true,
+				seedAuthor, comment.CreatedAt, graphstore.NoEvent))
+		}
 		nodes = append(nodes, node)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
@@ -431,6 +482,15 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 	return nodes, tuples
 }
 
+// commentAnchorBlock is the block an anchored comment's anchor names: the first paragraph of its
+// document's latest version, or the table row a thirtieth of them anchor on.
+func (r *seedRun) commentAnchorBlock(comment commentPlan) string {
+	if comment.TableRow {
+		return r.tableRow
+	}
+	return firstParagraphBlock
+}
+
 // writeMessages writes the issue threads and indexes each message's blocks. Every fiftieth
 // message is indexed twice, the first time from a body one block longer: that is a reindex under
 // a parser reading the same text as fewer blocks, which leaves a message block with a null
@@ -438,6 +498,22 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 func (r *seedRun) writeMessages(ctx context.Context) error {
 	return r.inBatches(ctx, "messages", len(r.plan.messages), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("message")
+		// Each message's node goes in before any row of the batch, in its issue's project, as the
+		// server's message create writes it; every seeded message is on an issue. The issues'
+		// owner locks come first, as for the asks (writeAsks): the window write takes them.
+		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
+		for index := from; index < to; index++ {
+			message := r.plan.messages[index]
+			nodes = append(nodes, graphstore.MessageNode(message.ID, r.itemProject(message.Issue, -1), nil, seedAuthor, message.CreatedAt))
+			owners = append(owners, store.IssueOwner(r.plan.issues[message.Issue].Key))
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the messages' owners: %w", err)
+		}
+		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+			return fmt.Errorf("the messages' nodes: %w", err)
+		}
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
 			mention := ""

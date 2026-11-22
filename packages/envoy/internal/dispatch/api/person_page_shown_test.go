@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee holds the person page to R15
+// TestAPersonPageHidesAPersonWhoseOnlyNodeALaterReleaseReservedForThem holds the person page to R15
 // of this change: GET /api/v1/people/{login}/nodes answers 200 only where that person
 // holds at least one node the reader may see, or the reader is that person, and otherwise, byte
 // for byte, what a login nobody holds answers.
@@ -26,7 +26,7 @@ import (
 // reserved for her, is written by SQL as a later release writes it (seedLaterAuthorOnlyComment),
 // with its authored_by tuple to carol's person node. bob reads her page as a login nobody holds,
 // and carol reads it 200, listing the comment.
-func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
+func TestAPersonPageHidesAPersonWhoseOnlyNodeALaterReleaseReservedForThem(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PAGE", "A person's page", "# Spec\n\nA passage.\n")
 	const first, second, nobodyLogin = "bob", "carol", "nobody-at-all"

@@ -47,6 +47,8 @@ var oneHopTables = []copyTable{
 	{"document_indexed_versions", []string{"artifact_id", "version"}},
 	{"document_blocks", []string{"artifact_id", "block_id", "node_id", "type", "text_sha256", "excerpt", "changed_version", "changed_at"}},
 	{"document_block_texts", []string{"artifact_id", "block_id", "version", "text"}},
+	{"document_rooms", []string{"artifact_id", "room"}},
+	{"issue_room_blocks", []string{"tree_artifact_id", "block_id", "document_id"}},
 	{"asks", []string{"id", "issue_key", "author", "question"}},
 	{"ask_blocks", []string{"ask_id", "block_id", "node_id", "position", "type", "text_sha256", "excerpt", "changed_revision", "changed_at"}},
 	{"comments", []string{"id", "issue_key", "author", "body"}},
@@ -144,7 +146,9 @@ type oneHopFixture struct {
 	database *store.Store
 	issue    string
 	// links and linkedFrom are the rows each field must hold, as relatedSummary writes them,
-	// sorted; members is the documents of links, each at depth 1 with its via, by ref_key.
+	// sorted; members is the documents of links, each at depth 1 with its via, as the member of kind
+	// artifact at its own address that documentMember reads (no document of the fixture moved), by
+	// ref_key.
 	links, linkedFrom []string
 	members           []Member
 	// own is every node of the issue and its own content as a graph node names it, which neither
@@ -524,6 +528,21 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 			add("components", "OPS", id, "Component "+strconv.Itoa(index), "prose", nullable(parent), 1, 1)
 			add("component_facts", "OPS", id, at, at)
 		}
+		// Issue rooms of the other project: oneHopMinimumRows documents, each converted into one of
+		// ten rooms and holding one block of it, so that document_rooms and issue_room_blocks,
+		// which the statements read for a document of an issue room and for a block target's
+		// document, hold a real size. No room is the issue's, and no room's tree holds a
+		// document_blocks row, so no answer of the read changes.
+		trees := make([]fixtureDocument, 10)
+		for index := range trees {
+			trees[index] = document("", "OPS", "room"+strconv.Itoa(index), "Room "+strconv.Itoa(index))
+		}
+		for index := range oneHopMinimumRows {
+			member := document("", "OPS", "roomed"+strconv.Itoa(index), "Roomed document "+strconv.Itoa(index))
+			tree := trees[index%len(trees)].id.String()
+			add("document_rooms", member.id.String(), tree)
+			add("issue_room_blocks", tree, "r"+strconv.Itoa(index), member.id.String())
+		}
 	}
 
 	loadFixture(t, database.Pool, oneHopTables, rows)
@@ -543,7 +562,7 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		if key[0] == "artifact" {
 			for _, doc := range first {
 				if doc.id.String() == key[1] {
-					fixture.members = append(fixture.members, Member{RefKey: doc.refKey, Depth: 1, Via: row.via})
+					fixture.members = append(fixture.members, documentMember(t, database.Pool, doc.refKey, 1, row.via))
 				}
 			}
 		}

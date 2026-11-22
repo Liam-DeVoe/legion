@@ -164,9 +164,11 @@ var itemRowLockTable = []itemRowLockCase{
 		ready:    readyAskEdit,
 	},
 	{
+		// The answer route writes the ask's row through the one writer of an ask's answer state
+		// (asks.Settled.Queue), which its ledger queues under the owner lock the route took.
 		name:     "the ask answer route",
-		file:     "internal/dispatch/api/ask_transitions.go",
-		function: "answerTransition",
+		file:     "internal/dispatch/asks/settle.go",
+		function: "Queue",
 		ready:    readyAskAnswer,
 	},
 	{
@@ -200,9 +202,12 @@ var itemRowLockTable = []itemRowLockCase{
 		ready:    readySessionReply,
 	},
 	{
+		// The backfill pins a comment's anchor in its one transaction of the row
+		// (backfillAnchorBlock), through pinCommentAnchorBlock, the statement this row's comment
+		// takes.
 		name:     "the anchor-block backfill",
 		file:     "internal/dispatch/docs/anchor_blocks.go",
-		function: "backfillAnchorBlock",
+		function: "pinCommentAnchorBlock",
 		ready:    readyAnchorBlockBackfill,
 	},
 }

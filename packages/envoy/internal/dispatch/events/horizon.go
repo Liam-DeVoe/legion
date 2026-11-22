@@ -563,43 +563,87 @@ func (h *Horizon) Mark(ctx context.Context) (Mark, error) {
 	return mark, nil
 }
 
-// oldestEventWriterSQL answers the oldest transaction id held in this database by a transaction
-// that can hold an event id not yet final: a backend that holds a lock on events of a mode an
-// insert takes (RowExclusiveLock or stronger), whose own transaction id it reads from that
-// backend's granted ExclusiveLock on its id, or a prepared transaction of this database; null when
-// there is none. It is widened to the 64-bit id marks carry.
+// eventWritersSQL is the with-clause both reads of the event log's writers share
+// (oldestEventWriterSQL, oldestEventWriterHolderSQL): next, the snapshot's xmax, and held, each
+// transaction in this database that can hold an event id not yet final, by x, its 32-bit
+// transaction id, pid, the backend that holds it, 0 for a prepared transaction as StallHolderSQL
+// reports one, and prepared, a prepared transaction's prepared time, null for a backend's.
 //
-// An insert into events locks the table, RowExclusiveLock, before it draws the row's id from
-// events_id_seq, and keeps that lock until its transaction ends, and Broker.Append takes its
-// transaction id before the insert (the writer invariant). So a transaction holding an event id
-// that is not yet final holds both now, and one that holds a transaction id alone (a read in a
-// transaction, a write to another table, an operator's open session) holds no event id: any it
-// draws later is drawn after this read's marks. That is what lets WriterFloor answer at once
-// where the horizon, which waits on every transaction id on the instance, waits. pg_locks shows
-// every backend's locks to every role, which pg_stat_activity's backend_xid does not. pg_locks
-// gives the 32-bit id; it is widened against the snapshot's xmax, which no running id is more
-// than 2^31 from.
-const oldestEventWriterSQL = `
+// Such a transaction is a backend that holds a lock on events of a mode an insert takes
+// (RowExclusiveLock or stronger), whose own transaction id is read from that backend's granted
+// ExclusiveLock on its id, or a prepared transaction of this database. An insert into events locks
+// the table, RowExclusiveLock, before it draws the row's id from events_id_seq, and keeps that lock
+// until its transaction ends, and Broker.Append takes its transaction id before the insert (the
+// writer invariant). So a transaction holding an event id that is not yet final holds both now,
+// and one that holds a transaction id alone (a read in a transaction, a write to another table, an
+// operator's open session) holds no event id: any it draws later is drawn after this read's marks.
+// That is what lets WriterFloor answer at once where the horizon, which waits on every transaction
+// id on the instance, waits. pg_locks shows every backend's locks to every role, which
+// pg_stat_activity's backend_xid does not.
+const eventWritersSQL = `
 	with next as (
 		select pg_snapshot_xmax(pg_current_snapshot())::text::numeric as nx
 	), held as (
-		select x.transactionid::text::numeric as x
+		select x.transactionid::text::numeric as x, t.pid, null::timestamptz as prepared
 		from pg_locks t
 		join pg_locks x on x.pid = t.pid and x.locktype = 'transactionid' and x.mode = 'ExclusiveLock' and x.granted
 		where t.locktype = 'relation' and t.database = (select oid from pg_database where datname = current_database())
 			and t.relation = 'events'::regclass and t.granted and t.pid <> pg_backend_pid()
 			and t.mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
 		union all
-		select transaction::text::numeric from pg_prepared_xacts where database = current_database()
-	)
-	select min(x + 4294967296 * (floor(nx / 4294967296)
+		select transaction::text::numeric, 0, prepared from pg_prepared_xacts where database = current_database()
+	)`
+
+// widenedXidSQL is held's 32-bit x (eventWritersSQL) widened to the 64-bit id marks carry, against
+// next's xmax, which no running id is more than 2^31 from.
+const widenedXidSQL = `x + 4294967296 * (floor(nx / 4294967296)
 		+ case
 			when x - mod(nx, 4294967296) > 2147483648 then -1
 			when mod(nx, 4294967296) - x > 2147483648 then 1
 			else 0
-		end))::text
+		end)`
+
+// oldestEventWriterSQL answers the oldest transaction id held in this database by a transaction
+// that can hold an event id not yet final (eventWritersSQL), widened to the 64-bit id marks carry;
+// null when there is none.
+const oldestEventWriterSQL = eventWritersSQL + `
+	select min(` + widenedXidSQL + `)::text
 	from held, next
 `
+
+// oldestEventWriterHolderSQL answers who holds the transaction oldestEventWriterSQL answers the id
+// of, read from the same rows: its backend's pid, 0 for a prepared transaction, and when it began,
+// a backend's pg_stat_activity.xact_start or a prepared transaction's prepared time. No row where
+// no such transaction is open.
+const oldestEventWriterHolderSQL = eventWritersSQL + `
+	select pid, coalesce(prepared, (select a.xact_start from pg_stat_activity a where a.pid = held.pid))
+	from held, next
+	order by ` + widenedXidSQL + `
+	limit 1
+`
+
+// ErrNoEventWriter is OldestEventWriter's answer where no transaction of this database holds a
+// write lock on events.
+var ErrNoEventWriter = errors.New("no transaction of this database holds a write lock on events")
+
+// OldestEventWriter names the oldest transaction that can hold an event id not yet final, the one
+// WriterFloor waits on (oldestEventWriterSQL): pid, its backend, 0 for a prepared transaction, as
+// StallHolderSQL reports one, and since, when its transaction began. since is the zero time where
+// Postgres shows this role no xact_start of that backend, as it shows none of another role's
+// backend to a role without pg_read_all_stats. It answers ErrNoEventWriter where none is open.
+func OldestEventWriter(ctx context.Context, q Queryer) (pid int32, since time.Time, err error) {
+	var began *time.Time
+	if err := q.QueryRow(ctx, oldestEventWriterHolderSQL).Scan(&pid, &began); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, time.Time{}, ErrNoEventWriter
+		}
+		return 0, time.Time{}, fmt.Errorf("read the oldest writer of the event log: %w", err)
+	}
+	if began != nil {
+		since = *began
+	}
+	return pid, since, nil
+}
 
 // WriterFloor answers the highest id at or below which no event can still be open, read from the
 // marks given, the newest first, and from H: the Newest of the first mark older than every

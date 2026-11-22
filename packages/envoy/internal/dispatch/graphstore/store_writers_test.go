@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
@@ -31,13 +31,19 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 // named without a package.
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
+// graphstoretestDirectory is the one package besides the store's own whose statements write its
+// tables: graphstoretest, which seeds for other packages' tests the rows the store's writers
+// refuse to write, and which no deployment builds. Any other package under the store's directory
+// is held to the rule like every package outside it.
+const graphstoretestDirectory = graphstoreDirectory + "/graphstoretest"
+
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through (graphstoretest.WriteFunctions), the same ones docs' register of the
+// package goes through (graphstorecopy.WriteFunctions), the same ones docs' register of the
 // tree's passes scans for (storeWriterCall), and the session writers beside them, held in
-// graphstoretest so api's scan of the projections' writers reads the same list. A write that
+// graphstorecopy so api's scan of the projections' writers reads the same list. A write that
 // holds a statement of its own instead is found by rawStoreWrite, and none outside this package
 // may hold one.
-var storeWriteFunctions = graphstoretest.WriteFunctions()
+var storeWriteFunctions = graphstorecopy.WriteFunctions()
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -333,10 +339,11 @@ func storeWriteSitesIn(relative string, files *token.FileSet, file *ast.File) ma
 // rawStoreWritesIn is every site one file writes the store at with a statement of its own, each
 // with the statements it holds as "<statement> at <file>:<line>", read from the file's string
 // literals alone, so a statement a comment spells is none. The store's own package writes its
-// tables that way by design, through the writers storeWriteFunctions names, so its files are
-// not read here.
+// tables that way by design, through the writers storeWriteFunctions names, and graphstoretest
+// seeds what those writers refuse (graphstoretestDirectory), so the files of those two packages
+// alone are not read here.
 func rawStoreWritesIn(relative string, files *token.FileSet, file *ast.File) map[string][]string {
-	if strings.HasPrefix(relative, graphstoreDirectory+"/") {
+	if directory := filepath.ToSlash(filepath.Dir(relative)); directory == graphstoreDirectory || directory == graphstoretestDirectory {
 		return nil
 	}
 	sites := map[string][]string{}

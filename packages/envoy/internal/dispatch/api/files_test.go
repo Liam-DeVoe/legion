@@ -149,8 +149,9 @@ func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
 	if code := responseCode(t, response); code != "FILE_STORE_UNAVAILABLE" {
 		t.Fatalf("error code = %q, want FILE_STORE_UNAVAILABLE", code)
 	}
+	// The issue's tree artifact is no file: an issue is born converted, holding its room's tree.
 	var artifacts int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifacts where issue_key = $1 and kind <> 'doc'`, issue).Scan(&artifacts); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifacts where issue_key = $1 and kind not in ('doc', 'tree')`, issue).Scan(&artifacts); err != nil {
 		t.Fatalf("count artifacts: %v", err)
 	}
 	if artifacts != 0 {
@@ -251,10 +252,11 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		name, insert string
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, false)`, true},
+		{"bucketless process", fmt.Sprintf(`insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, %d)`, store.OwnerLockProtocol), true},
+		// A build that predates the fleet columns predates the owner lock protocol too: its row reads 0.
 		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, true},
-		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, true)`, false},
-		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
+		{"process with a bucket", fmt.Sprintf(`insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, %d)`, store.OwnerLockProtocol), false},
+		{"lapsed bucketless process", fmt.Sprintf(`insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', %d)`, store.OwnerLockProtocol), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			memory := filestest.NewMemory()

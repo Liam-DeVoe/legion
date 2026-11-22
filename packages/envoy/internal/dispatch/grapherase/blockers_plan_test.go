@@ -124,17 +124,17 @@ func blockersStatement(t *testing.T, ctx context.Context, database *store.Store,
 
 // blockersBefore is readBlockers' read of the tuples into the node and its join to graph_nodes as
 // they stood before its probe, written with the constants the read is written with and the
-// parameter sql, the statement the read sends now, binds the state at: the tuples read naming no
-// `to_kind <> 'value'`, and joined to graph_nodes plainly, put back in place of the probe of each
-// stating node and of the test of its state.
+// parameter sql, the statement the read sends now, binds the gone state at: the tuples read
+// naming no `to_kind <> 'value'`, and joined to graph_nodes plainly, put back in place of the
+// probe of each stating node and of the test that it is not gone.
 func blockersBefore(t *testing.T, sql string) []explaintest.Part {
 	t.Helper()
-	state := explaintest.Parameter(t, sql, regexp.MustCompile(`where n\.state = (\$[0-9]+) and`))
+	state := explaintest.Parameter(t, sql, regexp.MustCompile(`where n\.state <> (\$[0-9]+) and`))
 	return []explaintest.Part{
 		{Name: "the read's test that a value is no node", Opens: " and t.to_kind <> '" + graphstore.KindValue + "'", Closes: "and not (", Text: " "},
 		{
 			Name: "the join to graph_nodes", Opens: "cross join lateral (", Closes: "t.asserted and (",
-			Text: "join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state = " + state + "\n\t\twhere ",
+			Text: "join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state <> " + state + "\n\t\twhere ",
 		},
 	}
 }

@@ -79,6 +79,13 @@ var ProjectedColumns = map[string]map[string]string{
 		// backfill takes as the cause of the block's in_document, visibility and state tuples
 		// (graphcensus's readBlockRows).
 		"changed_version": "the block's in_document, visibility and state tuples, as the event that is their cause",
+		// A block's type is its node's supertag, and the rank, the placement and the size the
+		// pass states of the block are of a block of that type (refs' blockNode); the census's
+		// block, block_size and block_author kinds read it.
+		"type": "the block's node, as its supertag",
+		// A block's text_sha256 is the digest of the text the pass states as the block's text
+		// value tuple (refs' blockTexts); the census's block_text kind reads it.
+		"text_sha256": "the block's text value tuple",
 	},
 	"block_refs": {
 		"node_kind":    "the row's node",

@@ -337,11 +337,12 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 
 // asksCitingTheDocument lists, as the ask itself, every ask holding a current part that cites
 // the document whose ref_key is the numbered parameter param, or one of that document's current
-// blocks: the arms a whole-document "in" read adds (readEdgeRows). Each ask is listed once per
-// target it cites, at the latest time one of its parts took that link; the read's own dedupe
-// (ReferencedBy) keeps it once overall, as it does for a comment citing the document from two
-// blocks. The arm over the document's blocks reads their ids once and then ask_block_refs by its
-// index of targets for each id, as keyedBlockArm reads every link table.
+// blocks, at its node or at an address that resolves to it (documentBlockKeys, held to the node
+// the address resolves to): the arms a whole-document "in" read adds (readEdgeRows). Each ask is
+// listed once per target it cites, at the latest time one of its parts took that link; the read's
+// own dedupe (ReferencedBy) keeps it once overall, as it does for a comment citing the document
+// from two blocks. The arm over the document's blocks reads their keys once and then
+// ask_block_refs by its index of targets for each key, as keyedBlockArm reads every link table.
 //
 // seen names the acting credential, bound by the read these arms belong to: an ask the acting
 // person may not see cites nothing here, and neither does a part that cites one of the
@@ -354,15 +355,15 @@ func asksCitingTheDocument(param, seen string) string {
 		where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'artifact' and r.to_id = ` + param + `
 		group by r.kind, r.ask_id
 		union all
-		select r.kind, ` + ask + `r.to_id
-		from ` + documentBlockIDs(param) + ` k (node_id)
+		select r.kind, ` + ask + `k.node_id
+		from ` + documentBlockKeys(param) + ` k (address, node_id)
 		cross join lateral (
-			select r.kind, r.ask_id, r.created_at, r.source_seq, r.to_id
+			select r.kind, r.ask_id, r.created_at, r.source_seq
 			from ` + itemBlockLinks(ItemAsk) + `
-			where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.node_id
+			where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.address
 		) r
 		where ` + VisibleKind("block", "k.node_id", seen) + `
-		group by r.kind, r.ask_id, r.to_id`
+		group by r.kind, r.ask_id, k.node_id`
 }
 
 // AskIDs is the part ids one read of an ask shows: the revision its parts have reached, the id

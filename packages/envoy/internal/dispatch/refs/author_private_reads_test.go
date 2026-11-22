@@ -29,20 +29,16 @@ var (
 	privateReader = model.Actor{Kind: "user", ID: "bob"}
 )
 
-// reserveForAuthor writes the store's node of kind and id reserved for privateAuthor, through the
-// store's own writer and the visibility a write that asked for `author` would get
-// (graphstoretest.VisibilityFor), handed the one rule that answers whether a credential may
-// reserve a node (graphstore.ProvesAuthor).
+// reserveForAuthor reserves the store's node of kind and id for privateAuthor, as the rows a
+// write that asked for `author` would store, seeded straight into the store
+// (graphstoretest.SeedAuthorOnly), since its writer takes a node reserved for its author of no
+// kind these reads answer (graphstore.ErrVisibilityNotAdmitted). What is under test is the read.
 func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	t.Helper()
-	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(privateAuthor))
-	if err != nil {
-		t.Fatalf("reserve %s %s for its author: %v", kind, id, err)
-	}
-	if err := graphstore.Write(context.Background(), tx, []graphstore.Node{{
-		Kind: kind, ID: id, Supertag: kind, Visibility: visibility, State: graphstore.StateLive,
+	if err := graphstoretest.SeedAuthorOnly(context.Background(), tx, graphstore.Node{
+		Kind: kind, ID: id, Supertag: kind, State: graphstore.StateLive,
 		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), MadeBy: privateAuthor, SourceEvent: graphstore.NoEvent,
-	}}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("write the private %s %s: %v", kind, id, err)
 	}
 }
@@ -75,8 +71,8 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 		t.Errorf("another person's closure = %#v; want no member, since one link is the private comment's and the other reaches the private document", got)
 	}
 	want := []Member{
-		{RefKey: privateDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: publicComment}},
-		{RefKey: publicDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: privateComment}},
+		documentMember(t, tx, privateDocument, 1, model.ReferenceVia{Kind: "comment", ID: publicComment}),
+		documentMember(t, tx, publicDocument, 1, model.ReferenceVia{Kind: "comment", ID: privateComment}),
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
@@ -103,12 +99,12 @@ func TestTheReferencesReadAnswersADocumentReservedForItsAuthorToThatAuthorAlone(
 	reserveForAuthor(t, tx, "artifact", farDocumentKey)
 
 	via := model.ReferenceVia{Kind: "comment", ID: comment}
-	public := Member{RefKey: publicDocumentKey, Depth: 1, Via: via}
+	public := documentMember(t, tx, publicDocumentKey, 1, via)
 	if got, want := closureOf(t, tx, privateReader), []Member{public}; !reflect.DeepEqual(got, want) {
 		t.Errorf("another person's read = %#v; want %#v, without the private document %s and the far one %s",
 			got, want, privateDocumentKey, farDocumentKey)
 	}
-	want := []Member{public, {RefKey: privateDocumentKey, Depth: 1, Via: via}}
+	want := []Member{public, documentMember(t, tx, privateDocumentKey, 1, via)}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
 		t.Errorf("the author's read = %#v; want %#v, without the far document %s, which is two hops away",

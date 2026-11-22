@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
@@ -41,7 +40,8 @@ const eraseOwnerAttempts = 3
 // (store.LockOwners), each taken once, in the order of the owner keys (events.LockOwnerRows), as
 // events.Broker.LockOwners takes the owners of several events: "artifact:<id>" for a document no
 // issue owns, before "issue:<key>". That is the one order over every owner, and the backfill's
-// batches take their documents' owners in it too (graphcensus's lockBlockDocuments).
+// batches take their documents' owners in it too (graphcensus's lockBlockDocuments and
+// lockObjectOwners).
 //
 // Before the owner locks it takes two rows that a background pass holds for the whole of a
 // transaction of its own, so that the run waits for such a pass holding no owner lock, which no
@@ -225,7 +225,7 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searc
 		}
 		return erasedRead{}, nil, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
 	}
-	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
+	if err := e.lockProjectionRows(ctx, tx); err != nil {
 		return erasedRead{}, nil, err
 	}
 	e.underLocks = &eventsUnderLocks{owners: before, ids: found.events}
@@ -247,10 +247,19 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searc
 
 // lockProjectionRows takes every projection row of the node `for update`, the level the delete of
 // each in apply takes, right after the node's row and before the erase reads under its locks or
-// writes anything: table by table in graphstore.ProjectedTables' order, and by key within each.
-// R17 has a node's row taken before any projection row whose foreign key names it, and every
-// writer of these rows that takes an owner row takes it before them, which the erase already
-// holds.
+// writes anything: table by table in graphstore.ProjectedTables' order, and by key within each,
+// and for a run of the command bar its going_requests row and then its going_events rows
+// (runTables). R17 has a node's row taken before any projection row whose foreign key names it,
+// and every writer of these rows that takes an owner row takes it before them, which the erase
+// already holds. A run's rows name no node, and no writer of them waits on the run's interaction
+// node row while it holds one of them. Each frame of this build takes the node's row `for no key
+// update` before the run's row (api's appendGoingEvent). A frame of a run with no node, and the
+// backfill, through the one writer of a run's node from its row (graphstore.WriteRun), take the
+// run's row `for no key update` and then write the node, which no other transaction can see until
+// they commit, let alone hold; a frame that finds there a node another write committed and another
+// transaction holds lets its transaction go and begins again, taking the node's row first (api's
+// lockGoingRun). So an erase holding the node's row may wait at the run's row for such a writer,
+// which never waits for the erase.
 //
 // Taking them here, and not when apply deletes them, is what orders the erase against a writer
 // that holds one of them and no owner row: the block index tick's window arm takes a comment's
@@ -259,11 +268,10 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searc
 // windows and that state first (forgetEmbeddings), and the arm, writing the same keys, would wait
 // for the erase while the erase waited for it, until Postgres ended one of them. Here the erase
 // waits at the row holding no row the arm writes, and the arm commits first.
-func lockProjectionRows(ctx context.Context, tx pgx.Tx, kind, id string) error {
-	for _, held := range graphstore.ProjectedTables {
-		if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where node_kind = $1 and node_address = $2 order by `+
-			held.Key+` for update`, kind, id); err != nil {
-			return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, kind, id, err)
+func (e *Erasure) lockProjectionRows(ctx context.Context, tx pgx.Tx) error {
+	for _, own := range e.ownRowSets() {
+		if _, err := tx.Exec(ctx, `select 1 from `+own.table+` where `+own.where+` order by `+own.key+` for update`, own.args...); err != nil {
+			return fmt.Errorf("lock the %s rows of %s:%s: %w", own.table, e.Kind, e.ID, err)
 		}
 	}
 	return nil

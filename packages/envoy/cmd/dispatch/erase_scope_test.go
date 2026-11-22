@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -34,13 +35,14 @@ func listed(erasure *grapherase.Erasure, parts ...string) bool {
 // blockWhoseTextIs is the node address of the block of document whose stored text is exactly
 // text, as ref_key, '#' and the block id (migration 0121), after reading that the store holds its
 // node. It is read by the whole text and not by a search inside it, so a sibling block that
-// repeats the words is never the block it answers.
+// repeats the words is never the block it answers. A converted document's blocks are read under
+// its issue's room, as blockHolding reads them.
 func blockWhoseTextIs(t *testing.T, database *store.Store, document, text string) string {
 	t.Helper()
 	var address string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select a.ref_key || '#' || t.block_id from document_block_texts t join artifacts a on a.id = t.artifact_id
-		where t.artifact_id = $1::uuid and t.text = $2
+		where t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and `+refs.BlockDocumentSQL("t")+` = $1::uuid and t.text = $2
 		  and exists (select 1 from graph_nodes n where n.kind = 'block' and n.id = a.ref_key || '#' || t.block_id)
 		order by t.version desc limit 1`, document, text).Scan(&address); err != nil {
 		t.Fatalf("read the block node of %s whose text is %q: %v", document, text, err)
@@ -169,9 +171,13 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 			t.Errorf("event %d lost the sibling's line, which no erase of another node may take:\nbefore %s\nafter  %s", id, before, after)
 		}
 	}
+	// A converted document's text rows are keyed by its issue's room, each in the document its
+	// fragment holds it in (refs.BlockDocumentSQL), as blockWhoseTextIs reads them.
 	var siblingText int
-	if err := database.Pool.QueryRow(ctx,
-		`select count(*) from document_block_texts where artifact_id = $1::uuid and text = $2`, document, sibling).Scan(&siblingText); err != nil {
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from document_block_texts t
+		where t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and `+refs.BlockDocumentSQL("t")+` = $1::uuid and t.text = $2`,
+		document, sibling).Scan(&siblingText); err != nil {
 		t.Fatalf("read the sibling's stored text: %v", err)
 	}
 	if siblingText != 1 {
@@ -230,6 +236,8 @@ func writeCommentReply(t *testing.T, server *dispatchProcess, issue, comment, bo
 // Each erase is held against a control that finds the bytes in the history before it runs. The
 // two comments are erased from documents of their own, so neither erase is the one that took the
 // other's bytes: the margin of a document goes with its history, which one erase replaces whole.
+// A converted issue's documents share its room's one history, so each document is one of an issue
+// of its own, and each erase lists that room (roomAddress).
 func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -240,12 +248,13 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 
 	const anchored = "A line a person had something to say about."
 	issue, _ := createEraseIssue(t, server, "ERM", "A comment in the margin", "# Spec\n\nNothing here.\n")
+	threadIssue, _ := createEraseIssue(t, server, "ERM", "A thread in the margin", "# Spec\n\nNothing here.\n")
 	alone := uploadEraseDocument(t, server, issue, "alone.md", "# Alone\n\n"+anchored+"\n")
-	thread := uploadEraseDocument(t, server, issue, "thread.md", "# Thread\n\n"+anchored+"\n")
+	thread := uploadEraseDocument(t, server, threadIssue, "thread.md", "# Thread\n\n"+anchored+"\n")
 	remark, answer := eraseTestSecret(), eraseTestSecret()+"answered"
 	comment := writeAnchoredComment(t, server, issue, alone, anchored, remark)
-	root := writeAnchoredComment(t, server, issue, thread, anchored, "A remark with nothing secret in it.")
-	reply := writeCommentReply(t, server, issue, root, answer)
+	root := writeAnchoredComment(t, server, threadIssue, thread, anchored, "A remark with nothing secret in it.")
+	reply := writeCommentReply(t, server, threadIssue, root, answer)
 	// The uploads and the comments owe both documents a settlement (doc_settlements_pending), which
 	// runs after the settle delay. Run after an erase, it would settle the history the erase wrote
 	// and could write a version of its own, with its event, so each erase is read against the
@@ -273,8 +282,8 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	if held := updatesHolding(t, database, alone, remark); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the anchored document still hold the comment's body", held)
 	}
-	if len(erased.Documents) != 1 || !strings.HasSuffix(erased.Documents[0].Document, "/alone-md") || erased.Documents[0].Held {
-		t.Errorf("the erase of the anchored comment lists the documents %+v, want the document it is anchored to, its text holding none of the body",
+	if len(erased.Documents) != 1 || erased.Documents[0].Document != roomAddress(t, database, alone) || erased.Documents[0].Held {
+		t.Errorf("the erase of the anchored comment lists the documents %+v, want the room of the document it is anchored to, its text holding none of the body",
 			erased.Documents)
 	}
 	if places, searched := columnsHolding(t, database, remark); len(places) > 0 {
@@ -294,8 +303,8 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	if held := updatesHolding(t, database, thread, answer); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the thread's document still hold the reply's body", held)
 	}
-	if len(answered.Documents) != 1 || !strings.HasSuffix(answered.Documents[0].Document, "/thread-md") {
-		t.Errorf("the erase of the reply lists the documents %+v, want the document its thread's root is anchored to", answered.Documents)
+	if len(answered.Documents) != 1 || answered.Documents[0].Document != roomAddress(t, database, thread) {
+		t.Errorf("the erase of the reply lists the documents %+v, want the room of the document its thread's root is anchored to", answered.Documents)
 	}
 	if places, searched := columnsHolding(t, database, answer); len(places) > 0 {
 		t.Errorf("after the erase the reply's body is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
@@ -329,7 +338,7 @@ func TestTheBlockEraseTakesAVersionThatCarriedTheBlockUnchanged(t *testing.T) {
 	var stored int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from document_block_texts t join artifacts a on a.id = t.artifact_id
-		where t.artifact_id = $1::uuid and a.ref_key || '#' || t.block_id = $2`, document, block).Scan(&stored); err != nil {
+		where t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and a.ref_key || '#' || t.block_id = $2`, document, block).Scan(&stored); err != nil {
 		t.Fatalf("count the stored texts of %s: %v", block, err)
 	}
 	if held := versionsOf(t, database, document); len(held) != 2 || stored != 1 {

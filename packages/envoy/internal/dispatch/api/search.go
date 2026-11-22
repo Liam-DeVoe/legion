@@ -189,14 +189,14 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
 		searchRowFilters("i.status", "c.author", "c.created_at") + `
   union all
-  select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
-         coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
+  select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) else null::uuid end,
+         coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name, coalesce(i.updated_at, k.created_at),
          false, ` + rank("k.search") + `
     from asks k
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
 		searchRowFilters("i.status", "k.author", "k.created_at") + `
@@ -357,12 +357,18 @@ var (
 // document's, so a visible document's window can cover a block its author keeps to themselves,
 // and naming that block would answer its id and its link to a reader who may not see it. The
 // block's node kind is its owner's block kind - `block` for a document's, `<kind>_block` for a
-// comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the address the
-// store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
-// item's (refs.ParseItemBlockNode).
+// comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the node the store
+// keys it by: for a document's block, the node its address `<ref_key>#<block>` resolves to
+// (refs.ResolvedBlockSQL: its moved_to tuples, then the room the document is edited in, then the
+// address itself), so a block of a document converted into its issue's room is held to the
+// predicate of the room's node, `<tree ref_key>#<block>`; `<kind>/<uuid>#<block>` for an item's
+// (refs.ParseItemBlockNode). None of those is a finding of a lens, or any other standing kind, so
+// the predicate binds no staleness test (refs.NodeKinds).
 func searchPageAndTailSQL(legsSource string, seen int) string {
-	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
-		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
+	documentBlock := `(ar.ref_key || '#' || covered.block_id)`
+	visibleBlock := refs.VisibleEnd(searchBlockKinds, `case r.kind when 'document' then 'block' else r.kind || '_block' end`,
+		`case r.kind when 'document' then coalesce(`+refs.ResolvedBlockSQL(documentBlock)+`, `+documentBlock+`)
+		  else r.kind || '/' || r.id || '#' || covered.block_id end`,
 		true, searchParam(seen))
 	return fmt.Sprintf(`page as (
   select l.*, f.score, f.own_lead
@@ -397,16 +403,19 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   ) txt on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
-  -- block texts are kept per version or revision, the latest being the current text. A message
-  -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's first refs.BlockExcerptRunes runes.
+  -- block texts are kept per version or revision, the latest being the current text. A
+  -- document's are read where the block index keeps them, in the room the document is edited in
+  -- (refs.DocumentRoomTextsSQL): an issue born converted keeps its documents' text rows under its
+  -- tree artifact. A message is never edited and keeps no text table (refs/item_blocks.go's
+  -- table map), so its block is ranked on the excerpt its row holds, the block's first
+  -- refs.BlockExcerptRunes runes.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
       cross join lateral (
         select case r.kind
           when 'document' then (select x.text from document_block_texts x
-                                 where x.artifact_id = r.artifact_id and x.block_id = covered.block_id
+                                 where %[3]s and x.block_id = covered.block_id
                                  order by x.version desc limit 1)
           when 'comment' then (select x.text from comment_block_texts x
                                  where x.comment_id = r.id::uuid and x.block_id = covered.block_id
@@ -423,7 +432,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, visibleBlock)
+`, legsSource, visibleBlock, refs.DocumentRoomTextsSQL("x", "r.artifact_id"))
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -507,12 +516,14 @@ with q as (select
 // the registry's predicate here (refs.VisibleEnd, over the arms' own kind and id) reaches
 // every keyword arm at once; a meaning arm binds its own besides, because its candidate CTE
 // cuts to its limit before this filter ever sees a row. A search row's kind is the reader's
-// word for it, and `document` is the node kind `artifact`.
+// word for it, and `document` is the node kind `artifact`. A row is an issue, a document, an ask,
+// a comment or a message (searchRowKinds), none of them a standing kind, so the predicate binds no
+// staleness test (refs.NodeKinds).
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
 func searchKindsCTE(arms, exclude string, seen int) string {
-	visible := refs.VisibleEnd(`case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
+	visible := refs.VisibleEnd(searchRowKinds, `case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
 	if exclude != "" {
 		visible = `not (` + exclude + `) and ` + visible
 	}
@@ -526,6 +537,14 @@ func searchKindsCTE(arms, exclude string, seen int) string {
 func searchParam(number int) string {
 	return "$" + strconv.Itoa(number)
 }
+
+// searchRowKinds is the node kind of every row a search arm answers, as the graph addresses it:
+// an issue, a document, an ask, a comment and a message. searchBlockKinds is the node kind of every
+// block a meaning hit can name: a document's block and each item kind's (refs.ItemKind.BlockKind).
+var (
+	searchRowKinds   = refs.KindsOf("issue", "artifact", string(refs.ItemAsk), string(refs.ItemComment), string(refs.ItemMessage))
+	searchBlockKinds = refs.KindsOf(refs.BlockNodeKind, refs.ItemAsk.BlockKind(), refs.ItemComment.BlockKind(), refs.ItemMessage.BlockKind())
+)
 
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
 // "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or
@@ -835,14 +854,14 @@ meaning_document as (
 ),
 ` + searchMeaningCommentArm(scope, seen) + `,
 meaning_ask_candidates as (
-  select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
+  select k.issue_key, k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + ` as block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
          i.title as issue_title, i.status as issue_status,
          p.key as owner_project, a.slug as owner_slug, a.name as owner_name, coalesce(i.updated_at, k.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join asks k on k.id = ` + windowItemUUID + `
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
      and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +

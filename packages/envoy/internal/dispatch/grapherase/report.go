@@ -26,6 +26,13 @@ type ErasedVersion struct {
 	Version  int    `json:"version"`
 }
 
+// ErasedWriter is one person or session who wrote or answered the erased node (Erasure.Writers),
+// named as the store names its node. It carries no text: an actor's address is no words of theirs.
+type ErasedWriter struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
 // ErasedReview is one approval whose content_sha256 covered the erased bytes. It cannot be
 // rewritten - artifact_review_content_sha256_update raises on any statement that moves a stored
 // digest - so the erase ends it, and names it by its document and its version.
@@ -127,6 +134,16 @@ type Erasure struct {
 	// out that other items still hold, until the project's next refresh pass, which counts it in
 	// full. It is not recorded, for the reason above.
 	NotRecounted []NotRecounted `json:"-"`
+	// Writers are who wrote, answered, removed or kept the node, each once and in order: the
+	// person or session at the far end of every authored_by, answered_by, decided_by and removed_by
+	// tuple out of an ask's node, of every authored_by, decided_by and kept_by out of a block's - a
+	// decision's, a reading's, a finding's of a lens - and of every authored_by out of a run of the
+	// command bar, a lens, a risk or a constraint, that the run deletes, asserted or retracted
+	// (writesTheNode). Once those tuples and the node's rows are gone nothing else names them,
+	// while their nodes stand: a session's always, since no erase removes one. The store census
+	// reads them off this record (graphcensus's erasedWriters), a person until an erase of that
+	// person runs after this one.
+	Writers []ErasedWriter `json:"writers"`
 	// Digest is the SHA-256 of Listing. A run without --confirm prints it, and a run with
 	// --confirm erases only when the listing it reads under its own locks has the digest it was
 	// given (Mismatch), so what an operator read is what goes.

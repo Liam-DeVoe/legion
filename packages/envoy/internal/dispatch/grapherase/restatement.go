@@ -91,22 +91,23 @@ func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []stri
 // restateKeywordVersions deletes the node's own rows of the keyword table (search_text_versions),
 // every version of its text the keyword fill wrote, and writes again the vector of each keyword
 // row of its spec issue that names a version the run deleted (textversions.RestateIssueVectors),
-// by the expression the fill writes it with. It runs after the versions' delete, so that vector
-// reads no markdown for the version that went and keeps the issue's key and the title its row
-// holds. The fill writes no row of the table while the run holds its cursor row
-// (textversions.HoldFillBack, lockOwnersThenNode), so the rows these statements reach are the
-// ones the read under the run's locks listed (readSearch).
+// those of the document the block stands in (erasedRead.versioned), by the expression the fill
+// writes it with. It runs after the versions' delete, so that vector reads no markdown for the
+// version that went and keeps the issue's key and the title its row holds. The fill writes no row
+// of the table while the run holds its cursor row (textversions.HoldFillBack, lockOwnersThenNode),
+// so the rows these statements reach are the ones the read under the run's locks listed
+// (readSearch).
 func (e *Erasure) restateKeywordVersions(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	tag, err := tx.Exec(ctx, `delete from search_text_versions where kind = $1 and id = $2`, e.Kind, e.ID)
 	if err != nil {
 		return fmt.Errorf("delete the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	e.removed("search_text_versions", tag.RowsAffected())
-	issue := read.document.specIssue()
+	issue := read.versioned.specIssue()
 	if issue == "" || len(read.numbers) == 0 {
 		return nil
 	}
-	restated, err := textversions.RestateIssueVectors(ctx, tx, issue, read.document.artifact, read.numbers)
+	restated, err := textversions.RestateIssueVectors(ctx, tx, issue, read.versioned.artifact, read.numbers)
 	if err != nil {
 		return err
 	}

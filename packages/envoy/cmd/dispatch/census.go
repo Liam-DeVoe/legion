@@ -7,6 +7,9 @@ import (
 	"io"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -19,7 +22,17 @@ import (
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
-//     checked no row of.
+//     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
+//     node; with the store-only lines of copied_from and moved_to, which no table projects,
+//     refusing a far end of either that does not resolve; with the dangling-citation counter's
+//     line and the collision census over the restore's work (graphcensus.DanglingCitations,
+//     CollisionsOf); and with what the decisions step's third phase still owes
+//     (graphcensus.DecisionsCensus:
+//     the decisions documents, their unconverted sections and the specs whose answered asks left
+//     them), none of which refuses; and with the census of the versions version_renders holds
+//     (graphcensus.VersionRenderCensus), each one's stored markdown held to a render of the tree
+//     as of its row's time, which refuses on a difference. `--verbose` adds one line for each
+//     citation the counter counted.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
@@ -43,15 +56,21 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		"census the node and tuple store against the tables that project it, rather than the pending migrations")
 	sizing := flags.Bool("sizing", false,
 		"with --store, add the growth pass: the write rate, each table's size, and a year's projection against the census limit")
+	verbose := flags.Bool("verbose", false,
+		"with --store, print one line for each citation the dangling-citation counter counted")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store and --sizing\n", flags.Arg(0))
+		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store, --sizing and --verbose\n", flags.Arg(0))
 		return 2
 	}
 	if *sizing && !*storeSide {
 		fmt.Fprintln(errOut, "census: --sizing is the growth pass of the store census; run it as `census --store --sizing`")
+		return 2
+	}
+	if *verbose && !*storeSide {
+		fmt.Fprintln(errOut, "census: --verbose lists the citations the store census counts; run it as `census --store --verbose`")
 		return 2
 	}
 	if strings.TrimSpace(databaseURL) == "" {
@@ -59,7 +78,7 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		return 2
 	}
 	if *storeSide {
-		return storeCensus(ctx, databaseURL, *sizing, out, errOut)
+		return storeCensus(ctx, databaseURL, *sizing, *verbose, out, errOut)
 	}
 	report, err := store.Census(ctx, databaseURL)
 	if err != nil {
@@ -75,28 +94,49 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one
 // read-only snapshot of its own, so a deployment can take it before it rolls, exactly as it
-// takes the migration census.
-func storeCensus(ctx context.Context, databaseURL string, sizing bool, out, errOut io.Writer) int {
-	report, err := graphcensus.StoreCensus(ctx, databaseURL, sizing)
+// takes the migration census. verbose prints each citation the dangling-citation counter counted,
+// whose returning set holds the returns the restore makes, judged by the restore's own test of a
+// person's removal (docs.ReturnDeclined), which graphcensus cannot read itself.
+// Beside the store's lines it prints what the decisions step's third phase still owes
+// (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its own, since only
+// docs reads a decisions document's sections; it refuses nothing. It prints too the census of the
+// versions version_renders holds (graphcensus.VersionRenderCensus), each one's stored markdown
+// against docs' render of the tree as of its row's time, read the same way, since only docs
+// renders; a version whose two differ refuses the census.
+func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, out, errOut io.Writer) int {
+	report, err := graphcensus.StoreCensus(ctx, databaseURL, sizing, docs.ReturnDeclined)
 	if err != nil {
 		writeCensusFailure(errOut, err)
 		return 2
 	}
-	report.Write(out)
+	if !report.Absent {
+		var decisions graphcensus.DecisionsCensus
+		var renders graphcensus.VersionRenderCensus
+		if err := inCensusSnapshot(ctx, databaseURL, "the decisions census", func(tx pgx.Tx) (err error) {
+			decisions, err = docs.ReadDecisionsCensus(ctx, tx)
+			return err
+		}); err != nil {
+			writeCensusFailure(errOut, err)
+			return 2
+		}
+		if err := inCensusSnapshot(ctx, databaseURL, "the census of the rendered versions", func(tx pgx.Tx) (err error) {
+			renders, err = docs.ReadVersionRenderCensus(ctx, tx)
+			return err
+		}); err != nil {
+			writeCensusFailure(errOut, err)
+			return 2
+		}
+		report.Decisions, report.VersionRenders = &decisions, &renders
+	}
+	if verbose {
+		report.WriteVerbose(out)
+	} else {
+		report.Write(out)
+	}
 	if report.Refused() {
 		return 1
 	}
 	return 0
-}
-
-// writeCensusFailure prints why a census could not be taken, under the one label every form of
-// the command reports under.
-func writeCensusFailure(errOut io.Writer, err error) {
-	message := err.Error()
-	if !strings.HasPrefix(message, "census: ") {
-		message = "census: " + message
-	}
-	fmt.Fprintln(errOut, message)
 }
 
 // versions is `envoy-dispatch versions`: what schema_migrations, on the database DATABASE_URL
@@ -121,4 +161,31 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 		return 1
 	}
 	return 0
+}
+
+// inCensusSnapshot runs read in a read-only snapshot on a connection of its own, as the census
+// reads what only docs reads (docs.ReadDecisionsCensus, docs.ReadVersionRenderCensus); what names
+// that read in an error.
+func inCensusSnapshot(ctx context.Context, databaseURL, what string, read func(pgx.Tx) error) error {
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("connect for %s: %w", what, err)
+	}
+	defer conn.Close(context.Background())
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("open the snapshot of %s: %w", what, err)
+	}
+	defer tx.Rollback(context.Background())
+	return read(tx)
+}
+
+// writeCensusFailure prints why a census could not be taken, under the one label every form of
+// the command reports under.
+func writeCensusFailure(errOut io.Writer, err error) {
+	message := err.Error()
+	if !strings.HasPrefix(message, "census: ") {
+		message = "census: " + message
+	}
+	fmt.Fprintln(errOut, message)
 }
