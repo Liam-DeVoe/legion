@@ -96,6 +96,7 @@ type DecisionStep struct {
 	// catchUpOwed is whether phase 2 owes a pass on a tick that finds the fleet one build: true
 	// until the first such tick runs it, and again after any tick that finds another build live or
 	// on which an ask failed.
+	// kept for one release: catch-up
 	catchUpOwed bool
 	// horizon marks the event log for the catch-up and the count (writerFloor), and marks are the
 	// marks their passes took, newest first and at most decisionStepMarksKept of them.
@@ -104,8 +105,10 @@ type DecisionStep struct {
 	// caughtUpThrough and caughtUpAbove are the catch-up's high-water mark: every event of the
 	// window at or below caughtUpThrough, and each event above it whose id caughtUpAbove holds,
 	// was read by a pass on which no ask failed, and so applied or found to need nothing.
+	// kept for one release: catch-up
 	caughtUpThrough int64
-	caughtUpAbove   []int64
+	// kept for one release: catch-up
+	caughtUpAbove []int64
 	// backfillUnknown is whether a tick reads graphcensus.AsksOwed even where it owes no
 	// catch-up: true until a read of it finds nothing owed with no other build live, and again
 	// once a tick sees another build live.
@@ -170,7 +173,7 @@ func (s *DecisionStep) OwedTotal() *int64 {
 func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionStepOwed, error) {
 	var owed DecisionStepOwed
 	if err := q.QueryRow(ctx, `
-		select (select count(*) from decisions_documents()),
+		select (select count(*) from decisions_documents()), -- kept for one release: decisions-documents-fn
 		       (select count(*) from projects p where 'decisions' = any(p.gated_steps))
 	`).Scan(&owed.DecisionsDocuments, &owed.GatedStepsLists); err != nil {
 		return DecisionStepOwed{}, fmt.Errorf("count what the decisions step owes: %w", err)
@@ -324,6 +327,7 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// kept for one release: catch-up
 	catchUp := work.other || s.catchUpOwed
 	// Phase 3 has work while the last count found something owed, and runs only on a fleet of
 	// this one build.
@@ -352,6 +356,7 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 			s.logger.Error("dispatch: decisions step backfill; the next tick tries again", "error", err)
 		}
 	}
+	// kept for one release: catch-up
 	if catchUp {
 		failed, err := s.catchUp(ctx)
 		if err != nil {
@@ -447,6 +452,7 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	if err := s.recountOwed(ctx, work.other); err != nil {
 		return decisionStepWork{}, err
 	}
+	// kept for one release: catch-up
 	if s.backfillUnknown || s.catchUpOwed {
 		if work.backfill, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil {
 			return decisionStepWork{}, err
@@ -530,15 +536,18 @@ func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
 
 // caughtUpAsk is the ask an event of the catch-up's read names, aliased e: a follower event names
 // it as ask_id, every other as the ask's own id.
+// kept for one release: catch-up
 const caughtUpAsk = `case when e.type like 'ask.follower_%' then e.payload->>'ask_id' else e.payload->>'id' end`
 
 // caughtUpTypes is the type list of every read of the catch-up, written out so the planner can
 // match it against a partial index's own: an answer, a resolution (a decline is one), an opening
 // (a reopen, or settlement's restoration), a follower added or removed.
+// kept for one release: catch-up
 const caughtUpTypes = `('ask.answered', 'ask.resolved', 'ask.opened', 'ask.follower_added', 'ask.follower_removed')`
 
 // caughtUpColumns is the event's own columns each row of a catch-up read starts with, in the order
 // scanCaughtUpEvent takes them; the ask it names and its owner follow.
+// kept for one release: catch-up
 const caughtUpColumns = `e.id, e.type, e.payload, e.actor, e.created_at`
 
 // caughtUpRead is the catch-up's one read of a pass: every event of the window above $1 of
@@ -555,6 +564,7 @@ const caughtUpColumns = `e.id, e.type, e.payload, e.actor, e.created_at`
 // anti-join over every tuple of every ask, read once and kept beside the events (copied_asks.go's
 // owedCopiesQuery meets the same with a hashed subplan); the subquery runs once for each event,
 // each run one probe of the index.
+// kept for one release: catch-up
 const caughtUpRead = `
 	select ` + caughtUpColumns + `, coalesce(` + caughtUpAsk + `, '') as ask,
 	       coalesce(e.issue_key, ''), coalesce(e.artifact_id::text, ''),
@@ -577,6 +587,7 @@ const caughtUpRead = `
 // the owner's events through the owner's unique (key, seq) index from $2 on, so it reads only
 // what the owner appended in that gap, follower events among them, which name their ask as
 // ask_id where events_ask_payload_id keys only on id.
+// kept for one release: catch-up
 func caughtUpSince(owner string) string {
 	return `
 	select ` + caughtUpColumns + `, $3::text, coalesce(e.issue_key, ''), coalesce(e.artifact_id::text, ''), e.seq
@@ -593,12 +604,14 @@ func caughtUpSince(owner string) string {
 // caughtUpSinceOnIssue and caughtUpSinceOnDocument are caughtUpSince of an ask an issue owns, read
 // through events_issue_key_seq_key, and of one a document no issue owns, read through
 // events_artifact_id_seq_key.
+// kept for one release: catch-up
 var (
 	caughtUpSinceOnIssue    = caughtUpSince(`e.issue_key = $1`)
 	caughtUpSinceOnDocument = caughtUpSince(`e.artifact_id = $1::uuid`)
 )
 
 // scanCaughtUpEvent reads one row of caughtUpRead or caughtUpSince.
+// kept for one release: catch-up
 func scanCaughtUpEvent(row pgx.CollectableRow) (caughtUpEvent, error) {
 	var event caughtUpEvent
 	var actor []byte
@@ -723,6 +736,7 @@ func (s *DecisionStep) writerFloor(ctx context.Context) (int64, int64, error) {
 // keepCaughtUp moves the high-water mark over what a pass on which no ask failed read: every event
 // at or below floor, and the ids of what it read above it, beside those an earlier pass read above
 // the mark that it has not passed yet.
+// kept for one release: catch-up
 func (s *DecisionStep) keepCaughtUp(floor int64, read []caughtUpEvent) {
 	through := max(s.caughtUpThrough, floor)
 	above := s.caughtUpAbove[:0]
@@ -742,6 +756,7 @@ func (s *DecisionStep) keepCaughtUp(floor int64, read []caughtUpEvent) {
 // caughtUpEvent is one event a catch-up read (caughtUpRead, caughtUpSince): the event, the ask it
 // names, and its owner's key - its issue, or the document it belongs to - with ownerSeq, for a row
 // of caughtUpRead the owner's last_seq as that read saw it.
+// kept for one release: catch-up
 type caughtUpEvent struct {
 	id              int64
 	eventType       string
@@ -777,6 +792,7 @@ type caughtUpEvent struct {
 // asks.Settle writes the event's own state, answer and resolution, under the event, by its actor at
 // its time; a follower event is stated as the row stands (asks.CatchUpFollower). It answers how
 // many events it applied.
+// kept for one release: catch-up
 func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []caughtUpEvent) (int, []caughtUpEvent, error) {
 	if askID == "" {
 		return 0, nil, nil
@@ -851,6 +867,7 @@ func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []
 
 // applyCaughtUpEvent applies one event a pass read, in catchUpAsk's transaction, and reports
 // whether it stated anything.
+// kept for one release: catch-up
 func applyCaughtUpEvent(ctx context.Context, tx pgx.Tx, askID string, event caughtUpEvent) (bool, error) {
 	if event.eventType == "ask.follower_added" || event.eventType == "ask.follower_removed" {
 		var payload model.AskFollowerEventPayload
@@ -887,6 +904,7 @@ func applyCaughtUpEvent(ctx context.Context, tx pgx.Tx, askID string, event caug
 
 // newestSource is the source_event of the newest tuple out of askID's node that narrow keeps, 0
 // where there is none.
+// kept for one release: catch-up
 func newestSource(ctx context.Context, tx pgx.Tx, narrow string, askID string, args ...any) (int64, error) {
 	var newest int64
 	if err := tx.QueryRow(ctx, `
