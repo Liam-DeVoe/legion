@@ -853,7 +853,8 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // A binary the image build did not stamp says so: null, never an empty string or a guess. So does
 // a process with no announcement of the fleet's build to report. Every field is always present,
 // the ones nothing filled as null, outbox_publisher false - a process with NATS disabled publishes
-// nothing - and idempotency_keys true, the binary's own fact.
+// nothing - idempotency_keys true, the binary's own fact, and consumer_names the naming mode the
+// process was started with (ENVOY_CONSUMER_NAMES), here the default, fixed.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	response := httptest.NewRecorder()
 	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, consumernames.ModeFixed).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -864,7 +865,7 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	want := map[string]any{
 		"ok": false, "db": false, "nats": nil, "files": nil, "signin": nil, "service_tokens": nil, "github": nil,
 		"commit": nil, "fleet_commit": nil, "schema_version": nil, "outbox_publisher": false,
-		"idempotency_keys": true,
+		"idempotency_keys": true, "consumer_names": "fixed",
 	}
 	for field, value := range want {
 		if got, found := health[field]; !found || got != value {
