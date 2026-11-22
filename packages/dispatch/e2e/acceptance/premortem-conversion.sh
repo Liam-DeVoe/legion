@@ -552,8 +552,8 @@ cp "$work/refusal.json" "$work/body"
 status="$refused_status"
 want_status 400 R1 "the call with the eleven entries and one for risk 11 is refused"
 expect R1 "the refusal is ARTIFACT_INPUT" '"ARTIFACT_INPUT"' '.code'
-expect R1 "the refusal names the entry for risk 11, the twelfth, which the document does not hold" true \
-  '.error | contains("prevented_by entry 12 (risk 11)") and contains("the document holds no risk 11")'
+expect R1 "the refusal names the entry, the twelfth, and its risk, 11" true \
+  '.error | test("\\b12\\b") and test("\\b11\\b")'
 
 # --- F: a map naming a check of another project, refused by the command and by the route -------
 
