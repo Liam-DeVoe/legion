@@ -189,6 +189,9 @@ function standInChromium(defaults: object | undefined) {
     launchPersistentContext: async (directory: string) => {
       launched.push(`persistent ${directory}`);
     },
+    launchServer: async (options?: { executablePath?: string }) => {
+      launched.push(`server ${options?.executablePath ?? "-"}`);
+    },
     launched,
   };
 }
@@ -208,35 +211,53 @@ test("a Chromium launch that does not start through the launcher fails by name w
   await expect(bypassed.launch({ executablePath: "/usr/bin/chromium" })).rejects.toThrow(
     '(executablePath "/usr/bin/chromium")'
   );
+  // A server's browser is one a row reaches with `connect`, so it is held to the same rule.
+  await expect(bypassed.launchServer({ executablePath: "/usr/bin/chromium" })).rejects.toThrow(
+    '(executablePath "/usr/bin/chromium")'
+  );
+  await expect(bypassed.launchServer()).rejects.toThrow("(executablePath null)");
   expect(bypassed.launched).toEqual([]);
 
   const routed = standInChromium({ executablePath: browserLauncher });
   guardChromiumLaunches(routed, own);
   await routed.launch();
   await routed.launch({ executablePath: browserLauncher });
-  expect(routed.launched).toEqual([`launch -`, `launch ${browserLauncher}`]);
+  await routed.launchServer();
+  expect(routed.launched).toEqual([`launch -`, `launch ${browserLauncher}`, "server -"]);
 
   const onHost = standInChromium({ args: [] });
   guardChromiumLaunches(onHost, { [browserNetworkVariable]: "host" });
   await onHost.launch();
   expect(onHost.launched).toEqual(["launch -"]);
 
-  const unreadable = { launch: async () => {}, launchPersistentContext: async () => {} };
+  const unreadable = {
+    launch: async () => {},
+    launchPersistentContext: async () => {},
+    launchServer: async () => {},
+  };
   guardChromiumLaunches(unreadable, own);
   await expect(unreadable.launch()).rejects.toThrow("has no `_playwright`");
 });
 
 // The guard wraps the object the `browser` fixture launches from - Playwright's own Chromium,
 // which `@playwright/test` exports too - and reads the defaults where that Chromium's own `launch`
-// reads them. A Playwright that merged them anywhere else would leave the guard reading none, and
-// every routed launch would then fail by name; this row says so before a run does.
-test("the guard reaches Playwright's own Chromium, whose launch reads the default options where the guard does", async () => {
+// and `launchServer` read them. A Playwright that merged them anywhere else would leave the guard
+// reading none, and every routed launch would then fail by name; this row says so before a run does.
+test("the guard reaches Playwright's own Chromium, whose launches read the default options where the guard does", async () => {
   const chromium = guardedChromium();
   const { chromium: exported } = await import("@playwright/test");
   expect(chromium).toBe(exported);
   expect(typeof Reflect.get(chromium, "_playwright")).toBe("object");
-  const ownLaunch: unknown = Reflect.get(Object.getPrototypeOf(chromium), "launch");
-  expect(String(ownLaunch)).toContain("...this._playwright._defaultLaunchOptions, ...options");
+  for (const call of ["launch", "launchServer"]) {
+    const own: unknown = Reflect.get(Object.getPrototypeOf(chromium), call);
+    expect({
+      call,
+      merges: String(own).includes("...this._playwright._defaultLaunchOptions, ...options"),
+    }).toEqual({
+      call,
+      merges: true,
+    });
+  }
 });
 
 // Every Chromium project the config runs on this machine's network launches through the

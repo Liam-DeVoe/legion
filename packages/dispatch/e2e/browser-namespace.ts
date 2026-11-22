@@ -143,13 +143,15 @@ export function chromiumLaunchOptions(
   return browserNetwork(env) === "own" ? { ...options, executablePath: browserLauncher } : options;
 }
 
-/** The part of a Playwright `BrowserType` the launch guard wraps: the two calls that start a
- *  browser, and the Playwright object whose `_defaultLaunchOptions` the worker's `browser`
- *  fixture fills from the project's and the row's `launchOptions` before it calls `launch()`
- *  with none (playwright/lib/index.js, `_browserOptions` and `browser`). */
+/** The part of a Playwright `BrowserType` the launch guard wraps: the three calls that start a
+ *  browser (`launchServer` too, whose browser a row reaches with `connect`), and the Playwright
+ *  object whose `_defaultLaunchOptions` the worker's `browser` fixture fills from the project's
+ *  and the row's `launchOptions` before it calls `launch()` with none (playwright/lib/index.js,
+ *  `_browserOptions` and `browser`); `launchServer` merges the same defaults. */
 type GuardedType = {
   launch(options?: LaunchOptions): Promise<unknown>;
   launchPersistentContext(userDataDir: string, options?: LaunchOptions): Promise<unknown>;
+  launchServer(options?: LaunchOptions): Promise<unknown>;
 };
 
 /** The options a launch of `type` with `options` starts the browser with, merged as Playwright's
@@ -189,6 +191,7 @@ export function guardChromiumLaunches(
   };
   const launch = type.launch.bind(type);
   const persistent = type.launchPersistentContext.bind(type);
+  const server = type.launchServer.bind(type);
   type.launch = async (options) => {
     refuseUnrouted(effectiveLaunchOptions(type, options));
     return launch(options);
@@ -197,15 +200,20 @@ export function guardChromiumLaunches(
     refuseUnrouted(effectiveLaunchOptions(type, options));
     return persistent(userDataDir, options);
   };
+  type.launchServer = async (options) => {
+    refuseUnrouted(effectiveLaunchOptions(type, options));
+    return server(options);
+  };
 }
 
-/** Whether `value` has the two launch calls the guard wraps. */
+/** Whether `value` has the three launch calls the guard wraps. */
 function isGuardedType(value: unknown): value is GuardedType {
   return (
     typeof value === "object" &&
     value !== null &&
     typeof Reflect.get(value, "launch") === "function" &&
-    typeof Reflect.get(value, "launchPersistentContext") === "function"
+    typeof Reflect.get(value, "launchPersistentContext") === "function" &&
+    typeof Reflect.get(value, "launchServer") === "function"
   );
 }
 
