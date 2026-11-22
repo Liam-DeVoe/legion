@@ -1554,6 +1554,43 @@ func TestDatasetBuildFromADirectoryOfASplitPackAndAWholeBundleOfOneNameRefuses(t
 	}
 }
 
+// The same holds for a bundle not named *.tar.gz, which pack --out takes: an earlier pack's
+// data.tgz.manifest.json and parts beside a whole data.tgz put there by hand are two bundles of
+// one name, so build --from the directory refuses rather than read the parts' inputs.
+func TestDatasetBuildFromADirectoryOfTwoBundlesOfAnyNameRefuses(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	bundles := filepath.Join(dir, "bundle")
+	whole := filepath.Join(dir, "whole")
+	for _, d := range []string{bundles, whole} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(bundles, "data.tgz"), 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the earlier pack wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 1}, filepath.Join(whole, "data.tgz"), dsPartSize); err != nil || len(parts) != 0 {
+		t.Fatalf("the newer pack wrote %v (%v), want the bundle alone", parts, err)
+	}
+	data, err := os.ReadFile(filepath.Join(whole, "data.tgz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundles, "data.tgz"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "build", "--from", bundles, "--out", out}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "name one") {
+		t.Errorf("build --from a directory of a split data.tgz and a whole data.tgz: exit %d: %s; want the refusal", code, stderr.String())
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused build made %s (%v)", out, err)
+	}
+}
+
 // build --from a directory reads its files of one name as one bundle only where they are one: the
 // bundle, manifest and parts pack wrote are read, and every other mix of them is refused, naming
 // what the directory holds, with no --out made, rather than read one bundle's inputs for
