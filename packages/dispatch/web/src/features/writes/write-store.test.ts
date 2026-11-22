@@ -439,13 +439,13 @@ test("a write pressed before the take-up of a reload's writes waits for it, then
       return null as never;
     });
     const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const kinds = Promise.withResolvers<void>();
     try {
       void statusPick(before, "done").catch(() => {});
       await settle();
       const keptKey = row(before)?.key ?? "";
       const after = new Writes(signedIn(), tab.page(), memoryFiles());
 
-      const kinds = Promise.withResolvers<void>();
       after.resume("alice", () => kinds.promise);
       const pressed = [statusPick(after, "todo"), statusPick(after, "backlog")];
       await settle();
@@ -474,6 +474,11 @@ test("a write pressed before the take-up of a reload's writes waits for it, then
       expect(await Promise.all(pressed)).toEqual([null, null]);
       expect(after.rows()).toEqual([]);
     } finally {
+      // The kinds let in whichever step failed, and their take-up run against this row's `send`:
+      // a take-up left waiting stays in the module's `takeUpsWaiting`, and a later row's
+      // `kindsRegistered` would end it and send its writes through that row's own `api.send`.
+      kinds.resolve();
+      await settle();
       send.mockRestore();
       tab.close();
     }
@@ -481,10 +486,11 @@ test("a write pressed before the take-up of a reload's writes waits for it, then
 });
 
 // The take-up ends once the kinds of write are in, whichever load brought them: its own ask can
-// fail with no reload to follow - the page being left, or the tab's recovery reloads spent - and
-// another load of the same chunk then brings them in (the writes host's prefetch), which
-// `kinds.ts` reports once its imports have defined every kind (`kindsRegistered`). The write
-// pressed meanwhile then goes out behind the kept one, as it does after a take-up's own load.
+// fail with no reload to follow - the page being left, the reader staying at the leave prompt a
+// write pressed meanwhile opens, or the tab's recovery reloads spent - and another load of the
+// same chunk then brings them in (the writes host's prefetch), which `kinds.ts` reports once its
+// imports have defined every kind (`kindsRegistered`). The write pressed meanwhile then goes out
+// behind the kept one, as it does after a take-up's own load.
 test("a take-up whose own ask for the kinds of write failed ends once another load registers them, and the write pressed meanwhile goes out behind the kept one", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -522,6 +528,10 @@ test("a take-up whose own ask for the kinds of write failed ends once another lo
       expect(await pressed).toBeNull();
       expect(after.rows()).toEqual([]);
     } finally {
+      // The take-up ended whichever step failed, against this row's `send`, so none is left in
+      // the module's `takeUpsWaiting` for a later row's `kindsRegistered` to end.
+      kindsRegistered();
+      await settle();
       send.mockRestore();
       tab.close();
     }
@@ -559,6 +569,10 @@ test("a write pressed after the take-up's ask for the kinds of write failed asks
       expect(await pressed).toBeNull();
       expect(writes.rows()).toEqual([]);
     } finally {
+      // The take-up ended whichever step failed, against this row's `send`, so none is left in
+      // the module's `takeUpsWaiting` for a later row's `kindsRegistered` to end.
+      kindsRegistered();
+      await settle();
       send.mockRestore();
       tab.close();
     }
@@ -568,8 +582,10 @@ test("a write pressed after the take-up's ask for the kinds of write failed asks
 /** A page whose take-up of what a reload kept waits for the kinds of write, and a write alice
  *  pressed meanwhile (`pressedWhileTakingUp`). */
 interface TakingUp {
-  /** Puts `api.send` back and ends the tab's pages. */
-  readonly end: () => void;
+  /** Lets the kinds of write in, whichever step of the row failed, and waits for the take-up to
+   *  run against this page's `api.send`, so none is left in the module's `takeUpsWaiting` for a
+   *  later row's `kindsRegistered` to end; then puts `api.send` back and ends the tab's pages. */
+  readonly end: () => Promise<void>;
   /** The write pressed meanwhile, as the store held it then. */
   readonly held: Write;
   /** The key of the write the reload kept. */
@@ -612,7 +628,9 @@ async function pressedWhileTakingUp(
   expect(held.status).toBe("queued");
   expect(tab.kept(held.key)).toMatchObject({ login: "alice" });
   return {
-    end: () => {
+    end: async () => {
+      kinds.resolve();
+      await settle();
       send.mockRestore();
       tab.close();
     },
@@ -658,7 +676,7 @@ async function dropsBoth(ways: Readonly<Record<string, (writes: Writes) => void>
       await nothingLeft(name, taking);
       expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
     } finally {
-      taking.end();
+      await taking.end();
     }
   }
 }
@@ -718,7 +736,7 @@ test("another tab's sign-out out when the take-up ends holds the write pressed m
       await nothingLeft("another tab's sign-out", taking);
       expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
     } finally {
-      taking.end();
+      await taking.end();
     }
   });
 });
@@ -761,7 +779,7 @@ test("this page's sign-out pressed while the take-up waits goes out alone once i
       await nothingLeft("this page's sign-out", taking);
       expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
     } finally {
-      taking.end();
+      await taking.end();
     }
   });
 });
@@ -827,7 +845,7 @@ test("a quiet write pressed while the take-up waits is let go five minutes after
       expect(taking.tab.kept(taking.held.key)).toBeUndefined();
       expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
     } finally {
-      taking.end();
+      await taking.end();
     }
   });
 });
@@ -848,7 +866,7 @@ test("a write pressed while the take-up waits and discarded then is never sent, 
       expect(taking.writes.rows()).toEqual([]);
       expect(taking.tab.kept(taking.held.key)).toBeUndefined();
     } finally {
-      taking.end();
+      await taking.end();
     }
   });
 });
@@ -897,7 +915,7 @@ test("a lapse while the take-up waits keeps the write pressed meanwhile and the 
           undefined,
         ]);
       } finally {
-        taking.end();
+        await taking.end();
       }
     }
   });
@@ -923,7 +941,7 @@ test("writes pressed while the take-up's load of the kinds of write is out start
       expect(await taking.pressed).toEqual([null, null]);
       expect(taking.kinds.asked()).toBe(1);
     } finally {
-      taking.end();
+      await taking.end();
     }
   });
 });

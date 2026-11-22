@@ -117,6 +117,14 @@ test("a lazy component whose download fails offline draws once the browser is ba
       expect(await screen.findByText("Hello Ada")).toBeDefined();
       expect(loads).toBe(2);
     } finally {
+      // Sent here too, so a row that fails before the event above leaves no download waiting on
+      // it: that download is under `renderChunk`, and while it is out `chunkLoadsOut` stays above
+      // zero for the rows of other files run after this one. The second load resolves, and an
+      // `online` nothing waits on reaches no listener.
+      await act(async () => {
+        window.dispatchEvent(new Event("online"));
+        await settle();
+      });
       view.unmount();
     }
   });

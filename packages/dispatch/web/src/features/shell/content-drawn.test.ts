@@ -55,6 +55,12 @@ test("a hold ends one frame after the document draws, not before that frame and 
     expect(await settled(drawn)).toBe(true);
   } finally {
     globalThis.requestAnimationFrame = requestFrame;
+    // Whichever step failed, the frames this test held run, and the task after them on the fake
+    // clock, so the hold ends here: a hold left releasing would hang the `afterEach` above on
+    // `whenContentDrawn`, since `contentDrawn` does nothing while a release is under way. A frame
+    // that already ran sets one more release, which finds no hold and does nothing.
+    for (const frame of frames) frame(performance.now());
+    jest.advanceTimersByTime(0);
   }
 });
 
