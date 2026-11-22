@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
+	"github.com/sjawhar/envoy/natsversion"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
@@ -357,8 +358,9 @@ func WithLastError(err error, conn *nats.Conn) error {
 
 // Unreachable reports whether err means NATS is not reachable yet, or not reachable for now: a
 // request made while the connection is cut fails at once with nats.ErrReconnectBufExceeded, since
-// every daemon connection keeps no reconnect buffer (Connect), and the boot waits that cut out as
-// it waits out a server not up yet. It answers false for a misconfiguration
+// every daemon connection keeps no reconnect buffer (Connect), and a read of the server's version
+// made while it is cut answers natsversion.ErrNotConnected at its deadline; the boot waits each cut
+// out as it waits out a server not up yet. It answers false for a misconfiguration
 // — a permission or an authorization violation the server itself refuses, a TLS alert, on the
 // handshake or on a later record (tlsalert.In: a server that demands a client certificate, say, or
 // speaks no TLS version this client does), or a malformed seed (userKey, before any dial is
@@ -380,7 +382,7 @@ func Unreachable(err error) bool {
 	if errors.Is(err, nats.ErrPermissionViolation) || errors.Is(err, nats.ErrAuthorization) || tlsalert.In(err) {
 		return false
 	}
-	if errors.Is(err, nats.ErrNoServers) || errors.Is(err, nats.ErrReconnectBufExceeded) {
+	if errors.Is(err, nats.ErrNoServers) || errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, natsversion.ErrNotConnected) {
 		return true
 	}
 	var opErr *net.OpError
