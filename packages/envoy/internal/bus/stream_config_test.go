@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // capsAnUnsetStream is what a test tells a start (ensureStreamWithConfig) or a keeper pass
@@ -108,10 +109,12 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 	})
 
+	// The outer deadline is the one under test, and the dial it bounds reaches real sockets: the
+	// connect is given it as a real context, and the row asserts it ended with that deadline
+	// rather than with its ten attempts run out.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
-	started := time.Now()
 	go func() {
 		conn, err := connectWithContext(ctx, "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
 		if conn != nil {
@@ -119,16 +122,12 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 		result <- err
 	}()
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("connect unexpectedly succeeded against unresponsive servers")
-		}
-		if elapsed := time.Since(started); elapsed > 6*time.Second {
-			t.Fatalf("connect returned after %s, want the outer five-second deadline", elapsed)
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("connect exceeded the outer deadline while walking NATS URLs")
+	err := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
+	if err == nil {
+		t.Fatal("connect unexpectedly succeeded against unresponsive servers")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", err)
 	}
 }
 

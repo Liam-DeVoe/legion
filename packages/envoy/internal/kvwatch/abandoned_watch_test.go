@@ -115,7 +115,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			w.Start()
 			eventually(t, "the first read's completion", w.Following)
 
-			js, err := jetstream.New(conn)
+			js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 			if err != nil {
 				t.Fatalf("jetstream: %v", err)
 			}

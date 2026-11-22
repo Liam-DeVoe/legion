@@ -129,7 +129,7 @@ func (s recreatedStreams) Stream(ctx context.Context, name string) (jetstream.St
 func anotherBucketsStream(t *testing.T, conn *natsgo.Conn) string {
 	t.Helper()
 	const bucket = "kvwatch-test-other-stream"
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

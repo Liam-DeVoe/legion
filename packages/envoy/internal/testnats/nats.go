@@ -38,6 +38,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testport"
@@ -255,7 +256,7 @@ func deleteStreams(t testing.TB, uri string) {
 	t.Helper()
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Errorf("open JetStream to delete the test's streams: %v", err)
 		return
@@ -1166,6 +1167,40 @@ func waitForJetStream(t testing.TB, check func(context.Context) error) {
 		}
 		bound.pause()
 	}
+}
+
+// MaxWait is the option every legacy JetStream context a test makes takes
+// (conn.JetStream(testnats.MaxWait(t))). nats.go's legacy context bounds each request made without
+// a nats.Context option, a KeyValue operation's among them, by its own wait, five seconds on the
+// wall clock unless natsgo.MaxWait sets another, and a test's requests rarely carry that option.
+// So a server that answers late on a loaded machine, or a relay a reload holds, would fail the
+// test with "nats: timeout" or "context deadline exceeded". With this option such a request waits
+// until testDeadline, the end of every wait of this package on a server's own fact, and with no
+// deadline (-timeout 0) for no bound a test can reach, so a late answer costs the test time and
+// not its result. The same wait is the default expiry of a pull subscription's Fetch and the time
+// a KV watcher waits for its initial values, so neither ends early either. A wait that sends a
+// request again when it draws no answer bounds each send by a step of its own instead (Connect's
+// jetStreamStep): with this option a send the server never answers would hold that wait until the
+// deadline.
+func MaxWait(t testing.TB) natsgo.JSOpt {
+	return natsgo.MaxWait(requestWait(t))
+}
+
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answers late on a loaded machine would fail the test with "context
+// deadline exceeded". With this option such a request waits as long as one of a MaxWait context.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	return jetstream.WithDefaultTimeout(requestWait(t))
+}
+
+// requestWait is how long a request of a context MaxWait or RequestTimeout made waits for its
+// answer: until testDeadline, never under a millisecond (waitEnd.step), and under -timeout 0
+// noDeadline, a day.
+func requestWait(t testing.TB) time.Duration {
+	return boundOf(t).step(noDeadline)
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,
