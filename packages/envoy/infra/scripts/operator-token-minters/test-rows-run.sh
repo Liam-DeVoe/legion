@@ -33,7 +33,11 @@
 #        it, writes that to --report, and exits 2 before any step runs;
 #   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
 #        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
-#        allowances.
+#        allowances;
+#   (co) a credential pasted as an argument, alone or as the value of a flag whose value the script
+#        checks, is a usage error that names the flag or the argument's place and never its text;
+#   (cp) the list of a guarded namespace's token Secrets asks the API server for their names alone,
+#        so no Secret's data reaches the run's work directory or its output.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -330,8 +334,9 @@ allowance_row() {
     not-an-agent)
       run --service-agent "$worker_gsa"
       want_status 2 "--service-agent naming an agent's own account"
-      want_text "operator-token-minters: --service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com, not $worker_gsa" \
+      want_text "operator-token-minters: --service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com; one of its values is not one" \
         "--service-agent naming an agent's own account"
+      ! has_prefix "$worker_gsa" || fail "the usage error printed the value given: $worker_gsa"
       ;;
     written)
       edge_member
@@ -348,4 +353,52 @@ allowance_row() {
 if row cj; then
   each allowance_row not-an-agent written
   passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given, --credentials-arg included, is written into --report"
+fi
+
+# --- (co) A usage error names the flag or the argument's place, never the text given: a token pasted
+# in the wrong place, alone or as a checked flag's value, is printed nowhere. ---
+pasted_canary="eyJhbGciOiJFZERTQSJ9.PASTED-CANARY-5c1e.sig"
+pasted_row() {
+  base_world
+  case "$1" in
+    alone)
+      run "$pasted_canary"
+      want_text "operator-token-minters: argument " "a pasted credential alone"
+      ;;
+    unknown-flag) run "--no-such-flag=$pasted_canary" && want_text "operator-token-minters: unknown flag --no-such-flag" "an unknown flag with a pasted value" ;;
+    *) run "--$1" "$pasted_canary" && want_text "operator-token-minters: --$1 " "--$1 given a pasted credential" ;;
+  esac
+  want_status 2 "a pasted credential ($1)"
+  ! has_prefix "PASTED-CANARY-5c1e" || fail "a usage error ($1) printed the pasted credential"
+}
+if row co; then
+  each pasted_row alone unknown-flag fleet service-agent broker-workload guarded db-secret broker-state
+  passed "(co) a credential pasted as an argument, alone or as a checked flag's value, is a usage error naming the flag or the argument's place and never printing it"
+fi
+
+# --- (cp) The token Secrets are listed by name: no Secret's data is asked for, written to the work
+# directory or printed. The fake kubectl answers a list of Secret objects with each one's data, as a
+# real API server does, records that it was asked, and on each later call looks for that data under
+# the run's work directory; this row runs in a temporary directory of its own, so that look sees
+# this run's work directory alone. ---
+if row cp; then
+  base_world
+  # One in each guarded namespace: the shell empties a redirect's file before kubectl runs, so the
+  # list's file in the work directory holds the last namespace's Secrets when later calls look.
+  jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
+    >"$world/clusters/operator-cluster/token-secrets.json"
+  : >"$world/clusters/operator-cluster/token-secret-data"
+  own_tmp="$temporary_dir/cp-tmp"
+  mkdir -p "$own_tmp"
+  mapfile -t cp_args < <(full_args)
+  status=0
+  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$own_tmp" bash "$check" "${cp_args[@]}" 2>&1)" || status=$?
+  cp_failures=""
+  [ ! -e "$world/clusters/operator-cluster/secret-data-asked" ] ||
+    cp_failures+="the check asked the API server for token Secrets whole, data included: $(tr '\n' ';' <"$world/clusters/operator-cluster/secret-data-asked") "
+  [ ! -e "$world/clusters/operator-cluster/secret-data-in-work" ] ||
+    cp_failures+="a token Secret's data was in the run's work directory: $(sort -u "$world/clusters/operator-cluster/secret-data-in-work" | sed "s|^$own_tmp/||" | tr '\n' ' ') "
+  ! has_prefix "SECRET-DATA-CANARY-7f3a" || cp_failures+="the check printed a token Secret's data "
+  [ -z "$cp_failures" ] || fail "$cp_failures"
+  passed "(cp) the token Secrets of a guarded namespace are listed by name: no Secret's data is asked for, kept in the work directory or printed"
 fi

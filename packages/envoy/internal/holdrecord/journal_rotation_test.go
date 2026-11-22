@@ -35,19 +35,6 @@ func rotationRows(t *testing.T) {
 		}
 	}
 	keepAll := func(string, string) bool { return true }
-	// listingClient is the operator's client after step 1 rolled the new key out to every command
-	// that verifies the hold's rows: it signs with the rig's key, the new one, and verifies against
-	// it and old.
-	listingClient := func(t *testing.T, r rig, old ed25519.PublicKey) *holdrecord.Client {
-		t.Helper()
-		cfg := r.Config()
-		cfg.VerifyKeys = append(cfg.VerifyKeys, old)
-		c, err := holdrecord.New(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return c
-	}
 
 	t.Run("ROT4: a routine rotation on a mixed history, step 4 as written: the row restored only when the read listed it", func(t *testing.T) {
 		// h-old ran under the old key; steps 1 and 2 moved signing to the new key, and h-new ran
@@ -145,4 +132,18 @@ func rotationRows(t *testing.T) {
 		}
 		afterStep4(t, r)
 	})
+}
+
+// listingClient is the operator's client after step 1 rolled the new key out to every command that
+// verifies the hold's rows: it signs with the rig's key, the new one, and verifies against it and
+// old.
+func listingClient(t *testing.T, r rig, old ed25519.PublicKey) *holdrecord.Client {
+	t.Helper()
+	cfg := r.Config()
+	cfg.VerifyKeys = append(cfg.VerifyKeys, old)
+	c, err := holdrecord.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }

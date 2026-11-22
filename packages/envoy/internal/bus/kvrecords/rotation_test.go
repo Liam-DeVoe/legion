@@ -2,6 +2,7 @@ package kvrecords_test
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,20 +18,22 @@ import (
 
 // copiesRead is infra/README.md's read of the records-only copies a key signed ("Rotating the hold
 // signing key", step 3), with <old> the key's id and <copies> the directory the operator keeps the
-// copies under: it counts the copies first and stops, naming the directory, when it holds none;
-// otherwise it lists each copy whose manifest.sig opens with the key's id and a dot, or holds no
-// dot (written before signatures named their key).
+// copies under: it counts the copies first and, when the directory holds none, says so on stderr,
+// naming the directory, and exits 1; otherwise it lists each copy whose manifest.sig opens with the
+// key's id and a dot, or holds no dot (written before signatures named their key).
 const copiesRead = `count=$(find <copies> -name manifest.sig | wc -l)
-if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; else grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>; fi`
+if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; exit 1; else grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>; fi`
 
 // The hold's records-only copies are signed with the operator's hold key, so a key rotation reads
 // them too: infra/README.md's read, run as written over a directory of copies, lists the copy the
-// old key signed and one written before signatures named their key, and not the new key's copy;
-// run over a directory that holds no copy, it says so, naming the directory, rather than print
-// nothing, which reads as no copy the old key signed; and the old key's copy stops reading once
-// that key leaves the list, naming its id. Fails while the README's step 3 reads only the five
-// tables, as at e481b26500, or reads the copies with no count, as at 886868daac (a wrong
-// directory prints nothing), or with a read that misses copies with no key id.
+// old key signed and one written before signatures named their key, and not the new key's copy,
+// and exits 0; run over a directory that holds no copy, it says so, naming the directory, and exits
+// 1, so neither a person nor a script that reads stdout or the exit status takes it for a directory
+// with no copy the old key signed; and the old key's copy stops reading once that key leaves the
+// list, naming its id. Fails while the README's step 3 reads only the five tables, as at
+// e481b26500, or reads the copies with no count, as at 886868daac (a wrong directory prints
+// nothing), or exits 0 over an empty directory, as at a0a2c7622f, or with a read that misses copies
+// with no key id.
 func TestTheRotationReadFindsTheCopiesTheOldKeySigned(t *testing.T) {
 	readme, err := os.ReadFile("../../../infra/README.md")
 	require.NoError(t, err)
@@ -74,9 +77,11 @@ func TestTheRotationReadFindsTheCopiesTheOldKeySigned(t *testing.T) {
 		"the read by the old key's id lists the old key's copy and the copy with no key id, and not the new key's")
 
 	empty := t.TempDir()
-	said, _ := read(empty).CombinedOutput()
+	said, err := read(empty).CombinedOutput()
 	require.Contains(t, string(said), "no manifest.sig under "+empty+": not the records-only copies' directory",
 		"the read over a directory with no copy prints %q; want it to say the directory holds none", said)
+	var exit *exec.ExitError
+	require.True(t, errors.As(err, &exit) && exit.ExitCode() == 1, "the read over a directory with no copy exited with %v; want exit status 1", err)
 
 	_, _, err = kvrecords.Read(oldCopy, bucket, r.keys, oldManifest.ManifestSHA256)
 	var unlisted *signedrecord.UnlistedKeyError

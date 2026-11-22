@@ -34,16 +34,21 @@ else
   # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its
   # ServiceAccount's token. Those a guarded pair's ServiceAccount lists (its `secrets`), and every
   # one the namespace's list of that type holds, whichever ServiceAccount it names; a refused list
-  # is UNKNOWN.
+  # is UNKNOWN. The list asks for the Secrets' names alone (a jsonpath of .metadata.name), so no
+  # Secret's data is fetched, written to $WORK or printed: the check requests no credential.
   : >"$WORK/token-secrets.tsv"
   jq -r '.items[]? | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
     | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"
   for guarded_ns in $(printf '%s\n' "${GUARDED[@]%%/*}" | sort -u); do
-    if ! kubectl --kubeconfig "$KUBE" get secrets -n "$guarded_ns" --field-selector type=kubernetes.io/service-account-token -o json \
-      >"$WORK/token-secrets.json" 2>"$WORK/token-secrets.err"; then
+    if ! kubectl --kubeconfig "$KUBE" get secrets -n "$guarded_ns" --field-selector type=kubernetes.io/service-account-token \
+      -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' >"$WORK/token-secret-names.txt" 2>"$WORK/token-secrets.err"; then
       unknown "$step" "the API server refused the list of token Secrets in $guarded_ns (it needs list on secrets there, container.secrets.list on GKE), so a token Secret no ServiceAccount lists is not asked by name: $(first_line "$WORK/token-secrets.err")"
-    elif ! jq -r --arg ns "$guarded_ns" '.items[]? | [$ns, .metadata.name] | @tsv' "$WORK/token-secrets.json" >>"$WORK/token-secrets.tsv" 2>"$WORK/token-secrets.err"; then
-      unknown "$step" "the API server's list of token Secrets in $guarded_ns is not JSON: $(first_line "$WORK/token-secrets.err")"
+    elif grep -qvE '^([a-z0-9]([-.a-z0-9]*[a-z0-9])?)?$' "$WORK/token-secret-names.txt"; then
+      unknown "$step" "the API server's list of token Secrets in $guarded_ns holds a line that is no Kubernetes name"
+    else
+      while IFS= read -r secret_name; do
+        [ -z "$secret_name" ] || printf '%s\t%s\n' "$guarded_ns" "$secret_name" >>"$WORK/token-secrets.tsv"
+      done <"$WORK/token-secret-names.txt"
     fi
   done
   rights="$(with_rights "$rights" "$(jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], n: .[1]}] | unique[]

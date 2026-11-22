@@ -23,7 +23,7 @@ import (
 )
 
 // NATSHold is what the NATS writer hold's routes need: the tables they write
-// (internal/cipher/natshold, migration 0041_nats_hold), the operator's public keys every write
+// (internal/cipher/natshold, migration 0042_nats_hold), the operator's public keys every write
 // must be signed by, and the one caller they admit, the operator entry of BROKER_NATS_SERVICES.
 // The routes are the only writer of those tables a deployment runs: the operator's commands
 // (envoy-infra hold, through internal/holdrecord) call them, and the auth service reads the hold
@@ -361,8 +361,12 @@ func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time, log []natsh
 
 // verifiedLogEntry reports whether a key of BROKER_NATS_HOLD_SIGNING_KEYS signed e, the row a log
 // entry carries.
-func (s *server) verifiedLogEntry(e natshold.LogEntry) bool {
-	return signedrecord.Verify(s.deps.NATSHold.Keys, e.Sig, signedrecord.HoldRow(e.Gen, e.Phase, e.HoldID, e.SignedAt)) == nil
+func (s *server) verifiedLogEntry(e natshold.LogEntry) bool { return s.logEntryVerified(e) == nil }
+
+// logEntryVerified is signedrecord.Verify's answer for e, the row a log entry carries, against
+// BROKER_NATS_HOLD_SIGNING_KEYS: nil when a listed key signed it.
+func (s *server) logEntryVerified(e natshold.LogEntry) error {
+	return signedrecord.Verify(s.deps.NATSHold.Keys, e.Sig, signedrecord.HoldRow(e.Gen, e.Phase, e.HoldID, e.SignedAt))
 }
 
 // latestSigned is the log entry with the latest signing time among those that verify, and false
