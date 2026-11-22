@@ -107,7 +107,7 @@ import (
 // (design_news_credit_test.go) pins it.
 //
 // With no variable set it runs newsModelCISeed and newsModelReplacementSeed for 40 steps each, a few
-// seconds: a seed whose run reaches eighteen of the twenty kinds of step and that each of the
+// seconds: a seed whose run reaches eighteen of the nineteen kinds of step and that each of the
 // record's rules, put back wrong one at a time, fails (newsModelCISeed says how that was read), and a
 // seed that fails where a running turn's task is replaced by a step that cannot replace it
 // (newsModelReplacementSeed). LEGION_NEWS_MODEL_SEED runs one seed,
@@ -151,22 +151,24 @@ func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
 }
 
 // newsModelCISeed is the seed the model test runs where no variable names one. Its 40 steps reach
-// eighteen of the twenty kinds of step — all but the provider error's ladder and the restart — the
-// two hand-overs, a re-entry and the root architect's narrowed task among them, and the run fails
-// under each of the seven rules the record keeps put back wrong one at a time (a credit
-// counted in any run, a credit reaching from any version, a fold that keeps no unreached credit, a
-// read that counts no standing credit, a fold before the turn's result, a carried opening that
-// clears any opening, and a narrowed root task that keeps the news it held). Read from runs of seeds
-// 1 to 100 at 40 steps: unmutated with -v, which prints the kinds each seed's drive chose
-// (newsModel.kinds), and under each of the seven. 91 of those seeds failed under all seven, no seed
-// reached all twenty kinds, and 35 is one of the five that fail under all seven and reach eighteen.
-const newsModelCISeed = 35
+// eighteen of the nineteen kinds of step — all but the restart — the two hand-overs, a re-entry and
+// the root architect's narrowed task among them, and the run fails under each of the seven rules
+// the record keeps put back wrong one at a time (a credit counted in any run, a credit reaching from
+// any version, a fold that keeps no unreached credit, a read that counts no standing credit, a fold
+// before the turn's result, a carried opening that clears any opening, and a narrowed root task
+// that keeps the news it held). Read from runs of seeds 1 to 100 at 40 steps, made on 2026-11-22 by
+// the builds Jobs at cf33de38: unmutated with -v, which prints the kinds each seed's drive chose
+// (newsModel.kinds), where every seed passed, and under each of the seven. 92 of those seeds failed
+// under all seven, no seed reached all nineteen kinds, and 43 is the lower of the two that reach
+// eighteen, 43 and 90, both of which fail under all seven.
+const newsModelCISeed = 43
 
 // newsModelReplacementSeed is the second seed the model test runs where no variable names one: the
 // seed whose run fails when supervise's refusal to let a task of news alone take a running turn's
-// place (Machine.queue) is deleted, which newsModelCISeed's run does not reach. Read from runs of
-// seeds 1 to 40 at 40 steps with that refusal deleted: seed 5 alone failed, at its step 7, and every
-// seed of 1 to 100 passes with it in place.
+// place (Machine.queue) is deleted, which newsModelCISeed's run does not reach (seed 43 passes with
+// it deleted). Read from runs of seeds 1 to 40 at 40 steps with that refusal deleted, made on
+// 2026-11-22 by the builds Jobs at cf33de38: seed 5 is the lowest of the five that failed (5, 12,
+// 19, 20 and 27), and it fails at its step 7; every seed of 1 to 100 passes with the refusal in place.
 const newsModelReplacementSeed = 5
 
 // errModelWrite is a write the model's claim store refused (newsModelStore).
