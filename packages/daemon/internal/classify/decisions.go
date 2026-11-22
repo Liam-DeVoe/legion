@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -1323,8 +1322,11 @@ func MergeComesNext(issue record.Issue, line []phase.Phase) bool {
 	case phase.Retro, phase.Merging:
 		return true
 	case phase.Accepting:
-		at := slices.Index(line, phase.Accepting)
-		return at >= 0 && at+1 < len(line) && line[at+1] == phase.Retro
+		for at, p := range line {
+			if p == phase.Accepting {
+				return at+1 < len(line) && line[at+1] == phase.Retro
+			}
+		}
 	}
 	return false
 }
