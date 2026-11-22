@@ -76,14 +76,20 @@ type cleanupTarget struct {
 //
 // It reads every store before it deletes anything: a store a family needs that no flag names
 // refuses the run (Dispatch's, and each daemon's that the broker's cutover rows or
-// --daemon-database name), and a reading that is not whole is UNKNOWN; either way nothing is
-// deleted. It does not use selection.Names.Cleanup, which runs Step 0 on a record's open
+// --daemon-database name, a retired project's among them), and a reading that is not whole is
+// UNKNOWN; either way nothing is deleted. It reads each daemon's store by the census's rule for
+// the daemon stores (cleanupDaemonStores), at exactly the address the project's one source names:
+// a store there whose database does not exist (SQLSTATE 3D000) is gone and holds no record to
+// clean, so cleanup names it and goes on, and a broker cutover row naming a dropped project, which
+// no command removes, does not stop every later cleanup; a store the rule leaves unreconciled is
+// UNKNOWN. It does not use selection.Names.Cleanup, which runs Step 0 on a record's open
 // operation (a creator's protocol, whose owner may be the process the hold stopped) and refuses a
 // store whose marker is not done, so it could not clean the names a rollback retired.
 //
 // Its intent is its admission, after the held re-read; it runs the re-read again before its first
 // delete. Its done entry names each consumer it deleted (deleted), how many records held a retired
-// name (records) and how many names it dropped from them (dropped). Every exit after its intent,
+// name (records), how many names it dropped from them (dropped) and each daemon store it found
+// gone (gone.<family>, daemonGoneText). Every exit after its intent,
 // a refusal, an UNKNOWN, the re-read's and a done entry whose write failed, writes its stop, which
 // records what every run of the command in this hold left (admission.stopped): nothing while no
 // run deleted a name, wrote a record or put this hold's barrier key (cleanupSessionTargets puts
@@ -112,7 +118,11 @@ func (r *run) cleanup(ctx context.Context) error {
 		}
 	}
 	if len(unnamed) > 0 {
-		return a.stopped(ctx, fmt.Errorf("cleanup reads every family's store before it deletes a name, and no flag names the store of %s (--dispatch-database-file, --daemon-database <project>=<file>)", strings.Join(unnamed, ", ")), true, nothing)
+		return a.stopped(ctx, fmt.Errorf("cleanup reads every family's store before it deletes a name, and no flag names the store of %s (--dispatch-database-file, --daemon-database <project>=<file>; a retired or dropped project's cutover row needs its file too, where the census's rule finds its store gone)", strings.Join(unnamed, ", ")), true, nothing)
+	}
+	gone, err := r.cleanupDaemonStores(ctx, families)
+	if err != nil {
+		return a.stopped(ctx, err, true, nothing)
 	}
 	nc, _, err := r.conn(ctx)
 	if err != nil {
@@ -124,6 +134,9 @@ func (r *run) cleanup(ctx context.Context) error {
 	}
 	r.read("the records of " + selectionStreamName + " behind the bucket barrier")
 	for _, family := range families {
+		if _, ok := gone[family]; ok {
+			continue
+		}
 		more, err := r.cleanupPGTargets(ctx, family)
 		if err != nil {
 			return a.stopped(ctx, err, true, nothing)
@@ -161,6 +174,9 @@ func (r *run) cleanup(ctx context.Context) error {
 	}
 	r.read("each record that holds a retired name, and the server's answer for each of those names")
 	outputs := map[string]string{"records": strconv.Itoa(len(targets)), "deleted": namesOrNone(deletedAll), "dropped": strconv.Itoa(droppedAll)}
+	for family, why := range gone {
+		outputs["gone."+family] = why
+	}
 	if err := a.done(ctx, outputs); err != nil {
 		return a.stopped(ctx, err, len(deletedAll) == 0 && droppedAll == 0,
 			fmt.Sprintf("this run deleted %s and dropped %d retired names from their records", namesOrNone(deletedAll), droppedAll))
@@ -194,8 +210,7 @@ func (r *run) cleanupGone(ctx context.Context) error {
 		return err
 	}
 	const nothing = "this run removed no consumer"
-	store, closeStore, err := r.daemonStoreByRule(ctx, project)
-	defer closeStore()
+	store, err := r.daemonStoreByRule(ctx, project)
 	switch {
 	case err != nil:
 		return a.stopped(ctx, err, true, nothing)
@@ -249,28 +264,87 @@ func (r *run) cleanupGone(ctx context.Context) error {
 	return nil
 }
 
-// daemonStoreByRule is project's daemon store as the census's rule for the daemon stores reads it
-// (censusReadDaemonStores), at exactly the address the project's one source names, its Deployment
-// or its entry of the retired projects' ConfigMap, which it reads with the hold's own Kubernetes
-// client (writerhold.KubeDaemonDeployments), from the file --daemon-database names: read, gone, or
-// unreconciled and why, for its caller to tell apart; and a close of what it opened, which the
-// caller runs, error or not. A listing it cannot read, or a rule that reads other than one store,
-// is UNKNOWN.
-func (r *run) daemonStoreByRule(ctx context.Context, project string) (censusDaemonRead, func(), error) {
-	family := daemonFamily(project)
+// cleanupDaemonStores reads the store of each daemon family of families by the census's rule for
+// the daemon stores (daemonStoresByRule), before cleanup deletes anything: a store the rule reads
+// is the run's database of its family, which cleanupPGTargets lists; a store the rule finds gone
+// holds no record to clean, and is answered, family to why (daemonGoneText), and printed; a store
+// the rule leaves unreconciled, and a listing of the sources it cannot read, are UNKNOWN, naming
+// each, so cleanup deletes nothing.
+func (r *run) cleanupDaemonStores(ctx context.Context, families []string) (map[string]string, error) {
+	stores, err := r.daemonStoresByRule(ctx, families)
+	if err != nil {
+		return nil, err
+	}
+	gone := map[string]string{}
+	var unreconciled []string
+	for _, s := range stores {
+		family := daemonFamily(s.project)
+		switch {
+		case s.unreconciled != "":
+			unreconciled = append(unreconciled, fmt.Sprintf("%s's store: %s", family, s.unreconciled))
+		case s.gone != nil:
+			gone[family] = daemonGoneText(*s.gone)
+			fmt.Fprintf(r.stdout, "cleanup %s: store gone: %s; it holds no record to clean\n", family, gone[family])
+		}
+	}
+	if len(unreconciled) > 0 {
+		return nil, unknownf(nil, "the daemon stores, by the census's rule for them, so cleanup deletes nothing: %s", strings.Join(unreconciled, "; "))
+	}
+	r.read("the daemon stores, each at the address its one source names")
+	return gone, nil
+}
+
+// daemonStoresByRule reads, by the census's rule for the daemon stores (censusReadDaemonStores),
+// the store of each daemon family of families (daemon/<project key>) from the file its
+// --daemon-database entry names, at exactly the address the project's one source names, its
+// Deployment or its entry of the retired projects' ConfigMap, which it lists once with the hold's
+// own Kubernetes client (writerhold.KubeDaemonDeployments): each read, gone, or unreconciled and
+// why, for its caller to tell apart; a family no entry names is unreconciled. A store the rule read
+// becomes the run's database of its family (database), so the command reads and writes it at the
+// address the rule checked, never through a second pool on the file; what the rule opened closes
+// when the run ends (close). A listing it cannot read is UNKNOWN.
+func (r *run) daemonStoresByRule(ctx context.Context, families []string) ([]censusDaemonRead, error) {
 	op, err := r.operatorHub(ctx)
 	if err != nil {
-		return censusDaemonRead{}, func() {}, unknownf(err, "the daemon stores' addresses")
+		return nil, unknownf(err, "the daemon stores' addresses")
 	}
-	file, _ := r.o.daemonDatabase(project)
-	stores, closeStores, err := censusReadDaemonStores(ctx, writerhold.KubeDaemonDeployments(op.Hub.Client), []string{family}, []string{project + "=" + file})
+	var entries []string
+	for _, family := range families {
+		if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
+			if file, ok := r.o.daemonDatabase(project); ok {
+				entries = append(entries, project+"="+file)
+			}
+		}
+	}
+	stores, closeStores, err := censusReadDaemonStores(ctx, writerhold.KubeDaemonDeployments(op.Hub.Client), families, entries)
+	r.closeDatabases = append(r.closeDatabases, closeStores)
+	if err != nil {
+		return nil, unknownf(err, "the daemon stores, each at the address its Deployment or its entry of %s names", retiredStoresSource)
+	}
+	for _, s := range stores {
+		if s.db == nil || s.gone != nil || s.unreconciled != "" {
+			continue
+		}
+		if r.databases == nil {
+			r.databases = map[string]Database{}
+		}
+		r.databases[daemonFamily(s.project)] = s.db
+	}
+	return stores, nil
+}
+
+// daemonStoreByRule is project's daemon store as daemonStoresByRule reads it: read, gone, or
+// unreconciled and why. A rule that reads other than one store is UNKNOWN.
+func (r *run) daemonStoreByRule(ctx context.Context, project string) (censusDaemonRead, error) {
+	family := daemonFamily(project)
+	stores, err := r.daemonStoresByRule(ctx, []string{family})
 	switch {
 	case err != nil:
-		return censusDaemonRead{}, closeStores, unknownf(err, "%s's store, at the address its Deployment or its entry of %s names", family, retiredStoresSource)
+		return censusDaemonRead{}, err
 	case len(stores) != 1:
-		return censusDaemonRead{}, closeStores, unknownf(nil, "%s's store: the census's rule read %d stores, not one", family, len(stores))
+		return censusDaemonRead{}, unknownf(nil, "%s's store: the census's rule read %d stores, not one", family, len(stores))
 	}
-	return stores[0], closeStores, nil
+	return stores[0], nil
 }
 
 // daemonGoneText names a daemon store the census's rule found gone, as cleanup --gone and status

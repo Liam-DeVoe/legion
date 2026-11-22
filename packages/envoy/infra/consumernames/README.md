@@ -56,7 +56,7 @@ These are `writerhold.HubFlags`, the flags `envoy-infra hold` and `envoy-infra b
 | `--verify-keys K` | none | every command: `BROKER_NATS_HOLD_SIGNING_KEYS`, the keys every row and record is verified under |
 | `--nats URL` | none | every command, once for each of the hub's client URLs |
 | `--signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing` | none | every command but `status` |
-| `--kube-namespace`, `--statefulset`, `--configmap` | `envoy`, `envoy-nats`, `envoy-nats-config` | every held command: the hub's Kubernetes objects, reached through the in-cluster configuration or KUBECONFIG's, beside the Compute API; `cleanup --gone` and `enroll` read the daemon stores' addresses through the same client (the Deployments of namespace `legion` and the ConfigMap `envoy-operator/envoy-operator-retired-stores`; [The daemon stores' addresses](#the-daemon-stores-addresses)), and so does `status` for a daemon store whose database answers that it does not exist |
+| `--kube-namespace`, `--statefulset`, `--configmap` | `envoy`, `envoy-nats`, `envoy-nats-config` | every held command: the hub's Kubernetes objects, reached through the in-cluster configuration or KUBECONFIG's, beside the Compute API; `cleanup`, `cleanup --gone` and `enroll` read the daemon stores' addresses through the same client (the Deployments of namespace `legion` and the ConfigMap `envoy-operator/envoy-operator-retired-stores`; [The daemon stores' addresses](#the-daemon-stores-addresses)), and so does `status` for a daemon store whose database answers that it does not exist |
 | `--probe-token-file F` | none | `restore --finish`, which refuses to run without it: the hold probe's token |
 
 Their values are the ones `envoy-infra hold` takes. `--minters-report` is accepted, as every
@@ -75,8 +75,9 @@ store whose database answers that it does not exist.
 
 Each line is read with its surrounding white space cut. A file whose first line is empty is
 refused, naming the flag; the URL is never echoed. Every command opens the URL on the first line.
-Only `envoy-infra streams census` and `cleanup --gone` read the second line, to check the store
-against the one source of its address (below), so a file of one line serves every other command.
+Only `envoy-infra streams census`, `cleanup` and `cleanup --gone` read the second line of a
+daemon's file, to check the store against the one source of its address (below), so a file of one
+line serves every other command.
 Below, `<store flags>` stands for `--dispatch-database-file` and one `--daemon-database` for each
 daemon:
 
@@ -108,12 +109,12 @@ A key of neither form makes every reading of the addresses fail, naming the key,
 read of the ConfigMap that Kubernetes refuses. A ConfigMap that does not exist holds no retired
 project.
 
-`envoy-infra streams census` and `cleanup --gone` read a daemon's store only at the address its one
-source names, and `status` calls a store gone only at that address: the address rule. The store is
-unreconciled, and none of them reads it, unless exactly one source names the project, a Deployment
-or a retired project's entry and never both, that source names both the database and the instance,
-no other source names the same database on the same instance, the `--daemon-database` file's URL
-names that database, and the file's second line is that instance.
+`envoy-infra streams census`, `cleanup` and `cleanup --gone` read a daemon's store only at the
+address its one source names, and `status` calls a store gone only at that address: the address
+rule. The store is unreconciled, and none of them reads it, unless exactly one source names the
+project, a Deployment or a retired project's entry and never both, that source names both the
+database and the instance, no other source names the same database on the same instance, the
+`--daemon-database` file's URL names that database, and the file's second line is that instance.
 Each refusal names the project and the source: `Deployment legion/<name>` or `ConfigMap
 envoy-operator/envoy-operator-retired-stores`. At that address, a server that answers SQLSTATE
 3D000 (the database does not exist) makes the store gone. Every other answer leaves it
@@ -596,14 +597,19 @@ created and each marker it set; a rerun goes on from the phase each record holds
 
 `cleanup --hold ID [--final] <hold flags> <store flags>`, in a `consumer-cleanup` hold. It reads
 every store before it deletes anything: the bucket, Dispatch's table, and each daemon's that a
-broker cutover row or `--daemon-database` names. A store no flag names stops it, recorded
-`unchanged`; a malformed value in the bucket is UNKNOWN, and it deletes nothing, its stop
-recording `unknown: ...` and naming the barrier key it put. It deletes each retired name the
-server holds and the record does not still select (its current, its open operation's candidate
-or old name), and drops from the record each retired name the server reports absent. It deletes
-no name by a pattern. It prints `cleanup F K: deleted [...], dropped from retired [...]` for each
-record it changed, then `cleanup: N records with retired names, D names deleted, X dropped from
-retired`. A delete or a write that failed stops it, recording what it deleted.
+broker cutover row or `--daemon-database` names. So it needs a `--daemon-database` file for every
+daemon row the cutover records, a retired or dropped project's too: a store no flag names stops
+it, naming each such row, recorded `unchanged`. It reads each daemon's store by the address rule:
+a store gone at its address holds no record to clean, and it prints `cleanup daemon/P: store gone:
+<why>; it holds no record to clean` and goes on, its done entry naming it (`gone.daemon/P`); a
+store the rule leaves unreconciled is UNKNOWN. A malformed value in the bucket is UNKNOWN too, and
+it deletes nothing, its stop recording `unknown: ...` and naming the barrier key it put. It
+deletes each retired name the server holds and the record does not still select (its current, its
+open operation's candidate or old name), and drops from the record each retired name the server
+reports absent. It deletes no name by a pattern. It prints `cleanup F K: deleted [...], dropped
+from retired [...]` for each record it changed, then `cleanup: N records with retired names, D
+names deleted, X dropped from retired`. A delete or a write that failed stops it, recording what
+it deleted.
 
 ### `cleanup --gone`
 

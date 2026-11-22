@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -58,7 +60,10 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	require.NoError(t, err)
 	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	dispatch := pgFamilyOf(t, familyDispatch, h.database(familyDispatch, dispatchMigrations...))
-	daemon := pgFamilyOf(t, daemonFamily("PROJ"), h.database(daemonFamily("PROJ"), daemonMigrations...))
+	daemonPool := h.database(daemonFamily("PROJ"), daemonMigrations...)
+	daemon := pgFamilyOf(t, daemonFamily("PROJ"), daemonPool)
+	// cleanup reads each daemon store by the census's rule, at the address its Deployment names.
+	projFile := "PROJ=" + h.censusDaemonDeployed("PROJ", daemonPool)
 	write := func(store selection.Store, logical string, record selection.Record) {
 		t.Helper()
 		_, err := store.Write(ctx, logical, record, 0)
@@ -105,7 +110,7 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	nc, _ = h.operator()
 	require.Contains(t, censusConsumers(t, nc), sessionRetired, "a refused cleanup deleted a name")
 
-	code, stdout, stderr := h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url")
+	code, stdout, stderr := h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", projFile)
 	require.Equal(t, 0, code, "%s", stderr)
 	require.Contains(t, stdout, "cleanup: 5 records with retired names, 3 names deleted, 5 dropped from retired")
 	nc, _ = h.operator()
@@ -133,12 +138,12 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	require.False(t, journal.Complete, "a run with no --final completed the hold's record")
 	require.ErrorContains(t, h.release(id), "the record is not complete", "hold release before a run with --final")
 
-	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url")
+	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", projFile)
 	require.Equal(t, 0, code, "%s", stderr)
 	require.Contains(t, stdout, "cleanup: 1 records with retired names, 0 names deleted, 0 dropped from retired")
 	require.Equal(t, "none", h.lastEntry(id, "consumer-names cleanup").Outputs["deleted"], "the second run's done entry names no deletion")
 
-	code, _, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url", "--final")
+	code, _, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", projFile, "--final")
 	require.Equal(t, 0, code, "%s", stderr)
 	journal = h.journal(id)
 	last := journal.Ops[len(journal.Ops)-1]
@@ -146,6 +151,102 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	require.True(t, journal.Complete, "the run with --final completes the hold's record")
 	require.NoError(t, h.release(id), "hold release after the run with --final")
 	require.Equal(t, "released", string(h.row().Phase))
+}
+
+// Plain cleanup reads each daemon store by the census's rule for the daemon stores, at exactly the
+// address the project's one source names, and skips a store the rule finds gone (SQLSTATE 3D000
+// there): it names the store gone in its output and in its done entry, and deletes every other
+// family's retired names. So a broker cutover row naming a dropped project, which no command
+// removes, does not stop every later cleanup: before cleanup --gone --final and after it, in a
+// later hold. Without the gone store's file it refuses, naming the flag, as the census does; a
+// store the rule leaves unreconciled (a file that reaches another database than its Deployment
+// names) is UNKNOWN, and cleanup deletes nothing. Control: de92b5a02e's cleanup, which opens the
+// file's URL and stops UNKNOWN on the 3D000 (exit 2), in this hold and in every later one.
+func TestPlainCleanupSkipsAGoneDaemonStore(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	id := h.cleanupHold()
+	server := h.database(familyDispatch, dispatchMigrations...)
+	const logical = "legion-go-LIVE-github"
+	const liveCurrent, liveRetired, liveRetiredLater = "legion-go-LIVE-github~cleanupGoneLiveAAA", "legion-go-LIVE-github~cleanupGoneLiveBBB",
+		"legion-go-LIVE-github~cleanupGoneLiveCCC"
+	livePool := h.database(daemonFamily("LIVE"), daemonMigrations...)
+	live := pgFamilyOf(t, daemonFamily("LIVE"), livePool)
+	liveFile := "LIVE=" + h.censusDaemonDeployed("LIVE", livePool)
+	nc, _ := h.operator()
+	for _, name := range []string{liveCurrent, liveRetired} {
+		cleanupPull(t, nc, name, logical)
+	}
+	_, err := live.Write(ctx, logical, selection.Record{Current: liveCurrent, Start: 2, Retired: []string{liveRetired}}, 0)
+	require.NoError(t, err)
+	dropped := censusDroppedDatabase()
+	h.censusDeploy(censusDeployment("GONE", dropped, censusInstance))
+	gone := censusStoreFileFor(t, "GONE", server, dropped, censusInstance)
+	// The real env opens the file's URL (openDatabase); the stack's env hands over h.dbs, so it is
+	// given a pool on the same URL, which de92b5a02e's cleanup reads.
+	raw, err := os.ReadFile(strings.TrimPrefix(gone, "GONE="))
+	require.NoError(t, err)
+	url, _, _ := strings.Cut(string(raw), "\n")
+	gonePool, err := pgxpool.New(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(gonePool.Close)
+	h.mu.Lock()
+	h.dbs[daemonFamily("GONE")] = gonePool
+	h.mu.Unlock()
+	for _, family := range []string{familySession, familyDispatch, daemonFamily("LIVE"), daemonFamily("GONE")} {
+		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)
+		require.NoError(t, err)
+	}
+	consumers := func() []string {
+		nc, _ := h.operator()
+		return censusConsumers(t, nc)
+	}
+
+	code, _, stderr := h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", liveFile)
+	require.Equal(t, 1, code, "with no file for daemon/GONE: %s", stderr)
+	require.Contains(t, stderr, "no flag names the store of daemon/GONE")
+	require.Contains(t, consumers(), liveRetired, "a refused cleanup deleted a name")
+
+	code, stdout, stderr := h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", liveFile, "--daemon-database", gone)
+	require.Equal(t, 0, code, "cleanup beside a gone store: %s%s", stdout, stderr)
+	require.Contains(t, stdout, "cleanup daemon/GONE: store gone: database "+dropped+" on instance "+censusInstance)
+	require.NotContains(t, consumers(), liveRetired, "cleanup left daemon/LIVE's retired name")
+	require.Contains(t, consumers(), liveCurrent)
+	done := h.lastEntry(id, "")
+	require.Equal(t, "consumer-names cleanup done", done.Command+" "+done.State)
+	require.Equal(t, liveRetired, done.Outputs["deleted"])
+	require.Contains(t, done.Outputs["gone.daemon/GONE"], "database "+dropped+" on instance "+censusInstance)
+	require.Contains(t, done.Outputs["gone.daemon/GONE"], "SQLSTATE 3D000")
+
+	// A store the rule leaves unreconciled is UNKNOWN: GONE's file reaches another database than
+	// its Deployment names.
+	elsewhere := censusStoreFileFor(t, "GONE", server, "cnames_elsewhere", censusInstance)
+	nc, _ = h.operator()
+	cleanupPull(t, nc, liveRetiredLater, logical)
+	record, revision, err := live.Read(ctx, logical)
+	require.NoError(t, err)
+	record.Retired = []string{liveRetiredLater}
+	_, err = live.Write(ctx, logical, record, revision)
+	require.NoError(t, err)
+	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", liveFile, "--daemon-database", elsewhere)
+	require.Equal(t, 2, code, "cleanup beside an unreconciled store: %s%s", stdout, stderr)
+	require.Contains(t, stderr, `reaches database "cnames_elsewhere"`)
+	require.Contains(t, consumers(), liveRetiredLater, "cleanup beside an unreconciled store deleted a name")
+
+	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--gone", "GONE", "--daemon-database", gone, "--final")
+	require.Equal(t, 0, code, "cleanup --gone GONE --final: %s%s", stdout, stderr)
+	require.NoError(t, h.release(id))
+	row, ok := h.cutoverRow(daemonFamily("GONE"))
+	require.True(t, ok)
+	require.Equal(t, selection.CutoverDone, row.State, "the gone project's cutover row stays")
+
+	later := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	code, stdout, stderr = h.run(actionCleanup, "--hold", later, "--dispatch-database-file", "dispatch.url", "--daemon-database", liveFile, "--daemon-database", gone, "--final")
+	require.Equal(t, 0, code, "cleanup in a later hold beside the gone store: %s%s", stdout, stderr)
+	require.Contains(t, stdout, "cleanup daemon/GONE: store gone: database "+dropped)
+	require.NotContains(t, consumers(), liveRetiredLater, "the later cleanup left daemon/LIVE's retired name")
+	require.True(t, h.journal(later).Complete)
+	require.NoError(t, h.release(later))
 }
 
 // cleanup, cleanup --gone and replace run only in a consumer-cleanup hold: with the row held in a

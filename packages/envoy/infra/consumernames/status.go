@@ -291,8 +291,7 @@ func (r *run) statusGone(ctx context.Context, family string, err error) (string,
 	if !daemon || statusRules.goneUnknown || !errors.As(err, &pg) || pg.Code != censusUndefinedDatabase {
 		return "", fmt.Errorf("%s's sentinel: %w", family, err)
 	}
-	store, closeStore, rerr := r.daemonStoreByRule(ctx, project)
-	defer closeStore()
+	store, rerr := r.daemonStoreByRule(ctx, project)
 	switch {
 	case rerr != nil:
 		return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule could not read it again (its answer: %v): %w", family, pg.Code, pg, rerr)
