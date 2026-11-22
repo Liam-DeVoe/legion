@@ -361,8 +361,12 @@ func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time, log []natsh
 
 // verifiedLogEntry reports whether a key of BROKER_NATS_HOLD_SIGNING_KEYS signed e, the row a log
 // entry carries.
-func (s *server) verifiedLogEntry(e natshold.LogEntry) bool {
-	return signedrecord.Verify(s.deps.NATSHold.Keys, e.Sig, signedrecord.HoldRow(e.Gen, e.Phase, e.HoldID, e.SignedAt)) == nil
+func (s *server) verifiedLogEntry(e natshold.LogEntry) bool { return s.logEntryVerified(e) == nil }
+
+// logEntryVerified is signedrecord.Verify's answer for e, the row a log entry carries, against
+// BROKER_NATS_HOLD_SIGNING_KEYS: nil when a listed key signed it.
+func (s *server) logEntryVerified(e natshold.LogEntry) error {
+	return signedrecord.Verify(s.deps.NATSHold.Keys, e.Sig, signedrecord.HoldRow(e.Gen, e.Phase, e.HoldID, e.SignedAt))
 }
 
 // latestSigned is the log entry with the latest signing time among those that verify, and false

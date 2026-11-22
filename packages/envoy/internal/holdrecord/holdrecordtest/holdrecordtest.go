@@ -51,8 +51,8 @@ type Broker struct {
 	deps         api.Deps
 	routes       atomic.Pointer[http.ServeMux]
 	floor        atomic.Pointer[signedrecord.Floor]
-	replica      *http.ServeMux
-	replicaFloor *signedrecord.Floor
+	replica      atomic.Pointer[http.ServeMux]
+	replicaFloor atomic.Pointer[signedrecord.Floor]
 	onReplica    atomic.Bool
 	hook         atomic.Pointer[func(http.ResponseWriter, *http.Request) bool]
 	recordWrites atomic.Int64
@@ -90,9 +90,7 @@ func Start(t testing.TB) *Broker {
 		},
 	}}
 	b.Restart()
-	b.replicaFloor = &signedrecord.Floor{}
-	b.replica = http.NewServeMux()
-	api.Register(b.replica, b.depsWith(b.replicaFloor))
+	b.RestartSecond()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/nats-hold/records" {
 			b.recordWrites.Add(1)
@@ -101,7 +99,7 @@ func Start(t testing.TB) *Broker {
 			return
 		}
 		if b.onReplica.Load() {
-			b.replica.ServeHTTP(w, req)
+			b.replica.Load().ServeHTTP(w, req)
 			return
 		}
 		b.routes.Load().ServeHTTP(w, req)
@@ -130,6 +128,15 @@ func (b *Broker) RestartListing(keys ...ed25519.PublicKey) {
 	b.Restart()
 }
 
+// RestartSecond is Restart for b's second replica: its routes mounted afresh, its floors gone.
+func (b *Broker) RestartSecond() {
+	floor := &signedrecord.Floor{}
+	mux := http.NewServeMux()
+	api.Register(mux, b.depsWith(floor))
+	b.replicaFloor.Store(floor)
+	b.replica.Store(mux)
+}
+
 // depsWith is b's routes' Deps with floor the process's floor of the hold row.
 func (b *Broker) depsWith(floor *signedrecord.Floor) api.Deps {
 	deps := b.deps
@@ -141,7 +148,7 @@ func (b *Broker) depsWith(floor *signedrecord.Floor) api.Deps {
 // Start mounts both on the same tables, as production runs two broker processes on one database:
 // each keeps what it keeps in memory, each record's floor and its row's floor among it, so what one
 // replica learns only from the database, the other's writes and deletes, is tested there. Restart
-// restarts the first.
+// restarts the first, and RestartSecond the second.
 func (b *Broker) UseReplica(on bool) { b.onReplica.Store(on) }
 
 // HoldView is the auth service's hold view of the first replica's process, or of the second's
@@ -150,7 +157,7 @@ func (b *Broker) UseReplica(on bool) { b.onReplica.Store(on) }
 func (b *Broker) HoldView(second bool) *natscallout.HoldView {
 	floor := b.floor.Load()
 	if second {
-		floor = b.replicaFloor
+		floor = b.replicaFloor.Load()
 	}
 	pool, schema := b.Pool, b.deps.NATSHold.Schema
 	read := func(ctx context.Context) (natshold.Reading, bool, error) { return natshold.Read(ctx, pool, schema) }

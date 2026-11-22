@@ -976,6 +976,8 @@ func TestTheHoldJournal(t *testing.T) {
 	keyRotationRows(t)
 	repairRows(t)
 	strictEndRows(t)
+	residualRows(t)
+	keyIDRows(t)
 	journalBindingRows(t)
 	rotationRows(t)
 	normalEndRows(t)
