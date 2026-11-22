@@ -43,6 +43,9 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	// The child holds its own copy of the write end; with this one closed, the reader sees the
 	// pipe's end once the child and everything that inherited it have closed theirs.
 	_ = in.Close()
+	if keptFromStarting(ctx, cmd, err) {
+		return 0, stopped(ctx, c, started)
+	}
 	if err != nil {
 		return 0, err
 	}

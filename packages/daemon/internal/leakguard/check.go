@@ -434,7 +434,8 @@ func program(base []string, name string) string {
 // run runs c under ctx and answers its exit status and everything it printed, out and err
 // together unless c.stderr takes err. The error is a child that could not be run at all: one that
 // did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
-// which has no status. A status is an answer, and no status is not.
+// which has no status. A status is an answer, and no status is not. A child the end of ctx kept
+// from starting is stopped by it too (keptFromStarting).
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	cmd, killed := g.command(ctx, c)
 	var printed bytes.Buffer
@@ -445,12 +446,20 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	started := time.Now()
 	err := procgroup.Err(cmd.Run())
 	switch {
-	case killed():
+	case killed(), keptFromStarting(ctx, cmd, err):
 		return 0, printed.String(), stopped(ctx, c, started)
 	case err != nil:
 		return 0, printed.String(), err
 	}
 	return cmd.ProcessState.ExitCode(), printed.String(), nil
+}
+
+// keptFromStarting is whether err, what starting cmd answered, is the end of ctx keeping it from
+// starting: exec's Start answers ctx's error, and starts nothing, where ctx has ended. On a loaded
+// machine the caller's deadline can pass in the guard's own work before the child, and that is a
+// stop by the bound as much as one that lands after the start.
+func keptFromStarting(ctx context.Context, cmd *exec.Cmd, err error) bool {
+	return cmd.Process == nil && ctx.Err() != nil && errors.Is(err, ctx.Err())
 }
 
 // command is c as a command under ctx, not yet started, in a process group of its own, and the
@@ -482,7 +491,9 @@ func (g *Guard) exitDelay() time.Duration {
 	return procgroup.WaitDelay
 }
 
-// stopped is the *stoppedError of c, started at started, which the end of ctx stopped.
+// stopped is the *stoppedError of c, started at started, which the end of ctx stopped. The bound
+// is the deadline less started, for a child that started and for one the end of ctx kept from
+// starting alike. A deadline already past at started is a bound of 0 s (pastDeadline).
 func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
 	stop := &stoppedError{
 		program:   filepath.Base(c.argv[0]),
@@ -491,6 +502,9 @@ func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		stop.bound = deadline.Sub(started)
+		if stop.bound <= 0 {
+			stop.bound, stop.pastDeadline = 0, true
+		}
 	}
 	return stop
 }
@@ -505,8 +519,12 @@ type stoppedError struct {
 	// ran is how long the child ran before the stop.
 	ran time.Duration
 	// bound is how long the context's deadline gave the child from its start, and zero where the
-	// context has no deadline.
+	// context has no deadline or where its deadline had passed before the child's run began.
 	bound time.Duration
+	// pastDeadline is whether the context's deadline had already passed when the child's run
+	// began, the one case where a bound of zero is a bound and not the absence of a deadline: the
+	// guard's own work before the child took the caller's whole bound.
+	pastDeadline bool
 	// cancelled is whether a cancel stopped the child rather than its deadline.
 	cancelled bool
 }
@@ -520,7 +538,7 @@ func (s *stoppedError) Error() string {
 // child and the setup failure of the shared check say the same thing. A context with no deadline
 // can end only by a cancel, so it is said as one.
 func (s *stoppedError) said(name string) string {
-	if s.cancelled || s.bound == 0 {
+	if s.cancelled || (s.bound == 0 && !s.pastDeadline) {
 		return fmt.Sprintf("%s ran %d s and was stopped by a cancel", name, wholeSeconds(s.ran))
 	}
 	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s", name, wholeSeconds(s.ran), wholeSeconds(s.bound))
