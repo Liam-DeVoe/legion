@@ -69,6 +69,7 @@ func TestHoldTheCensusReadsTheDaemonFamiliesFromTheCutoverRows(t *testing.T) {
 		return read, nil
 	}
 	stores := &fakeStores{ids: map[string]string{"A": "stream-0", "B": "stream-0"}}
+	h.daemonDeployments("A", "B")
 	census := func(families ...string) (int, string, string) {
 		args := []string{"census", "--daemon-consumer", "legion-b=notifications.b.>", "--daemon-database", "A=/dev/null", "--daemon-database", "B=/dev/null"}
 		for _, f := range families {

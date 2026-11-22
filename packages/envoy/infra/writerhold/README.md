@@ -150,12 +150,15 @@ before it reads or removes anything.
 - In hub-restore, after a done `hold prove`, it is admitted only after a stop. It then checks each
   claim against the newest done prove's disk, and names a proven disk that is gone (a 404, or
   another id under the name). Before it releases, it reconciles each daemon store of the
-  `daemon/<P>` cutover rows (`--daemon-database P=<file>`, repeat). It releases only when every
-  store is changed, gone or already consistent; otherwise it stops, naming each store. Each store
-  found gone (the server's SQLSTATE 3D000 answer, at the database and instance the daemon's
-  Deployment and the operator's file both name) is recorded in the journal: in the stop's reason
-  beside the stores left unreconciled, and in the done entry as `gone.daemon/<P>`, beside
-  `stream_id.daemon/<P>` for each store it rewrote.
+  `daemon/<P>` cutover rows (`--daemon-database P=<file>`, repeat), each at the address exactly
+  one source names: the daemon's Deployment, or, for a project retired after the cutover, its entry
+  of ConfigMap `envoy-operator/envoy-operator-retired-stores`. It releases only when every store is
+  changed, gone or already consistent at such an address; a store both sources name, or neither,
+  is left unreconciled, naming each source, and it stops, naming each store. Each store found gone
+  (the server's SQLSTATE 3D000 answer, at the database and instance its source and the operator's
+  file both name) is recorded in the journal: in the stop's reason beside the stores left
+  unreconciled, and in the done entry as `gone.daemon/<P>`, beside `stream_id.daemon/<P>` for each
+  store it rewrote.
 - On a row restored `released` with its hold id while its journal shows `prepare` (no done
   `hold set`, not ended), it is admitted, deletes the cohort record and writes its `done` entry,
   which ends the hold. With no journal at all (a row lost in `prepare` before its journal was

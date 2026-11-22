@@ -20,6 +20,7 @@ import (
 func TestHoldAbortRecordsTheStoresItFoundGone(t *testing.T) {
 	h := newHeldStack(t)
 	id := h.provenHubRestore()
+	h.daemonDeployments("P", "Q")
 	_, err := h.s.Records.PutCutover(t.Context(), "daemon/Q", "done", id)
 	require.NoError(t, err)
 	gone := GoneStore{Project: "P", Database: "daemon_p", Instance: "proj:region:inst-p", StatedInstance: "proj:region:inst-p",

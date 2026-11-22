@@ -297,11 +297,13 @@ func abortPrepared(ctx context.Context, records *holdrecord.Client, row holdreco
 // abortReconcile is hub-restore's abort's reconcile of the daemon stores after a done prove: the
 // restore put ENVOY_NOTIFICATIONS back, so each daemon store's recorded stream identity is checked
 // before the release admits the daemons. Its families are the cutover rows' daemon/<P> families;
-// each store is read at the address its daemon's Deployment names (KubeDaemonDeployments, the
-// hold's own Kubernetes client), with the operator's own --daemon-database entries, by the writer
+// each store is read at the address its one source names (KubeDaemonDeployments, the hold's own
+// Kubernetes client: its daemon's Deployment, or a retired project's entry of
+// RetiredStoresConfigMap), with the operator's own --daemon-database entries, by the writer
 // cmd/envoy-infra passes in (stores). The abort goes on only when the writer's result places every
-// daemon family in exactly one list (StreamIDResult.Covers) and leaves none unreconciled; any other
-// answer, a writer missing among them, is UNKNOWN or a refusal naming each store, and the abort
+// daemon family in exactly one list (StreamIDResult.Covers), each store it places at an address
+// exactly one source names, and leaves none unreconciled (reconcileStreamIDs); any other answer, a
+// writer missing among them, is UNKNOWN or a refusal naming each store, and the abort
 // writes its stop, whose reason names each store found gone with the server's answer and its
 // address. Otherwise it returns the abort's done outputs: stream_id.daemon/<P> for each store it
 // rewrote and gone.daemon/<P> for each found gone, as the census records them. A rerun of a crashed

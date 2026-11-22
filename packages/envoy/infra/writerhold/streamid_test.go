@@ -138,6 +138,29 @@ func (f *fakeStores) listedNames() []string {
 	return append([]string(nil), f.listed...)
 }
 
+// daemonDeployments makes, in the stack's Kubernetes, one Deployment of namespace legion for each
+// of projects, legion-daemon-<project in lower case>, annotated with its project: each store's one
+// source of its address, which the reconcile check requires of a store its writer places.
+func (h *heldStack) daemonDeployments(projects ...string) {
+	h.t.Helper()
+	for _, project := range projects {
+		_, err := h.s.Kube.Client.AppsV1().Deployments(DaemonNamespace).Create(context.Background(), &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+			Name: "legion-daemon-" + strings.ToLower(project), Namespace: DaemonNamespace, Annotations: map[string]string{DaemonProjectAnnotation: project},
+		}}, metav1.CreateOptions{})
+		require.NoError(h.t, err)
+	}
+}
+
+// daemonSources is a listing of the daemon stores' addresses that names each of projects by one
+// Deployment, as daemonDeployments makes it, for the rows that call reconcileStreamIDs directly.
+func daemonSources(projects ...string) DaemonDeployments {
+	listed := make([]DaemonDeployment, len(projects))
+	for i, project := range projects {
+		listed[i] = DaemonDeployment{Name: "legion-daemon-" + strings.ToLower(project), Annotations: map[string]string{DaemonProjectAnnotation: project}}
+	}
+	return func(context.Context) ([]DaemonDeployment, error) { return listed, nil }
+}
+
 // notificationsID reads ENVOY_NOTIFICATIONS' identity as the operator.
 func (h *heldStack) notificationsID() string {
 	h.t.Helper()
@@ -179,6 +202,7 @@ func TestHoldTheCensusReconcilesTheDaemonStoresStreamID(t *testing.T) {
 	old := h.notificationsID()
 	require.NotEmpty(t, old)
 	stores := &fakeStores{ids: map[string]string{"A": old, "B": old}}
+	h.daemonDeployments("A", "B")
 	families := []string{"--family", "session", "--family", "daemon/A", "--family", "daemon/B",
 		"--daemon-database", "A=/dev/null", "--daemon-database", "B=/dev/null"}
 
@@ -274,6 +298,7 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	gone := GoneStore{Project: "G", Database: "daemon_g", Instance: "proj:region:daemons", StatedInstance: "proj:region:daemons",
 		Answer: `FATAL: database "daemon_g" does not exist (SQLSTATE 3D000)`}
 	stores := &fakeStores{ids: map[string]string{"A": "stream-0", "B": current}, gone: map[string]GoneStore{"G": gone}}
+	h.daemonDeployments("A", "B")
 	families := []string{"--family", "session", "--family", "daemon/A", "--family", "daemon/B", "--family", "daemon/G",
 		"--daemon-database", "A=/dev/null", "--daemon-database", "B=/dev/null", "--daemon-database", "G=/dev/null"}
 
@@ -400,7 +425,7 @@ func TestTheCensusPrintsEachStoreItsWriterReconciled(t *testing.T) {
 		}, nil
 	}
 	var stdout bytes.Buffer
-	outputs, err := reconcileStreamIDs(context.Background(), nil, writer, nil, []string{"daemon/A", "daemon/B", "daemon/F"}, nil, &stdout)
+	outputs, err := reconcileStreamIDs(context.Background(), nil, writer, daemonSources("A", "B", "F"), []string{"daemon/A", "daemon/B", "daemon/F"}, nil, &stdout)
 	require.NoError(t, err)
 	require.Equal(t, `CHANGED daemon/A: stream_id "stream-1" -> "stream-2"`+"\n"+
 		`RECONCILED daemon/B: stream_id "stream-2" unchanged`+"\n"+

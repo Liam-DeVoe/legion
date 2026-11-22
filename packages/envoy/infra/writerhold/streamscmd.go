@@ -563,37 +563,64 @@ func leftBy(r streams.Report, barriers map[string]uint64, err error) error {
 // `RECONCILED daemon/<P>: stream_id "id" unchanged`, or `RECONCILED daemon/<P>: no stream_id
 // recorded, unchanged` for one that records none yet, named in no output, since the census wrote
 // nothing there. The stores are the daemons' own databases, no stream of the hub, so the
-// postcheck counts none of these writes. With no stores, or an error of theirs (a malformed
-// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), it
-// is UNKNOWN. A store the writer marks gone at an instance other than the one the operator's file
-// states (or at none) is left unreconciled and not printed gone. With any store left unreconciled,
-// which it names with why, it is UNKNOWN and the census writes no done entry; a store changed
-// before that is then named as what the run left (a *Left), so the stop does not record the run as
-// unchanged.
+// postcheck counts none of these writes. With no stores, a listing of the stores' addresses it
+// cannot read (deployments, which it reads once and hands the writer), or an error of the writer's
+// (a malformed --daemon-database, a stream with no identity), it is UNKNOWN. A store the writer
+// places (changed, gone or already consistent) whose project not exactly one source of the listing
+// names (notOneSource), and a store it marks gone at an instance other than the one the operator's
+// file states (or at none), is left unreconciled and not printed gone or reconciled. With any store
+// left unreconciled, which it names with why, it is UNKNOWN and the census writes no done entry; a
+// store changed before that is then named as what the run left (a *Left), so the stop does not
+// record the run as unchanged.
 func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, deployments DaemonDeployments, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
 	if stores == nil {
 		return nil, unknownf(StepPostcheck, ErrNoStoreWriter, "reconcile the daemon stores' stream ids")
 	}
-	result, err := stores(ctx, nc, deployments, families, daemonDatabases)
+	if deployments == nil {
+		return nil, unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: no reader of the stores' addresses")
+	}
+	listed, err := deployments(ctx)
+	if err != nil {
+		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids: read the stores' addresses")
+	}
+	result, err := stores(ctx, nc, func(context.Context) ([]DaemonDeployment, error) { return listed, nil }, families, daemonDatabases)
 	if err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
 	}
 	if err := result.Covers(families); err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
 	}
-	// A store is gone only at the instance its one source names and the operator's file states,
-	// both: a 3D000 from another server is no evidence that the live store is gone. The writer
-	// refuses such a store before it connects; this check stands beside it, and leaves the store
-	// unreconciled.
+	// A store is read only at the address exactly one source names, and it is gone only at the
+	// instance that source names and the operator's file states, both: a 3D000 from another server
+	// is no evidence that the live store is gone. The writer refuses such stores before it connects;
+	// this check stands beside it, and leaves each such store the writer placed unreconciled.
 	unreconciled := slices.Clone(result.Unreconciled)
+	sourced := func(project string) bool {
+		why := notOneSource(listed, project)
+		if why != "" {
+			unreconciled = append(unreconciled, UnreconciledStore{Project: project, Reason: why})
+		}
+		return why == ""
+	}
+	for _, c := range result.Changed {
+		sourced(c.Project)
+	}
 	var gone []GoneStore
 	for _, g := range result.Gone {
-		if g.Instance == "" || g.Instance != g.StatedInstance {
+		switch {
+		case !sourced(g.Project):
+		case g.Instance == "" || g.Instance != g.StatedInstance:
 			unreconciled = append(unreconciled, UnreconciledStore{Project: g.Project, Reason: fmt.Sprintf(
 				"gone at instance %q, and the operator's file states %q: a store is gone only at the instance both name", g.Instance, g.StatedInstance)})
-			continue
+		default:
+			gone = append(gone, g)
 		}
-		gone = append(gone, g)
+	}
+	var reconciled []ReconciledStore
+	for _, s := range result.Reconciled {
+		if sourced(s.Project) {
+			reconciled = append(reconciled, s)
+		}
 	}
 	outputs := map[string]string{}
 	var changed []string
@@ -608,7 +635,7 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 		fmt.Fprintf(stdout, "GONE %s%s: %s\n", daemonFamilyPrefix, g.Project, text)
 		outputs["gone."+daemonFamilyPrefix+g.Project] = text
 	}
-	for _, s := range result.Reconciled {
+	for _, s := range reconciled {
 		recorded := fmt.Sprintf("stream_id %q", s.StreamID)
 		if s.StreamID == "" {
 			recorded = "no stream_id recorded,"
@@ -633,6 +660,32 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 		return nil, &Left{What: strings.Join(changed, "; "), Err: err}
 	}
 	return nil, err
+}
+
+// notOneSource is why listed does not give project's daemon store one address, naming each source
+// it found: a store is read only at the address exactly one source names, its daemon's Deployment
+// (DaemonProjectAnnotation) or, Retired, its entry of RetiredStoresConfigMap, as
+// KubeDaemonDeployments reads them. It is "" for a store exactly one source names.
+func notOneSource(listed []DaemonDeployment, project string) string {
+	var sources []string
+	for _, d := range listed {
+		switch {
+		case d.Annotations[DaemonProjectAnnotation] != project:
+		case d.Retired:
+			sources = append(sources, fmt.Sprintf("the entry of ConfigMap %s/%s (keys %s%s, %s%s)",
+				RetiredStoresNamespace, RetiredStoresConfigMap, project, RetiredStoreDatabaseSuffix, project, RetiredStoreInstanceSuffix))
+		default:
+			sources = append(sources, "Deployment "+DaemonNamespace+"/"+d.Name)
+		}
+	}
+	switch len(sources) {
+	case 1:
+		return ""
+	case 0:
+		return fmt.Sprintf("no source names its address: no Deployment of namespace %s (annotation %s) and no entry of ConfigMap %s/%s",
+			DaemonNamespace, DaemonProjectAnnotation, RetiredStoresNamespace, RetiredStoresConfigMap)
+	}
+	return "not one source names its address: " + strings.Join(sources, " and ")
 }
 
 // daemonFamilyPrefix begins each daemon's cutover family, daemon/<project key>.

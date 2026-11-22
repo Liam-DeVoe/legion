@@ -11,7 +11,7 @@ import (
 
 // The reconcile check (reconcileStreamIDs, which the census and hub-restore's abort run on their
 // writer's result) refuses a store the writer marks gone at an instance other than the one the
-// operator's --daemon-database file states: a store is gone only at the address its Deployment and
+// operator's --daemon-database file states: a store is gone only at the address its one source and
 // the operator's file both name, so a 3D000 from another server is no evidence that the live store
 // is gone. It is UNKNOWN naming the store and both instances, and the result records nothing. This
 // is a check beside the writer's own (consumernames.ReconcileDaemonStreamIDs refuses that store
@@ -26,7 +26,7 @@ func TestHoldAGoneStoreAtAnotherInstanceIsRefused(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	outputs, err := reconcileStreamIDs(context.Background(), nil, gone("proj:region:inst-p", "proj:region:inst-p"), nil, []string{"daemon/P"}, nil, &out)
+	outputs, err := reconcileStreamIDs(context.Background(), nil, gone("proj:region:inst-p", "proj:region:inst-p"), daemonSources("P"), []string{"daemon/P"}, nil, &out)
 	require.NoError(t, err, "control: a store gone at the instance the operator's file states")
 	require.Contains(t, outputs, "gone.daemon/P")
 
@@ -36,7 +36,7 @@ func TestHoldAGoneStoreAtAnotherInstanceIsRefused(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			out.Reset()
-			outputs, err := reconcileStreamIDs(context.Background(), nil, gone(row.instance, row.stated), nil, []string{"daemon/P"}, nil, &out)
+			outputs, err := reconcileStreamIDs(context.Background(), nil, gone(row.instance, row.stated), daemonSources("P"), []string{"daemon/P"}, nil, &out)
 			var unknown *Unknown
 			require.ErrorAs(t, err, &unknown, "a store gone at an instance the operator's file does not state")
 			require.ErrorContains(t, err, "daemon/P")
@@ -59,7 +59,7 @@ func TestHoldAGoneStoreAtAnotherInstanceAfterAChangeLeavesTheChange(t *testing.T
 		}, nil
 	}
 	var out bytes.Buffer
-	outputs, err := reconcileStreamIDs(context.Background(), nil, writer, nil, []string{"daemon/A", "daemon/P"}, nil, &out)
+	outputs, err := reconcileStreamIDs(context.Background(), nil, writer, daemonSources("A", "P"), []string{"daemon/A", "daemon/P"}, nil, &out)
 	require.Nil(t, outputs)
 	var unknown *Unknown
 	require.ErrorAs(t, err, &unknown)

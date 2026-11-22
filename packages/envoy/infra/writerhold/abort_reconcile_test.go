@@ -63,6 +63,7 @@ func (h *heldStack) provenHubRestore() string {
 func TestHoldAbortReconcilesTheDaemonStores(t *testing.T) {
 	h := newHeldStack(t)
 	id := h.provenHubRestore()
+	h.daemonDeployments("P")
 	abort := func(what string) (int, string) {
 		t.Helper()
 		code, _, stderr := h.run(actionAbort, "--hold", id, "--reason", what, "--daemon-database", "P=/run/daemon-p")
@@ -113,6 +114,7 @@ func TestHoldACrashedAbortIsRerunWhole(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			h := newHeldStack(t)
 			id := h.provenHubRestore()
+			h.daemonDeployments("P")
 			ctx := context.Background()
 			stores := &scriptedStores{answers: []StreamIDResult{{Changed: []StreamIDChange{{Project: "P", From: "s-0", To: "s-1"}}}, row.second}}
 			h.d.Readers.Stores = stores.write
