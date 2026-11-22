@@ -200,7 +200,7 @@ was routed by. Every key the repository's configuration files set must be on an 
 settings that run no program and move no fetch or push (a clone's own, a Legion workspace's,
 gh-stack's, and everyday ones such as `user.name` and `pull.rebase`), any other key refused,
 and a `branch.*.pushRemote`, `remote.pushDefault`, `branch.*.remote` or `gh-stack.remote`
-setting must name a listed remote or `.`. Branch names from gh-stack's stack file that start
+setting must name a listed remote, not `.`. Branch names from gh-stack's stack file that start
 with `-` or fail `git check-ref-format`, a head or base there that is no commit id, and a local
 branch whose name starts with `-` are refused. `submit` without `--auto` is refused, since its
 editor writes pull request text no guard reads, and so are `alias` and `feedback`. `submit` and

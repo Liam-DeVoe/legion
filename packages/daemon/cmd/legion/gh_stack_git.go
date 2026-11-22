@@ -69,10 +69,10 @@ var ghStackGitConfigKeys = regexp.MustCompile(`^(` + strings.Join([]string{
 	`credential\..+`, `http\..+`, `include\.path`, `includeif\..+\.path`,
 }, "|") + `)$`)
 
-// ghStackPushSettings are the allowlisted keys gh-stack takes the remote it pushes to and fetches
-// from, where --remote is absent (internal/git/gitops.go, ResolveRemote): each must name a remote
-// `git remote -v` lists, or `.`, git's name for this repository (no URL rewrite is allowlisted to
-// move it).
+// ghStackPushSetting says whether key is an allowlisted key gh-stack takes the remote it pushes to
+// and fetches from, where --remote is absent (internal/git/gitops.go, ResolveRemote): each must
+// name a remote `git remote -v` lists. `.`, git's name for this repository, is refused too: a push
+// to it runs the repository's own hooks, and gh-stack's git refuses it anyway.
 func ghStackPushSetting(key string) bool {
 	return key == "remote.pushdefault" || key == "gh-stack.remote" ||
 		strings.HasPrefix(key, "branch.") && (strings.HasSuffix(key, ".pushremote") || strings.HasSuffix(key, ".remote"))
@@ -151,7 +151,7 @@ func ghStackGitConfigRefusal(names []string) error {
 		switch {
 		case !ghStackGitConfigKeys.MatchString(key):
 			return fmt.Errorf("the repository's git configuration (%s) sets %s, which is no setting `gh stack` lets its git read: many such settings make git run a program or fetch and push elsewhere, with this call's token directory in its environment, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)
-		case ghStackPushSetting(key) && value != "." && !slices.Contains(names, value):
+		case ghStackPushSetting(key) && !slices.Contains(names, value):
 			return fmt.Errorf("the git setting %s names %q, which is no remote `git remote -v` lists here, and gh-stack would push or fetch there, outside the repository this call is routed by, so `gh stack` sends nothing; set it to one of them or unset it", key, value)
 		}
 	}

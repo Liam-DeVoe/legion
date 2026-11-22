@@ -201,13 +201,13 @@ func TestGhStackLetsItsGitReadOnlyAllowlistedSettings(t *testing.T) {
 			[]string{"config", "rerere.enabled", "true"}, []string{"config", "rerere.autoupdate", "true"},
 			[]string{"config", "gh-stack.remote", "origin"}, []string{"config", "gh-stack.rerere-declined", "true"},
 			[]string{"config", "user.name", "Legion"}, []string{"config", "user.email", "legion@example.com"},
-			[]string{"config", "remote.pushDefault", "origin"}, []string{"config", "branch.feature.pushRemote", "."})
+			[]string{"config", "remote.pushDefault", "origin"}, []string{"config", "branch.feature.pushRemote", "origin"})
 		if err := push(); err != nil {
 			t.Errorf("with a Legion workspace's settings, ghTargetOf = %v; want acme's directory", err)
 		}
 	})
 	for _, key := range []string{"remote.pushDefault", "branch.main.pushRemote", "branch.main.remote", "gh-stack.remote"} {
-		for _, value := range []string{"--upload-pack=touch PWNED", "/tmp/another-repository", "https://github.com/acme/elsewhere.git"} {
+		for _, value := range []string{"--upload-pack=touch PWNED", "/tmp/another-repository", "https://github.com/acme/elsewhere.git", "."} {
 			t.Run(key+"="+value, func(t *testing.T) {
 				repository := inClone(t)
 				set(t, repository, key, value)

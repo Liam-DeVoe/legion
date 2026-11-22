@@ -130,14 +130,25 @@ func formatParts(format string) ([]string, []byte) {
 	}
 }
 
+// pieceStops are the bytes no piece holds: `:` and space, which would split or end a refspec; the
+// glob and revision bytes `*?[\^~`, which would make one refspec stand for many refs or a ref
+// another than the name; and every control byte. A branch name gh-stack takes from its stack or
+// from GitHub holds none of them (`git check-ref-format` refuses each).
+func pieceStop(b byte) bool {
+	return b < 0x20 || b == 0x7f || strings.IndexByte(": *?[\\^~", b) >= 0
+}
+
 // piece says whether p may stand for a format's piece: a name or a number gh-stack computes, a
-// value (no leading `-`, not `.` or `..`) with no `:` and no space, which ref names cannot hold.
+// value (no leading `-`, not `.` or `..`) with no pieceStop byte, no `..` and no `@{`, which git
+// reads as a range or a reflog entry rather than a name.
 func piece(p string) bool {
-	return p != "" && value(p) && !strings.ContainsAny(p, ": \t\n")
+	return p != "" && value(p) && !strings.Contains(p, "..") && !strings.Contains(p, "@{") &&
+		!strings.ContainsFunc(p, func(r rune) bool { return r < 0x80 && pieceStop(byte(r)) })
 }
 
 // fits says whether a is texts filled with pieces, the same number the same piece, trying every
-// way to split a, since a branch name holds `/` as the texts around it do.
+// way to split a, since a branch name holds `/` as the texts around it do. A piece ends at the
+// first pieceStop byte, so the splits tried are those before it, and the work is linear in a.
 func fits(texts []string, numbers []byte, a string, bound map[byte]string) bool {
 	if !strings.HasPrefix(a, texts[0]) {
 		return false
@@ -150,8 +161,29 @@ func fits(texts []string, numbers []byte, a string, bound map[byte]string) bool 
 	if p, ok := bound[n]; ok {
 		return strings.HasPrefix(a, p) && fits(texts[1:], numbers[1:], a[len(p):], bound)
 	}
-	for end := 1; end <= len(a); end++ {
-		if p := a[:end]; piece(p) {
+	// Every piece is a prefix of a[:limit], which holds no pieceStop byte; a prefix holds `..` or
+	// `@{` from the first one's end on, and the leading `-` and the whole `.`/`..` read the prefix's
+	// own bytes, so each split is checked in constant time.
+	limit := len(a)
+	if i := strings.IndexFunc(a, func(r rune) bool { return r < 0x80 && pieceStop(byte(r)) }); i >= 0 {
+		limit = i
+	}
+	if i := strings.Index(a[:limit], ".."); i >= 0 {
+		limit = min(limit, i+1)
+	}
+	if i := strings.Index(a[:limit], "@{"); i >= 0 {
+		limit = min(limit, i+1)
+	}
+	if strings.HasPrefix(a, "-") {
+		return false
+	}
+	next := texts[1]
+	for end := 1; end <= limit; end++ {
+		// The next text must follow the piece, so only an end where it starts is worth trying.
+		if !strings.HasPrefix(a[end:], next) {
+			continue
+		}
+		if p := a[:end]; p != "." {
 			bound[n] = p
 			if fits(texts[1:], numbers[1:], a[end:], bound) {
 				return true
