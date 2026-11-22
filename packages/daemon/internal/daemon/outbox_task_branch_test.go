@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -198,6 +201,47 @@ func TestAJoinThatConflictsIsRecordedAndTheBranchStandsOnTheFirstNeed(t *testing
 	}
 	if conflicts := rig.task(t, "d").JoinConflicts; !slices.Equal(conflicts, []string{"c"}) {
 		t.Fatalf("task d's join conflicts = %v, want [c]", conflicts)
+	}
+}
+
+// The end of a join is a fact: once its merges end, the row applies intake.TaskJoined through the
+// runner's handlers, naming the task, the branch and the needs it joined and each need GitHub
+// refused as a conflict, under an id of the issue, the generation, the task and the row, so a row
+// that runs again applies one fact. The handler's failure is the row's, which retries.
+func TestTheEndOfAJoinIsAppliedAsAFact(t *testing.T) {
+	rig := newTaskBranchRig(t, twoNeeds...)
+	handler := &outboxFactHandler{}
+	rig.runner.handlers = []intake.Handler{handler}
+	rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"x.txt": "from a\n"}, "a")
+	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"x.txt": "from c\n"}, "c")
+	row := mustOutboxRow(t, taskBranchIssue.Key, record.TaskBranch{Generation: taskBranchIssue.Generation, Task: "d"}, time.Now())
+	row.ID = 17
+
+	for range 2 {
+		if err := rig.runner.execute(context.Background(), row); err != nil {
+			t.Fatalf("execute the branch row of task d: %v", err)
+		}
+	}
+
+	want := intake.TaskJoined{Issue: taskBranchIssue.Key, Generation: taskBranchIssue.Generation, Task: "d", Branch: "legion/LEGION-208.d",
+		Needs: []string{"a", "c"}, Conflicts: []string{"c"}}
+	got := handler.facts()
+	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("the facts the row applied = %#v, want the one %#v", got, want)
+	}
+	var ids []string
+	rows, err := rig.pool.Query(context.Background(), `select event_id from processed_events where source = 'outbox' order by event_id`)
+	if err == nil {
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	}
+	if err != nil || !slices.Equal(ids, []string{"task-joined:LEGION-208:1:d:17"}) {
+		t.Fatalf("the outbox's applied facts = %v, %v; want task-joined:LEGION-208:1:d:17 alone", ids, err)
+	}
+
+	rig.runner.handlers = []intake.Handler{&outboxFactHandler{err: errors.New("record unavailable")}}
+	row.ID = 18
+	if err := rig.runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "record unavailable") {
+		t.Fatalf("the row whose fact failed answered %v, want the handler's failure", err)
 	}
 }
 

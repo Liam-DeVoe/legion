@@ -58,7 +58,8 @@ type roleForReader struct {
 // Engine.restartViewed and Engine.startReady, which read their task's first step: a planner's, an
 // implementer's or a role of the deployment's, as plan.Supported takes the acceptance only after
 // an implementer, and Engine.handOn, which reads the step a freed agent's waiting task stands at,
-// a step place, since only a step waits for its agent), or reads the retro's own
+// a step place, since only a step waits for its agent, and Engine.taskJoined, which reads the step
+// a task whose join ended stands at, its first step, since only a first step waits for its join), or reads the retro's own
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which
@@ -137,6 +138,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The role of the step a freed agent's waiting task stands at.
 	{file: "internal/workflow/run_end.go", fn: "Engine.handOn"}: {calls: 1, tests: []string{
 		"TestAFreedAgentTakesTheStepThatWaitedLongest", "TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter"}},
+	// The role of the first step of a task whose join ended.
+	{file: "internal/workflow/task_copy.go", fn: "Engine.taskJoined"}: {calls: 1, tests: []string{
+		"TestTheEndOfAJoinStartsTheStepThatWaits", "TestTheEndOfAJoinWhoseAgentIsBusyWaitsForTheAgent"}},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},

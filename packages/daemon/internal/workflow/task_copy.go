@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -34,6 +35,63 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: task})
+}
+
+// taskJoined applies the end of a task's join (intake.TaskJoined) in the fact's transaction: where
+// the step of the task waits for this join (the task running at the fact's generation, waiting for
+// its join, on the branch and with the needs the join read), it writes the needs whose join GitHub
+// refused as a conflict (record.Store.SetJoinConflicts), ends the wait and starts the step at the
+// task's place through Engine.start, the start of every step, so at no commit does the step wait for
+// nothing with nothing of it started: start raises its entry, or writes that it waits for its agent
+// where that agent runs a step of another task. Its task is told where its work stands and its own
+// pull request, as the start after the wait for an agent tells it (handOn). Any other end of a join
+// changes nothing: one of a generation the issue has left, of a task its plan no longer holds or
+// whose step waits for no join, and one onto another branch or from other needs, a row that a stop
+// and a later version of the task left behind, whose start again queued a join of its own.
+func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoined) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.Generation != fact.Generation {
+		return intake.Result{}, err
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return intake.Result{}, err
+	}
+	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == fact.Task })
+	if at < 0 {
+		return intake.Result{}, nil
+	}
+	joined := stored.Tasks[at]
+	if joined.State != record.TaskRunning || joined.StepWait != record.StepWaitJoin || joined.BranchOf(issue.Key) != fact.Branch ||
+		!slices.Equal(joined.Needs, fact.Needs) {
+		e.logOnCommit(ctx, "workflow: the end of a join the task's step does not wait for changes nothing", "issue", issue.Key, "task", fact.Task,
+			"state", joined.State, "wait", joined.StepWait, "branch", joined.BranchOf(issue.Key), "needs", joined.Needs,
+			"joined_branch", fact.Branch, "joined_needs", fact.Needs)
+		return intake.Result{}, nil
+	}
+	if err := e.store.SetJoinConflicts(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Conflicts); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, fact.Task, record.StepWaitNone, nil); err != nil {
+		return intake.Result{}, err
+	}
+	view, w, err := e.view(ctx, tx, *issue, fact.Task)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	role := w.RoleAt(w.Place)
+	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+		return intake.Result{}, err
+	}
+	pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, fact.Task)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: a task's join ended, and its step starts", "issue", issue.Key, "tree", issue.Tree, "task", fact.Task,
+		"place", placeWords(w.Place), "role", role, "branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts)
+	return intake.Result{}, e.start(ctx, tx, view, w, role, func(at Standing) string {
+		return task(view, at, record.PhaseRow{}, pr, "")
+	}, false)
 }
 
 // stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the
