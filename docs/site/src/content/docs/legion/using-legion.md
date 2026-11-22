@@ -87,12 +87,10 @@ options and a recommendation, and it reaches your Inbox.
 3. If it is not right, choose **Request changes** and say why. The architect revises the spec and
    asks again.
 
-No code is written until you approve. The approval is for that version of the spec: if the spec
-changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
-person approves: by default the spec alone, and a deployment can add the issue's Verification
-document, approved the same way. A deployment that sets
-`gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
-and nobody is asked.)
+No code is written until you approve.
+The approval is for that version of the spec: if the spec changes afterwards, you are asked again.
+(`gates.design` says which documents of the root issue a person approves: by default the spec, and also the issue's Verification document when the architect asks you to approve both in one request, and a deployment can add the issue's Verification document, approved the same way.
+A deployment that sets `gates.design: []` turns the design gate off; then the work starts as soon as the spec is written, and nobody is asked.)
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.
@@ -114,7 +112,7 @@ template, and the later phases fill in their own lines:
   line Dispatch printed when the result was recorded — the check, when it runs, the verdict, the
   commit it ran at and the role that ran it.
 - **Look at first** and **Not proven / risk**: written by Legion's reviewer, naming where a wrong
-  decision would hurt and every claim left unproven.
+  decision would hurt and, where one stands, a risk.
 - The `after_merge` check, recorded after the merge closes the issue by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then, or a `fail`
