@@ -22,17 +22,28 @@ import (
 // statement together (cybermonklabs/legion#4554).
 const referencesClosureBound = 2 * time.Second
 
-// boundedClosure runs refs.Closure, as who reads it, in a read transaction of its own, through
-// closureBudget, so that every statement of the read - the out and in statements and each loader
-// that names their nodes - runs under what is left of referencesClosureBound since the read
-// started. One statement_timeout of the whole bound for the transaction would not hold the bound:
-// the read sends several statements, whose sum can pass the context's deadline with none past the
-// bound, and at that deadline pgx closes the connection while the server's statement runs on (its
-// default BuildContextWatcherHandler, as outbox/lease.go records). The context, a second past the
-// bound, stays as the last guard, for a wait no statement_timeout covers, such as the begin's. The
-// rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the read's
-// context has expired exactly when the rollback matters, and pgx answers a rollback on an expired
-// context by destroying the connection instead of returning it to the pool.
+// boundedClosure runs refs.Closure, as who reads it, as inClosureRead's read, so that every
+// statement of the read - the out and in statements and each loader that names their nodes - runs
+// in inClosureRead's transaction under what is left of referencesClosureBound since the read
+// started.
+func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
+	return s.inClosureRead(ctx, func(ctx context.Context, q refs.Queryer) (refs.References, error) {
+		return refs.Closure(ctx, q, who, issueKey)
+	})
+}
+
+// inClosureRead runs read - boundedClosure's refs.Closure, or a test's read - in a read
+// transaction of its own, on a context that ends a second past referencesClosureBound. read is
+// handed that context and the transaction as closureBudget, so every statement it sends runs under
+// what is left of the bound since the read started. One statement_timeout of the whole bound for
+// the transaction would not hold the bound: the read sends several statements, whose sum can pass
+// the context's deadline with none past the bound, and at that deadline pgx closes the connection
+// while the server's statement runs on (its default BuildContextWatcherHandler, as outbox/lease.go
+// records). The context, a second past the bound, stays as the last guard, for a wait no
+// statement_timeout covers, such as the begin's. The rollback runs on a context of its own, as the
+// near-copy gate's does (duplicates.go): the read's context has expired exactly when the rollback
+// matters, and pgx answers a rollback on an expired context by destroying the connection instead
+// of returning it to the pool.
 //
 // JIT is off because compiling the read's statements costs more than running them. Each is index
 // probes and sub-plans, and over a large issue the planner's estimate passes jit_inline_above_cost
@@ -43,8 +54,11 @@ const referencesClosureBound = 2 * time.Second
 // 1,283 ms of the in statement's 1,308 ms, so the read passed its 2 s bound and answered 503
 // REFERENCES_TIMEOUT (cybermonklabs/legion#4193). Production's database is Cloud SQL, which does
 // not support PostgreSQL's LLVM JIT (benchtime.Open says the same), so this setting makes the read
-// on any other database what it is in production.
-func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
+// on any other database what it is in production. The setting is the transaction's alone (set
+// local), and it starts with refs.ClosureTag, as every other statement of the read does, so that
+// pg_stat_activity names it as the read's. TestTheIssueReferencesReadRunsWithJITOff holds the read
+// to it on a session that starts at jit = on.
+func (s *server) inClosureRead(ctx context.Context, read func(context.Context, refs.Queryer) (refs.References, error)) (refs.References, error) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()
@@ -57,13 +71,13 @@ func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey s
 		defer cancelRollback()
 		_ = tx.Rollback(rollback)
 	}()
-	if _, err := tx.Exec(ctx, "set local jit = off"); err != nil {
+	if _, err := tx.Exec(ctx, refs.ClosureTag+"set local jit = off"); err != nil {
 		return refs.References{}, err
 	}
-	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey)
+	return read(ctx, closureBudget{tx: tx, started: started})
 }
 
-// closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before
+// closureBudget is inClosureRead's transaction tx as its read reads it (refs.Queryer). Before
 // each statement it passes on, it gives that statement what is left of referencesClosureBound
 // since started, the start of the read (setStatementBudget), so a statement that waits, on a lock
 // or for the CPU, takes its wait out of the time of every statement after it. It answers the
@@ -104,7 +118,7 @@ func (r refusedRow) Scan(...any) error { return r.err }
 // bound, and the route answers it as it answers a statement Postgres cancelled there.
 var errClosureBudgetSpent = errors.New("the reference closure's budget has less than 1ms left")
 
-// setStatementBudget gives the next statement of boundedClosure's transaction tx what is left of
+// setStatementBudget gives the next statement of inClosureRead's transaction tx what is left of
 // referencesClosureBound, left, so that the statements of the read share the one bound rather
 // than each having it whole. It sets statement_timeout for the rest of tx to the whole
 // milliseconds of left, rounded down, 1ms at 1 ms left, with
