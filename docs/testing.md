@@ -406,7 +406,9 @@ The clock of a unit test:
   `e2e/__tests__` that waits for a bounded child or poll (`runBounded`, `eventually`) states its own
   limit with `rowLimit` from `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it
   waits for, plus 30 s (`e2e/__tests__/row-limits.test.ts` holds it). A row that waits for nothing
-  bounded, such as one that runs a child with `Bun.spawnSync`, runs under `test:harness`'s 60 s.
+  bounded, such as one that runs a child with `Bun.spawnSync`, runs under `test:harness`'s 60 s, or
+  under a shorter limit it states with a reason on the line above, as three rows of
+  `outside-agent-acceptance.test.ts` do (`row-limits.test.ts` holds those reasons).
 
 - A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
   real wait, because only real time moves that peer (`local-instance-support.test.ts`,
