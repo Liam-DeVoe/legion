@@ -16,7 +16,8 @@
  * `-t` filter.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
- * would kill a process its row is still using: the probe the seven driven rows of
+ * would kill a process its row is still using: the outside driver's `hold`, which three rows of
+ * `outside-edge-hold.test.ts` send SIGTERM while it runs, the probe the seven driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the hosts of the
