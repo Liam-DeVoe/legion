@@ -243,12 +243,13 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 // The texts the daemon sends an architect about children still in the workflow tell it how a child
 // leaves: by the architect's own status write in Dispatch (record.EndChildRule), and never by an
 // operation the daemon no longer serves or by the old word for the move (dispatch://INFRA-3178 R6).
-// The sign_off and close_root refusals and the pr-merged notice also say that a status the
-// architect wrote counts only once the daemon has taken it, because the Dispatch event that carries
-// it can reach the daemon after the architect calls again. The children-first notice ends a child,
-// released or not, by the same write, and so does the retro-held notice of a parent held before its
-// retro for the issues beneath it, which the daemon also posts beside a person's todo on that parent
-// (heldParentWait's reason). Each row holds only that much of the wording.
+// The sign_off and close_root refusals, the pr-merged notice and the retro-held notice of a parent
+// held before its retro for the issues beneath it also say that a status the architect wrote counts
+// only once the daemon has taken it, because the Dispatch event that carries it can reach the
+// daemon after the architect calls again. The children-first notice ends a child, released or not,
+// by the same write. The why the daemon posts beside a person's todo on a held parent is for that
+// person, and carries none of this (heldParentWait's reason, held in restart_task_test.go). Each
+// row holds only that much of the wording.
 func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -290,7 +291,7 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 		{"children-first", false, func(*testing.T) string {
 			return ChildrenFirstNotice(record.ChildWait{Parent: "LEGION-208", Open: []record.OpenChild{{Key: "LEGION-209", Status: "triage"}}}).Reason
 		}},
-		{"retro-held", false, func(*testing.T) string {
+		{"retro-held", true, func(*testing.T) string {
 			return retroHeldNotice("LEGION-208", []string{"LEGION-209"}).Reason
 		}},
 	} {

@@ -97,6 +97,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// Another architect's stop names it in the notice; one's own stop sends none.
 				{"`stop_task`", "`stoppedBy`"},
 				{"no notice", "200", "`stop_task`"},
+				// A task-stopped notice reaches the stopped issue's own architect, and the daemon
+				// sets back an architect's status write on its own issue (record.OwnsUnder), so
+				// that architect sends the end of that work to the architect above it rather than
+				// writing a status the daemon sets back for it to write again.
+				{"own issue's task stopped", "architect above it", "`envoy_publish`", "sets back"},
 				// A new version of plan.md names the token of the text it replaces.
 				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
 				// A child out of the workflow takes a new plan after its rerun: stop, then give it.

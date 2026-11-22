@@ -16,7 +16,8 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   Either a step failed and no earlier step of the type implementation can take the work back, and the reason names the task and the step: read the failed step's report.
   Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
-  Then give a later version that changes the task, or end the work: for a child, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
+  Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
+  When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
 
 - **`retro-held`:** a parent's task passed its last step with no `acceptance:owner` step to wait in, while issues beneath it are still in the workflow.
   Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.

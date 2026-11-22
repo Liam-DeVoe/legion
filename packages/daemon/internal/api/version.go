@@ -1387,7 +1387,7 @@ package api
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
 // which refuses a value it does not name rather than stripping it like an unknown key, so a word
 // added to the ladder later bumps this number again, and is served down by the value strip that
-// reads the table's arrivals (shaping.go's withoutUnadmittedHeldWords), as 212 did with
+// reads the table's arrivals (shaping.go's withoutUnadmittedHeldWords), as 219 did with
 // `children_before_retro` and `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (shaping.go's stateFor, withoutHeld), as a caller below 94 is served every
@@ -1526,8 +1526,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them. From 212 a parent held there for the issues beneath it
-// reads `children_before_retro` and a task that was stopped there `task_stopped` (212 below).
+// reader of 98 or above refuses them. From 219 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (219 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
@@ -3022,7 +3022,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 212: the owner of an issue gives Legion a plan with one task, and the plan picks which of
+// 219: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
 // version of a document of the issue from Dispatch, with its blocks, and answers 200 with the
@@ -3057,7 +3057,7 @@ package api
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
 // the two new reasons; only this release writes plan rows and those reasons, so no issue a release
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
-// `returnTo` to a daemon below 212 would have the completion refused, and a daemon below 212 has
+// `returnTo` to a daemon below 219 would have the completion refused, and a daemon below 219 has
 // neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
 // Every architect request of one issue — register_plan, stop_task, sign_off,
 // request_backward_move, retry_or_escalate, close_root and register_gate — names on its fact the
@@ -3072,23 +3072,23 @@ package api
 // `409 SIGNOFF_STALE_GENERATION`, `409 BACKWARD_STALE_GENERATION`, `409 RETRY_STALE_GENERATION`,
 // `409 CLOSE_STALE_GENERATION` or `409 GATE_STALE_GENERATION` for a run that is over, and
 // `409 SIGNOFF_STALE_ENTRY` or `409 BACKWARD_STALE_ENTRY` for a run of accepting that is over.
-// The answers and the requests of the two new routes are recorded at 212 and at no contract below
+// The answers and the requests of the two new routes are recorded at 219 and at no contract below
 // it. register_plan's answer arrives whole with its route (answers.go's AnswerPlanRegister), and
 // stop_task answers the empty object every fact route answers (AnswerEmptyObject), an answer
 // older than its route. A refused plan's `409 PLAN_REFUSED` carries `reasons` beside its code and
-// its sentence (`api.PlanRefusal`), a key of the refusal answer: a caller below 212 is served
+// its sentence (`api.PlanRefusal`), a key of the refusal answer: a caller below 219 is served
 // that refusal as its Failure alone, as a PauseFailure is below 178 (shaping.go's refusal row,
 // placed by the caller's pod where it states no contract: placedByPod), although no plugin below
-// 212 calls the route. The completion's request gains `returnTo`, and the request records of 212
+// 219 calls the route. The completion's request gains `returnTo`, and the request records of 219
 // hold it and the two new routes' requests; no recorded request field leaves.
 // One value set of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gets
 // wider: an issue's `holdReason` takes `task-stopped` (its owner stopped its task) and `children`
 // (a parent whose plan has no acceptance step waits, before its retro, for the issues beneath it)
-// beside `escalated`. Every reader below 212 reads the field with `z.literal("escalated")`, which
-// admits that one value as an enumeration of one would, and the reader of 212 reads it with a
+// beside `escalated`. Every reader below 219 reads the field with `z.literal("escalated")`, which
+// admits that one value as an enumeration of one would, and the reader of 219 reads it with a
 // `z.enum` of the three, so the field is a row of answers.go's EnumeratedFields: `escalated` is
-// recorded at the floor, and the two new words at 212. A caller whose contract (the one it states,
-// else its pod's lowest) is below 212 is served an issue held for either new reason with no
+// recorded at the floor, and the two new words at 219. A caller whose contract (the one it states,
+// else its pod's lowest) is below 219 is served an issue held for either new reason with no
 // `holdReason`, as a hold of no reason is served (shaping.go's valueStrips,
 // `withoutUnadmittedHoldReason`).
 // A second value set gets wider with it: `admission.held`'s `reason` takes
@@ -3096,9 +3096,9 @@ package api
 // with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
 // that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
-// plugin reads the word as a `z.enum`, so a caller whose contract is below 212 is served each row
+// plugin reads the word as a `z.enum`, so a caller whose contract is below 219 is served each row
 // of either word as `unclassified` with no `heldBy`, the row it read for that issue before
-// (valueStrips, `withoutUnadmittedHeldWords`; answers.go's heldReasons records the two at 212).
+// (valueStrips, `withoutUnadmittedHeldWords`; answers.go's heldReasons records the two at 219).
 // `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
 // key below `projects`, which no reader types, so no record holds it and nothing is served down
 // (answers.go's typedSettings). The three notice kinds this entry adds (`task-stopped`,
@@ -3108,11 +3108,14 @@ package api
 // other open pull request declared at a reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 381 open pull requests, made between 2026-11-21T09:45:11Z
 // and 09:45:33Z. The forward merge of 2026-11-21 that brought in c03d3afe brought main's 205
-// (INFRA-3178's entry above). A reading of every open pull request at that merge, which read all
-// 420 heads between 2026-11-21T22:07:20Z and 22:07:49Z, found 206 declared by #3712 and #4539,
-// 207 by seven, 208 by #4175, 209 by #4049 and #4580, 210 by #4661, 211 by #4902, and nothing at
-// 212, so this entry moved to 212. From this entry the last number of answers.go's
-// SupportedContracts is `api.OwnerPlanContract`, after `childRouteRemovedContract`, and
-// `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
-// number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 212
+// (INFRA-3178's entry above), and a reading of every open pull request at that merge, which read
+// all 420 heads between 2026-11-21T22:07:20Z and 22:07:49Z, found 212 declared by no other, so
+// this entry moved to 212. The reading before the push of 2026-11-22, which read all 431 heads
+// between 01:05:21Z and 01:05:49Z, found 212 declared by #4030, #4392, #4540, #4580 and #4682,
+// and 219 by none, so this entry moved to 219: the lowest number above main's 205 that no open
+// pull request declares and no later part of this work, stacked on this branch, holds. From this
+// entry the last number of answers.go's SupportedContracts is `api.OwnerPlanContract`, after
+// `childRouteRemovedContract`, and `shapedAnswersContract` and `repositoriesLiveContract` stay 193
+// and 202. Read the base's own number and every open pull request again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 219
