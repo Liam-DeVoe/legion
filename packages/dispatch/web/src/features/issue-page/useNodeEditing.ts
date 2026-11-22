@@ -1,3 +1,4 @@
+import type { DisplayTree } from "@legion/contracts";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
@@ -198,10 +199,10 @@ export function useNodeEditing({
   onEditing: OnEditing;
   /** Called at each edit of the row's editor's own that changes the document - the reader's
    *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
-   *  `onOwnEdit`) - with the key of the row being edited and the words the edit left in the
-   *  row's block, so the tree reads a read that drops the row before one draws those words as
-   *  the reader's. */
-  onOwnEdit: (row: string, words: string) => void;
+   *  `onOwnEdit`) - with the key of the row being edited and the row's block as the edit left
+   *  it, so the tree reads a read that drops the row while its note of the edit lasts as the
+   *  reader's (`IssueTree.tsx`'s `ownAct`). */
+  onOwnEdit: (row: string, block: DisplayTree) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -278,9 +279,9 @@ export function useNodeEditing({
         hold.current = "on";
         holdChanged.current?.();
       },
-      (words) => {
+      (block) => {
         const { onOwnEdit: heard, row } = ownEdit.current;
-        if (row !== undefined) heard(row, words);
+        if (row !== undefined) heard(row, block);
       }
     );
   }, []);

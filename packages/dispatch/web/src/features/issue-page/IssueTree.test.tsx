@@ -11977,10 +11977,10 @@ test("a collaborator's edit of the focused row being edited, then a read that dr
 });
 
 // Milkdown writes a heading's `id` from its words in a transaction of its own, kept out of the
-// undo history (`addToHistory: false`), after any heading's words change: here a collaborator's
-// edit of the heading above the statement. That transaction is the editor's and not the reader's,
-// so it notes nothing (`holdEditsToBlock`), and the read that then drops the row being edited is
-// another session's: the focus stays on the page's body.
+// undo history (`addToHistory: false`), after a change of a heading's words that moves its `id`:
+// here a collaborator's edit of the heading above the statement. That transaction is the editor's
+// and not the reader's, so it notes nothing (`holdEditsToBlock`), and the read that then drops the
+// row being edited is another session's: the focus stays on the page's body.
 test("the heading id the editor writes after a collaborator's edit notes nothing, and a read that then drops the row being edited leaves the focus on the page's body", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -12075,6 +12075,67 @@ test("the reader's edit, the read that draws it, Escape and three other reads le
     view,
     "after the reader's edit, its read, Escape and three other reads"
   );
+});
+
+// An edit's note ends at the first tree drawn after the reader leaves the row, though no tree has
+// drawn the words the edit left. Here a collaborator's letter, saved
+// before the read of the reader's edit, is drawn merged with it, so no read draws the reader's
+// words alone. The reader presses Escape, three reads that draw the statement as it is come, and
+// then another session's read drops the row the focus is back on: the focus stays on the page's
+// body.
+test("the reader's edit, a collaborator's drawn with it, Escape and three other reads leave a read that then drops the focused row another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  // A letter at the end of the word before the full stop.
+  collaboratorEdits(room, "A new statement of the spec".length, 0, "s");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A new statement of the specs.")
+  );
+  await act(async () => view.reread(statementRead("A new statement of the specs.")));
+  await escapeToStatement(user, view);
+
+  for (let read = 0; read < 3; read += 1) {
+    await act(async () => view.reread(statementRead("A new statement of the specs.")));
+  }
+  expect(
+    rowsFor(view.container, "spec#b-r1")[0],
+    "a read that drew the statement as it is took the focus off its row"
+  ).toHaveFocus();
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(
+    view,
+    "after the reader's edit, a collaborator's drawn with it, Escape and three other reads"
+  );
+});
+
+// The one tree drawn after the reader leaves the row still reads the edit's note, as the read of
+// their last edit may come just after they leave, so a drop there is theirs. A collaborator's
+// change that drops the row in that one tree is counted so too, which the rule
+// accepts: the focus moves on to the row now in the statement's place, which loses the reader
+// nothing. Here the reader types, presses Escape, and the very next read, of a collaborator's
+// edit that takes the filter's word out, drops the row.
+test("the reader's edit, Escape and the very next read, a collaborator's that drops the focused row, hand the focus to the row now in its place", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  await escapeToStatement(user, view);
+
+  // The filter's word, `statement`, typed over.
+  collaboratorEdits(room, 6, 9, "rule");
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  expect(
+    rowsFor(view.container, "comment-3")[0],
+    "the read after Escape that dropped the row the reader edited left the focus on no row of the tree, or not on the row now in its place"
+  ).toHaveFocus();
+  await expectReadersPlace(view.container, "comment-3");
 });
 
 // An edit the reader takes back leaves the words as they were, so no tree ever draws the node

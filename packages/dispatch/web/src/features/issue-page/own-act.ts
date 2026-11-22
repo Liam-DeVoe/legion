@@ -2,7 +2,7 @@ import { replaceEqualDeep } from "@tanstack/react-query";
 import { createContext, useContext } from "react";
 
 import type { DisplayTree } from "../../api/types";
-import { wordsOf } from "../refs/tree-fragment";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { nodeWords, type TreeNode } from "./issue-tree";
 
 /**
@@ -59,15 +59,16 @@ export function editWords(block: DisplayTree): string {
  * a block of a document is the reading of the block's whole stored text. A node whose read sent
  * no reading - this page asks every read for one (`api/client.ts`'s `Dispatch-Trees`) - is read
  * from its words as that read holds them (`TreeNode.text`). A decision's reading is the reading
- * of its section, whose first block is the decision's own heading, the block its row edits
- * (`lineReading`), so a decision whose read sent one is drawn with that heading's words. The
- * issue's words join its key to its title, which no edit leaves, but the outline draws no row of
- * the issue, so no edit notes it.
+ * of its section, whose first block is the decision's own heading, the block its row edits, so a
+ * decision whose read sent one is drawn with the words of the first block of it that holds any
+ * (`refs/tree-fragment.ts`'s `firstWordedBlock`), the block its one line is read from
+ * (`lineReading`). The issue's words join its key to its title, which no edit leaves, but the
+ * outline draws no row of the issue, so no edit notes it.
  */
 export function drawnWords(node: TreeNode): string {
-  const content = node.type === "decision" ? node.tree?.content : undefined;
-  const heading: DisplayTree | undefined = Array.isArray(content) ? content[0] : undefined;
-  return heading === undefined ? flatWords(nodeWords(node)) : editWords(heading);
+  const block =
+    node.type === "decision" && node.tree !== undefined ? firstWordedBlock(node.tree) : undefined;
+  return block === undefined ? flatWords(nodeWords(node)) : editWords(block);
 }
 
 /** `words` with each run of white space made one space and none left at either end. */
