@@ -31,7 +31,7 @@ import (
 // watcher, which its legacy Watch, History and Keys all run, arms an init timer while its scan is
 // pending whose callback can send on the channels the subscription's end has just closed, a "send
 // on closed channel" panic in a goroutine nats.go owns (the `initDoneTimer.Reset` of
-// `(*kvs).WatchFiltered`, unfixed through v1.55.0), while the jetstream package's watcher has no
+// `(*kvs).WatchFiltered` in v1.55.0). The jetstream package's watcher has no
 // such timer and closes its updates only on the subscription goroutine's own exit (its own
 // `(*kvs).WatchFiltered`). So the legacy handle is held unexported and KeyValue forwards only the
 // calls it checks: nothing can reach the legacy handle's Watch, WatchAll, WatchFiltered, History,
@@ -60,7 +60,7 @@ type KeyValue struct {
 	streams jetstream.JetStream
 	// owner is the client that owns the connection streams is on, found once when the handle is
 	// built (clientOwning), whose record of the server's refusals the handle's calls read
-	// (refusedOn, refusedAfterOn); nil on a connection no client owns.
+	// (refusedOn, refusedAfterOn, watchRefused); nil on a connection no client owns.
 	owner *Client
 }
 
@@ -130,8 +130,8 @@ const (
 // ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
 // caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
 // such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again
-// under its own lock, on a request whose budget is two seconds, and a read that kept it waiting
-// longer would stop every role and session read of the process rather than save a start.
+// for a read whose caller waits two seconds for it, and an open that kept sending would leave that
+// read and every one after it unanswered rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
@@ -175,12 +175,32 @@ func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.J
 	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
 }
 
-// refusedOn is call, a request kv makes once in a while of its bucket's stream (a watch's create,
-// a read of the stream), read for the server's refusal of subjects as it arrives (refusedBy), in
-// the record of the client that owns kv's connection, found when kv was built. A handle on a
-// connection no client owns sends as call does.
+// refusedOn is call, a request kv makes once in a while of its bucket's stream (a read of the
+// stream), read for the server's refusal of subjects as it arrives (refusedBy), in the record of
+// the client that owns kv's connection, found when kv was built. A handle on a connection no
+// client owns sends as call does.
 func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
 	return refusedBy(kv.owner, subjects, call)
+}
+
+// watchRefused is watch, the construction of a watcher whose consumer create has the shape create
+// describes, read for the server's refusal of a create of that shape as it arrives
+// (refusedByRecord), in the record of the client that owns kv's connection: a watch the grant
+// refuses ends at once naming its refusal, and one the grant allows returns its own watcher
+// whatever other request on the connection the server refuses meanwhile. A refusal that answers
+// the watch before its construction returns leaves that construction running to its own end, and
+// a watcher it then builds is stopped and read until it closes, since no caller holds it (a grant
+// that refuses a consumer by name is the one way to get there: watchCreate.matches). A handle on a
+// connection no client owns watches as watch does.
+func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyWatcher, error)) (jetstream.KeyWatcher, error) {
+	if kv.owner == nil {
+		return watch()
+	}
+	denied := func(sentAt time.Time) error { return kv.owner.deniedPublishMatching(create.matches, sentAt) }
+	return refusedByRecord(kv.owner, denied, watch, func(watcher jetstream.KeyWatcher) {
+		_ = watcher.Stop()
+		DrainWatcher(watcher)
+	})
 }
 
 // refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
@@ -193,15 +213,15 @@ func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T
 	return refusedAfter(kv.owner, subjects, call)
 }
 
-// keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.53.1
-// kv.go, the default KV prefix).
+// keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.55.0
+// kv.go:383-385, the default KV prefix).
 func (kv KeyValue) keySubjects(key string) func() []string {
 	return func() []string { return []string{"$KV." + kv.Bucket() + "." + key} }
 }
 
 // getSubjects are the requests a read of key's last value can send: a direct get of the key's last
 // message, on a bucket that allows direct gets, and a get from the stream's leader on one that
-// does not (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetLastBySubjectT).
+// does not (nats.go@v1.55.0 kv.go:642-686, js.go:216-217).
 func (kv KeyValue) getSubjects(key string) func() []string {
 	return func() []string {
 		stream := "KV_" + kv.Bucket()
@@ -210,16 +230,57 @@ func (kv KeyValue) getSubjects(key string) func() []string {
 }
 
 // revisionSubjects are the requests a read of one revision can send: a direct get by sequence and
-// a get from the stream's leader (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetT).
+// a get from the stream's leader (nats.go@v1.55.0 kv.go:642-686, js.go:214).
 func (kv KeyValue) revisionSubjects() []string {
 	stream := "KV_" + kv.Bucket()
 	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
 }
 
-// watchSubjects are the requests a watch sends to create its consumer, whose name nats.go picks as
-// it sends (jetstream ordered consumers): every consumer create under the bucket's stream.
-func (kv KeyValue) watchSubjects() []string {
-	return []string{jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket(), ">")}
+// watchCreate is the shape of the request a watch sends to create its consumer, as nats.go builds
+// it (nats.go@v1.55.0 jetstream/kv.go:1356-1361, js.go:1877 and 1963-1969, jsm.go:505-525):
+// prefix, `$JS.API.CONSUMER.CREATE.KV_<bucket>.`, then the consumer's name, then, for a watch of
+// one key, a dot and filter, `$KV.<bucket>.<key>` (every key, `$KV.<bucket>.>`, for a watch given
+// none, jetstream/kv.go:1268-1274). A watch of several keys sends their filters in the request's
+// body and none in its subject, so its filter is empty.
+type watchCreate struct {
+	prefix, filter string
+}
+
+// watchCreate is the shape of the create a watch of keys through kv sends.
+func (kv KeyValue) watchCreate(keys []string) watchCreate {
+	create := watchCreate{prefix: jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket()) + "."}
+	switch len(keys) {
+	case 0:
+		create.filter = "$KV." + kv.Bucket() + "." + jetstream.AllKeys
+	case 1:
+		create.filter = "$KV." + kv.Bucket() + "." + keys[0]
+	}
+	return create
+}
+
+// matches reports whether subject is a create of this shape: prefix, one token for the name, and
+// then a dot and the filter, or nothing after the name when there is no filter. nats.go picks the
+// name at random as it sends the create (getHash(nuid.Next()), js.go:1968), so a grant cannot
+// tell two creates of one shape apart by it: the refusal of a create of this shape is the refusal
+// this watch's own create meets. A create of the bucket's stream of another shape -- a watch of
+// another key, or a watch of one key beside one of several -- is another request, which a grant can
+// refuse while it allows this watch's, so it never answers this watch. The one exception is a grant
+// that refuses one consumer by name, as it can a durable's: the refusal of that consumer's create
+// answers a watch of the same shape too, before the watch's own create, which the grant allows, has
+// built its watcher, and watchRefused stops that watcher.
+func (create watchCreate) matches(subject string) bool {
+	rest, ok := strings.CutPrefix(subject, create.prefix)
+	if !ok {
+		return false
+	}
+	name, filter, filtered := strings.Cut(rest, ".")
+	if name == "" {
+		return false
+	}
+	if create.filter == "" {
+		return !filtered
+	}
+	return filtered && filter == create.filter
 }
 
 // Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
@@ -251,19 +312,19 @@ func (kv KeyValue) Bucket() string {
 
 // WatchKeys watches the keys matching keys (jetstream.AllKeys for every key) through kv's jetstream
 // handle, checking keys against the subject a watcher's create request builds. nats.go ties the
-// subscription's life to ctx, which it also uses for the consumer's create request (js.go:
-// 1951-1952, 2052-2058): the watcher ends at ctx's deadline, so one that follows the bucket takes a
-// ctx without one, and the caller cancels ctx once it has stopped the watcher, or the goroutine
-// nats.go parks on ctx.Done() outlives the watch. A ctx without a deadline still bounds the create,
-// by the JetStream request wait of the handle's legacy push context, 5 s (jsm.go:1791-1795,
-// js.go:299). The watcher sends a nil entry once it has delivered every existing key, and closes
-// its updates only once its subscription has ended; whoever stops it keeps reading it until then,
-// since nats.go's delivery blocks on a full 256-entry buffer.
+// subscription's life to ctx, which it uses for the consumer's create request (js.go:1970-1973)
+// and subscription lifetime (js.go:2072-2077). The watcher ends at ctx's deadline, so one that
+// follows the bucket takes a ctx without one, and the caller cancels ctx once it has stopped the
+// watcher, or the goroutine nats.go parks on ctx.Done() outlives the watch. A ctx without a
+// deadline still bounds the create by the JetStream request wait of the handle's legacy push
+// context, 5 s (js.go:303, jsm.go:1844-1846). The watcher sends a nil entry once it has delivered
+// every existing key, and closes its updates only once its subscription has ended; whoever stops it
+// keeps reading it until then, since nats.go's delivery blocks on a full 256-entry buffer.
 func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
+	watcher, err := kv.watchRefused(kv.watchCreate([]string{keys}), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -277,7 +338,7 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 			return nil, err
 		}
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
+	watcher, err := kv.watchRefused(kv.watchCreate(keys), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -317,8 +378,9 @@ func (kv KeyValue) write(key string) error {
 // jetstream.ErrInvalidKey on a watch through the jetstream handle) as the ErrInvalidKey it is,
 // naming key. nats.go checks the alphabet before it sends anything (an exact key on a read, write
 // or delete, a search key on a watch), so every call through the handle reads its answer rather
-// than repeat its check. RefusesRead is the one exception: it answers without calling nats.go, so
-// it repeats the check as natsKeyValid, which must follow nats.go's validKeyRe on every upgrade.
+// than repeat its check. RefusesRead and RefusesWrite are the exceptions: they answer without
+// calling nats.go, so they repeat the check as natsKeyValid, which must follow nats.go's validKeyRe
+// on every upgrade.
 func invalidKey(key any, err error) error {
 	if errors.Is(err, nats.ErrInvalidKey) || errors.Is(err, jetstream.ErrInvalidKey) {
 		return fmt.Errorf("%w: key %q: %w", ErrInvalidKey, key, err)
@@ -385,11 +447,35 @@ func (kv KeyValue) RefusesRead(key string) error {
 	return nil
 }
 
+// RefusesWrite answers the refusal a Put, PutString, Create or Update of key through this handle
+// would answer before anything is sent, and nil when a write of key would reach the bucket. It
+// sends nothing itself.
+//
+// It is for a caller that builds a key from text it does not control and must know, before it
+// acts, whether this build can ever write that key, rather than meet the refusal partway through
+// its writes: the webhook redelivery sweep keys a delivery by the GUID GitHub gave it, and leaves
+// out a delivery whose keys the bucket refuses. What it answers is exactly the refusal a write
+// answers before sending, so the two cannot drift silently: the writes' own check first (write),
+// then nats.go's key alphabet (natsKeyValid), as RefusesRead answers for a read. A write's bound
+// is tighter than a read's (watchOverhead against getOverhead), so a key RefusesRead takes may be
+// one RefusesWrite refuses. TestRefusesWriteAnswersTheSameRefusalAPutOfTheKeyAnswers is what pins
+// it, against the refusal a real Put answers.
+func (kv KeyValue) RefusesWrite(key string) error {
+	if err := kv.write(key); err != nil {
+		return err
+	}
+	if !natsKeyValid(key) {
+		return invalidKey(key, nats.ErrInvalidKey)
+	}
+	return nil
+}
+
 // natsKeyValid copies nats.go's keyValid, which every KV call there runs on
 // an exact key, refusing it locally without sending anything: a key is valid when it is not empty,
 // neither starts nor ends in a dot, and holds only `-`, `/`, `_`, `=`, `.`, a letter or a digit
 // (its `validKeyRe`). The copy exists because keyValid is unexported, so a caller that asks
-// what a read would be refused for (RefusesRead) cannot ask nats.go itself.
+// what a read or a write would be refused for (RefusesRead, RefusesWrite) cannot ask nats.go
+// itself.
 func natsKeyValid(key string) bool {
 	if key == "" || key[0] == '.' || key[len(key)-1] == '.' {
 		return false
