@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
@@ -279,14 +281,20 @@ type Client struct {
 	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
 	identity   listenerIdentity
 	httpClient *http.Client
+	// window is how long every listener call gets (roundTrip): CallWindow, or what WithTimeout
+	// names. clock is what that window runs on: clock.Real(), or what WithClock names.
+	window time.Duration
+	clock  clock.Clock
 	// logger takes the line a call made again on the shared token writes (do); slog.Default()
 	// unless WithLogger names another.
 	logger *slog.Logger
 }
 
-// defaultTimeout is the window every listener call gets. A send that misses it is
+// CallWindow is the window every listener call gets. A send that misses it is
 // ErrReceiptTimeout rather than a plain failure, because the envelope may already be published.
-const defaultTimeout = 5 * time.Second
+// It is exported because a test whose server runs on a fake clock moves that clock past the
+// window to make a call miss it (api's comment delivery tests).
+const CallWindow = 5 * time.Second
 
 // Option configures a Client.
 type Option func(*Client)
@@ -294,7 +302,14 @@ type Option func(*Client)
 // WithTimeout replaces the window every listener call gets. Tests use it to exercise a receipt
 // timeout without waiting out the production window.
 func WithTimeout(timeout time.Duration) Option {
-	return func(c *Client) { c.httpClient.Timeout = timeout }
+	return func(c *Client) { c.window = timeout }
+}
+
+// WithClock sets the clock every listener call's window runs on. Without it the window is the
+// real clock's; a test passes a clocktest.Fake and moves it past the window, so a listener that
+// went quiet is a receipt timeout at the moment the test chooses.
+func WithClock(clock clock.Clock) Option {
+	return func(c *Client) { c.clock = clock }
 }
 
 // WithToken sets the bearer every listener call sends (cmd/dispatch: ENVOY_TOKEN). Without it, or
@@ -337,10 +352,10 @@ func WithLogger(logger *slog.Logger) Option {
 // New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
-		httpClient: &http.Client{
-			Timeout: defaultTimeout,
-		},
+		baseURL:    strings.TrimSuffix(baseURL, "/"),
+		httpClient: &http.Client{},
+		window:     CallWindow,
+		clock:      clock.Real(),
 	}
 	for _, option := range options {
 		option(client)
@@ -349,6 +364,32 @@ func New(baseURL string, options ...Option) *Client {
 		client.logger = slog.Default()
 	}
 	return client
+}
+
+// roundTrip sends request within the client's window on the client's clock. The window covers
+// reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
+// released when the caller closes the body.
+func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
+	ctx, cancel := c.clock.WithTimeout(request.Context(), c.window)
+	response, err := c.httpClient.Do(request.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	response.Body = windowedBody{ReadCloser: response.Body, cancel: cancel}
+	return response, nil
+}
+
+// windowedBody is an answer's body whose Close also ends the window roundTrip opened for its call.
+type windowedBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b windowedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // do makes one listener call, the request build makes, and returns the listener's answer or the
@@ -378,7 +419,7 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		if err := c.authorize(request, shared); err != nil {
 			return nil, fmt.Errorf("%s: %w", route, err)
 		}
-		response, err := c.httpClient.Do(request)
+		response, err := c.roundTrip(request)
 		if err != nil {
 			return nil, transport(err)
 		}
@@ -921,10 +962,9 @@ func keptSend(response *http.Response) (SendResult, error) {
 // client finished writing can have reached the listener, and only that one may be
 // ErrReceiptTimeout - the class that tells a human the message may already have been published
 // and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and reports
-// the same "Client.Timeout exceeded while awaiting headers" text as a listener that went quiet,
-// so the text cannot tell them apart; requestWritten can. The cause is wrapped, not formatted,
-// so a caller can ask the same question again. Either way no listener answered, so both are
-// ErrUnreachable.
+// the same context deadline as a listener that went quiet, so the error cannot tell them apart;
+// requestWritten can. The cause is wrapped, not formatted, so a caller can ask the same question
+// again. Either way no listener answered, so both are ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
 	var timeout net.Error
 	timedOut := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())

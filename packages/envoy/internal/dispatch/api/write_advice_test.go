@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -971,6 +972,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	s := &server{
 		deps:              deps,
 		lifetime:          t.Context(),
+		clock:             clock.Real(),
 		suggestionTimeout: suggestionTimeout,
 		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {

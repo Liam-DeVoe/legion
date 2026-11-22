@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -57,6 +59,49 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 	})
 	if err == nil || errors.Is(err, ErrReceiptTimeout) {
 		t.Fatalf("refused send = %v, want a failure that is not a receipt timeout", err)
+	}
+}
+
+// A send's window runs on the clock WithClock names: a listener that holds the send is still
+// waited for however long the machine takes, until the clock reaches the window the call armed,
+// and the send then fails as the receipt timeout it is. The window is armed before the request
+// goes out, so once the listener holds the request the window stands at the clock's start plus
+// CallWindow.
+func TestASendsWindowRunsOnTheClientsClock(t *testing.T) {
+	reached, held := make(chan struct{}, 1), make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+		select {
+		case <-held:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(held)
+		listener.Close()
+	}()
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := New(listener.URL, WithClock(fake)).Send(context.Background(), SendInput{
+			TargetSession: "s1", Message: "held until the window", IdempotencyKey: "held:steer",
+		})
+		sent <- err
+	}()
+	testwait.Receive(t, "the send to reach the listener", reached)
+	window := start.Add(CallWindow)
+	if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(window) {
+		t.Fatalf("the clock holds %v while the listener holds the send, want the send's window alone, at %v", armed, window)
+	}
+	select {
+	case err := <-sent:
+		t.Fatalf("the send ended (%v) before its clock reached its window", err)
+	default:
+	}
+	fake.Set(window)
+	if err := testwait.Receive(t, "the send to end once its clock reached its window", sent); !errors.Is(err, ErrReceiptTimeout) {
+		t.Fatalf("a send whose clock reached its window = %v, want ErrReceiptTimeout", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -56,6 +57,16 @@ func newTargetedMessageHandler(t *testing.T, envoyURL string, window ...time.Dur
 		options.envoyTimeout = window[0]
 	}
 	handler, database, _ := newTestServer(t, options)
+	return handler, database
+}
+
+// newTargetedMessageHandlerOn is newTargetedMessageHandler on a server whose clock, which a
+// comment's mention lookups and every listener call's window run on, is clock: a test whose
+// lookups must be answered however late the listener answers them passes clocktest.Held(), and a
+// test of a bound moves a fake to it.
+func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: envoyURL, clock: clock})
 	return handler, database
 }
 

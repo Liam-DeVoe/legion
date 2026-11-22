@@ -24,6 +24,8 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -131,6 +133,9 @@ type testServerOptions struct {
 	// goroutines out; a test that stops the server before it ends (the socket's) passes one it
 	// can cancel itself. It must end by the test's end, so derive it from t.Context().
 	lifetime context.Context
+	// clock is the server's Deps.Clock, which its timers and the listener client's window run
+	// on: nil is clock.Real(), and a test that drives a timer passes a clocktest.Fake.
+	clock clock.Clock
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
 	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
@@ -147,6 +152,11 @@ type testServerOptions struct {
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
+	// liveSocketClock is the server's Deps.LiveSocketClock, which a live socket's pong deadline, its
+	// wait for the page's close frame and its drain of a frame past the read limit run on: nil is
+	// clock.Real(), and a test whose sockets must not end on a late pong passes clocktest.Held(), or
+	// a fake it moves to each deadline.
+	liveSocketClock clock.Clock
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -337,11 +347,13 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:           options.buildCommit,
 		OutboxPublishes:       options.outboxPublishes,
 		Metrics:               options.metrics,
+		Clock:                 options.clock,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
@@ -384,7 +396,18 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // lifetime is context.Background(): a related-item check it runs starts a statistics refresh and
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
-	return &server{deps: deps, lifetime: context.Background()}
+	return &server{deps: deps, lifetime: context.Background(), clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
+}
+
+// awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
+// what and the deadlines it last saw when none ever is. It looks for the one deadline rather than a
+// count, since the server's other timers on the same fake may be pending beside it.
+func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
 }
 
 // writeSessionRecord answers GET /v1/registry/{session_id} from the rows a stub listener also

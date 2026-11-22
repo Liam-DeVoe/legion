@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -187,6 +188,14 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
+	// heartbeats after the page's last pong, the wait for the page's close frame once the socket
+	// sent its own (liveSocketCloseWait), and the drain's wait for the rest of a frame past the read
+	// limit, liveSocketCloseWait too, which takes the pong deadline's place (drainReads). Nil is
+	// clock.Real(), as a deployment leaves it; only a test sets another, a clocktest fake on which
+	// no page's reads end until the test moves it there. It is not Clock, so a test that moves the
+	// server's clock through its heartbeats ends no read with it.
+	LiveSocketClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -219,6 +228,13 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Clock is the clock every timer of this package that a test asserts runs on: the heartbeat on
+	// which a socket resolves its caller again (whileCallerResolves), the listener lookups'
+	// windows (mentionLookupTimeout, the listener client's window), the take-over's tries
+	// (takeoverRetry), the related-item check's allowance (relatedBounds) and an agent view's wait
+	// for its replay (agentStreamReplayTimeout). Nil, which every deployment leaves it, is
+	// clock.Real(); a test passes a clocktest.Fake and moves it.
+	Clock clock.Clock
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -314,6 +330,9 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Clock is the clock the API's timers and the listener client's window run on; see
+	// Deps.Clock. Nil is clock.Real().
+	Clock clock.Clock
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -351,6 +370,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
+		}
+		if input.Clock != nil {
+			options = append(options, envoy.WithClock(input.Clock))
 		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
@@ -406,6 +428,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Clock:                  input.Clock,
 	}, nil
 }
 
@@ -456,7 +479,9 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime   context.Context
+	lifetime context.Context
+	// clock is Deps.Clock, clock.Real() where that is nil (register; directServer).
+	clock      clock.Clock
 	routeIndex []routeIndexEntry
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
@@ -799,7 +824,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, clock: cmp.Or[clock.Clock](deps.Clock, clock.Real()), agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -1019,13 +1044,16 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			// The heartbeat runs on the server's clock, so a test that drives a fake decides
+			// when the caller is resolved again rather than shortening the interval.
+			heartbeat := s.clock.NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
+				case <-heartbeat.C():
+					heartbeat.Reset(s.deps.StreamHeartbeat)
 					// The check resolves the admission's credential from a detached copy of
 					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
@@ -1839,6 +1867,30 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 		s.deps.Events.Publish(event)
 	}
 	s.storeEventDisplayTrees(ctx, events)
+}
+
+// boundedByClock is ctx ended d from now on the server's clock, with cause as the cause its end
+// carries (context.Cause), so the work behind it tells its own bound from the request that ran it
+// going away. The caller cancels it, as it would a context.WithTimeout's. It is the bound the
+// related-item check's allowance takes (relatedBounds): a test moves the server's own fake clock
+// to the deadline the code armed, and no real time decides the outcome.
+//
+// A d already spent (zero or less, which only a test sets - suggestionTimeout) ends the context
+// here, before this returns, so nothing behind it reads at all. A timer of zero or less runs its
+// function on a goroutine of its own, on the real clock as on the fake (clocktest's
+// placeLocked), and work that began before that goroutine ran would be the machine deciding the
+// outcome rather than the case (INFRA-3149).
+func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	bounded, end := context.WithCancelCause(ctx)
+	if d <= 0 {
+		end(cause)
+		return bounded, func() { end(context.Canceled) }
+	}
+	timer := s.clock.AfterFunc(d, func() { end(cause) })
+	return bounded, func() {
+		timer.Stop()
+		end(context.Canceled)
+	}
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
