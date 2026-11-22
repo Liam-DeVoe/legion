@@ -54,11 +54,11 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at its gen", nil)
 		return
 	}
-	admit := func(latest *natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
-		if err := s.rowSignedAtAdmitted(next.Gen, next.SignedAt); err != nil {
+	admit := func(log []natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
+		if err := s.rowSignedAtAdmitted(next.Gen, next.SignedAt, log); err != nil {
 			return err
 		}
-		return s.restoreAdmitted(latest, journals, next)
+		return s.restoreAdmitted(log, journals, next)
 	}
 	row, err := s.holdStore().Restore(r.Context(), natshold.Row{
 		Gen: uint64(body.Gen), Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
@@ -136,9 +136,13 @@ func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 // below_floor). Held follows only a prepare or held entry of its own hold id, so a hold the log
 // shows ended, by a release or by abort from prepare, which leaves no journal entry, is not held
 // again.
-func (s *server) restoreAdmitted(latest *natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
+func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
 	refuse := func(why string) error {
 		return &natshold.Conflict{Err: fmt.Errorf("%w: %s", natshold.ErrBadTransition, why)}
+	}
+	var latest *natshold.LogEntry
+	if len(log) > 0 {
+		latest = &log[len(log)-1]
 	}
 	if next.Phase == string(natsgrant.OperatorPhaseReleased) {
 		if err := s.heldByRecord(latest, journals, next.HoldID); err != nil {

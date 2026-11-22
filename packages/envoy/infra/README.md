@@ -4097,12 +4097,14 @@ a subject nothing else uses, so the probe only shows whether the hub admits a co
 **The operator's clocks.** Every `envoy-infra hold` command signs the row it writes with its own
 machine's clock, and the broker refuses a row signed more than five minutes
 (`signedrecord.SignedAtSkew`) before or after its own clock, or more than five minutes before the
-latest row it has taken: 409 `clock_skew`, naming both times, with nothing stored. So the clocks
+latest signing time it has taken or the log's verified entries hold, which both replicas share:
+409 `clock_skew`, naming both times and the gen compared with, with nothing stored. So the clocks
 of every machine that runs these commands must agree with each other, and with the broker's,
 within five minutes; two clocks each within five minutes of true time can be ten apart, so keep
-them synchronized (NTP), not merely close. A replica whose floor took a wrong time (a row stored
-before this check, say) reads every row after it as unknown; restarting that replica clears its
-floor, and it reads the row again.
+them synchronized (NTP), not merely close. A signing time more than five minutes ahead of the
+broker's clock (a row stored before this check, or read after the broker's clock jumped back) is
+no genuine row's: the broker judges later rows against its own clock instead, so such a time holds
+no correct clock back. A restart does not clear such a time, since the log keeps it, and needs not.
 
 **Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
 command of a hold through the broker's records, one command at a time: while one command's intent

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -315,23 +316,53 @@ type holdMoveBody struct {
 
 // errRowSkewed is a row a move or restore would write whose signed_at the broker refuses: more than
 // signedrecord.SignedAtSkew from the broker's own clock, or more than that before the latest row
-// this broker's floor of the row accepted. It is answered 409 clock_skew, naming both times, and
-// nothing is stored: a row signed by a clock far fast, once stored, would raise the floor past every
-// genuine move until each replica restarts, and one signed far behind would be stored and then read
-// as unknown.
+// this broker's floor of the row accepted, or the latest signing time among the log's verified
+// entries, which every replica shares. It is answered 409 clock_skew, naming both times and the gen
+// compared with, and nothing is stored: a row signed by a clock far fast, once stored, would raise
+// the floor past every genuine move, and one signed far behind would be stored and then read as
+// unknown, on this replica or on another whose floor took a later time.
 var errRowSkewed = errors.New("the row's signed_at is outside the clock-skew allowance")
 
 // rowSignedAtAdmitted judges the signed_at of a row a move or restore would write at gen, before
-// the write: against the broker's own clock, and against this broker's floor of the row
-// (signedrecord.Floor.Admits, which moves nothing). It answers errRowSkewed, naming both times.
-func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time) error {
-	if err := signedrecord.WithinSkewOf(signedAt, time.Now()); err != nil {
+// the write, given log, every log entry as the write's transaction reads it: against the broker's
+// own clock, against this broker's floor of the row (signedrecord.Floor.Admits, which moves
+// nothing), and against the latest signing time among the log's verified entries
+// (signedrecord.NotBackdated), so a row one replica stores never reads as unknown on the other. It
+// answers errRowSkewed, naming both times and the gen compared with.
+func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time, log []natshold.LogEntry) error {
+	now := time.Now()
+	if err := signedrecord.WithinSkewOf(signedAt, now); err != nil {
 		return fmt.Errorf("%w: %w", errRowSkewed, err)
 	}
 	if err := s.holdRowFloor.Admits(gen, signedAt); err != nil {
 		return fmt.Errorf("%w: %w", errRowSkewed, err)
 	}
+	if latest, ok := s.latestSigned(log); ok && gen > latest.Gen {
+		if err := signedrecord.NotBackdated(gen, signedAt, latest.Gen, latest.SignedAt, now); err != nil {
+			return fmt.Errorf("%w: %w", errRowSkewed, err)
+		}
+	}
 	return nil
+}
+
+// verifiedLogEntry reports whether a key of BROKER_NATS_HOLD_SIGNING_KEYS signed e, the row a log
+// entry carries.
+func (s *server) verifiedLogEntry(e natshold.LogEntry) bool {
+	return signedrecord.Verify(s.deps.NATSHold.Keys, e.Sig, signedrecord.HoldRow(e.Gen, e.Phase, e.HoldID, e.SignedAt)) == nil
+}
+
+// latestSigned is the log entry with the latest signing time among those that verify, and false
+// when none does. It verifies the entries from the latest signing time down, so it stops at the
+// first that verifies.
+func (s *server) latestSigned(log []natshold.LogEntry) (natshold.LogEntry, bool) {
+	bySignedAt := slices.Clone(log)
+	slices.SortFunc(bySignedAt, func(a, b natshold.LogEntry) int { return b.SignedAt.Compare(a.SignedAt) })
+	for _, e := range bySignedAt {
+		if s.verifiedLogEntry(e) {
+			return e, true
+		}
+	}
+	return natshold.LogEntry{}, false
 }
 
 // moveNATSHold moves the hold row, once its signature verifies over the gen it will store, and
@@ -357,11 +388,11 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the gen it would store", nil)
 		return
 	}
-	accept := func(current natshold.Row) error {
+	accept := func(current natshold.Row, log []natshold.LogEntry) error {
 		if err := s.acceptRow(current); err != nil {
 			return err
 		}
-		return s.rowSignedAtAdmitted(gen, signedAt)
+		return s.rowSignedAtAdmitted(gen, signedAt, log)
 	}
 	row, err := s.holdStore().Move(r.Context(), uint64(body.ExpectedGen), natshold.Row{
 		Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
