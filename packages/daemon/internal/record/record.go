@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -509,12 +510,11 @@ func (i Issue) WorkingPhase() phase.Phase {
 
 // RoleAt is the role that works the issue at p: the role of the claim that works its task's place
 // (PlaceRole) where it is set and p is the phase the issue works (WorkingPhase: its phase, or the
-// one its hold left) and one a place runs as (planning, implementing, testing, reviewing,
-// accepting, step, retro), so the owner's step and the owner's retro answer the architect;
-// otherwise the role of the step its task stands at (StepRole) for phase.Step, whose role the plan
-// names, and phase.RoleFor(p) for every other phase.
+// one its hold left), a phase that place runs as (placeRunsAs), so the owner's step and the
+// owner's retro answer the architect; otherwise the role of the step its task stands at (StepRole)
+// for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other phase.
 func (i Issue) RoleAt(p phase.Phase) claim.Role {
-	if i.PlaceRole != "" && p == i.WorkingPhase() && placeRunsAs(p) {
+	if i.PlaceRole != "" && p == i.WorkingPhase() && placeRunsAs(i.PlaceRole, p) {
 		return i.PlaceRole
 	}
 	if p == phase.Step {
@@ -523,12 +523,16 @@ func (i Issue) RoleAt(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
 
-// placeRunsAs says whether a place of a task runs as p: a step, which runs as the phase of its
-// role, or the retro. Admitted, held, merging, done and awaiting_person are none.
-func placeRunsAs(p phase.Phase) bool {
+// placeRunsAs says whether a place whose claim's role is role runs as p: the retro, whatever role
+// does it; a step of the owner (the architect) at any phase a step runs as; and any other step at
+// the phase its role runs as (plan.RunsAs). Admitted, held, merging, done and awaiting_person are
+// none.
+func placeRunsAs(role claim.Role, p phase.Phase) bool {
 	switch p {
-	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Step, phase.Retro:
+	case phase.Retro:
 		return true
+	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Step:
+		return role == claim.RoleArchitect || plan.RunsAs(string(role)) == p
 	}
 	return false
 }
