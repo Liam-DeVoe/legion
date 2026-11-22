@@ -78,13 +78,34 @@ func cachedState(s *Store, key string) (State, bool) {
 	return State{}, false
 }
 
+// awaitCache waits until read holds, asking every testwait.Poll, until the test's end (testEnd),
+// and fails the test there with what it waited for and the last value read. It is testwait.Until
+// with the test's end in place of Until's own: under a -timeout of 30 s or less Until asks once
+// and gives up, where a wait that ends at the test's end still has half of what is left.
+func awaitCache[T any](t *testing.T, what string, read func() (T, bool)) {
+	t.Helper()
+	var last T
+	holds := func() bool {
+		var ok bool
+		last, ok = read()
+		return ok
+	}
+	bound := time.Duration(1 << 60)
+	if end, bounded := testEnd(t); bounded {
+		bound = time.Until(end)
+	}
+	if !testwait.Holds(bound, testwait.Poll, holds) {
+		t.Fatalf("gave up waiting for %s at the test's end; last read: %+v", what, last)
+	}
+}
+
 // waitCacheChecks waits until the WatchAll cache shows n checks for the commit.
 func waitCacheChecks(t *testing.T, s *Store, owner, repo, number, sha string, n int) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	testwait.Until(t, fmt.Sprintf("the cache to reach %d checks for %s", n, key), func() (map[string]Check, bool) {
-		st, _ := cachedState(s, key)
-		return st.Checks, len(st.Checks) == n
+	awaitCache(t, fmt.Sprintf("the cache to reach %d checks for %s", n, key), func() (map[string]Check, bool) {
+		st, found := cachedState(s, key)
+		return st.Checks, found && len(st.Checks) == n
 	})
 }
 
@@ -92,9 +113,9 @@ func waitCacheChecks(t *testing.T, s *Store, owner, repo, number, sha string, n 
 func waitCacheSuites(t *testing.T, s *Store, owner, repo, number, sha string, n int) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	testwait.Until(t, fmt.Sprintf("the cache to reach %d suites for %s", n, key), func() (map[string]Suite, bool) {
-		st, _ := cachedState(s, key)
-		return st.Suites, len(st.Suites) == n
+	awaitCache(t, fmt.Sprintf("the cache to reach %d suites for %s", n, key), func() (map[string]Suite, bool) {
+		st, found := cachedState(s, key)
+		return st.Suites, found && len(st.Suites) == n
 	})
 }
 
@@ -102,7 +123,7 @@ func waitCacheSuites(t *testing.T, s *Store, owner, repo, number, sha string, n 
 func waitCacheStateMissing(t *testing.T, s *Store, owner, repo, number, sha string) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	testwait.Until(t, "the cache to evict "+key, func() (State, bool) {
+	awaitCache(t, "the cache to evict "+key, func() (State, bool) {
 		st, found := cachedState(s, key)
 		return st, !found
 	})
@@ -127,7 +148,7 @@ func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string,
 	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set last event at: %v", err)
 	}
-	testwait.Until(t, fmt.Sprintf("the cache to apply last_event_at %d for %s", at, key), func() (State, bool) {
+	awaitCache(t, fmt.Sprintf("the cache to apply last_event_at %d for %s", at, key), func() (State, bool) {
 		cached, found := cachedState(store, key)
 		return cached, found && cached.LastEventAt == at &&
 			cached.Generation == state.Generation &&
@@ -154,7 +175,7 @@ func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim
 	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set claim: %v", err)
 	}
-	testwait.Until(t, "the cache to apply the claim for "+key, func() (State, bool) {
+	awaitCache(t, "the cache to apply the claim for "+key, func() (State, bool) {
 		cached, found := cachedState(store, key)
 		return cached, found && (cached.Claim == nil) == (claim == nil)
 	})

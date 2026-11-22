@@ -28,29 +28,47 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
-// recordWaitMargin is how long before the test binary's deadline a wait untilTheTestEnds bounds
-// gives up, as testwait's waits do: the time the failing test's cleanups and its failure have to
-// run in before Go's alarm panics the binary.
+// recordWaitMargin is how long before the test binary's deadline a wait that ends at the test's
+// end (testEnd) gives up, as testwait's waits do: the time the failing test's cleanups and its
+// failure have to run in before Go's alarm panics the binary.
 const recordWaitMargin = 30 * time.Second
 
-// untilTheTestEnds is ctx bounded by t's own deadline less recordWaitMargin, and by nothing under
-// -timeout 0 or for a benchmark, which has no deadline: a wait that ends on the fact it waits for,
-// whatever the machine's load, and still fails the test rather than hanging the package.
+// testEnd is the moment a wait of t gives up (endBefore of t's own deadline), and false under
+// -timeout 0 and for a benchmark, which has no deadline: only the fact a wait waits for ends it
+// then.
+func testEnd(t testing.TB) (time.Time, bool) {
+	timed, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return time.Time{}, false
+	}
+	deadline, bounded := timed.Deadline()
+	if !bounded {
+		return time.Time{}, false
+	}
+	return endBefore(deadline, time.Now()), true
+}
+
+// endBefore is when a wait that begins at now gives up, for a test binary whose deadline is
+// deadline: the deadline less recordWaitMargin, or less half of what is left when that is the
+// smaller, so a run with a short -timeout still waits.
+func endBefore(deadline, now time.Time) time.Time {
+	return deadline.Add(-min(recordWaitMargin, deadline.Sub(now)/2))
+}
+
+// untilTheTestEnds is ctx bounded by the test's end (testEnd).
 func untilTheTestEnds(ctx context.Context, t testing.TB) (context.Context, context.CancelFunc) {
-	if timed, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, bounded := timed.Deadline(); bounded {
-			return context.WithDeadline(ctx, deadline.Add(-recordWaitMargin))
-		}
+	if end, bounded := testEnd(t); bounded {
+		return context.WithDeadline(ctx, end)
 	}
 	return context.WithCancel(ctx)
 }
 
 // openStore opens the store for a test and waits for its cache to be ready. Every Record and
-// RecordSuite of the store ends with the test (untilTheTestEnds) rather than at recordWait, 4 s on
-// the wall clock, which bounds a webhook delivery in production and which no test that records to
-// set up what it tests measures: under load a KV call takes the machine's time. A record that a
-// broken hand-over leaves waiting on its record's writer still fails its test by that deadline,
-// since a queued caller waits only while its context lasts (update).
+// RecordSuite of the store ends at the test's end (untilTheTestEnds) rather than at recordWait, 4 s
+// on the wall clock, which bounds each record a webhook delivery makes in production and which no
+// test that records to set up what it tests measures: under load a KV call takes the machine's
+// time. A record that a broken hand-over leaves waiting on its record's writer still fails its
+// test then, since a queued caller waits only while its context lasts (update).
 func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	t.Helper()
 	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
