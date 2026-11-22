@@ -144,7 +144,7 @@ test("github-actions is no identity kind", () => {
     [MACHINE_AUDIENCE_VAR]: "example-audience",
   };
   expect(() => machineIdentity(job)).toThrow(
-    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata or pool"
+    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata, pool or device-login"
   );
 });
 
