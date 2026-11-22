@@ -554,9 +554,10 @@ test.each(retired)("%s is reported at the line it starts on", (_source, page, li
 // plausibly say, which the lane and reviewer patterns refused until INFRA-1303's review round 3,
 // and the last thirteen, the rules of this change's own page and prompts said of a role, the
 // changelog fragment's own sentence and a measurement's note, which the lane, reviewer, wait,
-// choice and approval patterns refused until the class search at b6cb4b99, and three after them, a
+// choice and approval patterns refused until the class search at b6cb4b99, and six after them, a
 // check absent from the counted set whose re-run is withheld, which the absence pattern refused
-// until the class search at 59442ee2.
+// until the class search at 59442ee2 (the first three) and at f25ce50d (the last three, whose
+// negation stands a word or more before the re-run).
 const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'merge-gate.md\'s "A merge-group run is never re-run"',
@@ -973,6 +974,27 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     [
       "The counted set can lag behind a push. A check absent from that set gets no",
       "re-run until a `pull_request` run of the head holds its job.",
+    ],
+  ],
+  [
+    'a check absent from the counted set, "is no reason to re-run anything"',
+    [
+      "The counted set can lag behind a push. A check absent from the counted set is no reason to",
+      "re-run anything.",
+    ],
+  ],
+  [
+    'a check absent from the counted set, "gets no spend-free re-run while a failed job holds it"',
+    [
+      "The counted set can lag behind a push. A required check absent from the counted set gets no",
+      "spend-free re-run while a failed job holds it.",
+    ],
+  ],
+  [
+    'a check absent from the counted set, "is not to be re-run on that absence alone"',
+    [
+      "The counted set can lag behind a push. A check absent from the counted set is not to be",
+      "re-run on that absence alone.",
     ],
   ],
 ];

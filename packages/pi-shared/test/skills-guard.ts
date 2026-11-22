@@ -712,28 +712,34 @@ const AN_UNREPORTED_RED_WAITS = new RegExp(
  *
  * The shape is the absence from the set (`that`, `the` or `this` set, `counted` or not) with a
  * re-run within twenty characters after it, which is a trigger with nothing to limit it, unless a
- * negation governs the re-run itself: `never`, `not`, `no` or a word ending in `n't` right before
- * the re-run, or before `be` and the re-run (`never re-run`, `not be re-run`, `gets no re-run`,
- * `isn't re-run`). So a sentence that withholds the re-run passes: "A check absent from the
- * counted set is never re-run on that absence alone.", "… is not re-run while its run is in
- * progress." and "… gets no re-run until a `pull_request` run of the head holds its job." (the
- * class search at 59442ee2). A negation elsewhere between the two limits no re-run, so these are
- * refused: "… or absent from that set, not merely late: re-run that run's failed and cancelled
- * jobs", "… absent from that set (it isn't listed): re-run …" and "… absent from that set, no
- * matter why: re-run …" (the class search at e7052779, which found them let through while any
- * negation in the gap passed). So does the sentence that replaced it, since the job's state stands
- * between the two: "A required check absent from the counted set, or `completed` as `cancelled`
- * there, whose job in a `pull_request` run of the head was cancelled or never ran: re-run that
- * run's failed and cancelled jobs, once". So do the page's other absences, "may find the failing
- * check pending, queued, in progress or absent" and "with every check it holds `completed` and that
- * one absent", and the architect's notice, "is absent from that list rather than named as
- * missing". A literal pattern does not close every paraphrase: "missing from that set", "absent
- * from the rollup", "not in that set", "the pull request's counted set", and a re-run written
- * before the absence or more than twenty characters after it all pass; the reviewer's prompt
- * part's words, pinned in roles_test.go, carry the rest.
+ * negation governs the re-run itself: `never`, `not`, `no` or a word ending in `n't`, in the same
+ * clause as the re-run, with at most three plain words between them (letters, digits, hyphens and
+ * apostrophes, and only spaces between them, no punctuation). So a sentence that withholds the
+ * re-run passes: "A check absent from the counted set is never re-run on that absence alone.", "…
+ * is not re-run while its run is in progress." and "… gets no re-run until a `pull_request` run of
+ * the head holds its job." (the class search at 59442ee2), and "… is no reason to re-run
+ * anything.", "… gets no spend-free re-run while a failed job holds it." and "… is not to be
+ * re-run on that absence alone." (the class search at f25ce50d, which found them refused while the
+ * negation had to stand right before the re-run, or before `be` and the re-run). A negation that a
+ * mark of punctuation parts from the re-run limits no re-run, so these are refused: "… or absent
+ * from that set, not merely late: re-run that run's failed and cancelled jobs", "… absent from that
+ * set (it isn't listed): re-run …" and "… absent from that set, no matter why: re-run …" (the class
+ * search at e7052779, which found them let through while any negation in the gap passed). So does
+ * the sentence that replaced it, since the job's state stands between the two: "A required check
+ * absent from the counted set, or `completed` as `cancelled` there, whose job in a `pull_request`
+ * run of the head was cancelled or never ran: re-run that run's failed and cancelled jobs, once".
+ * So do the page's other absences, "may find the failing check pending, queued, in progress or
+ * absent" and "with every check it holds `completed` and that one absent", and the architect's
+ * notice, "is absent from that list rather than named as missing". A literal pattern does not close
+ * every paraphrase: "missing from that set", "absent from the rollup", "not in that set", "the
+ * pull request's counted set", and a re-run written before the absence or more than twenty
+ * characters after it all pass. So "… absent from that set: no re-run is spent, so re-run that
+ * run's failed and cancelled jobs" passes: `no` governs its first re-run, and its second stands
+ * past twenty characters. The reviewer's prompt part's words, pinned in roles_test.go, carry the
+ * rest.
  */
 const ABSENCE_FROM_THE_SET_IS_RERUN =
-  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=[^.]{0,20}?(?<!(?:\b(?:never|not|no)|n't)\s+(?:be\s+)?)\bre-?run\b)/i;
+  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=[^.]{0,20}?(?<!(?:\b(?:never|not|no)|n't)(?:\s+[a-z0-9'-]+){0,3}\s+)\bre-?run\b)/i;
 
 /** The twelve rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
