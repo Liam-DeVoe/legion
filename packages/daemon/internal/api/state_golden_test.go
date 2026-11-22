@@ -291,7 +291,7 @@ func populatedState(t *testing.T) State {
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
-	// What the five slots in use are spent on (contract 217): LEGION-208's implementer is in a
+	// What the five slots in use are spent on (contract 221): LEGION-208's implementer is in a
 	// turn; LEGION-210 is held and LEGION-212's tester is stranded, the two stopped holders, the
 	// older stopped when LEGION-210's implementer failed; and the two reviewing roots are idle.
 	// No returned member of the line is without a slot, and the one issue of the starting part,
@@ -705,7 +705,7 @@ func populatedState(t *testing.T) State {
 				Slot: &SlotView{
 					Index:      2,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
-					// Its retired tester is the stranded claim that stops it (contract 217).
+					// Its retired tester is the stranded claim that stops it (contract 221).
 					State: string(record.HolderStopped),
 					Since: &testerStoppedAt,
 				},
@@ -971,11 +971,19 @@ func populatedState(t *testing.T) State {
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
 		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// stale. Its one repository cache, acme/widgets' (Ready and read, as `repositories` below
+		// says), last answered its health with a repack that failed for lack of space, so the
+		// repository-cache-room row is open too, with the third source, `caches`, which a caller
+		// below cachesSourceContract is served without.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
+			Caches: []capabilities.Cache{{
+				Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
+				VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
+				RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
+			}},
 		}.Report()),
 		// Five repositories the live records name, of three owners, sorted by name, each showing
 		// an answer the block carries: acme/gadgets, the review App not installed on it, which
