@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -51,8 +52,9 @@ func assertHeld(t *testing.T, tasks map[string]record.PlanTask, task string, pla
 // reviewer, reviewer-2, fails: b is held at its review for the failed claim, a runs on, the issue
 // stands in implementing with no hold, and the owner's held notice names the task and the step,
 // `task b, step 2`. a's implementation then moves a to its review. The owner's retry that names b
-// releases b at its review and starts its reviewer's agent again; a retry that names no task while
-// b alone is held does the same, and an escalation that names b holds it for that reason. With a
+// releases b at its review and starts its reviewer's agent again, told b's own pull request; a
+// retry that names no task while b alone is held does the same, and an escalation that names b
+// holds it for that reason. With a
 // and b both held, the issue stands held from the review, a retry that names no task is refused
 // TASK_REQUIRED, and one that names c, which waits, is refused TASK_NOT_AT_PHASE.
 //
@@ -67,6 +69,8 @@ func TestAFailedClaimHoldsItsTaskAndTheOtherGoesOn(t *testing.T) {
 		planTask{id: "a", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "b", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer-2", "reviewer-2"}, state: record.TaskRunning, place: atStep(2)},
 		planTask{id: "c", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Task: "b", Repo: "sjawhar/legion", Number: 45,
+		Branch: "legion/LEGION-208.b", HeadSHA: "head-b", Failing: []string{}})
 	apply := applyFacts(t, pool, engine)
 
 	mustSpend(t, "the failure of b's reviewer", apply("reviewer-2-failed", failedClaimOf(t, root.Key, claim.RoleReviewer, "reviewer-2")))
@@ -93,9 +97,9 @@ func TestAFailedClaimHoldsItsTaskAndTheOtherGoesOn(t *testing.T) {
 	}
 	retries := startsIn(t, pool, root.Key, claim.RoleReviewer, phase.Reviewing)
 	if !slices.ContainsFunc(retries, func(start record.SuperviseRequest) bool {
-		return start.Claim == agentClaim(t, root.Key, "reviewer-2") && start.ResendEntry
+		return start.Claim == agentClaim(t, root.Key, "reviewer-2") && start.ResendEntry && strings.Contains(start.Task, " Pull request: #45.")
 	}) {
-		t.Fatalf("the reviewer's starts of %s in reviewing = %+v, want the retry's of b's agent reviewer-2", root.Key, retries)
+		t.Fatalf("the reviewer's starts of %s in reviewing = %+v, want the retry's of b's agent reviewer-2, naming b's own pull request #45", root.Key, retries)
 	}
 
 	mustSpend(t, "the second failure of b's reviewer", apply("reviewer-2-failed-again", failedClaimOf(t, root.Key, claim.RoleReviewer, "reviewer-2")))

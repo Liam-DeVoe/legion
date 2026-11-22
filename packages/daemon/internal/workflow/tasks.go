@@ -76,6 +76,17 @@ func (e *Engine) viewsOf(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]
 	return views, walks, nil
 }
 
+// pullRequestOf is the pull request of the work issue is read for: for a copy read for one task
+// of a plan of several (view), that task's own row (record.Store.PullRequestOfTask), nil where it
+// has none; for the issue itself, the issue's (record.Store.PullRequest), as every reader read it
+// before tasks had pull requests of their own.
+func (e *Engine) pullRequestOf(ctx context.Context, tx pgx.Tx, issue record.Issue) (*record.PullRequest, error) {
+	if issue.ViewTask != "" {
+		return e.store.PullRequestOfTask(ctx, tx, issue.Key, issue.ViewTask)
+	}
+	return e.store.PullRequest(ctx, tx, issue.Key)
+}
+
 // viewOfAgent is the copy of issue read for the task whose running step agent runs
 // (record.Issue.StepOfAgent, a held step among them), and the walk of that task: the one reading
 // of a fact of a step that reaches its task by the agent of the claim it names. An issue whose

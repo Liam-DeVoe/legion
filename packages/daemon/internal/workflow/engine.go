@@ -2299,7 +2299,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // completion of the same commit would be refused as not new. A round its reviewer completed that
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
-// reviewer's answer to its request.
+// reviewer's answer to its request. The pull request the round and the restarted worker's task
+// read is the one of the work issue is read for (pullRequestOf): of a copy read for one task of a
+// plan of several, that task's own.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
@@ -2344,7 +2346,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.pullRequestOf(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
