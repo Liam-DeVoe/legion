@@ -2067,6 +2067,23 @@ test("sessionHeads reads the heads it lacks in one query through the store comma
   ).rejects.toThrow("exited 3: permission denied for table");
 });
 
+// Catches: a store command that hangs holding the capture's read of the session heads for ever
+// (every other read has a limit; this one had none).
+test("a store command that prints nothing for the read's quiet limit is ended, and the read fails naming the command and the limit", async () => {
+  const root = path.join(dir, "heads-quiet");
+  mkdirSync(root, { recursive: true });
+  // It reads its query, then waits in a child of its own, which holds its output open.
+  const hung = path.join(root, "hung.sh");
+  writeFileSync(hung, "#!/bin/sh\ncat >/dev/null\nsleep 5\n", { mode: 0o755 });
+  const started = performance.now();
+  await expect(
+    sessionHeads(hung, "store_a", [pathHash("/sessions/other.jsonl")], root, 200)
+  ).rejects.toThrow(
+    `the store command ${hung}'s read of the session heads printed nothing for 200 ms on store_a, so it was ended (STORE_QUIET_MS)`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+});
+
 // Catches: a capture made before the harness-string rule read back and replayed.
 test("a saved capture whose record holds no harness record is refused", () => {
   const root = path.join(dir, "saved-before");

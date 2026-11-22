@@ -207,7 +207,10 @@ import {
   ghLimiter,
   MAX_RATE_RETRIES,
   RATE_LIMITED,
+  rateLimitWait,
   schemaFaults,
+  textOf,
+  timeLimit,
   triesError,
 } from "./common";
 import { loadConfig, type SkillCutsConfig } from "./config";
@@ -226,25 +229,42 @@ export interface GhResult {
 /** Runs gh with `args`; the test injects a stand-in. */
 export type Gh = (args: readonly string[]) => Promise<GhResult>;
 
+/** How long one gh call may run before it is ended: context.ts's gh reads have the same limit
+ *  (GH_READ_TIMEOUT_MS), GitHub ends an API request it takes more than 10 s over on its side, and
+ *  the longest calls (a whole repository's tree, a batch of blobs) answer in seconds; a call past
+ *  it is a hung process or connection. */
+export const GH_CALL_TIMEOUT_MS = 120_000;
+
 /** The pod's own gh, with the environment this process has, at most `ghLimiter().limit` at once
- *  across the runner (common.ts). */
-export const spawnGh: Gh = (args) =>
-  ghLimiter().run(async () => {
-    // `env` given, so gh is found on the PATH this process has now (Bun.spawn's own default reads
-    // the PATH of the process's start).
-    const child = Bun.spawn(["gh", ...args], {
-      env: process.env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+ *  across the runner (common.ts), each call ended once it runs `ms` (its time starting when it
+ *  spawns, not while it waits for a place). An ended call exits 124, and its stderr says `gh <the
+ *  call> timed out after <ms> ms`, which GhRetries takes as a transient failure (`time limit`). */
+export function spawnGhWithin(ms: number): Gh {
+  return (args) =>
+    ghLimiter().run(async () => {
+      // `env` given, so gh is found on the PATH this process has now (Bun.spawn's own default
+      // reads the PATH of the process's start).
+      const child = Bun.spawn(["gh", ...args], {
+        env: process.env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const limit = timeLimit(child, ms);
+      const [stdout, stderr, code] = await Promise.all([
+        textOf(child.stdout, limit),
+        textOf(child.stderr, limit),
+        child.exited,
+      ]);
+      limit.clear();
+      if (!limit.timedOut()) return { code, stdout, stderr };
+      const call = args.join(" ").slice(0, 200);
+      return { code: 124, stdout, stderr: `${stderr}\ngh ${call} timed out after ${ms} ms` };
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { code, stdout, stderr };
-  });
+}
+
+/** The pod's own gh (`spawnGhWithin`), each call ended at GH_CALL_TIMEOUT_MS. */
+export const spawnGh: Gh = spawnGhWithin(GH_CALL_TIMEOUT_MS);
 
 /** What `main` uses of the world. */
 export interface CopiesIo {
@@ -278,10 +298,6 @@ function rethrowStop(error: unknown): void {
   if (error instanceof MemoryStop) throw error;
 }
 
-/** GitHub's refusal for its secondary rate limit, which has no reset to wait for (`rateWait`). */
-const SECONDARY_LIMITED = /secondary rate limit/i;
-/** The first wait after a refusal for the secondary rate limit, doubled at each refusal after. */
-const SECONDARY_WAIT_MS = 60_000;
 const REST_JOBS = 4;
 /** The repositories read at once, each its commit, tree and blobs, the slower of them sharing the
  *  read slots below with the rest. */
@@ -690,20 +706,10 @@ class Github {
   }
 
   /** The milliseconds to wait before a call GitHub refused for its rate limit is sent again, at
-   *  its `attempt`-th refusal (from 0), whose error is `stderr`. GitHub's secondary rate limit has
-   *  no reset: GitHub asks a client to wait its `retry-after` (which gh shows only with `-i`, so
-   *  never for these calls), else at least a minute, and to back off; so the wait is
-   *  SECONDARY_WAIT_MS, doubled at each refusal. A primary limit is waited out to `resource`'s
-   *  reset (`waitForReset`). */
-  private async rateWait(
-    stderr: string,
-    attempt: number,
-    resource: "core" | "graphql"
-  ): Promise<number> {
-    if (!SECONDARY_LIMITED.test(stderr)) return this.waitForReset(resource);
-    const wait = SECONDARY_WAIT_MS * 2 ** attempt;
-    this.io.err(`copies: GitHub's secondary rate limit refused a call; waiting ${wait / 1000} s`);
-    return wait;
+   *  its `attempt`-th refusal (from 0), whose error is `stderr`: common.ts's `rateLimitWait`, a
+   *  primary limit waited out to `resource`'s reset (`waitForReset`). GhRetries says each wait. */
+  private rateWait(stderr: string, attempt: number, resource: "core" | "graphql"): Promise<number> {
+    return rateLimitWait(stderr, attempt, () => this.waitForReset(resource));
   }
 
   /** gh's standard output for `args`, a read of the REST (`core`) or the GraphQL `resource`, each

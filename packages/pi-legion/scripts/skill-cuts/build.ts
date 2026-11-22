@@ -551,6 +551,7 @@ import {
 import {
   commandRetries,
   configFrom,
+  eachChunk,
   firstLine,
   type GhRetries,
   json,
@@ -558,7 +559,10 @@ import {
   parse,
   Refused,
   required,
+  STORE_QUIET_MS,
   schemaFaults,
+  textOf,
+  timeLimit,
   transientReason,
   writeWhole,
 } from "./common";
@@ -1025,23 +1029,40 @@ async function storeRows(command: string, db: string, query: string): Promise<un
 /**
  * Runs `query` by the store command `command` on the database `db` and gives each row to `visit`
  * as the command prints it, read by psql-rows.ts's `PsqlTable`, so no more than one row's text is
- * held. A command that fails is reported first, with its first error line; then a fault of its
- * output; then a throw of `visit`, after which no row is given. Returns the rows the table holds.
+ * held. A command that prints nothing for `quietMs` is ended and reported first, naming the
+ * command and the limit; then a command that fails, with its first error line; then a fault of
+ * its output; then a throw of `visit`, after which no row is given. Returns the rows the table
+ * holds.
  */
 async function eachStoreRow(
   command: string,
   db: string,
   query: string,
-  visit: (row: unknown) => void
+  visit: (row: unknown) => void,
+  quietMs = STORE_QUIET_MS
 ): Promise<number> {
   const child = Bun.spawn([command, db], {
     stdin: new Blob([query]),
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stderr = new Response(child.stderr).text();
+  // Ended once it prints nothing for `quietMs` (STORE_QUIET_MS): each chunk starts the time again.
+  const limit = timeLimit(child, quietMs);
+  const stderr = textOf(child.stderr, limit);
   const table = new PsqlTable(visit);
-  for await (const chunk of child.stdout) table.write(chunk);
+  try {
+    await eachChunk(child.stdout, limit, (chunk) => {
+      limit.touch();
+      table.write(chunk);
+    });
+  } finally {
+    limit.clear();
+  }
+  if (limit.timedOut()) {
+    throw new Error(
+      `the store command ${command} printed nothing for ${quietMs} ms on ${db}, so it was ended (STORE_QUIET_MS)`
+    );
+  }
   const code = await child.exited;
   if (code !== 0) {
     const first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
@@ -1053,12 +1074,14 @@ async function eachStoreRow(
 /** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE rows a call, each
  *  row checked by psql-rows.ts's `PullCheck` and its bytes written as it comes (`eachStoreRow`),
  *  so one row (a slice of 1 MiB and at most 3 bytes more) is held at a time however long the
- *  file. Returns the bytes it wrote and the calls it took. */
+ *  file; a call that prints nothing for `quietMs` is ended and fails the pull. Returns the bytes
+ *  it wrote and the calls it took. */
 export async function pullTranscript(
   command: string,
   db: string,
   filePath: string,
-  spool: string
+  spool: string,
+  quietMs = STORE_QUIET_MS
 ): Promise<{ bytes: number; calls: number }> {
   const fd = openSync(spool, "w");
   try {
@@ -1068,7 +1091,7 @@ export async function pullTranscript(
       for (let at = 0; at < text.length; ) at += writeSync(fd, text, at);
     };
     for (let calls = 1; ; calls += 1) {
-      const page = await eachStoreRow(command, db, pullSql(filePath, check.last), write);
+      const page = await eachStoreRow(command, db, pullSql(filePath, check.last), write, quietMs);
       if (page < PULL_PAGE) return { bytes: check.bytes, calls };
     }
   } finally {
@@ -2101,9 +2124,8 @@ class NpmFailed extends Error {
 /** The registry's tarball of a package version, one GET (`get`: fetch, or a test's stand-in) given
  *  up after `timeoutMs`, its body included: undefined for a 404. It throws an NpmFailed for an
  *  answer that is not OK, for a try past the limit and for a connection that failed
- *  (CONNECTION_FAILURES), and any other failure as fetch threw it. TRANSIENT_FAILURES names no 429,
- *  the registry's "too many requests", so its failure says "temporary failure", and it is sent
- *  again as a 5xx is. */
+ *  (CONNECTION_FAILURES), and any other failure as fetch threw it. A 429, the registry's "too many
+ *  requests", is sent again as a 5xx is (TRANSIENT_FAILURES' `HTTP 429`). */
 export async function registryTarball(
   name: string,
   version: string,
@@ -2116,7 +2138,7 @@ export async function registryTarball(
     const response = await get(url, { signal });
     if (response.status === 404) return undefined;
     if (response.status === 429) {
-      throw new NpmFailed(url, "HTTP 429 (temporary failure: too many requests)");
+      throw new NpmFailed(url, "HTTP 429 (too many requests)");
     }
     if (!response.ok) throw new NpmFailed(url, `HTTP ${response.status}`);
     return new Uint8Array(await response.arrayBuffer());
@@ -2128,7 +2150,6 @@ export async function registryTarball(
     throw new NpmFailed(url, `${CONNECTION_FAILURES[code]} (${messageFor(error)})`);
   }
 }
-
 /** The files of a gzipped tar (an npm tarball), by path less its first part (`package/`), each
  *  as UTF-8 text: a regular file's entry only, its name the ustar prefix and name joined. */
 export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
@@ -2178,14 +2199,17 @@ export class GithubReads {
    *  failure; any other failure fails it at once. Nothing is kept: each call reads the registry. */
   async tarball(name: string, version: string): Promise<Uint8Array | undefined> {
     // A try is one `GhRetries.send` reads by its code and its error text, the bytes beside them.
-    const read = await this.retries.send(async () => {
-      try {
-        return { code: 0, stderr: "", bytes: await this.npm(name, version) };
-      } catch (error) {
-        if (!(error instanceof NpmFailed)) throw error;
-        return { code: 1, stderr: error.failure, bytes: undefined };
-      }
-    });
+    const read = await this.retries.send(
+      async () => {
+        try {
+          return { code: 0, stderr: "", bytes: await this.npm(name, version) };
+        } catch (error) {
+          if (!(error instanceof NpmFailed)) throw error;
+          return { code: 1, stderr: error.failure, bytes: undefined };
+        }
+      },
+      { read: `the registry read of ${tarballUrl(name, version)}` }
+    );
     if (read.code !== 0) throw new NpmFailed(tarballUrl(name, version), firstLine(read.stderr));
     return read.bytes;
   }

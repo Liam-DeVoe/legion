@@ -25,6 +25,7 @@ import {
   frontmatterBlock,
   ghSource,
   gitBlobId,
+  LOCAL_SKILL_REPO,
   legionRole,
   localSource,
   NoSuchFile,
@@ -750,7 +751,7 @@ test("a gh read that times out twice is sent again after 5 s and 15 s, as copies
   expect(said).toHaveLength(2);
   expect(said[1]).toEndWith("sending it again in 15 s, retry 2 of 4");
   expect(source.reads?.()).toMatchObject({ calls: 3, retries: { "i/o timeout": 2 } });
-});
+}, 120_000);
 
 test("a gh read that always fails stops after 4 tries more, naming the command and each try's error", async () => {
   const { gh, count } = standinGh("gh-always", 99, "");
@@ -767,7 +768,7 @@ test("a gh read that always fails stops after 4 tries more, naming the command a
   expect(failed.match(/i\/o timeout/g)?.length).toBe(5);
   expect(readFileSync(count, "utf8").trim()).toBe("5");
   expect(waits).toEqual([5_000, 15_000, 45_000, 135_000]);
-});
+}, 120_000);
 
 test("a gh read that fails for good, such as a 404, is NoSuchFile at once: one call, no wait", async () => {
   const root = path.join(dir, "gh-missing");
@@ -793,7 +794,7 @@ test("a gh read that fails for good, such as a 404, is NoSuchFile at once: one c
   expect(said).toEqual([]);
   expect(source.reads?.().calls).toBe(1);
   expect(source.reads?.().retries).toEqual({});
-});
+}, 120_000);
 
 // Catches: a read of prompts.go that failed taken as a repository that holds none.
 test("a Legion context's role prompt: a plugin repository that holds no prompts.go is passed over, and a read of it that failed stops the context, naming why", async () => {
@@ -1002,7 +1003,7 @@ test("a profile of N files at one commit is read with its tree and ceil(N/50) Gr
   // Built again from the cache, it reads nothing.
   await buildContext(c, arm, options);
   expect(callsOf(log)).toEqual({ tree: 1, graphql: 3, blob: 0, other: 0 });
-});
+}, 120_000);
 
 test("a blob a batch does not give whole, binary or no UTF-8, is read alone over REST, byte for byte", async () => {
   const files: StandinFile[] = [
@@ -1027,7 +1028,7 @@ test("a blob a batch does not give whole, binary or no UTF-8, is read alone over
     const at = path.join(built.skillsDir, file.path.replace(/^skills\//, ""));
     expect([...readFileSync(at)]).toEqual([...file.bytes]);
   }
-});
+}, 120_000);
 
 test("a tree read that failed is not kept: the next context at that commit reads it again, and the source counts each gh call", async () => {
   const bytes = new TextEncoder().encode("---\nname: again\ndescription: Made-up again.\n---\n");
@@ -1061,7 +1062,7 @@ exec ${JSON.stringify(inner.gh)} "$@"
   expect(callsOf(inner.log)).toEqual({ tree: 1, graphql: 1, blob: 0, other: 0 });
   // The failed tree read, the tree read again and one GraphQL batch.
   expect(source.reads?.().calls).toBe(3);
-});
+}, 120_000);
 
 /** A made-up skill's SKILL.md at `dir`, and one reference beside it. */
 const skillFiles = (dir: string): StandinFile[] => [
@@ -1191,7 +1192,7 @@ exec ${JSON.stringify(inner.gh)} "$@"
   expect(built.record.githubRetries).toEqual({ "TLS handshake timeout": 1 });
   // The failed tree read, the tree read again and one GraphQL batch.
   expect(source.reads?.()).toMatchObject({ calls: 3, retries: { "TLS handshake timeout": 1 } });
-});
+}, 120_000);
 
 /** A file of the made-up acme/deep: its path, its mode (git's: 100755 executable, 120000 a link
  *  whose target is its text) and its bytes. */
@@ -1409,7 +1410,7 @@ test("a directory of a commit whose tree GitHub cuts short is read along its pat
     expectedUnder(DEEP_FILES, "skills/deep")
   );
   expect(source.reads?.().calls).toBe(9);
-});
+}, 120_000);
 
 test("a directory whose own recursive tree GitHub cuts short too is walked one level at a time, with no tarball read", async () => {
   const { gh, log } = standinDeepGh("gh-deep-levels", DEEP_FILES, { cutShort: ["skills/deep"] });
@@ -1423,7 +1424,7 @@ test("a directory whose own recursive tree GitHub cuts short too is walked one l
   // The commit's tree and the directory's, cut short; the root and skills/ to find it; then its
   // four directories one level each: skills/deep, scripts, references and references/a.
   expect(routeKinds(log)).toEqual({ recursive: 2, level: 6, blob: 5, tarball: 0, other: 0 });
-});
+}, 120_000);
 
 test("a directory the commit does not hold, or one a level of which GitHub cuts short even read alone, fails naming the repository, the commit and the path, with no tarball read", async () => {
   const missing = standinDeepGh("gh-deep-missing", DEEP_FILES);
@@ -1461,7 +1462,7 @@ test("a directory the commit does not hold, or one a level of which GitHub cuts 
     `acme/deep at ${COMMIT}: skills/deep cannot be read: GitHub cuts the tree of skills/deep/references short even one level at a time`
   );
   expect(routeKinds(cut.log).tarball).toBe(0);
-});
+}, 120_000);
 
 /** What `filesUnder` gives for each of `files`, at its whole path. */
 function expectedAll(
@@ -1529,7 +1530,7 @@ test("a skill at its repository's root is the root's files at their whole paths,
   // The commit's tree, cut short, then each of the root's nine levels alone: the root, data,
   // data/proofs, skills, skills/other, skills/deep and its scripts, references and references/a.
   expect(routeKinds(deep.log)).toEqual({ recursive: 1, level: 9, blob: 8, tarball: 0, other: 0 });
-});
+}, 120_000);
 
 // Catches: a "skill" at the root of a large repository read whole, file by file.
 test("a skill at a root of more than 200 files is refused, naming the repository, the commit and the count, with no blob or tarball read, from the commit's tree or a walk cut short", async () => {
@@ -1575,7 +1576,7 @@ test("a skill at a root of more than 200 files is refused, naming the repository
   // The commit's tree, cut short, then the root and notes/, one level each: no blob read.
   expect(routeKinds(deep.log)).toEqual({ recursive: 1, level: 2, blob: 0, tarball: 0, other: 0 });
   expect(existsSync(path.join(dir, "root-deep-large", "x"))).toBe(false);
-});
+}, 120_000);
 
 /** A made-up dispatch-first, which the Envoy plugin reads as it loads. */
 const DISPATCH_FIRST =
@@ -2209,4 +2210,92 @@ test("a dev box's ~/.omp/agents its installers link is the project agents of a s
       `the project agents of a dev box's home: acme/dotfiles's installers/omp.sh:10 at ${COMMIT} names ~/.omp/agents in a line the runner does not read as a link of a directory of the repository (ensure_link or ln -s), so the context reads none of it`,
     ],
   });
+}, 120_000);
+
+/** `inner` with each read recorded as `<method> <repo>`, and a read of LOCAL_SKILL_REPO refused
+ *  as `gh` refuses a repository GitHub does not hold. */
+function recordedSource(inner: RepoSource, calls: string[]): RepoSource {
+  const read = (method: string, repo: string): void => {
+    calls.push(`${method} ${repo}`);
+    if (repo === LOCAL_SKILL_REPO) {
+      throw new Error(`gh api --method GET repos/${repo}/... failed: gh: Not Found (HTTP 404)`);
+    }
+  };
+  return {
+    name: inner.name,
+    async file(repo, commit, file) {
+      read("file", repo);
+      return inner.file(repo, commit, file);
+    },
+    async tree(repo, commit, dir, dest) {
+      read("tree", repo);
+      return inner.tree(repo, commit, dir, dest);
+    },
+    async link(repo, commit, file) {
+      read("link", repo);
+      return inner.link?.(repo, commit, file);
+    },
+  };
+}
+
+// Catches: a load test's task in a dev box's subagent profile that fails before any run, its
+// context reading the installers of the tested skill's own entry, whose repository
+// (LOCAL_SKILL_REPO) GitHub does not hold.
+test("a load test's own entry of the tested skill names no repository: its context reads nothing of LOCAL_SKILL_REPO and still reads the user agents of the profile's dev-box repository; an arm's tested copy of a real repository is read as one", async () => {
+  const root = path.join(dir, "load-own");
+  const repos = path.join(root, "repos");
+  writeRepositories(repos);
+  writeTree(path.join(repos, "acme", "legion", COMMIT), PLUGIN_AGENTS);
+  writeTree(path.join(repos, "acme", "dotfiles", COMMIT), DOTFILES);
+  const options = (name: string, calls: string[]): ContextOptions => ({
+    source: recordedSource(localSource(repos), calls),
+    cacheDir: path.join(root, name, "cache"),
+    root: path.join(root, name, "scratch"),
+  });
+  const beta = { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "beta" };
+  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  // As load.ts's caseOf builds a task's case and arm: the profile's skills and the tested
+  // skill's own entry, under LOCAL_SKILL_REPO, at the arm's directory.
+  const skillDir = path.join(root, "tested");
+  writeTree(skillDir, { "SKILL.md": ALPHA_ARM });
+  const own = { repo: LOCAL_SKILL_REPO, commit: "4a02261ae3d020c7", path: skillDir, name: "alpha" };
+  const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
+  const task: Case = {
+    ...base,
+    id: "t6",
+    profile: { ...base.profile, skills: [beta, gamma, own] },
+    evidence: [subagentItem("subagent:alpha-reviewer", "devbox")],
+  };
+  const arm: Arm = {
+    name: "old",
+    skill: "alpha",
+    skillDir,
+    installedDir: "/skills/alpha",
+    messages: [{ role: "user", content: [{ type: "text", text: "Write the alpha list." }] }],
+    profileSkills: task.profile.skills,
+  };
+  const calls: string[] = [];
+  const built = await buildContext(task, arm, options("task", calls));
+  expect(calls.filter((call) => call.endsWith(` ${LOCAL_SKILL_REPO}`))).toEqual([]);
+  expect(built.record.agent).toEqual(DOTFILES_REVIEWER);
+  expect(built.record.skills.find((skill) => skill.name === "alpha")?.from).toBe("arm");
+  expect(calls).toContain("tree acme/dotfiles");
+  // A behaviour case whose tested copy is the dev-box repository's own: its installers are read.
+  const copy = aCase("subagent:alpha-reviewer", {
+    plugins: AGENTS_PACK,
+    contextFiles: [],
+    skills: [{ repo: "acme/dotfiles", commit: COMMIT, path: "skills/alpha", name: "alpha" }, beta],
+  });
+  const behaviour = { ...copy, evidence: [subagentItem("subagent:alpha-reviewer", "devbox")] };
+  writeTree(path.join(root, "old"), { "SKILL.md": ALPHA_ARM });
+  const copyArm = buildArm(
+    behaviour,
+    "old",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    path.join(root, "arm")
+  );
+  const copied: string[] = [];
+  const read = await buildContext(behaviour, copyArm, options("copy", copied));
+  expect(read.record.agent).toEqual(DOTFILES_REVIEWER);
+  expect(copied).toContain("tree acme/dotfiles");
 }, 120_000);

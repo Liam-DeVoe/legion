@@ -109,6 +109,11 @@ const TAGS: Readonly<Record<string, readonly string[]>> = {
   "acme/kit": ["kit-v1.0.0", "kit-v2.0.0"],
 };
 const LINE = "2. Write each step's result on one line.";
+/** The limit of a describe's hook that runs builds once for its rows (45 sessions through the
+ *  whole pipeline: 111 store calls, each a process, and 89 reader calls). It took 18 s and 28 s on
+ *  2026-11-22 and passed 120 s when other runs loaded the pod (a whole file ran 10 times slower
+ *  then), so the limit is 20 times the slower measure. */
+const HOOK_BUILD_MS = 600_000;
 const scratch = temporaryDirectory("skill-cuts-build", { real: true });
 
 /** F1's lines, parsed, as a fresh copy. */
@@ -1963,7 +1968,7 @@ beforeAll(() => {
       ].join("\n")
     );
   }
-});
+}, 60_000);
 afterAll(async () => {
   await recorder.close();
 });
@@ -2064,7 +2069,7 @@ describe("build-cases over every made-up session", () => {
     code = await main(buildArgs(sessions, out, "7"), io(printed));
     requests = recorder.requests.slice(from);
     cases = loadCases(out, old);
-  }, 120_000);
+  }, HOOK_BUILD_MS);
 
   test("each case's evidence holds its listing measure: a subagent's against its own recorded listing, a top-level session's against a subagent's of it, else not measurable; the summary counts them", () => {
     const measureOf = (name: string) => {
@@ -3292,7 +3297,7 @@ test("a dev-box session that read a skill of a github: dependency's package and 
       .flat()
       .some((arg) => arg.startsWith("repos/acme/pack/commits?sha=main&"))
   ).toBe(true);
-});
+}, 60_000);
 
 test("a subagent's profile reads its packages at its root's last prompt build before its start, and its pools at its own start, and the evidence names both times", async () => {
   const out = path.join(scratch, "pinned-subagent", "cases.jsonl");
@@ -3323,7 +3328,7 @@ test("a subagent's profile reads its packages at its root's last prompt build be
   expect(evidence[`commit ${PACK_PIN} of acme/pack`]).toContain(
     "at or before the session's start 2026-11-20T01:59:41.780Z"
   );
-});
+}, 60_000);
 
 test("a subagent whose dev box pins packages by npm versions gets each package as the version its plugin list pinned at the root's last prompt build ships it, its pool as its own start has it, and a skill at a repository's root with the path .", async () => {
   // The suite's copies output, with acme/dots as the dev box's repository (it holds an installer
@@ -3430,7 +3435,7 @@ test("a subagent whose dev box pins packages by npm versions gets each package a
     path: ".",
     name: "one-skill",
   });
-});
+}, 60_000);
 
 test("a dev-box profile installs the units its dev box's own installers install though the session read none of them, leaves out a skill its Oh My Pi config ignores, and installs a skill that hides itself as not listed", async () => {
   // The copies output of the suite, with acme/home named as the dev box's repository: it holds an
@@ -3516,7 +3521,7 @@ test("a dev-box profile installs the units its dev box's own installers install 
   expect(alphas).toEqual([
     { repo: "acme/home", commit: SHA, path: "skills/alpha", name: "alpha", namespace: "agent" },
   ]);
-});
+}, 60_000);
 
 test("a Legion profile installs what its deployment gives each role at its start: the every-role plugin and every other plugin of the catalog its role setup names but those the project leaves out, and the skill its worker image installs from a release", async () => {
   // The suite's copies output, with acme/deploy as the deployment that holds ACME's project file.
@@ -3578,7 +3583,7 @@ test("a Legion profile installs what its deployment gives each role at its start
   expect(
     evidence["skill alpha-tools/alpha (acme/catalog plugins/alpha-tools/skills/alpha)"]
   ).toContain("and this copy's text differs");
-});
+}, 60_000);
 
 test("the seed fixes the order the sessions are taken in, and --max stops at that many cases", async () => {
   const names = ["good", "secret", "legion", "no-step"];
@@ -4562,7 +4567,7 @@ describe("build-cases goes on from where a run stopped", () => {
     codes.push(await main(args(killed), io(lines)));
     resumedRequests = recorder.requests.slice(from);
     resumedPulls = psqlLines(logged);
-  }, 120_000);
+  }, HOOK_BUILD_MS);
 
   test("a build killed after 3 sessions and run again gives the cases and summary of one uninterrupted run, with no pull and no reader call for those 3", () => {
     expect(codes).toEqual([0, 1, 0]);
@@ -5597,7 +5602,7 @@ test("the pull reads the store command's output row by row with psqlRows' checks
   expect(
     await pullTranscript(failing, "store_a", "/x", path.join(dir, "failing.jsonl")).catch(String)
   ).toBe("Error: the store command exited 3: psql: error: gone");
-});
+}, 60_000);
 
 /** The profile load.ts's load test takes for a task from session `name`: build-cases' profile of
  *  that session's case, less the tested skill, with the case's context. */
@@ -7332,11 +7337,44 @@ describe("GithubReads", () => {
   });
 });
 
+// Catches: a store command that hangs (a connection that never answers) holding a pull, and with it
+// the build, for ever; and a limit on the whole call, which would end a long pull that is still
+// streaming its rows.
+test("a pull whose store command prints nothing for the quiet limit is ended, naming the command and the limit; one that prints a little at a time within it runs as long as it needs", async () => {
+  const root = path.join(scratch, "store-quiet");
+  mkdirSync(root, { recursive: true });
+  const spool = path.join(root, "pull.jsonl");
+  // It reads its query, then waits in a child of its own, which holds its output open.
+  const hung = path.join(root, "hung.sh");
+  writeFileSync(hung, "#!/bin/sh\ncat >/dev/null\nsleep 5\n", { mode: 0o755 });
+  const started = performance.now();
+  await expect(pullTranscript(hung, "store_a", "/sessions/x.jsonl", spool, 200)).rejects.toThrow(
+    `the store command ${hung} printed nothing for 200 ms on store_a, so it was ended (STORE_QUIET_MS)`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+  // An answer of no row printed in pieces 300 ms apart: 1.8 s in all, past a limit of 1.2 s, but
+  // never 1.2 s without a piece (the margin is for a loaded machine).
+  const slow = path.join(root, "slow.sh");
+  writeFileSync(
+    slow,
+    "#!/bin/sh\nprintf ' value '\ncat >/dev/null\nfor piece in '\\n' '-------' '\\n' '(0 rows)' '\\n' '\\n'; do sleep 0.3; printf -- \"$piece\"; done\n",
+    { mode: 0o755 }
+  );
+  expect(await pullTranscript(slow, "store_a", "/sessions/x.jsonl", spool, 1_200)).toEqual({
+    bytes: 0,
+    calls: 1,
+  });
+}, 60_000);
+
 describe("GithubReads.tarball", () => {
   const ALPHA = "https://registry.npmjs.org/@acme/alpha/-/alpha-1.2.3.tgz";
   const BYTES = new Uint8Array([31, 139, 8, 0]);
   /** The time limit of a try here: short, so a row whose try meets it takes well under a second. */
   const LIMIT_MS = 50;
+  /** The limit of the row whose answer stops after its headers: long enough that the local
+   *  registry's headers, sent at once, come before it however loaded the machine is, so the try is
+   *  given up for its body, which never ends. */
+  const STALL_LIMIT_MS = 2_000;
   /** One fetch of the registry, given the signal registryTarball gives it. */
   type Fetch = (init: { readonly signal: AbortSignal }) => Promise<Response>;
   /** A local registry (recorder.ts's) whose answers only the time limit ends: `/never` never
@@ -7373,7 +7411,7 @@ describe("GithubReads.tarball", () => {
   /** The profile's reads, whose registry read is registryTarball's with the limit LIMIT_MS, its
    *  n-th fetch (from 0) `fetches[n]`, each URL it asks kept in `asked`; a retry waits for no time,
    *  each wait it asks for kept in `waits` and each line it says in `lines`. */
-  const reading = (fetches: readonly Fetch[]) => {
+  const reading = (fetches: readonly Fetch[], limitMs = LIMIT_MS) => {
     const asked: string[] = [];
     const waits: number[] = [];
     const lines: string[] = [];
@@ -7392,7 +7430,7 @@ describe("GithubReads.tarball", () => {
       stderr: "no gh call is made here\n",
     });
     const reads = new GithubReads(gh, new Map(), retries, (name, version) =>
-      registryTarball(name, version, LIMIT_MS, (url, init) => {
+      registryTarball(name, version, limitMs, (url, init) => {
         const next = fetches[asked.length];
         asked.push(url);
         if (next === undefined) throw new Error(`fetch ${asked.length} of ${url} was not expected`);
@@ -7402,7 +7440,7 @@ describe("GithubReads.tarball", () => {
     return { reads, asked, waits, lines, retries };
   };
   const sentAgain = (wait: number, retry: number, failure: string) =>
-    `build-cases: a gh call failed (${failure}); sending it again in ${wait} s, retry ${retry} of 4`;
+    `build-cases: the registry read of ${ALPHA} failed (${failure}); sending it again in ${wait} s, retry ${retry} of 4`;
 
   // Catches: a registry read with no time limit, whose try a network fault left unanswered, holding
   // the build for ever (a screen sat 15 minutes in one).
@@ -7419,21 +7457,28 @@ describe("GithubReads.tarball", () => {
   // the build for ever.
   test("a tarball whose body stops after its headers is given up after the limit too, and sent again", async () => {
     let headers = false;
-    const { reads, asked, waits, lines, retries } = reading([
-      async (init) => {
-        const response = await local("/stall")(init);
-        headers = true;
-        return response;
-      },
-      answer(200, BYTES),
-    ]);
+    let tried = 0;
+    const { reads, asked, waits, lines, retries } = reading(
+      [
+        async (init) => {
+          tried = performance.now();
+          const response = await local("/stall")(init);
+          headers = true;
+          return response;
+        },
+        answer(200, BYTES),
+      ],
+      STALL_LIMIT_MS
+    );
     expect(await reads.tarball("@acme/alpha", "1.2.3")).toEqual(BYTES);
+    // The headers came, and the try was given up at its limit, for its body.
     expect(headers).toBe(true);
+    expect(performance.now() - tried).toBeGreaterThanOrEqual(STALL_LIMIT_MS * 0.9);
     expect(asked).toEqual([ALPHA, ALPHA]);
     expect(retries.record()).toEqual({ "time limit": 1 });
     expect(waits).toEqual([5_000]);
-    expect(lines).toEqual([sentAgain(5, 1, `timed out after ${LIMIT_MS} ms`)]);
-  });
+    expect(lines).toEqual([sentAgain(5, 1, `timed out after ${STALL_LIMIT_MS} ms`)]);
+  }, 60_000);
 
   // Catches: a version the registry does not have sent again for minutes, or a refusal for good
   // taken as transient for a word of the package's name in its URL.
@@ -7472,7 +7517,7 @@ describe("GithubReads.tarball", () => {
     const tries = [
       "HTTP 503",
       `connection reset (ECONNRESET: ${reset})`,
-      "HTTP 429 (temporary failure: too many requests)",
+      "HTTP 429 (too many requests)",
       `connection refused (ECONNREFUSED: ${refused})`,
       `timed out after ${LIMIT_MS} ms`,
     ];
@@ -7483,7 +7528,7 @@ describe("GithubReads.tarball", () => {
       "connection reset": 1,
       "connection refused": 1,
       "HTTP 503": 1,
-      "temporary failure": 1,
+      "HTTP 429": 1,
     });
     expect(waits).toEqual([5_000, 15_000, 45_000, 135_000]);
     expect(lines).toEqual(
