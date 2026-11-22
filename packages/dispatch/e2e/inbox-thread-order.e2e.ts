@@ -9,7 +9,7 @@ import {
   listIssueMessages,
   markThreadRead,
 } from "./api";
-import { displayChoice, openDisplayMenu } from "./filters";
+import { displayChoice } from "./filters";
 import { settledScrollTop } from "./frames";
 import { inboxList, inboxPane, paneScroller } from "./inbox-pane";
 import { asSession, holdReadMarks, replyRowId, THREAD_SESSION } from "./inbox-threads";
@@ -202,17 +202,24 @@ async function scrollPositions(page: Page, pane: boolean): Promise<Record<string
  * its fold is still open, nothing scrolled, the page did not load again, and the menu is still
  * open with the order picked.
  *
- * The scroll is read once the menu is open. Below the pane's width the window scrolls the list
- * and the menu's trigger heads it, so a reader further down the list scrolls back up to the
- * trigger to open the menu, and so does a click of the test. What the pick must keep is where
- * the page stands with the menu open.
+ * The scroll is recorded before the menu opens, so the reads after a pick cover the whole
+ * switch, the menu's opening too. The test opens and shuts the menu with a script click on
+ * View. Playwright's own click scrolls a control into view before it presses it. At 1024 px with
+ * the list scrolled, View is above the screen, so that scroll would be the test's and not the
+ * page's. A script click scrolls nothing.
  */
 async function switchBothWays(page: Page, threads: readonly Drawn[], pane: boolean): Promise<void> {
-  const menu = await openDisplayMenu(page);
   const before = await scrollPositions(page, pane);
+  const trigger = page.getByRole("button", { exact: true, name: "View" });
+  const menu = page.getByRole("dialog", { name: "View" });
+  await trigger.evaluate((node) => (node as HTMLElement).click());
+  await expect(menu).toHaveCount(1);
   for (const order of ["newest", "oldest"] as const) {
     const choice = displayChoice(menu, "Thread order", order);
-    await choice.click();
+    // A script click too. At 1024 px the menu is cut to the room under View and scrolls in
+    // itself, and Thread order is its last section, out of sight. Playwright's click would
+    // scroll the menu to it first, which is a scroll the test makes.
+    await choice.evaluate((node) => (node as HTMLElement).click());
     for (const thread of threads) {
       await expectOrder(thread, order);
       await expectFoldOpen(thread);
@@ -226,8 +233,8 @@ async function switchBothWays(page: Page, threads: readonly Drawn[], pane: boole
     await expect(menu, `the display menu after ${order}`).toBeVisible();
     await expect(choice).toBeChecked();
   }
-  // Shut again by its own trigger, so the panel covers nothing the test drives next.
-  await page.getByRole("button", { exact: true, name: "View" }).click();
+  // Shut again, so the panel covers nothing the test drives next.
+  await trigger.evaluate((node) => (node as HTMLElement).click());
   await expect(menu).toHaveCount(0);
 }
 
