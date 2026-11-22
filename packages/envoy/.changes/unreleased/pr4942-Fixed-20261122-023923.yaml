@@ -16,11 +16,12 @@ body: |-
   issuer never published is refused as before. While a key set cannot be read, the exchange
   refuses `400 invalid_request`, with no `Retry-After`, a token the library refuses whatever key
   signed it: an `exp` that is not a number or is past, an `iat` older than its type's window or
-  not a number, an `nbf` that is not a number, an `iss` that is not its type's issuer, and for a
-  workflow run's token a `jti` that is missing or one the replay store holds as presented. That
-  holds for a person's token in a sign-in too, which the library reaches only after the machine's
-  actor token. A token whose only fault is an `iat` or an `nbf` in the future, which a wait can
-  make valid, is answered `503` until the key set can be read. The broker's own checks, made once
+  not a number, an `nbf` that is not a number (a null `nbf` counts as none), an `iss` that is not
+  its type's issuer, and for a workflow run's token no `jti` string (none, an empty one, or one
+  that is not a string), or one the replay store holds as presented. That holds for a person's
+  token in a sign-in too, which the library reaches only after the machine's actor token. A token
+  whose only fault is an `iat` or an `nbf` in the future, which a wait can make valid, is answered
+  `503` until the key set can be read. The broker's own checks, made once
   the token verifies (its audience, and whether an entry lists it), are not made meanwhile, so a
   token that would fail only those is answered `503` too, and so is a workflow run's token while
   the replay store cannot be read either. During such an outage a forged token can learn from a
@@ -33,8 +34,9 @@ body: |-
   That is a token with no `exp`, an `exp` of null, 0 or any value under 1, and an `exp` further
   ahead than the window, such as 9223372036854774784. The library the exchange uses admits some of
   these as tokens that never expire, and the broker minted an access token for them. The tokens
-  the issuers mint for this deployment are all well inside the window: the cluster tokens Legion's
-  own pods send to the exchange are projected for 3,600 seconds.
+  the issuers mint for this deployment are all within the window: a GitHub or Google token living
+  a whole hour fills its window, and the cluster tokens Legion's own pods send to the exchange are
+  projected for 3,600 seconds.
   The broker logs `broker: key set cannot be read` at WARN once when a read of a key set it checks
   callers' tokens against fails, and `broker: key set can be read again` at INFO once when a read
   of it succeeds after that, each naming the issuer and the key set's address, never a token: each

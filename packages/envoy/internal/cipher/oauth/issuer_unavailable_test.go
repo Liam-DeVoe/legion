@@ -234,6 +234,50 @@ func TestTheReplayReadSpendsNothing(t *testing.T) {
 	}
 }
 
+// TestAnUnreadableReplayStoreIsAnswered503: a workflow run's jti the replay store holds as
+// presented, carried by a token whose key the broker does not hold while GitHub's key set cannot be
+// read, is refused 400 while the store can be read. While the store cannot be read either (its table
+// renamed away), nothing says whether the jti was presented, so the token is answered 503 with
+// Retry-After: 1 and not refused. Once the store can be read again, it is refused 400 again.
+func TestAnUnreadableReplayStoreIsAnswered503(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	const run, jti = "4800", "run-4800"
+	if _, err := f.pool.Exec(context.Background(), `insert into oauth_exchange_jtis (jti, expires_at) values ($1, now() + interval '1 hour')`, jti); err != nil {
+		t.Fatalf("hold %s as presented: %v", jti, err)
+	}
+	f.github.FailKeys(http.StatusServiceUnavailable)
+	unread := oidctest.New(t).PublishKey(t, "rotated-key")
+	now := time.Now()
+	token := f.github.Mint(t, unread, map[string]any{
+		"iss": f.github.URL(), "sub": "repo:" + repository + ":ref:" + ref, "aud": workflowAudience,
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(15 * time.Minute).Unix(), "jti": jti,
+		"repository": repository, "workflow_ref": repository + "/" + workflow + "@" + ref,
+		"job_workflow_ref": repository + "/" + workflow + "@" + ref, "ref": ref, "run_id": run,
+	})
+	form := exchangeForm(token, oauthwire.SubjectTokenTypeGitHub, "ci-release")
+	rename := func(from, to string) {
+		t.Helper()
+		if _, err := f.pool.Exec(context.Background(), `alter table `+from+` rename to `+to); err != nil {
+			t.Fatalf("rename %s to %s: %v", from, to, err)
+		}
+	}
+
+	t.Run("the store can be read: the spent jti is refused", func(t *testing.T) {
+		requireRefused(t, f, form, "must be used only once")
+	})
+	rename("oauth_exchange_jtis", "oauth_exchange_jtis_hidden")
+	t.Run("the store cannot be read: answered 503", func(t *testing.T) {
+		status, header, body := f.post(t, "/token", form, newKey(t))
+		if status != http.StatusServiceUnavailable || body["code"] != oidc.IssuerUnavailableCode || header.Get("Retry-After") != "1" {
+			t.Fatalf("answered %d %v (Retry-After %q), want 503 %s with Retry-After: 1: an unreadable replay store says nothing of the jti", status, body, header.Get("Retry-After"), oidc.IssuerUnavailableCode)
+		}
+	})
+	rename("oauth_exchange_jtis_hidden", "oauth_exchange_jtis")
+	t.Run("the store can be read again: the spent jti is refused", func(t *testing.T) {
+		requireRefused(t, f, form, "must be used only once")
+	})
+}
+
 // TestATokenThatNeverExpiresIsRefusedWhileTheKeySetIsRead: with every key set read, the exchange
 // refuses 400 a token that does not expire within its type's window, though the library admits most
 // of them: an exp of null, 0, 0.5, 9223371974719179008, 9223372000000000000 or 9223372036854774784

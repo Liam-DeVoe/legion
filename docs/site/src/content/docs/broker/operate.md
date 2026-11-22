@@ -903,8 +903,9 @@ the lifetime the pod asked for has passed, or after 24 hours, and a cluster's ow
 lifetime is named by no setting of the broker's. The cluster tokens Legion's own pods send to the
 exchange are projected for 3,600 seconds. A token is refused for this when it has no `exp`, an
 `exp` of null, of 0 or of any value under 1, or an `exp` further ahead than the window. The tokens
-the issuers mint for this deployment are all well inside it; the library the exchange uses admits
-some of the refused tokens as never expiring.
+the issuers mint for this deployment are all within it: a GitHub or Google token living a whole
+hour fills its window, and a cluster token of 3,600 seconds sits well inside 24 hours. The library
+the exchange uses admits some of the refused tokens as never expiring.
 
 When a token names a key the broker does not hold and its issuer's key set cannot be read now,
 the exchange answers as follows. This covers a cluster's, a machine's, a person's and a workflow
@@ -912,8 +913,9 @@ run's token, and in a person's sign-in the person's token as well as the machine
 
 - `400 invalid_request`, with no `Retry-After`, for a token the library refuses whatever key
   signed it: its `exp` is not a number or is past; its `iat` is older than its type's window, or
-  is not a number; its `nbf` is not a number; its `iss` is not its type's issuer; or, for a
-  workflow run's token, it carries no `jti`, or one the replay store holds as presented.
+  is not a number; its `nbf` is not a number (a null `nbf` counts as none); its `iss` is not its
+  type's issuer; or, for a workflow run's token, it carries no `jti` string (none, an empty one,
+  or one that is not a string), or one the replay store holds as presented.
 - `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1` for any other token, including one whose
   only fault is an `iat` or an `nbf` in the future, which a wait can make valid. It is never
   refused as a token that does not verify. The broker's own checks, made once the token

@@ -554,11 +554,12 @@ var errNeverExpires = errors.New("oauth: the subject token does not expire withi
 // it.
 //
 // It is a tightening of what the library admits, which no token this deployment's issuers mint for
-// the exchange meets: GitHub's and Google's live an hour, and the cluster tokens this deployment's
-// pods project live 3,600 seconds (kubernetesTolerance). The library takes an exp it reads as 0 for
-// no exp at all and admits the token, and an exp near 9.22e18 overflows its own window check
-// (time.Unix) and passes it, so the broker would mint an access token for a token that never
-// expires. Every other exp it refuses as the library's window check does.
+// the exchange meets: GitHub's live at most an hour and Google's an hour, inside their one-hour
+// window, and the cluster tokens this deployment's pods project live 3,600 seconds, their own
+// projection, inside kubernetesTolerance, the 24-hour cluster window. The library takes an exp it
+// reads as 0 for no exp at all and admits the token, and an exp near 9.22e18 overflows its own
+// window check (time.Unix) and passes it, so the broker would mint an access token for a token that
+// never expires. Every other exp it refuses as the library's window check does.
 func refusedForLifetime(claims jwt.Claims, window time.Duration, now time.Time) error {
 	if window == 0 {
 		window = time.Hour
