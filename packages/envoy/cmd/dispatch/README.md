@@ -968,9 +968,9 @@ Every other message whose body is such a line - an issue message, a mention, a b
 A tab opened before the deploy sends the switch without `connected_only`, and a new server holds it to a running session by that rule all the same, so that tab needs no reload for it.
 An earlier server that takes the same switch, until the update ends or for good after a rollback, sends it as that release always did:
 its registry read does not find a session the listener knows only by its record, so it fails that attempt `no live session`, and it sends the switch to a session whose registry entry still stands, for which the listener stores it if that session's process has gone, as it did before this release.
-A tab opened after the deploy sends `connected_only`, which an earlier server refuses as an unknown field (`400 INVALID_JSON`, from `decodeJSON`'s `DisallowUnknownFields`), and the page drops the switch, shows that refusal and sends nothing.
-The person presses again: a press that reaches a new server goes through, and every press does once the update ends.
-After a rollback no press goes through until the deployment moves forward again, and reloading the tab onto the earlier build's page sends the switch the earlier way.
+A tab opened after the deploy sends `connected_only`, which an earlier server ignores, as `decodeJSON` ignores every member a route does not declare (it logs the member and decodes the rest).
+So that earlier server sends the switch as that release always did (above), and the page shows no refusal.
+After a rollback every press is sent that way until the deployment moves forward again.
 An earlier server's delivery sweep resumes an attempt without the flag, since that build does not read the column, so it can send a switch attempt a new server left pending the way the earlier release sends one (above).
 That takes a new server killed mid-send, whose drain therefore never settles the attempt, while an earlier server still serves, in a rolling update or a rollback.
 The earlier server's sweep can then send that attempt once its claim lapses, one to two minutes after the kill (`model.DeliveryClaimLapse`, and the sweep's one pass a minute), unless a new server's sweep takes it first and sends it with the flag.
@@ -2920,6 +2920,15 @@ A function and a trigger are its only two statements, which is what exempts it f
 It is applied second so that a version an older build writes between the two commits meets no function the database does not have yet; such a version does not re-index its issue, which the next write of that document does.
 Its census answers `0`: the trigger runs only on versions written after it.
 
+Migration `20261121060636_search_document_text` creates `search_document_text(markdown)`, the one definition of a document's search text: its ask blocks removed, then `search_text` ([Search](#search)).
+It replaces the bodies of `artifact_versions_search` and `20261105145242`'s `issue_search_vector`, which removed the ask blocks after `search_text`, so a block between two underscore runs joined them into one that the parser read in time quadratic in its length.
+`create or replace` keeps each trigger bound to its function, so it takes no table lock, and the release before it still calls the functions it knows, whose answers keep their types.
+It writes no row.
+The two orders give a different text only where text the ask-block pattern matches has an underscore run's character on each side of it, which a real ask block, on a line of its own, never has: only `:::ask{…}:::` written inside a run, in a paragraph or a code block, is indexed differently.
+Where the parser reads the joined run as words, as it reads `a_a_…`, both texts give the same vector; where it reads the run as one host name, email address, path or URL, the vector differs in that run's lexemes and in the positions of the words after it, and such a row keeps its vector until its document's next version.
+While the release before this one still serves, its related-item check and duplicate check build that text in the old order, so for such a text they compare with a vector built in the other order.
+Its census answers `0`.
+
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
 On success it backfills each artifact's project and generated `ref_key`.
@@ -3904,7 +3913,10 @@ the version current when an unanchored comment or ask is written on a document, 
 
 Migration 0010 added stored generated `search` columns.
 Migrations `0057`–`0061` made them plain columns that a `BEFORE INSERT OR UPDATE` trigger per table fills (`issues_search`, `artifact_versions_search`, `comments_search`, `asks_search`, `messages_search`), so no application code writes or refreshes a search vector.
-Every indexed text, headline, and duplicate-title comparison first passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
+Every indexed text, headline, and duplicate-title comparison passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
+A document's markdown, and so an issue's spec, passes through `search_document_text` (`20261121060636`), which removes the ask blocks and then applies `search_text`:
+removed after it, a block between two runs joined them into one run that nothing broke, which the text-search parser read again from each letter, so 41,000 bytes of `a_` runs between ask blocks took 5 s per vector.
+The document and issue triggers, the related-item check and the duplicate check each call it, so the text each compares with a stored vector is built as every vector written since that migration was.
 A query is not normalised and is limited to 1,000 characters.
 `websearch_to_tsquery` ANDs a person's words, so a question of theirs answers nothing as soon as one of its words is in no item at all.
 That AND is what every search runs, whatever the question's length, and a question it answers is answered from it and nothing else.
@@ -3928,7 +3940,7 @@ It has a path of its own because a build released before those members answers i
 Search covers issue titles, the latest settled document text, comments, asks (questions, option labels and descriptions, free-text answers and the options an answer chose), and messages.
 An issue's own vector carries its key and its title at weight `A`, as `0088` left them, and the markdown of the latest version of its primary document at weight `C` (`20261105145242`), so an issue whose title holds none of its spec's words is still found by them, and below every issue whose key or title holds them:
 `ts_rank_cd`, which ranks every keyword arm, scores `A` at 1.0 and `C` at 0.2.
-The spec is read as the document arm reads that same document, through `search_text` with the ask blocks stripped, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
+The spec is read as the document arm reads that same document, through `search_document_text`, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
 An ask hit's excerpt is cut from that same indexed text (the question, then `ask_search_suffix`), never from the options' raw JSON, and the hit carries `ask`, where the ask stands when the search ran:
 `open`, `answered` with its latest answer, or `resolved` with its resolution and, when anyone answered it, the last answer it had, which for an ask that document settlement retracted while it was answered is read from its `ask.answered` events, since its row keeps none.
 Live document text takes up to the 2 s settle delay to appear in search results.

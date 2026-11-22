@@ -60,7 +60,8 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 // build, its schema numbers and owner lock protocol among them, with a heartbeat of the given age,
 // and answers the instance id. A row without the schema numbers reads as a build that predates the
 // fleet columns, which the document service reads as another build (docs' anotherBuildServes),
-// and one without the owner lock protocol as a build before it (store.OwnerLockProtocol).
+// and one at the owner lock protocol's default, 0, is an earlier build's arrival, whose insert
+// waits for the owner lock gate (fleetProcess in internal/dispatch/docs says why).
 func seedServerProcess(t *testing.T, database *store.Store, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
