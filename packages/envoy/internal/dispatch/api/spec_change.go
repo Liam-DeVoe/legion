@@ -34,7 +34,7 @@ const specRequestStaleEvent = "spec.request_stale"
 
 // specChangeRouteWords is what the routes that write a person's approval say of an approval of a
 // change request (routes_table.go).
-const specChangeRouteWords = "An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports), APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it) or SPEC_REQUEST_UNREAD (a version with no record of the revision it was read at). A request for changes writes nothing into it."
+const specChangeRouteWords = "An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports) or APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it). A request for changes writes nothing into it."
 
 // specChangeRefusal is a refusal of the approved spec (specstore.Refusal), with the issue and the
 // approval request it refused, which a stale refusal's event names once the approval's
@@ -109,9 +109,11 @@ func versionDigest(ctx context.Context, q queryer, artifactID string, version in
 // source; any other writes nothing here. A covered approval answers an open approval request
 // (APPROVAL_REQUEST_REQUIRED otherwise) and counts only for the text that request names: a
 // document whose text moved after the request handed it to the person (Version past
-// RequestedVersion) is refused the same way. The request is read at the revision each version
-// named was read at (specchange.VersionCut): the statements and components at the spec's, the
-// checks at the Verification document's where the request names it, else at the spec's.
+// RequestedVersion) is refused the same way. The request is read from the versions it names, as
+// they are stored (specchange.FromVersions): the statements and components from the spec's, the
+// checks from the Verification document's where the request names it, else from that document's
+// latest settled version, so a request that changes a check its approval request leaves out is
+// refused (specstore.RefusalChecksNotIncluded).
 func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, request *model.AskApproval,
 	documents []model.AskApprovalDocument, actor model.Actor, askID *string) error {
 	var spec, verification *model.Artifact
@@ -150,24 +152,38 @@ func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 				document.RequestedVersion, document.Name, document.Version)
 		}
 	}
-	specCut, err := specchange.VersionCut(ctx, tx, spec.ID, specVersion)
-	if errors.Is(err, specchange.ErrNoRecord) {
-		return errorf(http.StatusConflict, "SPEC_REQUEST_UNREAD",
-			"version %d of the spec of %s holds no record of the revision it was read at, so its change request cannot be read as the person approves it; write a new version of the spec and request approval of it", specVersion, issue.Key)
-	}
+	statements, err := specVersionText(ctx, tx, *spec, specVersion)
 	if err != nil {
 		return err
 	}
-	checksCut := specCut
-	if verification != nil {
-		if checksCut, err = specchange.VersionCut(ctx, tx, verification.ID, verificationVersion); errors.Is(err, specchange.ErrNoRecord) {
-			return errorf(http.StatusConflict, "SPEC_REQUEST_UNREAD",
-				"version %d of the Verification document of %s holds no record of the revision it was read at; write a new version of it and request approval again", verificationVersion, issue.Key)
-		} else if err != nil {
+	var checks *specchange.VersionText
+	switch {
+	case verification != nil:
+		text, err := specVersionText(ctx, tx, *verification, verificationVersion)
+		if err != nil {
 			return err
 		}
+		checks = &text
+	default:
+		unnamed, held, err := s.verificationDocument(ctx, tx, issue.Key, "")
+		if err != nil {
+			return err
+		}
+		if held {
+			latest, err := settledVersionNumber(ctx, tx, unnamed.ID)
+			if err != nil {
+				return err
+			}
+			if latest > 0 {
+				text, err := specVersionText(ctx, tx, unnamed, latest)
+				if err != nil {
+					return err
+				}
+				checks = &text
+			}
+		}
 	}
-	changeRequest, err := specchange.FromIssue(ctx, tx, issue.Key, specCut, checksCut)
+	changeRequest, err := specchange.FromVersions(issue.Key, statements, checks)
 	if err != nil {
 		return err
 	}
@@ -189,6 +205,15 @@ func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 		return &specChangeRefusal{refusal: refusal, issue: issue.Key, ask: askID}
 	}
 	return err
+}
+
+// specVersionText is version of artifact as specchange reads a change request from it.
+func specVersionText(ctx context.Context, q queryer, artifact model.Artifact, version int) (specchange.VersionText, error) {
+	markdown, err := storedVersionText(ctx, q, artifact.ID, version)
+	if err != nil {
+		return specchange.VersionText{}, err
+	}
+	return specchange.VersionText{Document: artifact.RefKey, Version: version, Markdown: markdown}, nil
 }
 
 // specDocumentOf is version of artifact as an act of the approved spec names it, with its digest.

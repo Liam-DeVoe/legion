@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -39,20 +41,21 @@ const seedSpec = ":::requirement{#an-order-is-paid-once kind=\"behavior\" about=
 	":::component{#billing-to-bank name=\"Billing to bank\" kind=\"interface\" joins=\"bank billing\"}\n" +
 	"Billing sends each payment to the bank.\n:::\n"
 
-// paidOnceCheck is the check of an-order-is-paid-once at base, or a new one where base is "".
+// paidOnceCheck is the check of an-order-is-paid-once at base, or a new one where base is "". A
+// document keeps no soft line break, so each field of a check is a paragraph of its own.
 func paidOnceCheck(base string) string {
 	return ":::check{#a-second-payment-is-refused statement=\"an-order-is-paid-once\" subject=\"code\" procedure=\"program\" " +
 		"runner=\"go\" selector=\"example.com/billing TestASecondPaymentIsRefused\" job=\"go-test\"" + baseAttribute(base) + "}\n" +
-		"Claim: A second payment of one order is refused.\n" +
-		"Procedure: The test pays one order two times.\n" +
+		"Claim: A second payment of one order is refused.\n\n" +
+		"Procedure: The test pays one order two times.\n\n" +
 		"Failing example: A build that takes the second payment.\n:::\n"
 }
 
 // refundCheck is the check fixture 2 adds for its new statement.
 const refundCheck = ":::check{#a-refund-is-paid-back statement=\"a-refund-returns-the-payment\" subject=\"code\" procedure=\"program\" " +
 	"runner=\"go\" selector=\"example.com/billing TestARefundIsPaidBack\" job=\"go-test\"}\n" +
-	"Claim: A refund pays the payment of its order back.\n" +
-	"Procedure: The test refunds one paid order.\n" +
+	"Claim: A refund pays the payment of its order back.\n\n" +
+	"Procedure: The test refunds one paid order.\n\n" +
 	"Failing example: A build that keeps the payment.\n:::\n"
 
 // fixtureTwoSpec is v-approval's fixture 2: it proposes one statement and changes another, with the
@@ -167,14 +170,29 @@ func (r *specRig) request(t *testing.T, issue model.Issue, verification bool) st
 	}](t, response).Ask.ID
 }
 
-// answer answers the approval request as alice, with Approve or Request changes and the words.
+// answer answers the approval request as alice, with Approve or Request changes and the words, at
+// the revision of the ask she reads first, as a person answers the request she sees.
 func (r *specRig) answer(t *testing.T, ask, selected, words string) *httptest.ResponseRecorder {
 	t.Helper()
-	body := map[string]any{"selected": []string{selected}}
+	read := dispatchRequest(t, r.handler, http.MethodGet, "/api/v1/asks/"+ask, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the approval request %s: status=%d body=%s", ask, read.Code, read.Body.String())
+	}
+	revision := decodeBody[struct {
+		Ask struct {
+			EditedAt json.RawMessage `json:"edited_at"`
+		} `json:"ask"`
+	}](t, read).Ask.EditedAt
+	body := map[string]any{"selected": []string{selected}, "expected_edited_at": revision}
 	if words != "" {
 		body["text"] = words
 	}
 	return dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", body, "alice")
+}
+
+// retype is the edit that sets the attributes of the typed block id of type typ, in place.
+func retype(id, typ string, attributes map[string]any) []map[string]any {
+	return []map[string]any{{"op": "retype", "block": id, "type": typ, "attributes": attributes}}
 }
 
 // approve answers the approval request with Approve and fails unless the approval is recorded.
@@ -367,7 +385,7 @@ func TestApprovalRefusals(t *testing.T) {
 			":::requirement{#a-paid-bill-is-closed kind=\"behavior\"}\nA paid bill is closed.\n:::\n",
 			":::check{#a-paid-bill-reads-closed statement=\"a-paid-bill-is-closed\" subject=\"code\" procedure=\"program\" runner=\"go\" "+
 				"selector=\"example.com/billing TestAPaidBillReadsClosed\" job=\"go-test\"}\n"+
-				"Claim: A paid bill reads closed.\nProcedure: The test pays a bill.\nFailing example: A build that leaves it open.\n:::\n")
+				"Claim: A paid bill reads closed.\n\nProcedure: The test pays a bill.\n\nFailing example: A build that leaves it open.\n:::\n")
 		rig.refused(t, rig.request(t, unchecked, false), "SPEC_CHECKS_NOT_INCLUDED")
 		rig.requireAbsent(t, specRepo, "a-paid-bill-is-closed")
 		rig.requireAbsent(t, specRepo, "a-paid-bill-reads-closed")
@@ -395,7 +413,8 @@ func TestApprovalRefusals(t *testing.T) {
 		if others := staleEvents(t, rig.database, first.Key); len(others) != 0 {
 			t.Errorf("%s holds %d spec.request_stale events, want none", first.Key, len(others))
 		}
-		editSpec(t, rig.handler, second.Key, []map[string]any{{"op": "replace", "find": `base="1"}` + "\nA bill names its order and its total.", "with": `base="2"}` + "\nA bill names its order, its date and its total."}})
+		editSpec(t, rig.handler, second.Key, retype("a-bill-names-its-order", "requirement", map[string]any{"kind": "behavior", "about": "billing", "base": "2"}))
+		editSpec(t, rig.handler, second.Key, []map[string]any{{"op": "replace", "find": "A bill names its order and its total.", "with": "A bill names its order, its date and its total."}})
 		rig.approve(t, rig.request(t, second, false))
 		rig.requireVersions(t, specRepo, "a-bill-names-its-order", "A bill names its order.", "A bill names its order and its date.", "A bill names its order, its date and its total.")
 	})
@@ -451,14 +470,13 @@ func TestApprovalDigestCoversTheChangeRequest(t *testing.T) {
 	rig.approve(t, rig.request(t, fixture, true))
 	digest := func() string {
 		t.Helper()
-		var sum string
-		if err := rig.database.Pool.QueryRow(context.Background(), `
-			select r.record_sha256 from version_renders r
-			where r.artifact_id = $1 and r.number = (select max(number) from version_renders where artifact_id = $1)
-		`, fixture.PrimaryArtifactID).Scan(&sum); err != nil {
+		// The digest of the spec query's record (R22, the record an approval covers), read at the
+		// head the edit left.
+		record, err := docs.ReadQueryRecord(context.Background(), rig.database.Pool, fixture.Key, graphstore.QuerySpec, refs.TreeCut{})
+		if err != nil {
 			t.Fatalf("read the spec digest of %s: %v", fixture.Key, err)
 		}
-		return sum
+		return record.Digest
 	}
 	replace := func(find, with string) []map[string]any {
 		return []map[string]any{{"op": "replace", "find": find, "with": with}}
@@ -469,16 +487,16 @@ func TestApprovalDigestCoversTheChangeRequest(t *testing.T) {
 		moves bool
 	}{
 		{"1: a word of the text of a statement", replace("A refund returns the payment of an order.", "A refund returns the whole payment of an order."), true},
-		{"2: the parent of a statement", replace(`#a-refund-is-logged kind="behavior"`, `#a-refund-is-logged kind="behavior" under="a-refund-returns-the-payment"`), true},
-		{"3: the order of two statements under one parent", replace(
-			":::requirement{#an-order-is-paid-once kind=\"behavior\" about=\"billing\" base=\"1\"}\nAn order is paid once, and a second payment is refused.\n:::\n\n"+
-				":::requirement{#a-refund-returns-the-payment kind=\"behavior\" about=\"billing\"}\nA refund returns the whole payment of an order.\n:::\n",
-			":::requirement{#a-refund-returns-the-payment kind=\"behavior\" about=\"billing\"}\nA refund returns the whole payment of an order.\n:::\n\n"+
-				":::requirement{#an-order-is-paid-once kind=\"behavior\" about=\"billing\" base=\"1\"}\nAn order is paid once, and a second payment is refused.\n:::\n"), true},
-		{"4: the about relation of a statement", replace(`#a-refund-returns-the-payment kind="behavior" about="billing"`, `#a-refund-returns-the-payment kind="behavior" about="bank billing"`), true},
-		{"5: the serves relation of a statement", replace(`#a-refund-returns-the-payment kind="behavior" about="bank billing"`, `#a-refund-returns-the-payment kind="behavior" about="bank billing" supports="an-order-is-paid-once"`), true},
+		{"2: the parent of a statement", retype("a-refund-is-logged", "requirement",
+			map[string]any{"kind": "behavior", "about": "billing", "under": "a-refund-returns-the-payment"}), true},
+		{"3: the order of two statements under one parent", []map[string]any{{"op": "move", "block": "a-refund-returns-the-payment", "before": "block:an-order-is-paid-once"}}, true},
+		{"4: the about relation of a statement", retype("a-refund-returns-the-payment", "requirement",
+			map[string]any{"kind": "behavior", "about": "bank billing"}), true},
+		{"5: the serves relation of a statement", retype("a-refund-returns-the-payment", "requirement",
+			map[string]any{"kind": "behavior", "about": "bank billing", "supports": "an-order-is-paid-once"}), true},
 		{"6: the purpose of a component", replace("It takes the payment of each order.", "It takes and refunds the payment of each order."), true},
-		{"7: the joins relation of an interface", replace(`joins="bank billing" base="1"`, `joins="bank" base="1"`), true},
+		{"7: the joins relation of an interface", retype("billing-to-bank", "component",
+			map[string]any{"name": "Billing to bank", "kind": "interface", "joins": "bank", "base": "1"}), true},
 		{"8: the removal of a statement that the approval did not name", []map[string]any{{"op": "insert", "after": "end",
 			"markdown": ":::requirement{#a-bill-names-its-order kind=\"behavior\" about=\"billing\" base=\"1\" removes=\"true\"}\nA bill names its order.\n:::\n"}}, true},
 		{"9: only prose of the issue outside its memo", replace("Prose the person reads around the request.", "Prose the person reads beside the request."), false},

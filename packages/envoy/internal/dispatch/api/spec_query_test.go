@@ -65,7 +65,7 @@ func TestTheSpecQueryTakesComponentsUnderOneDefinition(t *testing.T) {
 	values := recordField("joins") + recordField("bank shop") + recordField(graphstore.AttributeState) + recordField(graphstore.StateLive) +
 		recordField(graphstore.AttributeVisibility) + recordField(graphstore.VisibilityProject)
 	want := pinnedRecord + recordField(refs.BlockNodeKind+":"+component) + recordField("component") + recordField(graphstore.KindIssue+":PIN-1") +
-		recordField("1W") + recordField(values) + recordField(text) + recordField("")
+		recordField("1W") + recordField(values) + recordField(text) + recordField(recordField(graphstore.TuplePartOf)+recordField(graphstore.KindIssue+":PIN-1"))
 	after := read()
 	if string(after.Record) != want {
 		t.Errorf("with a component block the spec record of PIN-1 reads\n%q\nwant\n%q", after.Record, want)
