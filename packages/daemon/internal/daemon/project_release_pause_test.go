@@ -1,10 +1,11 @@
 package daemon
 
 // The two refusals between a project's pause and its release (dispatch://INFRA-3583 R13, checks
-// E17 and E18), run on the idle rig through the `legion` an operator runs: the whole daemon on a
-// scratch Postgres, the Sandbox runtime over the rig's stand-in cluster, a real NATS and Envoy
-// listener, and a scripted role process in each pod. Each test logs every answer the checks print,
-// each line beginning with its check's name.
+// E17 and E18), and the answer of a release that finished before a pause, run on the idle rig
+// through the `legion` an operator runs: the whole daemon on a scratch Postgres, the Sandbox
+// runtime over the rig's stand-in cluster, a real NATS and Envoy listener, and a scripted role
+// process in each pod. Each test logs every answer the checks print, each line beginning with its
+// check's name.
 
 import (
 	"context"
@@ -23,13 +24,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// pauseReleaseConfiguration is the configuration both tests boot on: the move test's wake pacing
-// (moveConfiguration), one launch a second, with the idle release on where the move test turns it
-// off, because a daemon whose idle release is off cannot hold a pause and answers PAUSE_UNAVAILABLE
-// (pause.Unavailable). Its idle period and backstop are longer than either test runs, so no pod is
-// released and no stopped role is woken behind the test's back. Both tests boot on the wall clock
-// (idleRigOptions.wallClock), as the move test does: the pacing lets a launch out on a timer, which
-// the rig's still clock never fires, so on it every launch after the first token waits for ever.
+// pauseReleaseConfiguration is the configuration each test here boots on: the move test's wake
+// pacing (moveConfiguration), one launch a second, with the idle release on where the move test
+// turns it off, because a daemon whose idle release is off cannot hold a pause and answers
+// PAUSE_UNAVAILABLE (pause.Unavailable). Its idle period and backstop are longer than any test here
+// runs, so no pod is released and no stopped role is woken behind the test's back. Each test boots
+// on the wall clock (idleRigOptions.wallClock), as the move test does: the pacing lets a launch out
+// on a timer, which the rig's still clock never fires, so on it every launch after the first token
+// waits for ever.
 func pauseReleaseConfiguration(cfg *config.Config) {
 	cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst = 60, 1
 	cfg.Runtime.Kubernetes.IdleRelease = config.IdleReleaseConfig{IdleMinutes: 60, BackstopMinutes: 60}
@@ -340,5 +342,58 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 		if paused[token] != state {
 			t.Errorf("the claim %s is %s after the pause, want it as the release left it, %s", token, paused[token], state)
 		}
+	}
+}
+
+// dispatch://INFRA-3583 R13, after E18: once this process's release has finished and a pause is
+// taken, `legion project release` run again, its dry run too, prints that release and exits 0, as
+// it does with no pause, and the route answers it 200. The daemon answers its own release before
+// it reads the pause, and that answer starts nothing: the release is not refused 409
+// PROJECT_PAUSED, whose sentence says that nothing was recorded, stopped or deleted, after it
+// stopped and deleted, and no second release is recorded.
+func TestAFinishedReleaseIsAnsweredWhileItsProjectIsPaused(t *testing.T) {
+	const check = "R13 after the release"
+	rig := newIdleRigWith(t, idleRigOptions{wallClock: true, configure: pauseReleaseConfiguration},
+		idleRigSeed{name: "alpha", roles: []claim.Role{claim.RoleImplementer}, plan: &idleRigPlan{TakeTurn: true}})
+	legion := buildLegion(t)
+	rig.launchAll()
+	alpha := rig.issue("alpha")
+	idleRigEventually(t, idleRigPodWait, "the role up with no task it has not taken", func() bool {
+		c := rig.claimsByToken()[rig.token(alpha)]
+		return idleRigWorking(c.State) && c.Pending == nil
+	})
+
+	released, release := rig.projectRelease(legion, "--bound", "20s")
+	t.Logf("%s: legion project release exited %d; stdout %s; stderr %q", check, released.code, released.stdout, released.stderr)
+	if released.code != 0 || release.FinishedAt == nil || release.ID == 0 {
+		t.Fatalf("legion project release exited %d with %+v, want 0 and a finished release", released.code, release)
+	}
+	if line := releaseLine(t, release, alpha.pod); !line.Deleted() {
+		t.Fatalf("the release's line of %s is %+v, want it deleted", alpha.pod, line)
+	}
+	taken := rig.operatorCommand(check, legion, "project", "pause", "--reason", check+": a pause once the release has finished")
+	if taken.code != 0 || !strings.HasPrefix(taken.stdout, "project paused: ") {
+		t.Fatalf("legion project pause once release %d finished exited %d (stdout %q, stderr %q), want the pause taken",
+			release.ID, taken.code, taken.stdout, taken.stderr)
+	}
+
+	for _, flags := range [][]string{nil, {"--dry-run"}} {
+		ran, again := rig.projectRelease(legion, flags...)
+		t.Logf("%s: legion project release %v while paused exited %d; stdout %s; stderr %q", check, flags, ran.code, ran.stdout, ran.stderr)
+		if ran.code != 0 || again.ID != release.ID || again.DryRun || again.FinishedAt == nil || !again.FinishedAt.Equal(*release.FinishedAt) {
+			t.Errorf("legion project release %v while paused exited %d with %+v, want 0 and release %d as it finished", flags, ran.code, again, release.ID)
+		}
+	}
+	status, body := rig.api.request(http.MethodPost, api.ProjectReleaseRoute, api.ProjectReleaseRequest{}, true)
+	t.Logf("%s: POST %s while paused answered %d %s", check, api.ProjectReleaseRoute, status, body)
+	var answered api.ProjectReleaseResponse
+	if err := json.Unmarshal(body, &answered); status != http.StatusOK || err != nil || answered.ID != release.ID || answered.FinishedAt == nil {
+		t.Errorf("POST %s while paused answered %d %s, want 200 with release %d as it finished", api.ProjectReleaseRoute, status, body, release.ID)
+	}
+	if n := rig.count(`select count(*) from project_releases`); n != 1 {
+		t.Errorf("the store holds %d project releases, want only the one that finished", n)
+	}
+	if n := rig.count(`select count(*) from project_pauses where ended_at is null`); n != 1 {
+		t.Errorf("the store holds %d open pauses, want the one taken after the release", n)
 	}
 }

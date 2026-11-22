@@ -23,10 +23,12 @@ body: |-
   A notice, role message, hook prompt, merge-queue removal message or merge-forward message held
   through the release reaches its claim once the next boot's start of it holds its role again.
   While the project is paused, or while a pod that a pause stopped is still held after the resume,
-  the release answers `409 PROJECT_PAUSED`, its dry run included, names each held pod with the
-  claims to resume (`legion claims resume --claim <token>`), and records, stops and deletes
-  nothing. While a release runs, `legion project pause` and the controller's `pause` answer
-  `409 PROJECT_RELEASING` and pause nothing; once the release has finished, a pause is taken.
+  a daemon process that has run no release answers the release `409 PROJECT_PAUSED`, its dry run
+  included, names each held pod with the claims to resume (`legion claims resume --claim
+  <token>`), and records, stops and deletes nothing; one that has run a release answers that
+  release, as it does with no pause. While a release runs, `legion project pause` and the
+  controller's `pause` answer `409 PROJECT_RELEASING` and pause nothing; once the release has
+  finished, a pause is taken.
   The command prints one line for each Sandbox and each stopped claim, and exits 0 once the
   release finished and left no Sandbox of the project. `--dry-run` shows what a release would do
   now and changes nothing. `POST` and `GET /legion/v1/operator/project/release` start and read the

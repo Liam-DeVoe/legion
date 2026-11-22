@@ -2,12 +2,9 @@ package natscallout
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
@@ -35,11 +32,13 @@ type PlatformTokens struct {
 }
 
 // Verify answers what raw says of its service (ServiceIdentity) once the verifier of its issuer
-// has verified it. A Google token must carry a verified email: the account is looked up by it.
+// has verified it. The issuer is read before that, with every space removed, as the verifiers read
+// raw (oidc.UnverifiedIssuer). A Google token must carry a verified email: the account is looked up
+// by it.
 func (p PlatformTokens) Verify(ctx context.Context, raw string) (ServiceIdentity, error) {
-	issuer, err := unverifiedIssuer(raw)
+	issuer, err := oidc.UnverifiedIssuer(raw)
 	if err != nil {
-		return ServiceIdentity{}, err
+		return ServiceIdentity{}, fmt.Errorf("natscallout: the service token's claims do not decode: %w", err)
 	}
 	switch {
 	case p.K8s != nil && slices.ContainsFunc(p.K8sIssuers, func(k8s oidc.NamedIssuer) bool { return k8s.URL == issuer }):
@@ -59,25 +58,6 @@ func (p PlatformTokens) Verify(ctx context.Context, raw string) (ServiceIdentity
 		return ServiceIdentity{Account: token.Identity.Account, Google: true, Issued: token.IssuedAt, Expiry: token.Expiry}, nil
 	}
 	return ServiceIdentity{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
-}
-
-// unverifiedIssuer is the 'iss' raw names, read without verifying it: it only picks the verifier.
-func unverifiedIssuer(raw string) (string, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return "", errors.New("natscallout: the service token is no JWT")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", errors.New("natscallout: the service token's claims do not decode")
-	}
-	var claims struct {
-		Issuer string `json:"iss"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", errors.New("natscallout: the service token's claims do not decode")
-	}
-	return claims.Issuer, nil
 }
 
 // RequireAudiences refuses a list naming a service whose kind of platform token has no NATS

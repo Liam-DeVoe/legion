@@ -37,11 +37,12 @@ const projectReleaseNoPod = "PROJECT_RELEASE_NO_POD"
 type ProjectRelease interface {
 	// Start starts the release with bound, or the daemon's pod_update_grace_minutes when bound
 	// is zero, or runs a dry run of it. While a release of this process runs, or after it finished,
-	// it starts nothing and answers that release with started false; a dry run answers its report
-	// with started false. A runtime that runs no pod answers ErrProjectReleaseRunsNoPod. A pause
-	// that holds the project — the project paused, or a pod a pause stopped still held — answers
-	// a *store.ProjectPausedError, a dry run's included, before anything of the release acts and
-	// whatever release ran here (dispatch://INFRA-3583 R13).
+	// it starts nothing and answers that release with started false, a dry run's included, whether
+	// or not a pause holds the project: no pause commits while that release runs. Otherwise a dry
+	// run answers its report with started false. A runtime that runs no pod answers
+	// ErrProjectReleaseRunsNoPod. A pause that holds the project — the project paused, or a pod a
+	// pause stopped still held — answers every other start a *store.ProjectPausedError, a dry run's
+	// included, before anything of the release acts (dispatch://INFRA-3583 R13).
 	Start(ctx context.Context, bound time.Duration, dryRun bool) (view ProjectReleaseResponse, started bool, err error)
 	// Read is the newest release of the project as its record holds it, and whether one ran.
 	Read(ctx context.Context) (ProjectReleaseResponse, bool, error)
@@ -269,10 +270,10 @@ func (r ProjectReleaseResult) Listed() ProjectReleaseResult {
 // startProjectRelease is `POST /legion/v1/operator/project/release`: 202 with the release's record
 // once it is recorded, 200 with the report of a dry run, and 200 with this process's release, which
 // starts nothing, once one ran here. A bound that is no positive Go duration is refused 400 before
-// anything starts, and a release while a pause holds the project 409 PROJECT_PAUSED
-// (releasePausedFailure). Its answer is the `legion` command's, which no plugin parses
-// (answerUnparsed, writeUnparsedAnswer), as the operator's pause's is; every refusal is
-// AnswerRefusal.
+// anything starts, and, while a pause holds the project, a release or a dry run of a process that
+// ran none 409 PROJECT_PAUSED (releasePausedFailure). Its answer is the `legion` command's, which
+// no plugin parses (answerUnparsed, writeUnparsedAnswer), as the operator's pause's is; every
+// refusal is AnswerRefusal.
 func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 	if s.projectRelease == nil {
 		s.refuse(w, r, http.StatusInternalServerError, "the project release is not served by this daemon")
@@ -337,7 +338,7 @@ func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
 		body.HeldPods = make([]PauseHeldPodView, len(refused.Held))
 		pods := make([]string, len(refused.Held))
 		for i, held := range refused.Held {
-			claims := slices.Clone(held.Claims)
+			claims := held.Claims
 			if claims == nil {
 				claims = []claim.Token{}
 			}

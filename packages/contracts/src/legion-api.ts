@@ -1065,15 +1065,18 @@ const legionAgentSecretsLoginView = z.object({
  * `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `present` or `open` from the
  * sessions' reports (`legionCapabilityReportView`), and carries no `configLine`; `live` is no
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
- * alone decides) or `boot` (what boot measured); absent on every other row (contract 25). A gap is
- * reported here, never refused (contract 16). */
+ * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
+ * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
+ * room (contract 213). A caller below 213 is served that row without `source`, since the enum it
+ * was built with names two words: a value follows the contract the caller states, else its pod's
+ * lowest recorded contract. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
   name: nonEmptyString.optional(),
   status: z.enum(["present", "unchecked", "withheld", "decided", "open"]).optional(),
   detail: nonEmptyString.optional(),
   decision: nonEmptyString.optional(),
   configLine: nonEmptyString.optional(),
-  source: z.enum(["configuration", "boot"]).optional(),
+  source: z.enum(["configuration", "boot", "caches"]).optional(),
 });
 
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
@@ -1282,17 +1285,18 @@ const legionReleasedClaim = z.object({
 
 /** `api.ProjectReleaseRequest`, the body of `POST /legion/v1/operator/project/release`: the bound
  * as a Go duration (`30m`; absent for the daemon's `pod_update_grace_minutes`), and whether this
- * is a dry run, which reads each pod's workspace and asks, stops and saves nothing. While the
- * project is paused, or a pod a pause stopped is still held, the route answers 409
- * `PROJECT_PAUSED` (`LegionPauseFailureResponse`, with `heldPods`), a dry run's included, and
- * records, stops and deletes nothing. */
+ * is a dry run, which reads each pod's workspace and asks, stops and saves nothing. Once this
+ * daemon process has run a release, the route answers that release, which starts nothing, whatever
+ * the pause. Before that, while the project is paused, or a pod a pause stopped is still held, the
+ * route answers 409 `PROJECT_PAUSED` (`LegionPauseFailureResponse`, with `heldPods`), a dry run's
+ * included, and records, stops and deletes nothing. */
 export const LegionProjectReleaseRequest = z.strictObject({
   bound: nonEmptyString.optional(),
   dryRun: z.boolean().optional(),
 });
 
 /** `api.ProjectReleaseResponse`, the body of `POST` and `GET /legion/v1/operator/project/release`
- * and the state's `projectRelease` (contract 209): the release's record id (none on a dry run),
+ * and the state's `projectRelease` (contract 221): the release's record id (none on a dry run),
  * when it started and when it deletes every pod still waiting (`boundAt`), that `bound` as a Go
  * duration, when it finished and when a boot ended it (`endedBy` `boot`), each absent until it
  * happens, and its result: one line per Sandbox of the project and one per claim it stopped,
@@ -1444,8 +1448,8 @@ const legionPaused = z.object({
  * the one `wakesWaiting` is optional for: the route strips both for a caller below 178, read the
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither. `projectRelease` is the project's newest project release,
- * the body its own `GET` answers (contract 209), absent while none was ever recorded and for a
- * caller below 209, read the same way (`api.stateFor`, `withoutProjectRelease`). */
+ * the body its own `GET` answers (contract 221), absent while none was ever recorded and for a
+ * caller below 221, read the same way (`api.stateFor`, `withoutProjectRelease`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -2012,7 +2016,7 @@ export const LegionProjectResumeResponse = z.object({
 });
 
 /** `api.PauseHeldPodView` — one pod a pause still holds, as a refused project release names it
- * (contract 209): the pod's `issue`, the `pause` that holds it, `heldAt`, when the hold began, and
+ * (contract 221): the pod's `issue`, the `pause` that holds it, `heldAt`, when the hold began, and
  * `claims`, the claims of the pod stored suspended by `released`, the source a pause stops a role
  * by, in token order and never null. An operator's `legion claims resume --claim <token>` of one
  * of them runs a role of the pod again, and that role's ready ends the hold. */
@@ -2029,15 +2033,15 @@ const legionPauseHeldPod = z.object({
  * `PAUSE_UNAVAILABLE` names the `setting` that turns the pause off, and none from a daemon that
  * runs no workflow; `PROJECT_ALREADY_PAUSED` and `PROJECT_PAUSED` name the `pause` that stands;
  * `PROJECT_NOT_PAUSED` names the `lastPause`, where one has ended. `legion project release`'s
- * `PROJECT_PAUSED` (contract 209) names the `pause` where one stands and `heldPods`, each pod a
- * pause still holds, where one does: the release refuses while the project is paused and while a
- * pod that a pause stopped is still held after the resume, since it would delete such a pod
- * unread. A pause while a project release runs answers `PROJECT_RELEASING` (contract 209), which
- * names nothing beside its sentence, and the sentence names the release. A blank reason's refusal
- * (`PAUSE_REASON_REQUIRED`) names nothing beside its sentence and is the plain refusal
- * (`LegionErrorResponse`). The daemon client reads a refusal's code and sentence alone
- * (`LegionErrorResponse`), and the sentence says which pause it is, so this schema is what holds
- * the rest of the body to the daemon's goldens. */
+ * `PROJECT_PAUSED` (contract 221) names the `pause` where one stands and `heldPods`, each pod a
+ * pause still holds, where one does: the release of a daemon process that has run none refuses
+ * while the project is paused and while a pod that a pause stopped is still held after the resume,
+ * since it would delete such a pod unread. A pause while a project release runs answers
+ * `PROJECT_RELEASING` (contract 221), which names nothing beside its sentence, and the sentence
+ * names the release. A blank reason's refusal (`PAUSE_REASON_REQUIRED`) names nothing beside its
+ * sentence and is the plain refusal (`LegionErrorResponse`). The daemon client reads a refusal's
+ * code and sentence alone (`LegionErrorResponse`), and the sentence says which pause it is, so
+ * this schema is what holds the rest of the body to the daemon's goldens. */
 export const LegionPauseFailureResponse = z.object({
   code: nonEmptyString,
   error: nonEmptyString,
@@ -2172,7 +2176,7 @@ export const LegionIssueStatusRequest = z.strictObject({
  * that is not a controller's (`CONTROLLER_REQUIRED`), a blank reason (`PAUSE_REASON_REQUIRED`),
  * a deployment whose configuration cannot hold a pause (`PAUSE_UNAVAILABLE`), a project that
  * is paused already (`PROJECT_ALREADY_PAUSED`) and a pause while a project release of the project
- * runs (`PROJECT_RELEASING`, contract 209). */
+ * runs (`PROJECT_RELEASING`, contract 221). */
 export const LegionProjectPauseRequest = z.strictObject({
   grantId: nonEmptyString,
   reason: nonEmptyString,
