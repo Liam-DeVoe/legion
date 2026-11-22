@@ -530,38 +530,89 @@ func TestAStoredPublishToAStreamThatIsGoneIsSentOnceAndStoresNothing(t *testing.
 	}
 }
 
-// closedFirstPublisher is a client's JetStream context whose first publish answers that the
-// connection closed under it, without sending, and whose later publishes go through; it counts
-// every publish.
-type closedFirstPublisher struct {
+// closingPublisher is a client's JetStream context whose first publish closes the client's
+// connection and is then sent on it, so it answers that the connection closed and nothing reaches
+// the server. The connection closes without its ClosedCB, so no recovery replaces it in the
+// background: the one replacement is the one sendStored dials (ensureConnWithContext).
+type closingPublisher struct {
 	nats.JetStreamContext
-	calls atomic.Int32
+	client *Client
+	calls  atomic.Int32
 }
 
-func (p *closedFirstPublisher) Publish(subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
+func (p *closingPublisher) Publish(subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
 	if p.calls.Add(1) == 1 {
-		return nil, nats.ErrConnectionClosed
+		p.client.mu.Lock()
+		conn := p.client.Conn
+		p.client.mu.Unlock()
+		conn.SetClosedHandler(nil)
+		conn.Close()
 	}
 	return p.JetStreamContext.Publish(subject, data, opts...)
 }
 
-// The stored path's send again after a reconnect starts under the loop's rule: not within
-// noStreamMargin of the publish's deadline. Here the first send answers that the connection closed,
-// the connection is there again, and the deadline is 99 ms away: the call fails with the first
-// send's answer after one publish.
-func TestAStoredPublishIsNotSentAgainAfterAReconnectWithinTheMarginOfItsDeadline(t *testing.T) {
+// afterReconnectDeadline is a context that has not ended and whose deadline is an hour away while
+// the client still has the connection it had when the row began, and 99 ms away once the client has
+// replaced it: a publish's deadline that turns near only during its reconnect. It counts the near
+// reads.
+type afterReconnectDeadline struct {
+	context.Context
+	client *Client
+	first  *nats.Conn
+	near   atomic.Int32
+}
+
+func (c *afterReconnectDeadline) Deadline() (time.Time, bool) {
+	c.client.mu.Lock()
+	replaced := c.client.Conn != c.first
+	c.client.mu.Unlock()
+	if !replaced {
+		return time.Now().Add(time.Hour), true
+	}
+	c.near.Add(1)
+	return time.Now().Add(99 * time.Millisecond), true
+}
+
+// The stored path's send again after a reconnect starts under the loop's rule, read once the
+// reconnect is done: not within noStreamMargin of the publish's deadline. Here the first send
+// closes the client's connection and answers that it closed, sendStored dials a new one, and the
+// deadline turns 99 ms away only once the new one is in place: the call fails with the first send's
+// answer, nothing is sent again and nothing is stored. A rule read before the reconnect, while the
+// deadline was still an hour away, sends again and stores the message.
+func TestAStoredPublishIsNotSentAgainWhenItsReconnectBringsItsDeadlineNear(t *testing.T) {
 	client, err := ConnectOwningStream([]string{testnats.URL(t)}, WithKeepInterval(time.Hour))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	publisher := &closedFirstPublisher{JetStreamContext: client.JS()}
+	before, err := client.JS().StreamInfo(Stream, nats.Context(untilTheRowsEnd(t)))
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
 	client.mu.Lock()
+	first := client.Conn
+	publisher := &closingPublisher{JetStreamContext: client.js, client: client}
 	client.js = publisher
 	client.mu.Unlock()
-	ctx := &nearDeadline{Context: context.Background()}
-	_, err = client.sendStored(ctx, offSubjectEnvelope.Topic, []byte(`{}`), nats.Context(ctx))
-	if !errors.Is(err, nats.ErrConnectionClosed) || publisher.calls.Load() != 1 {
-		t.Fatalf("a publish whose connection closed under it 99 ms before its deadline = %v after %d publishes, want nats.ErrConnectionClosed after one", err, publisher.calls.Load())
+	ctx := &afterReconnectDeadline{Context: context.Background(), client: client, first: first}
+	ack, err := client.sendStored(ctx, offSubjectEnvelope.Topic, []byte(`{}`), nats.Context(ctx))
+	client.mu.Lock()
+	replaced := client.Conn != first
+	client.mu.Unlock()
+	if !replaced {
+		t.Fatal("sendStored dialed no new connection, so this row holds nothing")
+	}
+	if !errors.Is(err, nats.ErrConnectionClosed) || ack.Resent {
+		t.Fatalf("a publish whose reconnect brought its deadline within 99 ms = %+v, %v, want nats.ErrConnectionClosed and no send again", ack, err)
+	}
+	if ctx.near.Load() == 0 {
+		t.Fatal("the deadline was never read after the reconnect, so the rule was not read where this row holds it")
+	}
+	after, err := client.JS().StreamInfo(Stream, nats.Context(untilTheRowsEnd(t)))
+	if err != nil {
+		t.Fatalf("read the stream again: %v", err)
+	}
+	if after.State.Msgs != before.State.Msgs {
+		t.Fatalf("the stream holds %d messages after the publish, %d before: the publish was sent again and stored", after.State.Msgs, before.State.Msgs)
 	}
 }
