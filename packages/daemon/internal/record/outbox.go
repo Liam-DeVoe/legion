@@ -339,13 +339,13 @@ type NoticeKind string
 // review-stuck notice's summary names the fact that wrote it, and its topic is the topic of the
 // claim of the worker on the reviewer's step, which the architect asks for the decision.
 type Notice struct {
-	Kind    NoticeKind  `json:"kind"`
-	Role    claim.Role  `json:"role,omitempty"`
+	Kind NoticeKind `json:"kind"`
+	Role claim.Role `json:"role,omitempty"`
 	// Claim is the claim a controller notice of a kind that stands per claim speaks for
 	// (NoticePerClaim): the provider-errors notice names the claim whose turns keep ending in a
 	// provider error. It is "" for every other kind and for a row the release before wrote, which
 	// the pending read keys by its issue and role instead.
-	Claim claim.Token `json:"claim,omitempty"`
+	Claim   claim.Token `json:"claim,omitempty"`
 	Phase   phase.Phase `json:"phase,omitempty"`
 	Summary string      `json:"summary,omitempty"`
 	Verdict string      `json:"verdict,omitempty"`
