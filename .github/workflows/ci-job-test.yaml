@@ -609,7 +609,10 @@ jobs:
       # two CPUs the whole directory ran on (2026-11-20, main d36289cb84), the slowest row that passed
       # took 98.5 s and 58 rows took more than 5 s; 200 s is about twice the slowest. The rows whose
       # shells wait set their own bound in their file and give up 20 s inside it, so a wait that gives
-      # up still names what it waited for.
+      # up still names what it waited for. --parallel runs the files in one worker process per CPU
+      # rather than one after another: most rows wait on a child, a socket or a bound rather than
+      # compute, so one file's waits no longer hold every other file's rows. Run alone, as it ran
+      # before, the step took a median 178 s over 412 pull-request runs of 2026-11-22.
         run: bun run test:e2e-lib
 
       # After setup-go: its fixtures run go list over a scratch module.
