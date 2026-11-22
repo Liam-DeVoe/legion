@@ -5,29 +5,11 @@ import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { readStandinBody } from "@legion/test-fixtures/standin-body"
+import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS } from "./reopen-server"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
-
-/**
- * `promise`, or a failure naming `what` once `PROCESS_WAIT_MS` has passed without it: a hang
- * guard only, far above what a whole server process takes on a loaded machine, so the fact the
- * row waits for decides it, never this bound. A real timer on purpose: what it guards is another
- * process, which no fake clock moves.
- */
-async function within<T>(promise: Promise<T>, what: string): Promise<T> {
-  const { promise: guard, reject } = Promise.withResolvers<never>()
-  const timer = setTimeout(
-    () => reject(new Error(`timed out after ${PROCESS_WAIT_MS} ms waiting for ${what}`)),
-    PROCESS_WAIT_MS,
-  )
-  try {
-    return await Promise.race([promise, guard])
-  } finally {
-    clearTimeout(timer)
-  }
-}
 
 test(
   "a hangup from the Claude process group deregisters the session before the server exits",
@@ -38,7 +20,7 @@ test(
     // that leaves the session live in the registry until its TTL.
     const broker = new FakeNatsServer()
     const calls: string[] = []
-    const registered = Promise.withResolvers<void>()
+    let registered = false
     // The stand-in listens at an address of its own, out of reach on Linux of a client of another
     // test that still dials its port at 127.0.0.1, and refuses by name a POST body that is no JSON
     // object before it records the request (`loopbackHost`, `readStandinBody`).
@@ -52,7 +34,7 @@ test(
         calls.push(`${request.method} ${url.pathname}`)
         if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
           const body = read.body as { session_id: string; topics: string[] }
-          registered.resolve()
+          registered = true
           return Response.json({
             session_id: body.session_id,
             machine_id: "test",
@@ -83,13 +65,38 @@ test(
       stdout: "pipe",
       stderr: "pipe",
     })
+    let exited = false
+    void server.exited.then(() => {
+      exited = true
+    })
+    const decoder = new TextDecoder()
+    let stderr = ""
+    const stderrEnded = (async () => {
+      for await (const chunk of server.stderr) stderr += decoder.decode(chunk, { stream: true })
+    })()
+    const state = (): string =>
+      `exit code ${server.exitCode}; signal ${server.signalCode}; calls ${calls.join(", ") || "none"}; stderr:\n${stderr}`
 
     try {
-      await within(registered.promise, "the server's registration")
+      // Each wait ends on its fact, or on the server's exit, which no registration and no later
+      // DELETE can follow; `PROCESS_WAIT_MS` is a hang guard only.
+      await waitFor(
+        async () => registered || exited,
+        "the server's registration",
+        state,
+        PROCESS_WAIT_MS,
+      )
+      if (!registered) throw new Error(`the server exited before it registered (${state()})`)
       server.kill("SIGHUP")
-      const exitCode = await within(server.exited, "the server's exit after the hangup")
+      await waitFor(
+        async () => exited,
+        "the server's exit after the hangup",
+        state,
+        PROCESS_WAIT_MS,
+      )
+      await stderrEnded
 
-      expect(exitCode).toBe(0)
+      expect({ exitCode: server.exitCode, stderr }).toEqual({ exitCode: 0, stderr })
       expect(calls).toContain("DELETE /v1/sessions/ses_hangup")
     } finally {
       server.kill("SIGKILL")

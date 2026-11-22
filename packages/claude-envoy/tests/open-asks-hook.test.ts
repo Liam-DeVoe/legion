@@ -900,8 +900,9 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
 // export, and neither the two lines the `dispatch` command needs nor the summary. The jj here
 // writes its pid and then waits for ever, so what the row reads is what the hook's own bound did
 // to it (`JJ_BASE_CHAIN_TIMEOUT_MS`, which kills its process group): gone when the hook returned.
-// A hook that waited it out would not return, and the row's timeout would name it; no clock of
-// the row's own decides it, since a loaded machine starting the hook slowly is no failure.
+// A hook that waited it out would not return, and the row's timeout would name it. That bound,
+// with the hook's other steps, ends inside the 20 s hooks.json gives the hook: hooks-timeout.test.ts
+// holds that, since a clock here would be read by how fast a loaded machine starts the hook.
 test("gives up on a jj that never answers, keeping the other exports and the summary", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")

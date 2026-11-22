@@ -1,19 +1,21 @@
-import { afterAll, afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { readStandinBody } from "@legion/test-fixtures/standin-body"
+import { builtPlugin } from "./built-plugin"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
 // `answers`): Claude Code keeps a hook's additionalContext where only the requests it
-// sends to the model show it, so each moment is read off those. Claude Code runs with this package
-// as `--plugin-dir`, an isolated HOME and CLAUDE_CONFIG_DIR, and one stand-in as both its Messages
-// endpoint (`ANTHROPIC_BASE_URL`, streaming as the API does) and Dispatch (`DISPATCH_URL`), whose
+// sends to the model show it, so each moment is read off those. Claude Code runs with a plugin built
+// from this tree (`builtPlugin`) as `--plugin-dir`, an isolated HOME and CLAUDE_CONFIG_DIR, and one
+// stand-in as both its Messages endpoint (`ANTHROPIC_BASE_URL`, streaming as the API does) and
+// Dispatch (`DISPATCH_URL`), whose
 // answers route serves a list each case changes between moments. LEGION_TEST_CLAUDE names the
 // binary: the version the repository's .claude-code-pin pins, which CI installs
 // (.github/actions/install-claude-code). A run without one skips, except on GitHub Actions, where a
@@ -26,39 +28,6 @@ const binary = (): string => {
   if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset on GitHub Actions")
   return claude
 }
-
-const packageRoot = resolve(import.meta.dir, "..")
-
-/** The scratch directory of the plugin build, removed after the last case. */
-let pluginScratch: string | undefined
-let pluginBuild: Promise<string> | undefined
-
-/**
- * The plugin Claude Code loads, built once by the first case that runs: a fresh
- * `scripts/build.ts --out` build of this tree, as legion-phase-hook-claude.test.ts builds its
- * own. The hooks the plugin's `hooks/hooks.json` names run `dist/session-hook.js`, and nothing
- * commits `dist/`: run from the package itself, a checkout with no `dist/` fails every case, as
- * one did on a dev box, and one with an old `dist/` runs old hooks. CI's job happens to build
- * `dist/` into its checkout first.
- */
-function builtPlugin(): Promise<string> {
-  pluginBuild ??= (async () => {
-    pluginScratch = await mkdtemp(join(tmpdir(), "claude-envoy-answers-plugin-"))
-    const out = join(pluginScratch, "plugin")
-    const build = Bun.spawn(
-      [process.execPath, join(packageRoot, "scripts", "build.ts"), "--out", out],
-      { cwd: tmpdir(), stdout: "ignore", stderr: "pipe" },
-    )
-    const [exitCode, stderr] = await Promise.all([build.exited, new Response(build.stderr).text()])
-    if (exitCode !== 0) throw new Error(`scripts/build.ts --out exited ${exitCode}: ${stderr}`)
-    return out
-  })()
-  return pluginBuild
-}
-
-afterAll(async () => {
-  if (pluginScratch !== undefined) await rm(pluginScratch, { recursive: true, force: true })
-})
 
 /** What a case waits for at most: a process's exit, or a turn's result line. */
 const WAIT_MS = 60_000
