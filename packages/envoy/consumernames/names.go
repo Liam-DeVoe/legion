@@ -818,10 +818,9 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 			record = record.retire(old)
 		}
 	}
-	if fixedOld {
-		pending := *op
-		record.Op = &pending
-	} else {
+	// A convert's replace stays open, as record's own copy of it, until finishFixedDelete confirms
+	// its fixed name's delete.
+	if !fixedOld {
 		record.Op = nil
 	}
 	next, err := n.write(ctx, sel, record)
