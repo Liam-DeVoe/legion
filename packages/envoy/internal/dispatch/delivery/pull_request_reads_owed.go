@@ -354,18 +354,16 @@ func LinkedPullRequestSQL(url string) string {
 // link; the statement, which judges many pull requests, gives linkFormsOf the names it read once
 // (attributedTerms, held_names), which are the names this array is made of.
 //
-// The renamed names are only those of the rows whose own renamed_to is repo's canonical name, in
-// any case: a name passes the comparison of canonical names below only where some row of that
-// name, in any case, renames to repo's canonical name, and that row is one of these, under a name
-// whose lowered form is the same, which is all the array holds of it. repo's canonical name is
-// read once, as c.
+// The names come from the rule's inverse (refs.NamesSQL): the lowered names whose canonical name
+// is repo's in any case, which are the canonical name itself where it is its own canonical name
+// and each name the rule's one relation (refs.RenamesSQL) renames to it. So the array reads only
+// the rows that rename to that name, not every renamed repository's canonical name, and its count
+// of scans does not grow with the renamed repositories
+// (TestPullRequestLinksSQLReadsOnlyTheRenamesOfItsRepository). repo's canonical name is read
+// once, as c.
 func PullRequestLinksSQL(repo, number string) string {
-	return linkFormsOf(`array(select lower(n.name)
-		from (select `+refs.CanonicalRepoSQL(repo)+` as canonical) c
-		cross join lateral (select c.canonical as name
-			union select renamed.repo from repo_projects renamed
-			where renamed.renamed_to is not null and lower(renamed.renamed_to) = lower(c.canonical)) n
-		where lower(`+refs.CanonicalRepoSQL("n.name")+`) = lower(c.canonical))`, number)
+	return linkFormsOf(`(select `+refs.NamesSQL("c.canonical")+`
+		from (select `+refs.CanonicalRepoSQL(repo)+` as canonical) c)`, number)
 }
 
 // linkFormsOf is the lowered /pull/ and /issues/ link of pull request number under each name of
@@ -671,12 +669,10 @@ var owedReadJoin = `left join lateral (
 // owedReadsOfRepository is the read of the name and the revision of each read owed in one
 // repository, $1 its canonical name, through the same rule as owedReadJoin, also each row that a
 // link by hand alone owed: the snapshot that a read-through takes before its list read
-// (ReadThroughCommitPulls).
+// (ReadThroughCommitPulls). The names are the rule's inverse of $1 (refs.NamesSQL).
 var owedReadsOfRepository = `select o.repo, o.number, o.revision from pull_request_reads_owed o
-	where lower(o.repo) = any(array(select lower($1::text) union select lower(r.repo) from repo_projects r
-			where r.renamed_to is not null and lower(r.renamed_to) = lower($1::text)))
-		and octet_length(o.repo) <= 1024
-		and lower(` + refs.CanonicalRepoSQL("o.repo") + `) = lower($1::text)`
+	where lower(o.repo) = any(` + refs.NamesSQL("$1::text") + `)
+		and octet_length(o.repo) <= 1024`
 
 // owedReadsIn is the name, the number and the revision of each read owed in repoFull, the
 // canonical name, as a read of GitHub begins (owedReadsOfRepository). A read that fails answers

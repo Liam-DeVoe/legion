@@ -136,43 +136,44 @@ func attributionHeldFor(source, held string) string {
 	return `(` + source + ` = '` + string(sourceExternalLink) + `' or ` + held + `)`
 }
 
-// renameTerms are the statement's terms of the renaming rule (refs.CanonicalRepoSQL), which read
-// repo_projects once a statement:
+// renameTerms are the statement's terms of the renaming rule, which read repo_projects once a
+// statement:
 //
-//   - renames: one row for each lowered name that some mapping renames, whose target is the
-//     greatest renamed_to of those mappings: the canonical name of that name, as
+//   - renames: refs.RenamesSQL, the rule's one relation, materialized: one row for each lowered
+//     name that some mapping renames, whose rename_target is its canonical name, as
 //     refs.CanonicalRepoSQL reads it. A name with no row here is its own canonical name.
-//   - renamed_names: for each lowered target, the lowered names renamed to it.
+//   - renamed_names: for each lowered target, the lowered names renamed to it, the relation's
+//     inverse, which the statement alone reads.
 //
 // Every read of the rule in the statement is a join of one of them (renameJoin, namesJoin), which
 // a hash join serves from one scan. refs.CanonicalRepoSQL is a scan of repo_projects for each name
 // it reads, and the statement read about 20 names a pull request: on 5,000 stored pull requests
 // and the 43 mappings production held on 22 November, 1 of them renamed, a window read of 1,000
-// pull requests took about 170 ms, of which about 40 ms were those scans.
-const renameTerms = `renames as materialized (
-		select lower(r.repo) as source, pg_catalog.max(r.renamed_to) as target
-		from repo_projects r where r.renamed_to is not null group by lower(r.repo)
+// pull requests took about 170 ms, of which about 40 ms were those scans. So the statement keeps
+// the set-based read, and takes the relation and the canonical name from refs, where the rule is
+// written once.
+const renameTerms = `renames as materialized (` + refs.RenamesSQL + `
 	), renamed_names as materialized (
-		select lower(n.target) as target, pg_catalog.array_agg(n.source) as names
-		from renames n group by lower(n.target)
+		select lower(n.rename_target) as target, pg_catalog.array_agg(n.rename_source) as names
+		from renames n group by lower(n.rename_target)
 	)`
 
 // renameJoin is the join of renames, under alias, that gives the canonical name of the expression
 // name (canonicalOver): a left join, so a name no mapping renames keeps its row.
 func renameJoin(alias, name string) string {
-	return `left join renames ` + alias + ` on ` + alias + `.source = lower(` + name + `)`
+	return `left join renames ` + alias + ` on ` + alias + `.rename_source = lower(` + name + `)`
 }
 
-// canonicalOver is the canonical name of the expression name over renameJoin(alias, name): the
-// target of its row in renames, else the name itself, which is refs.CanonicalRepoSQL(name).
+// canonicalOver is the canonical name of the expression name over renameJoin(alias, name):
+// refs.CanonicalOverSQL of the target of its row in renames, which is refs.CanonicalRepoSQL(name).
 func canonicalOver(alias, name string) string {
-	return `coalesce(` + alias + `.target, ` + name + `)`
+	return refs.CanonicalOverSQL(alias+`.rename_target`, name)
 }
 
 // namesJoin is the two joins, under alias, that give the names of the expression lowered, a
 // lowered canonical name (namesOver).
 func namesJoin(alias, lowered string) string {
-	return `left join renames ` + alias + `_own on ` + alias + `_own.source = ` + lowered + `
+	return `left join renames ` + alias + `_own on ` + alias + `_own.rename_source = ` + lowered + `
 		left join renamed_names ` + alias + `_to on ` + alias + `_to.target = ` + lowered
 }
 
@@ -182,7 +183,7 @@ func namesJoin(alias, lowered string) string {
 // a name x with a row in renames reads as its target, which is lowered only where x is renamed to
 // it, and a name with no row reads as itself.
 func namesOver(alias, lowered string) string {
-	return `(coalesce(` + alias + `_to.names, '{}'::text[]) || case when ` + alias + `_own.source is null then array[` + lowered + `] else '{}'::text[] end)`
+	return `(coalesce(` + alias + `_to.names, '{}'::text[]) || case when ` + alias + `_own.rename_source is null then array[` + lowered + `] else '{}'::text[] end)`
 }
 
 // attributionSubjects is the `subjects` term of the statement (attributedTerms): the distinct
@@ -492,13 +493,12 @@ func attributionStatementsFor(schema string) *attributionStatements {
 }
 
 // notKnownJudged is the judged rows of PullRequestsNotKnown: the open and merged results rows of
-// $1, the canonical name, and of each name that the repository was renamed away from, whose texts
-// hold no commit messages. The index pull_request_texts_messages_not_read holds exactly the texts
-// rows whose messages are not read, so the read costs those rows of $1 and no more.
-const notKnownJudged = `select t.repo, t.number from pull_request_texts t
+// $1, the canonical name, under each of its names (refs.NamesSQL), whose texts hold no commit
+// messages. The index pull_request_texts_messages_not_read holds exactly the texts rows whose
+// messages are not read, so the read costs those rows of $1 and no more.
+var notKnownJudged = `select t.repo, t.number from pull_request_texts t
 		join pull_request_heads h on h.repo = t.repo and h.number = t.number
-		where lower(t.repo) = any(array(select lower($1::text) union select lower(r.repo) from repo_projects r
-			where r.renamed_to is not null and lower(r.renamed_to) = lower($1::text)))
+		where lower(t.repo) = any(` + refs.NamesSQL("$1::text") + `)
 		and t.commit_messages is null and h.state in ('open', 'merged')`
 
 // notKnownSelect is PullRequestsNotKnown's select over the terms of notKnownJudged: each judged

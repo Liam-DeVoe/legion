@@ -32,35 +32,67 @@ import (
 // repository renamed away, GitHub answers 404 for its installation, so the old name cannot be
 // read at all and the pair is declared, never discovered.
 
-// CanonicalRepoSQL is that rule as a SQL expression over repo, itself an expression naming a
-// repository: null where repo is null, so a comparison against it stays null rather than
-// becoming true. It reads repo_projects by a lowercased name on both sides, as every comparison
-// of a repository here does, because GitHub spells an owner and a repository as their owners do
-// (`Acme/Widgets`) while Dispatch stores a mapping's path canonicalised (ExternalRepo).
-// The expression text is spliced twice, so repo must be a column, a bound parameter or another
-// side-effect-free expression.
+// RenamesSQL is that rule as a relation, the one definition every reader of the rule derives from:
+// one row (rename_source, rename_target) for each lowered name that some mapping renames, whose
+// target is the greatest renamed_to of those mappings. A name with no row is its own canonical
+// name (CanonicalOverSQL). It reads only the mappings that name a rename, by a lowercased name, as
+// every comparison of a repository here does, because GitHub spells an owner and a repository as
+// their owners do (`Acme/Widgets`) while Dispatch stores a mapping's path canonicalised
+// (ExternalRepo).
 //
-// The inner read is an aggregate, so it answers exactly one row however many rows match: the
+// The read groups by the lowered name, so it answers one row a name however many rows match: the
 // primary key is the repository's own spelling, so two mappings whose names differ only by case
 // can exist — direct SQL, or a hand repair, which migration 20261105075455_repo_projects_renamed_to
-// expects — and a plain scalar subquery over both would fail every statement this expression is
-// spliced into with `more than one row returned by a subquery`. It reads only the mappings that
-// name a rename, so a repository mapped with no rename coalesces to its own name.
+// expects — and a plain scalar subquery over both would fail every statement it is spliced into
+// with `more than one row returned by a subquery`.
 //
-// That read goes through a derived table that renames both columns it keeps, because repo is
-// the caller's own expression spliced into this one and SQL resolves an unqualified name
-// against the innermost query's columns first. Reading repo_projects directly here would put a
-// column named `repo` in scope, so a caller splicing a bare `repo` would compare that column
-// with itself — true for every row, which answers the whole table's greatest renamed_to for
-// every row of every caller rather than each row's own canonical name. No caller's column is
-// named rename_source or rename_target, so a caller's bare `repo` reaches the caller's own
-// table, and a caller whose statement has no such column fails loudly with `column "repo" does
-// not exist` rather than silently answering some other repository's name.
+// Its two columns are named so that no caller's column is: a reader joins the relation beside its
+// own tables, and SQL resolves an unqualified name against the innermost query's columns first, so
+// a column of the relation named `repo` would take a caller's bare `repo`, compare that column with
+// itself, true for every row, and answer the whole table's greatest renamed_to for every row of
+// every caller. No caller's column is named rename_source or rename_target, so a caller's bare
+// `repo` reaches the caller's own table, and a caller whose statement has no such column fails
+// loudly with `column "repo" does not exist` rather than silently answering some other
+// repository's name.
+//
+// CanonicalRepoSQL reads it for one name, a scan of repo_projects at each evaluation; a statement
+// that judges many names reads it once, as a materialized term that it joins (delivery's
+// attribution statement), and takes each name's canonical name through CanonicalOverSQL.
+const RenamesSQL = `select lower(renamed.repo) as rename_source, pg_catalog.max(renamed.renamed_to) as rename_target
+	from repo_projects renamed where renamed.renamed_to is not null group by lower(renamed.repo)`
+
+// CanonicalOverSQL is the canonical name of the expression name, given target, the expression of
+// the rename_target of name's row of RenamesSQL (null where the relation holds no row of it): that
+// target, else the name itself.
+func CanonicalOverSQL(target, name string) string {
+	return `coalesce(` + target + `, ` + name + `)`
+}
+
+// CanonicalRepoSQL is the rule as a SQL expression over repo, itself an expression naming a
+// repository: CanonicalOverSQL over the row of RenamesSQL whose rename_source is repo lowered. It
+// is null where repo is null, so a comparison against it stays null rather than becoming true. The
+// expression text is spliced twice, so repo must be a column, a bound parameter or another
+// side-effect-free expression. The relation's columns are named as RenamesSQL says, so a caller's
+// bare `repo` reaches the caller's own table. The planner pushes the comparison with the lowered
+// name into the grouped read, so each evaluation reads the mappings of that one name.
 func CanonicalRepoSQL(repo string) string {
-	return `coalesce((select max(rename.rename_target) from (
-			select renamed.repo as rename_source, renamed.renamed_to as rename_target
-			from repo_projects renamed where renamed.renamed_to is not null
-		) rename where lower(rename.rename_source) = lower(` + repo + `)), ` + repo + `)`
+	return CanonicalOverSQL(`(select rename.rename_target from (`+RenamesSQL+`) rename
+		where rename.rename_source = lower(`+repo+`))`, repo)
+}
+
+// NamesSQL is the rule's inverse for one name, as a SQL array: every lowered name whose canonical
+// name is the expression canonical, in any case. That is each name RenamesSQL renames to it, and
+// canonical itself where it is its own canonical name. A reader compares lower() of a stored name
+// with the array (`lower(x.repo) = any(...)`), which an index on lower() serves, instead of reading
+// CanonicalRepoSQL for each stored row; the two agree exactly, since a name passes only where its
+// row of RenamesSQL, or its lack of one, gives canonical. canonical is spliced several times, so it
+// must be a column, a bound parameter or another side-effect-free expression. A statement that
+// judges many names reads the same inverse from one materialized read of RenamesSQL (delivery's
+// attribution statement, renamed_names).
+func NamesSQL(canonical string) string {
+	return `array(select lower(` + canonical + `) where lower(` + CanonicalRepoSQL(canonical) + `) = lower(` + canonical + `)
+		union select rename.rename_source from (` + RenamesSQL + `) rename
+		where lower(rename.rename_target) = lower(` + canonical + `))`
 }
 
 // CanonicalRepo is that rule read through q for one full `owner/name`: the expression above,
