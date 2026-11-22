@@ -138,8 +138,10 @@ func (d *driver) dueNow() time.Time { return d.now().Add(dueSlack) }
 // the outbox rows the daemon's lanes would take now, in the store's own order and under its own
 // rules (record.Postgres.DueRows: due, in order, one status write of an issue at a time, a start
 // behind an older issue_branch, a start that waits for a slot not before it holds one, nothing a
-// pause holds), one at a time and listed again after each, since a row run changes what is due,
-// until none is due; then a wake at the next row that comes due later (wake).
+// pause holds), but a start a wait holds under the run's rule (waitHolds), one at a time and
+// listed again after each, since a row run changes what is due, until none is due; then a wake at
+// the next row that comes due later (wake). A start a wait holds stays due, and the drain after
+// the fact whose pass ends the wait takes it.
 func (d *driver) drain() error {
 	for {
 		var due []record.OutboxRow
@@ -152,6 +154,13 @@ func (d *driver) drain() error {
 		}
 		ran := false
 		for _, row := range due {
+			held, err := d.waitHolds(row)
+			if err != nil {
+				return err
+			}
+			if held {
+				continue
+			}
 			took, err := d.take(row)
 			if err != nil {
 				return err
@@ -165,6 +174,52 @@ func (d *driver) drain() error {
 			return d.wake()
 		}
 	}
+}
+
+// waitHolds says whether row is a start that the wait of its issue on another issue holds under
+// the run's rule. Under a rule whose start may take a cover (record.TakeCover, the rule of the
+// tool's spec at version 4) a started issue keeps its slot through a wait, and the wait holds the
+// start of its next phase worker by a hold of its own, which reads the wait and not the slot, while
+// the phase under way goes on; no release of the daemon holds a start so, so the stub holds it in
+// the lanes' place. The start held is one that waits for a slot (record.SuperviseRequest.NeedsSlot,
+// a phase worker's) and brings its worker a phase entry its claim has not been given, of an issue
+// whose slot the admission pass marks waiting (record.Slot.WaitsSince: admit's markSlotWaits over
+// blockers.KeptWaits, the waits a cover reads). A covered waiter holds no slot, so the lanes' own
+// rule holds its start. Under every other rule nothing is held here.
+func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
+	if d.rule.Take != record.TakeCover || row.Kind != record.OutboxKindSupervise {
+		return false, nil
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		// The row's own run reports what it cannot decode (take).
+		return false, nil
+	}
+	start, ok := payload.(record.SuperviseRequest)
+	if !ok || start.Op != "start" || !start.NeedsSlot || start.Entry <= 0 {
+		return false, nil
+	}
+	token, err := claim.NewToken(d.token, row.Issue, start.Role)
+	if err != nil {
+		return false, err
+	}
+	if c, found := d.claims[token]; found && start.Entry <= c.GivenEntry {
+		return false, nil
+	}
+	waits := false
+	err = pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		slots, err := d.records.Slots(d.ctx, tx)
+		for _, slot := range slots {
+			if slot.Issue == row.Issue && slot.WaitsSince != nil {
+				waits = true
+			}
+		}
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("replay: read whether a wait holds the start row %d of %s: %w", row.ID, row.Issue, err)
+	}
+	return waits, nil
 }
 
 // wake queues the stub's next run at the earliest next_at of the project's rows that come due

@@ -450,12 +450,26 @@ func (d *driver) signOff(key string) error {
 			d.counters.HeldSignOffs++
 		}
 		d.signOffs[key] = true
+		if d.rule.Take == record.TakeCover {
+			return d.heldSignOff(key)
+		}
 	default:
 		delete(d.signOffs, key)
 		d.counters.Refused = append(d.counters.Refused, RefusedMove{Issue: key, At: d.clock.Instant(), Trigger: workflow.TriggerSignOff,
 			From: phase.Accepting, To: phase.Retro, Reason: result.Refusal.Message})
 	}
 	return nil
+}
+
+// heldSignOff enters the sign-off of key the workflow held behind an issue beneath it (HeldSignOff),
+// which a rule whose start may take a cover reads as the parent's wait on the issues beneath it.
+func (d *driver) heldSignOff(key string) error {
+	issue, err := d.recorded(key)
+	if err != nil || issue == nil {
+		return err
+	}
+	_, err = d.apply("replay", d.factID("held-sign-off", key), HeldSignOff{Issue: key, Generation: issue.Generation})
+	return err
 }
 
 // failPiece enters the failure of the claim of p's role that ends p (intake.ClaimFailed), which

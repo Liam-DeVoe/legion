@@ -333,9 +333,19 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // Exempt is not read here: that rule is the promotion's, about what a candidate may start in
 // spite of its links, and this one is about what a started issue holds a slot for, so an issue
 // carrying a run gives its row back like any other.
+//
+// Under a rule whose start may take a cover (record.TakeCover), a covered waiter
+// (record.LineFacts.Covers) gave its row to the issue that holds it for the wait, so it waits as
+// an issue that gave its row back, on every wait a cover reads of it (CoverWaits), whatever the
+// rule says of a wait that keeps the row: its release frees a row it still holds, and the line
+// places it in a record.LineWaitingOnIssue entry the promotion passes over, since its slot comes
+// back with the cover's end and never from the line.
 func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
 	if !facts.KeepsSlot(issue) {
 		return nil
+	}
+	if _, covered := facts.Covers[issue.Key]; covered {
+		return CoverWaits(rows, issue, facts)
 	}
 	if issue.AwaitingPerson() {
 		return nil
@@ -357,6 +367,37 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	for _, child := range facts.ChildWaits[issue.Key].Open {
 		if !slices.Contains(waits, child.Key) {
 			waits = append(waits, child.Key)
+		}
+	}
+	return waits
+}
+
+// CoverWaits is what a started issue waits on as a rule whose start may take a cover reads a wait
+// (record.TakeCover, admit's covers), each once: the Dispatch issues it is blocked by that are not
+// done (Unfinished), the open children its first phase waits for (record.LineFacts.ChildWaits),
+// and, past its review, the issues beneath it its close waits for — a held sign-off, or a merge
+// whose close waits for them (record.LineFacts.BeneathWaits). A blocked_by link of an issue past
+// its review (record.PastReview) is no wait there: it holds no start and gives no cover, as the
+// rule's spec states. A root that waits on a person and a root that arrived carrying the row of
+// the tree it left wait on nothing here, as waitsOf exempts them from the release; a tree's own
+// root whose design gate has never opened is a waiter, so what its design waits on can start on
+// its slot.
+func CoverWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
+	if !record.InWorkflow(issue) || issue.AwaitingPerson() || record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+		return nil
+	}
+	var waits []string
+	if !record.PastReview(issue) {
+		waits = Unfinished(rows, issue.Key)
+	}
+	for _, child := range facts.ChildWaits[issue.Key].Open {
+		if !slices.Contains(waits, child.Key) {
+			waits = append(waits, child.Key)
+		}
+	}
+	for _, beneath := range facts.BeneathWaits[issue.Key] {
+		if !slices.Contains(waits, beneath) {
+			waits = append(waits, beneath)
 		}
 	}
 	return waits

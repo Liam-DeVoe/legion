@@ -379,9 +379,6 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 					continue
 				}
 				t.Run(run.name, func(t *testing.T) {
-					if why, waits := fixtureRunWaits(name, run); waits {
-						t.Skip(why)
-					}
 					slowdown := run.want.Slowdown
 					if slowdown == 0 {
 						slowdown = 1

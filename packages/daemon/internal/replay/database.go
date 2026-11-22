@@ -21,15 +21,32 @@ import (
 const replayDatabasePrefix = "legion_replay_"
 
 // replayTables is the tables a rule replays read that no daemon migration makes, created by the
-// replay in its own database after the daemon's migrations, and in no daemon's database: the
-// merger's ready mark inside merging of the release at 9542c6fb (ReadyMark, assumption 20), which
-// the rule infra-w2 reads. A rule added with a table of its own adds it here.
+// replay in its own database after the daemon's migrations, and in no daemon's database, since the
+// daemon runs none of these rules: the merger's ready mark inside merging of the release at
+// 9542c6fb (ReadyMark, assumption 20), which the rule infra-w2 reads, kept for the issue's
+// generation and the merger's phase entry it was made in, so a later visit to merging reads none
+// of it; the sign-offs the workflow held behind an issue beneath, which the rule cover reads as a
+// wait (HeldSignOff), kept the same way for the architect's entry into accepting; and the covers
+// that stand under the rule cover, the holder of each covered waiter. The admission pass reads
+// them and keeps the covers through ruleTables. A rule added with a table of its own adds it here.
 var replayTables = []string{
 	`create table replay_ready_marks (
 		issue text not null,
 		generation bigint not null,
+		entry bigint not null,
 		marked_at timestamptz not null,
-		primary key (issue, generation)
+		primary key (issue, generation, entry)
+	)`,
+	`create table replay_held_signoffs (
+		issue text not null,
+		generation bigint not null,
+		entry bigint not null,
+		held_at timestamptz not null,
+		primary key (issue, generation, entry)
+	)`,
+	`create table replay_covers (
+		waiter text primary key,
+		holder text not null unique
 	)`,
 }
 

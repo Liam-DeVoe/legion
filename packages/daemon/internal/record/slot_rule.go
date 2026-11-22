@@ -77,8 +77,10 @@ const (
 	// TakeOwnSlot is the daemon's own: a start that needs a slot takes one of its own, and only
 	// while the cap has one free.
 	TakeOwnSlot StartTake = "own_slot"
-	// TakeCover lets an issue that a slot holder waits on start on that holder's slot, one such
-	// cover for each holder, whatever the cap says.
+	// TakeCover lets an issue that a counted waiter waits on start on that waiter's slot whatever
+	// the cap says, one such cover for each holder: the waiter gives its slot to the issue, which
+	// holds it for the waiter until the issue is done or the waiter no longer waits on it, and the
+	// waiter takes a slot of its own back at once then (LineFacts.Covers, admit's covers).
 	TakeCover StartTake = "cover"
 )
 
@@ -169,9 +171,13 @@ func (r SlotRule) PastReview(issue Issue) bool {
 // rule whose wait stops the phase under way (WaitStopsPhase) the last term goes: a parent the
 // daemon has started waits on its open children in whatever phase it stands, as one whose first
 // phase never started does, and gives its slot back for that wait (blockers.waitsOf), so its
-// children are read wherever it stands.
+// children are read wherever it stands. Under a rule whose start may take a cover (TakeCover) the
+// gate's term is that it has opened at some time (TreeGate.EverOpened): a parent's wait on its
+// children stands from the first opening of its design gate, also while a new spec version has
+// closed the gate again, so a cover a child holds for its parent does not end with the version.
 func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
 	anyPhase := r.OrMain().WaitStopsPhase
+	everOpened := r.OrMain().Take == TakeCover
 	byKey := make(map[string]Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
@@ -186,7 +192,7 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 		if (!anyPhase && issue.Phase != phase.Admitted) || !InWorkflow(issue) || !recorded || root.Lingers() {
 			continue
 		}
-		if !gates[issue.Tree].Open() {
+		if gate := gates[issue.Tree]; !gate.Open() && !(everOpened && gate.EverOpened()) {
 			continue
 		}
 		keys = append(keys, issue.Key)
@@ -195,12 +201,110 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 	return keys
 }
 
-// SlotRules is every named rule the repository keeps, the daemon's own first. Each answer is a
-// copy, so a caller that changes a rule it was handed changes no other caller's.
+// SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
+// the replay's comparison runs beside it: the rules two recorded windows ran under (infra-w1,
+// infra-w2) and the four candidates of the comparison (keep-past-review, blockers-first,
+// returned-by-rank, cover). `legion replay rules` prints them. Each answer is built afresh, so a
+// caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	daemon := MainRule
 	daemon.KeepsSlotIn = slices.Clone(MainRule.KeepsSlotIn)
-	return []SlotRule{daemon}
+	return []SlotRule{daemon, windowOneRule(), windowTwoRule(), keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule()}
+}
+
+// The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
+// window one, whose slot rule is the one 20.25.1 (52b3cf5c) ran before it and whose transition
+// table carries the five rows that move a conflicting head back to implementing; and release
+// 19.57.3, which the same deployment ran over its window two.
+const (
+	conflictMovesBackCommit = "958173da0ea4cd03290a1964edf9eb92e6685200"
+	awaitingMergeCommit     = "9542c6fbbecd184ccee73523ab3defa39d6cf23a"
+)
+
+// mainRuleWith is MainRule under name, moved by change and nothing else, its phases a copy: the
+// one way a rule that is the daemon's own with one choice changed is built, so its other choices
+// are the daemon's own by construction. Its commit is MainRule's, the code its every other choice
+// comes from.
+func mainRuleWith(name string, change func(*SlotRule)) SlotRule {
+	rule := MainRule
+	rule.Name = name
+	rule.KeepsSlotIn = slices.Clone(MainRule.KeepsSlotIn)
+	change(&rule)
+	return rule
+}
+
+// everyWorkflowPhase is every phase an issue the daemon has started stands in until it is done:
+// the phases a rule that keeps a started issue's slot through its whole work keeps one in.
+func everyWorkflowPhase() []phase.Phase {
+	return []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
+		phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, phase.Held}
+}
+
+// windowOneRule is the rule named infra-w1, which releases 20.25.1 and 20.42.5 ran: the daemon's
+// own slot choices — no slot past the review (#3573) and none during a wait on another issue
+// (#3715) — and a head that conflicts with its base moving back to implementing by workflow's
+// TriggerConflict, the rows of that release's transition table the daemon's own table no longer
+// carries (workflow.TableFor), where main keeps the phase and merges the base forward (#4464).
+func windowOneRule() SlotRule {
+	return mainRuleWith("infra-w1", func(rule *SlotRule) {
+		rule.Commit = conflictMovesBackCommit
+		rule.Conflict = ConflictMovesBack
+	})
+}
+
+// windowTwoRule is the rule named infra-w2, which release 19.57.3 ran (#2751 and #3206): a started
+// issue keeps its slot in every phase of the workflow until the merger's ready mark inside
+// merging, which that release's awaiting_merge was and a replay reads as a mark (ReleaseAtReady,
+// LineFacts.Ready); no wait on another issue gives the slot back; and red checks, that release's
+// one path of a conflicting head, move the issue back to implementing by workflow's
+// TriggerChecksRed.
+func windowTwoRule() SlotRule {
+	return mainRuleWith("infra-w2", func(rule *SlotRule) {
+		rule.Commit = awaitingMergeCommit
+		rule.KeepsSlotIn = everyWorkflowPhase()
+		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false
+		rule.Conflict = ConflictChecksRed
+		rule.ReleaseAtReady = true
+	})
+}
+
+// keepPastReviewRule is the daemon's own rule with the slot kept in accepting, retro and merging
+// too, so a send-back past the review finds its issue holding its slot.
+func keepPastReviewRule() SlotRule {
+	return mainRuleWith("keep-past-review", func(rule *SlotRule) {
+		rule.KeepsSlotIn = everyWorkflowPhase()
+	})
+}
+
+// blockersFirstRule is the daemon's own rule with each issue that a started issue waits on placed
+// first among the issues that have not started (LineBlockersFirst).
+func blockersFirstRule() SlotRule {
+	return mainRuleWith("blockers-first", func(rule *SlotRule) {
+		rule.Order = LineBlockersFirst
+	})
+}
+
+// returnedByRankRule is the daemon's own rule with an issue whose work came back placed in the
+// line by its board rank rather than by the moment it gave its slot back (LineReturnedByRank).
+func returnedByRankRule() SlotRule {
+	return mainRuleWith("returned-by-rank", func(rule *SlotRule) {
+		rule.Order = LineReturnedByRank
+	})
+}
+
+// coverRule is the rule of the tool's spec at version 4 and its decisions at version 1: a started
+// issue keeps its slot in every phase until its work is done, and no wait on another issue gives
+// it back; an issue a counted waiter waits on starts at once on that waiter's slot, which it then
+// holds for the waiter, one waiter for each holder, and the waiter is not counted while the cover
+// stands (TakeCover; admit's covers). The line keeps the daemon's own order: the issues that came
+// back oldest first and the rest by the board's rank, with nothing put ahead of the rank. A
+// conflicting head keeps its phase, as on main, which the spec was written against.
+func coverRule() SlotRule {
+	return mainRuleWith("cover", func(rule *SlotRule) {
+		rule.KeepsSlotIn = everyWorkflowPhase()
+		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false
+		rule.Take = TakeCover
+	})
 }
 
 // SlotRuleNamed is the rule SlotRules keeps under name, and whether it keeps one.

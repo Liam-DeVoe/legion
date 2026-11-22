@@ -115,6 +115,9 @@ type Admission struct {
 	// rule is the slot rule this pass judges by (UseSlotRule): record.MainRule, the daemon's own,
 	// unless a caller that replays a recorded window under another rule set one.
 	rule record.SlotRule
+	// tables is where a pass under a rule the daemon does not run reads and keeps what that rule
+	// records beyond the daemon's own tables (UseRuleTables, RuleTables): nil in the daemon.
+	tables RuleTables
 
 	// releasedWakes reads the recorded wakes of released pods that the stranded judgement reads a
 	// released claim by (UseReleasedWakes, workflow.Stranded), for the tick's slots reading; nil
@@ -495,8 +498,8 @@ const todoWakeDelay = 30 * time.Second
 // blocker hold and the same children-first wait: a line built here from its own reads would
 // answer differently from the pass that acts, and a slot this said was free would then go to
 // nobody. It is judged under the pass's own rule (lineFacts) and counted as the promotion counts
-// against the cap (capLets): a slot a holder lends under a cover (covers) is one the cap does not
-// count, and a candidate that takes one starts on it and takes no free slot.
+// against the cap (capLets): a candidate a counted waiter offers its slot to under a cover
+// (covers) starts on that slot, which the waiter gives up for it, and takes no free slot.
 func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if a.cap <= 0 {
 		return false, nil
@@ -518,15 +521,17 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	lending := coversOf(own, rows, facts)
+	lending := coversOf(issues, own, rows, facts)
 	taking := 0
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate, facts) {
+		if len(blockers.LineWaitsOn(rows, candidate)) > 0 || !slotFor(candidate, facts) {
+			continue
+		}
+		if _, covering := lending.take(candidate.Issue.Key); !covering {
 			taking++
-			lending.take(candidate.Issue.Key)
 		}
 	}
-	return len(own)+taking-lending.lent < a.cap, nil
+	return len(own)+taking < a.cap, nil
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -1962,6 +1967,23 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
+	// Under a rule whose start may take a cover, each cover that ended gives its waiter's slot
+	// back and each waiter a started issue can hold the slot of gives it to that issue, after the
+	// releases and before the line is promoted, and the records are read again where a slot or a
+	// cover moved (settleCovers). A waiter it covered freed a slot the cap no longer counts.
+	covered, freed, err := a.settleCovers(ctx, tx, issues, slots, rows, facts, &moves)
+	if err != nil {
+		return 0, released, err
+	}
+	released = append(released, freed...)
+	if covered {
+		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
+			return 0, released, err
+		}
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+			return 0, released, err
+		}
+	}
 	// Each holder that waits on another issue while it keeps its slot has the moment its wait
 	// began written beside its slot, which the slots reading dates the holder state `issue` by,
 	// and the mark goes once its waits end (markSlotWaits). It is judged here, after the releases,
@@ -2004,9 +2026,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	var promoted []string
 	for {
 		own := ownSlots(issues, slots)
-		// The slots the holders of this round lend under a rule whose start may take a cover
-		// (covers): nothing under every other rule, the daemon's own among them.
-		lending := coversOf(own, rows, facts)
+		// The covers of this round under a rule whose start may take a cover: the slots its
+		// counted waiters offer to what they wait on (covers), nothing under every other rule,
+		// the daemon's own among them.
+		lending := coversOf(issues, own, rows, facts)
 		stopped, opened, resumed := false, false, false
 		moves.round()
 		promoted = promoted[:0]
@@ -2126,6 +2149,21 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			}
 			now := a.now()
 			if takes {
+				// A candidate a counted waiter waits on starts on that waiter's slot where one
+				// is offered, whichever half of the cap let it through (covers.take): the waiter
+				// gives its slot up first, so the candidate takes none of the cap's own, and the
+				// covers that stand are kept with the new one. Under every other rule nothing is
+				// offered.
+				if waiter, covering := lending.take(issue.Key); covering {
+					var err error
+					if slots, _, err = a.cover(ctx, tx, waiter, issue.Key, slots, len(own), facts, &moves); err != nil {
+						return admitted, released, err
+					}
+					own = slices.DeleteFunc(own, func(slot record.Slot) bool { return slot.Issue == waiter })
+					if err := a.keepCovers(ctx, tx, lending.held); err != nil {
+						return admitted, released, err
+					}
+				}
 				// An entry carries whether its issue held a row when the line was built
 				// (record.LineEntry.Holds), and the line this loop reads holds each issue once,
 				// so no grant here changes the answer slotFor gives a candidate behind it; what
@@ -2149,10 +2187,6 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					}
 				}
 				slots, own = append(slots, slot), append(own, slot)
-				// A candidate a holder waits on takes that holder's lent slot where one is
-				// offered, whichever half of the cap let it through, so it counts against none
-				// of the cap's own (covers.take); under every other rule nothing is lent.
-				lending.take(issue.Key)
 				a.logSlot(ctx, "taken", issue.Key, len(own))
 				moves.give(issue.Key, candidate.Kind, len(own))
 			}
@@ -2338,9 +2372,18 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // the pass's own slot rule (record.ReadLineFactsUnder, UseSlotRule): every read of the facts the
 // pass judges comes through here, so the release, the line, the waits, the held words, the grant
 // and the repair all answer under the one rule the admission was given, and none of them reads
-// the daemon's own in its place.
+// the daemon's own in its place. Where the admission was given tables of a rule the daemon does
+// not run (UseRuleTables), what that rule records there is read in beside them: the merger's
+// ready marks and the covers that stand (RuleTables.ReadRuleFacts).
 func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue) (record.LineFacts, error) {
-	return record.ReadLineFactsUnder(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps(), a.rule)
+	facts, err := record.ReadLineFactsUnder(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps(), a.rule)
+	if err != nil || a.tables == nil {
+		return facts, err
+	}
+	if err := a.tables.ReadRuleFacts(ctx, tx, issues, &facts); err != nil {
+		return record.LineFacts{}, fmt.Errorf("read what the slot rule %s keeps for %s: %w", a.rule.Name, a.project, err)
+	}
+	return facts, nil
 }
 
 // slotFor says whether promoting this candidate must take one of the cap's slots for it: it
@@ -2374,12 +2417,13 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 }
 
 // capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
-// the project holds, facts, the pass's own, and lending, the slots its holders lend (covers): an
+// the project holds, facts, the pass's own, and lending, the covers of the pass (covers): an
 // entry that takes no slot (slotFor) starts whatever the cap says, and one that takes a slot
 // starts while a row stands free or, under a rule whose start may take a cover
-// (record.TakeCover), while a holder that waits on it offers its own. A lent slot is no row of
-// the cap's own, so the rows standing on one are taken off held before it is weighed against the
-// cap. A cap that admits nothing lets nothing start, since the promotion does not run under it.
+// (record.TakeCover), while a counted waiter that waits on it offers its own, which the waiter
+// gives up for it (covers.take), so the start leaves the count where it stood. A covered waiter
+// holds no row, so held is the count the cap bounds. A cap that admits nothing lets nothing
+// start, since the promotion does not run under it.
 // It answers the cap's half alone: what an entry waits on is the other half
 // (blockers.LineWaitsOn), which each reader asks beside this.
 //
@@ -2391,7 +2435,7 @@ func (a *Admission) capLets(entry record.LineEntry, held int, facts record.LineF
 	if a.cap <= 0 {
 		return false
 	}
-	return !slotFor(entry, facts) || held-lending.lent < a.cap || lending.offers(entry.Issue.Key)
+	return !slotFor(entry, facts) || held < a.cap || lending.offers(entry.Issue.Key)
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream

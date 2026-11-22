@@ -27,35 +27,13 @@ const (
 // phaseChanged is the line every recorded phase move is read from (workflow.(*Engine).transition).
 const phaseChanged = "workflow: phase changed"
 
-// builtRules is the rules of the two recorded releases as the plan names them, built here from
-// its words for as long as the repository keeps no rule of that name (record.SlotRuleNamed):
-// infra-w1, main's slot choices with a conflicting head moving back to implementing; infra-w2, a
-// slot kept in every phase of the workflow until the merger's ready mark, given back on no wait,
-// with red checks moving back to implementing.
-var builtRules = map[string]record.SlotRule{
-	"infra-w1": {
-		Name: "infra-w1", Commit: conflictRelease,
-		KeepsSlotIn:       slices.Clone(record.MainRule.KeepsSlotIn),
-		LinkWaitGivesBack: true, ChildrenWaitGivesBack: true,
-		Order: record.LineReturnedOldestFirst, Take: record.TakeOwnSlot, Conflict: record.ConflictMovesBack,
-	},
-	"infra-w2": {
-		Name: "infra-w2", Commit: awaitingMergeRelease,
-		KeepsSlotIn: []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
-			phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, phase.Held},
-		Order: record.LineReturnedOldestFirst, Take: record.TakeOwnSlot, Conflict: record.ConflictChecksRed, ReleaseAtReady: true,
-	},
-}
-
-// replayedRule is the rule the repository keeps under name, or, where it keeps none, builtRules'.
+// replayedRule is the rule the repository keeps under name (record.SlotRuleNamed), which the test
+// fails without.
 func replayedRule(t *testing.T, name string) record.SlotRule {
 	t.Helper()
-	if rule, kept := record.SlotRuleNamed(name); kept {
-		return rule
-	}
-	rule, built := builtRules[name]
-	if !built {
-		t.Fatalf("the repository keeps no slot rule named %s and this test builds none", name)
+	rule, kept := record.SlotRuleNamed(name)
+	if !kept {
+		t.Fatalf("the repository keeps no slot rule named %s", name)
 	}
 	return rule
 }
@@ -173,8 +151,8 @@ var wantMoves = map[workflow.TriggerKind]wantMove{
 // test fails for a row whose trigger has no entry, for an entry that differs from the way the
 // design decides for its trigger (wantMoves) or that names no row, and for a mapping of the release
 // at 9542c6fb that does not land on today's phases: awaiting_merge read as merging, so its merge is
-// merging's and its ready move a mark that moves nothing. The rules infra-w1 and infra-w2 are
-// built here from the plan's words while the repository keeps neither (builtRules).
+// merging's and its ready move a mark that moves nothing. The rules infra-w1 and infra-w2 are the
+// ones the repository keeps (record.SlotRuleNamed).
 func TestEveryRowOfTheTableHasASourceInTheRecord(t *testing.T) {
 	facts := intakeFactTypes(t)
 	rows := recordedRows(t)

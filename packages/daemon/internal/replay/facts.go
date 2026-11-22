@@ -2,12 +2,15 @@ package replay
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -34,8 +37,9 @@ type RecordedMove struct {
 
 // ReadyMark is the merger's ready mark of the release at 9542c6fb inside merging (TriggerReady,
 // MoveMark, assumption 20), which the replay's handler writes into the replay's own table of marks
-// (replayTables) for a rule that gives the slot back at it. Under a rule that reads no mark it
-// changes nothing.
+// (replayTables) under a rule that keeps a slot in merging and gives it back at the mark
+// (record.SlotRule.ReleaseAtReady), whose admission pass reads it there (ruleTables). Under every
+// other rule it changes nothing.
 type ReadyMark struct {
 	replayFact
 	Issue      string
@@ -54,19 +58,48 @@ type Settled struct {
 	Issue string
 }
 
+// HeldSignOff is the replay's own fact when the workflow refuses a sign-off because an issue beneath
+// the parent is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW; Divergence.HeldSignOffs): the
+// daemon keeps no record of the refusal, so the replay's handler writes it into a table of its own
+// (replayTables) under a rule whose start may take a cover, which reads the parent's wait on the
+// issues beneath it from there (ruleTables, record.LineFacts.BeneathWaits). Under every other rule
+// it changes nothing. Its pass runs in the same transaction, at the moment of the refusal.
+type HeldSignOff struct {
+	replayFact
+	Issue      string
+	Generation uint64
+}
+
+// FirstBoot is the first boot of a release that runs the rule cover over a start state another
+// rule left (spec v4, R9): the store migration of that release gives a slot to each issue the
+// daemon started that holds none — a waiter that gave its slot back, an issue past its review, an
+// issue that owes its next worker a start — and the first admission pass, which runs in the same
+// transaction, works out the covers (admit's settleCovers). The replay applies it at the window's
+// start under a rule whose start may take a cover, and the handler does nothing under any other.
+type FirstBoot struct {
+	replayFact
+}
+
 // replayHandler is the handler a replay puts before the daemon's chain (admit.Handlers) for the
 // replay's own facts: a RecordedMove through the engine's ReplayTransition, refused with its reason
-// where the issue does not stand where the record says, and a ReadyMark into the replay's table of
-// marks. Every other fact it leaves to the chain.
+// where the issue does not stand where the record says; a ReadyMark and a HeldSignOff into the
+// replay's tables under a rule that reads them (rule); and a FirstBoot's migration of the start
+// state, over records, the store of project. Every other fact it leaves to the chain.
 type replayHandler struct {
-	engine *workflow.Engine
-	clock  func() time.Time
+	engine  *workflow.Engine
+	clock   func() time.Time
+	rule    record.SlotRule
+	records record.Store
+	project string
 }
 
 // refusedMove is the code of a replay's refused move, whose message is ReplayTransition's reason.
 const refusedMove = "REPLAY_MOVE_REFUSED"
 
-// Apply makes a replay fact's change in the fact's own transaction.
+// Apply makes a replay fact's change in the fact's own transaction. A ready mark is kept with the
+// merger's phase entry it falls in, and a held sign-off with the architect's (record.PhaseRow.Entry,
+// zero where the role has none), so each reads only while the issue stands in that visit to the
+// phase.
 func (h replayHandler) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	switch fact := fact.(type) {
 	case RecordedMove:
@@ -76,11 +109,82 @@ func (h replayHandler) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (
 		}
 		return intake.Result{Refusal: &intake.Refusal{Status: 409, Code: refusedMove, Message: reason}}, nil
 	case ReadyMark:
-		_, err := tx.Exec(ctx, `insert into replay_ready_marks (issue, generation, marked_at) values ($1, $2, $3)
-			on conflict (issue, generation) do nothing`, fact.Issue, int64(fact.Generation), h.clock())
+		if !readsReadyMarks(h.rule) {
+			return intake.Result{}, nil
+		}
+		_, err := tx.Exec(ctx, `insert into replay_ready_marks (issue, generation, entry, marked_at)
+			select $1::text, $2::bigint, coalesce((select entry from phases where issue = $1::text and role = $3::text), 0), $4::timestamptz
+			on conflict (issue, generation, entry) do nothing`, fact.Issue, int64(fact.Generation), string(claim.RoleMerger), h.clock())
 		return intake.Result{}, err
+	case HeldSignOff:
+		if h.rule.OrMain().Take != record.TakeCover {
+			return intake.Result{}, nil
+		}
+		_, err := tx.Exec(ctx, `insert into replay_held_signoffs (issue, generation, entry, held_at)
+			select $1::text, $2::bigint, coalesce((select entry from phases where issue = $1::text and role = $3::text), 0), $4::timestamptz
+			on conflict (issue, generation, entry) do nothing`, fact.Issue, int64(fact.Generation), string(claim.RoleArchitect), h.clock())
+		return intake.Result{}, err
+	case FirstBoot:
+		if h.rule.OrMain().Take != record.TakeCover {
+			return intake.Result{}, nil
+		}
+		return intake.Result{}, h.firstBoot(ctx, tx)
 	}
 	return intake.Result{}, nil
+}
+
+// firstBoot is the store migration of a FirstBoot: each issue of the project in the workflow that
+// the rule keeps a slot for where it stands (record.LineFacts.NeedsSlot), holds none, and that the
+// daemon has started — it carries the mark of a release for a wait (record.Issue.ReleasedForWaitAt),
+// owes its next worker a start (record.LineFacts.Owed), or stands past its review
+// (record.PastReview) — takes a slot, its mark cleared, at the clock's moment. The count may stand
+// above the cap after it, R5's second case; the pass that follows starts nothing R4 does not start
+// until it is below.
+func (h replayHandler) firstBoot(ctx context.Context, tx pgx.Tx) error {
+	issues, err := h.records.LiveIssues(ctx, tx, h.project)
+	if err != nil {
+		return fmt.Errorf("replay: list the issues of %s at the first boot: %w", h.project, err)
+	}
+	slots, err := h.records.Slots(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("replay: list the slots at the first boot: %w", err)
+	}
+	facts, err := record.ReadLineFactsUnder(ctx, tx, h.records, h.project, issues, h.engine.GatedSteps(), h.rule)
+	if err != nil {
+		return err
+	}
+	holds := make(map[string]bool, len(slots))
+	used := make(map[int]bool, len(slots))
+	for _, slot := range slots {
+		holds[slot.Issue], used[slot.Index] = true, true
+	}
+	byKey := make(map[string]record.Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	live := record.LiveRoots(issues, facts)
+	index := 0
+	for _, issue := range issues {
+		_, running := live[issue.Tree]
+		_, owes := facts.Owed[issue.Key]
+		started := issue.ReleasedForWaitAt != nil || owes || record.PastReview(issue)
+		if holds[issue.Key] || !started || !facts.NeedsSlot(issue, byKey[issue.Tree], running) {
+			continue
+		}
+		for used[index] {
+			index++
+		}
+		used[index] = true
+		if err := h.records.PutSlot(ctx, tx, record.Slot{Issue: issue.Key, Index: index, AdmittedAt: h.clock()}); err != nil {
+			return fmt.Errorf("replay: give %s its slot at the first boot: %w", issue.Key, err)
+		}
+		if issue.ReleasedForWaitAt != nil {
+			if err := h.records.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+				return fmt.Errorf("replay: clear the slot release of %s at the first boot: %w", issue.Key, err)
+			}
+		}
+	}
+	return nil
 }
 
 // The assumptions a fact a replay leaves out rests on (FactSources), and a row its worker stub

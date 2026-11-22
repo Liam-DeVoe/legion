@@ -208,16 +208,6 @@ func TestAStretchCountsNoMergeOfItsOwn(t *testing.T) {
 	}
 }
 
-// movesBackRule is main with a conflicting head moved back to implementing by conflict
-// (record.ConflictMovesBack), the rule the fixture windows name infra-w1, built here while the
-// repository keeps no rule of that name (the plan's t11 adds it).
-func movesBackRule() record.SlotRule {
-	rule := record.MainRule
-	rule.Name, rule.Conflict = "infra-w1", record.ConflictMovesBack
-	rule.KeepsSlotIn = slices.Clone(record.MainRule.KeepsSlotIn)
-	return rule
-}
-
 // Under a rule whose conflicting head moves back, a drawn conflict moves the issue back to
 // implementing by the rule's trigger through the daemon's own path, and the loop's work is drawn
 // from the window's recorded loops (spec R2; the fixture windows' README, "Conflicts"). The test
@@ -235,7 +225,7 @@ func TestADrawnConflictMovesTheIssueBackUnderAMovesBackRule(t *testing.T) {
 	if !ok {
 		t.Fatal("the window's expect.json holds no scorecard under infra-w1")
 	}
-	result, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "conflict-from-fitted-rate"), Rule: movesBackRule(),
+	result, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "conflict-from-fitted-rate"), Rule: replayedRule(t, "infra-w1"),
 		Branch: MainBranch, Seed: want.Seed, Slowdown: 1, PGDSN: dsn, Out: t.TempDir()})
 	if err != nil {
 		t.Fatalf("replay the window under infra-w1: %v", err)

@@ -131,6 +131,7 @@ var tapped = []string{
 	"workflow: design gate closed",
 	mergeForwardAskedLine,
 	mergeForwardLandedLine,
+	admit.CoverTakenLine,
 }
 
 // driver is one replay's run: the window and its reading, the replay's database, its simulated
@@ -300,8 +301,8 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 
 // newChain builds the daemon's handler chain afresh, as each of the daemon's boots does: a new
 // engine and admission pass under the run's rule, on the simulated clock, with the window's
-// settings and the cap the daemon served under at at, and the replay's own handler before the
-// chain.
+// settings and the cap the daemon served under at at, the replay's tables of what a rule the
+// daemon does not run records (ruleTables), and the replay's own handler before the chain.
 func (d *driver) newChain(at time.Time) {
 	w := d.window
 	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), 0x7265706c6179))
@@ -316,14 +317,15 @@ func (d *driver) newChain(at time.Time) {
 		Experiments: w.Experiments, ExperimentSource: draw, SlotRule: d.rule}, d.log)
 	d.admission = admit.New(d.records, d.engine, capAt(w, at), w.Project, d.log)
 	d.admission.UseSlotRule(d.rule)
+	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)
 	d.admission.UseExperimentSource(draw)
 	d.admission.UseStalledTreeNotice(time.Duration(w.StalledTreeNotice))
 	d.admission.UseWorkerSilence(time.Duration(w.WorkerSilence), time.Duration(w.WorkerBackground))
 	d.admission.UsePassObserver(d.snap.pass)
-	d.handlers = append([]intake.Handler{replayHandler{engine: d.engine, clock: d.clock.Now}},
-		admit.Handlers(d.records, w.Project, d.engine, d.admission)...)
+	d.handlers = append([]intake.Handler{replayHandler{engine: d.engine, clock: d.clock.Now, rule: d.rule, records: d.records,
+		project: w.Project}}, admit.Handlers(d.records, w.Project, d.engine, d.admission)...)
 }
 
 // capAt is the admission cap w's daemon ran with at at: the last change at or before it, or the
@@ -451,6 +453,8 @@ func (d *driver) observe() error {
 			d.snap.roundBegins(key, d.clock.Instant())
 		case mergeForwardLandedLine:
 			d.snap.roundEnds(key, d.clock.Instant())
+		case admit.CoverTakenLine:
+			d.used[14] = true
 		}
 	}
 	return d.placeAnchored()
@@ -497,6 +501,14 @@ func (d *driver) run() error {
 	// The process that runs at the window's start is the newest that started before it; a boot
 	// at the start itself is applied as a boot.
 	d.newChain(w.From)
+	// Under a rule whose start may take a cover the start state the record's rule left is first
+	// booted onto the rule, as the release that runs it boots (FirstBoot, spec v4 R9): every started
+	// issue holding no slot takes one, and the pass of the same fact works out the covers.
+	if d.rule.Take == record.TakeCover {
+		if _, err := d.apply("replay", d.factID("first-boot"), FirstBoot{}); err != nil {
+			return err
+		}
+	}
 	for i := range t.Boots {
 		boot := t.Boots[i]
 		if boot.At.Before(w.From) || !boot.At.Before(w.To) {

@@ -110,16 +110,6 @@ func linesAt(log []replayLine, match func(replayLine) bool) []time.Time {
 	return at
 }
 
-// keepPastReviewRule is main with a slot kept in accepting, retro and merging too, the rule the
-// fixture windows name keep-past-review, built here while the repository keeps no rule of that
-// name (the plan's t11 adds it).
-func keepPastReviewRule() record.SlotRule {
-	rule := record.MainRule
-	rule.Name = "keep-past-review"
-	rule.KeepsSlotIn = append(slices.Clone(record.MainRule.KeepsSlotIn), phase.Accepting, phase.Retro, phase.Merging)
-	return rule
-}
-
 // pastReviewKept is the record of a daemon that keeps the slot past the review: key's segment in
 // from ends at at and it moves to to by trigger, its slot kept, and the role of to starts its turn.
 func (b *windowBuilder) pastReviewKept(at time.Time, key string, from, to phase.Phase, trigger workflow.TriggerKind) {
@@ -334,7 +324,7 @@ func TestTheFirstStartsKnobOrdersFirstStartsByTheRecordOrByRank(t *testing.T) {
 		branch, first string
 	}{{"main", "ACME-2"}, {"main+firstStarts=rank", "ACME-3"}} {
 		t.Run(c.branch, func(t *testing.T) {
-			result, log := knobRun(t, window, keepPastReviewRule(), c.branch)
+			result, log := knobRun(t, window, replayedRule(t, "keep-past-review"), c.branch)
 			var taken []string
 			for _, line := range log {
 				if line.Msg == "admission: slot taken" && line.Time.Equal(clock(11, 0)) {

@@ -546,9 +546,16 @@ const tickDelay = time.Minute
 // events and the lines are read in one time order, the events of an instant before its lines, as
 // the fact a pass applied comes before what the pass wrote. Then the slots, waits, worker starts,
 // segments and ticks are built from what they read. It fails for a line or an event its reader
-// refuses, which collect never writes into a window; what it reads and cannot place it names in
-// Trace.Unplaced.
+// refuses, which collect never writes into a window, and for a part of the window that names a
+// slot rule the repository does not keep (record.SlotRuleNamed), whose phases no slot span or
+// worker start could be read by; what it reads and cannot place it names in Trace.Unplaced.
 func BuildTrace(w Window) (Trace, error) {
+	for _, part := range w.Parts {
+		if _, kept := record.SlotRuleNamed(part.Rule); !kept {
+			return Trace{}, fmt.Errorf("replay: the window's part from %s names the slot rule %q, which the repository does not keep (legion replay rules)",
+				stamp(part.From), part.Rule)
+		}
+	}
 	b := traceBuilder{
 		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
@@ -1815,19 +1822,21 @@ func (b *traceBuilder) forWait(iss *IssueTrace) {
 }
 
 // ruleAt is the slot rule the window's daemon ran at at: the rule of the part that holds it, or of
-// the nearest part, as the repository keeps it (record.SlotRuleNamed), and the daemon's own rule
-// where the window names none the repository keeps.
+// the nearest part, as the repository keeps it (record.SlotRuleNamed; BuildTrace refuses a window
+// whose part names a rule the repository does not keep), and the daemon's own rule where the
+// window names no part.
 func (t Trace) ruleAt(at time.Time) record.SlotRule {
-	name := ""
+	if len(t.Parts) == 0 {
+		return record.MainRule
+	}
+	name := t.Parts[0].Rule
 	for _, part := range t.Parts {
-		if name == "" || !part.From.After(at) {
+		if !part.From.After(at) {
 			name = part.Rule
 		}
 	}
-	if rule, ok := record.SlotRuleNamed(name); ok {
-		return rule
-	}
-	return record.MainRule
+	rule, _ := record.SlotRuleNamed(name)
+	return rule
 }
 
 // segments sets each of iss's visits' worker start and work segment.

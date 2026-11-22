@@ -21,7 +21,10 @@ import (
 // a wait only where waitsOf answers nothing for it: a root waiting on a person, a tree's own root
 // whose design gate has never opened, and a root that arrived carrying the row of the tree it
 // left. A rule whose wait keeps the slot (record.SlotRule.LinkWaitGivesBack false, or
-// ChildrenWaitGivesBack false) makes every holder that waits so a holder of this kind.
+// ChildrenWaitGivesBack false) makes every holder that waits so a holder of this kind. Under a
+// rule whose start may take a cover (record.TakeCover) the waits are the ones a cover reads
+// (CoverWaits), so a counted waiter's mark is the wait that holds its next start, and a link of an
+// issue past its review, which holds none, marks nothing.
 func KeptWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
 	given := waitsOf(rows, issue, facts)
 	var kept []string
@@ -29,6 +32,12 @@ func KeptWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) 
 		if !slices.Contains(given, key) && !slices.Contains(kept, key) {
 			kept = append(kept, key)
 		}
+	}
+	if facts.Rule.OrMain().Take == record.TakeCover {
+		for _, key := range CoverWaits(rows, issue, facts) {
+			keep(key)
+		}
+		return kept
 	}
 	for _, key := range Unfinished(rows, issue.Key) {
 		keep(key)

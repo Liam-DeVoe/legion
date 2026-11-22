@@ -528,8 +528,27 @@ type LineFacts struct {
 	// merging for the merge itself: the merger's ready mark, at which a rule that keeps a slot in
 	// merging and gives it back there (SlotRule.ReleaseAtReady) takes the slot back. It is read
 	// only for such a rule (ReadLineFactsUnder) and is empty under every other, the daemon's own
-	// among them, so a pass under those reads nothing for it.
+	// among them, so a pass under those reads nothing for it. A replay of a release whose ready
+	// was a move rather than a handoff writes that mark in a table of its own database instead,
+	// which its pass reads in here beside the phases rows (admit's RuleTables).
 	Ready map[string]struct{}
+	// Covers is the covers that stand under a rule whose start may take a cover (SlotRule.Take,
+	// TakeCover), by the key of each covered waiter: the issue that holds that waiter's slot for it
+	// while the waiter waits on it, the holder. A cover is kept rather than judged again on each
+	// pass, since it stays until its holder is done or leaves the work, or until the waiter no
+	// longer waits on it, whatever else begins to wait meanwhile: judged again, a new link or an
+	// older waiter could take it from its waiter and the count would rise with no start. The daemon
+	// runs its own rule and keeps none; a replay under such a rule keeps them in a table of its own
+	// database, which the pass reads in here (admit's RuleTables). Nil under every other rule.
+	Covers map[string]string
+	// BeneathWaits is, under a rule whose start may take a cover (SlotRule.Take, TakeCover), the
+	// issues beneath each issue past its review whose close waits for them (OpenBeneath): a parent
+	// whose sign-off the workflow holds while an issue beneath it is in the workflow, and an issue
+	// whose pull request merged while one is (workflow's closeMerged). Each such wait is a wait a
+	// cover reads (blockers.CoverWaits), as the rule's spec adds them. The daemon runs its own rule
+	// and reads none; a replay under such a rule reads them from its own records and a table of its
+	// own database (admit's RuleTables). Nil under every other rule.
+	BeneathWaits map[string][]string
 }
 
 // KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
