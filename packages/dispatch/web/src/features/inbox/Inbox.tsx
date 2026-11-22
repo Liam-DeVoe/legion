@@ -771,8 +771,8 @@ function withHeld(
 
 /** `bands` with an empty band for each key of `kept` that none of them has, headed as the reader
  *  last saw it (`previous`, the bands as last drawn) and drawn after the nearest band before it
- *  there that is still drawn: the band a write out keeps its row in once every other row the
- *  list holds has left it. */
+ *  there that is still drawn: the band a write out keeps its row in, or the reader's hand keeps
+ *  a moved row in, once every other row the list holds has left it. */
 function withHeldBands(
   bands: readonly InboxGroup[],
   kept: ReadonlySet<string>,
@@ -1876,7 +1876,10 @@ function InboxBody({
   // while the list is still drawn under it - the same grouping, and the same view. Under that
   // layout the band a write holds its row in is drawn again though no other row is left in it
   // (`keptBands`): a snooze takes its row out of the band whoever else is there, and an answer,
-  // a decline, an Assign to me or a hand-on the filters drop takes it out of the list.
+  // a decline, an Assign to me or a hand-on the filters drop takes it out of the list. So is the
+  // band the reader's hand holds a listed row in that has moved to another band, as a pick of the
+  // row's own priority moves it: drawn in no band, the row would leave the page with the
+  // reader's focus in it.
   const layout = showDismissed ? "dismissed" : groupBy;
   const sameLayout = presentedBands.current.layout === layout;
   const held: PlacedRow[] = [];
@@ -1911,7 +1914,9 @@ function InboxBody({
     );
     if (kept === undefined) continue;
     held.push(kept);
-    if (sameLayout && (out || written)) keptBands.add(kept.group);
+    if (sameLayout && ((inHand && listed !== undefined) || out || written)) {
+      keptBands.add(kept.group);
+    }
     if (inHand) handHeld = kept;
   }
   heldUnder.current =
@@ -2497,8 +2502,9 @@ function InboxBody({
   }
 
   // Each held row is drawn in the band the reader saw it in, after the row it then followed; a
-  // band a write keeps its row in is drawn where it stood though no other row is left in it
-  // (`keptBands`). A band every row has left is empty, and an empty band has nothing to head.
+  // band a write keeps its row in, or the reader's hand keeps a moved row in, is drawn where it
+  // stood though no other row is left in it (`keptBands`). A band every row has left is empty,
+  // and an empty band has nothing to head.
   const heldById = new Map(held.map((placed) => [rowId(placed.row), placed]));
   const drawn = withHeldBands(bands, keptBands, presentedBands.current.headings)
     .map((band) => {

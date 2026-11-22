@@ -1677,6 +1677,55 @@ test("a priority pick that takes the row under the reader's hand out of the prio
   }
 });
 
+// Grouped by priority, a pick of P0 on the one P2 row moves it out of a band no other row is in.
+// The reader's hand is on the row - the focus is in its priority list, and the pick gives it back
+// to the list's trigger - so the row is kept where they saw it, and its band is drawn with it:
+// the row, its trigger and the focus on it stay, through the save and the read after it.
+test("a priority pick that moves the row under the reader's hand out of a band it was alone in keeps the row, its band and the focus on its trigger", async () => {
+  const user = userEvent.setup();
+  const alone = inboxIssue("ask-p2", "CORE-1", "Ship it at P2?", { priority: 2 });
+  const other = inboxIssue("ask-p1", "CORE-2", "Which format?", { priority: 1 });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([alone, other]);
+  const getAsk = mockAskReads([alone, other]);
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { queryClient, unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Ship it at P2?");
+    const row = rowOf("ask-p2");
+    const trigger = within(row).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(trigger);
+    await user.keyboard("p0");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    expect(rowOf("ask-p2"), "the row was drawn anew").toBe(row);
+    expect(trigger, "the pick left the focus off the row's priority").toHaveFocus();
+    expect(
+      headings().some((heading) => heading.startsWith("P2")),
+      "the P2 band went"
+    ).toBe(true);
+
+    const reads = getInbox.mock.calls.length;
+    getInbox.mockResolvedValue([{ ...alone, priority: 0 }, other]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(alone, "alice"), priority: 0 });
+      await save.promise;
+    });
+    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(rowOf("ask-p2"), "the row was drawn anew once the save landed").toBe(row);
+    expect(trigger, "the landing left the focus off the row's priority").toHaveFocus();
+    expect(trigger).toHaveAccessibleName("Priority of CORE-1 P0");
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 // The reading column keeps a question whose row has left the list while the reader has an
 // unsent answer in its box (`paneRow`). A pick of P2 in the column's own priority picker, under
 // `?priority=P1`, takes the row out of the list; the kept question is drawn as the Inbox holds it

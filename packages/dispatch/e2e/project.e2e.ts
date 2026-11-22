@@ -378,9 +378,11 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
     await revealPagePicker(page, `Repository of ${issue.key}`);
     await expect(picker).toHaveAccessibleName(`Repository of ${issue.key} acme/widgets`);
 
-    // The reader picks the repository's row in the list, which writes it.
+    // The list suggests Inherit, the project's default and the issue's own repository alone, so
+    // the reader types acme/gadgets into its text box and takes it with the row that takes it.
     await picker.click();
-    await listOf(picker).getByRole("option", { exact: true, name: "acme/gadgets" }).click();
+    await listOf(picker).getByRole("combobox").fill("acme/gadgets");
+    await listOf(picker).getByRole("option", { exact: true, name: 'Use "acme/gadgets"' }).click();
     await expect.poll(() => shown.values.at(-1)).toBe("acme/gadgets");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);

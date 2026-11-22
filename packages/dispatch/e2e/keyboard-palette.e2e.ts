@@ -386,13 +386,14 @@ test("a Set priority row the server refuses is reported by the header, in the di
     // The row writes through the page's one priority write, so the header reports its refusal
     // and the badge rolls back, exactly as for the picker and the digit keys.
     const header = page.getByTestId("issue-header");
+    const priority = listTrigger(header, `Priority of ${issue.key}`);
     const failure = header
       .getByRole("alert")
       .filter({ hasText: `Could not update the priority of ${issue.key}.` });
     await expect(failure).toBeVisible();
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
     expect(patches).toBe(1);
 
@@ -401,7 +402,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
     await page.keyboard.press("3");
     await expect.poll(() => patches).toBe(2);
     await expect(failure).toHaveCount(1);
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
   } finally {
     await context.close();
   }
