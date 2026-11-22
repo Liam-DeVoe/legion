@@ -339,6 +339,8 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	unknown := h.row().HoldID
 	require.Equal(t, 2, code, "a census with a store unreconciled: %s%s", stdout, stderr)
 	require.Contains(t, stderr, "UNKNOWN")
+	require.NotContains(t, stdout, "CLEAN", "a census whose reconcile is UNKNOWN printed a clean report")
+	require.True(t, strings.HasSuffix(stdout, "UNKNOWN\n"), "the census's report does not end UNKNOWN:\n%s", stdout)
 	require.Contains(t, stderr, `daemon/A: Deployment legion/legion-daemon-a reads database "other"`)
 	require.NotContains(t, h.journalCommands(unknown), CommandStreamsCensus+" done")
 	last := h.journal(unknown).Ops[len(h.journal(unknown).Ops)-1]
@@ -358,6 +360,7 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	require.Equal(t, 2, code, "a census whose write failed after another: %s%s", stdout, stderr)
 	require.Contains(t, stdout, fmt.Sprintf("CHANGED daemon/A: stream_id %q -> %q", "stream-0", current))
 	require.Contains(t, stderr, "daemon/B: its envoy.sentinel row's write failed: refused")
+	require.NotContains(t, stdout, "CLEAN", "a census whose reconcile is UNKNOWN printed a clean report")
 	last = h.journal(unknown).Ops[len(h.journal(unknown).Ops)-1]
 	require.Equal(t, CommandStreamsCensus+" "+holdrecord.StateStop, last.Command+" "+last.State)
 	require.Contains(t, last.Outputs["left"], fmt.Sprintf("stream_id of daemon/A: stream_id %q -> %q", "stream-0", current),

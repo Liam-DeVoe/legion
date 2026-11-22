@@ -53,6 +53,7 @@ func TestHoldTheCensusReconcilesAStoreOnlyWhereOneSourceNamesIt(t *testing.T) {
 	code, stdout, stderr := h.streamsRunWith(stub, stores.reconcile, append([]string{"census", "--hold", id}, args...)...)
 	require.Equal(t, 2, code, "a census of stores not each named by one source: %s%s", stdout, stderr)
 	require.Contains(t, stderr, "UNKNOWN")
+	require.NotContains(t, stdout, "CLEAN", "a census whose reconcile is UNKNOWN printed a clean report")
 	both := lineFrom(stderr, "daemon/BOTH: ")
 	require.Contains(t, both, "Deployment legion/legion-daemon-both", "the store's sources are not named")
 	require.Contains(t, both, "ConfigMap envoy-operator/envoy-operator-retired-stores", "the store's sources are not named")

@@ -506,6 +506,11 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				return changes, nil, leftBy(r, barriers, refused)
 			}
 			outputs, err := reconcileStreamIDs(ctx, nc, d.Readers.Stores, deployments, families, o.daemonDatabases, stdout)
+			// A reconcile that is UNKNOWN makes the report read UNKNOWN, as the census's exit does.
+			var unknown *Unknown
+			if errors.As(err, &unknown) {
+				result.Unknown = append(result.Unknown, unknown.What)
+			}
 			return changes, outputs, leftBy(r, barriers, err)
 		}
 	}
