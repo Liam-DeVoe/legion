@@ -77,14 +77,16 @@ func newRestoreRigOf(t *testing.T, replicas int, families ...string) *restoreRig
 }
 
 // restoreRigOn is a rig of one copy on h, a stack that holds ENVOY_NOTIFICATIONS or will, with a
-// store of each of families.
+// store of each of families: each daemon's rendered with its Deployment and named by a real file
+// (enrollDeployed), since every writer of a daemon store reads it at the address its one source
+// names.
 func restoreRigOn(h *stack, families ...string) *restoreRig {
 	h.t.Helper()
 	rig := &restoreRig{stack: h, pools: map[string]*pgxpool.Pool{}, replicas: 1}
 	for _, family := range families {
 		if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
 			rig.pools[family] = rig.database(family, daemonMigrations...)
-			rig.flags = append(rig.flags, "--daemon-database", project+"=/dev/null")
+			rig.flags = append(rig.flags, "--daemon-database", project+"="+rig.enrollDeployed(project))
 			continue
 		}
 		rig.pools[family] = rig.database(family, dispatchMigrations...)

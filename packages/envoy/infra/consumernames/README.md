@@ -282,8 +282,15 @@ status --hold ID` and in each command's refusal.
      `--dispatch-database-file` is given or its set holds `delivery-events` or `delivery-jobs`;
      each daemon whose `--daemon-database` is given or whose fixed names its set holds. Its set is
      every fixed name the listing holds, every member of the cohort record the listing no longer
-     holds, and both of Dispatch's durables when `dispatch` is a family. A stop, recorded
-     `unchanged`, names the first store that cannot hold the conversion:
+     holds, and both of Dispatch's durables when `dispatch` is a family. It reads each daemon store
+     a `--daemon-database` file names first by the address rule, and writes it through the
+     connection the rule opened there. A stop, recorded `unchanged`, names the stores that cannot
+     hold the conversion:
+     - `daemon/P's store is unreconciled, so convert writes none of its records: <why>`, for each
+       store the address rule leaves unreconciled (no table among them), and `daemon/P's store is
+       gone at the address its Deployment names (...): remove its consumers with cleanup --gone P
+       in a consumer-cleanup hold, and give convert no --daemon-database for it`, for each it finds
+       gone;
      - `the selection bucket envoy_session_consumers cannot hold the session family's records
        (...): consumer-names create-bucket --hold ID comes before convert`, for a missing bucket
        or a bucket with no sentinel;
@@ -295,15 +302,15 @@ status --hold ID` and in each command's refusal.
        convert again`, for a missing table when the flag is given;
      - `the Legion daemon of project P has fixed names to convert and its store cannot hold them
        (...): give --daemon-database P=<file>, and boot the project once so its migration makes
-       intake_consumers`, the same for a daemon.
+       intake_consumers`, for a daemon no flag names.
 
      Any other failed read of a store is UNKNOWN, a stop recorded `unknown: ...` (below): a
-     Postgres sentinel that does not decode, and a daemon store whose database is gone. So before
-     `hold prepare`, remove a gone daemon's consumers with `cleanup --gone` in a `consumer-cleanup`
-     hold, and give `convert` no flag for it: with no flag and no name of it on the stream, it is
-     none of `convert`'s families. When the address rule leaves that store unreconciled (no single
-     source names the project with both its database and its instance), `cleanup --gone` removes
-     nothing, and no command of this package removes those consumers.
+     Postgres sentinel that does not decode. So before `hold prepare`, remove a gone daemon's
+     consumers with `cleanup --gone` in a `consumer-cleanup` hold, and give `convert` no flag for
+     it: with no flag and no name of it on the stream, it is none of `convert`'s families. When the
+     address rule leaves that store unreconciled (no single source names the project with both its
+     database and its instance), `cleanup --gone` removes nothing, and no command of this package
+     removes those consumers.
 
 Then `convert` saves its set, the hold's record of kind `convert` and key `set`: its first change.
 It runs the held re-read again before its first change to the hub. After that, a stop records the

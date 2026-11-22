@@ -450,9 +450,17 @@ func (c convertRule) families(r *run, set convertSet) []string {
 // anything, and answers the refusal of the first that cannot hold the conversion: a selection
 // bucket that create-bucket has not made, and a Dispatch or daemon store that no flag names or
 // that has no intake_consumers table (a project whose daemon never booted the migration). A store
-// with no sentinel row yet is the state convert writes it from.
+// with no sentinel row yet is the state convert writes it from. Each daemon store a
+// --daemon-database file names it reads first by the census's rule for the daemon stores
+// (daemonStoresByRule), at exactly the address the project's one source names, and converts
+// through the pool the rule opened there: a store the rule leaves unreconciled or finds gone
+// refuses the run, naming each.
 func (c convertRule) checkStores(ctx context.Context, r *run, set convertSet) (string, error) {
-	for _, family := range c.families(r, set) {
+	families := c.families(r, set)
+	if refusal, err := c.checkDaemonAddresses(ctx, r, families); err != nil || refusal != "" {
+		return refusal, err
+	}
+	for _, family := range families {
 		st, err := r.store(ctx, family)
 		if err != nil {
 			return convertStoreRefusal(r.o, family, err), nil
@@ -473,6 +481,41 @@ func (c convertRule) checkStores(ctx context.Context, r *run, set convertSet) (s
 		}
 	}
 	return "", nil
+}
+
+// checkDaemonAddresses reads, by the census's rule for the daemon stores (daemonStoresByRule), the
+// store of each daemon family of families that a --daemon-database file names, which becomes the
+// run's database of its family, and answers the refusal naming each the rule leaves unreconciled
+// or finds gone: convert writes no store but the one at the address its project's one source
+// names. A daemon family no file names is left to checkStores' refusal.
+func (c convertRule) checkDaemonAddresses(ctx context.Context, r *run, families []string) (string, error) {
+	var named []string
+	for _, family := range families {
+		if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
+			if _, ok := r.o.daemonDatabase(project); ok {
+				named = append(named, family)
+			}
+		}
+	}
+	if len(named) == 0 {
+		return "", nil
+	}
+	stores, err := r.daemonStoresByRule(ctx, named)
+	if err != nil {
+		return "", err
+	}
+	var refusals []string
+	for _, s := range stores {
+		family := daemonFamily(s.project)
+		switch {
+		case s.unreconciled != "":
+			refusals = append(refusals, fmt.Sprintf("%s's store is unreconciled, so convert writes none of its records: %s", family, s.unreconciled))
+		case s.gone != nil:
+			refusals = append(refusals, fmt.Sprintf("%s's store is gone at the address %s names (%s): remove its consumers with cleanup --gone %s in a consumer-cleanup hold, and give convert no --daemon-database for it",
+				family, s.addressSource(), daemonGoneText(*s.gone), s.project))
+		}
+	}
+	return strings.Join(refusals, "; "), nil
 }
 
 // convertStoreRefusal names the store a family's conversion needs and cannot reach, and its remedy.

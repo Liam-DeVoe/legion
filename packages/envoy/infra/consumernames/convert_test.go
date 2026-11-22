@@ -20,8 +20,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
@@ -625,6 +627,47 @@ func TestConvertStopsNamingADaemonProjectWithNoStore(t *testing.T) {
 	code, _, stderr = rig.run(actionConvert, "--hold", id)
 	require.Zero(t, code, "control: the project with its table: %s", stderr)
 	require.True(t, strings.HasPrefix(pgRecord(t, daemonFamily("p2"), db, "legion-go-p2-wake").Current, "legion-go-p2-wake~"))
+}
+
+// convert reads each daemon store a --daemon-database file names by the census's rule for the
+// daemon stores, at exactly the address the project's one source names, before it changes
+// anything, and writes that store alone: a file that reaches another database than the project's
+// Deployment names stops convert, naming the project, the file and the Deployment, with no set
+// saved, no fixed name changed and nothing written to the store. Control, in the same hold: with
+// the Deployment naming the store the file reaches, convert converts the project. And b061ae27e4's
+// convert, which opens the file's URL with no rule, converts through the file whatever the
+// Deployment names.
+func TestConvertReadsEachDaemonStoreByTheAddressRule(t *testing.T) {
+	rig := newConvertRig(t, 0)
+	ctx := context.Background()
+	rig.publish("notifications.legion.cva.controller", 2)
+	rig.fixed("legion-go-cva-wake", "notifications.legion.cva.controller", 0)
+	db := rig.database(daemonFamily("cva"), daemonMigrations...)
+	rig.censusDeploy(censusDeployment("cva", "daemon_elsewhere", censusInstance))
+	file := "cva=" + rig.enrollFile(db)
+	id, _ := rig.heldForConvert()
+
+	code, _, stderr := rig.run(actionConvert, "--hold", id, "--daemon-database", file)
+	require.Equal(t, 1, code, "convert beside a file another Deployment's database: %s", stderr)
+	require.Contains(t, stderr, fmt.Sprintf("%s's store is unreconciled, so convert writes none of its records: --daemon-database cva=<file> reaches database %q, and Deployment legion/legion-daemon-cva names database %q",
+		daemonFamily("cva"), db.Config().ConnConfig.Database, "daemon_elsewhere"))
+	require.Equal(t, "stop", rig.lastEntry(id, actionConvert).State)
+	require.Equal(t, []string{"legion-go-cva-wake"}, rig.fixedNames(), "convert changed a fixed name before it stopped")
+	_, _, found, err := readConvertSet(ctx, rig.records(), id)
+	require.NoError(t, err)
+	require.False(t, found, "convert saved a set beside a store the rule does not read")
+	_, err = enrollStore(t, "cva", db).State(ctx)
+	require.ErrorIs(t, err, selection.ErrNoSentinel, "convert marked the store")
+
+	deployments := rig.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace)
+	rendered, err := deployments.Get(ctx, "legion-daemon-cva", metav1.GetOptions{})
+	require.NoError(t, err)
+	rendered.Annotations[writerhold.DaemonStoreDatabaseAnnotation] = db.Config().ConnConfig.Database
+	_, err = deployments.Update(ctx, rendered, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	code, _, stderr = rig.run(actionConvert, "--hold", id, "--daemon-database", file)
+	require.Zero(t, code, "control: convert with the Deployment naming the store: %s", stderr)
+	require.True(t, strings.HasPrefix(pgRecord(t, daemonFamily("cva"), db, "legion-go-cva-wake").Current, "legion-go-cva-wake~"))
 }
 
 // The held re-read catches a writer connected across the hold (plan §3a, "Every held command",
