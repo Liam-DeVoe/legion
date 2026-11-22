@@ -517,8 +517,9 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // rows) (grapherase's lockInStoreOrder). Before its first owner lock it takes two rows no other
 // writer holding an owner lock takes, each of which a background pass holds for a whole transaction
 // of its own: the term statistics totals row of each project of its owners
-// (api.TakeErasedTermTotalsTx), and the keyword fill's cursor row, which holds the fill back until
-// the erase ends (textversions.HoldFillBack), so it waits for such a pass holding no owner lock,
+// (api.TakeErasedTermTotalsTx), and, for a node whose keyword rows it deletes or rewrites, the
+// keyword fill's cursor row, which holds the fill back until the erase ends
+// (textversions.HoldFillBack), so it waits for such a pass holding no owner lock,
 // which no writer of the node's issue or document then waits on. The erase itself takes a totals
 // row under its owner locks, that of each project its items name (api.ForgetErasedTermsTx), and
 // for a project of none of its owners that can be a row another erase took before its own owner

@@ -23,12 +23,19 @@ const (
 // payloadPaths is the classification of one payload shape: each string value it can hold, by
 // its path, in the list of its class. A path names the JSON keys from the payload's top level
 // down to the value, joined by `.`, with `[]` after the key of an array for an element of it
-// (`author.origin.host`, `ask_sessions[]`, `version.authors[].act.token_name`). content is the
-// class of a string at a path no list names whose key structuralKey does not name either
-// (eventClasses.classOf).
+// (`author.origin.host`, `ask_sessions[]`, `version.authors[].act.token_name`). A string at a path
+// no list names is read by eventClasses.classOf.
 type payloadPaths struct {
-	content               payloadClass
 	own, quoted, identity []string
+	// legacy are identity paths production's log holds that no Go field of this build writes, so
+	// no walk of the shape's Go type reaches them.
+	legacy []legacyPath
+}
+
+// legacyPath is an identity path of payloads an older build wrote, which the erase still reads:
+// where it was seen and why no field of this build writes it.
+type legacyPath struct {
+	path, seen, why string
 }
 
 // payloadClassification is the erase's classification of the payload of each event type it
@@ -36,7 +43,7 @@ type payloadPaths struct {
 // three classes - the node's own words, or a value that can carry them (ownWords); another node's
 // words, which the payload quotes (quotedWords); and identity, which the redaction never rewrites.
 // Every identity path is listed as every other is - one an older build wrote that no field of
-// this build writes in legacyIdentityPaths - so a path nobody classified is one no list names:
+// this build writes in its shape's legacy list - so a path nobody classified is one no list names:
 // TestEveryStringOfAnEventPayloadTheEraseReadsHasAClass fails on any string of a payload's Go type
 // that no list names, and on any listed path no field writes.
 //
@@ -50,9 +57,9 @@ type payloadPaths struct {
 //
 // A path it does not name - a key a later or an older build writes, or a payload of a type it
 // does not hold - is read by the rule it replaced (eventClasses.classOf): identity where
-// structuralKey names the key the value stands under, else the content class of the type, or of
-// the event's predicate for a type it does not hold. That fallback stays because a field another
-// build adds that holds what a person wrote must lose the erased bytes as every other does.
+// structuralKey names the key the value stands under, else the content class of the predicate
+// that read the event (classesOf). That fallback stays because a field another build adds that
+// holds what a person wrote must lose the erased bytes as every other does.
 var payloadClassification = map[string]payloadPaths{
 	"comment.anchor_refreshed":   commentEventPaths,
 	"comment.answered":           commentEventPaths,
@@ -93,7 +100,6 @@ var referenceChangePaths = slices.Concat(
 // the comment (model.Comment), with the name of the document it is anchored to, the question of
 // the ask it replies to, and the sessions and routes its write reached.
 var commentEventPaths = payloadPaths{
-	content: ownWords,
 	// What the comment's author wrote - its body and a suggestion's replacement - and what each
 	// send of it answered, which can echo the body the send carried.
 	own: []string{"body", "suggestion.replace_with", "deliveries[].error", "deliveries[].resolve_error"},
@@ -118,13 +124,19 @@ var commentEventPaths = payloadPaths{
 		"project_key", "artifact_slug", "ask_state", "ask_waiting_on", "ask_sessions[]", "thread_root_id",
 		"suppressed_route", "suppressed_route_session_id", "thread_logins[]",
 	}, under("author", actorPaths), under("resolved_by", actorPaths), referenceChangePaths),
+	legacy: []legacyPath{{
+		path: "suppressed_authors[]",
+		seen: "comment.created and comment.edited payloads of production's log " +
+			"(textversions' testdata/payloads/comment.created-*.json and comment.edited-1.json)",
+		why: "model.CommentEventPayload carried it, the authors' sessions a route left to the comment's mentions; " +
+			"the session routes read the comment's mentions and nothing read it, so the field went (CHANGELOG)",
+	}},
 }
 
 // deliveryReceiptPaths classify model.CommentDeliveryEventPayload, the receipt of one attempt to
 // deliver a comment's mention. Its error is what the send answered, which can echo what the send
 // carried; everything else names the attempt.
 var deliveryReceiptPaths = payloadPaths{
-	content:  ownWords,
 	own:      []string{"error"},
 	identity: []string{"comment_id", "ask_id", "target", "delivery", "session_id", "state", "reply_id"},
 }
@@ -134,8 +146,7 @@ var deliveryReceiptPaths = payloadPaths{
 // in the reference graph. The payload quotes the whole document, so every value of it a person
 // wrote is quoted words: the document's name, the version's summary and the diff.
 var artifactVersionPaths = payloadPaths{
-	content: quotedWords,
-	quoted:  []string{"name", "diff", "version.summary"},
+	quoted: []string{"name", "diff", "version.summary"},
 	identity: slices.Concat(
 		[]string{"artifact_id", "version.created_at", "version.mime", "version.sha256"},
 		under("version.authors[]", actorPaths),
@@ -146,7 +157,6 @@ var artifactVersionPaths = payloadPaths{
 // humanEditedPaths classify model.ArtifactHumanEditedEventPayload: the document, the people who
 // edited it and the diff of their edits, which quotes the document.
 var humanEditedPaths = payloadPaths{
-	content:  quotedWords,
 	quoted:   []string{"name", "diff"},
 	identity: []string{"artifact_id", "editors[]"},
 }
@@ -156,36 +166,12 @@ var humanEditedPaths = payloadPaths{
 // which a statement adds after the append (docs' approval review). The review's reason quotes the
 // document as its name does.
 var reviewPaths = payloadPaths{
-	content: quotedWords,
-	quoted:  []string{"name", "reason"},
+	quoted: []string{"name", "reason"},
 	identity: slices.Concat(
 		[]string{"artifact_id", "kind", "ask_id", "content_sha256", "content_sha256_source"},
 		under("actor", actorPaths),
 	),
 }
-
-// legacyIdentityPath is an identity path production's log holds that no Go field of this build
-// writes, so no walk of a payload's Go type reaches it: the types it is identity in, where it was
-// seen and why no field writes it.
-type legacyIdentityPath struct {
-	path      string
-	types     []string
-	seen, why string
-}
-
-// legacyIdentityPaths are the identity paths of payloads an older build wrote, which the erase
-// still reads.
-var legacyIdentityPaths = []legacyIdentityPath{{
-	path: "suppressed_authors[]",
-	types: []string{
-		"comment.anchor_refreshed", "comment.answered", "comment.created", "comment.edited",
-		"comment.reopened", "comment.resolved", "suggestion.accepted", "suggestion.rejected",
-	},
-	seen: "comment.created and comment.edited payloads of production's log " +
-		"(textversions' testdata/payloads/comment.created-*.json and comment.edited-1.json)",
-	why: "model.CommentEventPayload carried it, the authors' sessions a route left to the comment's mentions; " +
-		"the session routes read the comment's mentions and nothing read it, so the field went (CHANGELOG)",
-}}
 
 // under is each of paths as it stands below prefix.
 func under(prefix string, paths []string) []string {
@@ -212,15 +198,15 @@ type eventClasses struct {
 	content payloadClass
 }
 
-// payloadClasses is payloadClassification, with legacyIdentityPaths, by event type.
+// payloadClasses is payloadClassification by event type, each path a shape names with its class:
+// its own, quoted and identity paths, and its legacy paths as identity.
 var payloadClasses = indexPayloadClasses()
 
-// indexPayloadClasses answers payloadClassification and legacyIdentityPaths by event type, each
-// path with its class.
-func indexPayloadClasses() map[string]eventClasses {
-	indexed := make(map[string]eventClasses, len(payloadClassification))
+// indexPayloadClasses answers payloadClassification by event type, each path with its class.
+func indexPayloadClasses() map[string]map[string]payloadClass {
+	indexed := make(map[string]map[string]payloadClass, len(payloadClassification))
 	for kind, shape := range payloadClassification {
-		paths := make(map[string]payloadClass, len(shape.own)+len(shape.quoted)+len(shape.identity))
+		paths := make(map[string]payloadClass, len(shape.own)+len(shape.quoted)+len(shape.identity)+len(shape.legacy))
 		for _, listed := range []struct {
 			class payloadClass
 			paths []string
@@ -229,36 +215,34 @@ func indexPayloadClasses() map[string]eventClasses {
 				paths[path] = listed.class
 			}
 		}
-		indexed[kind] = eventClasses{paths: paths, content: shape.content}
-	}
-	for _, legacy := range legacyIdentityPaths {
-		for _, kind := range legacy.types {
-			if classes, held := indexed[kind]; held {
-				classes.paths[legacy.path] = identity
-			}
+		for _, legacy := range shape.legacy {
+			paths[legacy.path] = identity
 		}
+		indexed[kind] = paths
 	}
 	return indexed
 }
 
-// classesOf is the classification of a payload of type kind. A type payloadClassification does
-// not hold names no path, and its content class is the one its predicate reads it by
-// (readEvents): comment is the erased comment's id, empty for a block, so an event about a
-// comment, which the comment's predicate read, is the comment's own words, and an event about a
-// block, a document event of the block's document, quotes that document.
+// classesOf is the classification of a payload of type kind that the predicate comment names read
+// (readEvents): the class of each path payloadClassification names for kind, none for a type it
+// does not hold, and the content class of every other path, which the predicate alone decides.
+// comment is the erased comment's id, empty for a block: an event about a comment, which the
+// comment's predicate read, is the comment's own words, and an event about a block, a document
+// event of the block's document, quotes that document. Each type the classification holds is read
+// by one of the two predicates alone - a comment's own events and its receipts by the comment's,
+// the document events by the block's - so no type carries a content class of its own.
 func classesOf(kind, comment string) eventClasses {
-	if classes, held := payloadClasses[kind]; held {
-		return classes
-	}
+	content := quotedWords
 	if comment != "" {
-		return eventClasses{content: ownWords}
+		content = ownWords
 	}
-	return eventClasses{content: quotedWords}
+	return eventClasses{paths: payloadClasses[kind], content: content}
 }
 
 // classOf is the class of the string at path, which stands under key - the key of the array
 // holding it, for an element of one: the class the classification names for path, else identity
-// where key is structural (structuralKey), else the type's content class.
+// where key is structural (structuralKey), else the content class of the predicate that read the
+// event (classesOf).
 func (c eventClasses) classOf(path, key string) payloadClass {
 	if class, held := c.paths[path]; held {
 		return class

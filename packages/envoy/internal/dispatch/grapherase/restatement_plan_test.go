@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -22,8 +20,8 @@ const owedPlanDocuments = 5000
 // owedPlanDocuments other documents of issue CORE-1, each given its document_block_versions row by
 // its version holding markdown (migration 0122's trigger), written and analyzed before the update.
 // The update is the one restateEmbeddings sends for the document seedPreStoreDocument writes, whose
-// version 1 holds markdown, with the argument it binds (explaintest.RecordedTx, its Exec kept by
-// recordedExecs), and the document is held to being marked by it. With hash and merge joins off,
+// version 1 holds markdown, with the argument it binds (explaintest.RecordedTx, which keeps what
+// Exec sends), and the document is held to being marked by it. With hash and merge joins off,
 // under each plan-cache mode the plan must read document_block_versions through its primary key
 // (document_block_versions_pkey) and artifact_versions through an index, each by its key
 // (explaintest.RequireEachRowProbedOnce): the erase reads no whole large table while it holds its
@@ -63,7 +61,7 @@ func TestTheEraseMarksTheDocumentsOwedWindowsThroughTheirKey(t *testing.T) {
 		document.artifactID); err != nil {
 		t.Fatalf("clear the mark of %s: %v", document.refKey, err)
 	}
-	recorded := recordedExecs{&explaintest.RecordedTx{Tx: tx}}
+	recorded := &explaintest.RecordedTx{Tx: tx}
 	erasure := &Erasure{Kind: refs.BlockNodeKind, ID: document.refKey + "#erased"}
 	if err := erasure.restateEmbeddings(ctx, recorded, forgottenEmbeddings{documents: []string{document.artifactID}}); err != nil {
 		t.Fatalf("mark %s owed its windows: %v", document.refKey, err)
@@ -97,13 +95,4 @@ func owedBefore(t *testing.T, sql string) explaintest.Part {
 		Name: "the test of the row's document", Opens: "owed.artifact_id = any(", Closes: "and exists (",
 		Text: "owed.artifact_id::text = any(" + documents + "::text[])\n\t\t\t  ",
 	}
-}
-
-// recordedExecs is explaintest.RecordedTx keeping the statements sent through Exec as well, the
-// call restateEmbeddings sends its update by: RecordedTx keeps those read by Query or QueryRow.
-type recordedExecs struct{ *explaintest.RecordedTx }
-
-func (r recordedExecs) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	r.Sent = append(r.Sent, explaintest.Statement{SQL: sql, Args: args})
-	return r.Tx.Exec(ctx, sql, args...)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
@@ -54,11 +55,12 @@ const eraseOwnerAttempts = 3
 //     transaction, which production's logs show reaching 18.5 s. Under the locks
 //     api.ForgetErasedTermsTx takes the row of every project whose items the run changed, each
 //     waiting 100 ms at most, and finds each of these rows held by this transaction already;
-//   - then the keyword fill's cursor row `for share` (textversions.HoldFillBack). A batch of the
-//     fill in flight, which may have read the node's text before the run took its locks and which
-//     runs 0.6 to 1.3 s when full, commits first, so the read under the locks lists every keyword
-//     row a batch wrote, and no batch writes until the run ends. The totals rows come first so
-//     that the run does not hold the fill back while it waits for a pass.
+//   - then, for a node whose erase deletes or rewrites a keyword row (lockOwnersThenNode says
+//     which), the keyword fill's cursor row `for share` (textversions.HoldFillBack). A batch of
+//     the fill in flight, which may have read the node's text before the run took its locks and
+//     which runs 0.6 to 1.3 s when full, commits first, so the read under the locks lists every
+//     keyword row a batch wrote, and no batch writes until the run ends. The totals rows come
+//     first so that the run does not hold the fill back while it waits for a pass.
 //
 // The store's lock order allows both before the owners because no writer but the erase takes
 // either while it holds an owner lock, so a wait for one closes no cycle through an owner but one
@@ -203,11 +205,22 @@ func (e *Erasure) searchLeftAfterCommit(ctx context.Context, conn *pgx.Conn, rea
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
 // under (ownerRows, which reads no node, tuple or event) and their projects (ownerProjects), takes
 // those projects' term statistics totals rows (api.TakeErasedTermTotalsTx), holds the keyword fill
-// back (textversions.HoldFillBack), takes the owners (events.LockOwnerRows), the node's row and
-// the node's projection rows (lockProjectionRows), reads the rest of the listing under those locks
-// (readDerived) - the events about the node among those of the owners it took and those the try's
-// search found (eventsUnderLocks) - lists beside it the rows left that the search found
-// (searchLeft), and answers it with every owner it names that the try did not take.
+// back (textversions.HoldFillBack) where the erase reaches a keyword row (below), takes the owners
+// (events.LockOwnerRows), the node's row and the node's projection rows (lockProjectionRows),
+// reads the rest of the listing under those locks (readDerived) - the events about the node among
+// those of the owners it took and those the try's search found (eventsUnderLocks) - lists beside
+// it the rows left that the search found (searchLeft), and answers it with every owner it names
+// that the try did not take.
+//
+// The keyword table (search_text_versions) holds rows of an issue, a comment, a message and an
+// ask alone, each keyed by its item's kind and id (textversions.WritesRowsOf), and the erase
+// reaches a row of it two ways (readSearch, restateKeywordVersions): it deletes the rows of the
+// node's own kind and id, which only a node of one of those kinds has, and for a block it writes
+// again the vector of each row of its document's spec issue that names a version the run deletes.
+// So the run holds the fill back for a node of one of those four kinds and for a block, and for
+// no other: a person, a session, a role, a page, a block reference and every other kind has no row
+// there and reaches none, so a batch can write nothing the run reads or removes, and holding the
+// fill back would only stop it for as long as the run lasts.
 func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searchedBeforeLocks) (erasedRead, []string, error) {
 	before, documents, err := e.ownerRows(ctx, tx)
 	if err != nil {
@@ -220,8 +233,10 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searc
 	if err := api.TakeErasedTermTotalsTx(ctx, tx, projects); err != nil {
 		return erasedRead{}, nil, err
 	}
-	if err := textversions.HoldFillBack(ctx, tx); err != nil {
-		return erasedRead{}, nil, err
+	if textversions.WritesRowsOf(e.Kind) || e.Kind == refs.BlockNodeKind {
+		if err := textversions.HoldFillBack(ctx, tx); err != nil {
+			return erasedRead{}, nil, err
+		}
 	}
 	if err := events.LockOwnerRows(ctx, tx, before); err != nil {
 		return erasedRead{}, nil, err

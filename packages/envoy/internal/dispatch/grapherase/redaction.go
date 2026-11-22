@@ -186,9 +186,9 @@ type eventsUnderLocks struct {
 //
 // A path the classification does not name - a key a later or an older build writes, or any path
 // of a type it does not hold - is read by the rule it replaced (eventClasses.classOf): identity
-// where structuralKey names its key, else the content class of its type, or for a type the
-// classification does not hold, of the predicate that read the event (classesOf). So a field
-// another build adds that holds what a person wrote loses the erased bytes as every other does.
+// where structuralKey names its key, else the content class of the predicate that read the event
+// (classesOf). So a field another build adds that holds what a person wrote loses the erased bytes
+// as every other does.
 //
 // comment is the erased comment's id, empty for any other node. A payload that is that comment's
 // own (its `id`) and whose `body_truncated` is true carries only the first part of the body
