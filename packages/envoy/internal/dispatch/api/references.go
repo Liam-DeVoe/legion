@@ -63,7 +63,9 @@ const referencesSinceWait = time.Second
 // conversion retires a document and moves its address to the lens it writes in its place - answers
 // that lens (movedDocumentNode), as a moved block's old address answers the block it moved to. A
 // ?kind= this build does not emit - a newer build's, during a release - has no edges here, and the
-// answer lists it in unknown_kinds rather than refusing the read.
+// answer lists it in unknown_kinds rather than refusing the read. The edges, with the excerpts of
+// their document mentions, are read with JIT off (inReferencesListRead); the node is read before
+// them on the pool.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -159,27 +161,19 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	}
 	// When this build knows none of the kinds the caller named, no edge is of them; refs.Edges
 	// with no Kinds would read every kind.
-	edges := []model.GraphEdge{}
-	if len(query.Kinds) > 0 || len(unknownKinds) == 0 {
-		if query.Since != nil {
-			safe, err := s.sinceHorizon(r.Context())
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			query.Through = &safe
-		}
-		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
+	readEdges := len(query.Kinds) > 0 || len(unknownKinds) == 0
+	if readEdges && query.Since != nil {
+		safe, err := s.sinceHorizon(r.Context())
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		query.Through = &safe
 	}
-	if query.Direction == "in" {
-		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	edges, err := s.inReferencesListRead(r.Context(), who, query, readEdges)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
@@ -683,16 +677,51 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	return query, ref, unknownKinds, nil
 }
 
+// inReferencesListRead is getReferences's list: query's edges (refs.Edges), when readEdges says
+// the kinds the caller named leave any to read, and none otherwise, with, on an inbound read, the
+// excerpts stored on the document mentions among them (documentMentionExcerpts), all read in a
+// read transaction of its own whose first statement sets jit off (inJITOffRead). A read with no
+// edges to read and no excerpts to read sends nothing.
+//
+// JIT is off because compiling the read's statement over graph_edges (readEdgeRows) costs more
+// than running it: with JIT on, which compiled 451 functions for each call, it took 136.5 ms a
+// call, and with JIT off 21.6 to 27.8 ms (the root's c-read-cost). Production's
+// database is Cloud SQL, which runs no JIT, so the setting makes the read on a deployment with its
+// own Postgres what it is in production. No statement of this read carries a tag, so the setting
+// carries none either. The read has no budget: referencesClosureBound is the closure's alone.
+// TestTheReferencesListReadRunsWithJITOff holds the route's read to it on a session that starts at
+// jit = on.
+func (s *server) inReferencesListRead(ctx context.Context, who model.Actor, query refs.Query, readEdges bool) ([]model.GraphEdge, error) {
+	edges := []model.GraphEdge{}
+	if !readEdges && query.Direction != "in" {
+		return edges, nil
+	}
+	err := s.inJITOffRead(ctx, "", func(tx pgx.Tx) error {
+		if readEdges {
+			var err error
+			if edges, err = refs.Edges(ctx, tx, who, query); err != nil {
+				return err
+			}
+		}
+		if query.Direction == "in" {
+			return documentMentionExcerpts(ctx, tx, who, query, edges)
+		}
+		return nil
+	})
+	return edges, err
+}
+
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the
-// excerpt stored when the mention was indexed (refs.RecordExcerpts): the block holding the mention,
-// its id a #b-<id> jump target, and its markdown. The route reads no document: a mention whose
-// excerpt the reconciliation has not stored yet, is owed a fresh one, or lies in no block keeps
-// the document's name. The reconciliation serves the next stored block only after it records a
-// non-null excerpt_version. During the deploy that ships migration 0092, a stale excerpt whose
-// version is still set is served until the reconciliation marks it owed (refs.StoredExcerpts).
-// The excerpts are read for who, so one whose document or block who may not see is none.
-func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, query refs.Query, edges []model.GraphEdge) error {
-	stored, err := refs.StoredExcerpts(ctx, s.deps.Store.Pool, who, query.Kind, query.ID)
+// excerpt stored when the mention was indexed (refs.RecordExcerpts), read through q: the block
+// holding the mention, its id a #b-<id> jump target, and its markdown. The route reads no
+// document: a mention whose excerpt the reconciliation has not stored yet, is owed a fresh one, or
+// lies in no block keeps the document's name. The reconciliation serves the next stored block
+// only after it records a non-null excerpt_version. During the deploy that ships migration 0092, a
+// stale excerpt whose version is still set is served until the reconciliation marks it owed
+// (refs.StoredExcerpts). The excerpts are read for who, so one whose document or block who may
+// not see is none.
+func documentMentionExcerpts(ctx context.Context, q refs.Queryer, who model.Actor, query refs.Query, edges []model.GraphEdge) error {
+	stored, err := refs.StoredExcerpts(ctx, q, who, query.Kind, query.ID)
 	if err != nil {
 		return err
 	}
