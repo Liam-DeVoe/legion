@@ -567,3 +567,39 @@ func TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten(t *testing.T) {
 	// have advanced the consumer's ack floor past it.
 	requireStillPending(t, rig.consumers, sessionID, seq)
 }
+
+// N2: two re-marks of one session, the second asked while the first is in flight, never run at
+// once, so noteRepositoryGap's read and write cannot interleave and leave the in-memory mark and
+// the entry's mark diverged, which would send the session a second, redundant gap notice. onReply
+// runs each nak'd gap-marked frame's re-mark off its callback; scheduleReMark holds one in flight
+// per session and folds a re-mark asked meanwhile into a single further run after it. Control: with
+// scheduleReMark reverted to a plain `go m.reMark`, the second re-mark runs while the first is in
+// flight and the first select fails.
+func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
+	relays := &sessionRelays{logger: logging.New("test")}
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	relays.reMark = func(string) {
+		entered <- struct{}{}
+		<-release
+	}
+	const sessionID = "ses_remark_serial"
+	relays.scheduleReMark(sessionID)
+	<-entered // the first re-mark is in flight, held on release
+	relays.scheduleReMark(sessionID) // a second re-mark asked while the first runs
+	select {
+	case <-entered:
+		close(release)
+		t.Fatal("two re-marks of one session ran at once: the second did not wait for the first")
+	case <-time.After(500 * time.Millisecond):
+		// The second re-mark did not run while the first was in flight: one is held per session.
+	}
+	close(release)
+	// The re-mark the fold held still runs once the first finishes, so the session's owed mark is
+	// not dropped.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the held re-mark never ran after the first finished; the session's owed mark is dropped")
+	}
+}

@@ -253,6 +253,14 @@ type sessionRelays struct {
 	// the KV read and write it makes never stalls the receipts the one callback carries. A test
 	// sets it to hold the write, so it can show onReply does not wait on it.
 	reMark func(sessionID string)
+	// reMarkMu guards reMarking and reMarkAgain, which hold one re-mark in flight per session:
+	// onReply runs each nak'd gap-marked frame's re-mark off its callback (scheduleReMark), and a
+	// re-mark asked while one runs for the session is folded into a single further run after it, so
+	// two naks cannot run noteRepositoryGap's read and write at once and leave the in-memory mark
+	// and the entry's mark diverged, which would send the session one redundant gap notice.
+	reMarkMu    sync.Mutex
+	reMarking   map[string]bool
+	reMarkAgain map[string]bool
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -1532,11 +1540,13 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 		if frame.gapMark != "" {
 			// onReply is the one callback for every session's receipts on this connection's core
 			// subscription, run one at a time (nats.go), so the re-mark's KV read and write
-			// (noteRepositoryGap, up to sendRequestBudget) runs in its own goroutine: a slow write
-			// stalls no other session's receipt. The owed mark is on the frame already (gapMark),
-			// so the relay loop needs nothing back from the write; a write that fails is logged,
-			// and the session's next relay run sends the mark (owedRepositoryGap).
-			go m.reMark(frame.run.sessionID)
+			// (noteRepositoryGap, up to sendRequestBudget) runs off the callback: a slow write
+			// stalls no other session's receipt. It runs with one re-mark in flight per session
+			// (scheduleReMark), so two naks of one session cannot interleave that read and write.
+			// The owed mark is on the frame already (gapMark), so the relay loop needs nothing back
+			// from the write; a write that fails is logged, and the session's next relay run sends
+			// the mark (owedRepositoryGap).
+			m.scheduleReMark(frame.run.sessionID)
 		}
 	}
 	if err != nil {
@@ -1557,6 +1567,40 @@ func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 		m.logger.Warn("session relay could not re-mark a withheld gap frame's session; its next run sends the mark",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	}
+}
+
+// scheduleReMark runs sessionID's withheld-gap re-mark off onReply's callback (reMarkWithheldGap)
+// with one in flight per session: a re-mark asked while one runs for the session is folded into a
+// single further run after it. onReply's own goroutine let two naks of one session re-mark at once,
+// so noteRepositoryGap's read and write could interleave and leave the in-memory mark and the
+// entry's mark different, sending the session one redundant gap notice; holding one in flight keeps
+// them one.
+func (m *sessionRelays) scheduleReMark(sessionID string) {
+	m.reMarkMu.Lock()
+	if m.reMarking == nil {
+		m.reMarking, m.reMarkAgain = map[string]bool{}, map[string]bool{}
+	}
+	if m.reMarking[sessionID] {
+		m.reMarkAgain[sessionID] = true
+		m.reMarkMu.Unlock()
+		return
+	}
+	m.reMarking[sessionID] = true
+	m.reMarkMu.Unlock()
+	go func() {
+		for {
+			m.reMark(sessionID)
+			m.reMarkMu.Lock()
+			if m.reMarkAgain[sessionID] {
+				delete(m.reMarkAgain, sessionID)
+				m.reMarkMu.Unlock()
+				continue
+			}
+			delete(m.reMarking, sessionID)
+			m.reMarkMu.Unlock()
+			return
+		}
+	}()
 }
 
 // decodeStoredEnvelope decodes a stored message into item under the durable path's rules
