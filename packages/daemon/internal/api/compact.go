@@ -238,11 +238,19 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
 // (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (CompactResponse, bool) {
-	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {
-		s.writeFailure(w, r, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
-			"%s runs on %s, which has no Oh My Pi session to compact; %s is what starts it again",
-			token, runtime.Backends[runtime.BackendClaude].Name, freshSessionName))
-		return CompactResponse{}, false
+	if c := m.Claim(); s.backend != nil {
+		backend, err := s.backend(r.Context(), c.Issue, c.Role)
+		if err != nil {
+			s.logRequestFailure(r, err, "api: the harness of a claim to compact")
+			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the harness of "+string(token))
+			return CompactResponse{}, false
+		}
+		if runtime.Of(backend) == runtime.BackendClaude {
+			s.writeFailure(w, r, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
+				"%s runs on %s, which has no Oh My Pi session to compact; %s is what starts it again",
+				token, runtime.Backends[runtime.BackendClaude].Name, freshSessionName))
+			return CompactResponse{}, false
+		}
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()

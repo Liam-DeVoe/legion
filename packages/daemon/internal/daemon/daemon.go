@@ -1486,6 +1486,10 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// backends is the one decision of the harness a role runs on for a claim of an issue
+	// (roleBackends), which the launch, the stale-plugin rule (noPluginInstall) and the API's
+	// compaction route read; nil in a supervision a test builds by hand reads worker_backends alone.
+	backends roleBackend
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1734,9 +1738,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// The clean stops of session registrations the machines send run past their decisions and are
 	// counted here (sessionStopsInFlight).
 	var sessionStops sessionStopsInFlight
-	// The daemon's one reader of a role of a plan, which a launch's prompt and model and a launch's
-	// App (roleApps) read alike.
+	// The daemon's one reader of a role of a plan, which a launch's prompt and model, a launch's
+	// App (roleApps) and a role's harness (roleBackends) read alike.
 	planRole := planRoleOf(st)
+	backends := roleBackends(cfg.BackendFor, planRole)
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
@@ -1749,7 +1754,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
-			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
+			backend: backends, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
@@ -1793,7 +1798,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, backends, c) },
 	}
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
@@ -1802,7 +1807,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
+		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}
@@ -2286,7 +2291,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
-	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
+	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.backends, c) }
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
@@ -2442,9 +2447,19 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // backend is the daemon's configuration (supervise.Deps.NoPluginInstall, handed this same
 // function); and the API's stale-caller refusal, which would otherwise hold such a worker's
 // grants, its handoff_complete and its ready on a relaunch that never comes
-// (api.Options.NoPluginInstall, api's staleClaim).
-func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
-	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
+// (api.Options.NoPluginInstall, api's staleClaim). The harness is backends' for c's issue
+// (roleBackends, the one decision the launch reads too); nil reads worker_backends alone. A read
+// of the issue's plan that fails answers that an install can move the claim, as an Oh My Pi
+// role's answer is: the stale-plugin lane tries it again at its next pass.
+func noPluginInstall(cfg config.Config, backends roleBackend, c supervise.Claim) bool {
+	if cfg.Runtime.Name != "kubernetes" {
+		return false
+	}
+	if backends == nil {
+		backends = roleBackends(cfg.BackendFor, nil)
+	}
+	backend, err := backends(context.Background(), c.Issue, c.Role)
+	return err == nil && runtime.Of(backend) == runtime.BackendClaude
 }
 
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
@@ -2783,7 +2798,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, s.backends, c) },
 			architectStalls: architectStalls,
 		},
 		StateTransactions:  st,
@@ -2802,8 +2817,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
-		Backend:            cfg.BackendFor,
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, s.backends, c) },
+		Backend:            s.backends,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
 		Decisions:          s.decided,

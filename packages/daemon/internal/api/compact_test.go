@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -35,9 +36,18 @@ func compactHarnessLogging(t *testing.T, backend func(claim.Role) runtime.Backen
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{&phaseRestarter{}}, Backend: backend, Log: log,
+		Handlers: []intake.Handler{&phaseRestarter{}}, Backend: byRole(backend), Log: log,
 	}).Handler
 	return h
+}
+
+// byRole is backend as Options.Backend reads it: a role's harness whatever the claim's issue. Nil
+// stays nil, the Oh My Pi of every role.
+func byRole(backend func(claim.Role) runtime.Backend) func(context.Context, string, claim.Role) (runtime.Backend, error) {
+	if backend == nil {
+		return nil
+	}
+	return func(_ context.Context, _ string, role claim.Role) (runtime.Backend, error) { return backend(role), nil }
 }
 
 // compactDoor is one of the two ways a compaction is asked for: `legion claims compact`, which

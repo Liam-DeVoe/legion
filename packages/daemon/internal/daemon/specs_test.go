@@ -208,6 +208,57 @@ func TestACutShortCopyOfAPlanRolesPromptIsWrittenAgainBeforeALaunch(t *testing.T
 	}
 }
 
+// One function decides a role's harness for a claim of an issue (roleBackends), and the launch and
+// the stale-plugin rule both read it. The deployment defines prober on Claude Code, and the plan in
+// force of LEGION-43 defines a prober of its own. LEGION-43's prober launches on Oh My Pi, the
+// harness of every role of a plan, and an install can move it; LEGION-44's prober is the
+// deployment's, launches on Claude Code and is the claim no install moves under Kubernetes.
+//
+// The control is the order this replaces, run by hand: roleBackends reading worker_backends alone.
+// LEGION-43's prober then launches on Claude Code, and the check of its launch fails.
+func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(t.TempDir(), "prober.md")
+	if err := os.WriteFile(prompt, []byte("You are the deployment's prober.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Runtime: config.Runtime{Name: "kubernetes"},
+		Roles:          []config.Role{{Name: "prober", Type: "testing", PromptFile: prompt, GitHubApp: config.RoleAppReview}},
+		WorkerBackends: map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}}
+	planRole := func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+		if issue != "LEGION-43" || role != "prober" {
+			return record.PlanRole{}, false, nil
+		}
+		return record.PlanRole{Issue: issue, Role: "prober", Type: "testing", Model: "m-one", Prompt: "# Prober\n\nProbe the change."}, true, nil
+	}
+	backends := roleBackends(cfg.BackendFor, planRole)
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, roles: cfg.Roles, planRole: planRole, backend: backends, appOwners: noAppOwners}
+	for _, tc := range []struct {
+		issue     string
+		want      runtime.Backend
+		noInstall bool
+	}{{"LEGION-43", runtime.BackendOmp, false}, {"LEGION-44", runtime.BackendClaude, true}} {
+		token, err := claim.NewToken("s1", tc.issue, "prober")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := supervise.Claim{Token: token, Issue: tc.issue, Tree: "LEGION-42", Role: "prober"}
+		spec, err := s.SpawnSpec(context.Background(), c)
+		if err != nil {
+			t.Fatalf("the prober's spawn spec on %s: %v", tc.issue, err)
+		}
+		if spec.Backend != tc.want {
+			t.Errorf("the prober on %s launches on %q, want %q", tc.issue, spec.Backend, tc.want)
+		}
+		if got := noPluginInstall(cfg, backends, c); got != tc.noInstall {
+			t.Errorf("noPluginInstall of the prober on %s = %t, want %t", tc.issue, got, tc.noInstall)
+		}
+	}
+}
+
 // A tree's root architect is told the design-gate steps its deployment gates after its
 // addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
 // prompt carries what those steps ask of it: one registration for each step, on that step's own
@@ -312,7 +363,11 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, backend: tc.backend, appOwners: noAppOwners}
+			var backend roleBackend
+			if tc.backend != nil {
+				backend = roleBackends(tc.backend, nil)
+			}
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, backend: backend, appOwners: noAppOwners}
 			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: tc.role})
 			if err != nil {
 				t.Fatalf("SpawnSpec: %v", err)
@@ -705,7 +760,7 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 				runtimeName:             "tmux",
 				commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 				same:                    newRepositories("acme", ghrepo.Renames{}).same,
-				backend:                 func(claim.Role) runtime.Backend { return backend },
+				backend:                 roleBackends(func(claim.Role) runtime.Backend { return backend }, nil),
 				repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 					return ghrepo.MustParse("acme/widgets"), "main", nil
 				},
@@ -888,12 +943,12 @@ func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
 		appOwners: noAppOwners,
-		backend: func(role claim.Role) runtime.Backend {
+		backend: roleBackends(func(role claim.Role) runtime.Backend {
 			if role == claim.RoleImplementer {
 				return runtime.BackendClaude
 			}
 			return runtime.BackendOmp
-		}}
+		}, nil)}
 	worker := func(role claim.Role) supervise.Claim {
 		token, err := claim.NewToken("s1", "S1-2", role)
 		if err != nil {

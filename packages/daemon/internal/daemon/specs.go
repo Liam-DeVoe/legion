@@ -119,9 +119,9 @@ type specs struct {
 	// Contract already set to api.DaemonAPIVersion; nil when the daemon knows none
 	// (LEGION-164's degraded mode). Never read under any other runtime.
 	plugins *runtime.PluginInstall
-	// backend is the backend a role runs on (config.Config.BackendFor); nil runs every role on Oh
-	// My Pi.
-	backend func(claim.Role) runtime.Backend
+	// backend is the harness a role runs on for a claim of an issue (roleBackends: the issue's
+	// plan first, then config.Config.BackendFor); nil runs every role on Oh My Pi.
+	backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
 	// hostWorkspaces is the runtime leaving each claim's workspace to the daemon's own host
 	// (runtime.Runtime.ProvisionsWorkspaces false: tmux). ensureWorkspace then provisions an
 	// issue's workspace a launch finds missing or not checked out there (outbox.ensureWorkspace,
@@ -173,7 +173,7 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	// whatever map the launch holds by then (stallLimitVariables).
 	passthrough(spec.Env, stallLimitVariables...)
 	var part string
-	if spec.Backend, part, err = s.launchBackend(c.Role); err != nil {
+	if spec.Backend, part, err = s.launchBackend(ctx, c); err != nil {
 		return runtime.SpawnSpec{}, err
 	}
 	if part != "" {
@@ -183,16 +183,19 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	return spec, nil
 }
 
-// launchBackend is the backend role runs on (backend; Oh My Pi when nil) and the path of the
-// daemon prompt part its entry names (runtime.Backends), "" when it names none.
-func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
+// launchBackend is the backend c runs on (backend, for c's issue; Oh My Pi when nil) and the path
+// of the daemon prompt part its entry names (runtime.Backends), "" when it names none.
+func (s specs) launchBackend(ctx context.Context, c supervise.Claim) (runtime.Backend, string, error) {
 	backend := runtime.BackendOmp
 	if s.backend != nil {
-		backend = s.backend(role)
+		var err error
+		if backend, err = s.backend(ctx, c.Issue, c.Role); err != nil {
+			return "", "", fmt.Errorf("the %s's backend: %w", c.Role, err)
+		}
 	}
 	info, err := runtime.LookupBackend(backend)
 	if err != nil {
-		return "", "", fmt.Errorf("the %s's backend: %w", role, err)
+		return "", "", fmt.Errorf("the %s's backend: %w", c.Role, err)
 	}
 	if info.PromptPart == "" {
 		return backend, "", nil

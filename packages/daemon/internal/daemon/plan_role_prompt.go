@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -98,4 +99,30 @@ func roleApps(deployed appauth.DeploymentApps, planRole func(ctx context.Context
 		}
 		return appauth.Planned{Defines: found, Type: stepplan.Type(defined.Type)}, nil
 	}}
+}
+
+// roleBackend is the harness role runs on for a claim of issue (roleBackends).
+type roleBackend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
+
+// roleBackends is the one decision of the harness a role runs on for a claim of issue, which the
+// launch (specs.launchBackend), the rule of a claim no install can move (noPluginInstall) and the
+// compaction route (api.Options.Backend) all read. A role the plan in force of issue defines runs
+// on Oh My Pi, as every role of a plan does (plan.RolesOf), even where the deployment took its name
+// and worker_backends puts the deployment's role on another harness. Every other role runs on the
+// harness worker_backends names (backendFor, config.Config.BackendFor). Legion's own roles and a
+// claim of no issue read no plan, and neither does a nil planRole. A read of the plan that fails is
+// the error.
+func roleBackends(backendFor func(claim.Role) runtime.Backend, planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)) roleBackend {
+	return func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error) {
+		if planRole != nil && issue != "" && !claim.IsBuiltin(role) {
+			_, found, err := planRole(ctx, issue, role)
+			if err != nil {
+				return "", fmt.Errorf("the harness of %s on %s: %w", role, issue, err)
+			}
+			if found {
+				return runtime.BackendOmp, nil
+			}
+		}
+		return backendFor(role), nil
+	}
 }
