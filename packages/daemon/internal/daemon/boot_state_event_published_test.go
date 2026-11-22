@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // A daemon that bootOverALiveTree boots publishes its boot event (the state_boot outbox row) and
@@ -20,11 +20,13 @@ import (
 func TestABootOverALiveTreePublishesItsBootEventWithNoErrorLine(t *testing.T) {
 	var logged syncBuffer
 	_, d, _ := bootOverALiveTree(t, "acme/widgets", &workflowTokenRecorder{}, repositoriesGitHub(t), slog.New(slog.NewJSONHandler(&logged, nil)))
-	conn, err := pgx.Connect(context.Background(), d.cfg.PostgresDSN)
+	// A pool, as the daemon opens its store: the DSN a test is given may carry pgxpool's keys
+	// (pool_max_conns), which a bare pgx.Connect sends to the server as settings it refuses.
+	pool, err := pgxpool.New(context.Background(), d.cfg.PostgresDSN)
 	if err != nil {
-		t.Fatalf("connect to the store: %v", err)
+		t.Fatalf("open the store: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	t.Cleanup(pool.Close)
 	var (
 		rows     int
 		attempts int
@@ -32,7 +34,7 @@ func TestABootOverALiveTreePublishesItsBootEventWithNoErrorLine(t *testing.T) {
 	)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		err := conn.QueryRow(context.Background(), `select count(*), coalesce(max(attempts), 0), coalesce(max(last_error), '')
+		err := pool.QueryRow(context.Background(), `select count(*), coalesce(max(attempts), 0), coalesce(max(last_error), '')
 			from outbox where kind = 'state_boot' and issue = $1`, d.cfg.Project).Scan(&rows, &attempts, &lastErr)
 		if err != nil {
 			t.Fatalf("read the boot event's outbox row: %v", err)
