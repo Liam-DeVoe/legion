@@ -10,11 +10,14 @@
 -- on no read of the plan document. A role's name is lower case and at most 32 characters, the name
 -- a step of a task can write.
 --
--- The release before this one boots without the table: it names it in no statement, and it
--- refuses a plan that defines a role, so no plan it takes writes a row here. A plan in force with
--- roles before a rollback keeps its rows while that release runs, and a carry it makes to a new
--- generation copies no role, so after the roll forward such a generation's steps name roles the
--- store does not hold, and its owner gives the plan again.
+-- The release before this one boots without the table. It names the table in no statement, and
+-- it refuses a plan that defines a role, so no plan it takes writes a row here.
+--
+-- The way back below drops the table, so a rollback takes away every role a plan defines. At its
+-- boot, the release before stops each task that still has a step of such a role to run. The
+-- reason it gives is "step <n> names the role <role>, which the deployment no longer defines".
+-- After the roll forward, the owner of each such task gives its plan again, and Legion takes that
+-- version for the stopped task.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. A rollback that also goes past the
