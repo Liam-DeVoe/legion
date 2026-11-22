@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/specform/charge"
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -458,9 +459,9 @@ func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([
 	lint, verbs := ste.LintVerbs(line)
 	judge.told(len(sentences)+noted.count, joinedIn(sentences), line, noted.verbs)
 	var found []broken
-	for _, sentence := range sentences {
+	for index, sentence := range sentences {
 		for _, word := range sentence.stopsWithNoSpace() {
-			found = append(found, stopNoSpaceBreak(word, judge.offered(unitKey{text: sentence.in(line)}, ruleStopNoSpace, word, stopNoSpaceWays(word))))
+			found = append(found, stopNoSpaceBreak(word, judge.offered(judge.sentence(index), ruleStopNoSpace, word, stopNoSpaceWays(word))))
 		}
 	}
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
@@ -647,8 +648,13 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 	} else {
 		names = personNames(people, line, references)
 	}
+	// The judge names an address once, not once for each name in it.
+	var addressed charge.Unit
+	if address && len(names) > 0 {
+		addressed = judge.named(line, true)
+	}
 	for _, each := range names {
-		name, unit := line[each.start:each.end], unitKey{text: line, address: address}
+		name, unit := line[each.start:each.end], addressed
 		if judge != nil && !address {
 			unit = places.of(each.start, name)
 		}

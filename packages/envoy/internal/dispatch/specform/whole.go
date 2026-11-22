@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/envoy/internal/dispatch/specform/charge"
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
@@ -43,28 +44,28 @@ import (
 // a text for the ways out of its first maxJudgedInSentence findings only, as it reads a sentence
 // for those of the first maxJudgedInSentence findings of the sentence (the work table's row of many
 // lines of one text). A finding after them is still refused and named, and its detail says that
-// Dispatch offers no way out of it (wholeNote). Each reading of a sentence, its words or its Spread
-// asks the sentence's charge first (sentenceReads, reads), as every reading of the judge does, so
-// the work of a judgment stays in proportion to its text however many ways out read one sentence;
-// a way out that would read a sentence past its charge is refused unread (elsewhereNote).
+// Dispatch offers no way out of it (wholeNote).
+//
+// wholeText keeps no byte of a sentence and nothing that it read of one: it names each sentence by
+// its unit and its place in the line, and what it keeps of each place (sentenceAt) is in the
+// judgment's texts, which give it only through the sentence's charge (charge.Texts.Read). So each
+// reading of a sentence, its words, its Spread or a count of its pieces is charged, as every reading
+// of the judge is, and the work of a judgment stays in proportion to its text however many ways out
+// read one sentence; a way out that would read a sentence past its charge is refused unread
+// (elsewhereNote). The first place of each member of a synonym group (firsts) is kept outside the
+// charge: one for each member of rules.json at most, so no walk of it grows with the text.
 type wholeText struct {
-	line string
-	// spans is the bytes of each sentence of the line, from the end of the one before it, so that
-	// they write the line whole (sentencesOf); keys is the unit of each sentence, its text as the
-	// judge names a place (unitKey, sentence.in), and at the sentences of each unit; and opened is
-	// whether a backtick that nothing closes stands before each sentence, an odd count of backticks
-	// in the line before it: ste-lint cuts code font from a backtick to the next one, so a backtick
-	// that a way out writes in that sentence would close it, and code font would take the words of
-	// each sentence between.
-	spans  []string
-	keys   []unitKey
-	at     map[unitKey][]int
-	opened []bool
-	// bare is each word of the line, with the sentence that it stands in, by its bare form
-	// (bareWord), read the first time that a finding asks where its words stand (holding).
-	bare map[string][]wordAt
-	// reads is the charge of each reading of a sentence of the judgment (sentenceReads).
-	reads *sentenceReads
+	texts *charge.Texts[sentenceAt]
+	// units is the unit of each sentence of the line, in order (sentencesOf), and nth the index of
+	// its place among the places of its unit (charge.Texts.Keep); at is the sentences of each
+	// unit.
+	units []charge.Unit
+	nth   []int
+	at    map[charge.Unit][]int
+	// bare is each word of the line, by its place, under its bare form (bareWord), read the first
+	// time that a finding asks where its words stand (holding, indexed).
+	bare    charge.Index[wordAt]
+	indexed bool
 	// held is the verbs of each footnote that the text holds (footnotesHeld.verbs). elsewhere, for
 	// the text of a footnote, reports whether a way out that changes the verbs of its words from
 	// one set to another gives a finding of the rule synonym-rotation of the footnotes and the
@@ -75,18 +76,17 @@ type wholeText struct {
 	elsewhere func(before, after ste.Verbs) bool
 	lines     bool
 	readFor   map[wayKey]bool
-	// The fields below are read once (load): the Spread of each sentence; the sentences that each
-	// member of a synonym group stands in, in order, with its first place in each; the words of the
-	// piece of ste-lint that runs on into each sentence from the ones before it (left), and that
-	// runs from the start of each sentence to the end of its piece (runs, one more than the
-	// sentences); the findings of the rules that read more than one sentence, the text's verbs;
-	// whether its first sentence starts a list item (listItem), whether its last sentence ends in
-	// "and" or "or" (endsInConjunction), and so whether it is a list item that ends so (dangles).
-	read              bool
-	spreads           []ste.Spread
-	stands            map[[2]int][]sentenceHit
-	left              []int
-	runs              []int
+	// The fields below are read once (load): the first place of each member of a synonym group in
+	// the text (firsts), and each sentence that it stands in, in order, by the index of its Hit in
+	// the sentence's Spread (stands); the findings of the rules that read more than one sentence,
+	// the text's verbs; whether its first sentence starts a list item (listItem), whether its last
+	// sentence ends in "and" or "or" (endsInConjunction), and so whether it is a list item that ends
+	// so (dangles). refused is whether a charge refused one of the judgment's readings of each
+	// sentence for no finding (fixedReads), which the bounds that ownReads is derived from never
+	// let happen: then each way out is refused (elsewhereNote).
+	read, refused     bool
+	firsts            map[[2]int]sentenceHit
+	stands            map[[2]int][]standAt
 	before            map[findingKey]int
 	verbs             ste.Verbs
 	listItem          bool
@@ -95,10 +95,29 @@ type wholeText struct {
 	passed            map[wholeWay]bool
 }
 
-// wordAt is a word of a line, as strings.Fields cuts it, and the sentence that it stands in.
+// sentenceAt is what a judgment keeps of one sentence of the line, one place of its unit
+// (charge.Texts.Keep), which only a reading of the unit through its charge gives
+// (charge.Texts.Read): its place in the line (index); its bytes, from the end of the sentence before
+// it, so that the sentences write the line whole (span, sentencesOf); and whether a backtick that
+// nothing closes stands before it, an odd count of backticks in the line before it (opened):
+// ste-lint cuts code font from a backtick to the next one, so a backtick that a way out writes in
+// that sentence would close it, and code font would take the words of each sentence between. The
+// judgment's one reading of the sentence for its Spread (load) adds its Spread; the words of the
+// piece of ste-lint that runs on into it from the sentences before it (left); and the words of the
+// piece that runs from the start of the next sentence to the end of its piece, none after the last
+// sentence (after).
+type sentenceAt struct {
+	index       int
+	span        string
+	opened      bool
+	spread      ste.Spread
+	left, after int
+}
+
+// wordAt is a word of a line, as strings.Fields cuts it, by the sentence that it stands in and
+// where it stands in the sentence's span (sentenceAt.span[start:end]).
 type wordAt struct {
-	sentence int
-	word     string
+	sentence, start, end int
 }
 
 // sentenceHit is the first place of a member of a synonym group in one sentence of a text.
@@ -107,10 +126,18 @@ type sentenceHit struct {
 	hit      ste.Hit
 }
 
-// writtenSentence is a sentence of a text as a way out writes it: its bytes, and their Spread.
+// standAt is a sentence of a text where a member of a synonym group stands, and the index of its
+// first place there in the Hits of the sentence's Spread.
+type standAt struct {
+	sentence, hit int
+}
+
+// writtenSentence is a sentence of a text as a way out writes it: its bytes and their Spread, and
+// what the judgment keeps of the sentence (was), which the way out's charged reading gave.
 type writtenSentence struct {
 	text   string
 	spread ste.Spread
+	was    *sentenceAt
 }
 
 // wholeWay is a way out of a finding as the whole text reads it once: the finding by its rule and
@@ -121,23 +148,58 @@ type wholeWay struct {
 }
 
 // newWholeText is line as the judge reads it whole, with held, the verbs of its footnotes, and
-// elsewhere for the text of a footnote (nil for a text), its readings charged to reads. Its split of
-// the line into sentences reads each sentence once, the first of the judgment's readings of it.
-func newWholeText(line string, held []ste.Verbs, elsewhere func(before, after ste.Verbs) bool, reads *sentenceReads) *wholeText {
-	w := &wholeText{line: line, held: held, elsewhere: elsewhere, reads: reads, at: map[unitKey][]int{}, lines: ste.Lines(line) > 1}
+// elsewhere for the text of a footnote (nil for a text): each sentence of line named in texts, the
+// judgment's texts, with what the judgment keeps of its place (charge.Texts.Name, Keep). Its split
+// of the line reads the line, which the rules hand it, and no sentence through the charge.
+func newWholeText(line string, held []ste.Verbs, elsewhere func(before, after ste.Verbs) bool, texts *charge.Texts[sentenceAt]) *wholeText {
+	w := &wholeText{texts: texts, held: held, elsewhere: elsewhere, at: map[charge.Unit][]int{}, lines: ste.Lines(line) > 1}
 	ticks := 0
 	for index, each := range sentencesOf(line) {
-		span, key := line[each.start:each.end], unitKey{text: each.in(line)}
-		if _, ok := w.at[key]; !ok {
-			reads.charge(key, true)
-		}
-		w.spans = append(w.spans, span)
-		w.keys = append(w.keys, key)
-		w.at[key] = append(w.at[key], index)
-		w.opened = append(w.opened, ticks%2 == 1)
+		span, unit := line[each.start:each.end], texts.Name(each.in(line), false, false)
+		w.units = append(w.units, unit)
+		w.nth = append(w.nth, texts.Keep(unit, sentenceAt{index: index, span: span, opened: ticks%2 == 1}))
+		w.at[unit] = append(w.at[unit], index)
 		ticks += strings.Count(span, "`")
 	}
 	return w
+}
+
+// readAll is the judgment's one reading of each sentence of the line for no finding (fixedReads),
+// each unit once through its charge, and is what the judgment keeps of each sentence, in the order
+// of the line; false where a charge refuses the reading, which the bounds that ownReads is derived
+// from never let happen.
+func (w *wholeText) readAll() ([]*sentenceAt, charge.Answer) {
+	records := make([]*sentenceAt, len(w.units))
+	for index, unit := range w.units {
+		if records[index] != nil {
+			continue
+		}
+		_, kept, charged := w.texts.Read(unit, true)
+		if !charged {
+			return nil, false
+		}
+		for place := range kept {
+			records[kept[place].index] = &kept[place]
+		}
+	}
+	return records, true
+}
+
+// other is what the judgment keeps of the sentence index, for a way out of a finding that does not
+// stand in it: read, the readings of one judgment of a way out, gives each unit's places once, so
+// each sentence is read once for each such judgment through its charge; false where the charge
+// refuses the reading.
+func (w *wholeText) other(index int, read map[charge.Unit][]sentenceAt) (*sentenceAt, charge.Answer) {
+	unit := w.units[index]
+	kept, ok := read[unit]
+	if !ok {
+		var charged charge.Answer
+		if _, kept, charged = w.texts.Read(unit, false); !charged {
+			return nil, false
+		}
+		read[unit] = kept
+	}
+	return &kept[w.nth[index]], true
 }
 
 // bareWord is word without the characters at its two ends that are no letter or digit: its marks,
@@ -146,113 +208,146 @@ func bareWord(word string) string {
 	return strings.TrimFunc(word, func(letter rune) bool { return !isLetterOrDigit(letter) })
 }
 
-// holding is each sentence of the line, as the judge names a place (unitKey), where a writer who
-// changes words at each place where they stand (strings.ReplaceAll) changes them and no place of
-// places stands, each once; and whether the charge of each sentence that it read let it read it
-// (true), or refused a reading (false). words is a word with no white space, the words of a stop
-// with no space after it or of an email address, which stands in a word of the line whose bare form
-// (bareWord) is its own: "Web.Config" stands in "Web.Config.", "`Web.Config`" and "(Web.Config)",
-// and "ada@example.com" in "ada@example.com:.". The words of the line are read once, with the
-// sentence of each, by their bare forms (bare), so each finding's look reads the words that have
-// its bare form, not the line, and tests each such word, not its sentence. A test reads a word of a
-// sentence where the finding does not stand, so it is charged to that sentence, once for each
-// sentence of the look (sentenceReads). Words with white space in them, the sentence of a finding
-// of instructions or a person's name, stand in no word, and so in no sentence that holding names; a
-// sentence that holds the same text is one of places already (at).
-func (w *wholeText) holding(words string, places []unitKey) ([]unitKey, bool) {
+// fieldsOf calls each with where each word of text, as strings.Fields cuts it, starts and ends.
+func fieldsOf(text string, each func(start, end int)) {
+	start := -1
+	for index, letter := range text {
+		switch space := unicode.IsSpace(letter); {
+		case space && start >= 0:
+			each(start, index)
+			start = -1
+		case !space && start < 0:
+			start = index
+		}
+	}
+	if start >= 0 {
+		each(start, len(text))
+	}
+}
+
+// holding is each sentence of the line, by its unit, where a writer who changes words at each place
+// where they stand (strings.ReplaceAll) changes them and no place of places stands, each once; and
+// whether the charge of each sentence that it read let it read it (true), or refused a reading
+// (false). words is a word with no white space, the words of a stop with no space after it or of
+// an email address, which stands in a word of the line whose bare form (bareWord) is its own:
+// "Web.Config" stands in "Web.Config.", "`Web.Config`" and "(Web.Config)", and "ada@example.com"
+// in "ada@example.com:.". The words of the line are read once, by their places under their bare
+// forms (bare), so each finding's look reads the words that have its bare form, not the line, and
+// tests each such word, not its sentence. A test reads a word of a sentence where the finding does
+// not stand, so it reads the sentence through its charge, once for each sentence of the look
+// (other). Words with white space in them, the sentence of a finding of instructions or a person's
+// name, stand in no word, and so in no sentence that holding names; a sentence that holds the same
+// text is one of places already (at).
+func (w *wholeText) holding(words string, places []charge.Unit) ([]charge.Unit, charge.Answer) {
 	if words == "" || strings.ContainsFunc(words, unicode.IsSpace) {
 		return nil, true
 	}
-	if w.bare == nil {
-		w.reads.chargeAll(w.at)
-		w.bare = map[string][]wordAt{}
-		for index, span := range w.spans {
-			for _, word := range strings.Fields(span) {
-				key := bareWord(word)
-				w.bare[key] = append(w.bare[key], wordAt{index, word})
-			}
+	if !w.indexed {
+		w.indexed = true
+		records, charged := w.readAll()
+		w.refused = w.refused || !bool(charged)
+		for _, at := range records {
+			fieldsOf(at.span, func(start, end int) {
+				w.bare.Put(bareWord(at.span[start:end]), wordAt{at.index, start, end})
+			})
 		}
+	}
+	if w.refused {
+		return nil, false
 	}
 	read := map[int]bool{}
 	for _, place := range places {
-		if !place.address && !place.title {
+		if !place.Address() && !place.Title() {
 			for _, index := range w.at[place] {
 				read[index] = true
 			}
 		}
 	}
-	tested := map[unitKey]bool{}
-	var units []unitKey
-	for _, at := range w.bare[bareWord(words)] {
-		key := w.keys[at.sentence]
+	look := map[charge.Unit][]sentenceAt{}
+	var units []charge.Unit
+	for _, at := range w.bare.Get(bareWord(words)) {
 		if read[at.sentence] {
 			continue
 		}
-		if !tested[key] {
-			if !w.reads.charge(key, false) {
-				return nil, false
-			}
-			tested[key] = true
+		sentence, charged := w.other(at.sentence, look)
+		if !charged {
+			return nil, false
 		}
-		if !strings.Contains(at.word, words) {
+		if !strings.Contains(sentence.span[at.start:at.end], words) {
 			continue
 		}
-		for _, index := range w.at[key] {
+		unit := w.units[at.sentence]
+		for _, index := range w.at[unit] {
 			read[index] = true
 		}
-		units = append(units, key)
+		units = append(units, unit)
 	}
 	return units, true
 }
 
 // load reads each sentence of the text once, the first time that a way out asks: its Spread, the
 // first place of each member of a synonym group, the words of the pieces that run across its two
-// ends, and the findings of the whole text.
-func (w *wholeText) load() {
+// ends, and the findings of the whole text; false where the judgment refused that reading
+// (refused).
+func (w *wholeText) load() charge.Answer {
 	if w.read {
-		return
+		return charge.Answer(!w.refused)
 	}
 	w.read = true
-	w.reads.chargeAll(w.at)
-	if w.lines {
-		w.before, w.verbs = lintedWhole(w.line, w.held)
-		return
+	records, charged := w.readAll()
+	if w.refused = w.refused || !bool(charged); w.refused {
+		return false
 	}
-	count := len(w.spans)
-	w.spreads = make([]ste.Spread, count)
-	w.stands = map[[2]int][]sentenceHit{}
-	for index, span := range w.spans {
-		w.spreads[index] = ste.SpreadOf(span)
-		for _, hit := range w.spreads[index].Hits {
+	if w.lines {
+		var line strings.Builder
+		for _, at := range records {
+			line.WriteString(at.span)
+		}
+		w.before, w.verbs = lintedWhole(line.String(), w.held)
+		return true
+	}
+	count := len(records)
+	w.firsts, w.stands = map[[2]int]sentenceHit{}, map[[2]int][]standAt{}
+	for index, at := range records {
+		at.spread = ste.SpreadOf(at.span)
+		for place, hit := range at.spread.Hits {
 			member := [2]int{hit.Group, hit.Member}
-			w.stands[member] = append(w.stands[member], sentenceHit{index, hit})
+			if _, ok := w.firsts[member]; !ok {
+				w.firsts[member] = sentenceHit{index, hit}
+			}
+			w.stands[member] = append(w.stands[member], standAt{index, place})
 		}
 	}
-	w.left = make([]int, count)
 	for index := 1; index < count; index++ {
-		before := w.spreads[index-1]
+		before := records[index-1].spread
 		switch last := len(before.Pieces) - 1; {
 		case !before.Open:
 		case last == 0:
-			w.left[index] = w.left[index-1] + before.Pieces[0]
+			records[index].left = records[index-1].left + before.Pieces[0]
 		default:
-			w.left[index] = before.Pieces[last]
+			records[index].left = before.Pieces[last]
 		}
 	}
-	w.runs = make([]int, count+1)
+	runs := 0
 	for index := count - 1; index >= 0; index-- {
-		spread := w.spreads[index]
-		w.runs[index] = spread.Pieces[0]
-		if len(spread.Pieces) == 1 && spread.Open {
-			w.runs[index] += w.runs[index+1]
+		at := records[index]
+		at.after = runs
+		if runs = at.spread.Pieces[0]; len(at.spread.Pieces) == 1 && at.spread.Open {
+			runs += at.after
 		}
 	}
-	w.before, w.verbs = w.rotations(nil)
+	// The text as it stands changes no sentence, so this reads none through a charge.
+	if w.before, w.verbs, charged = w.rotations(nil, nil); !charged {
+		w.refused = true
+		return false
+	}
 	if count > 0 {
-		w.pieces(0, count-1, nil, false, func(words int) { addLong(w.before, words, 1) })
-		w.listItem, w.endsInConjunction = ste.ListItem(w.spans[0]), ste.EndsInConjunction(w.spans[count-1])
+		spread := func(index int) ste.Spread { return records[index].spread }
+		pieces(0, count-1, spread, records[0].left, records[count-1].after, false, func(words int) { addLong(w.before, words, 1) })
+		w.listItem, w.endsInConjunction = ste.ListItem(records[0].span), ste.EndsInConjunction(records[count-1].span)
 	}
 	w.dangles = w.listItem && w.endsInConjunction
+	return true
 }
 
 // passes reports whether way, a way out of finding written at each place of its words in the
@@ -260,16 +355,16 @@ func (w *wholeText) load() {
 // that read more than one sentence that the text does not give as many times (wholeText); and what
 // the finding says where the judge did not read it (note): wholeNote where the judge reads the text
 // whole, which it does for the ways out of the first maxJudgedInSentence findings that ask and no
-// more, and elsewhereNote where a reading of a sentence would pass its charge (sentenceReads). The
-// sentences of places hold the finding, and those of also only its words (wayJudge.alsoAt). A place
-// that is no sentence of the text, an address or a sentence of a title, changes none of its words.
-// A place of the text that is no sentence of the line, which this reading cannot write, refuses the
-// way out, and so does a way out that writes a backtick in a sentence after a backtick that nothing
-// closes (opened), which would take the sentences between into code font: neither passes unread.
-// No way out that a rule writes holds a line break that ste-lint reads (ste.Lines): its words are a
-// word of ste-lint, an address or a sentence without the white space at its ends, in a text that
-// ste-lint reads as one line or that this reading reads whole (lines).
-func (w *wholeText) passes(finding wayKey, way wayOut, places, also []unitKey) (passed bool, note string) {
+// more, and elsewhereNote where a reading of a sentence would pass its charge (charge.Texts.Read).
+// The sentences of places hold the finding, and those of also only its words (wayJudge.alsoAt). A
+// place that is no sentence of the text, an address or a sentence of a title, changes none of its
+// words. A place of the text that is no sentence of the line, which this reading cannot write,
+// refuses the way out, and so does a way out that writes a backtick in a sentence after a backtick
+// that nothing closes (opened), which would take the sentences between into code font: neither
+// passes unread. No way out that a rule writes holds a line break that ste-lint reads (ste.Lines):
+// its words are a word of ste-lint, an address or a sentence without the white space at its ends,
+// in a text that ste-lint reads as one line or that this reading reads whole (lines).
+func (w *wholeText) passes(finding wayKey, way wayOut, places, also []charge.Unit) (passed bool, note string) {
 	key := wholeWay{finding, way}
 	if passed, ok := w.passed[key]; ok {
 		return passed, ""
@@ -279,26 +374,27 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places, also []unitKey) (
 	passed = true
 	// write writes the way out at each place of units, the finding's own (own) or not, where the
 	// charge of its sentence lets it, until one refuses the way out.
-	write := func(units []unitKey, own bool) bool {
+	write := func(units []charge.Unit, own bool) charge.Answer {
 		for _, place := range units {
 			if !passed {
 				return true
 			}
-			if place.address || place.title {
+			if place.Address() || place.Title() {
 				continue
 			}
-			indexes, ok := w.at[place]
-			if !ok {
+			if _, ok := w.at[place]; !ok {
 				passed = false
 				return true
 			}
-			if !w.reads.charge(place, own) {
+			_, kept, charged := w.texts.Read(place, own)
+			if !charged {
 				return false
 			}
-			for _, index := range indexes {
-				passed = passed && !(ticks && w.opened[index])
-				text := strings.ReplaceAll(w.spans[index], way.from, way.to)
-				changed[index] = writtenSentence{text, ste.SpreadOf(text)}
+			for index := range kept {
+				at := &kept[index]
+				passed = passed && !(ticks && at.opened)
+				text := strings.ReplaceAll(at.span, way.from, way.to)
+				changed[at.index] = writtenSentence{text, ste.SpreadOf(text), at}
 			}
 		}
 		return true
@@ -316,8 +412,10 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places, also []unitKey) (
 			}
 			w.readFor[finding] = true
 		}
-		w.load()
-		var charged bool
+		if !w.load() {
+			return false, elsewhereNote
+		}
+		var charged charge.Answer
 		if passed, charged = w.writesNoNewFinding(changed); !charged {
 			return false, elsewhereNote
 		}
@@ -332,29 +430,31 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places, also []unitKey) (
 // writesNoNewFinding reports whether the text with the sentences of changed in place of its own
 // gives no finding of the rules that read more than one sentence that the text does not give as
 // many times (passed), and whether the charge of each sentence that it reads beside those of
-// changed let it read it (charged): each other sentence of a text that it reads whole, and each
-// sentence between two of changed that a piece of ste-lint runs through (changedRuns). Those are
-// sentences where the finding does not stand, as changed holds each place of the finding.
-func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed, charged bool) {
+// changed let it read it (charged): each other sentence of a text that it reads whole, each
+// sentence between two of changed that a piece of ste-lint runs through (changedRuns), and the
+// sentence where a member of a synonym group first stands after the sentences of changed
+// (rotations). Those are sentences where the finding does not stand, as changed holds each place of
+// the finding, and each is read once for this way out (read).
+func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed bool, charged charge.Answer) {
+	read := map[charge.Unit][]sentenceAt{}
 	var after map[findingKey]int
 	var verbs ste.Verbs
 	if w.lines {
 		var written strings.Builder
-		read := map[unitKey]bool{}
-		for index, span := range w.spans {
+		for index := range w.units {
 			if each, ok := changed[index]; ok {
-				span = each.text
-			} else if key := w.keys[index]; !read[key] {
-				if !w.reads.charge(key, false) {
-					return false, false
-				}
-				read[key] = true
+				written.WriteString(each.text)
+				continue
 			}
-			written.WriteString(span)
+			at, charged := w.other(index, read)
+			if !charged {
+				return false, false
+			}
+			written.WriteString(at.span)
 		}
 		after, verbs = lintedWhole(written.String(), w.held)
-	} else {
-		after, verbs = w.rotations(changed)
+	} else if after, verbs, charged = w.rotations(changed, read); !charged {
+		return false, false
 	}
 	if w.elsewhere != nil && verbs != w.verbs && w.elsewhere(w.verbs, verbs) {
 		return false, true
@@ -367,18 +467,32 @@ func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed,
 			after[key] += count
 		}
 	}
-	runs, charged := w.changedRuns(changed)
+	runs, charged := w.changedRuns(changed, read)
 	if !charged {
 		return false, false
+	}
+	// spreadOf is the Spread of the sentence index of a run, as the way out writes it (written) or
+	// as the text holds it: a sentence of changed, or one between two of them that changedRuns read.
+	spreadOf := func(written bool) func(index int) ste.Spread {
+		return func(index int) ste.Spread {
+			if each, ok := changed[index]; ok {
+				if written {
+					return each.spread
+				}
+				return each.was.spread
+			}
+			return read[w.units[index]][w.nth[index]].spread
+		}
 	}
 	for _, run := range runs {
 		// The piece that starts the sentence after the run is part of what both readings count
 		// where either runs on into it (next), so that the count after the way out holds it as a
 		// piece of its own where the way out ends the piece that ran on into it, and the count
 		// before it where the way out makes a piece run on into it.
-		next := w.spreads[run[1]].Open || w.spread(changed, run[1]).Open
-		w.pieces(run[0], run[1], nil, next, func(words int) { addLong(after, words, -1) })
-		w.pieces(run[0], run[1], changed, next, func(words int) { addLong(after, words, 1) })
+		first, last := changed[run[0]], changed[run[1]]
+		next := last.was.spread.Open || last.spread.Open
+		pieces(run[0], run[1], spreadOf(false), first.was.left, last.was.after, next, func(words int) { addLong(after, words, -1) })
+		pieces(run[0], run[1], spreadOf(true), first.was.left, last.was.after, next, func(words int) { addLong(after, words, 1) })
 	}
 	if !noneNew(after, w.before) {
 		return false, true
@@ -391,8 +505,8 @@ func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed,
 	if !w.dangles {
 		return false, true
 	}
-	for index, written := range changed {
-		if ste.Neutral(written.text) != ste.Neutral(w.spans[index]) {
+	for _, written := range changed {
+		if ste.Neutral(written.text) != ste.Neutral(written.was.span) {
 			return false, true
 		}
 	}
@@ -431,15 +545,26 @@ func noneNew(after, before map[findingKey]int) bool {
 // rotations is the findings of the rule synonym-rotation of the text with the sentences of changed
 // in place of its own, and its verbs: of its own words, each member of a group after the first one
 // to stand in it, at its first place, in the order of ste.LintVerbs; and of its words with those of
-// its footnotes (ste.Rotations, held).
-func (w *wholeText) rotations(changed map[int]writtenSentence) (map[findingKey]int, ste.Verbs) {
+// its footnotes (ste.Rotations, held); and whether the charge of each sentence that it read let it
+// read it. A member whose first place is in a sentence of changed first stands, beside changed, in
+// the next sentence of stands that changed does not hold, which it reads through its charge (read).
+func (w *wholeText) rotations(changed map[int]writtenSentence, read map[charge.Unit][]sentenceAt) (map[findingKey]int, ste.Verbs, charge.Answer) {
 	firsts := map[[2]int]sentenceHit{}
-	for member, stands := range w.stands {
-		for _, stand := range stands {
-			if _, ok := changed[stand.sentence]; !ok {
-				firsts[member] = stand
-				break
+	for member, first := range w.firsts {
+		if _, ok := changed[first.sentence]; !ok {
+			firsts[member] = first
+			continue
+		}
+		for _, stand := range w.stands[member][1:] {
+			if _, ok := changed[stand.sentence]; ok {
+				continue
 			}
+			at, charged := w.other(stand.sentence, read)
+			if !charged {
+				return nil, 0, false
+			}
+			firsts[member] = sentenceHit{stand.sentence, at.spread.Hits[stand.hit]}
+			break
 		}
 	}
 	for index, written := range changed {
@@ -473,44 +598,35 @@ func (w *wholeText) rotations(changed map[int]writtenSentence) (map[findingKey]i
 	for _, each := range rotationBreaks(ste.Rotations(verbs, w.held), "its footnotes") {
 		found[findingKeyOf(each)]++
 	}
-	return found, verbs
-}
-
-// spread is the Spread of the sentence index of the text, or of the sentence that changed writes in
-// its place.
-func (w *wholeText) spread(changed map[int]writtenSentence, index int) ste.Spread {
-	if written, ok := changed[index]; ok {
-		return written.spread
-	}
-	return w.spreads[index]
+	return found, verbs, true
 }
 
 // changedRuns is the sentences of changed as runs, each from the first to the last of the sentences
 // of changed that the pieces of ste-lint join: a piece runs on, in the text or as changed writes
 // it, from each sentence of a run to the next. So no piece runs from a run into a sentence of
 // changed outside it, before the way out or after it. It reads the Spread of each sentence between
-// two of changed until a piece stops there, and pieces reads the runs again, so each such sentence
-// is charged once (sentenceReads); it reports false where a charge refuses one.
-func (w *wholeText) changedRuns(changed map[int]writtenSentence) ([][2]int, bool) {
+// two of changed until a piece stops there, through the sentence's charge (read), which the pieces
+// of the runs then read from read; it reports false where a charge refuses one.
+func (w *wholeText) changedRuns(changed map[int]writtenSentence, read map[charge.Unit][]sentenceAt) ([][2]int, charge.Answer) {
 	indexes := make([]int, 0, len(changed))
 	for index := range changed {
 		indexes = append(indexes, index)
 	}
 	sort.Ints(indexes)
-	read := map[unitKey]bool{}
-	open := func(index int) (bool, bool) {
-		if _, ok := changed[index]; !ok && !read[w.keys[index]] {
-			if !w.reads.charge(w.keys[index], false) {
-				return false, false
-			}
-			read[w.keys[index]] = true
+	open := func(index int) (bool, charge.Answer) {
+		if each, ok := changed[index]; ok {
+			return each.was.spread.Open || each.spread.Open, true
 		}
-		return w.spreads[index].Open || w.spread(changed, index).Open, true
+		at, charged := w.other(index, read)
+		if !charged {
+			return false, false
+		}
+		return at.spread.Open, true
 	}
 	var runs [][2]int
 	for _, index := range indexes {
 		if count := len(runs); count > 0 {
-			joined, charged := true, true
+			joined, charged := true, charge.Answer(true)
 			for at := runs[count-1][1]; at < index && joined; at++ {
 				if joined, charged = open(at); !charged {
 					return nil, false
@@ -527,14 +643,14 @@ func (w *wholeText) changedRuns(changed map[int]writtenSentence) ([][2]int, bool
 }
 
 // pieces calls emit with the words of each piece of ste-lint that the sentences from to through
-// take part in, each sentence as changed writes it, with the words of the piece that runs on into
-// from from the sentences before it (left), and from through into the sentences after it (runs).
-// Where next asks for the piece that starts the sentence after through and through, as changed
-// writes it, does not run on into it, that piece is emitted alone, as ste-lint reads it then.
-func (w *wholeText) pieces(from, through int, changed map[int]writtenSentence, next bool, emit func(int)) {
-	open := w.left[from]
+// take part in, each sentence's Spread as spread gives it, with the words of the piece that runs on
+// into from from the sentences before it (left), and from through into the sentences after it
+// (after). Where next asks for the piece that starts the sentence after through and through does
+// not run on into it, that piece is emitted alone, as ste-lint reads it then.
+func pieces(from, through int, spread func(index int) ste.Spread, left, after int, next bool, emit func(int)) {
+	open := left
 	for index := from; index <= through; index++ {
-		each := w.spread(changed, index)
+		each := spread(index)
 		last := len(each.Pieces) - 1
 		if last == 0 {
 			open += each.Pieces[0]
@@ -551,10 +667,10 @@ func (w *wholeText) pieces(from, through int, changed map[int]writtenSentence, n
 		}
 	}
 	switch {
-	case w.spread(changed, through).Open:
-		emit(open + w.runs[through+1])
+	case spread(through).Open:
+		emit(open + after)
 	case next:
-		emit(w.runs[through+1])
+		emit(after)
 	}
 }
 
@@ -563,7 +679,7 @@ func (w *wholeText) pieces(from, through int, changed map[int]writtenSentence, n
 // its first sentence, and its last word in its last. It reads only the sentences of changed, and
 // for the others what load read of them once (listItem, endsInConjunction).
 func (w *wholeText) dangling(changed map[int]writtenSentence) bool {
-	count := len(w.keys)
+	count := len(w.units)
 	if count == 0 {
 		return false
 	}

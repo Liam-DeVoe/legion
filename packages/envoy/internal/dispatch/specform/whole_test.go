@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/specform/charge"
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
@@ -63,15 +64,17 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 	read, joined, several := 0, 0, 0
 	for _, text := range lines {
 		line := oneLine(text)
-		whole := newWholeText(line, nil, nil, &sentenceReads{})
-		if len(whole.spans) == 0 {
+		whole := newWholeText(line, nil, nil, newTexts())
+		if len(whole.units) == 0 {
 			continue
 		}
 		if whole.lines {
 			several++
 			continue
 		}
-		whole.load()
+		if !whole.load() {
+			t.Fatalf("%q: the charge refuses the judgment's one reading of each sentence", line)
+		}
 		read++
 		want, verbs := lintedWhole(line, nil)
 		dangles := false
@@ -85,8 +88,9 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 			t.Errorf("%q: wholeText reads %v, verbs %b and dangles %v; ste-lint reads %v, verbs %b and dangles %v",
 				line, whole.before, whole.verbs, whole.dangles, want, verbs, dangles)
 		}
-		for _, spread := range whole.spreads[:len(whole.spreads)-1] {
-			if spread.Open {
+		sentences := sentencesOf(line)
+		for _, each := range sentences[:len(sentences)-1] {
+			if ste.SpreadOf(line[each.start:each.end]).Open {
 				joined++
 			}
 		}
@@ -109,20 +113,21 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // way a piece can cross the changed sentence. Each line is one that the judge reads by its
 // sentences, with no backtick that nothing closes before a sentence (opened), which the judge
 // refuses a backtick after on purpose. Each change is read by a reading of its own, as a judgment
-// reads one finding's ways out, so the charge of a sentence (sentenceReads) holds each.
+// reads one finding's ways out, so the charge of a sentence (charge.Texts.Read) holds each. The
+// text that ste-lint reads is written from the line's own split (sentencesOf), not from what the
+// judge keeps.
 func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *testing.T) {
 	verbs := []string{"checks", "verifies", "validated", "confirm", "deletes", "removed", "starts", "begin", "halted", "display"}
 	texts, ways, opened, closed, refused := 0, 0, 0, 0, 0
 	for _, text := range wholeTestLines(t) {
 		line := oneLine(text)
-		whole := newWholeText(line, nil, nil, &sentenceReads{})
-		if len(whole.spans) == 0 || whole.lines || strings.Count(line, "`")%2 == 1 {
+		sentences := sentencesOf(line)
+		if len(sentences) == 0 || ste.Lines(line) > 1 || strings.Count(line, "`")%2 == 1 {
 			continue
 		}
-		whole.load()
 		texts++
 		before, _ := lintedWhole(line, nil)
-		for index, each := range sentencesOf(line) {
+		for index, each := range sentences {
 			place := each.in(line)
 			pieces := ste.Words(place)
 			if len(pieces) == 0 {
@@ -149,13 +154,15 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 					// The judge keeps its reading of a way out by its finding and the way out, so the
 					// finding names the sentence: the same change in two sentences is two readings.
 					finding := wayKey{rule: Rule(fmt.Sprintf("probe of sentence %d", index)), from: way.from}
-					judged := newWholeText(line, nil, nil, &sentenceReads{})
-					passed, note := judged.passes(finding, way, []unitKey{{text: place}}, nil)
+					judgment := newTexts()
+					judged := newWholeText(line, nil, nil, judgment)
+					passed, note := judged.passes(finding, way, []charge.Unit{judgment.Name(place, false, false)}, nil)
 					if note != "" {
 						t.Fatalf("%q: the judge did not read %q to %q: %s", line, way.from, way.to, note)
 					}
 					var written strings.Builder
-					for _, span := range whole.spans {
+					for _, other := range sentences {
+						span := line[other.start:other.end]
 						if ste.Strip(span) == place {
 							span = strings.ReplaceAll(span, way.from, way.to)
 						}
@@ -170,7 +177,8 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 					if !passed {
 						refused++
 					}
-					was, now := whole.spreads[index].Open, ste.SpreadOf(strings.ReplaceAll(whole.spans[index], way.from, way.to)).Open
+					span := line[each.start:each.end]
+					was, now := ste.SpreadOf(span).Open, ste.SpreadOf(strings.ReplaceAll(span, way.from, way.to)).Open
 					switch {
 					case was && !now:
 						closed++

@@ -505,8 +505,11 @@ func TestAWayOutThatKeepsItsFindingIsNoWayOut(t *testing.T) {
 	judge := newWayJudge(planted(), nil, KindStatement, false)
 	sentences := sentencesOf(line)
 	judge.told(len(sentences), joinedIn(sentences), line, nil)
-	unit := unitKey{text: line}
-	state, _ := judge.unit(unit, true)
+	unit := judge.sentence(0)
+	state, charged := judge.unit(unit, true)
+	if !unit.Named() || !bool(charged) {
+		t.Fatalf("%q: the judge reads no unit of its one sentence", line)
+	}
 	for _, test := range []struct {
 		way  wayOut
 		want bool
@@ -657,16 +660,17 @@ func TestAFindingPastTheEighthOfATextReadWholeIsRefusedWithNoWayOutOffered(t *te
 
 // The judge reads a way out also in each sentence where the finding's words stand and the finding
 // does not, as a name that ends another sentence or stands in code font there (wayJudge.alsoAt), and
-// each such reading, as every reading of a sentence, asks the sentence's charge (sentenceReads). So
-// one sentence that holds in code font the names that many sentences after it end with is read for
-// the ways out of the first of their findings, until its charge for the findings that stand
-// elsewhere (ownReads) is spent; each finding after them is still refused and named, and the words
-// of its ways out say that Dispatch offers no way out of it, not that none exists (elsewhereNote).
+// each such reading, as every reading of a sentence, asks the sentence's charge
+// (charge.Texts.Read). So one sentence that holds in code font the names that many sentences after
+// it end with is read for the ways out of the first of their findings, until its charge for the
+// findings that stand elsewhere (ownReads) is spent; each finding after them is still refused and
+// named, and the words of its ways out say that Dispatch offers no way out of it, not that none
+// exists (elsewhereNote).
 // Controls: the same findings, each name in code font in a sentence of its own, each give their way
 // out; and a name that ends twenty other sentences gives its ways out, as no bound holds how many
 // sentences one finding reads.
 func TestAFindingWhoseWayOutWouldReadASentencePastItsChargeIsRefusedWithNoWayOutOffered(t *testing.T) {
-	const note = "Dispatch reads one sentence at most 63 times for the ways out of findings that stand elsewhere, and a way out of this one would read a sentence past that, so it offers none for this one, though one can exist"
+	const note = "Dispatch reads one sentence at most 52 times for the ways out of findings that stand elsewhere, and a way out of this one would read a sentence past that, so it offers none for this one, though one can exist"
 	const findings, space = 40, "Put a space after the stop"
 	shared, own := "It keeps", ""
 	for index := 1; index <= findings; index++ {

@@ -3,8 +3,10 @@ package specform
 import (
 	"fmt"
 	"iter"
+	"sort"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/specform/charge"
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
@@ -17,7 +19,7 @@ import (
 // refused and named, and its detail says that Dispatch offers no way out of it (pastNote). A text
 // that the judge reads whole for each way out it reads for the ways out of this many findings of
 // the text, in the same way (wholeText.passes, wholeNote). The charge of each sentence counts the
-// readings that this bound holds (ownReads, sentenceReads).
+// readings that this bound holds (ownReads, charge.Texts).
 const maxJudgedInSentence = 8
 
 // pastNote is what the detail of a finding past the first maxJudgedInSentence findings of its
@@ -35,7 +37,7 @@ var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings 
 // out that the judge did not read (note): pastNote for a finding past the first
 // maxJudgedInSentence findings of its sentence, wholeNote for one past those of a text that the
 // judge reads whole, elsewhereNote for one whose way out would read a sentence past its charge
-// (sentenceReads), or nothing.
+// (charge.Texts.Read), or nothing.
 type offer struct {
 	ways [maxWays]wayOut
 	note string
@@ -74,10 +76,11 @@ func (o offer) said(ways string) string {
 // place, with the way out written at each place of the finding's words in that sentence: it first
 // takes each place (survey), then judges.
 // A rule that reads more than one sentence, such as synonym-rotation, which reads the text whole,
-// the judge reads in the whole text that the way out writes at each place (wholeText). Each reading
-// of a sentence asks its charge first (reads), so the judge reads one sentence a bounded number of
-// times however many findings read it. A nil judge offers each way out unjudged: the judge's own
-// reading of a sentence is one.
+// the judge reads in the whole text that the way out writes at each place (wholeText). The judge
+// names each sentence by its unit (charge.Unit), an index, in each map and each walk, and reads a
+// sentence's text only through its charge (texts, charge.Texts.Read), so the judge reads one
+// sentence a bounded number of times however many findings read it. A nil judge offers each way
+// out unjudged: the judge's own reading of a sentence is one.
 type wayJudge struct {
 	c      Context
 	people [][]string
@@ -94,40 +97,31 @@ type wayJudge struct {
 	// finding, once and in the order of the text, rank where a finding stands among the
 	// findings of each unit that holds it, and ranked how many findings each unit holds.
 	surveying bool
-	places    map[wayKey][]unitKey
+	places    map[wayKey][]charge.Unit
 	rank      map[place]int
-	ranked    map[unitKey]int
-	units     map[unitKey]*judgedUnit
+	ranked    map[charge.Unit]int
+	units     map[charge.Unit]*judgedUnit
 	given     map[wayKey]offer
 	// whole is the text as the judge reads it for the rules that read more than one sentence
 	// (told), and elsewhere, for the judge of a footnote, what wholeText.elsewhere says
 	// (footnoteJudge.rotationCanChange).
 	whole     *wholeText
 	elsewhere func(before, after ste.Verbs) bool
-	// reads is the charge of each reading of a sentence of the text (sentenceReads), which the whole
-	// text and the places of the reference rules charge too.
-	reads sentenceReads
+	// texts is each sentence of the text, of its titles and each address that the judge reads, by
+	// its unit, and the charge of each reading of them (charge.Texts), which the whole text reads
+	// through too.
+	texts *charge.Texts[sentenceAt]
 }
 
-// unitKey is a place of a finding as the judge reads it: a sentence of the text, as the text holds
-// it; the address of a link or an image (address), which the reference rules read as an address
-// and no form rule reads; or a sentence of a title (title), which is no sentence of the text, so the
-// whole text that a way out writes holds none of its words (wholeText.passes).
-type unitKey struct {
-	text           string
-	address, title bool
-}
-
-// placed reports whether the unit is a place that the judge found: sentencePlaces.of names a place
-// whose sentence it does not find by a unit of no text.
-func (u unitKey) placed() bool {
-	return u != unitKey{title: u.title}
-}
-
-// place is a finding, by the words that its ways out change, at one unit that holds it.
+// place is a finding, by the words that its ways out change, at one unit that holds it: a
+// sentence of the text, as the text holds it; the address of a link or an image
+// (charge.Unit.Address), which the reference rules read as an address and no form rule reads; or a
+// sentence of a title (charge.Unit.Title), which is no sentence of the text, so the whole text that
+// a way out writes holds none of its words (wholeText.passes). A unit that names no text
+// (charge.None) is a place that the judge did not find.
 type place struct {
 	way  wayKey
-	unit unitKey
+	unit charge.Unit
 }
 
 // judgedUnit is a unit as the judge reads it alone: how many sentences of the text stand outside
@@ -159,7 +153,29 @@ type wayKey struct {
 // newWayJudge is the judge of the ways out of the findings of a text of kind, whose words the
 // reference rules read as the page shows them where shown (Held.Shown).
 func newWayJudge(c Context, people [][]string, kind Kind, shown bool) *wayJudge {
-	return &wayJudge{c: c, people: people, kind: kind, shown: shown}
+	return &wayJudge{c: c, people: people, kind: kind, shown: shown, texts: newTexts()}
+}
+
+// sentence is the unit of the sentence index of the text that the judge was told (told), as
+// sentencesOf splits it; no unit for a nil judge, a judge told no text or an index past its
+// sentences. The form rules name the sentence that holds a finding by it, so no finding names its
+// sentence by the sentence's text.
+func (j *wayJudge) sentence(index int) charge.Unit {
+	if j == nil || j.whole == nil || index >= len(j.whole.units) {
+		return charge.None(false)
+	}
+	return j.whole.units[index]
+}
+
+// named is the unit of text, a sentence that a rule reads in a split of its own (instructionBreaks),
+// or of an address (address): the unit of the sentence of the text of the same words where there is
+// one (charge.Texts.Name). A rule names each such text once in each run, not once for each finding.
+// No unit for a nil judge.
+func (j *wayJudge) named(text string, address bool) charge.Unit {
+	if j == nil {
+		return charge.None(false)
+	}
+	return j.texts.Name(text, address, false)
 }
 
 // told gives the judge what the form rules read of the whole text: how many sentences count for
@@ -177,7 +193,7 @@ func (j *wayJudge) told(count, joined int, line string, held []ste.Verbs) {
 	}
 	j.joined = joined
 	if j.whole == nil {
-		j.whole = newWholeText(line, held, j.elsewhere, &j.reads)
+		j.whole = newWholeText(line, held, j.elsewhere, j.texts)
 	}
 }
 
@@ -210,10 +226,10 @@ func (j *wayJudge) survey(find func()) {
 // past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
 // so (pastNote), as does one past maxJudgedInSentence of the findings of a text that the judge
 // reads whole (wholeNote), and one whose way out would read a sentence past its charge
-// (elsewhereNote); so does one whose sentence is not known at some place (unit ""), with no
-// word of it, and one that survey did not see. A nil judge offers ways as they are, and so does
-// each judge a finding that gives none.
-func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]wayOut) offer {
+// (elsewhereNote); so does one whose sentence is not known at some place (a unit that names no
+// text), with no word of it, and one that survey did not see. A nil judge offers ways as they are,
+// and so does each judge a finding that gives none.
+func (j *wayJudge) offered(unit charge.Unit, rule Rule, from string, ways [maxWays]wayOut) offer {
 	if j == nil || ways == ([maxWays]wayOut{}) {
 		return offer{ways: ways}
 	}
@@ -231,7 +247,7 @@ func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]w
 		if j.rank[place{key, at}] >= maxJudgedInSentence {
 			given.note = pastNote
 		}
-		if !at.placed() || given.note != "" {
+		if !at.Named() || given.note != "" {
 			given.ways = [maxWays]wayOut{}
 		}
 	}
@@ -245,15 +261,15 @@ func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]w
 	// those sentences too (also), where it must give no new finding, and the finding's own rule
 	// need not give fewer. One sentence can hold the words of many findings, as one sentence can
 	// hold in code font the names that many other sentences end with, so each such reading, as each
-	// reading of a sentence for any purpose, asks the sentence's charge first (sentenceReads): a
+	// reading of a sentence for any purpose, asks the sentence's charge first (charge.Texts.Read): a
 	// judgment reads one sentence at most maxReadsOfSentence times, whatever reads it and for
 	// however many findings, so its work is at most that many readings of its text (the work
 	// table's rows of one sentence that holds the words of many findings). A finding whose way out
 	// would read a sentence past its charge gets no way out, and says so (elsewhereNote).
 	refuse := func(note string) { given.ways, given.note = [maxWays]wayOut{}, note }
-	var also []unitKey
+	var also []charge.Unit
 	if given.ways != ([maxWays]wayOut{}) {
-		var charged bool
+		var charged charge.Answer
 		if also, charged = j.alsoAt(from, places); !charged {
 			refuse(elsewhereNote)
 		}
@@ -305,7 +321,7 @@ func (j *wayJudge) take(at place) {
 		return
 	}
 	if j.rank == nil {
-		j.places, j.rank, j.ranked = map[wayKey][]unitKey{}, map[place]int{}, map[unitKey]int{}
+		j.places, j.rank, j.ranked = map[wayKey][]charge.Unit{}, map[place]int{}, map[charge.Unit]int{}
 	}
 	j.rank[at] = j.ranked[at.unit]
 	j.ranked[at.unit]++
@@ -315,23 +331,24 @@ func (j *wayJudge) take(at place) {
 // unit is the judge's reading of unit, read once, for a finding that stands in it (own) or for one
 // that does not: how many sentences of the text stand outside it, how many stops with no space
 // after them it holds, and whether it ends at a stop of its own. It reports false, and reads
-// nothing, where the unit's charge refuses the reading (sentenceReads.charge).
-func (j *wayJudge) unit(unit unitKey, own bool) (*judgedUnit, bool) {
+// nothing, where the unit's charge refuses the reading (charge.Texts.Read).
+func (j *wayJudge) unit(unit charge.Unit, own bool) (*judgedUnit, charge.Answer) {
 	if state, ok := j.units[unit]; ok {
 		return state, true
 	}
 	state := &judgedUnit{findings: map[int]map[findingKey]int{}}
-	if prose(j.kind) && !unit.address {
-		if !j.reads.charge(unit, own) {
+	if prose(j.kind) && !unit.Address() {
+		text, _, charged := j.texts.Read(unit, own)
+		if !charged {
 			return nil, false
 		}
-		sentences := sentencesOf(unit.text)
+		sentences := sentencesOf(text)
 		state.joined = joinedIn(sentences)
 		state.others = max(0, j.count+j.joined-len(sentences)-state.joined)
-		state.ends = endsWithStop(unit.text)
+		state.ends = endsWithStop(text)
 	}
 	if j.units == nil {
-		j.units = map[unitKey]*judgedUnit{}
+		j.units = map[charge.Unit]*judgedUnit{}
 	}
 	j.units[unit] = state
 	return state, true
@@ -342,14 +359,15 @@ func (j *wayJudge) unit(unit unitKey, own bool) (*judgedUnit, bool) {
 // reads, stops of them, read once for each count of such stops, for a finding that stands in the
 // unit (own) or for one that does not. It reports false, and reads nothing, where the unit's charge
 // refuses the reading.
-func (j *wayJudge) before(state *judgedUnit, unit unitKey, stops int, own bool) (map[findingKey]int, bool) {
+func (j *wayJudge) before(state *judgedUnit, unit charge.Unit, stops int, own bool) (map[findingKey]int, charge.Answer) {
 	if found, ok := state.findings[stops]; ok {
 		return found, true
 	}
-	if !j.reads.charge(unit, own) {
+	text, _, charged := j.texts.Read(unit, own)
+	if !charged {
 		return nil, false
 	}
-	found := j.read(unit.text, unit.address, state.others+state.joined-stops)
+	found := j.read(text, unit.Address(), state.others+state.joined-stops)
 	state.findings[stops] = found
 	return found, true
 }
@@ -359,7 +377,7 @@ func (j *wayJudge) before(state *judgedUnit, unit unitKey, stops int, own bool) 
 // prose, the form rules, as a sentence of a text of the judge's kind that outside sentences of the
 // text stand beside; then the reference rules, for an address as an address, and for a sentence of
 // a text that the page shows with no code font as the page shows it (withoutCodeFont). It judges no
-// way out. Its callers charge the reading (before, passes).
+// way out. Its callers read the text through its charge (before, passes).
 func (j *wayJudge) read(text string, address bool, outside int) map[findingKey]int {
 	findings := map[findingKey]int{}
 	if prose(j.kind) && !address {
@@ -386,16 +404,17 @@ func (j *wayJudge) read(text string, address bool, outside int) map[findingKey]i
 // no space after it of another finding ends a sentence in the count of both readings: in the unit
 // before the way out, all but the finding's own, which are the stops that the way out takes away at
 // each place; after it, each that is left.
-func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut, holds bool) (passed, charged bool) {
-	if !j.reads.charge(unit, holds) {
+func (j *wayJudge) passes(state *judgedUnit, unit charge.Unit, rule Rule, way wayOut, holds bool) (passed bool, charged charge.Answer) {
+	text, _, charged := j.texts.Read(unit, holds)
+	if !charged {
 		return false, false
 	}
-	changed := strings.ReplaceAll(unit.text, way.from, way.to)
-	if changed == unit.text {
+	changed := strings.ReplaceAll(text, way.from, way.to)
+	if changed == text {
 		return false, true
 	}
 	stops, outside := 0, state.others
-	if prose(j.kind) && !unit.address {
+	if prose(j.kind) && !unit.Address() {
 		if endsWithStop(changed) != state.ends {
 			return false, true
 		}
@@ -409,7 +428,7 @@ func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut
 	if !charged {
 		return false, false
 	}
-	after := j.read(changed, unit.address, outside)
+	after := j.read(changed, unit.Address(), outside)
 	own, ownAfter := 0, 0
 	for key, count := range after {
 		if count > before[key] {
@@ -427,11 +446,11 @@ func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut
 	return !holds || ownAfter < own, true
 }
 
-// alsoAt is each sentence of the text, as the judge names a place (unitKey), that holds from where
-// no place of places stands: a place of the words of a finding where the finding does not stand
-// (offered); and whether the charge of each sentence that it read let it read it
-// (wholeText.holding). A judge told no text (told) knows no sentence beside places.
-func (j *wayJudge) alsoAt(from string, places []unitKey) ([]unitKey, bool) {
+// alsoAt is each sentence of the text, by its unit, that holds from where no place of places
+// stands: a place of the words of a finding where the finding does not stand (offered); and
+// whether the charge of each sentence that it read let it read it (wholeText.holding). A judge told
+// no text (told) knows no sentence beside places.
+func (j *wayJudge) alsoAt(from string, places []charge.Unit) ([]charge.Unit, charge.Answer) {
 	if j.whole == nil {
 		return nil, true
 	}
@@ -440,8 +459,8 @@ func (j *wayJudge) alsoAt(from string, places []unitKey) ([]unitKey, bool) {
 
 // eachPlace is each unit of places, where the finding stands (true), then each of also, where only
 // its words stand (false).
-func (j *wayJudge) eachPlace(places, also []unitKey) iter.Seq2[unitKey, bool] {
-	return func(yield func(unitKey, bool) bool) {
+func (j *wayJudge) eachPlace(places, also []charge.Unit) iter.Seq2[charge.Unit, bool] {
+	return func(yield func(charge.Unit, bool) bool) {
 		for _, at := range places {
 			if !yield(at, true) {
 				return
@@ -457,67 +476,70 @@ func (j *wayJudge) eachPlace(places, also []unitKey) iter.Seq2[unitKey, bool] {
 
 // sentencePlaces finds the sentence that holds a place of a finding, for the judge of the ways out
 // (wayJudge.offered): a sentence of words, the words of a text as the rules of the form read them,
-// code font and all (sentencesOf), which take each byte of words once. A place is an offset of
-// shown, the words that the reference rules read: the words as the page shows them (Held.Shown),
-// which are words with the marks of code font taken out, so each byte of shown stands at the next
-// byte of words that equals it; or words itself, for a text with no Shown and for a title, whose
-// places say so (title). One cursor walks shown and words once, and one the sentences, for places
-// asked in the order of shown. Its one reading of each sentence of words is charged to the
-// sentence (reads), and where a charge refuses it, it finds no place.
+// code font and all (sentencesOf), which take each byte of words once, named by its unit. A place
+// is an offset of shown, the words that the reference rules read: the words as the page shows them
+// (Held.Shown), which are words with the marks of code font taken out, so each byte of shown
+// stands at the next byte of words that equals it (wordsAt); or words itself, for a text with no
+// Shown and for a title, whose units say so (charge.Unit.Title). It keeps no byte of words or
+// shown: only where each byte of shown stands in words, where each sentence ends, and its unit.
 type sentencePlaces struct {
-	words, shown     string
-	title            bool
-	reads            *sentenceReads
-	sentences        []sentence
-	read, refused    bool
-	at               int
-	shownAt, wordsAt int
+	title bool
+	// wordsAt is the offset in words of each byte of shown, or -1 past the last byte of shown that
+	// words holds; ends is the end of each sentence of words in words, and units its unit.
+	wordsAt []int32
+	ends    []int
+	units   []charge.Unit
 }
 
 // placesIn is the sentencePlaces of words, as the page shows them (shown), a title's where title,
-// whose reading the judge's charge counts (reads); nil for a nil judge, which takes no place.
+// each of its sentences named once (charge.Texts.Name). It is nil for a nil judge, which takes no
+// place, and outside the survey, where the judge takes none (survey): the run after the survey
+// asks the offers that the survey's places gave (offered).
 func (j *wayJudge) placesIn(words, shown string, title bool) *sentencePlaces {
-	if j == nil {
+	if j == nil || !j.surveying {
 		return nil
 	}
-	return &sentencePlaces{words: words, shown: shown, title: title, reads: &j.reads}
+	p := &sentencePlaces{title: title, wordsAt: make([]int32, len(shown))}
+	for _, each := range sentencesOf(words) {
+		p.ends = append(p.ends, each.end)
+		p.units = append(p.units, j.texts.Name(each.in(words), false, title))
+	}
+	at := 0
+	for index := 0; index < len(shown); index++ {
+		for at < len(words) && words[at] != shown[index] {
+			at++
+		}
+		if at == len(words) {
+			for ; index < len(shown); index++ {
+				p.wordsAt[index] = -1
+			}
+			break
+		}
+		p.wordsAt[index] = int32(at)
+		at++
+	}
+	return p
 }
 
-// of is the sentence of words that holds the place of shown at offset, at or after the last place
-// asked for, where name stands; or a unit of no text where words writes name at no such place, as
-// for a name that the marks of code font cut, or holds no sentence there.
-func (p *sentencePlaces) of(offset int, name string) unitKey {
-	if !p.read {
-		p.sentences, p.read = sentencesOf(p.words), true
-		charged := map[unitKey]bool{}
-		for _, each := range p.sentences {
-			unit := unitKey{text: each.in(p.words), title: p.title}
-			if !charged[unit] {
-				charged[unit] = true
-				p.refused = p.refused || !p.reads.charge(unit, true)
-			}
-		}
+// of is the unit of the sentence of words that holds the place of shown at offset, where name, the
+// words of shown there, stands in words as one run of bytes; or a unit of no text where words
+// writes name at no such place, as for a name that the marks of code font cut, or holds no
+// sentence there. A nil sentencePlaces finds no place.
+func (p *sentencePlaces) of(offset int, name string) charge.Unit {
+	if p == nil {
+		return charge.None(false)
 	}
-	if p.refused {
-		return unitKey{title: p.title}
+	last := offset + len(name) - 1
+	if name == "" || offset < 0 || last >= len(p.wordsAt) {
+		return charge.None(p.title)
 	}
-	for p.shownAt < offset && p.wordsAt < len(p.words) {
-		if p.words[p.wordsAt] == p.shown[p.shownAt] {
-			p.shownAt++
-		}
-		p.wordsAt++
+	start := p.wordsAt[offset]
+	if start < 0 || p.wordsAt[last] != start+int32(len(name))-1 {
+		return charge.None(p.title)
 	}
-	for p.shownAt == offset && p.wordsAt < len(p.words) && p.words[p.wordsAt] != p.shown[offset] {
-		p.wordsAt++
+	index := sort.Search(len(p.ends), func(index int) bool { return p.ends[index] > int(start) })
+	if index == len(p.ends) {
+		return charge.None(p.title)
 	}
-	if p.shownAt < offset || !strings.HasPrefix(p.words[p.wordsAt:], name) {
-		return unitKey{title: p.title}
-	}
-	for p.at < len(p.sentences) && p.sentences[p.at].end <= p.wordsAt {
-		p.at++
-	}
-	if p.at == len(p.sentences) {
-		return unitKey{title: p.title}
-	}
-	return unitKey{text: p.sentences[p.at].in(p.words), title: p.title}
+	return p.units[index]
 }
