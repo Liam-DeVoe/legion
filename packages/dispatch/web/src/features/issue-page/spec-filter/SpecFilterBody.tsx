@@ -231,9 +231,8 @@ export function SpecFilterBody({
   // that stand failed (`failed`), and no other, and none of them while it is read again already.
   // Each read of a line is paired with its key's hash (`lineRead`), and each line carries the
   // refusals of its reads it has counted while the body lives, each once under its key
-  // (`useLineRefusals`), which keys its alert, and whether it speaks. A line is drawn while a read
-  // of it stands failed, which holds a refusal, so it is drawn exactly while the hook says it
-  // stands.
+  // (`useLineRefusals`), which keys its alert, whether it stands, which draws it, and whether it
+  // speaks.
   // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
@@ -266,8 +265,9 @@ export function SpecFilterBody({
       failed: group.reads.flatMap(({ failing, read }) => (failing ? [read] : [])),
       refusals: counted[at].refusals,
       speaks: counted[at].speaks,
+      stands: counted[at].stands,
     }))
-    .filter(({ failed }) => failed.length > 0);
+    .filter(({ stands }) => stands);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
   // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
   // addresses a node, which is the one rule the tree was built with, so a `shaped` tie resolves

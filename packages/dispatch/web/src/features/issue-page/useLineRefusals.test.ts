@@ -5,8 +5,8 @@ import { type LineRead, useLineRefusals } from "./useLineRefusals";
 
 /**
  * The count that keys a failed-read line's alert (`useLineRefusals`), read draw by draw: each
- * case draws the hook over one line and draws it again with the line's reads as they then stand,
- * as a view draws it again as its reads change.
+ * case draws the hook over one line, or two, and draws it again with the lines' reads as they
+ * then stand, as a view draws it again as its reads change.
  */
 
 /** A read under the key whose hash is `hash`, refused `errorUpdateCount` times, and failing or
@@ -213,5 +213,37 @@ test("a line that stands quietly speaks once it counts a new refusal, while it s
     expect(line.speaks(), "a line that does not stand spoke").toBe(false);
   } finally {
     line.unmount();
+  }
+});
+
+// Each line counts the refusals of its own reads. The statements line stands on the spec's
+// blocks, refused once, while the results line's Verification document's blocks answer. The issue
+// then names its spec as its Verification document too: the results line starts to read the key
+// the statements line counted, has said none of its refusals, and counts the refusal as new. Both
+// lines then stand on that one key, and each counts its next refusal and speaks.
+test("two lines on one refused key each count its refusals, and a line that joins a key another line counted counts them as new", () => {
+  const hook = renderHook((lines: readonly (readonly LineRead[])[]) => useLineRefusals(lines), {
+    initialProps: [[lineRead("spec", 1, true)], [lineRead("verification", 0, false)]],
+  });
+  try {
+    expect(hook.result.current).toEqual([
+      { refusals: 1, speaks: true, stands: true },
+      { refusals: 0, speaks: false, stands: false },
+    ]);
+    hook.rerender([[lineRead("spec", 1, true)], [lineRead("spec", 1, true)]]);
+    expect(
+      hook.result.current,
+      "the line that joined a key another line counted did not count its refusal"
+    ).toEqual([
+      { refusals: 1, speaks: true, stands: true },
+      { refusals: 1, speaks: true, stands: true },
+    ]);
+    hook.rerender([[lineRead("spec", 2, true)], [lineRead("spec", 2, true)]]);
+    expect(hook.result.current, "a line on the shared key did not count its new refusal").toEqual([
+      { refusals: 2, speaks: true, stands: true },
+      { refusals: 2, speaks: true, stands: true },
+    ]);
+  } finally {
+    hook.unmount();
   }
 });

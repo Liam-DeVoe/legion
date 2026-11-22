@@ -25,8 +25,9 @@ export interface LineRefusals {
 interface Kept {
   /** Each line as it was at the last draw, in the lines' order. */
   lines: readonly LineRefusals[];
-  /** The `errorUpdateCount` last seen under each key the hook has read, by the key's hash. */
-  readonly seen: Map<string, number>;
+  /** For each line, in the lines' order, the `errorUpdateCount` last seen under each key the line
+   *  has read, by the key's hash, held only while it is above 0. */
+  readonly seen: Map<string, number>[];
 }
 
 /**
@@ -34,14 +35,16 @@ interface Kept {
  * `failure`), whether it stands, and whether it speaks, so a screen reader says the failure again
  * exactly for a refusal new to the line.
  *
- * The rule: the hook keeps, for as long as the component that calls it lives, the
- * `errorUpdateCount` last seen under each key it has read, written for every read at every draw,
- * failing or not. At each draw, each failing read raises its line's count by what its
- * `errorUpdateCount` rose by since the count last seen under its key, or by the whole of it where
- * no count was seen under that key or the count is below the one seen (the query was reset or
- * made afresh, which drops its answer too). An answer leaves `errorUpdateCount` as it is: TanStack
- * sets it to 0 only for a query made afresh or reset. So each refusal is counted once under its
- * key, and a line's count never falls. A line stands while a read of it is failing and either the
+ * The rule: the hook keeps for each line, for as long as the component that calls it lives, the
+ * `errorUpdateCount` last seen under each key the line has read, written for every read of the
+ * line at every draw, failing or not, and dropped where it is 0, which counts as no count seen.
+ * At each draw, each failing read raises its line's count by what its `errorUpdateCount` rose by
+ * since the count the line last saw under its key, or by the whole of it where the line saw no
+ * count under that key or the count is below the one seen (the query was reset or made afresh,
+ * which drops its answer too). An answer leaves `errorUpdateCount` as it is: TanStack sets it to
+ * 0 only for a query made afresh or reset. So each line counts each refusal once under its key,
+ * a line that starts to read a key another line counted counts that key's refusals as new to it,
+ * and a line's count never falls. A line stands while a read of it is failing and either the
  * line stood at the last draw or a failing read holds a refusal under its key (`errorUpdateCount`
  * above 0). So a line does not stand for a read that is merely out with no refusal, it stays
  * through a run again, and it stands again, with its count unchanged, where a read is back on a
@@ -58,10 +61,12 @@ interface Kept {
  */
 export function useLineRefusals(lines: readonly (readonly LineRead[])[]): readonly LineRefusals[] {
   const ref = useRef<Kept | undefined>(undefined);
-  ref.current ??= { lines: [], seen: new Map() };
+  ref.current ??= { lines: [], seen: [] };
   const kept = ref.current;
   const counted = lines.map((reads, at): LineRefusals => {
     const was = kept.lines[at];
+    const seen = kept.seen[at] ?? new Map<string, number>();
+    kept.seen[at] = seen;
     let refusals = was?.refusals ?? 0;
     let failing = false;
     let refused = false;
@@ -69,21 +74,22 @@ export function useLineRefusals(lines: readonly (readonly LineRead[])[]): readon
       if (!read.failing) continue;
       failing = true;
       refused ||= read.errorUpdateCount > 0;
-      const seen = kept.seen.get(read.hash);
+      const last = seen.get(read.hash);
       refusals +=
-        seen === undefined || read.errorUpdateCount < seen
+        last === undefined || read.errorUpdateCount < last
           ? read.errorUpdateCount
-          : read.errorUpdateCount - seen;
+          : read.errorUpdateCount - last;
+    }
+    // Written once every read of the line is counted, so two reads of the line on one key each
+    // count against the count seen before this draw.
+    for (const read of reads) {
+      if (read.errorUpdateCount > 0) seen.set(read.hash, read.errorUpdateCount);
+      else seen.delete(read.hash);
     }
     const stands = failing && (refused || (was?.stands ?? false));
     const speaks = stands && (refusals > (was?.refusals ?? 0) || (was?.speaks ?? false));
     return { refusals, speaks, stands };
   });
-  // Every line is counted against the counts seen before this draw, so two lines that read the
-  // same key each count its new refusals.
-  for (const reads of lines) {
-    for (const read of reads) kept.seen.set(read.hash, read.errorUpdateCount);
-  }
   kept.lines = counted;
   return counted;
 }

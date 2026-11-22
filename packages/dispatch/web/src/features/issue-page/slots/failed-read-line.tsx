@@ -18,9 +18,8 @@ export const FailedLineLeaves = createContext<(() => void) | undefined>(undefine
 
 export interface FailedReadLineProps {
   /** Which failure the line says, which keys its alert: a read's `errorUpdateCount`, as the
-   *  outline gives it for a read its rows come from (`outline-reads.ts`); for the names, the
-   *  count of their reads' failures since every one of them last answered
-   *  (`NamesFailure.failure`); or for an address's item whose read failed, the failures of that
+   *  outline gives it for a read its rows come from (`outline-reads.ts`); for the names,
+   *  `NamesFailure.failure`; or for an address's item whose read failed, the failures of that
    *  read since the address was followed (`address-target.ts`'s landing `failure`, through
    *  `slots/body.tsx`'s `ItemReadFailed`). The last two are no read's own count. Where it is not
    *  given, the line counts the failures it sees itself: each run it saw end while it stayed
@@ -32,7 +31,7 @@ export interface FailedReadLineProps {
   onRetry: () => void;
   /** Whether the read runs again (TanStack Query's `isFetching`). */
   retrying: boolean;
-  /** Unless false, the line speaks: one standing again for a failure it already said is quiet. */
+  /** Where false, the message carries no live role, so a screen reader does not say it. */
   speaks?: boolean;
 }
 

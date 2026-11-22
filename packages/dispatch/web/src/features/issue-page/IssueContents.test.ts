@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, within } from "@testing-library/react";
 import { createElement, useEffect } from "react";
 
+import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { contentsEntries } from "./contents-entries";
@@ -211,6 +212,48 @@ test("folding the entry above the one the reader is in leaves the tab stop on th
     expect(stops()).toEqual(["ask-1"]);
   } finally {
     view.unmount();
+  }
+});
+
+// The list reads who is reading as the tree reads it, kept fresh by events and never read again
+// by its age (`EVENT_FRESH`). Under the app's 30 s `staleTime` (`main.tsx`) a list drawn more than
+// 30 s after whoami answered asked for it again, a request of the list's own.
+test("a list drawn more than 30 s after whoami answered asks for it nothing", () => {
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  client.setQueryData(
+    whoAmIQuery().queryKey,
+    { event_head: "0", kind: "user", login: "alice" },
+    { updatedAt: Date.now() - 31_000 }
+  );
+  const view = render(
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(ContentsList, {
+        focusBranch: false,
+        nameOf: () => undefined,
+        onFocusBranch: () => {},
+        onGo: () => {},
+        root: node("CORE-1", "issue", [node("ask-1", "ask")]),
+      })
+    )
+  );
+  try {
+    expect(
+      view.container.querySelector('[data-contents-entry="ask-1"]'),
+      "the list drew no entry"
+    ).not.toBeNull();
+    expect(whoAmI, "the list asked for whoami again").not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    whoAmI.mockRestore();
   }
 });
 

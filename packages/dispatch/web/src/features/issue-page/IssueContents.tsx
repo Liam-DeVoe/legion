@@ -20,6 +20,7 @@ import {
   pageQuietText,
   pageWaitingBg,
 } from "../../theme/classes";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { isContentsEntry } from "./contents-entries";
 import { useFocusedNode } from "./focused-node";
 import { MenuMark } from "./IssuePresets";
@@ -177,7 +178,9 @@ export function ContentsList({
   /** The tree the outline draws. */
   root: TreeNode;
 }): ReactNode {
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  // The reader, read as the tree reads it (`useIssueTree`, `EVENT_FRESH`): staleness is per
+  // observer, so under the app's 30 s `staleTime` the list drawn later would ask for it again.
+  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const entries = useMemo(() => contentsOf(root, viewer), [root, viewer]);
   const entryIds = useMemo(() => {
     const ids = new Set<string>();

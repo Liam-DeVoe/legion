@@ -15,7 +15,12 @@ import { type HeldNotifications, holdNotifications } from "../../../__tests__/co
 import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
 import type {
   Actor,
   CheckBlock,
@@ -64,7 +69,12 @@ import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
-import { issueAsksQuery, treeDocumentIds } from "../useIssueTree";
+import {
+  issueAsksQuery,
+  issueCommentsQuery,
+  issueMessagesQuery,
+  treeDocumentIds,
+} from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -991,6 +1001,118 @@ test("a failed names read says so in its own line, after the view's own, and its
   } finally {
     view.unmount();
     decisions.mockRestore();
+    names.mockRestore();
+  }
+});
+
+/** `client` holding every read the page's tree is built from, answered: the issue holds two
+ *  threads of comments and nothing else, as the stage's cases above seed them. Who is reading is
+ *  each case's own. */
+function holdTreeReads(client: QueryClient): void {
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, {
+    decisions: [],
+    document: null,
+    open_questions: [],
+  });
+  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
+  client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
+}
+
+/** The page's stage at the Spec view's address (`AddressedStage`), over `client`'s reads. */
+function drawSpecStage(client: QueryClient, issue: IssueDetails): RenderResult {
+  return render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// The Spec view's slot reads who is reading as the tree reads it, kept fresh by events and never
+// read again by its age (`EVENT_FRESH`). Under the app's 30 s `staleTime` (`main.tsx`) the view
+// opened more than 30 s after whoami answered asked for it again, a request of the view's own.
+test("the Spec view opened more than 30 s after whoami answered asks for it nothing", async () => {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  holdTreeReads(client);
+  client.setQueryData(
+    whoAmIQuery().queryKey,
+    { event_head: "0", kind: "user", login: READER },
+    { updatedAt: Date.now() - 31_000 }
+  );
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: READER,
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = drawSpecStage(client, issue);
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-body]"),
+        "the stage drew no Spec view"
+      ).not.toBeNull()
+    );
+    expect(whoAmI, "the Spec view asked for whoami again").not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    whoAmI.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The Spec view draws the names reads' line as the tree says it, speaking or not
+// (`NamesFailure.speaks`): a line that stands again for a refusal it already said is drawn
+// without speaking. The names read of the tree's set is refused; a comment goes, the names read
+// of the smaller set answers, and the line leaves. The comment comes back: the names read is back
+// on the first set, which holds no answer and the refusal the line counted, and runs again, so
+// the line stands again, with no live role.
+test("a names line that stands again in the Spec view for a refusal it counted is drawn without speaking", async () => {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  holdTreeReads(client);
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(new Error("offline"));
+  const view = drawSpecStage(client, issue);
+  try {
+    await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
+    await act(async () => {
+      client.setQueryData(
+        issueCommentsQuery(KEY).queryKey,
+        TWO_THREADS.filter((comment) => comment.id !== "reply-b")
+      );
+    });
+    await waitFor(() =>
+      expect(
+        view.queryByText(STATE_LINES.names_unreadable),
+        "the names' line stayed once the names of the smaller set answered"
+      ).toBeNull()
+    );
+    names.mockReturnValueOnce(new Promise<never>(() => {}) as never);
+    await act(async () => {
+      client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
+    });
+    const words = await waitFor(() => view.getByText(STATE_LINES.names_unreadable));
+    expect(words, "the names' line said again a refusal it had counted").not.toHaveAttribute(
+      "role"
+    );
+    expect(view.queryByRole("alert"), "a line standing again spoke").toBeNull();
+  } finally {
+    view.unmount();
     names.mockRestore();
   }
 });

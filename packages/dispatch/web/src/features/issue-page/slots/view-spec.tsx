@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -31,8 +32,10 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   // them too - the three sentences, and the name of every reference a plain line cites - so
   // their line's state while they stand failed (`namesFailure`) is passed on for the body to draw.
   const { namesFailure, root } = useIssueTree(issue);
-  // Who is reading, so a decision of theirs reads as their own words (R5).
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
+  // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
+  // `staleTime` the view opened later would ask for it again.
+  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
   // (`useAddressTarget`, as the outline reads it).
   const { named, reveal } = useAddressTarget(root, address);
