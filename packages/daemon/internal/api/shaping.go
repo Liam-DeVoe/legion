@@ -862,7 +862,7 @@ const quietTimeContract = 111
 const shapedAnswersContract = 193
 
 // agentActionsContract is the daemon contract four of the agent door's six agent actions and the
-// controller's pod update arrived at (version.go's 221): `POST /legion/v1/agents/stop`, `retry`,
+// controller's pod update arrived at (version.go's 227): `POST /legion/v1/agents/stop`, `retry`,
 // `suspend` and `resume`, which answer AgentActionResponse (AnswerAgentAction), and
 // `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse (AnswerPodUpdate). Each
 // answer arrived whole with its routes, so no contract below this one records either, no caller
@@ -872,7 +872,7 @@ const shapedAnswersContract = 193
 // It is a literal of its own and never DaemonAPIVersion, as shapedAnswersContract is: a later
 // contract moves that constant, and the contract these answers arrived at stays where it is. It
 // moves only with the number of the change that added the routes (#4065).
-const agentActionsContract = 221
+const agentActionsContract = 227
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on

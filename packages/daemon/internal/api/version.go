@@ -3095,7 +3095,7 @@ package api
 // and no open head but this change's own declaring 213. Read the base's own number and every open
 // pull request again at the next merge rather than from this line.)
 //
-// 221: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// 227: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
@@ -3182,7 +3182,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 221 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 227 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's
 // are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
@@ -3280,6 +3280,9 @@ package api
 // (INFRA-4036), moves it from 215 to 221: 214 is #4592's and #4918's, 215 is #4596's as well as
 // this change's own, 216 to 220 are other open pull requests', and no open head declares 221
 // (read at refs/pull/<n>/head of all 444 open pull requests, 2026-11-22T11:23:08Z to
-// 11:25:58Z). Read the base's own number and every open head again at the next merge rather than
-// from this line.)
-const DaemonAPIVersion = 221
+// 11:25:58Z). The merge of main `b537812f`, which still declares 213, moves it from 221 to 227:
+// 221 is #3993's, #4049's, #4392's, #4432's, #4771's and #4942's as well as this change's own,
+// 214 to 226 are other open pull requests', and no open head declares 227 (read at
+// refs/pull/<n>/head of all 445 open pull requests, 2026-11-22T15:30:04Z to 15:32:38Z). Read the
+// base's own number and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 227
