@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
@@ -31,9 +30,18 @@ type holdRestoreBody struct {
 	Sig string `json:"sig"`
 }
 
-// errHoldLogUnknown is a restore refused because the log's latest entry cannot be judged by: it
-// does not verify, or the log is empty under a row this broker served, read or wrote.
-var errHoldLogUnknown = errors.New("the hold log's latest entry reads as unknown")
+// errHoldLogUnknown is a restore refused because a record it judges by reads as unknown: the log's
+// latest entry does not verify, or the log is empty under a row this broker served, read or wrote
+// (restoreTrusted); or a hold's done record, which heldByRecord judges, is below this broker's
+// record floor or does not verify. It is answered 409 below_floor, naming the entry or the record,
+// and nothing is stored.
+var errHoldLogUnknown = errors.New("a record the restore judges by reads as unknown")
+
+// handRepair is what a restore refusal names when no route can clear it: a database writer added
+// a done record that does not verify, put an older one back, deleted an ended hold's released
+// entry, or cut the log back under a live hold, and no route can tell those from a live hold's
+// record a writer broke, so freeing the restore would free every client mid-hold.
+const handRepair = `no route can clear this, so a database admin deletes or restores the rows named here (infra/README.md, "Restoring a lost hold row")`
 
 // restoreNATSHold writes the hold row while there is none, once its signature verifies, judging
 // from the log's latest entry, which must verify (restoreTrusted), whether the row may be restored
@@ -52,7 +60,7 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		return
 	}
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, body.Sig, signedrecord.HoldRow(uint64(body.Gen), body.Phase, body.HoldID, signedAt)); err != nil {
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at its gen", nil)
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at its gen: "+err.Error(), nil)
 		return
 	}
 	admit := func(log []natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
@@ -144,7 +152,7 @@ func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Re
 		latest = &log[len(log)-1]
 	}
 	if next.Phase == string(natsgrant.OperatorPhaseReleased) {
-		if err := s.heldByRecord(log, journals); err != nil {
+		if err := s.heldByRecord(log, latest, journals); err != nil {
 			return err
 		}
 	}
@@ -177,13 +185,16 @@ func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Re
 }
 
 // heldByRecord refuses a released restore while a hold's own record holds it. It skips a hold the
-// verified log shows ended (endedInLog): a released entry naming it, at any gen, or a later hold's
-// prepare after its own entries. Every other hold's done record is judged: one below this
-// replica's record floor (an older signed version put back) or one that does not verify is unknown
-// (409 below_floor), and one that shows hold set done and no end refuses the restore
-// (ErrBadTransition, naming the hold). A log cut back below a hold's own entries shows nothing of
-// that hold, so its record still refuses.
-func (s *server) heldByRecord(log []natshold.LogEntry, journals []natshold.Record) error {
+// verified log shows ended (endedInLog): a released entry naming it, at any gen. Every other hold's
+// done record is judged: one below this replica's record floor (an older signed version put back)
+// or one that does not verify is unknown (409 below_floor), and one that shows hold set done and no
+// end refuses the restore (ErrBadTransition). A log cut back below a hold's own entries shows
+// nothing of that hold, so its record still refuses. Each refusal names the hold and why its
+// record holds the restore. It advises restoring the row held only when the route admits that
+// restore, after latest, the log's latest entry, when that is the hold's own prepare or held
+// entry; otherwise it names the hand repair (handRepair), and for a signature whose key left
+// BROKER_NATS_HOLD_SIGNING_KEYS, that key's id, which goes back in the list verify-only.
+func (s *server) heldByRecord(log []natshold.LogEntry, latest *natshold.LogEntry, journals []natshold.Record) error {
 	ended := s.endedInLog(log)
 	for i := range journals {
 		holdID := journals[i].HoldID
@@ -191,46 +202,51 @@ func (s *server) heldByRecord(log []natshold.LogEntry, journals []natshold.Recor
 			continue
 		}
 		if s.holdFloors.below(recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}, journals[i].Gen) {
-			return fmt.Errorf("%w: hold %s's done record is at gen %d, below a gen this broker wrote or served", errHoldLogUnknown, holdID, journals[i].Gen)
+			return fmt.Errorf("%w: hold %q's done record is at gen %d, below a gen this broker wrote or served, an older version put back; %s", errHoldLogUnknown, holdID, journals[i].Gen, handRepair)
 		}
-		d, ok := s.verifiedJournal(holdID, &journals[i])
-		if !ok {
-			return fmt.Errorf("%w: hold %s's done record does not verify", errHoldLogUnknown, holdID)
+		d, err := s.journalDone(holdID, &journals[i])
+		if err != nil {
+			return unknownJournal(holdID, err)
 		}
-		if _, setDone := d.Latest(holdrecord.CommandSet, holdrecord.StateDone); setDone && !journalEnded(d) {
-			return &natshold.Conflict{Err: fmt.Errorf("%w: hold %s's journal shows hold set done and no end, so a released row restored now would free every client mid-hold; restore the row held with its hold id %s", natshold.ErrBadTransition, holdID, holdID)}
+		if _, setDone := d.Latest(holdrecord.CommandSet, holdrecord.StateDone); !setDone || journalEnded(d) {
+			continue
 		}
+		held := fmt.Errorf("%w: hold %s's journal shows hold set done and no end, so a released row restored now would free every client mid-hold", natshold.ErrBadTransition, holdID)
+		if latest != nil && latest.HoldID == holdID && (latest.Phase == string(natsgrant.OperatorPhasePrepare) || latest.Phase == string(natsgrant.OperatorPhaseHeld)) {
+			return &natshold.Conflict{Err: fmt.Errorf("%w; restore the row held with its hold id %s", held, holdID)}
+		}
+		return &natshold.Conflict{Err: fmt.Errorf("%w, and the log's latest entry is not that hold's prepare or held entry, so no held restore of it is admitted either: the log was cut back under the live hold, or the ended hold's released entry was deleted; %s", held, handRepair)}
 	}
 	return nil
 }
 
+// unknownJournal is heldByRecord's refusal of holdID's done record, which err says does not
+// verify. A record signed by a key no longer listed names that key's id, the repair a rotation
+// done too early needs; every refusal names the hand repair, the only one for a record a database
+// writer added or broke, or one a leaked key signed.
+func unknownJournal(holdID string, err error) error {
+	repair := handRepair
+	var unlisted *signedrecord.UnlistedKeyError
+	if errors.As(err, &unlisted) {
+		repair = fmt.Sprintf("if key %s was retired while records it signed remain, it goes back in BROKER_NATS_HOLD_SIGNING_KEYS, verify-only; otherwise %s", unlisted.KeyID, handRepair)
+	}
+	return fmt.Errorf("%w: hold %q's done record does not verify: %v; %s", errHoldLogUnknown, holdID, err, repair)
+}
+
 // endedInLog answers, for a hold id, whether the log's verified entries show that hold ended: a
 // released entry naming it, at any gen (its release or abort moved the row, and a hold id is never
-// held again), or a prepare entry of another hold at a gen above every entry naming it (a later
-// hold began). A hold no verified entry names is shown nothing.
+// held again). Nothing else does: a prepare of another hold at a higher gen may be an entry of
+// another history of the log (a point-in-time restore, or a log cut back and saved rows put back),
+// whose gens and signing times say nothing about this hold. A hold no verified entry names is
+// shown nothing.
 func (s *server) endedInLog(log []natshold.LogEntry) func(holdID string) bool {
 	released := map[string]bool{}
-	last := map[string]uint64{}
-	var prepares []natshold.LogEntry
 	for _, e := range log {
-		if e.HoldID == "" || !s.verifiedLogEntry(e) {
-			continue
-		}
-		last[e.HoldID] = max(last[e.HoldID], e.Gen)
-		switch e.Phase {
-		case string(natsgrant.OperatorPhaseReleased):
+		if e.HoldID != "" && e.Phase == string(natsgrant.OperatorPhaseReleased) && s.verifiedLogEntry(e) {
 			released[e.HoldID] = true
-		case string(natsgrant.OperatorPhasePrepare):
-			prepares = append(prepares, e)
 		}
 	}
-	return func(holdID string) bool {
-		if released[holdID] {
-			return true
-		}
-		lastGen, named := last[holdID]
-		return named && slices.ContainsFunc(prepares, func(p natshold.LogEntry) bool { return p.HoldID != holdID && p.Gen > lastGen })
-	}
+	return func(holdID string) bool { return released[holdID] }
 }
 
 // journalOf is holdID's done record among journals, nil when there is none.
@@ -246,8 +262,8 @@ func journalOf(journals []natshold.Record, holdID string) *natshold.Record {
 // holdEnded reports whether journal, holdID's done record, verifies and shows the hold ended
 // (journalEnded).
 func (s *server) holdEnded(holdID string, journal *natshold.Record) bool {
-	d, ok := s.verifiedJournal(holdID, journal)
-	return ok && journalEnded(d)
+	d, err := s.journalDone(holdID, journal)
+	return err == nil && journalEnded(d)
 }
 
 // journalEnded reports whether d shows the hold ended. It asks the journal's own Decide: it answers
@@ -256,15 +272,20 @@ func journalEnded(d holdrecord.Done) bool {
 	return errors.Is(holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandRelease}), holdrecord.ErrAlreadyDone)
 }
 
-// verifiedJournal is journal, holdID's done record, decoded, when it is there and its signature
-// verifies against BROKER_NATS_HOLD_SIGNING_KEYS, and false otherwise.
-func (s *server) verifiedJournal(holdID string, journal *natshold.Record) (holdrecord.Done, bool) {
-	if journal == nil || signedrecord.Verify(s.deps.NATSHold.Keys, journal.Sig, signedrecord.Record(holdID, natshold.KindDone, journal.Key, journal.Gen, journal.Value)) != nil {
-		return holdrecord.Done{}, false
+// journalDone is journal, holdID's done record, decoded, once its signature verifies against
+// BROKER_NATS_HOLD_SIGNING_KEYS. Its error says why not: there is no record, no listed key verifies
+// its signature (signedrecord.Verify's refusal, which names the signing key's id when the
+// signature carries one, never the key), or its value is no journal.
+func (s *server) journalDone(holdID string, journal *natshold.Record) (holdrecord.Done, error) {
+	if journal == nil {
+		return holdrecord.Done{}, errors.New("there is no done record")
+	}
+	if err := signedrecord.Verify(s.deps.NATSHold.Keys, journal.Sig, signedrecord.Record(holdID, natshold.KindDone, journal.Key, journal.Gen, journal.Value)); err != nil {
+		return holdrecord.Done{}, err
 	}
 	var d holdrecord.Done
 	if json.Unmarshal(journal.Value, &d) != nil {
-		return holdrecord.Done{}, false
+		return holdrecord.Done{}, errors.New("its value is no journal")
 	}
-	return d, true
+	return d, nil
 }

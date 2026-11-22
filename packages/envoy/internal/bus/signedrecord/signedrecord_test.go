@@ -3,6 +3,7 @@ package signedrecord_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -213,6 +214,85 @@ func TestAFutureSigningTimeIsJudgedByTheReadersClock(t *testing.T) {
 		if err := signedrecord.WithinSkewOf(now.Add(x.off), now); !errors.Is(err, x.want) || (x.want == nil && err != nil) {
 			t.Errorf("WithinSkewOf a time %v off the clock answered %v, want %v", x.off, err, x.want)
 		}
+	}
+}
+
+// A gen judged against the reader's clock, because the latest signing time is more than the
+// allowance ahead of it, is refused naming that clock, not the far-future time and its gen, which
+// it was not compared with. Fails while the refusal prints "before gen 4 signed at" beside the
+// far-future time, as at c23c8c1b87.
+func TestARefusalJudgedByTheClockNamesTheClock(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	err := signedrecord.NotBackdated(5, now.Add(-6*time.Minute), 4, now.Add(20*time.Minute), now)
+	if !errors.Is(err, signedrecord.ErrBackdated) {
+		t.Fatalf("NotBackdated of a gen 6 minutes before the clock, after a time 20 minutes ahead, answered %v, want ErrBackdated", err)
+	}
+	if text := err.Error(); !strings.Contains(text, "gen 5 signed at 2026-11-21T11:54:00Z") || !strings.Contains(text, "the reader's clock reads 2026-11-21T12:00:00Z") ||
+		strings.Contains(text, "gen 4") || strings.Contains(text, "12:20:00") {
+		t.Errorf("the refusal %q does not name gen 5's time and the clock alone", text)
+	}
+}
+
+// A signature names the key that made it: Sign writes <key id>.<signature>, the key id KeyID's
+// fingerprint of the public half (the unpadded base64url of the first 8 bytes of its SHA-256),
+// which holds no key material. Verify picks the listed key by that id: a list holding the key, a
+// retired key beside it, verifies; a list without it answers *UnlistedKeyError carrying the id,
+// which is ErrBadSignature too; a listed key that did not sign these lines is ErrBadSignature
+// naming its id; and a key id that is not one is a signature that does not decode, so no text a
+// writer puts there reaches an error. Fails while Sign writes no key id, as at c23c8c1b87, or
+// Verify answers an unlisted key with a bare ErrBadSignature.
+func TestASignatureNamesItsKeyAndVerifyPicksTheListedKeyByIt(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	retired, _ := newKey(t)
+	lines := signedrecord.HoldRow(3, "held", "hold-1", time.Unix(0, 0))
+	digest := sha256.Sum256(operator)
+	kid := signedrecord.KeyID(operator)
+	if want := base64.RawURLEncoding.EncodeToString(digest[:8]); kid != want {
+		t.Fatalf("KeyID = %q, want %q, the first 8 bytes of the key's SHA-256", kid, want)
+	}
+	sig := sign(t, operatorKey, lines)
+	if !strings.HasPrefix(sig, kid+".") {
+		t.Fatalf("Sign wrote %q, which does not open with its key's id %q and a dot", sig, kid)
+	}
+	if err := signedrecord.Verify([]ed25519.PublicKey{retired, operator}, sig, lines); err != nil {
+		t.Errorf("Verify with the key listed after a retired one answered %v, want nil", err)
+	}
+	err := signedrecord.Verify([]ed25519.PublicKey{retired}, sig, lines)
+	var unlisted *signedrecord.UnlistedKeyError
+	if !errors.As(err, &unlisted) || unlisted.KeyID != kid || !errors.Is(err, signedrecord.ErrBadSignature) || !strings.Contains(err.Error(), kid) {
+		t.Errorf("Verify with the key not listed answered %v, want an UnlistedKeyError carrying %s that is ErrBadSignature", err, kid)
+	}
+	if err != nil && strings.Contains(err.Error(), base64.RawURLEncoding.EncodeToString(operator)) {
+		t.Errorf("the refusal %q holds the key itself", err)
+	}
+	err = signedrecord.Verify([]ed25519.PublicKey{operator}, sig, signedrecord.HoldRow(4, "held", "hold-1", time.Unix(0, 0)))
+	if !errors.Is(err, signedrecord.ErrBadSignature) || errors.As(err, &unlisted) || !strings.Contains(err.Error(), kid) {
+		t.Errorf("Verify of other lines under the listed key answered %v, want ErrBadSignature naming %s and no UnlistedKeyError", err, kid)
+	}
+	_, signature, _ := strings.Cut(sig, ".")
+	err = signedrecord.Verify([]ed25519.PublicKey{operator}, "<b>x</b>."+signature, lines)
+	if !errors.Is(err, signedrecord.ErrBadSignature) || errors.As(err, &unlisted) || strings.Contains(err.Error(), "<b>") {
+		t.Errorf("Verify of a key id that is not one answered %v, want ErrBadSignature naming no part of it", err)
+	}
+}
+
+// A signature with no key id, as Sign wrote before signatures named their key (the tests' fixtures
+// and the model's stored rows), still verifies by trying each listed key; when none verifies it,
+// the refusal says "signed with no key id", so the reader knows why it names none. The first half
+// fails with a Verify that takes only signatures naming a key, the second with a refusal that does
+// not say so, as at c23c8c1b87.
+func TestASignatureWithNoKeyIDVerifiesByTryingEachListedKey(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	other, _ := newKey(t)
+	lines := signedrecord.HoldRow(3, "held", "hold-1", time.Unix(0, 0))
+	bare := base64.RawURLEncoding.EncodeToString(ed25519.Sign(operatorKey, []byte(strings.Join(lines, "\n"))))
+	if err := signedrecord.Verify([]ed25519.PublicKey{other, operator}, bare, lines); err != nil {
+		t.Errorf("Verify of a signature with no key id, under a listed key, answered %v, want nil", err)
+	}
+	err := signedrecord.Verify([]ed25519.PublicKey{other}, bare, lines)
+	var unlisted *signedrecord.UnlistedKeyError
+	if !errors.Is(err, signedrecord.ErrBadSignature) || errors.As(err, &unlisted) || !strings.Contains(err.Error(), "signed with no key id") {
+		t.Errorf("Verify of a signature with no key id that no listed key verifies answered %v, want ErrBadSignature saying it was signed with no key id", err)
 	}
 }
 
