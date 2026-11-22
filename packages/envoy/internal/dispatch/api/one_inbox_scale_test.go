@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // This child's two measurements, taken before its first line of product code (spec
@@ -125,16 +126,17 @@ func TestOneInboxParticipantSetOfTheCorpus(t *testing.T) {
 	}
 }
 
-// TestOneInboxWriteBaseline is measurement two: the build of BASELINE_SHA, checked out at
-// $TMPDIR/base-p99 and booted over $ISSUE_P99_DATABASE_URL, which it migrates; the corpus seeded
-// into that database once the migration has run, through its pool and through the base build's
-// API; and every write path R11 names timed against it, 200 readings each.
+// TestOneInboxWriteBaseline is measurement two: the build of BASELINE_SHA, checked out as base-p99
+// under a directory of the test's own in TMPDIR (testtmp.Dir) and booted over
+// $ISSUE_P99_DATABASE_URL, which it migrates; the corpus seeded into that database once the
+// migration has run, through its pool and through the base build's API; and every write path R11
+// names timed against it, 200 readings each.
 func TestOneInboxWriteBaseline(t *testing.T) {
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take the one-inbox write baseline", dismissedScaleEnv)
 	}
 	databaseURL := baselineDatabaseURL(t, oneInboxDatabaseEnv, oneInboxDatabase)
-	binary, commit := buildBaseline(t, filepath.Join(os.TempDir(), oneInboxWorktree))
+	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, oneInboxWorktree), oneInboxWorktree))
 	server := bootBaseline(t, binary, databaseURL)
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)

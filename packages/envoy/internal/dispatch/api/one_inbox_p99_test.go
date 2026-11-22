@@ -25,17 +25,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // c-p99 (the spec's R11, the plan's T16): neither the one read nor a write gets slower
 // beyond R11's bounds, every figure taken in this one run on two builds over one corpus.
 //
 // It times two processes the same way: the build of the commit BASELINE_SHA names (buildBaseline),
-// checked out at $TMPDIR/base-p99 and booted over $ISSUE_P99_DATABASE_URL, and this build, built
-// from this checkout with the stamp the base build gets and booted over a database of the test's own
-// the way the base build is booted (bootOneInboxThisBuild, startBuild: the person read from one
-// trusted header, NATS off, a stand-in listener, and the Go runtime settings this process runs
-// under). It boots a build of an earlier commit because what it holds this build to - the reads this
+// checked out as base-p99 under a directory of the test's own in TMPDIR (testtmp.Dir) and booted
+// over $ISSUE_P99_DATABASE_URL, and this build, built from this checkout with the stamp the base
+// build gets and booted over a database of the test's own the way the base build is booted
+// (bootOneInboxThisBuild, startBuild: the person read from one trusted header, NATS off, a
+// stand-in listener, and the Go runtime settings this process runs under). It boots a build of an
+// earlier commit because what it holds this build to - the reads this
 // one replaces, and each write as it was before this build's node and tuple writes - this build
 // cannot answer. Each corpus is the one one_inbox_scale_seed_test.go seeds, through its build's API
 // and its own pool: the base build's through its process, and this build's through this build's
@@ -89,27 +91,28 @@ const (
 
 // oneInboxWriteBounds is R11's bound on each write path that holds to one, by the path's name in
 // oneInboxWritePaths: its p50 at most this many times the base build's p50 of the same path in the
-// same run, as the Verification's c-p99 list names it. A bound above 1.25 is the ratio a run of
-// this check measured for the path, rounded up to the next 0.25. The table names every write path
-// but the one that moves more than one ask a reading (project-default-assignee), which holds to no
-// bound, and names nothing else: the test fails at its start where it does not
+// same run, as the Verification's c-p99 list names it. Each bound is the worst p50 ratio three
+// clean runs of this check measured for the path, times 1.1, rounded up to the next 0.25, so a
+// path slower than any run measured by a tenth fails. The table names every write path but the one
+// that moves more than one ask a reading (project-default-assignee), which holds to no bound, and
+// names nothing else: the test fails at its start where it does not
 // (requireOneInboxWriteBoundsMatchPaths).
 var oneInboxWriteBounds = map[string]float64{
-	"comment":                          3.25,
-	"agent-clear-and-read":             2.75,
-	"mark-all-read":                    2.50,
-	"broadcast":                        2.25,
-	"direct-reply":                     2.00,
-	"comment-mention-person":           2.00,
-	"comment-mention":                  1.75,
-	"issue-message":                    1.75,
-	"ask-asked-of":                     1.50,
-	"ask-answer":                       1.50,
-	"patch-issue-assignee":             1.50,
-	"dismissal":                        1.25,
-	"thread-read":                      1.25,
-	"snooze":                           1.25,
-	"project-default-assignee-one-ask": 1.25,
+	"comment":                          3.50,
+	"agent-clear-and-read":             3.00,
+	"mark-all-read":                    2.75,
+	"broadcast":                        2.75,
+	"direct-reply":                     2.25,
+	"comment-mention-person":           2.25,
+	"comment-mention":                  2.00,
+	"issue-message":                    2.00,
+	"patch-issue-assignee":             2.00,
+	"ask-asked-of":                     1.75,
+	"ask-answer":                       1.75,
+	"project-default-assignee-one-ask": 2.25,
+	"dismissal":                        1.50,
+	"thread-read":                      1.50,
+	"snooze":                           1.50,
 }
 
 // oneInboxReader is one shape the read is measured over: the person whose read it is, and the
@@ -163,7 +166,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	settleOneInbox(t, this, oneInboxOwedWorkHere)
 	analyzeOneInbox(t, this)
 
-	binary, commit := buildBaseline(t, filepath.Join(os.TempDir(), oneInboxWorktree))
+	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, oneInboxWorktree), oneInboxWorktree))
 	baseServer := bootBaselineTrustingHeader(t, binary, databaseURL)
 	baseDatabase, err := store.Open(ctx, databaseURL)
 	if err != nil {

@@ -9,7 +9,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,14 +22,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // c-read-state-tuples (the spec's R6) over marks the release before this branch wrote:
-// the build of BASELINE_SHA, checked out at $TMPDIR/base-read-state and booted over
-// $ISSUE_READ_STATE_DATABASE_URL, which it migrates, as the Verification preamble states (T1's
-// harness, one_inbox_basebuild_test.go). It boots a server of an earlier commit because what it
-// reads back - marks a release before this one stored, with no tuple beside them - this build
-// cannot write. It carries the basebuild tag, as the other base-build checks do.
+// the build of BASELINE_SHA, checked out as base-read-state under a directory of the test's own in
+// TMPDIR (testtmp.Dir) and booted over $ISSUE_READ_STATE_DATABASE_URL, which it migrates, as the
+// Verification preamble states (T1's harness, one_inbox_basebuild_test.go). It boots a server of
+// an earlier commit because what it reads back - marks a release before this one stored, with no
+// tuple beside them - this build cannot write. It carries the basebuild tag, as the other
+// base-build checks do.
 const (
 	readStateDatabaseEnv = "ISSUE_READ_STATE_DATABASE_URL"
 	readStateDatabase    = "dispatch_infra_1152_read_state"
@@ -84,7 +85,7 @@ type readStateMarks struct {
 func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, readStateDatabaseEnv, readStateDatabase)
-	binary, commit := buildBaseline(t, filepath.Join(os.TempDir(), readStateWorktree))
+	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, readStateWorktree), readStateWorktree))
 	base := bootBaseline(t, binary, databaseURL)
 	marks := writeMarksThroughTheBase(t, base, databaseURL)
 	captured := captureReadState(t, databaseURL)
