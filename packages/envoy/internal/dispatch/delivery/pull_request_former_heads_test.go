@@ -166,6 +166,66 @@ func TestTheReKeyCarriesNoHeadToAPullRequestClosedWhileItWaited(t *testing.T) {
 	}
 }
 
+// TestTheReKeyCarriesNothingAcrossACloseAndReopenOfThePullRequest: a writer holds the row of the
+// pull request under the old name, which left 7171… and stands at 7272…, while the reconcile
+// re-keys it; meanwhile the canonical row closes and reopens at 7474…. The close ends the pull
+// request's lifecycle under both its names, so once the writer commits the reopened canonical row
+// holds neither the head the old row left nor the old row's own head. Where the writer moves the
+// old row on to 7575… after the reopen, that head is the new lifecycle's, and the re-key carries
+// it.
+func TestTheReKeyCarriesNothingAcrossACloseAndReopenOfThePullRequest(t *testing.T) {
+	const left, oldHead, head = "7171717171717171717171717171717171717171", "7272727272727272727272727272727272727272", "7373737373737373737373737373737373737373"
+	const reopened, moved = "7474747474747474747474747474747474747474", "7575757575757575757575757575757575757575"
+	for _, row := range []struct {
+		name   string
+		number int
+		move   bool
+		want   []string
+	}{
+		{"the old row stays at the head the close left it at", 530, false, nil},
+		{"the old row moves on after the reopen", 531, true, []string{moved}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newReKeyRig(t, row.number, left, oldHead, head)
+			writer, err := rig.pool.Begin(rig.ctx)
+			if err != nil {
+				t.Fatalf("begin the writer: %v", err)
+			}
+			defer writer.Rollback(context.Background())
+			if _, err := writer.Exec(rig.ctx, `update pull_request_heads set checked_at = now() where repo = $1 and number = $2`, gadgetsOldRepo, rig.number); err != nil {
+				t.Fatalf("stamp %s#%d: %v", gadgetsOldRepo, rig.number, err)
+			}
+			answered := rig.refreshBehind(t, writer)
+			if _, err := rig.pool.Exec(rig.ctx, `update pull_request_heads set state = 'closed' where repo = $1 and number = $2`, gadgetsRepo, rig.number); err != nil {
+				t.Fatalf("close %s#%d: %v", gadgetsRepo, rig.number, err)
+			}
+			if _, err := rig.pool.Exec(rig.ctx, `update pull_request_heads set state = 'open', head_sha = $3 where repo = $1 and number = $2`, gadgetsRepo, rig.number, reopened); err != nil {
+				t.Fatalf("reopen %s#%d at %s: %v", gadgetsRepo, rig.number, reopened, err)
+			}
+			if row.move {
+				if _, err := writer.Exec(rig.ctx, `update pull_request_heads set head_sha = $3 where repo = $1 and number = $2`, gadgetsOldRepo, rig.number, moved); err != nil {
+					t.Fatalf("move %s#%d to %s: %v", gadgetsOldRepo, rig.number, moved, err)
+				}
+			}
+			if err := writer.Commit(rig.ctx); err != nil {
+				t.Fatalf("commit the writer: %v", err)
+			}
+			if err := <-answered; err != nil {
+				t.Fatalf("re-key %s#%d: %v", gadgetsOldRepo, rig.number, err)
+			}
+			if state, at := rig.canonicalStateAndHead(); state != "open" || at != reopened {
+				t.Fatalf("%s#%d is %s at %s after the reopen, want open at %s", gadgetsRepo, rig.number, state, at, reopened)
+			}
+			if got := rig.formerHeadsOf(gadgetsRepo); !slices.Equal(got, row.want) {
+				t.Fatalf("#%d under %s, reopened, left %v after the re-key, want %v: a head of the lifecycle the close ended came back", rig.number, gadgetsRepo, got, row.want)
+			}
+			if got := rig.formerHeadsOf(gadgetsOldRepo); len(got) != 0 {
+				t.Fatalf("the old name %s still keeps the former heads %v of #%d", gadgetsOldRepo, got, rig.number)
+			}
+		})
+	}
+}
+
 // TestAReKeyByTheReleaseBeforeCarriesTheHeadsItLeft: the release before this one re-keys #526 with
 // a plain delete of the old row, after its write of the canonical row, and carries nothing itself.
 // The canonical row holds the heads the pull request left under the old name all the same.

@@ -33,8 +33,10 @@ type Leases interface {
 // DISPATCH_TEST_HOOKS), a conditional edit's admission's
 // (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
-// lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite)
-// and the rename graph's own (api's refuseRepoRenameChain), each a first key of its own, so a
+// lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite),
+// the rename graph's own (api's refuseRepoRenameChain) and one pull request's former heads under
+// all its names (the function pull_request_former_heads_lock, migration 20261122071001), each a
+// first key of its own, so a
 // lease's second key, its name's hashtext, separates the leases from each other and from nothing
 // else.
 const leaseNamespace int32 = 0x4C4F4F50
