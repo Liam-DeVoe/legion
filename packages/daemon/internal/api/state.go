@@ -596,8 +596,8 @@ type Admission struct {
 	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
-	// An issue the daemon has started that waits on another issue before its review is missing
-	// from here too, other than the three roots that keep their slot through such a wait
+	// An issue the daemon has started that waits on another issue in a phase that keeps a slot is
+	// missing from here too, other than the three roots that keep their slot through such a wait
 	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
@@ -717,9 +717,10 @@ type Issue struct {
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
-	// it ran (record.HoldTaskStopped), and `children` while a parent whose plan has no acceptance
-	// step waits, before its retro, for the issues beneath it (record.HoldForChildren). A hold of
-	// either of the last two is no architect's to retry or escalate: a later version of the plan
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
+	// the owner's acceptance waits, before its retro, for the issues beneath it
+	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
+	// escalate: a later version of the plan
 	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
 	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
 	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
