@@ -220,6 +220,12 @@ on:
           dispatch-browser-latest-blobs.test.sh and what it tests.
         type: string
         required: true
+      dispatch_browser_fetch_binaries_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_fetch_binaries_test:
+          dispatch-browser-fetch-binaries.test.sh and what it tests.
+        type: string
+        required: true
       dispatch_browser_run_reads_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_run_reads_test:
@@ -511,6 +517,13 @@ jobs:
       - name: Test the browser lane's blob attempt selection
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # The second read of the binaries artifact the shard and alone jobs make when
+      # actions/download-artifact's first did not complete, against a stand-in GitHub whose blob
+      # stalls partway, serves bytes off the artifact's digest, or is not there.
+      - name: Test the browser lane's second read of its binaries (a stand-in GitHub)
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_fetch_binaries_test == 'true'
+        run: .github/scripts/dispatch-browser-fetch-binaries.test.sh
 
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
       # the jobs read takes, the retry ladder's attempts and the waits between them, and the two

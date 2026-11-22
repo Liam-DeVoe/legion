@@ -957,6 +957,13 @@ dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - '.github/scripts/dispatch-browser-run-reads.test.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
   - '.github/scripts/gh-read.sh'
+dispatch_browser_fetch_binaries_test: &dispatch_browser_fetch_binaries_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/dispatch-browser-fetch-binaries.test.sh'
+  - '.github/scripts/dispatch-browser-fetch-binaries.sh'
 gh_read_test: &gh_read_test
   - *ci_router
   - *ci_filters_data
@@ -1085,6 +1092,7 @@ test:
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
   - *dispatch_browser_run_reads_test
+  - *dispatch_browser_fetch_binaries_test
   - *gh_read_test
   - *dispatch_browser_samples_test
   - *race_memory_test
@@ -1593,6 +1601,7 @@ dispatch_browser:
   - '.github/scripts/dispatch-browser-samples.sh'
   - '.github/scripts/dispatch-browser-postgres.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
+  - '.github/scripts/dispatch-browser-fetch-binaries.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
   - '.github/scripts/dispatch-browser-wait-for-store.sh'
   - '.github/scripts/dispatch-browser-shard-suite.sh'
