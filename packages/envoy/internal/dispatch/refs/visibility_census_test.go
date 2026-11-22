@@ -180,9 +180,8 @@ var readsWithoutAViewer = map[string]string{
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockRefKinds": serverWork + " - a version write's block index and the erase read the names of the block[] attributes the " +
 		"store's type nodes declare, which only a migration writes, to bind them as a parameter of their own read of the store's tuples",
-	"BlockTargets":  serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":   nodeDetail,
-	"CanonicalRepo": noNode,
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
 	"CommentsNamingNoNode": serverWork + " - the block-index tick's write of the comments the events after its cursor name " +
 		"reads, under those comments' owner locks, which of their rows name no node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
