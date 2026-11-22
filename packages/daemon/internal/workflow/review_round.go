@@ -40,7 +40,7 @@ import (
 // naming the commit it was stored with, or `none`, though the row's commit has moved since, so
 // the record holds exactly what the worker is sent.
 //
-// A role the deployment defines whose step at step is of the type review gets one sentence, the
+// A role the deployment or the issue's plan defines whose step at step is of the type review gets one sentence, the
 // commit its own step's newest run read, ` Last reviewed commit: <sha>.`, which its row holds
 // (record.PhaseRow.ReviewedHead, written by the workflow's recordStepReview for a review step
 // alone; the first run of a second step of the role starts from the row of its step before,
@@ -65,7 +65,7 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 }
 
 // namesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
-// reviewer's, and a role the deployment defines, whose review step names its commit. So a stored
+// reviewer's, and a role the deployment or the issue's plan defines, whose review step names its commit. So a stored
 // task of such a role is marked as named (record.SuperviseRequest.RoundNamed), and the queue names
 // the others (queuedRow).
 func namesTheRound(role claim.Role) bool {

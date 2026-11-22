@@ -257,8 +257,8 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 // the walk in the caller's transaction, after any move of the task (moveTask), so a write that
 // names its phase itself is checked against the store and not against the caller's copy: one read
 // of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
-// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows. A workflow move
-// writes through writeIssueOn instead, on the walk it read once and moved.
+// four reads (issue_plans, plan_tasks, plan_steps, plan_roles) for a run with plan rows. A workflow
+// move writes through writeIssueOn instead, on the walk it read once and moved.
 func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -436,7 +436,7 @@ func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlac
 	return place, true
 }
 
-// lostStep is the first step w's task still has to run whose role d does not define (lostAt): the
+// lostStep is the first step w's task still has to run whose role neither d nor the plan in force defines (lostAt): the
 // step it stands at and each after it, or every step of a task at no act; none for a task at its
 // retro or its merge, done, left or stopped.
 func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
@@ -477,7 +477,7 @@ func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
 
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
 // phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
-// and the role itself where it runs as step, a role the deployment defines; the implementer at the
+// and the role itself where it runs as step, a role the deployment or the plan defines; the implementer at the
 // retro and the merger at the merge; and "" at no act or at a place the task does not hold. On a
 // task whose roles are Legion's own it answers phase.RoleFor of the phase the place derives.
 func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
@@ -499,7 +499,7 @@ func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
 
 // endingRole is the role whose step a move of w's task out of from ends, read on the walk before
 // the move: on a task with plan rows the role of the step at the task's place (RoleAt), which names
-// a role the deployment defines at step, and on an issue with none the role of the phase.
+// a role the deployment or the plan defines at step, and on an issue with none the role of the phase.
 func (w Walk) endingRole(from phase.Phase) claim.Role {
 	if w.Stored {
 		return w.RoleAt(w.Place)
