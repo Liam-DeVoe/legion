@@ -1267,7 +1267,12 @@ commit. Else the registry's tarball of the version (`https://registry.npmjs.org/
 its scope>-<version>.tgz`, one small download) names the skills it ships, each installed from the
 repository at the commit read; a version of neither ships nothing to the profile. Each read is a
 `version of <unit>` evidence item. The dev box's own plugin lists come first when two pin one
-package.
+package. A try of the tarball's download is given up after 60 s, its body included; a try that
+failed for a transient reason (that limit, a connection refused or reset, a name not resolved,
+an HTTP 429 or 5xx) is sent again after 5, 15, 45 and 135 s, as a GitHub read is, each retry said
+on standard error and counted with the GitHub reads' (`githubRetries`). A 404 is no tarball; any
+other failure, and a download that failed on every try (its error naming each try's), fails that
+profile's build, and the next build that needs the tarball downloads it again.
 
 A skill at its repository's root (a clone that is one skill, or a package whose manifest declares
 `.`) has the path `.` in a profile, which cases.ts's schema and load accept. A task profile is

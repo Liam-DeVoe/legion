@@ -21,6 +21,7 @@ import {
   pullTranscript,
   RESTATE_WINDOWS,
   readTranscript,
+  registryTarball,
   removeSecrets,
   SECRET_REMOVED,
   SPOOL_CHUNK,
@@ -6976,5 +6977,168 @@ describe("GithubReads", () => {
       expect(outcome).toContain("gh: Not Found (HTTP 404)");
     }
     expect(calls).toEqual([`repos/acme/request-timeout/git/trees/${COMMIT}?recursive=1`]);
+  });
+});
+
+describe("GithubReads.tarball", () => {
+  const ALPHA = "https://registry.npmjs.org/@acme/alpha/-/alpha-1.2.3.tgz";
+  const BYTES = new Uint8Array([31, 139, 8, 0]);
+  /** The time limit of a try here: short, so a row whose try meets it takes well under a second. */
+  const LIMIT_MS = 50;
+  /** One fetch of the registry, given the signal registryTarball gives it. */
+  type Fetch = (init: { readonly signal: AbortSignal }) => Promise<Response>;
+  /** A local registry (recorder.ts's) whose answers only the time limit ends: `/never` never
+   *  answers, and `/stall` answers a 200 of 1000 bytes and sends 3 of them. */
+  let registry: Recorder;
+  beforeAll(() => {
+    registry = startRecorder({
+      route: ({ path }) =>
+        path === "/stall"
+          ? new Response(new ReadableStream({ start: (sent) => sent.enqueue(new Uint8Array(3)) }), {
+              headers: { "content-length": "1000" },
+            })
+          : Promise.withResolvers<Response>().promise,
+    });
+  });
+  afterAll(() => registry.close());
+  /** A real fetch of `route` of the local registry. */
+  const local =
+    (route: string): Fetch =>
+    (init) =>
+      fetch(`${registry.url}${route}`, init);
+  /** The registry's answer `status`, with `body`. */
+  const answer =
+    (status: number, body: Uint8Array | null = null): Fetch =>
+    async () =>
+      new Response(body, { status });
+  /** A connection that failed as Bun 1.4.4's fetch fails one: a TypeError whose message opens with
+   *  its code. */
+  const failed =
+    (code: string, words: string): Fetch =>
+    async () => {
+      throw Object.assign(new TypeError(`${code}: ${words}`), { code });
+    };
+  /** The profile's reads, whose registry read is registryTarball's with the limit LIMIT_MS, its
+   *  n-th fetch (from 0) `fetches[n]`, each URL it asks kept in `asked`; a retry waits for no time,
+   *  each wait it asks for kept in `waits` and each line it says in `lines`. */
+  const reading = (fetches: readonly Fetch[]) => {
+    const asked: string[] = [];
+    const waits: number[] = [];
+    const lines: string[] = [];
+    const retries = new GhRetries(
+      {
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+        err: (line) => lines.push(line),
+      },
+      "build-cases"
+    );
+    const gh = async (): Promise<GhResult> => ({
+      code: 1,
+      stdout: "",
+      stderr: "no gh call is made here\n",
+    });
+    const reads = new GithubReads(gh, new Map(), retries, (name, version) =>
+      registryTarball(name, version, LIMIT_MS, (url, init) => {
+        const next = fetches[asked.length];
+        asked.push(url);
+        if (next === undefined) throw new Error(`fetch ${asked.length} of ${url} was not expected`);
+        return next(init);
+      })
+    );
+    return { reads, asked, waits, lines, retries };
+  };
+  const sentAgain = (wait: number, retry: number, failure: string) =>
+    `build-cases: a gh call failed (${failure}); sending it again in ${wait} s, retry ${retry} of 4`;
+
+  // Catches: a registry read with no time limit, whose try a network fault left unanswered, holding
+  // the build for ever (a screen sat 15 minutes in one).
+  test("a tarball read whose first try never answers is given up after its limit and sent again as a gh read is, its second try's bytes used, the retry counted and said", async () => {
+    const { reads, asked, waits, lines, retries } = reading([local("/never"), answer(200, BYTES)]);
+    expect(await reads.tarball("@acme/alpha", "1.2.3")).toEqual(BYTES);
+    expect(asked).toEqual([ALPHA, ALPHA]);
+    expect(retries.record()).toEqual({ "time limit": 1 });
+    expect(waits).toEqual([5_000]);
+    expect(lines).toEqual([sentAgain(5, 1, `timed out after ${LIMIT_MS} ms`)]);
+  });
+
+  // Catches: a limit that covers the answer's headers alone, so a body that stops half-way holds
+  // the build for ever.
+  test("a tarball whose body stops after its headers is given up after the limit too, and sent again", async () => {
+    let headers = false;
+    const { reads, asked, waits, lines, retries } = reading([
+      async (init) => {
+        const response = await local("/stall")(init);
+        headers = true;
+        return response;
+      },
+      answer(200, BYTES),
+    ]);
+    expect(await reads.tarball("@acme/alpha", "1.2.3")).toEqual(BYTES);
+    expect(headers).toBe(true);
+    expect(asked).toEqual([ALPHA, ALPHA]);
+    expect(retries.record()).toEqual({ "time limit": 1 });
+    expect(waits).toEqual([5_000]);
+    expect(lines).toEqual([sentAgain(5, 1, `timed out after ${LIMIT_MS} ms`)]);
+  });
+
+  // Catches: a version the registry does not have sent again for minutes, or a refusal for good
+  // taken as transient for a word of the package's name in its URL.
+  test("a tarball the registry does not have (404) is undefined, and a 403 fails at once naming its URL, though the package's name holds the word timeout; neither is sent again", async () => {
+    const missing = reading([answer(404)]);
+    expect(await missing.reads.tarball("@acme/alpha", "1.2.3")).toBeUndefined();
+    expect(missing.asked).toEqual([ALPHA]);
+    const forbidden = reading([answer(403)]);
+    const outcome = await forbidden.reads
+      .tarball("@acme/request-timeout", "1.2.3")
+      .then(() => "read", String);
+    const url = "https://registry.npmjs.org/@acme/request-timeout/-/request-timeout-1.2.3.tgz";
+    expect(outcome).toBe(`Error: ${url}: HTTP 403`);
+    expect(forbidden.asked).toEqual([url]);
+    for (const each of [missing, forbidden]) {
+      expect(each.retries.record()).toEqual({});
+      expect(each.waits).toEqual([]);
+      expect(each.lines).toEqual([]);
+    }
+  });
+
+  // Catches: a read that failed for a transient reason on every try failed with its last try's
+  // error alone, or its failure kept, so a later caller of that tarball gets it with no read.
+  test("a tarball read that fails for a transient reason on every try fails naming each try's failure, and the next read of that tarball reads the registry again", async () => {
+    const reset = "The socket connection was closed unexpectedly.";
+    const refused = "Unable to connect. Is the computer able to access the url?";
+    const { reads, asked, waits, lines, retries } = reading([
+      answer(503),
+      failed("ECONNRESET", reset),
+      answer(429),
+      failed("ECONNREFUSED", refused),
+      local("/never"),
+      answer(200, BYTES),
+    ]);
+    const outcome = await reads.tarball("@acme/alpha", "1.2.3").then(() => "read", String);
+    const tries = [
+      "HTTP 503",
+      `connection reset (ECONNRESET: ${reset})`,
+      "HTTP 429 (temporary failure: too many requests)",
+      `connection refused (ECONNREFUSED: ${refused})`,
+      `timed out after ${LIMIT_MS} ms`,
+    ];
+    expect(outcome).toBe(
+      `Error: ${ALPHA}: 5 tries: ${tries.map((failure, n) => `try ${n + 1}: ${failure}`).join("; ")}`
+    );
+    expect(retries.record()).toEqual({
+      "connection reset": 1,
+      "connection refused": 1,
+      "HTTP 503": 1,
+      "temporary failure": 1,
+    });
+    expect(waits).toEqual([5_000, 15_000, 45_000, 135_000]);
+    expect(lines).toEqual(
+      [5, 15, 45, 135].map((wait, n) => sentAgain(wait, n + 1, tries[n] ?? ""))
+    );
+    // The next read of the tarball reads the registry: the failure is not kept.
+    expect(await reads.tarball("@acme/alpha", "1.2.3")).toEqual(BYTES);
+    expect(asked).toEqual(Array(6).fill(ALPHA));
   });
 });
