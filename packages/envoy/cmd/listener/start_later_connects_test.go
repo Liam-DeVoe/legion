@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +15,128 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/config"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
+
+// laterStepWatchdog bounds each wait of the tests below on a connect of the start.
+const laterStepWatchdog = time.Minute
+
+// TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries: a connect of the start begun
+// with half a second of the start's 180 s left, as the role lane is when the main client took
+// 179.5 s to get in, still makes main's ten tries a second apart on a dial that fails for another
+// reason than a refusal, here a port where nothing listens: no start ends sooner than main's
+// would. A connect that ended at the bound would end after two tries, half a second apart.
+func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T) {
+	start := newNATSStart(listenerCredentialWait)
+	start.once.Do(func() { start.began = time.Now().Add(-listenerCredentialWait + 500*time.Millisecond) })
+	cfg := config.Service{MachineID: "start-near-the-bound", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}
+	type outcome struct {
+		lane roleLane
+		err  error
+		at   time.Time
+	}
+	began := time.Now()
+	returned := make(chan outcome, 1)
+	go func() {
+		lane, err := startRoleLane(cfg, nil, func(*nats.Msg) {}, nil, metrics.New(), logging.NewWithWriter("test", io.Discard), start)
+		returned <- outcome{lane, err, time.Now()}
+	}()
+	var got outcome
+	select {
+	case got = <-returned:
+	case <-time.After(laterStepWatchdog):
+		t.Fatalf("watchdog: the role lane's connect had not returned %s after it began", laterStepWatchdog)
+	}
+	took := got.at.Sub(began)
+	if got.err == nil {
+		got.lane.stopWatch()
+		got.lane.client.Close()
+		t.Fatalf("the role lane connected to a port where nothing listens, %s after it began", took)
+	}
+	t.Logf("the role lane's connect ended %s after it began: %v", took, got.err)
+	// Ten tries, one second apart: nine waits.
+	if took < 9*time.Second || took >= 20*time.Second {
+		t.Fatalf("the role lane's connect, begun with half a second of the start's bound left, ended %s after it began with %v, want after main's ten tries a second apart, in under 20 s", took, got.err)
+	}
+	if refusal := start.refusal.Load(); refusal != nil {
+		t.Fatalf("the start reported a refused dial as a refusal of its credential: %s", *refusal)
+	}
+}
+
+// TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential: the refusal a connect of the start
+// waited out is forgotten once that connect gets in, not once the whole step it belongs to has
+// succeeded. The role lane's connect waits out a refusal of the nkey, the server then admits the
+// nkey but refuses its subscription to the role lane (in the shared queue group and in the
+// machine's), and the step fails after its connect got in. /healthz then answers as on main, and
+// the line main ends the start with (natsStart.stepFailed) names the step's error and no
+// nats_credential: the credential is not what failed. Forgetting the refusal at the step's end
+// would leave /healthz reporting it and the line naming the credential.
+func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) {
+	seed, public := testnats.User(t)
+	_, fallback := testnats.User(t)
+	server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback), []string{"-js"}, true)
+	t.Setenv(bus.NkeySeedEnvVar, seed)
+	cfg := config.Service{MachineID: "start-later-step", NATSURLs: []string{uri}, NATSReplicas: 1}
+	start := newNATSStart(listenerCredentialWait)
+	base := serveStartRoutes(t, start)
+	type outcome struct {
+		lane roleLane
+		err  error
+	}
+	began := time.Now()
+	returned := make(chan outcome, 1)
+	go func() {
+		lane, err := startRoleLane(cfg, nil, func(*nats.Msg) {}, nil, metrics.New(), logging.NewWithWriter("test", io.Discard), start)
+		returned <- outcome{lane, err}
+	}()
+	for {
+		status, _ := probe(t, base, "/healthz")
+		if status == http.StatusServiceUnavailable {
+			break
+		}
+		if time.Since(began) > laterStepWatchdog {
+			t.Fatalf("watchdog: /healthz did not report the refusal of the role lane's connect within %s", laterStepWatchdog)
+		}
+		select {
+		case got := <-returned:
+			t.Fatalf("the role lane's step returned before the server admitted its nkey: %v", got.err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	refusesRoleLane := fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, contracts.RoleTopicPrefix+">")
+	if err := server.Reload(t, nkeyAuthorization(fallback, refusesRoleLane)); err != nil {
+		t.Fatalf("reload the server with the nkey admitted and its role-lane subscription refused: %v", err)
+	}
+	var got outcome
+	select {
+	case got = <-returned:
+	case <-time.After(laterStepWatchdog):
+		t.Fatalf("watchdog: the role lane's step had not returned %s after the server admitted its nkey", laterStepWatchdog)
+	}
+	if got.err == nil {
+		got.lane.stopWatch()
+		got.lane.client.Close()
+		t.Fatalf("the role lane subscribed where the server refuses its subscription")
+	}
+	t.Logf("the role lane's step failed after its connect got in: %v", got.err)
+	// Both checks below report, so a run shows each of the two places the refusal outlived its
+	// connect.
+	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
+		t.Errorf("/healthz after the role lane's connect got in and its subscription failed = %d %v, want main's 200 starting", status, fields)
+	}
+	var line bytes.Buffer
+	start.stepFailed(logging.NewWithWriter("test", &line), "core role subscription failed", got.err, os.LookupEnv)
+	if !strings.Contains(line.String(), "core role subscription failed") {
+		t.Fatalf("the line that ends the start is %q, want it to name the step", line.String())
+	}
+	if strings.Contains(line.String(), "nats_credential") || strings.Contains(line.String(), public) {
+		t.Errorf("the line that ends the start, %q, names the credential, though its connect got in and the step failed afterwards", line.String())
+	}
+}
 
 // laterConnectRefusedFor is how long TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects
 // has the server refuse the nkey while a later connect of the start runs: past the ten tries a

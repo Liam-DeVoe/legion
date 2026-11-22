@@ -43,11 +43,12 @@ type scriptedTry struct {
 // The schedule of a start that waits out refusals of its credential (waitOutCredentialRefusals), on
 // a clock only the start moves: it waits 1 s after the first refusal and doubles each wait up to
 // 10 s, cuts the last wait to end at its bound, counted from its first try, and lets a try in
-// progress at the bound finish and succeed. It begins no try after the bound: a wait the clock
-// wakes it from past the bound ends the start, except that the try at the bound, the one the
-// wait cut to the bound leads to, may begin up to startTryLateness late. A refusal of the stream's
-// ensure counts as one of the connect. Any other error counts toward main's ten tries in a row,
-// one second apart, and a refusal ends such a row.
+// progress at the bound finish and succeed. It begins no try after the bound on a refusal: a wait
+// the clock wakes it from past the bound ends the start, except that the try at the bound, the one
+// the wait cut to the bound leads to, may begin up to startTryLateness late. A refusal of the
+// stream's ensure counts as one of the connect. Any other error counts toward main's ten tries in
+// a row, one second apart, whatever the bound, so no start ends sooner than main's would; a refusal
+// ends such a row.
 func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 	refusal := fmt.Errorf("dial: %w", nats.ErrAuthorization)
 	denied := fmt.Errorf("ensure stream: %w: nats: Permissions Violation for Publish to \"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS\"", ErrPublishDenied)
@@ -114,15 +115,23 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 			wantRefused: 1,
 		},
 		{
-			name:  "other errors after a refusal end at the bound",
+			name:  "other errors after a refusal still make main's ten tries past the bound",
 			bound: 5 * time.Second,
 			tries: []scriptedTry{{err: refusal}, {err: other}},
-			// One wait of a second after the refusal, then main's second after each other error,
-			// until the bound: tries at 0, 1, 2, 3, 4 and 5 s.
-			wantSlept:   slices.Repeat([]time.Duration{second}, 5),
-			wantTries:   6,
+			// One wait of a second after the refusal, then main's second after each of the first
+			// nine other errors: tries at 0 to 10 s, the last five past the bound.
+			wantSlept:   slices.Repeat([]time.Duration{second}, 10),
+			wantTries:   11,
 			wantErr:     other,
 			wantRefused: 1,
+		},
+		{
+			name:      "a start begun with half a second of its bound left still makes main's ten tries",
+			bound:     500 * time.Millisecond,
+			tries:     []scriptedTry{{err: other}},
+			wantSlept: slices.Repeat([]time.Duration{second}, 9),
+			wantTries: 10,
+			wantErr:   other,
 		},
 		{
 			name:  "a wait the clock wakes the start from past the bound begins no try",
@@ -199,26 +208,54 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 	}
 }
 
-// A start that ends at its bound after refusals names the bound and the last refusal, and one
-// whose last try failed otherwise names that error as well as the last refusal.
+// A start that ends at its bound on a refusal names the bound and the refusal, and one that ends
+// after main's ten other errors in a row, past its bound, names the last of them and the last
+// refusal before them.
 func TestACredentialWaitThatEndsNamesTheLastRefusal(t *testing.T) {
 	refusal := fmt.Errorf("dial: %w", nats.ErrAuthorization)
 	other := errors.New("nats: no servers available for connection")
-	clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC)}
-	tries := 0
-	_, err := waitOutCredentialRefusals(5*time.Second, nil, clock.clock(), func() (*Client, error) {
-		tries++
-		if tries == 1 {
-			return nil, refusal
-		}
-		return nil, other
-	})
-	if err == nil || !errors.Is(err, nats.ErrAuthorization) || !errors.Is(err, other) {
-		t.Fatalf("the start ended with %v, want an error naming the last refusal and the last try's error", err)
-	}
-	for _, want := range []string{"5s", refusal.Error(), other.Error()} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("the start ended with %q, want it to name %q", err, want)
-		}
+	for _, row := range []struct {
+		name string
+		// try is the error of try n, from 1.
+		try  func(n int) error
+		want []string
+		is   []error
+	}{
+		{
+			name: "refused until the bound",
+			try:  func(int) error { return refusal },
+			want: []string{"5s", refusal.Error()},
+			is:   []error{nats.ErrAuthorization},
+		},
+		{
+			name: "refused once, then ten other errors",
+			try: func(n int) error {
+				if n == 1 {
+					return refusal
+				}
+				return other
+			},
+			want: []string{refusal.Error(), other.Error()},
+			is:   []error{nats.ErrAuthorization, other},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC)}
+			tries := 0
+			_, err := waitOutCredentialRefusals(5*time.Second, nil, clock.clock(), func() (*Client, error) {
+				tries++
+				return nil, row.try(tries)
+			})
+			for _, want := range row.is {
+				if !errors.Is(err, want) {
+					t.Fatalf("the start ended with %v, want an error wrapping %v", err, want)
+				}
+			}
+			for _, want := range row.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("the start ended with %q, want it to name %q", err, want)
+				}
+			}
+		})
 	}
 }

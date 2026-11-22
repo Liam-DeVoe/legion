@@ -260,7 +260,8 @@ type roleLane struct {
 // nkey one at a time, the main client can get in through the one server that has reloaded while
 // the lane's connect meets one that has not, so it waits out a refusal of the credential under
 // the start's bound (natsStart.option), which /healthz reports while it lasts and forgets once the
-// lane is open. A failure still ends the start, as main ends it.
+// lane's connect gets in (natsStart.admitted), before its subscribe and flush. A failure still ends
+// the start, as main ends it, and names the credential only when the connect did not get in.
 //
 // An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
 // takes no share of any project's role messages. A shared listener resolves a role's holder, an
@@ -275,7 +276,6 @@ func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler,
 	if err != nil {
 		return roleLane{}, err
 	}
-	start.succeeded()
 	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", queue))
 	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
 		return int64(client.SlowConsumers())

@@ -49,27 +49,32 @@ type startClock struct {
 var wallStartClock = startClock{now: time.Now, sleep: time.Sleep}
 
 // startTryLateness is how late past its bound a start that waits out refusals of its credential
-// may begin the try at the bound, the one its last wait, cut to end at the bound, leads to
-// (waitOutCredentialRefusals). A sleep on the process's clock ends after its wait, never at it, by
-// as long as the scheduler takes to run the start again, which on a loaded machine can be tens of
-// milliseconds or more; without this, the try the bound schedules would never begin. Any other
-// try, and the try at the bound past this, is not begun: the start ends instead. One second is the
-// scheduling margin the listener's exit at its bound is held to beside a try's connectTimeout.
+// may begin the try at the bound, the one the wait after a refusal, cut to end at the bound, leads
+// to (waitOutCredentialRefusals). A sleep on the process's clock ends after its wait, never at it,
+// by as long as the scheduler takes to run the start again, which on a loaded machine can be tens
+// of milliseconds or more; without this, the try the bound schedules would never begin. Any other
+// try after a refusal's wait, and the try at the bound past this, is not begun: the start ends
+// instead. One second is the scheduling margin the listener's exit at its bound is held to beside
+// a try's connectTimeout.
 const startTryLateness = time.Second
 
 // waitOutCredentialRefusals runs try, one try of a start, until it succeeds, and answers what it
 // made. After a refusal of the credential (credentialRefusal) it waits credentialRetryFirst before
-// the next try and doubles each wait up to credentialRetryCap; after any other error it waits
+// the next try and doubles each wait up to credentialRetryCap, each wait cut to end at bound,
+// counted from the first try; a try in progress at the bound may finish, its success counting, and
+// no try begins after the bound on a refusal: it reads the clock as each such wait ends, before
+// the try after it begins, and ends the start when the bound has passed. The one try a refusal's
+// wait lets begin past the bound is the try at the bound, the one the wait cut to end at the bound
+// leads to, which the clock may wake it for up to startTryLateness late.
+//
+// After any other error, a dial's that no wait for the credential repairs, it waits
 // connectRetryWait, the wait between the tries of a start without the wait, and such errors count
-// toward connectTries in a row, which a refusal ends. Every wait is cut to end at bound, counted
-// from the first try, and a try in progress at the bound may finish, its success counting. It
-// begins no try after the bound: it reads the clock as each wait ends, before the try after it
-// begins, and ends the start when the bound has passed. The one try it lets begin past the bound
-// is the try at the bound, the one the wait cut to end at the bound leads to, which the clock may
-// wake it for up to startTryLateness late. The start ends with the error of its last try at the
-// first of the two limits, naming the last refusal (credentialWaitEnded, withLastRefusal), and at
-// once on an error that no wait repairs (endsStart), with the error it carries, naming the last
-// refusal too.
+// toward connectTries in a row whatever the bound, so no start ends on them sooner than one
+// without the wait would: a connect begun with little of its bound left, as a later connect of the
+// listener's start can be, still makes those ten tries. A refusal ends such a row. The start ends
+// with the error of its last try at the first of the two limits, naming the last refusal
+// (credentialWaitEnded, withLastRefusal), and at once on an error that no wait repairs
+// (endsStart), with the error it carries, naming the last refusal too.
 //
 // refused, when not nil, is told of each refusal as it comes, with the wait before the next try is
 // due, or zero when the start ends on it at once. A wait that ends past the bound ends the start
@@ -88,45 +93,42 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 		if errors.As(err, &final) {
 			return nil, withLastRefusal(final.err, lastRefusal)
 		}
-		next, isRefusal := connectRetryWait, credentialRefusal(err)
-		if isRefusal {
-			lastRefusal, others = err, 0
-			next, retry = retry, min(retry*2, credentialRetryCap)
-		} else if others++; others == connectTries {
-			return nil, withLastRefusal(err, lastRefusal)
+		if !credentialRefusal(err) {
+			if others++; others == connectTries {
+				return nil, withLastRefusal(err, lastRefusal)
+			}
+			clock.sleep(connectRetryWait)
+			continue
 		}
+		lastRefusal, others = err, 0
+		next := retry
+		retry = min(retry*2, credentialRetryCap)
 		left := end.Sub(clock.now())
 		if left <= 0 {
-			if isRefusal && refused != nil {
+			if refused != nil {
 				refused(err, 0)
 			}
-			return nil, credentialWaitEnded(bound, err, lastRefusal)
+			return nil, credentialWaitEnded(bound, err)
 		}
 		atBound := next >= left
 		next = min(next, left)
-		if isRefusal && refused != nil {
+		if refused != nil {
 			refused(err, next)
 		}
 		clock.sleep(next)
 		if late := clock.now().Sub(end); late > 0 && (!atBound || late > startTryLateness) {
-			return nil, credentialWaitEnded(bound, err, lastRefusal)
+			return nil, credentialWaitEnded(bound, err)
 		}
 	}
 }
 
 // credentialWaitEnded is the error a start that waited out refusals of its credential ends with at
-// its bound: last, the error of its last try, and refusal, the last refusal, when there was one
-// and it is not last. A start that met no refusal ends with last as it is, which names the step
-// that failed: the credential wait it never needed is no part of why it ended.
-func credentialWaitEnded(bound time.Duration, last, refusal error) error {
-	switch {
-	case refusal == nil:
-		return last
-	case last == refusal:
-		return fmt.Errorf("bus: the NATS server still refused the credential when the start's %s wait ran out: %w", bound, last)
-	default:
-		return fmt.Errorf("bus: the start's %s credential wait ran out: %w (last refusal of the credential: %w)", bound, last, refusal)
-	}
+// its bound: refusal, the refusal its last try met. Only a refusal ends a start at its bound; a
+// try that failed otherwise counts toward the ten tries in a row of a start without the wait
+// (waitOutCredentialRefusals), whose last error the start ends with as it is (withLastRefusal), so
+// no words of the credential wait reach a start that ended for another reason.
+func credentialWaitEnded(bound time.Duration, refusal error) error {
+	return fmt.Errorf("bus: the NATS server still refused the credential when the start's %s wait ran out: %w", bound, refusal)
 }
 
 // withLastRefusal is err, the error of the last of connectTries tries in a row that failed other

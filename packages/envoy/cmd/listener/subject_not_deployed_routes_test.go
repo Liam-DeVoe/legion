@@ -249,3 +249,70 @@ func TestAPublishWhileTheDeployedStreamLacksATeamTopicAnswers503AndStoresNothing
 	rig.publishFrom(t, sender, topic, nil).requireStatus(t, "the same publish after the restore", http.StatusOK)
 	rig.requireStoredOnce(t, topic)
 }
+
+// A send to a role whose live holder's agent subject the deployed stream does not capture, as
+// during a hub move's quiesce, is not the 503 that says the message was not sent. The publish
+// route forwards a role message to its holder's agent subject (bus.Client.StartRequestStoredTo),
+// a publish no capture check refuses before it is sent, so the stream acknowledges no forward,
+// each forward is made again until the send's window (publishDeliveryWindow) ends, and the send is
+// the 504 delivery_failed. That 504 costs its sender one, as every 504 does (roleSend.timedOut):
+// the listener cannot say whether a forward stored the message, where the direct send's 503 above,
+// which sent nothing, costs nothing. The stream stores nothing on the holder's agent subject, while
+// it is narrowed or after the restore.
+//
+// It pins what the listener already does, which the hub move accepts: a change that refused the
+// forward before it was sent, and answered the not-sent 503 that costs nothing, fails it at the
+// status.
+func TestARoleSendWhileTheDeployedStreamLacksItsHoldersAgentSubjectAnswers504AndCostsOne(t *testing.T) {
+	const (
+		sender = "ses_not_deployed_role_sender"
+		holder = "ses_not_deployed_role_holder"
+		role   = "not-deployed-role"
+		what   = "a role send while the stream lacks its holder's agent subject"
+	)
+	agent := contracts.LegacyAgentSubject(holder)
+	rig := newNotDeployedRig(t)
+	claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
+	forwards := rig.interceptForwards(func(_ int, forward func() (func() error, error)) (func() error, error) {
+		return forward()
+	})
+	original := rig.narrow(t, agent)
+	baseline := rig.lastSeq(t)
+
+	// Step 1: the 504 once the window has ended, after at least one forward, and its one line,
+	// which names the sender because the send cost it one.
+	started := time.Now()
+	answer := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
+	elapsed := time.Since(started)
+	answer.requireStatus(t, what, http.StatusGatewayTimeout)
+	if elapsed < publishDeliveryWindow {
+		t.Fatalf("%s: answered after %s, want the %s window to have ended first", what, elapsed, publishDeliveryWindow)
+	}
+	if answer.Reason != string(sendDeliveryFailed) || answer.Holder != holder {
+		t.Fatalf("%s: body %s, want reason %s naming holder %s", what, answer.raw, sendDeliveryFailed, holder)
+	}
+	if *forwards == 0 {
+		t.Fatalf("%s: the send made no forward, so its 504 says nothing of a forward the stream did not store", what)
+	}
+	answer.requireOutcome(t, what, outcomeDeliveryFailed)
+	if answer.line["status"] != float64(http.StatusGatewayTimeout) {
+		t.Fatalf("%s: the line's status is %v, want 504; line %v", what, answer.line["status"], answer.line)
+	}
+	answer.requireNamed(t, what, sender)
+
+	// Step 2: the stream stored nothing, on the holder's agent subject or elsewhere.
+	if got := rig.storedOn(t, agent); got != 0 {
+		t.Fatalf("%s: the stream holds %d messages on %s, want none", what, got, agent)
+	}
+	if after := rig.lastSeq(t); after != baseline {
+		t.Fatalf("%s: the stream's last sequence moved from %d to %d, want no message stored", what, baseline, after)
+	}
+
+	// Step 3: once the stream captures the subject again it still holds no late copy of the
+	// forward, and the sender's next message is refused for its rate: the 504 cost it its one.
+	rig.restore(t, original, agent)
+	if got := rig.storedOn(t, agent); got != 0 {
+		t.Fatalf("after the restore the stream holds %d messages on %s, want none", got, agent)
+	}
+	rig.requireCount(t, sender, false)
+}

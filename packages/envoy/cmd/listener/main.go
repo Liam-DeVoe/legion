@@ -605,7 +605,8 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // The route serves this handler behind the start's own answer (registerProbeRoutes): while the
 // listener's start waits out a refusal of its NATS credential, /healthz answers 503 naming the
 // refusal before this handler is asked (natsStart.healthz). Before the start's first refusal and
-// once it has succeeded, this handler answers, 200 "starting" until deps is set.
+// once the connect that met it has got in (natsStart.admitted), this handler answers, 200
+// "starting" until deps is set.
 func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1624,7 +1625,7 @@ func runListener(credentialWait time.Duration) {
 	// The role lane (startRoleLane), the start's second connect; an edge listener opens none.
 	lane, err := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger, start)
 	if err != nil {
-		logger.Error("core role subscription failed", append([]slog.Attr{slog.String("error", err.Error())}, start.refusedCredential(os.LookupEnv)...)...)
+		start.stepFailed(logger, "core role subscription failed", err, os.LookupEnv)
 		client.Conn.Close()
 		os.Exit(1)
 	}
@@ -1648,8 +1649,7 @@ func runListener(credentialWait time.Duration) {
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
 	delivery, err := startSessionDelivery(cfg, inactiveThreshold, client, logger, edge, start)
 	if err != nil {
-		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own",
-			append([]slog.Attr{slog.String("error", err.Error())}, start.refusedCredential(os.LookupEnv)...)...)
+		start.stepFailed(logger, "session consumer connection failed: every session is delivered through a consumer of its own", err, os.LookupEnv)
 		client.Conn.Close()
 		os.Exit(1)
 	}

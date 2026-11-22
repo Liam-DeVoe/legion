@@ -53,13 +53,14 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
-	// credentialWait and credentialRefused are WithCredentialWait's bound and report, and
-	// startCheck WithStartCheck's check.
-	credentialWait    time.Duration
-	credentialRefused func(error)
-	startCheck        func(*Client) error
-	closedHook        func()
-	closeSettleBound  time.Duration
+	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
+	// reports, and startCheck WithStartCheck's check.
+	credentialWait     time.Duration
+	credentialRefused  func(error)
+	credentialAdmitted func()
+	startCheck         func(*Client) error
+	closedHook         func()
+	closeSettleBound   time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -266,26 +267,34 @@ func WithStreamMessageReads() ConnectOption {
 // ensure or a start check that fails for any other reason ends the start at once, with its own
 // error, as it ends a start without the option. After a refusal the start waits a second before
 // its next try and doubles each wait up to ten seconds, the last cut to end at bound; a try in
-// progress at the bound may finish, and its success counts, and no try begins after the bound
-// (startTryLateness says what a late wake from the last wait may still begin). A dial that fails
-// for any other reason counts toward the ten tries in a row, a second apart, that a start without
-// the option makes, and a refusal ends such a row. The start ends with an error at the first of the
-// two limits, naming the last refusal when it met one, and with the failed step's own error when it
-// met none (waitOutCredentialRefusals, credentialWaitEnded).
+// progress at the bound may finish, and its success counts, and no try begins after the bound on a
+// refusal (startTryLateness says what a late wake from the last wait may still begin). A dial that
+// fails for any other reason counts toward the ten tries in a row, a second apart, that a start
+// without the option makes, whatever the bound, so no start ends on such dials sooner than one
+// without the option would; a refusal ends such a row. The start ends with an error at the first of
+// the two limits, naming the last refusal when it met one, and with the failed step's own error
+// when it met none (waitOutCredentialRefusals, credentialWaitEnded, withLastRefusal).
 //
 // refused, when not nil, is handed each refusal as it comes, on the constructor's goroutine, so the
-// caller can report that its start is waiting (cmd/listener's /healthz answers 503 naming it). Each
-// refusal is also logged at WARN with the wait that follows it. A bound of zero or less is no wait:
-// the start of a client without the option, whose connect tries ten times whatever the error and
-// whose ensure fails at the server's first refusal. A start in the background
-// (WithConnectInBackground) never fails, so it ignores the option.
+// caller can report that its start is waiting (cmd/listener's /healthz answers 503 naming it).
+// admitted, when not nil, is called once the constructor's start has got in: connected, and, for
+// an owning client, ensured the stream, and run its start check, each a step that can refuse the
+// credential. It runs before the constructor returns, so a caller whose own step after the
+// constructor fails (a subscribe, a flush, a check of the server's version) knows its credential
+// was admitted and is not what failed. Each refusal is also logged at WARN with the wait that
+// follows it. A bound of zero or less is no wait: the start of a client without the option, whose
+// connect tries ten times whatever the error and whose ensure fails at the server's first refusal;
+// admitted is still called when it gets in. A start in the background (WithConnectInBackground)
+// never fails, so it ignores the option.
 //
 // cmd/listener alone passes it, through its start (natsStart.option): to the main client, the role
 // lane (ConnectRoleLane) and the session-consumer connection (ConnectSessionConsumers), each a
 // connect of the listener's start, so a listener started before the hub's servers have reloaded
 // its new nkey connects once they have, where it would exit and be restarted.
-func WithCredentialWait(bound time.Duration, refused func(error)) ConnectOption {
-	return clientOption(func(o *connectOpts) { o.credentialWait, o.credentialRefused = bound, refused })
+func WithCredentialWait(bound time.Duration, refused func(error), admitted func()) ConnectOption {
+	return clientOption(func(o *connectOpts) {
+		o.credentialWait, o.credentialRefused, o.credentialAdmitted = bound, refused, admitted
+	})
 }
 
 // WithStartCheck has the constructor's start in the foreground (Connect's or ConnectOwningStream's)
@@ -607,16 +616,18 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 
 // newClient makes the client Connect and ConnectOwningStream return, from what every try of its
 // start shares: the servers it may reach (refuseRemoteNATS), and the credential and the proxy the
-// environment names, each refused before any dial. A start in the foreground with
-// WithCredentialWait waits out a refusal of the credential (waitOutCredentialRefusals), each of
-// its tries a client of its own whose start dials once (startClient) and whose check then runs
+// environment names, each refused before any dial. A start in the foreground (credentialStart)
+// with WithCredentialWait waits out a refusal of the credential (waitOutCredentialRefusals), each
+// of its tries a client of its own whose start dials once (startClient) and whose check then runs
 // (WithStartCheck, checkedStart), and logs each refusal at WARN with the wait that follows it. A
 // try whose dial failed otherwise counts toward the ten tries in a row of a start without the
-// wait; a try whose install (an owning client's ensure of the stream among it) or start check
-// failed otherwise ends the start at once (endsStart), as such a failure ends a start without the
-// wait: no wait repairs a stream the server will not take, and the ensure's hang guard has already
-// waited out its whole bound. Every other start is one startClient that dials up to connectTries
-// times, connectRetryWait after each dial that fails, and whose check then runs.
+// wait, whatever the bound; a try whose install (an owning client's ensure of the stream among it)
+// or start check failed otherwise ends the start at once (endsStart), as such a failure ends a
+// start without the wait: no wait repairs a stream the server will not take, and the ensure's
+// hang guard has already waited out its whole bound. Every other start in the foreground is one
+// startClient that dials up to connectTries times, connectRetryWait after each dial that fails, and
+// whose check then runs. A start in the foreground that got in reports it to WithCredentialWait's
+// admitted before newClient returns.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
@@ -634,6 +645,17 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		client, _, err := startClient(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
 		return client, err
 	}
+	client, err := credentialStart(urls, ownsStream, opts, settings, dialer)
+	if err == nil && opts.credentialAdmitted != nil {
+		opts.credentialAdmitted()
+	}
+	return client, err
+}
+
+// credentialStart is newClient's start in the foreground: one checkedStart of up to connectTries
+// dials without WithCredentialWait's bound, and the start that waits out refusals of the
+// credential with it.
+func credentialStart(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer) (*Client, error) {
 	if opts.credentialWait <= 0 {
 		client, _, err := checkedStart(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
 		return client, err

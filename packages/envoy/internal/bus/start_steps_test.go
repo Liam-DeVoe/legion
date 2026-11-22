@@ -53,7 +53,7 @@ func TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry(t *testing.T
 	var refused atomic.Int32
 	started := time.Now()
 	client, err := ConnectOwningStream([]string{uri}, WithName(name), WithReplicas(3),
-		WithCredentialWait(time.Minute, func(error) { refused.Add(1) }))
+		WithCredentialWait(time.Minute, func(error) { refused.Add(1) }, nil))
 	took := time.Since(started)
 	if client != nil {
 		client.Close()
@@ -75,8 +75,9 @@ func TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry(t *testing.T
 	}
 }
 
-// A start that met no refusal of its credential and ends at its bound ends with its last try's own
-// error, naming the step that failed, and not with words of the credential wait it never needed.
+// A start that met no refusal of its credential ends after main's ten tries in a row, whatever its
+// bound, with its last try's own error, naming the step that failed, and not with words of the
+// credential wait it never needed.
 func TestACredentialWaitThatMetNoRefusalEndsWithItsLastTrysOwnError(t *testing.T) {
 	other := errors.New("nats: no servers available for connection")
 	clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC)}
@@ -85,8 +86,8 @@ func TestACredentialWaitThatMetNoRefusalEndsWithItsLastTrysOwnError(t *testing.T
 		tries++
 		return nil, other
 	})
-	if tries != 4 {
-		t.Errorf("the start made %d tries, want 4: at 0, 1, 2 and 3 s", tries)
+	if tries != connectTries {
+		t.Errorf("the start made %d tries, want main's %d, a second apart, its bound of 3 s notwithstanding", tries, connectTries)
 	}
 	if !errors.Is(err, other) {
 		t.Fatalf("the start ended with %v, want its last try's error", err)

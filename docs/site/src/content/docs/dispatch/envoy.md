@@ -801,16 +801,18 @@ from its first try. The same wait, under the same 180 seconds, covers the start'
 the role lane's and the session consumers', each on a connection of its own: one can meet a server
 that has not reloaded after another got in through one that has. Meanwhile `/healthz` answers
 `503` `unhealthy`, naming the last refusal, and `/livez` answers `204`. Once a server admits it, the
-start goes on as usual. A try in progress at 180 seconds may still succeed, and no try begins after
-it: when the last try begun by then fails, the listener exits `1`, its last line naming its
-credential (an nkey user by its public key) and the last refusal. A connect made after the 180
-seconds tries ten times, a second apart, as before. A dial that fails for any other reason ends the
-start after ten tries a second apart, and a reconcile that fails for any other reason, such as
-`ENVOY_NATS_REPLICAS` above `1` on a single server, ends it at once; its last line names the step
-that failed, and the credential only when a server refused it. An edge listener
-(`ENVOY_EDGE_PROJECTS`) only reads the stream and opens no role lane, and its start waits out a
-refused credential at the connect, and a grant that refuses that read, the same way. A stream the
-server does not hold, a read that times out, or any other failure of the read ends its start at
+start goes on as usual, and `/healthz` stops naming the refusal as soon as that connect gets in. A
+try in progress at 180 seconds may still succeed, and no try begins after it on a refusal: when the
+last try begun by then is refused, the listener exits `1`, its last line naming its credential (an
+nkey user by its public key) and the last refusal. A connect made after the 180 seconds tries ten
+times, a second apart, as before. A dial that fails for any other reason, whenever it fails, ends
+the start only after ten tries a second apart, as before, so a connect begun near the 180 seconds
+still makes them. A reconcile that fails for any other reason, such as `ENVOY_NATS_REPLICAS` above
+`1` on a single server, ends the start at once, and so does a step after a connect that got in, such
+as the role lane's subscribe; such a line names the step that failed, not the credential. An edge
+listener (`ENVOY_EDGE_PROJECTS`) only reads the stream and opens no role lane, and its start waits
+out a refused credential at the connect, and a grant that refuses that read, the same way. A stream
+the server does not hold, a read that times out, or any other failure of the read ends its start at
 once.
 
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
