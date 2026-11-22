@@ -531,3 +531,24 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 		})
 	}
 }
+
+// The owner's sign-off moves the task to its next step, and to the retro only where the acceptance
+// is the task's last step (workflow's signOff); the retro starts once the task's last step passed,
+// whichever step that is. Each daemon part is read alone, by its name. This shows the text is
+// loaded, never that an agent follows it.
+func TestSignOffMovesTheTaskToItsNextStepInTheGoParts(t *testing.T) {
+	moves := "it moves the task to its next step, or to `retro` where your acceptance is its last step"
+	for _, tc := range []struct {
+		part       string
+		want, gone []string
+	}{
+		{"architect-common.md", []string{"and moves the task to its next step, or to `retro` where your acceptance is its last step"}, []string{"and moves the issue to `retro`"}},
+		{"architect.md", []string{moves}, []string{"it moves the issue to `retro`"}},
+		{"architect-root.md", []string{moves}, []string{"it moves the issue to `retro`"}},
+		{"implementer.md", []string{"once the task's last step passed, whichever step that is"}, []string{"the architect's acceptance where the task has the step `acceptance:owner`"}},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+}
