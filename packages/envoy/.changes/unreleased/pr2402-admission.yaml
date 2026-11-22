@@ -36,7 +36,7 @@ body: |-
   and a maximum of 5.8) and answered lane routes at twice their stated second. A lane's refusal
   now counts against the longest a refused read waited, as a class queue's does, where that
   figure - which nothing exports, so the admission's own tests are what read it - was blind to
-  every refusal the three heavy read routes got. No admitted request holds its units across a wait
+  every refusal the four heavy read routes got. No admitted request holds its units across a wait
   on another server: a request whose caller's resolution waits on IAP's key set (an assertion
   under a key the set in memory lacks, or a set due to be read again), on the sign-in issuer
   renewing a lapsed confirmation, or on a service-account issuer's discovery or key set gives its

@@ -31,8 +31,9 @@
 # anchors_outside_logged_block not 0), each before any kubectl call; (c) up, seed, step,
 # replay-prepare, replay, db-size, collect, status, down and all run through to the end, and every
 # kubectl call any of them makes, the background heartbeat and sampler included, carries
-# `-n <namespace>`; each step and replay writes pg-stats-before.json and pg-stats-after.json; a
-# step's reset looks up the nats-box pod once; loadgen, envoy-dispatch and seed.json go into the
+# `-n <namespace>`; every render of postgres.yaml that up and db-size apply passes the Postgres
+# container `-c jit=off`; each step and replay writes pg-stats-before.json and pg-stats-after.json;
+# a step's reset looks up the nats-box pod once; loadgen, envoy-dispatch and seed.json go into the
 # runner only when it does not hold them, and a step's directory is removed from the runner once
 # copied back; up builds the stored-order checker from the dispatch commit's own archive with
 # GOWORK=off and CGO_ENABLED=0 and records its fields (dispatch_commit, built_from, overlay_source
@@ -1749,6 +1750,20 @@ echo '1600000 100000' >"$fake/cpu.max"
 run_cluster db-size --namespace "$ns" 4 15Gi
 ((RC != 0)) || fail "db-size accepted a cpu.max that is not the new limit"
 grep -q "cpu.max reads '1600000 100000', not '400000 100000'" "$tmp/out" || fail "db-size's cpu.max refusal does not name both values"
+
+# The copy's Postgres runs with JIT off, as Cloud SQL does (manifests/postgres.yaml cites the page
+# and INFRA-1950's measurement): every render of postgres.yaml applied so far, up's and db-size's,
+# passes the Postgres container -c jit=off among its args.
+pg_renders=$(grep -c '^# postgres\.yaml:' "$fake/applied.yaml" || true)
+jit_renders=$(awk '/^# [a-z.]+\.yaml(\.tmpl)?:/ { pg = ($2 == "postgres.yaml:"); args = 0 }
+  pg && /^ *args:$/ { args = 1; prev = ""; next }
+  args && /^ *#/ { next }
+  args && !/^ *- / { args = 0 }
+  args { sub(/^ *- /, ""); if (prev == "-c" && $0 == "jit=off") n++; prev = $0 }
+  END { print n + 0 }' "$fake/applied.yaml")
+((pg_renders >= 2 && jit_renders == pg_renders)) ||
+  fail "$jit_renders of the $pg_renders renders of postgres.yaml that up and db-size applied pass the Postgres container -c jit=off"
+pass "every render of postgres.yaml that up and db-size apply passes the Postgres container -c jit=off, as Cloud SQL runs without JIT"
 
 run_cluster collect --namespace "$ns" --upload-issue TEST-1
 ((RC == 0)) || fail "collect exited $RC"

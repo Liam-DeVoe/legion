@@ -23,6 +23,8 @@ const (
 	NoLane Lane = iota
 	// Search is GET /api/v1/search, the full-text union.
 	Search
+	// References is an issue's references, GET /api/v1/issues/{key}/references.
+	References
 	// IssueArtifacts is GET /api/v1/issues/{key}/artifacts, an issue's documents and files.
 	IssueArtifacts
 	// IssueList is GET /api/v1/issues, the filtered issue list.
@@ -30,8 +32,8 @@ const (
 	laneCount
 )
 
-var laneNames = [laneCount]string{NoLane: "", Search: "search", IssueArtifacts: "issue_artifacts",
-	IssueList: "issue_list"}
+var laneNames = [laneCount]string{NoLane: "", Search: "search", References: "references",
+	IssueArtifacts: "issue_artifacts", IssueList: "issue_list"}
 
 func (l Lane) String() string {
 	if l < 0 || l >= laneCount {
@@ -42,7 +44,7 @@ func (l Lane) String() string {
 
 // HeavyReadLanes are the lanes in order, for a caller that reports on each of them (the metrics
 // endpoint).
-func HeavyReadLanes() []Lane { return []Lane{Search, IssueArtifacts, IssueList} }
+func HeavyReadLanes() []Lane { return []Lane{Search, References, IssueArtifacts, IssueList} }
 
 // heavyReadLaneLimit is how many requests of one heavy read route may run at once in a process
 // of procs processors: heavyReadsPerCPU a processor, at least MinHeavyReadLane and at most
@@ -63,10 +65,10 @@ func HeavyReadLanes() []Lane { return []Lane{Search, IssueArtifacts, IssueList} 
 //	an issue's artifacts                      15.0 s over  52 calls, 288 ms each
 //	the issue list (recursive, filtered)      14.1 s over  95 calls, 149 ms each
 //
-// The references closure, the second of those, has no lane: an issue's references became a read
-// of one hop in each direction (refs.Closure), whose statements run one after another on the
-// request's one connection, none of them walking further than a bound depth, so it costs the
-// database what an ordinary read does. The lanes are the other three.
+// The references closure, the second of those, became a read of one hop in each direction, and
+// its route keeps its lane all the same: on a production-sized database that read still runs to
+// its statement timeout, holding its read unit 3.5 to 4 s, and without the lane those reads held
+// the read class while 307,933 other reads were refused (INFRA-592, c-scale at e151d049).
 //
 // Three - one a processor on that box - is measured too, against one and two, three runs each
 // (INFRA-592, j-report Step 5). The three answer the same load differently and the difference is
@@ -90,15 +92,15 @@ func HeavyReadLanes() []Lane { return []Lane{Search, IssueArtifacts, IssueList} 
 // Dispatch on a 16 vCPU database), a lane held at three refused requests at half the load, after
 // the burst had gone, that the copy had the processors to serve, and failed the recovery's 99%
 // on those refusals alone (INFRA-592, cluster run lt-20261105t223939-4a7a). MaxHeavyReadLane is
-// the read class's own cap shared among the three lanes, so the heavy reads together can never
-// hold more than the reads a process admits at all (MaxReadLimit).
+// the read class's own cap shared among the four lanes, so the heavy reads together can never hold
+// more than the reads a process admits at all (MaxReadLimit).
 //
 // It never falls below MinHeavyReadLane, three, the width that measurement found below which a
 // lane refuses requests the box would serve. One a processor alone gave a two-processor server
 // lanes of two, and on the load test's two-processor bed at 2x those refused 16 heavy reads
 // (15 of an issue's references, 1 of the issue list) that main, with no lanes, served with a p99
-// of 540 and 368 ms (INFRA-592, tester round 38, steps s-head-2x and s-main-2x). Three lanes of
-// three, each request one unit (a heavy read route sets no weight), hold 9 read units, within the
+// of 540 and 368 ms (INFRA-592, tester round 38, steps s-head-2x and s-main-2x). Four lanes of
+// three, each request one unit (a heavy read route sets no weight), hold 12 read units, within the
 // 14 the read class admits on one processor, so the floor admits no more heavy reads than the read
 // class can hold.
 func heavyReadLaneLimit(procs int) int {
@@ -112,7 +114,7 @@ const heavyReadsPerCPU = 1
 // (heavyReadLaneLimit says why).
 const MinHeavyReadLane = 3
 
-// MaxHeavyReadLane is the widest a heavy read lane grows: the read class's cap over the three lanes.
+// MaxHeavyReadLane is the widest a heavy read lane grows: the read class's cap over the four lanes.
 const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
 
 // fifoGate is a limit of places and the queue that waits for one, served first in, first out, one

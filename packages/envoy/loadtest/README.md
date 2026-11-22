@@ -3886,6 +3886,9 @@ its cores and working set from `cgroup.json`. It also holds:
 - No cloud-sql-proxy sidecar (0.14 to 0.19 cores in production, BG-11).
 - Postgres runs in a pod, not in Cloud SQL, with `track_commit_timestamp` on and the commit-time
   trigger. A setting that Cloud SQL's documentation does not give stays at PostgreSQL's default.
+  JIT is off (`jit=off`), as in Cloud SQL, whose features page lists LLVM JIT compilation as
+  unsupported; at PostgreSQL's default, on, INFRA-1950 measured JIT at about 1,330 ms of a
+  1,350 ms references statement.
 - The copy's database carries only Dispatch. Production's instance also serves the secrets broker
   and Legion's daemons. No synthetic load stands for them, also not on the 4 vCPU database.
 - Dispatch reaches NATS directly, not through the tailnet SOCKS5 proxy.

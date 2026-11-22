@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,17 +11,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// An issue's references read takes no heavy read lane since it reads one hop in each direction
-// (refs.Closure): its statements run one after another on its one connection, so a flood of it is
-// bounded by the read class alone, as an ordinary read is. Here the flood fills the read class to
-// its cap, every request of it admitted and running at once, where a lane of one place, the width
-// this limiter gives every lane, would have run one of them; and the reads of other routes sent
-// behind the flood wait for a unit and are admitted within their one wait, once the flood's reads
-// give theirs back. A lock on issues, which each references read's first statement (loadIssue)
-// waits for, holds the flood in flight until the other reads have queued behind it.
-func TestAFloodOfIssueReferencesAtTheReadCapStillAdmitsOtherReads(t *testing.T) {
-	const readCap = 4
-	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: 1, ReadWait: 5 * time.Second})
+// An issue's references read keeps a heavy read lane of its own: on a production-sized database
+// the one-hop read still runs to its statement timeout (INFRA-592, c-scale at e151d049), so each
+// such read holds its place for seconds, and a flood of it must be held to its lane rather than
+// take the read class from every other route. Here the lane is one place wide and its queue holds
+// two, and a lock on issues, which each references read's first statement (loadIssue) waits for,
+// holds the lane's read and the two queued behind it. A references read past those is refused at
+// once, 429 OVERLOADED naming the references lane, and the reads of another route sent while the
+// flood holds are admitted to the read units the lane left free and answered at once. Without the
+// lane the flood takes three of the read class's four units, the references reads past it take
+// the fourth or queue for it, and none of them is refused.
+func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t *testing.T) {
+	const (
+		readCap = 4
+		lane    = 1
+		// held is the lane's place and its queue, which holds twice the lane's limit.
+		held = 3 * lane
+		past = 2
+	)
+	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: lane, ReadWait: 5 * time.Second})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -28,45 +37,78 @@ func TestAFloodOfIssueReferencesAtTheReadCapStillAdmitsOtherReads(t *testing.T) 
 	createReferenceAPIComment(t, handler, issue.Key, "dispatch://CORE/artifact/design-notes")
 
 	release := lockTables(t, database, "issues")
-	flood := make(chan *httptest.ResponseRecorder, readCap)
-	for range readCap {
+	flood := make(chan *httptest.ResponseRecorder, held)
+	for range held {
 		go func() { flood <- issueReferencesRequest(t, handler, issue.Key, "") }()
 	}
-	pollUntil(t, 10*time.Second, "the read class full of references reads", func() bool {
-		return limiter.Stats()[admission.Read].InFlight == readCap
+	// Each read of the flood holds a read unit or waits in the lane's queue, holding none.
+	pollUntil(t, 10*time.Second, "the flood's references reads admitted or queued in their lane", func() bool {
+		return limiter.Stats()[admission.Read].InFlight+referencesLane(t, limiter).Queued == held
 	})
-	others := []string{"/api/v1/issues/" + issue.Key, "/api/v1/issues/" + issue.Key + "/events"}
-	answered := make(chan *httptest.ResponseRecorder, len(others))
-	for _, target := range others {
-		go func() { answered <- dispatchRequest(t, handler, http.MethodGet, target, nil, "alice") }()
+
+	refused := make(chan *httptest.ResponseRecorder, past)
+	for range past {
+		go func() { refused <- issueReferencesRequest(t, handler, issue.Key, "") }()
 	}
-	pollUntil(t, 10*time.Second, "the other reads queued behind the flood", func() bool {
-		return limiter.Stats()[admission.Read].Queued == len(others)
-	})
+	for range past {
+		select {
+		case response := <-refused:
+			body := response.Body.String()
+			assertRetryable(t, response.Result(), http.StatusTooManyRequests, admission.CodeOverloaded)
+			if !strings.Contains(body, "references lane") {
+				t.Fatalf("a references read past the lane's place and queue was refused %s, want the references lane named", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("a references read past the lane's place and queue was not answered within 2 s, want 429 OVERLOADED "+
+				"naming the references lane at once: the flood holds the read class (%+v)", limiter.Stats()[admission.Read])
+		}
+	}
+
+	others := make(chan *httptest.ResponseRecorder, readCap-lane)
+	sent := time.Now()
+	for range readCap - lane {
+		go func() { others <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "alice") }()
+	}
+	for range readCap - lane {
+		if response := awaitResponse(t, others); response.Code != http.StatusOK {
+			t.Fatalf("a read of another route sent while the flood held its lane: status=%d body=%s, want 200",
+				response.Code, response.Body.String())
+		}
+	}
+	if took := time.Since(sent); took > time.Second {
+		t.Fatalf("the reads of another route sent while the flood held its lane answered after %s, want at once",
+			took.Round(time.Millisecond))
+	}
+	if stats := referencesLane(t, limiter); stats.InFlight != lane || stats.Queued != 2*lane || stats.QueueFull != past {
+		t.Fatalf("the references lane holds %d, queues %d and refused %d for a full queue, want %d, %d and %d",
+			stats.InFlight, stats.Queued, stats.QueueFull, lane, 2*lane, past)
+	}
 	release()
 
-	for range readCap {
+	for range held {
 		response := awaitFloodResponse(t, flood)
 		if response.Code != http.StatusOK {
-			t.Fatalf("a references read of the flood: status=%d body=%s, want 200", response.Code, response.Body.String())
+			t.Fatalf("a references read the lane held or queued: status=%d body=%s, want 200", response.Code, response.Body.String())
 		}
 		if answer := decodeBody[model.IssueReferences](t, response); len(answer.Members) != 1 || answer.Members[0].Artifact.ID != design.ID {
-			t.Fatalf("a references read of the flood answered %#v, want Design notes alone", answer)
-		}
-	}
-	for range others {
-		if response := awaitFloodResponse(t, answered); response.Code != http.StatusOK {
-			t.Fatalf("a read behind the flood: status=%d body=%s, want 200", response.Code, response.Body.String())
+			t.Fatalf("a references read the lane held or queued answered %#v, want Design notes alone", answer)
 		}
 	}
 	if stats := limiter.Stats()[admission.Read]; stats.QueueFull != 0 || stats.WaitExceeded != 0 {
 		t.Fatalf("the read class refused reads during the flood: %+v, want none", stats)
 	}
-	for _, lane := range limiter.LaneStats() {
-		if lane.QueueFull != 0 || lane.WaitExceeded != 0 {
-			t.Fatalf("the %s lane refused requests during a flood of references reads: %+v", lane.Lane, lane)
+}
+
+// referencesLane reads the references lane's counts.
+func referencesLane(t *testing.T, limiter *admission.Limiter) admission.LaneStats {
+	t.Helper()
+	for _, stats := range limiter.LaneStats() {
+		if stats.Lane == admission.References {
+			return stats
 		}
 	}
+	t.Fatal("the limiter reports no references lane")
+	return admission.LaneStats{}
 }
 
 // awaitFloodResponse is awaitResponse with room for a loaded box: the flood's reads and the reads

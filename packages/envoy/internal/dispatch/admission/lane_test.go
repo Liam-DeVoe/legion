@@ -23,11 +23,11 @@ func TestALaneRunsOneRequestAtATimeAndHoldsNoOtherRouteBehindIt(t *testing.T) {
 		t.Fatalf("take the search lane: %v", err)
 	}
 	// Another lane, and a route in no lane, are untouched by the search lane's one place.
-	artifacts, err := enterLane(ctx, limiter, IssueArtifacts)
+	references, err := enterLane(ctx, limiter, References)
 	if err != nil {
-		t.Fatalf("take the issue_artifacts lane while the search lane is full: %v", err)
+		t.Fatalf("take the references lane while the search lane is full: %v", err)
 	}
-	artifacts()
+	references()
 	if none, err := enterLane(ctx, limiter, NoLane); err != nil {
 		t.Fatalf("a route of no lane was held behind the search lane: %v", err)
 	} else {
@@ -240,7 +240,7 @@ func waitForLane(t *testing.T, limiter *Limiter, lane Lane, queued int) {
 // keeps three and a sixteen-processor server is not held to that box's three; it is never
 // narrower than three, the width below which that measurement refused requests the box would
 // serve, so a one- or two-processor server keeps three too; and it stops at the read class's cap
-// over the three lanes, so the heavy reads together never exceed the reads a process admits.
+// over the four lanes, so the heavy reads together never exceed the reads a process admits.
 func TestALaneIsOneRequestWideAProcessorUpToTheReadClassesShare(t *testing.T) {
 	for _, c := range []struct{ procs, want int }{{1, 3}, {2, 3}, {3, 3}, {4, 4}, {7, 7}, {16, MaxHeavyReadLane}} {
 		if got := heavyReadLaneLimit(c.procs); got != c.want {
