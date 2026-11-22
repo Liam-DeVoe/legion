@@ -65,7 +65,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
 
-- On each `child-closed`, read the child's handoff, and edit the specs of open children it changes.
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
 
 ## 3. Children complete
 

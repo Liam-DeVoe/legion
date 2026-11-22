@@ -644,7 +644,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// claim routes answer; api.Failure, which adds the stable `code` the credential and
 		// workflow routes carry; api.PauseFailure, the Failure with what a refusal of the pause
 		// names beside it (contract 178); and api.PlanRefusal, the Failure with one reason for
-		// each cause of a refused plan beside it (contract 212). A client parses any of them on
+		// each cause of a refused plan beside it (contract 219). A client parses any of them on
 		// every answer that is not a success, so the fixture holds each and the record is the keys
 		// of the four read as one set. The pause refusals are the three the goldens hold
 		// (TestPauseRouteGoldens): the setting that turns the pause off, the pause that stands,

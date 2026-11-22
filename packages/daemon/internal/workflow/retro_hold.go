@@ -78,12 +78,14 @@ func (w heldParentWait) refusal() *intake.Refusal {
 	return intake.RetryOfHeldParentUntilTreeRuns(w.parent.Key, w.parent.Tree, w.lingers)
 }
 
-// reason is the reason posted beside the status a todo on the held root is set back to: the hold's
-// own retro-held sentence where any issue beneath is open (retroHeldNotice), and otherwise why its
-// tree runs nothing yet (intake.HeldParentWaitsForTree).
+// reason is the reason posted beside the status a todo on the held root is set back to, which the
+// person who set the todo reads: the issues beneath still open, the last of which starts the retro
+// (intake.HeldParentWaitsForChildren), or why its tree runs nothing yet
+// (intake.HeldParentWaitsForTree). It carries none of the architect's rules for ending a child,
+// which only the architect's retro-held notice gives (retroHeldNotice).
 func (w heldParentWait) reason() string {
 	if len(w.beneath) > 0 {
-		return retroHeldNotice(w.parent.Key, w.beneath).Reason
+		return intake.HeldParentWaitsForChildren(w.parent.Key, w.beneath)
 	}
 	return intake.HeldParentWaitsForTree(w.parent.Key, w.parent.Tree, w.lingers)
 }
