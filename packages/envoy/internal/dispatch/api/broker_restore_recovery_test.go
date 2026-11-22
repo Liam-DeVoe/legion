@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recoveryRig is a Dispatch server and a real broker (ciphertest.NewRig) for the runbook's
@@ -740,19 +741,14 @@ func TestTheBrokerRestoredBlockTakesTheApprovalLockBeforeTheSessionRow(t *testin
 	}
 	ran := make(chan error, 1)
 	go func() { ran <- runBlockIn(r.dispatch.Pool, block.statements, args) }()
-	for deadline := time.Now().Add(time.Minute); ; time.Sleep(20 * time.Millisecond) {
+	testwait.Eventually(t, "the block to wait on a lock", func() bool {
 		var waiting int
 		if err := r.dispatch.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
 			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the block neither finished nor waited on a lock within a minute")
-		}
-	}
+		return waiting > 0
+	})
 	// Ending the member's account writes their session row, as people_account_ends_sessions does.
 	if tag, err := write.Exec(ctx, `update user_sessions set generation = generation + 1 where login = $1`, email); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("the owner's write of the member's session row while the block waits: %d rows, %v; want the row granted, the block holding no session row while it waits for the approval lock", tag.RowsAffected(), err)
@@ -765,8 +761,8 @@ func TestTheBrokerRestoredBlockTakesTheApprovalLockBeforeTheSessionRow(t *testin
 		if err != nil {
 			t.Fatalf("the block after the owner's write committed: %v; want it to commit", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the block did not finish within 30 s of the owner's commit")
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatal("the block did not finish after the owner's commit")
 	}
 }
 
