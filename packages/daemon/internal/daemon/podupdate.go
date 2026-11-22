@@ -2460,11 +2460,21 @@ func (s *supervision) endRoundWhosePodWent(ctx context.Context, issue string, gr
 	s.endPodUpdates(issue, group, round)
 }
 
-// repositoryMove is a repository an issue has left and the one its record holds now, as a message
-// of a round on the issue names them (podWentMessage, workspaceLostMessage). The zero value is no
-// move, and roundMove sets the two together or neither.
+// repositoryMove is what a message of a round on the issue says of the repository the round's pod
+// was built from (podWentMessage, workspaceLostMessage), as roundMove reads it. The zero value is
+// no move: the record was read and holds that repository, or the round recorded none, and the
+// message sends each role to origin. from and to together are a move: from is the repository the
+// pod was built from, and to the one the record holds now. from alone is the round's repository
+// where the record could not be read (unread).
 type repositoryMove struct {
 	from, to ghrepo.Repository
+}
+
+// unread is whether the message names the round's own repository because the issue's record
+// could not be read (roundMove). Origin in the next pod is then unknown: a correction can have
+// moved the record, so origin can hold none of the work the roles pushed.
+func (m repositoryMove) unread() bool {
+	return !m.from.IsZero() && m.to.IsZero()
 }
 
 // roundMove is the move a message of a round on the issue names: the repository the round's pod
@@ -2474,10 +2484,15 @@ type repositoryMove struct {
 // stood at the round's open: a correction while the round ran moved the record on, whatever drift
 // opened the round, and the issue's next pod is built from the record as it stands now. It is no
 // move for a round that recorded no repository, whose pod named none, and for a round whose
-// issue's record holds the pod's repository or cannot say which repository it holds.
+// issue's record holds the pod's repository. A record that cannot be read is the round's own
+// repository alone (repositoryMove.unread), never no move: a message that sent each role to
+// origin would send it, after a correction, to a repository that holds none of its work.
 func (s *supervision) roundMove(ctx context.Context, issue string, group []supervise.Claim, round string) repositoryMove {
 	built := roundRepository(group, round)
-	recorded := s.recordedLeft(ctx, issue, built)
+	recorded, read := s.recordedLeft(ctx, issue, built)
+	if !read {
+		return repositoryMove{from: built}
+	}
 	if recorded.IsZero() {
 		return repositoryMove{}
 	}
@@ -3021,7 +3036,7 @@ func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) (g
 			"issue", issue, "error", err)
 		return ghrepo.Repository{}, ""
 	}
-	recorded := s.recordedLeft(ctx, issue, built)
+	recorded, _ := s.recordedLeft(ctx, issue, built)
 	if recorded.IsZero() {
 		return built, ""
 	}
@@ -3033,29 +3048,32 @@ func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) (g
 // zero Repository wherever nothing says it has: no pod repository, a deployment with no workflow
 // (plan.recordedRepository nil), an issue the record does not hold, a record that names the
 // pod's repository, and a record that cannot be read or whose name is no repository, each of the
-// last two logged. The round's open reads it (repositoryDrift), and so does each message of the
-// round on the issue (roundMove), each at its own moment.
-func (s *supervision) recordedLeft(ctx context.Context, issue string, pod ghrepo.Repository) ghrepo.Repository {
+// last two logged. read is false for those last two alone, the record whose answer nobody has:
+// the round's open adds no reason for it (repositoryDrift), as for every unknown, while a message
+// of the round on the issue names the round's own repository for it rather than origin
+// (roundMove), since origin in the next pod is the record's repository, which nothing read. Each
+// reads it at its own moment.
+func (s *supervision) recordedLeft(ctx context.Context, issue string, pod ghrepo.Repository) (left ghrepo.Repository, read bool) {
 	if pod.IsZero() || s.plan.recordedRepository == nil {
-		return ghrepo.Repository{}
+		return ghrepo.Repository{}, true
 	}
 	recorded, err := s.plan.recordedRepository(ctx, issue)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: read the repository this issue's record holds", "issue", issue, "pod", pod.String(), "error", err)
 		}
-		return ghrepo.Repository{}
+		return ghrepo.Repository{}, false
 	}
 	if !s.plan.repositories.left(pod.String(), recorded) {
-		return ghrepo.Repository{}
+		return ghrepo.Repository{}, true
 	}
-	left, err := ghrepo.Parse("the repository this issue's record holds", recorded)
+	left, err = ghrepo.Parse("the repository this issue's record holds", recorded)
 	if err != nil {
-		s.log.Error("supervise: the repository this issue's record holds is no repository; the issue is read as on its pod's",
+		s.log.Error("supervise: the repository this issue's record holds is no repository; it is read as unknown",
 			"issue", issue, "pod", pod.String(), "error", err)
-		return ghrepo.Repository{}
+		return ghrepo.Repository{}, false
 	}
-	return left
+	return left, true
 }
 
 // reasonSeparator joins the reasons a round is opened for into the one string the round records
@@ -3669,7 +3687,9 @@ func roundOpenedFor(reasons string) string {
 // repository the pod was built from, and the new pod's origin is the one the issue's record holds
 // now. So where moved is a move (roundMove), the last sentence names both repositories and sends
 // a role to the old one's issue branch (pushedWorkMessage), and what it says of a kept volume
-// names the old repository's workspace (keptDiskMessage).
+// names the old repository's workspace (keptDiskMessage). Where the record could not be read
+// (repositoryMove.unread), the same sentences name the pod's repository and say that the daemon
+// does not know the new pod's origin.
 func podWentMessage(issue, round, reasons string, lost []supervise.Claim, kept bool, moved repositoryMove) string {
 	disk := "The pod's disk went with the pod. Work that these roles did not push is lost."
 	if kept {
@@ -3689,10 +3709,20 @@ The daemon starts each role again, in the same session, on a new pod. %s`,
 // at origin. Where moved is a move (roundMove), every push a role made before the pod went is on
 // the issue branch of the repository the pod was built from, and the new pod's origin is the
 // repository the issue's record holds now, so the sentence names both repositories and sends a
-// role to the old one's issue branch.
+// role to the old one's issue branch. Where the record could not be read
+// (repositoryMove.unread), the new pod's origin is unknown, so the sentence sends a role to the
+// issue branch of the pod's repository and says that the daemon could not read the record.
 func pushedWorkMessage(moved repositoryMove) string {
-	if moved == (repositoryMove{}) {
+	switch {
+	case moved == (repositoryMove{}):
 		return "Each role must read its issue branch at origin to see the work that it pushed."
+	case moved.unread():
+		return fmt.Sprintf("Work that each role pushed before the pod went "+
+			"is on the issue branch of the repository `%[1]s`. "+
+			"The daemon could not read the repository that this issue's record holds now. "+
+			"It does not know which repository is origin in the new pod. "+
+			"To see that work, each role must read the issue branch of the repository `%[1]s`.",
+			moved.from)
 	}
 	return fmt.Sprintf("Work that each role pushed before the pod went "+
 		"is on the issue branch of the repository `%[1]s`. "+
@@ -3706,7 +3736,9 @@ func pushedWorkMessage(moved repositoryMove) string {
 // (workspaceLostMessage, workspaceRead.found): "at origin" where moved is no move. Where moved is
 // a move (roundMove), it names the repository the pod was built from: the read of the workspace
 // ran in that pod, whose origin was that repository, and a role reads the message in the new pod,
-// whose origin is the repository the issue's record holds now, which holds none of that work.
+// whose origin is the repository the issue's record holds now, which holds none of that work. It
+// names that repository too where the record could not be read (repositoryMove.unread), since the
+// new pod's origin is then unknown.
 func podOrigin(moved repositoryMove) string {
 	if moved == (repositoryMove{}) {
 		return "at origin"
@@ -3720,12 +3752,25 @@ func podOrigin(moved repositoryMove) string {
 // built from and the one the issue's record holds now), "the next pod mounts the volume" alone
 // would mislead: the work is in the old repository's workspace, and the next pod makes a
 // workspace of the new repository beside it, where every role works, and no role works in the old
-// one again. So the message names that workspace's path and how a role keeps the work. The path
+// one again. So the message names that workspace's path and how a role keeps the work. Where the
+// record could not be read (repositoryMove.unread), the next pod's repository is unknown, so the
+// message names the path and says how a role keeps the work if that pod makes a workspace of
+// another repository; pushedWorkMessage says that the daemon could not read the record. The path
 // is the one the Sandbox runtime's pod gives the workspace (sandbox.IssueWorkspaceDir), as that
 // runtime is the one that keeps a volume (runtime.IssueVolumeReader).
 func keptDiskMessage(issue, unpushed string, moved repositoryMove) string {
 	if moved != (repositoryMove{}) {
 		if old, err := sandbox.IssueWorkspaceDir(moved.from, issue); err == nil {
+			if moved.unread() {
+				return fmt.Sprintf("%[3]s is on that volume, "+
+					"in the workspace of `%[1]s` at `%[2]s`. "+
+					"The next pod of this issue mounts the volume. "+
+					"If that pod makes a workspace of a different repository, "+
+					"read that work at `%[2]s` in that pod. "+
+					"Put that work on the issue branch in the new workspace. "+
+					"Then push the issue branch.",
+					moved.from, old, unpushed)
+			}
 			return fmt.Sprintf("This issue moved from the repository `%[1]s` "+
 				"to the repository `%[2]s`. "+
 				"%[4]s is on that volume, "+
@@ -3752,13 +3797,13 @@ func keptDiskMessage(issue, unpushed string, moved repositoryMove) string {
 // true, the pod's disk is a kept volume that is still there and that the issue's next pod mounts
 // (roundKeptVolume), so the message says the work is on that volume, as podWentMessage does.
 //
-// Where moved is a move (roundMove), the message says of it what podWentMessage says, in the same
-// sentences (pushedWorkMessage, keptDiskMessage), and each of its sentences that names the work
-// that no branch holds, what the read found included, names it by the repository the pod was
-// built from rather than by origin (podOrigin): in the new pod, origin is the repository the
-// record holds now, which holds none of that work. The issue's spec requires this message
-// (dispatch://INFRA-4109 R1, R7). Another agent reads it, so it follows ASD-STE100, as
-// podWentMessage does.
+// Where moved is a move (roundMove), or the record could not be read (repositoryMove.unread), the
+// message says of it what podWentMessage says, in the same sentences (pushedWorkMessage,
+// keptDiskMessage), and each of its sentences that names the work that no branch holds, what the
+// read found included, names it by the repository the pod was built from rather than by origin
+// (podOrigin): in the new pod, origin is the repository the record holds now, which holds none of
+// that work. The issue's spec requires this message (dispatch://INFRA-4109 R1, R7). Another agent
+// reads it, so it follows ASD-STE100, as podWentMessage does.
 func workspaceLostMessage(issue, round, reasons string, named []supervise.Claim, read workspaceRead, kept bool,
 	moved repositoryMove) string {
 	roles := "The round did not wait for these roles, because no process of these roles ran in the pod: "

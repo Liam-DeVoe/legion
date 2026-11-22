@@ -524,10 +524,11 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 // follows refuses the bundle for its repository and moves it to workspace_bundles_refused, where
 // the work stays (TestABundleOfARepositoryTheIssueHasLeftIsRefusedAndKept).
 //
-// The drop decides by the take's own rule (ghrepo.Renames.Left). A configured rename's two names
-// are one repository, and so is a record with no repository and a bundle saved before the column,
-// since an empty name is never a statement that the issue has left anything: each of those drops
-// the bundle as before.
+// The drop decides by the take's own rule (bundleOffer.refusedForRepository, over
+// ghrepo.Renames.Left). A configured rename's two names are one repository, and a record with no
+// repository is never a statement that the issue has left anything: each of those drops the
+// bundle as before. A bundle that names no repository is work of a repository nothing recorded,
+// which the take refuses whatever the record holds, so the drop keeps it for that take too.
 func TestAKeptVolumeDropsNoBundleOfARepositoryTheIssueHasLeft(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
 	keptSince := at.Add(-time.Hour)
@@ -544,7 +545,8 @@ func TestAKeptVolumeDropsNoBundleOfARepositoryTheIssueHasLeft(t *testing.T) {
 			afterTake: runtime.WorkspaceBundleRefusedRepository},
 		{name: "the record names the rename's other name", saved: savedRepo, recorded: "acme/gadgets", left: renamed, dropped: true},
 		{name: "the record names no repository", saved: savedRepo, recorded: "", left: noRenames, dropped: true},
-		{name: "the bundle was saved before the column", saved: "", recorded: "zeta/tools", left: noRenames, dropped: true},
+		{name: "the bundle names no repository", saved: "", recorded: "zeta/tools", left: noRenames,
+			afterTake: runtime.WorkspaceBundleRefusedRepository},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -895,39 +897,63 @@ func TestARefusedBundleOutlivesEveryLaterSaveAndDeleteOfTheIssuesBundle(t *testi
 }
 
 // The repository refusal reads two names and refuses on the difference alone. A bundle of the
-// repository the issue is recorded on now is the ordinary case and is sent, and so is a row
-// saved before the repo column, whose repository nothing recorded: such a row behaves as it did
-// before this release.
+// repository the issue is recorded on now is the ordinary case and is sent. A row that names no
+// repository is not this case (TestABundleWithNoRepositoryIsRefusedAndKept).
 func TestABundleOfTheIssuesOwnRepositoryIsStillSent(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		name string
-		repo string
-	}{
-		{name: "the repository the issue is recorded on", repo: savedRepo},
-		{name: "a row saved before the repo column", repo: ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			s := migratedStore(t)
-			saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"),
-				Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
-			if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, tc.repo, saved); err != nil {
-				t.Fatal(err)
-			}
-			recordIssueOn(t, s, "INFRA-945", savedRepo)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, savedRepo, saved); err != nil {
+		t.Fatal(err)
+	}
+	recordIssueOn(t, s, "INFRA-945", savedRepo)
 
-			read, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-replacement", at.Add(time.Minute), noRenames)
-			if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != string(saved.Bundle) {
-				t.Fatalf("the replacement pod was answered %q (%v, %v), want the saved work", read.Bundle, take, err)
-			}
-			if read.Repo != tc.repo {
-				t.Fatalf("the bundle reads back as work of %q, want %q: the row answers the repository it was saved under", read.Repo, tc.repo)
-			}
-			if pod, outcome := bundleAttempt(t, s, "INFRA-945"); pod != "pod-replacement" || outcome != "sent" {
-				t.Fatalf("the row records the attempt as %q by %s, want sent to the pod that asked", outcome, pod)
-			}
-		})
+	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-replacement", at.Add(time.Minute), noRenames)
+	if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != string(saved.Bundle) {
+		t.Fatalf("the replacement pod was answered %q (%v, %v), want the saved work", read.Bundle, take, err)
+	}
+	if read.Repo != savedRepo {
+		t.Fatalf("the bundle reads back as work of %q, want %q: the row answers the repository it was saved under", read.Repo, savedRepo)
+	}
+	if pod, outcome := bundleAttempt(t, s, "INFRA-945"); pod != "pod-replacement" || outcome != "sent" {
+		t.Fatalf("the row records the attempt as %q by %s, want sent to the pod that asked", outcome, pod)
+	}
+}
+
+// A bundle whose row names no repository is work whose repository nothing recorded: a row an
+// earlier release saved, before the column or after a roll back to it. The issue's record can
+// have moved since, so the take reads the empty name as unknown and never as the issue's own
+// repository: it refuses the bundle for its repository, sends nothing, and moves it whole to
+// workspace_bundles_refused, where the work stays and the daemon writes on the issue where it is
+// (internal/daemon's bundleRepositoryMessage). The refusal is the bundle's one attempt. Control: a
+// take that reads the empty name as no change sends the work to the pod.
+func TestABundleWithNoRepositoryIsRefusedAndKept(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of an unknown repository"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, "", saved); err != nil {
+		t.Fatal(err)
+	}
+	recordIssueOn(t, s, "INFRA-945", savedRepo)
+
+	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-replacement", at.Add(time.Minute), noRenames)
+	if err != nil || take != runtime.WorkspaceBundleRefusedRepository {
+		t.Fatalf("the replacement pod was answered %v (%v), want the bundle refused: nothing recorded its repository", take, err)
+	}
+	if len(read.Bundle) != 0 || read.Repo != "" || read.Head != saved.Head {
+		t.Fatalf("the refusal answered %d bytes of the work of %q at %s, want no bytes and the save's own empty repository and head %s",
+			len(read.Bundle), read.Repo, read.Head, saved.Head)
+	}
+	kept := refusedBundles(t, s, "INFRA-945")
+	if len(kept) != 1 || kept[0].release != 11 || kept[0].repo != "" || kept[0].refused != "pod-replacement" || !bytes.Equal(kept[0].bundle, saved.Bundle) {
+		t.Fatalf("workspace_bundles_refused holds %+v, want the bundle of release 11 whole, refused to the pod that asked", kept)
+	}
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-after-it", at.Add(time.Hour), noRenames); err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod after the refusal was answered %v (%v), want nothing: the refusal was the bundle's one attempt", take, err)
 	}
 }
 

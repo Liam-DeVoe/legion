@@ -701,9 +701,10 @@ func savedWorkspaceBundle(st *store.Store, project string, left func(saved, reco
 // project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
 // record is another project's daemon's, and a pod of this daemon drops none of it. It follows the
 // take's repository rule by the same left (repositories.left): a bundle of a repository the issue
-// has left is not dropped, because the volume holds that work in the old repository's workspace,
-// which the pod does not work in. The take that runs next refuses it, and the daemon writes on the
-// issue where the work is (tellBundleRepositoryRefused).
+// has left, or one that names no repository, is not dropped, because the volume holds that work in
+// the workspace of its own repository, which the pod does not work in, or in one nothing recorded.
+// The take that runs next refuses it, and the daemon writes on the issue where the work is
+// (tellBundleRepositoryRefused).
 func heldWorkspaceBundle(st *store.Store, project string, left func(saved, recorded string) bool) runtime.HeldWorkspaceBundleDrop {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
 		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince, left)

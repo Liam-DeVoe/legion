@@ -35,9 +35,9 @@ import (
 // reads, because the caller is what can read the pod (the daemon's
 // outbox.bundleIssueWorkspace, over issuePodRepository): the record's own repository is not the
 // same answer while a correction is waiting for the pod it moved to be replaced, and the pod's
-// is the one the work is in. An empty repo is an issue the workflow does not record, since the
-// caller falls back to the record's repository where the runtime answers none; it is stored as
-// it is given and refuses nothing, which is what a row saved before this column reads as.
+// is the one the work is in. The caller cancels the save where it cannot read the pod's
+// repository, so an empty repo is no save of this release's. It is stored as it is given, and the
+// take refuses it for its repository, as it refuses a row an earlier release saved with none.
 //
 // The save ends the issue's bundle refusal in the same statement (RecordBundleRefusal): the
 // work fit this time, so nothing is left for the idle rule to hold the pod for.
@@ -128,10 +128,14 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // nothing is sent. The pod's workspace is a clone of the issue's repository now and holds none
 // of the saved commits' bases, so the bundle could not be applied there at all, and the daemon
 // writes on the issue where the work is instead (internal/daemon's bundleRepositoryMessage). A
-// row whose repo is empty — one saved before the column — and a record that names no repository
-// are each read as an empty name, so neither refuses anything: a name nothing recorded is never a
-// statement that the issue has left anything. An issue project does not record is answered
-// nothing before any of this (the paragraph on whose bundle it is, above).
+// row whose repo is empty — one an earlier release saved, which writes no repository, and which
+// the migration that added the column found no record to fill from or never saw, as after a roll
+// back to that release — is refused the same way (bundleOffer.refusedForRepository): nothing says
+// which repository its work is of, and the issue's record can have moved since, so sending it
+// could put work of one repository into a clone of another. A record that names no repository
+// refuses nothing by itself: a name nothing recorded on the issue's side is never a statement
+// that the issue has left anything. An issue project does not record is answered nothing before
+// any of this (the paragraph on whose bundle it is, above).
 //
 // A refusal for the repository moves the row out of workspace_bundles and into
 // workspace_bundles_refused, in the transaction that records it. workspace_bundles holds one
@@ -175,7 +179,7 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 		}
 		outcome = "refused_older"
 		switch {
-		case left(offer.repo, offer.recorded):
+		case offer.refusedForRepository(left):
 			outcome = "refused_repository"
 		case offer.savedBy:
 			outcome = "sent"
@@ -275,7 +279,7 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // the bundle it deleted, and true. It answers false, having deleted nothing, when the issue has no
 // bundle of project's, when the bundle had its one attempt already, when the pod is the pod the
 // work came off (source_pod_uid), when the Sandbox was not created before the save's own second,
-// and when the issue has left the repository the work is of.
+// and when the issue has left the repository the work is of or the row names none.
 //
 // It deletes the row a confirmed restore deletes (DeleteRestoredWorkspaceBundle), under the take's
 // own condition (offeredBundle), and it reads none of the body: a bundle runs to tens of
@@ -295,15 +299,16 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // idle period after the Sandbox's first pod, and a reset makes its Sandbox after a later pod's
 // init container failed, so a skew of seconds does not change the answer.
 //
-// The take's repository rule stands too, and left decides it as it decides the take's. A bundle
-// of a repository the issue has left is kept for the take, which refuses it for its repository
-// and moves it to workspace_bundles_refused, and the daemon writes on the issue where the work is.
-// The kept volume holds that work, but in the workspace of the repository the issue left: a
-// workspace's directory names its repository (workspace.Location), so the pod of the issue's
-// repository now works in another workspace on the same volume, and the volume goes at a reset
-// or at the issue's close. So the volume is no reason to delete that bundle. A row with no
-// repository, saved before the column, and a record that names none, are each an empty name,
-// which left never reads as a change, so the drop deletes such a row as it deletes any other.
+// The take's repository rule stands too, and decides here as it decides the take's
+// (bundleOffer.refusedForRepository). A bundle of a repository the issue has left, or one that
+// names no repository, is kept for the take, which refuses it for its repository and moves it to
+// workspace_bundles_refused, and the daemon writes on the issue where the work is. The kept volume
+// holds that work, but in the workspace of the repository the work is of: a workspace's directory
+// names its repository (workspace.Location), so the pod of the issue's repository now works in
+// another workspace on the same volume, and the volume goes at a reset or at the issue's close. So
+// the volume is no reason to delete that bundle. A record that names no repository is an empty
+// name, which left never reads as a change, so the drop deletes a bundle of such an issue as it
+// deletes any other.
 //
 // The drop refuses an empty project, an empty podUID and a zero keptSince, as the take refuses its
 // own (bundleAsk.check).
@@ -322,7 +327,7 @@ func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, pod
 		if err != nil {
 			return err
 		}
-		if offer.savedBy || left(offer.repo, offer.recorded) {
+		if offer.savedBy || offer.refusedForRepository(left) {
 			return nil
 		}
 		// offeredBundle holds the row's lock, so the row this deletes is the one it read.
@@ -348,6 +353,15 @@ type bundleOffer struct {
 	// with. A pod created then is read as newer than the save. A kept Sandbox created then is not
 	// read as older than the save, so it is not known to hold the volume the save was taken off.
 	savedBy bool
+}
+
+// refusedForRepository is whether the take refuses the bundle for its repository
+// (runtime.WorkspaceBundleRefusedRepository): the row names no repository, or left answers that
+// the issue has left the one it names. left reads an empty name as no change, which is the rule
+// for the record's side; on the bundle's side an empty name is work of a repository nobody knows,
+// which is never sent.
+func (o bundleOffer) refusedForRepository(left func(saved, recorded string) bool) bool {
+	return o.repo == "" || left(o.repo, o.recorded)
 }
 
 // offeredBundle locks issue's bundle row that the take keeps its one attempt for

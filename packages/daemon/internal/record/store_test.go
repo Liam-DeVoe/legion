@@ -238,9 +238,9 @@ func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueL
 	}
 }
 
-// A correction of a record that held no repository yet — one the repository backfill had not
-// filled — moved the issue off no repository, so the record reads as holding no correction: there
-// is no repository the issue left for a launch to name, and none whose work it saved.
+// A row that records a correction off no repository reads as holding no correction: there is no
+// repository the issue left for a launch to name, and none whose work it saved. The daemon writes
+// no such row (Issue.Unfilled), so the statement is driven here by hand over a record emptied.
 func TestACorrectionOffNoRepositoryReadsAsNone(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

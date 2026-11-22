@@ -141,6 +141,60 @@ func TestARenamedRepositorysBundleIsRestored(t *testing.T) {
 	}
 }
 
+// A bundle whose row names no repository — one an earlier release saved, before the column or
+// after a roll back to it — is refused for its repository, whatever repository the record holds:
+// nothing recorded which repository the work is of, and the record can have moved since. The
+// daemon writes on the issue that it does not know that repository and where it keeps the work,
+// and never that the issue is on a different repository now, which it does not know either.
+// Control: a take that reads the empty name as no change sends the work, and writes nothing.
+func TestABundleWithNoRepositoryIsKeptAndTheIssueTold(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	putOutboxIssue(t, pool, records, issue)
+	st := outboxTreeStore(t, pool, issue.Key)
+
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of an unknown repository"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	if err := st.PutWorkspaceBundle(ctx, issue.Key, 11, "", saved); err != nil {
+		t.Fatalf("save the released workspace's bundle: %v", err)
+	}
+	var told []string
+	take := tellBundleRepositoryRefused(st, "legion", unrenamed,
+		func(_ context.Context, _, body string) error {
+			told = append(told, body)
+			return nil
+		}, quietLogger())
+
+	got, outcome, err := take(ctx, issue.Key, "pod-replacement", at.Add(time.Minute))
+	if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository || len(got.Bundle) != 0 {
+		t.Fatalf("the replacement pod was answered %v with %d bytes (%v), want the bundle refused and nothing sent", outcome, len(got.Bundle), err)
+	}
+	if len(told) != 1 {
+		t.Fatalf("the daemon wrote %d messages on the issue, want one:\n%s", len(told), strings.Join(told, "\n---\n"))
+	}
+	body := told[0]
+	t.Logf("the daemon writes this on the issue:\n%s", body)
+	for _, want := range []string{
+		"The daemon did not record the repository that the work is of.",
+		saved.Head,
+		"in the table `workspace_bundles_refused`. The row has the issue `LEGION-208` and the release_id `11`.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the message on the issue does not say %q:\n%s", want, body)
+		}
+	}
+	for _, wrong := range []string{"of the repository ``", "This issue is on a different repository now."} {
+		if strings.Contains(body, wrong) {
+			t.Errorf("the message on the issue says %q, which nothing recorded:\n%s", wrong, body)
+		}
+	}
+}
+
 // Every other outcome of the take passes through untouched and writes nothing on the issue: a
 // bundle sent to the pod that replaces the released one, a pod the store refuses as no newer
 // than the save, and an issue with no bundle at all. Only the repository refusal is a thing no

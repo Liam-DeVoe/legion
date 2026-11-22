@@ -258,7 +258,7 @@ type IdleDecision struct {
 //     work out of the pod it deletes, and the pod that replaces it puts it back; until a
 //     restore is confirmed, a second release would take a bundle of a workspace that never had
 //     that work and store it over the one that does. A bundle the store refused because it is
-//     of a repository the issue has left waits for nothing and holds nothing
+//     of a repository the issue has left, or names none, waits for nothing and holds nothing
 //     (runtime.WorkspaceBundleRefusedRepository): the refusal moves it to a table of its own,
 //     where no release of the issue overwrites or deletes it and no pod is ever sent it, so a
 //     hold for it would never end. The daemon writes on the issue where the work is (store's

@@ -167,6 +167,43 @@ func TestRepositoryCorrectionLabelsTheSavedBundleWithThePodsOwnRepository(t *tes
 	}
 }
 
+// A runtime that releases issue pods (runtime.IssueReleaser) answers the repository of every pod
+// it holds (runtime.Runtime.PodRepository), and "" only where it cannot say: the Sandbox runtime
+// answers "" for a pod its store does not hold, or holds under another uid. An empty answer at the
+// save is that unknown, and the save takes it as it takes a read that failed: the release is
+// cancelled under the bundle-save hold, no bundle is stored, and the role in the pod stays idle in
+// it. The record's repository is no answer for the pod: a correction can have moved the record
+// while the pod is still a clone of the repository the issue left, and a bundle of that
+// repository labelled with the new one is sent into the new clone. Control: with the record as
+// the fallback, the save stores the bundle under acme/widgets and the release goes on.
+func TestASaveThatCannotReadThePodsRepositoryCancelsTheRelease(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.podBuiltFrom(rig.issue.Repo)
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if !rig.marked(t) {
+		t.Fatal("the pass marked no release of an idle pod")
+	}
+	// By the time the save's row runs, the runtime no longer names the pod's repository.
+	rig.podBuiltFrom("")
+
+	rig.drain(t)
+
+	if rig.bundled(t) {
+		t.Fatalf("the release stored a bundle labelled %q, want none: nothing read the repository its work is of", rig.bundleRepository(t))
+	}
+	records := rig.records(t)
+	if len(records.Releases) != 0 {
+		t.Fatalf("releases = %+v, want none: the release was cancelled", records.Releases)
+	}
+	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldBundleSave.String() {
+		t.Fatalf("holds = %+v, want the one %s", records.Holds, workflow.IdleHoldBundleSave)
+	}
+	if got := rig.machine.Claim(); got.State != supervise.StateIdle {
+		t.Fatalf("the implementer = %s by %s, want it left idle in the pod the cancelled release kept", got.State, got.SuspendedBy)
+	}
+}
+
 // The refused work outlives the issue's next release. The message on the issue says the daemon
 // keeps that work (bundleRepositoryMessage), and the release of the issue's new pod writes the
 // issue's one bundle row: it saves that pod's own unpushed work over the row, or deletes the row

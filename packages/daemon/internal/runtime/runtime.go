@@ -390,9 +390,10 @@ func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 // issue's pod (workflow.IdleHoldBundleUnrestored).
 //
 // WorkspaceBundleRefusedRepository is that one attempt spent for the other reason: the bundle is
-// of a repository the issue has left, which Dispatch corrected and the daemon's record followed.
-// The issue's pods are now clones of another repository, so the saved commits have no bases
-// there. The store moves the bundle out of the issue's one row and into a table of its own
+// of a repository the issue has left, which Dispatch corrected and the daemon's record followed,
+// or it names no repository at all, which an earlier release's save left. The issue's pods can
+// be clones of another repository, so the saved commits can have no bases there. The store
+// moves the bundle out of the issue's one row and into a table of its own
 // (workspace_bundles_refused), where no later release of the issue overwrites or deletes it and
 // no pod is ever sent it, even after Dispatch moves the issue back. The daemon writes on the
 // issue where the work is, and the bundle holds no pod: a hold for work nothing restores would
@@ -424,14 +425,14 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
 // rule cannot order against the save.
 //
-// A bundle of a repository the issue has left drops nothing either. The kept volume still holds
-// that work, but in the clone of the repository the issue left: a workspace's directory names its
-// repository (workspace.Location), so the issue's next pod provisions a new workspace of the
-// issue's repository beside it, and its roles never work in the old one. The volume goes when a
-// reset replaces it or the issue closes, and nothing tells the issue that the work is there. So
-// the runtime then takes the bundle, the take refuses it for its repository
-// (WorkspaceBundleRefusedRepository), the store keeps it in workspace_bundles_refused, and the
-// daemon writes on the issue where the work is.
+// A bundle of a repository the issue has left drops nothing either, nor does one that names no
+// repository. The kept volume still holds that work, but in the clone of the repository the work
+// is of: a workspace's directory names its repository (workspace.Location), so the issue's next
+// pod provisions a new workspace of the issue's repository beside it, and its roles never work
+// in the old one. The volume goes when a reset replaces it or the issue closes, and nothing tells
+// the issue that the work is there. So the runtime then takes the bundle, the take refuses it for
+// its repository (WorkspaceBundleRefusedRepository), the store keeps it in
+// workspace_bundles_refused, and the daemon writes on the issue where the work is.
 type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with

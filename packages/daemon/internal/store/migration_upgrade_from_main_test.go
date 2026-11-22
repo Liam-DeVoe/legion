@@ -255,7 +255,9 @@ var mainsOutboxKinds = []string{
 // The database this test upgrades is main's: every migration up to and including main's own
 // 20261108000545 except the two this branch adds below it, which is what main has recorded and
 // what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
-// out of either list, the Migrate below fails on the pending release row.
+// out of either list, the Migrate below fails on the pending release row. The bundle main's daemon
+// saved names no repository, and the upgrade fills it from its issue's record (20261112012123);
+// without that fill the take would refuse it as work of an unknown repository.
 func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -306,9 +308,32 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
 		}
 	}
+	// A bundle main's daemon saved, which names no repository, since main writes no
+	// workspace_bundles.repo: 20261112012123 fills it from its issue's record, because main never
+	// moves a record off its repository, and leaves empty the bundle of an issue no record holds.
+	if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch, github_repo)
+		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, 'acme/widgets', 'main', 'Acme/Widgets')`); err != nil {
+		t.Fatalf("record the issue main's daemon recorded: %v", err)
+	}
+	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
+		if _, err := store.pool.Exec(ctx, `insert into workspace_bundles (issue, bundle, size_bytes, at, head, release_id, source_pod_uid)
+			values ($1, '\x5041434b'::bytea, 4, now(), 'f2f134541b30dfa5160a5d1ce5e17b76c967c661', 11, 'pod-being-released')`, issue); err != nil {
+			t.Fatalf("save the bundle of %s main's daemon saved: %v", issue, err)
+		}
+	}
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("upgrade the database main migrated: %v", err)
+	}
+
+	for issue, want := range map[string]string{"LEGION-208": "acme/widgets", "LEGION-209": ""} {
+		var repo string
+		if err := store.pool.QueryRow(ctx, `select repo from workspace_bundles where issue = $1`, issue).Scan(&repo); err != nil {
+			t.Fatalf("read the repository of the bundle of %s after the upgrade: %v", issue, err)
+		}
+		if repo != want {
+			t.Errorf("the bundle of %s names the repository %q after the upgrade, want %q", issue, repo, want)
+		}
 	}
 
 	var pending int

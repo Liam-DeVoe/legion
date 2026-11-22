@@ -3502,25 +3502,23 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	// this line only where the correction landed after the rule read the pod; this label is what
 	// makes that race harmless, and the hold is what makes it rare.
 	//
-	// The record is the fallback and only where the runtime answers nothing: the tmux runtime,
-	// whose panes are in no pod, and a claim with no process. Neither can have left the
-	// repository the record holds, since neither has a pod built from one. An issue the workflow
-	// does not record saves under the empty repository, which the take reads as a bundle that
-	// refuses no pod: the save stores the work whatever the two reads answer, and only a read
-	// that failed for a reason of its own cancels the release.
+	// The runtime here releases issue pods (runtime.IssueReleaser, checked above), and such a
+	// runtime answers the repository of every pod it holds: it answers "" only where it cannot
+	// say, for a pod its store does not hold or holds under another uid (the Sandbox runtime's
+	// PodRepository), or for a claim with no process. An empty answer is that unknown, so the save
+	// takes it as it takes a read that failed: the release is cancelled and nothing is stored.
+	// The record's repository is no answer in its place, for the reason above: after a correction
+	// it labels work of the old repository with the new one. No runtime that reaches this line
+	// lacks a pod repository: the tmux runtime, whose panes are in no pod, releases no pod and
+	// returned at the IssueReleaser check, so the record is the fallback of no runtime here.
 	repo, err := issuePodRepository(ctx, r.supervisor, row.Issue)
-	if err != nil {
+	switch {
+	case err != nil:
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
 			fmt.Sprintf("read the repository the pod of %s was built from: %v", row.Issue, err))
-	}
-	if repo == "" {
-		issue, err := r.recordedIssue(ctx, row.Issue)
-		if err != nil {
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-		}
-		if issue != nil {
-			repo = issue.Repo
-		}
+	case repo == "":
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
+			fmt.Sprintf("the runtime names no repository the pod of %s was built from", row.Issue))
 	}
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, repo, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())

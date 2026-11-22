@@ -214,7 +214,17 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // answered the reads of (Resolution.Unread) is nothing Dispatch has said that the daemon can act
 // on, so this writes and says nothing at all, and the daemon's follow reads the repository again
 // until GitHub answers.
+//
+// A record that holds no repository (record.Issue.Unfilled) is the backfill's to fill, and this
+// writes nothing on it and says nothing: a correction would fill it without the checks the
+// backfill makes, and the stamp of the record a fact was prepared against could fence nothing,
+// since a preparation against such a record stamps it empty (PreparedAgainst). The preparations
+// read GitHub for no such record (the daemon's prepareRecorded and prepareHandover), and the
+// follow takes none (followListing).
 func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+	if issue.Unfilled() {
+		return nil
+	}
 	resolved := fact.ResolvedRepo
 	// The record moved after the fact was prepared: it takes nothing from the fact, and a follow
 	// reads the issue fresh once this transaction commits (the doc above says why).

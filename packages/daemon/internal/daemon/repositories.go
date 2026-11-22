@@ -2704,7 +2704,9 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // sameRepository), so a configured rename's other name — the one the rename pass wrote over the
 // record's, or the one Dispatch still names after it — and a spelling that differs in case are no
 // change and read nothing. A resolution that names no repository reads nothing either: the
-// engine tells the issue so without a read.
+// engine tells the issue so without a read. Nor does a record that holds no repository
+// (record.Issue.Unfilled), whatever Dispatch resolves it to: the backfill fills it, the engine
+// corrects none, and the boot's listing asks for no follow of it.
 //
 // Whatever the resolution, this sets the repository recorded holds on the fact
 // (intake.DispatchIssue.PreparedAgainst), which its correction is applied against
@@ -2715,7 +2717,7 @@ func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.Disp
 	if issue.ResolvedRepoMissing {
 		issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
 	}
-	if issue.ResolvedRepo == "" || w.repositories.same(issue.ResolvedRepo, recorded.Repo) {
+	if issue.ResolvedRepo == "" || recorded.Unfilled() || w.repositories.same(issue.ResolvedRepo, recorded.Repo) {
 		return issue, nil
 	}
 	if boot {
@@ -2853,11 +2855,12 @@ func (w *workflowRuntime) correctionReads(ctx context.Context, key, resolved str
 // answers for that repository now (correctionReads), which the correction admission's hand-over
 // makes is written from (admit's consumeHandover); one that names the record's repository, or
 // none, reads nothing, and so does one whose Dispatch read is older than the record
-// (record.Issue.Outdates), which that correction leaves as it stands. Reads GitHub did not answer
-// ask for a follow of the issue (requestFollowOf), as an event's do: the hand-over is applied
-// whatever its correction writes, so nothing else would read the change again. It runs outside
-// the fact lock, as every preparation does, since the fact's apply performs no I/O. The fact
-// carries the repository the record holds at this preparation
+// (record.Issue.Outdates), which that correction leaves as it stands, and one of a record that
+// holds no repository (record.Issue.Unfilled), which no correction fills. Reads GitHub did not
+// answer ask for a follow of the issue (requestFollowOf), as an event's do: the hand-over is
+// applied whatever its correction writes, so nothing else would read the change again. It runs
+// outside the fact lock, as every preparation does, since the fact's apply performs no I/O. The
+// fact carries the repository the record holds at this preparation
 // (intake.Handover.PreparedAgainst), as an event's does, which its correction is applied against
 // (workflow.Engine.ApplyRepositoryChange says why).
 func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.Handover) (intake.Handover, error) {
@@ -2869,7 +2872,7 @@ func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.H
 		return handover, err
 	}
 	handover.PreparedAgainst = recorded.Repo
-	if w.repositories.same(handover.ResolvedRepo, recorded.Repo) || recorded.Outdates(record.ReadSeq, handover.Seq) {
+	if recorded.Unfilled() || w.repositories.same(handover.ResolvedRepo, recorded.Repo) || recorded.Outdates(record.ReadSeq, handover.Seq) {
 		return handover, nil
 	}
 	answer := w.correctionReads(ctx, handover.Issue, handover.ResolvedRepo)
@@ -3053,7 +3056,8 @@ func (w *workflowRuntime) followReasons() []string {
 // of the live records at the commit (projectRecords' CorrectIssueRepository), which takes that
 // repository out of the cache set and the live set once no other live record names it. The
 // records are read first, so a project the workflow records no issue of asks Dispatch for no
-// listing.
+// listing. A record that holds no repository (record.Issue.Unfilled) is the backfill's, and the
+// pass takes none: no correction fills it.
 func (w *workflowRuntime) followListing(ctx context.Context, only map[string]bool) (left map[string]bool, err error) {
 	reading, cancelReads := context.WithTimeout(ctx, appMintAttempt)
 	defer cancelReads()
@@ -3082,7 +3086,7 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 	cut := false
 	for _, summary := range listed {
 		recorded := records[summary.Key]
-		if recorded == nil || only != nil && !only[summary.Key] {
+		if recorded == nil || recorded.Unfilled() || only != nil && !only[summary.Key] {
 			continue
 		}
 		if !cut {

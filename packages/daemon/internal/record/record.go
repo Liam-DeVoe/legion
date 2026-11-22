@@ -309,6 +309,15 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
 }
 
+// Unfilled says whether the record holds no repository: one written before records carried their
+// repository, which the daemon's backfill has not filled yet (Store.UnfilledIssues). Nothing
+// corrects such a record onto the repository Dispatch resolves it to (workflow's
+// ApplyRepositoryChange), and no preparation reads GitHub for it, because a correction is no fill.
+// The backfill fills it (the daemon's fillRepositories), and makes the checks a correction makes
+// none of: what names the repository the issue worked in, and the spelling its workspace was made
+// under.
+func (i Issue) Unfilled() bool { return i.Repo == "" }
+
 // SeqKind is what the Dispatch sequence a fact carries stands for, which decides whether a record
 // at that same sequence already holds what the fact says (Issue.Outdates).
 type SeqKind uint8
@@ -359,9 +368,9 @@ func (i Issue) Behind(seq int64) bool { return seq > i.LastDispatchSeq }
 // RepositoryCorrection is what a correction of an issue's repository left on its record: the
 // repository the record held before it (Before) and the moment the daemon applied it (At). The
 // two are one value because neither says anything alone, so a record holds a correction or nil.
-// A correction of a record that held no repository yet — one the repository backfill had not
-// filled — moved the issue off no repository, and it reads as none: nothing was ever worked or
-// saved under a repository the issue left.
+// A row that records a correction off no repository reads as none: nothing was ever worked or
+// saved under a repository the issue left. The daemon writes no such row, since it corrects no
+// record that holds no repository (Issue.Unfilled).
 type RepositoryCorrection struct {
 	Before string
 	At     time.Time

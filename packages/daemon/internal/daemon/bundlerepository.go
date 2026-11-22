@@ -16,8 +16,8 @@ import (
 // tellBundleRepositoryRefused is the store's take of an issue's saved workspace bundle for a pod
 // of project (savedWorkspaceBundle, store.Store.TakeWorkspaceBundleForRestore) as the runtime
 // asks it, with the one thing the daemon owes a person added to it: the bundle the store refused
-// because it is of a repository the issue has left is told on the issue itself
-// (bundleRepositoryMessage, written through write). Every other outcome passes through
+// for its repository — a repository the issue has left, or none at all — is told on the issue
+// itself (bundleRepositoryMessage, written through write). Every other outcome passes through
 // untouched, and the refusal passes through as it was: the pod still starts on what its own
 // fetch provisioned. A bundle of an issue project does not record is answered nothing by the
 // store, so no message is ever written on another project's issue from here.
@@ -55,14 +55,20 @@ func tellBundleRepositoryRefused(st *store.Store, project string, left func(save
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
 		}
+		// The store refuses a bundle for its repository when it names none as well
+		// (store's bundleOffer.refusedForRepository), and the log says which of the two it was.
+		why := "is of the repository it has left"
+		if bundle.Repo == "" {
+			why = "names no repository"
+		}
 		if err := write(ctx, issue, bundleRepositoryMessage(issue, bundle)); err != nil {
 			if ctx.Err() == nil {
-				log.Error("supervise: write on the issue that its saved workspace bundle is of the repository it has left; the work is kept in workspace_bundles_refused and nothing tells the issue again",
+				log.Error("supervise: write on the issue that its saved workspace bundle "+why+"; the work is kept in workspace_bundles_refused and nothing tells the issue again",
 					"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At, "release", bundle.Release, "error", err)
 			}
 			return bundle, outcome, nil
 		}
-		log.Warn("supervise: the saved workspace bundle of this issue is of the repository it has left, so no pod restores it; the issue is told and the work is kept in workspace_bundles_refused",
+		log.Warn("supervise: the saved workspace bundle of this issue "+why+", so no pod restores it; the issue is told and the work is kept in workspace_bundles_refused",
 			"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At, "release", bundle.Release)
 		return bundle, outcome, nil
 	}
@@ -79,7 +85,9 @@ func tellBundleRepositoryRefused(st *store.Store, project string, left func(save
 // repository's history, and a reader sent to the new repository would look for commits that are
 // not there. The moment of the save is the reader's other handle on the work: it says how much
 // of the issue's work the bundle can hold. It says nothing of the issue's pods to come: Dispatch
-// can move the issue back, and a refused bundle is not restored then either.
+// can move the issue back, and a refused bundle is not restored then either. A bundle that names
+// no repository (b.Repo empty) is work nothing recorded the repository of, so the message says
+// that rather than name one, and does not say that the issue has moved, which nothing read.
 func bundleRepositoryMessage(issue string, b runtime.WorkspaceBundle) string {
 	var lines []string
 	for _, name := range slices.Sorted(maps.Keys(b.Bookmarks)) {
@@ -89,14 +97,19 @@ func bundleRepositoryMessage(issue string, b runtime.WorkspaceBundle) string {
 	if len(lines) > 0 {
 		bookmarks = fmt.Sprintf("The saved work has these bookmarks:\n\n%s", strings.Join(lines, "\n"))
 	}
+	repository := "The work is of the repository `" + b.Repo + "`. This issue is on a different repository now."
+	if b.Repo == "" {
+		repository = "The daemon did not record the repository that the work is of. " +
+			"This issue can be on a different repository now."
+	}
 	return fmt.Sprintf(`The daemon did not restore the saved work of this issue.
 
-A release of this issue's pod saved the work that no remote had. The daemon saved that work at %s. The work is of the repository `+"`%s`"+`. This issue is on a different repository now. The daemon does not put work of one repository into a clone of a different repository.
+A release of this issue's pod saved the work that no remote had. The daemon saved that work at %s. %s The daemon does not put work of one repository into a clone of a different repository.
 
 The saved work has the head commit `+"`%s`"+`. %s
 
 The daemon keeps the saved work in its database, in the table `+"`workspace_bundles_refused`"+`. The row has the issue `+"`%s`"+` and the release_id `+"`%d`"+`. The `+"`bundle`"+` column of that row is a git bundle. The daemon does not send this work to a pod, and the daemon does not delete it. Ask an operator for the work if you need it.`,
-		b.At.UTC().Format(time.RFC3339), b.Repo, b.Head, bookmarks, issue, b.Release)
+		b.At.UTC().Format(time.RFC3339), repository, b.Head, bookmarks, issue, b.Release)
 }
 
 // codeSpan is name inside a Markdown code span that name itself cannot break. A bookmark name
