@@ -657,11 +657,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served the key and every older pod is not.
 		pause bool
 		// questions is whether the caller is served `questionsForController`, the questions the
-		// answer loop passed to the controller (questionsForControllerContract, the contract 228
+		// answer loop passed to the controller (questionsForControllerContract, the contract 229
 		// added), `[]` where no question was passed, so a pod below it is served no key at all. A
 		// pod's claims at shapedAnswersContract or later place it in no band (podContracts), so
 		// a pod row is served the key only where it is served this daemon's own body; the callers
-		// from shapedAnswersContract to below 228 state their contract, and
+		// from shapedAnswersContract to below 229 state their contract, and
 		// TestACallerStatingAContractBelowTheQuestionsIsServedNone reads them.
 		questions bool
 		// repos is whether the caller is served the repositories block this contract writes,
@@ -917,7 +917,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the `paused` contract 178 added (withoutPause), with the repository caches'
 			// capability row without its `source`, the value cachesSourceContract added
 			// (withoutUnadmittedCapabilitySources, stripCachesSources above), and with
-			// `questionsForController` gone, the key contract 228 added, which a reader before it
+			// `questionsForController` gone, the key contract 229 added, which a reader before it
 			// refuses empty as surely as filled (withoutQuestionsForController).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
@@ -1352,9 +1352,9 @@ func populatedRepositoriesAt152(t *testing.T) repositoriesAt152 {
 	return repositoriesAt152{
 		Owners: []string{"acme", "cybermonklabs", "zeta"},
 		Mapped: []servedRepositoryAt152{
-			{Repo: "acme/widgets", Apps: both, Cache: entry("acme/widgets").Cache},
-			{Repo: "cybermonklabs/legion", Apps: both},
-			{Repo: "zeta/tools", Apps: both, Cache: entry("zeta/tools").Cache},
+			{Repo: "acme/widgets", Apps: &both, Cache: entry("acme/widgets").Cache},
+			{Repo: "cybermonklabs/legion", Apps: &both},
+			{Repo: "zeta/tools", Apps: &both, Cache: entry("zeta/tools").Cache},
 		},
 		Refused: []refusedRepositoryAt152{
 			{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
@@ -1466,7 +1466,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		_, block := repositoriesServed(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
 		want := repositoriesAt152{
 			Owners: []string{"acme"},
-			Mapped: []servedRepositoryAt152{{Repo: "acme/stale", Apps: AppInstallationsView{Implement: true, Review: true}}},
+			Mapped: []servedRepositoryAt152{{Repo: "acme/stale", Apps: &AppInstallationsView{Implement: true, Review: true}}},
 			Refused: []refusedRepositoryAt152{
 				{Repo: "acme/fresh", Reason: "GitHub has not answered for it yet"},
 				{Repo: "sjawhar/moved", Reason: "the implement and review Apps are not installed on cybermonklabs/moved", Apps: &AppInstallationsView{}},
