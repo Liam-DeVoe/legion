@@ -223,9 +223,12 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  coordinates: that is the list moving under the hand, which is the thing being compensated
    *  for, so it must not be read as the reader looking somewhere new. */
   private pointerAt: { x: number; y: number } | null = null;
-  /** The box whose own scroll anchoring is turned off for the commit in flight, and the inline
-   *  `overflow-anchor` it had before (`holdNativeAnchoring`). Null between such commits. */
+  /** The box whose own scroll anchoring is turned off for a press's commit, and the inline
+   *  `overflow-anchor` it had before (`holdNativeAnchoring`). Null while it is on. */
   private nativeAnchoring: { box: HTMLElement; priority: string; value: string } | null = null;
+  /** The frame request that gives the box its scroll anchoring back once a rendering update has
+   *  run with it off (`releaseAfterRendering`). Null while none is pending. */
+  private releaseFrame: number | null = null;
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
@@ -248,22 +251,51 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  commit in flight: the box the host named, else the document's root, whose value the window
    *  takes. The browser would hold the view against the going of the rows a press of the reader's
    *  takes away, which is the shift this component lets happen. The value is read back at once,
-   *  so it is in force before React removes the rows. `releaseNativeAnchoring` turns it back on. */
+   *  so it is in force before React removes the rows. A hold still pending from an earlier press
+   *  keeps the value the box had before it. `releaseAfterRendering` turns it back on. */
   private holdNativeAnchoring(): void {
+    this.cancelRelease();
     const box = this.scrollerElement() ?? document.documentElement;
-    const { style } = box;
-    this.nativeAnchoring = {
-      box,
-      priority: style.getPropertyPriority("overflow-anchor"),
-      value: style.getPropertyValue("overflow-anchor"),
-    };
-    style.setProperty("overflow-anchor", "none");
+    if (this.nativeAnchoring?.box !== box) {
+      this.releaseNativeAnchoring();
+      const { style } = box;
+      this.nativeAnchoring = {
+        box,
+        priority: style.getPropertyPriority("overflow-anchor"),
+        value: style.getPropertyValue("overflow-anchor"),
+      };
+    }
+    box.style.setProperty("overflow-anchor", "none");
     void getComputedStyle(box).overflowAnchor;
   }
 
+  /** Gives the box its scroll anchoring back once a rendering update has run with it off: two
+   *  frames on, since a frame's callbacks run before that frame's layout. WebKit adjusts for the
+   *  shift a commit made at a layout after it rather than in it, so anchoring turned back on in
+   *  the commit's own task let it scroll the window by the content that left above the anchor
+   *  (a Dismiss that takes Mark all read out of the Inbox's control row at a phone's width
+   *  scrolled 52 px), a move this component had already let happen. */
+  private releaseAfterRendering(): void {
+    if (this.nativeAnchoring === null) return;
+    this.cancelRelease();
+    this.releaseFrame = requestAnimationFrame(() => {
+      this.releaseFrame = requestAnimationFrame(() => {
+        this.releaseFrame = null;
+        this.releaseNativeAnchoring();
+      });
+    });
+  }
+
+  private cancelRelease(): void {
+    if (this.releaseFrame === null) return;
+    cancelAnimationFrame(this.releaseFrame);
+    this.releaseFrame = null;
+  }
+
   /** Gives the box back the scroll anchoring `holdNativeAnchoring` turned off, with the inline
-   *  value it had. */
+   *  value it had, at once. */
   private releaseNativeAnchoring(): void {
+    this.cancelRelease();
     const held = this.nativeAnchoring;
     if (held === null) return;
     this.nativeAnchoring = null;
@@ -391,6 +423,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     window.removeEventListener("scroll", this.viewScrolled, true);
     this.contentSize?.disconnect();
     this.contentSize = null;
+    this.releaseNativeAnchoring();
   }
 
   // Both listeners hang off the rendered root, not `document`: `pointerover`/`pointerout` bubble,
@@ -554,6 +587,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   }
 
   getSnapshotBeforeUpdate(previousProps: Readonly<ViewportAnchorProps>): Snapshot | null {
+    const snapshot = this.measure(previousProps);
+    // A commit no press of the reader's takes rows away in is one the browser's own anchoring
+    // holds the view through, so a hold still pending from a press ends before it.
+    if (snapshot === null || snapshot.leaving.length === 0) this.releaseNativeAnchoring();
+    return snapshot;
+  }
+
+  /** The row the reader's hand is on and where it stands before the commit, with the rows a
+   *  press of theirs takes away above it, the native anchoring held off where there are any. */
+  private measure(previousProps: Readonly<ViewportAnchorProps>): Snapshot | null {
     const { enabled } = this.props;
     if (enabled !== undefined && !enabled()) return null;
     const current = this.current();
@@ -581,7 +624,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     try {
       this.keepPlace(snapshot);
     } finally {
-      this.releaseNativeAnchoring();
+      this.releaseAfterRendering();
     }
   }
 
