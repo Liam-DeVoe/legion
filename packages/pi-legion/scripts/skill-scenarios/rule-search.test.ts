@@ -13,26 +13,36 @@
 //
 // RULE_SEARCH_CHECKOUT names the checkout (default: the repository this file is in) and
 // RULE_SEARCH_TREE its tree, base or head (default: head). Each test works in a copy of the
-// checkout's prompts and skills under its own mktemp directory.
+// checkout's prompts and skills under the file's own scratch directory.
 
-import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { appendFileSync, cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { RULES } from "./label-rules";
 import { chainOf, roleTexts } from "./role-texts";
 import { headSentences, search, searchCut } from "./rule-search";
 import { fileRowLimit } from "./test-limit";
 
 // Each row and hook copies or removes the checkout's prompts and skills: each test and hook gets
-// the limit test-limit.ts computes from the bounds of what they wait for, set before the hook
-// below is registered.
+// the limit test-limit.ts computes from the bounds of what they wait for, set before the hooks
+// of the scratch directory below are registered.
 setDefaultTimeout(fileRowLimit());
 
 const checkout = process.env.RULE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const tree = (process.env.RULE_SEARCH_TREE ?? "head") as "base" | "head";
-const scratch = mkdtempSync(path.join(tmpdir(), "rule-search-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+/**
+ * The most the scratch directory holds at once, times the runs that may share the host: the rows
+ * make ten copies for each of the three labels and keep them all until the file ends, each copy
+ * the 96 files of the prompts and skills in 204 tmpfs pages (816 KiB), so a run holds under
+ * 32 MiB; room for four runs at once.
+ */
+const SCRATCH_NEED = 4 * 32 * 2 ** 20;
+// The scratch directory is on the memory root, where the fixture makes it and removes it in a
+// process of its own on the file's clock: the copies make thousands of directory entries, whose
+// removal on the shared disk took 36 s at a load of about 690 and, in a bare afterAll of this
+// file, ran past the file's limit at 98.8 s under load.
+const scratch = temporaryDirectory("rule-search", { root: memoryRoot({ need: SCRATCH_NEED }) });
 
 let copies = 0;
 function copy(): string {
@@ -225,5 +235,14 @@ describe("rule-search", () => {
       expect(faults.some((fault) => fault.includes("UNKNOWN"))).toBe(true);
       expect(faults.some((fault) => fault.includes("is not in the checkout"))).toBe(true);
     }
+  });
+
+  // Catches: the copies made and removed on the shared disk again, under tmpdir() and by a hook of
+  // this file's own, where a loaded box's other programs set how long the removal takes.
+  test("the copies live in a directory the fixture made on the memory root", () => {
+    expect({ root: path.dirname(scratch), made: existsSync(scratch) }).toEqual({
+      root: memoryRoot({ need: SCRATCH_NEED }),
+      made: true,
+    });
   });
 });
