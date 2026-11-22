@@ -12,9 +12,9 @@ import (
 // A real Dispatch process derives the document service's memory bounds from the Go memory limit
 // it holds and names each of them in a line of its boot log, so what an operator reads there is
 // what that pod's rooms, cold reads and whole-document copies are held to. The two limits are the
-// production pod's - 90 per cent of the 20Gi it has had since 2026-11-05 (theorem-labs/agent-infra
-// dispatch/Pulumi.prod.yaml's appMemory), where the room budget is 10 GiB and the pod builds ten
-// whole-document copies at once rather than one - and the 4 GiB pod these figures were
+// production pod's - 90 per cent of the 20Gi it has had since 2026-11-05 (appMemory in the
+// deployment repository's dispatch/Pulumi.prod.yaml), where the room budget is 10 GiB and the pod
+// builds ten whole-document copies at once rather than one - and the 4 GiB pod these figures were
 // calibrated on, whose bounds are the constants every drive under the `memory` tag is written
 // against.
 //

@@ -2096,7 +2096,7 @@ const refusalTrials = 20
 // turns away at the upgrade is sent no state, and reads once it has sent its first frames.
 //
 // Both update rows are closed by ygo, which writes the close frame and closes the connection at
-// once after it (theorem-labs/ygo v1.55.1-theorem.4, provider/websocket/peer.go:471-481), while
+// once after it (cybermonklabs/ygo at f1d235b9, provider/websocket/peer.go:471-481), while
 // the read loop drops the peer's input from the refusal on (server.go:2318-2327). The page's frames
 // meet a connection closed with frames of the page's unread, or still arriving, which the
 // server's kernel answers with a reset that throws away what it had not yet sent of the
@@ -2328,8 +2328,8 @@ func awaitPageRefusal(t *testing.T, server *memoryServer, room string, after int
 }
 
 // frameAwareness is the tag of an awareness frame of the document socket, whose payload is one
-// awareness update as VarBytes (theorem-labs/ygo v1.55.1-theorem.4, provider/websocket/
-// server.go:107, peer.go:107-110).
+// awareness update as VarBytes (cybermonklabs/ygo v1.55.1-legion.1, provider/websocket/
+// server.go:104, peer.go:114-117).
 const frameAwareness = 1
 
 // presenceFrame is the awareness frame a page sends when the person's cursor moves to cursor: its

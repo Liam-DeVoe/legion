@@ -622,7 +622,7 @@ type poisonedLog struct {
 // storePoisonedLog stores, as artifactID's rows, the typist's keystrokes (typedRows), a version a
 // settlement took of them halfway, which agrees with them, the crafted update (poisonUpdate), and a
 // named version recorded at it holding the typist's first three characters. Under
-// github.com/theorem-labs/ygo v1.55.1-theorem.3 a read of these rows - a room's load, a cold read,
+// cybermonklabs/ygo at 9c4cced4 a read of these rows - a room's load, a cold read,
 // the read a named version is rendered from - renders those three: the merge of the document's
 // encoding with the struct it parks lets that struct win the clock tie at the typist's clock 5,
 // and drops every struct after it. A replay of the rows one at a time renders all twenty.

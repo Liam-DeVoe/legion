@@ -10,7 +10,7 @@ import (
 
 // The room budget charges each delete range a room's live document parks at
 // bytesOfHeapAParkedRange, which is priced at the heaviest shape measured on
-// theorem-labs/ygo v1.55.1-theorem.11: a client of its own for each range, the range's two halves
+// cybermonklabs/ygo at f80e73e7: a client of its own for each range, the range's two halves
 // parked by two senders. The fork's record of who parked each range (crdt.Doc.parkedDsBy) keeps a
 // delete set for each sender, so there it holds twice the ranges the queue does, each in a set of
 // its own. A sender is the connection the provider applies an update for, the apply's origin

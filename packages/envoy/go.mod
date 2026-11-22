@@ -165,9 +165,12 @@ require (
 )
 
 // The fork of ygo keeps the upstream module path; consume its published tag through a remote
-// versioned replacement. Releases are cut on theorem-labs/ygo with knives (its registry entry
+// versioned replacement. Releases are cut on cybermonklabs/ygo with knives (its registry entry
 // is [repos.ygo-fork]: upstream reearth/ygo, work branches on the personal fork, releases on
-// theorem-labs), and no release is cut on a personal account. The fork is upstream ygo v1.55.0,
+// cybermonklabs/ygo), and no release is cut on a personal account. The releases named below by a
+// commit were cut on another organization's fork of reearth/ygo before v1.55.1-legion.1, and
+// cybermonklabs/ygo holds each of those commits too, since the forks of one network share their
+// commits. The fork is upstream ygo v1.55.0,
 // through upstream main
 // 510c2cf5, plus fixes, each carried until upstream ships it; RELEASE_NOTES.md in the tagged
 // fork lists every member with its upstream pull request. Thirteen wait in open upstream pull
@@ -242,74 +245,73 @@ require (
 // its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
 // about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
 // of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
-// v1.55.1-theorem.7 adds the apply check this package's bound on a browser's rendering stands
-// on (v1.55.1-sami.17): Doc.SetApplyCheck runs a caller's check after a remote apply integrates
-// and before its transaction commits, through a read-only view that takes no lock, and an error
-// rolls the apply back byte for byte; a drain the check refuses is taken back alone and the
-// update stands, which the providers answer as applied. An update's bytes do not show what it
-// does to the rendering - a 35-byte frame setting a list's start number grew one document by
-// 800,024 bytes, and a 7-byte delete of an inline-code mark's format items grew another by
-// 2,799,998 - so only a check of the result can hold the bound (render_check.go).
-// v1.55.1-theorem.8 adds what this package's room keeps parked content out of the document with,
-// every behaviour change an option off by default and the rest additive: PeerUpdateInfo.Context,
-// the connection's request context, which the client id rule reads its socket from
-// (judgeClients); ApplyUpdateV1Outcome and Server.RelayIntegratedOnly and AnswerParkedNotApplied,
-// so a frame that parks is neither relayed nor answered applied; Server.AnswerOnceStored and
-// PersistenceAdapterStored, so a frame's answer waits for its commit's store (StoreUpdateStored);
-// Doc.SetParkedOutOfState, so nothing parked is encoded, answered or stored, and
-// Doc.SetDiscardRefusedDrain with DrainDiscardedError, so a drain the room cannot take is
-// discarded and its senders named (leaveParkedOut, closeDiscardedSenders); Server.ClosePeer and
-// ResyncPeer, which close or resync a browser from any goroutine after the answers it is owed
-// (closeDiscardedSenders, resyncLanded); and HeldStructsDifferV1, which compares an update's
-// structs with what the document holds at the same clocks (refusedDuplicate).
-// v1.55.1-theorem.9 makes an apply check cost each apply what it touched: whether the apply
-// changed the document is read from its delete set and the clocks of the clients it added structs
-// for, and a drain is checked only where the pending queue holds anything, so a keystroke into a
-// document of 40,000 clients no longer walks every client for the room's render check
+// The fork's release at 76dc89ed adds the apply check this package's bound on a browser's
+// rendering stands on (v1.55.1-sami.17): Doc.SetApplyCheck runs a caller's check after a remote
+// apply integrates and before its transaction commits, through a read-only view that takes no
+// lock, and an error rolls the apply back byte for byte; a drain the check refuses is taken back
+// alone and the update stands, which the providers answer as applied. An update's bytes do not
+// show what it does to the rendering - a 35-byte frame setting a list's start number grew one
+// document by 800,024 bytes, and a 7-byte delete of an inline-code mark's format items grew
+// another by 2,799,998 - so only a check of the result can hold the bound (render_check.go).
+// The fork's release at 2945f8a5 adds what this package's room keeps parked content out of
+// the document with, every behaviour change an option off by default and the rest additive:
+// PeerUpdateInfo.Context, the connection's request context, which the client id rule reads
+// its socket from (judgeClients); ApplyUpdateV1Outcome and Server.RelayIntegratedOnly and
+// AnswerParkedNotApplied, so a frame that parks is neither relayed nor answered applied;
+// Server.AnswerOnceStored and PersistenceAdapterStored, so a frame's answer waits for its
+// commit's store (StoreUpdateStored); Doc.SetParkedOutOfState, so nothing parked is encoded,
+// answered or stored, and Doc.SetDiscardRefusedDrain with DrainDiscardedError, so a drain the
+// room cannot take is discarded and its senders named (leaveParkedOut, closeDiscardedSenders);
+// Server.ClosePeer and ResyncPeer, which close or resync a browser from any goroutine after
+// the answers it is owed (closeDiscardedSenders, resyncLanded); and HeldStructsDifferV1, which
+// compares an update's structs with what the document holds at the same clocks (refusedDuplicate).
+// The fork's release at 0f7aeee2 makes an apply check cost each apply what it touched: whether the
+// apply changed the document is read from its delete set and the clocks of the clients it added
+// structs for, and a drain is checked only where the pending queue holds anything, so a keystroke
+// into a document of 40,000 clients no longer walks every client for the room's render check
 // (BenchmarkATangledRoomTakesAKeystroke; the fork's BenchmarkApplyUpdateV1_ApplyCheckManyClients,
 // 87.65 ms to 63.86 ms).
-// v1.55.1-theorem.10 closes what review 8 found the room could not bound or answer truthfully.
-// ApplyBudget.MayParkDeletes judges each client a delete range would park under, and an apply it
-// answers false for is refused whole (ErrParkedDeleteRefused), so a range parks only under a
-// client the sender's socket holds (parkJudge); Server.MaxPendingDeleteRanges caps a room's parked
-// delete ranges apart from its parked structs (maxParkedDeleteRanges), and the record of who
-// parked them keeps only what each frame newly parked; PendingStats.ContentBytes is what the
-// queue holds of content now (noteQueued); DocContainsUpdateV1Limit and HeldStructsDifferV1Limit
-// stop a decode outside an apply at the apply's value limit (roomHolds, refusedDuplicate);
-// Server.ReadOnlySyncStep2MaxBytes answers a read-only browser's sync step 2 past
-// unslottedApplyBytes without a decode, and Server.ReadOnlySyncStep2MaxValues stops the decode of
-// one at or under it past what an unslotted apply's structs may hold (unslottedApplyStructs);
-// under AnswerOnceStored a frame that commits
-// nothing waits for the stores in flight, and a room instance one commit of which was not stored
-// answers nothing applied again; and under RelayIntegratedOnly a frame whose drain landed anything
-// is relayed to its own sender too (ApplyOutcome.Drained).
-// v1.55.1-theorem.11 closes findings 2 and 3 of review 9. The record of who parked each delete
-// range keeps one set per sender, compacted as the pending deletes are and cut to what they still
-// hold, so frames that grow or bridge the ranges parked no longer grow it past twice the parked
-// ranges plus 16 (bytesOfHeapAParkedRange); and PendingStats.ContentBytes counts the map key a
-// parked struct holds (noteQueued).
-// v1.55.1-theorem.12 says which run an apply check judges and lets a room forget an origin, and
-// adds no option. ApplyView.Drained is false on the update's run and true on the drain's, so the
-// one run of an apply whose update changed nothing - the room held all of it, or its structs only
-// parked - is judged as the drain's (renderCheck.check); and Doc.ForgetParkedOrigin drops an
-// origin from the record a document that discards refused drains keeps of who parked what, which
-// the room calls after each server write's apply (applyServerWrite), and the WebSocket server for
-// each peer that leaves its room. The tag is on ee46210f, the head of
-// release/v1.55.1/2026-11-20.2.
-// v1.55.1-theorem.13 makes each removal from a list a document, a type, a persistence or a client
-// keeps clear the slot it vacates (slices.Delete), so an unsubscribed callback, and what its
-// closure captured, no longer stays reachable from the backing array: before it, the closure each
-// server write subscribes (applyRemoteBatch, applyCaptured) kept the write's update reachable from
-// the room until a later subscription took the slot. The tag is on 4b19472d, the head of
-// release/v1.55.1/2026-11-20.3.
-// v1.55.1-theorem.14, which this branch never pinned alone, keeps the record of who parked each
-// struct to what the pending queue holds, dropping a struct as a merge drops it, a drain lands it
-// or a refused drain discards it (closeDiscardedSenders); gives a parked string a merge cuts at its
-// front bytes of its own, so it keeps only the part PendingStats.ContentBytes counts (noteQueued);
-// and drops a SyncReply that carries a SyncStep1, which was answered outside
-// Server.OnStateAnswer's bound and relayed to every other peer (weighStateAnswer). The tag is on
-// d18319dc.
-// v1.55.1-theorem.15 adds ApplyBudget.Integrated, a callback the apply-budget callback can return
+// The fork's release at 382ed018 closes what review 8 found the room could not bound or answer
+// truthfully. ApplyBudget.MayParkDeletes judges each client a delete range would park under,
+// and an apply it answers false for is refused whole (ErrParkedDeleteRefused), so a range parks
+// only under a client the sender's socket holds (parkJudge); Server.MaxPendingDeleteRanges caps
+// a room's parked delete ranges apart from its parked structs (maxParkedDeleteRanges), and the
+// record of who parked them keeps only what each frame newly parked; PendingStats.ContentBytes
+// is what the queue holds of content now (noteQueued); DocContainsUpdateV1Limit and
+// HeldStructsDifferV1Limit stop a decode outside an apply at the apply's value limit (roomHolds,
+// refusedDuplicate); Server.ReadOnlySyncStep2MaxBytes answers a read-only browser's sync step 2
+// past unslottedApplyBytes without a decode, and Server.ReadOnlySyncStep2MaxValues stops the decode
+// of one at or under it past what an unslotted apply's structs may hold (unslottedApplyStructs);
+// under AnswerOnceStored a frame that commits nothing waits for the stores in flight, and a
+// room instance one commit of which was not stored answers nothing applied again; and under
+// RelayIntegratedOnly a frame whose drain landed anything is relayed to its own sender too
+// (ApplyOutcome.Drained).
+// The fork's release at f80e73e7 closes findings 2 and 3 of review 9. The record of who parked
+// each delete range keeps one set per sender, compacted as the pending deletes are and cut to
+// what they still hold, so frames that grow or bridge the ranges parked no longer grow it past
+// twice the parked ranges plus 16 (bytesOfHeapAParkedRange); and PendingStats.ContentBytes
+// counts the map key a parked struct holds (noteQueued).
+// The fork's release at ee46210f says which run an apply check judges and lets a room forget
+// an origin, and adds no option. ApplyView.Drained is false on the update's run and true
+// on the drain's, so the one run of an apply whose update changed nothing - the room held
+// all of it, or its structs only parked - is judged as the drain's (renderCheck.check); and
+// Doc.ForgetParkedOrigin drops an origin from the record a document that discards refused
+// drains keeps of who parked what, which the room calls after each server write's apply
+// (applyServerWrite), and the WebSocket server for each peer that leaves its room. Its commit
+// is the head of the cut release/v1.55.1/2026-11-20.2.
+// The fork's release at 4b19472d makes each removal from a list a document, a type, a persistence
+// or a client keeps clear the slot it vacates (slices.Delete), so an unsubscribed callback,
+// and what its closure captured, no longer stays reachable from the backing array: before it,
+// the closure each server write subscribes (applyRemoteBatch, applyCaptured) kept the write's
+// update reachable from the room until a later subscription took the slot. Its commit is the
+// head of the cut release/v1.55.1/2026-11-20.3.
+// The fork's release at d18319dc, which this branch never pinned alone, keeps the record of who
+// parked each struct to what the pending queue holds, dropping a struct as a merge drops it, a
+// drain lands it or a refused drain discards it (closeDiscardedSenders); gives a parked string a
+// merge cuts at its front bytes of its own, so it keeps only the part PendingStats.ContentBytes
+// counts (noteQueued); and drops a SyncReply that carries a SyncStep1, which was answered
+// outside Server.OnStateAnswer's bound and relayed to every other peer (weighStateAnswer).
+// v1.55.1-legion.1 adds ApplyBudget.Integrated, a callback the apply-budget callback can return
 // with an apply's budget, which the document calls once that apply has integrated and passed its
 // apply check, right after the commit releases the document's lock and before the commit's first
 // observer, and never for an apply that is refused or rolled back. Dispatch sets no Integrated: a

@@ -23,7 +23,7 @@
 #       Refuses with exit 2 while the lock ConfigMap
 #       dispatch-loadtest-lock exists. Then takes the lock, installs the copy (Postgres 16 CPU /
 #       60Gi on a --pg-volume data volume, default 100Gi, Dispatch 16 CPU / 32Gi, production's
-#       size until 2026-11-05 (production has run 20Gi since: theorem-labs/agent-infra
+#       size until 2026-11-05 (production has run 20Gi since: the deployment repository's
 #       dispatch/Pulumi.prod.yaml), listener 500m / 512Mi, NATS 3 × 2 / 4Gi, runner 8 / 16Gi), builds
 #       loadgen and (with --browsertype-commit) a static browsertype of that commit for browser
 #       typing (below), starts the heartbeat and the sampler, and prints each copy container's

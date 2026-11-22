@@ -68,9 +68,9 @@ func parks(doc *crdt.Doc) bool {
 // is no stand-in for them. A log ygo will not even merge into runs is that same state, answered
 // the same way (runsThrough). Twenty keystrokes with the parked row stored after the first three,
 // then another client's rows that park past the queue until a later row of that client's arrives,
-// merged into bytes a room's load decoded holding three of the twenty keystrokes, under ygo
-// v1.55.1-theorem.3 and with the fix of its parked merge ported onto it alike; with the parked row
-// stored after all twenty, three under v1.55.1-theorem.3 and all twenty with the fix
+// merged into bytes a room's load decoded holding three of the twenty keystrokes, under
+// cybermonklabs/ygo at 9c4cced4 and with the fix of its parked merge ported onto it alike; with
+// the parked row stored after all twenty, three under 9c4cced4 and all twenty with the fix
 // (TestAHistoryWhoseRunsDoNotApplyInOrderIsUnloadableAndItsRebuildRetiresItsClients).
 //
 // A log of one update is returned as stored: a compaction leaves the rows it folds as one update

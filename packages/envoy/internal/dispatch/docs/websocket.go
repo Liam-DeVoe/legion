@@ -1085,7 +1085,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // weighStateAnswer is ygo's Server.OnStateAnswer: the room runs it immediately before it answers
 // a browser's SyncStep1 with the room's state, and runs the release it returns once that answer
 // is in that browser's write queue, by every way out including the one that sends nothing
-// (theorem-labs/ygo v1.55.1-theorem.2, provider/websocket/state_answer.go). It holds a grant of
+// (cybermonklabs/ygo v1.55.1-legion.1, provider/websocket/state_answer.go). It holds a grant of
 // the pod's copy heap for the answer, weighed by the path ygo's answer takes for that room
 // (answerWeight) and by the browser's own SyncStep1 (stepOneWeight), and refuses the answer with
 // the room's busy close where the pool has no room for it inside the server's wait bound.
@@ -1101,7 +1101,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which the pinned theorem-labs/ygo v1.55.1-theorem.15 carries, a room that parked anything was
+// which the pinned cybermonklabs/ygo v1.55.1-legion.1 carries, a room that parked anything was
 // cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
 // 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run
@@ -1167,17 +1167,17 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 // weighStateAnswer's.
 //
 // The room's clients are what this answer's heap follows, and the library counts them in constant
-// time under the document's read lock (crdt.Doc.ClientCount, theorem.3). A room of many structs
-// and few clients is therefore priced for the clients it has: a run of a million keystrokes is
-// granted 63,869,984 bytes where it measures 25,428,848 at most, against the 340,003,400 the
-// room's struct count would have charged it.
+// time under the document's read lock (crdt.Doc.ClientCount, cybermonklabs/ygo v1.55.1-legion.1).
+// A room of many structs and few clients is therefore priced for the clients it has: a run of a
+// million keystrokes is granted 63,869,984 bytes where it measures 25,428,848 at most, against the
+// 340,003,400 the room's struct count would have charged it.
 //
 // It is a price of what the cut holds at once, as every taker of the pool is priced, and not of
 // what it allocates, which can be several times more: what the cut allocates past what it holds
 // is scratch it drops update by update - each update it packs begins a delete set and a state
 // vector of its own, grows an encoder to the update's size and copies the update out of it - and
 // garbage is the Go memory limit's to bound, which the collector steers the whole heap to, not
-// the pool's. Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6 with a struct priced at
+// the pool's. Measured 2026-11-16 on cybermonklabs/ygo at 1340fd1e with a struct priced at
 // 88 bytes (answerHeapAStruct, raised since for arm64), the fewest bytes of five answers against
 // the most live heap a collection marked (liveHeapPeak): the grant covered what
 // each answer held - 1.06 to 4.21 times over in rooms of 1,000 structs and more, and in smaller
@@ -1202,7 +1202,7 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // entry. The entries are the count the vector's first number names, which the decoder makes its
 // map for before reading one, and none for a message that names none or one the decoder refuses
 // before it makes the map: a count past half the vector's bytes or past maxUpdateItems
-// (crdt/update.go:395-418 in theorem-labs/ygo v1.55.1-theorem.9). Read off the message's first
+// (crdt/update.go:395-418 in cybermonklabs/ygo v1.55.1-legion.1). Read off the message's first
 // numbers, it costs nothing to weigh.
 func stepOneWeight(step1 []byte) int64 {
 	kind, rest, ok := readUvarint(step1)
@@ -1232,7 +1232,7 @@ func answerFrameWeight(structs int64) int64 {
 // answerHeapAStateByte is the heap an answer cut from a room's own structs holds for each byte of
 // the room's state: its frames, held twice over while each message is wrapped in its frame, and
 // what the cut builds besides them, the room's whole delete set among it
-// (crdt.SplitStateAsUpdateV1). Measured 2026-11-13 and 14 on theorem-labs/ygo v1.55.1-theorem.2
+// (crdt.SplitStateAsUpdateV1). Measured 2026-11-13 and 14 on cybermonklabs/ygo at 23d983a9
 // at copyMeasurementGCPercent, in two to three runs of three answers a shape to a browser holding
 // nothing, on a two-processor machine other measurements were running on
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot, run with
@@ -1266,7 +1266,7 @@ const answerHeapAClient = 340
 // state term granted 193,224, and the keystroke and split-dense runs an editor makes fell short
 // of it too.
 //
-// Measured 2026-11-15 on theorem-labs/ygo v1.55.1-theorem.6, on a copy of the fork that collects
+// Measured 2026-11-15 on cybermonklabs/ygo at 1340fd1e, on a copy of the fork that collects
 // at every growth of those arrays, of each encoder and of each update's copy and reads the live
 // heap above the document there, counting the array a growth copies from: 680 readings of rooms
 // of 4 to 137,127 structs - runs of GC structs of one client, rooms of 1, 64, 127, 128 and 200 GC
@@ -1312,7 +1312,7 @@ const answerFrameStructs = 16_000
 
 // answerHeapAStepOneEntry is the heap the map ygo decodes a browser's SyncStep1 state vector into
 // holds for each entry the vector names (crdt.DecodeStateVectorV1, which makes the map at that
-// count before it reads one). Measured 2026-11-19 on theorem-labs/ygo v1.55.1-theorem.9 with
+// count before it reads one). Measured 2026-11-19 on cybermonklabs/ygo at 0f7aeee2 with
 // go1.27.3, the live heap two collections left above the decode with the vector's own bytes kept
 // alive, at counts from 7 to 1,048,576 (TestAStepOnesStateVectorHoldsNoMoreThanItsPrice): the
 // most 37.83 bytes an entry at 500,000 entries, then 36.99 at 1,000 and 36.08 at 1,048,576, and

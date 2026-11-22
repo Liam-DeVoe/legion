@@ -24,8 +24,8 @@ import (
 // reader reports true.
 //
 // A struct takes the clocks the library's decoder counts for it (decodeStructsV1 and
-// contentIDsFromStructs, crdt/merge.go and crdt/contentmap.go in theorem-labs/ygo
-// v1.55.1-theorem.9): a GC run its length, and an item its content's length - a deletion's
+// contentIDsFromStructs, crdt/merge.go and crdt/contentmap.go in cybermonklabs/ygo
+// v1.55.1-legion.1): a GC run its length, and an item its content's length - a deletion's
 // length, a JSON or Any item's count of values, a string's UTF-16 units, and one for content of
 // any other kind. A Skip run, which only stands for clocks the update does not hold, and a struct
 // of no clocks are passed and not called, as the decoder keeps neither. A struct reaching past
@@ -34,7 +34,7 @@ import (
 // ygo write each client's structs as one group.
 //
 // It passes a struct as the library's own scan of a frame passes one (pendingScanner.item and
-// .content, crdt/pending_budget.go:758-960 in theorem-labs/ygo v1.55.1-theorem.9), so the two read
+// .content, crdt/pending_budget.go:758-960 in cybermonklabs/ygo v1.55.1-legion.1), so the two read
 // the same bytes as the same structs: a GC or Skip run is its length; an item is its info byte, its
 // origin and right origin where the byte says it has them and its parent where it has neither, and
 // then its content by the byte's low five bits - a deletion's length, a JSON item's values as JSON
@@ -84,8 +84,8 @@ func eachV1Range(update []byte, structs, deletes func(client crdt.ClientID, cloc
 // two bytes at least. It is what the library's apply decodes of the update: it reads each group's
 // structs one by one, Skip runs included, counting each against its value limit before it reads it,
 // and reserves a one-client update's list of structs for its header's count held to the same half
-// of the bytes left (decodeStructs, crdt/update.go:912-948 in theorem-labs/ygo
-// v1.55.1-theorem.11). It passes the structs of every group but the last as eachV1Range does,
+// of the bytes left (decodeStructs, crdt/update.go:912-948 in cybermonklabs/ygo
+// v1.55.1-legion.1). It passes the structs of every group but the last as eachV1Range does,
 // building nothing, to reach the next group's header, and stops where the bytes stop reading,
 // past which the decoder reads nothing either: it refuses the update there. Nothing past the
 // last group's header is read, since the count needs nothing of its structs and the delete set
@@ -113,17 +113,17 @@ func declaredStructs(update []byte) uint64 {
 }
 
 // maxV1Clock is the highest clock the library's decoder lets a struct reach, 2^53 - 1, the largest
-// integer a JavaScript number holds exactly (structEnd, crdt/update.go in theorem-labs/ygo
-// v1.55.1-theorem.9): a struct that starts or ends past it reads as false.
+// integer a JavaScript number holds exactly (structEnd, crdt/update.go in cybermonklabs/ygo
+// v1.55.1-legion.1): a struct that starts or ends past it reads as false.
 const maxV1Clock = 1<<53 - 1
 
 // maxAnyDepth is how deep eachV1Range follows lib0 Any arrays and maps inside one another:
 // the depth past which the library's own reader refuses a value (anycodec.MaxDepth, 100, in
-// theorem-labs/ygo v1.55.1-theorem.9), so a value it refuses does not read here either.
+// cybermonklabs/ygo v1.55.1-legion.1), so a value it refuses does not read here either.
 const maxAnyDepth = 100
 
 // The low five bits of a V1 struct's info byte that name what it is (crdt/update.go's wire tags in
-// theorem-labs/ygo v1.55.1-theorem.9), and the three high bits that say what an item carries.
+// cybermonklabs/ygo v1.55.1-legion.1), and the three high bits that say what an item carries.
 const (
 	v1GC       = 0
 	v1Deleted  = 1
@@ -307,7 +307,7 @@ func (r *v1Reader) passContent(tag byte) uint64 {
 // utf16Units is the UTF-16 units text, UTF-8, takes, which are the clocks a string item takes
 // (crdt.ContentString.Len): one for each byte that starts a character and one more for each that
 // starts a character of four bytes, one past U+FFFF, as the library's frame scan counts them
-// (utf16Units, crdt/pending_budget.go in theorem-labs/ygo v1.55.1-theorem.9).
+// (utf16Units, crdt/pending_budget.go in cybermonklabs/ygo v1.55.1-legion.1).
 func utf16Units(text []byte) uint64 {
 	var units uint64
 	for _, b := range text {

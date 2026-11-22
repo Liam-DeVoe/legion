@@ -534,7 +534,7 @@ type Service struct {
 	// the parked ones per room in counts, not bytes: its structs by Server.MaxPendingItems, which
 	// this service sets to maxParkedStructs (4,096; New, below), and its delete ranges apart by
 	// Server.MaxPendingDeleteRanges, set to maxParkedDeleteRanges (4,096), each refusing an update
-	// that would park past it (theorem-labs/ygo v1.55.1-theorem.11,
+	// that would park past it (cybermonklabs/ygo v1.55.1-legion.1,
 	// provider/websocket/server.go:1378-1384, :2042-2043).
 	// Each load's bytes are counted against that load's token, and each unload of a name ends the
 	// name's oldest token, so a room that loaded again before an earlier room of the same name

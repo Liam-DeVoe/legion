@@ -88,7 +88,7 @@ import (
 // across the deploy or reloaded by the reader once it is over, holds the edits it typed under its
 // own id, saved in the browser (pending-sync.ts), and replays each saved row under the client id
 // it was typed under; and a client that presents no DocumentClientIdParameter at all - a page of
-// that build, agent-infra's measure job - is given no id (legacy) and writes under the one it
+// that build, the deployment's measure job - is given no id (legacy) and writes under the one it
 // drew for itself. So an id below the floor that no row names may be claimed - before the apply
 // (claimClients), by the person whose browser update carries structs under it first, or at the
 // admission of a page of this build that presents it (keepsClient) - and is that person's from
@@ -189,7 +189,7 @@ import (
 // newer-content close, the room budget, a read or a decision that failed), and every request
 // ygo's upgrade would refuse, which is answered as that upgrade answers it first
 // (refusedAtUpgrade). Four come after the id, inside ygo's ServeHTTP, which the
-// admission cannot ask first (theorem-labs/ygo v1.55.1-theorem.10,
+// admission cannot ask first (cybermonklabs/ygo v1.55.1-legion.1,
 // provider/websocket/server.go:2207-2323): authorize's 401 for a room whose load failed, ygo's 500
 // where the room's load fails or the request ends waiting for it, the upgrade's drop of a client
 // that sent bytes before its 101, and the close of a socket upgraded into a room ygo dropped

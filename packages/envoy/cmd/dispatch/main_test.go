@@ -1384,7 +1384,7 @@ func TestMain(m *testing.M) {
 
 // The boot path sets the runtime's memory limit to 90% of what its provider reads: a container
 // limited to 4 GiB gives 3.6 GiB, the production pod's 20Gi gives 18 GiB, 19,327,352,832 bytes
-// (infra/gcp/dispatch_kube.go's appMemory, 20Gi in theorem-labs/agent-infra
+// (infra/gcp/dispatch_kube.go's appMemory, 20Gi in the deployment repository's
 // dispatch/Pulumi.prod.yaml since 2026-11-05), and the boot line names both figures. A provider
 // that reports no limit, or finds no control group to read, leaves the runtime with none, and the
 // boot line says so.

@@ -24,12 +24,12 @@ import (
 // ygo walks every client of a document several times in each apply whatever the apply holds: a
 // keystroke here makes eight StateVector calls over the room's 40,002 clients, four in the room's
 // apply and four in the replica's (its state before and after, the apply's own, the drain's),
-// counted from an allocation profile. Before theorem-labs/ygo v1.55.1-theorem.9 every apply check
+// counted from an allocation profile. Before cybermonklabs/ygo at 0f7aeee2 every apply check
 // a document carried added two walks more, which is why the replica's document carries none while
-// it holds nothing parked (holdParkedIn). Measured on theorem.8 on a shared two-CPU pod, five runs
-// a side of 30 keystrokes each, alternating between 2a57f092, where the replica always carried
-// holdParked, and the change that dropped it there: a median of 166 ms a keystroke (151 ms of
-// CPU) before and 150 ms (145 ms of CPU) after.
+// it holds nothing parked (holdParkedIn). Measured on cybermonklabs/ygo at 2945f8a5 on a shared
+// two-CPU pod, five runs a side of 30 keystrokes each, alternating between 2a57f092, where the
+// replica always carried holdParked, and the change that dropped it there: a median of 166 ms a
+// keystroke (151 ms of CPU) before and 150 ms (145 ms of CPU) after.
 func BenchmarkATangledRoomTakesAKeystroke(b *testing.B) {
 	tree, err := pmdoc.Parse("# Tangled\n\nThe tangle follows the next paragraph.\n")
 	if err != nil {

@@ -104,7 +104,7 @@ func BoundsForLimit(limit int64) MemoryBounds {
 // at, and the limit a service runs under when its process holds none: 90 per cent of a
 // container's 4 GiB, 3,865,470,566 bytes, which is what Dispatch's deployment gave it while these
 // figures were measured. The production pod is larger now - 20Gi since 2026-11-05
-// (theorem-labs/agent-infra dispatch/Pulumi.prod.yaml's appMemory), whose 90 per cent is
+// (appMemory in the deployment repository's dispatch/Pulumi.prod.yaml), whose 90 per cent is
 // 19,327,352,832 (setGoMemoryLimit, cmd/dispatch/main.go) - and a process holding another limit
 // runs under this calibration scaled to that limit (BoundsForLimit), not under these figures.
 const calibratedGoMemoryLimitBytes = 4 << 30 * 9 / 10

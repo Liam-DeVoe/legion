@@ -9,8 +9,8 @@ import (
 )
 
 // productionGoMemoryLimitBytes is the Go memory limit of Dispatch's production pod: 90 per cent of
-// the 20Gi its container has been given since 2026-11-05 (theorem-labs/agent-infra
-// dispatch/Pulumi.prod.yaml's appMemory, setGoMemoryLimit's ratio), 19,327,352,832 bytes, five
+// the 20Gi its container has been given since 2026-11-05 (appMemory in the deployment
+// repository's dispatch/Pulumi.prod.yaml, setGoMemoryLimit's ratio), 19,327,352,832 bytes, five
 // times the calibration and two bytes more.
 const productionGoMemoryLimitBytes = 19_327_352_832
 

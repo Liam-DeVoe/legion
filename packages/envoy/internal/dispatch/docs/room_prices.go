@@ -98,12 +98,12 @@ func roomWeight(stateBytes, structs int64) int64 {
 // crdt.DeleteRange of two uint64s in its client's entry) and in the record of who parked it, which
 // the room keeps so that a refused drain can name who parked what it discards
 // (crdt.Doc.parkedDsBy, which SetDiscardRefusedDrain turns on: leaveParkedOut). Since
-// theorem-labs/ygo v1.55.1-theorem.11 the record keeps one delete set for each sender, the
+// cybermonklabs/ygo at f80e73e7 the record keeps one delete set for each sender, the
 // connection the provider applies an update for (its origin, provider/websocket/peer.go:357),
 // compacted as the pending deletes are and cut to what they still hold, and after every apply it
 // holds at most twice the parked ranges plus 16; an apply with no sender records nothing.
 //
-// Measured 2026-11-20 on theorem-labs/ygo v1.55.1-theorem.11 (f80e73e7), over this package at
+// Measured 2026-11-20 on cybermonklabs/ygo at f80e73e7, over this package at
 // fae59209, each shape parking 4,096 ranges, the cap, through the hook (weighPeerUpdate), with the
 // heap read once the frames were freed. The repro's frames, one range a frame under one client
 // applied with no sender (`DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" go test

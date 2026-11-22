@@ -52,7 +52,7 @@ import (
 //
 // A read-only socket's awareness is decoded by nothing at all. ygo answers a read-only peer's
 // awareness message with a reply of its own and applies and relays none of it
-// (provider/websocket/peer.go:113-125 in theorem-labs/ygo v1.55.1-theorem.9), so reading one here
+// (provider/websocket/peer.go:113-125 in cybermonklabs/ygo v1.55.1-legion.1), so reading one here
 // would only be work the read path does for nothing, outside any load slot. The filter passes over
 // such a message's bytes as it passes a message too large to read (skip) and hands ygo an
 // awareness message naming no client in its place. It learns that a socket is read-only from the

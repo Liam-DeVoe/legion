@@ -27,7 +27,7 @@ import (
 //
 // The pointer is read once the write's rows are stored, with no later write between. Each of
 // these writes subscribes a closure that picks out its own commit and holds its origin
-// (applyRemoteBatch, applyCaptured), and before theorem-labs/ygo v1.55.1-theorem.13 an
+// (applyRemoteBatch, applyCaptured), and before cybermonklabs/ygo at 4b19472d an
 // unsubscribe left the closure in the slot of the observer list it vacated, so the room kept the
 // update reachable until a later subscription took the slot.
 func TestAServerWriteThatParksLeavesTheRoomNoReferenceToItsUpdate(t *testing.T) {

@@ -519,8 +519,8 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 // A revoke ends the socket with a close frame of ygo's own, which gorilla's WriteControl puts on
 // the connection between two of ygo's messages: it waits up to a second for a message already
 // going out and never cuts into one. Here the document is far past 64 KB, which the room sends a
-// page as sync Update messages of at most 64 KiB each and a SyncStep2 last (theorem-labs/ygo
-// v1.55.1-theorem.6, carrying sjawhar/ygo v1.55.1-sami.3's bounded answer), and the page reads
+// page as sync Update messages of at most 64 KiB each and a SyncStep2 last (cybermonklabs/ygo
+// v1.55.1-legion.1, carrying sjawhar/ygo v1.55.1-sami.3's bounded answer), and the page reads
 // nothing until the re-check has revoked its socket, so the document is part way out when the
 // revoke arrives. The page then reads every message whole and the close with the
 // admission-revoked code after them - never a protocol error from a frame cut in half, and never
@@ -594,8 +594,8 @@ const ygoPeerWriteTimeout = 10 * time.Second
 const ygoCloseFrameTimeout = time.Second
 
 // ygoCloseHandshakeTimeout is how long ygo waits, once a revoked socket's close frame is out, for
-// the page's own close frame in reply before it closes the connection anyway (theorem-labs/ygo
-// v1.55.1-theorem.6 provider/websocket/peer.go, closeHandshakeTimeout, which closeForCause waits
+// the page's own close frame in reply before it closes the connection anyway (cybermonklabs/ygo
+// v1.55.1-legion.1 provider/websocket/peer.go, closeHandshakeTimeout, which closeForCause waits
 // out). The wait is the closing handshake of RFC 6455: a connection closed right after its close
 // frame, with the page's input unread, is reset, and the reset discarded the close frame with
 // whatever else the page had not yet received - at the pin before it, a refusal's code was lost
@@ -640,8 +640,8 @@ const postRevokeMarker = "afterrevoke"
 // server accepts every socket with the send buffer serverSendBufferRequest asks for, and the
 // document is seeded at the size that grant holds whole (slowPageMessageSize): past 64 KB, and
 // hundreds of times what the slow page's 4096-byte receive buffer takes. The room sends it as
-// sync Update messages of at most 64 KiB each and a SyncStep2 last (theorem-labs/ygo
-// v1.55.1-theorem.6). That page connects and never reads a byte, so when the re-check revokes its
+// sync Update messages of at most 64 KiB each and a SyncStep2 last (cybermonklabs/ygo
+// v1.55.1-legion.1). That page connects and never reads a byte, so when the re-check revokes its
 // socket the whole document is queued on the wire to a page that has taken none of it, and the
 // server's writes of it have returned, so every byte of it is in the record this test reads. Of
 // the revoke alone, this requires:
@@ -1330,8 +1330,8 @@ const (
 
 // serverStream is what the bytes a server wrote to one socket amount to: how they end, how many
 // bytes of document the room sent in them - the sync Update messages and the SyncStep2 that ends
-// its answer, which the room sends in messages of at most 64 KiB each (theorem-labs/ygo
-// v1.55.1-theorem.6) - counting what each declares, whole or part way out, whether that SyncStep2
+// its answer, which the room sends in messages of at most 64 KiB each (cybermonklabs/ygo
+// v1.55.1-legion.1) - counting what each declares, whole or part way out, whether that SyncStep2
 // went out whole, and how many whole frames follow it. A page owed a document reads it in those
 // messages, and the frames after the SyncStep2 say the server has moved on from writing it.
 type serverStream struct {

@@ -588,7 +588,7 @@ func structCeiling(doc *crdt.Doc) uint64 {
 //
 // A parked delete range is counted nowhere here. The splits its landing makes are the drain's, and
 // the apply that lands it spends them from its own Split share, which counts the drain's splits
-// (crdt.ApplyBudget.Split, crdt/doc.go:310-330 in theorem-labs/ygo v1.55.1-theorem.9); a range
+// (crdt.ApplyBudget.Split, crdt/doc.go:339-357 in cybermonklabs/ygo v1.55.1-legion.1); a range
 // that never lands adds nothing to what the store holds. Counted once each, one 4,186,013-byte
 // frame of 1,048,565 ranges over a client the room had never seen filled a small room's whole
 // headroom, which refused every edit that adds a struct and every API or server write of two

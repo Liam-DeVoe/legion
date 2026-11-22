@@ -139,8 +139,8 @@ func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() 
 // awaitLoaded waits until ygo is loading no room under room's name, or ctx ends between looks. A
 // room ygo is loading holds its name in the server's rooms (Server.Rooms) and is reported absent
 // (Server.GetDoc) until its load hook has returned and ygo publishes it, or until its load fails
-// and gives the name up (failRoomLoad, theorem-labs/ygo v1.55.1-theorem.6,
-// provider/websocket/server.go:1763-1779,2077-2086). So this answers once the name holds a
+// and gives the name up (failRoomLoad, cybermonklabs/ygo v1.55.1-legion.1,
+// provider/websocket/server.go:1854-1870,2172-2181). So this answers once the name holds a
 // published room or none. ygo's one wait on a load is its CloseRoom's, which closes the room it
 // waited for, so this looks again, waiting from roomInUseFirstWait doubling to
 // roomInUseLongestWait, as closeWhenFree waits for a room's callers.

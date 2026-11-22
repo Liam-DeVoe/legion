@@ -457,7 +457,7 @@ var errVersionDisagrees = errors.New("a stored version disagrees with the stored
 //
 // A compaction runs it only for a fold whose document parked something (fold). ygo merges a
 // document's encoding only when it holds parked structs or deletions, and under
-// github.com/theorem-labs/ygo v1.55.1-theorem.3 a struct parked over clocks the document already
+// cybermonklabs/ygo at 9c4cced4 a struct parked over clocks the document already
 // holds wins that merge's clock tie and drops every struct after it, so a read of the document,
 // and a version written from that read, holds a fraction of the text the rows hold. The fold's
 // read-back refuses such rows (readsBackOtherwise); once the merge keeps the held structs they

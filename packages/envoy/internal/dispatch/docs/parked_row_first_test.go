@@ -432,8 +432,8 @@ func decodedAsARoom(state []byte) string {
 // a merge of those runs is what a room's load would have decoded, and the merge keeps the parked
 // struct over the keystrokes it covers. Its rebuild retires every client its rows name, at the
 // clock each reached, which it reads from the runs themselves. The parked row stored first and
-// stored last both make such a history, under ygo v1.55.1-theorem.3 and with the fix of its parked
-// merge alike: the fold of either parks past the queue whatever that merge does.
+// stored last both make such a history, under cybermonklabs/ygo at 9c4cced4 and with the fix of
+// its parked merge alike: the fold of either parks past the queue whatever that merge does.
 func TestAHistoryWhoseRunsDoNotApplyInOrderIsUnloadableAndItsRebuildRetiresItsClients(t *testing.T) {
 	for _, order := range []struct {
 		name        string

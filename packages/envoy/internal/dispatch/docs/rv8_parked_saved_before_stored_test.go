@@ -7,7 +7,7 @@ package docs
 // was answered applied at once, while the commit that held the edit was still waiting for its
 // store. The editor clears every row recorded before such a SyncStep2 (pending-sync.ts, the lcPage
 // model), so the edit showed saved before it was stored, and stayed shown saved when that store
-// failed. Under theorem-labs/ygo v1.55.1-theorem.10 a frame that commits nothing is answered once
+// failed. Under cybermonklabs/ygo v1.55.1-legion.1 a frame that commits nothing is answered once
 // every commit the room had made when it read the frame is stored, and the test holds that alice's
 // reconnect does not clear her row for her keystroke while the store holds her below the clock she
 // wrote, that store then failing.

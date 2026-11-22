@@ -26,8 +26,8 @@ import (
 // settlement's repair. The tracked state is what each remote apply's report added as it
 // committed and what the drain counted for a commit no report covers (roomApplies.state,
 // renderedReplica.countCommit). An update the peer hook admits is drained by that observer inside
-// the apply that committed it, as the transaction ends (buildPhase2, crdt/doc.go:1328-1453 in
-// theorem-labs/ygo v1.55.1-theorem.9), before the hook can read what the apply left
+// the apply that committed it, as the transaction ends (buildPhase2, crdt/doc.go:1415-1541 in
+// cybermonklabs/ygo v1.55.1-legion.1), before the hook can read what the apply left
 // in the queue, so the hook weighs the room once more itself where its queue's charge, or the
 // count of delete ranges it parks, moved (Service.weighPeerUpdate, roomApplies.noteQueued,
 // roomApplies.noteParkedRanges); one its apply refused committed nothing to drain and reported

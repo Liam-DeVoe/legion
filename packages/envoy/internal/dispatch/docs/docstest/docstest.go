@@ -406,7 +406,7 @@ func (p *Peer) Write(syncMessage []byte) error {
 // SyncStatus, or the connection has ended, within within. The room answers a socket's frames in
 // the order they came, each once what it waits on is known: under Server.AnswerOnceStored a frame
 // that commits nothing is answered once every commit the room had made when it was read is stored
-// (theorem-labs/ygo v1.55.1-theorem.10), so a later frame's other answers, such as the document a
+// (cybermonklabs/ygo v1.55.1-legion.1), so a later frame's other answers, such as the document a
 // sync step 1 asks for, can come first.
 func (p *Peer) AwaitAnswered(within time.Duration) error {
 	deadline := time.Now().Add(within)

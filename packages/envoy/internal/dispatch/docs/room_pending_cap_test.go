@@ -22,7 +22,7 @@ import (
 // caps - maxParkedStructs for its parked structs, and maxParkedDeleteRanges for its parked delete
 // ranges apart (Server.MaxPendingDeleteRanges) - once the state is in and before OnLoadDocument
 // (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go:1830, :1897-1899; loadRoom in
-// theorem-labs/ygo v1.55.1-theorem.10), so every peer's apply after the load is held to them. A
+// cybermonklabs/ygo v1.55.1-legion.1), so every peer's apply after the load is held to them. A
 // room loads a stored state that parks structs and delete ranges; a browser then sends, over the
 // document socket, an update parking delete ranges up to the range cap exactly, which the room
 // applies, and one parking a range more, which the room refuses, leaving its parked queue as it

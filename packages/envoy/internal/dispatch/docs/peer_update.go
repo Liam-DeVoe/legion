@@ -1166,8 +1166,8 @@ func (a *roomApplies) releaseGrant(origin any) {
 // (TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive).
 //
 // The figure is the library's count of what the queue holds now (crdt.PendingStats.ContentBytes,
-// counted as ApplyBudget.Bytes counts a struct, its map key included since theorem-labs/ygo
-// v1.55.1-theorem.11, which a struct with no origin holds from its decode on), read after each
+// counted as ApplyBudget.Bytes counts a struct, its map key included since cybermonklabs/ygo at
+// f80e73e7, which a struct with no origin holds from its decode on), read after each
 // apply, and not a sum of what each apply added: a drain, a merge and a discard take content out
 // of the queue as a park puts it in. Summed, every apply that left the queue holding anything
 // was charged its whole content, integrated or parked, and the charge went back only once the
@@ -1508,7 +1508,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 // committed since the replica's last rendering. Such an update still drains: a
 // parked struct or delete range can wait on clocks a server write in the room's own transaction
 // supplied, which runs no drain, and lands at the next remote apply, whatever that apply carries
-// (crdt.StructStore.noteAppend, crdt/store.go:155-166 in theorem-labs/ygo v1.55.1-theorem.9,
+// (crdt.StructStore.noteAppend, crdt/store.go:162-174 in cybermonklabs/ygo v1.55.1-legion.1,
 // marks what such a struct releases for the next drain). Nothing says the edit is too large
 // then, so the honest answer is the one the editor keeps the edit and sends it again for, and its
 // resend is weighed whole, its gap now filled. A sender already gone is closed by nothing, and its

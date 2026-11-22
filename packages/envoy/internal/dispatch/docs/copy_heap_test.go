@@ -304,7 +304,7 @@ func measureCopyPaths(t *testing.T, state []byte) {
 
 // stateAnswerMessageBytes is how long ygo's server lets one sync message of a state answer be on
 // a y-websocket connection: the 64 KiB one frame of the answer may be, less the one byte of the
-// frame's own message type (theorem-labs/ygo v1.55.1-theorem.2, provider/websocket/peer.go,
+// frame's own message type (cybermonklabs/ygo v1.55.1-legion.1, provider/websocket/peer.go,
 // stateFrameBytes and stateMessageBytes).
 const stateAnswerMessageBytes = 64<<10 - 1
 
@@ -327,9 +327,9 @@ const stateAnswerParker = 7_000_001
 //
 // Every row is a measurement, run with DISPATCH_MEASURE_COPY_HEAP=1 alone: an answer's peak moves
 // with where the collector runs, by half again on a busy machine (a mebibyte of prose answered
-// from its encoded state, as a room that parked was answered before theorem.6, held 47,280,064
-// to 73,004,928 bytes in one run of three), so a later run can pass a grant set past the most an
-// earlier one measured. The shapes are a
+// from its encoded state, as a room that parked was answered before the fork's release at
+// 1340fd1e, held 47,280,064 to 73,004,928 bytes in one run of three), so a later run can pass
+// a grant set past the most an earlier one measured. The shapes are a
 // mebibyte of prose; one paragraph of a mebibyte typed in one transaction, a few structs; and,
 // each of about a million structs, a run of a million keystrokes, each its own item as a room
 // takes them one transaction at a time (chainedRun), a run of 1,024,000 characters with every
@@ -441,8 +441,8 @@ func measureStateAnswers(t *testing.T, doc *crdt.Doc) {
 
 // answerFrames is what ygo's server builds to answer step1 from doc's room between the hook's
 // admission and its release: the sync messages sync.EncodeSyncStep2Split cuts doc's state into,
-// each wrapped in the frame the browser's writer is handed (theorem-labs/ygo
-// v1.55.1-theorem.2, provider/websocket's answerSyncStep1, sendSyncSeries and syncFrame).
+// each wrapped in the frame the browser's writer is handed (cybermonklabs/ygo
+// v1.55.1-legion.1, provider/websocket's answerSyncStep1, sendSyncSeries and syncFrame).
 func answerFrames(t *testing.T, doc *crdt.Doc, step1 []byte) [][]byte {
 	t.Helper()
 	messages, err := ygsync.EncodeSyncStep2Split(doc, step1, stateAnswerMessageBytes)
@@ -597,7 +597,7 @@ func TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt(t *testing.T) {
 // discards, and the fewest of the five is the figure, as answerAllocation takes the fewest
 // allocation: what else the process holds live can only add to a reading, and each reading's
 // hundreds of collections over thousands of answers find the answer's own peak. Measured
-// 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, the answers held, past their variable
+// 2026-11-16 on cybermonklabs/ygo at 1340fd1e, the answers held, past their variable
 // terms, from below nothing to 3,360 and 3,504 bytes in two runs (the run of 256 GC structs,
 // 27,448 and 27,592 against the 28,184 a struct priced at 88 granted), where single readings of
 // that room read up to 31,480 and one of the run of 512 GC structs 328 bytes past its grant: the
@@ -1035,8 +1035,8 @@ func TestALoadWaitsForASlotWhileEveryOneIsHeldAndThenTakesIt(t *testing.T) {
 }
 
 // A room ygo loaded without reading the store through this service's persistence - ygo decoded
-// what another persistence handed it into the room's document itself (theorem-labs/ygo
-// v1.55.1-theorem.4, provider/websocket/server.go:2052-2071), so the load hook finds no record
+// what another persistence handed it into the room's document itself (cybermonklabs/ygo
+// v1.55.1-legion.1, provider/websocket/server.go:2144-2163), so the load hook finds no record
 // of a load of its own (takeLoadedState) - is decoded again by the hook, from an encode of its
 // own document, into the copy its replica takes, under a grant of the pod's load concurrency of
 // its own (onLoadDocument, holdServerLoad). That encode carries what the room parks, so the copy
@@ -1056,8 +1056,8 @@ func TestARoomLoadedWithoutTheServicesPersistenceIsGrantedACopyThatCountsWhatItP
 	service.settle = time.Hour // no settlement takes a grant beside the load's
 	// The room's document as ygo's loadRoom hands it to the hook: made with the pending cap
 	// lifted, the state its persistence read decoded into it - here with a frame parked behind
-	// a gap among it - and the server's cap set once that state is in (theorem-labs/ygo
-	// v1.55.1-theorem.4, provider/websocket/server.go:1885, 1951-1954, 2065-2066).
+	// a gap among it - and the server's cap set once that state is in (cybermonklabs/ygo
+	// v1.55.1-legion.1, provider/websocket/server.go:1973, 2039-2042, 2157-2158).
 	doc := crdt.New(crdt.WithMaxPendingItems(math.MaxInt))
 	for _, update := range [][]byte{seededState(t), parkedGCFrame(parker, parkedStructs)} {
 		if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {

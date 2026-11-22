@@ -67,8 +67,8 @@ import (
 //
 // A replica's document that holds nothing parked has no drain to refuse, and is given no check
 // (holdParkedIn): the replica applies every commit the room makes, and a check costs each of
-// those applies its rollback record and the check's own call. Until theorem-labs/ygo
-// v1.55.1-theorem.9 it also cost two walks of every client of the document, whatever the check
+// those applies its rollback record and the check's own call. Until cybermonklabs/ygo at
+// 0f7aeee2 it also cost two walks of every client of the document, whatever the check
 // answered - on the tangled browser row's document, 40,001 clients, about 15 ms of a keystroke's
 // 170 ms of CPU in a profile of its typing - and BenchmarkATangledRoomTakesAKeystroke measures the
 // keystroke's cost with the room's check and the replica's. Nothing the replica takes parks in it

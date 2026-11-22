@@ -91,8 +91,8 @@ func (s *Service) roomHoldsHead(live *crdt.Doc, head int64) bool {
 
 // roomHeld reports whether this process holds a room of room, resident or still loading. A load
 // in flight counts, and Rooms() is what reports it: the goroutine that owns a load puts its
-// placeholder under the room's name before it reads the store (theorem-labs/ygo
-// v1.55.1-theorem.10, createRoomPlaceholder, provider/websocket/server.go:1956-2007), and GetDoc
+// placeholder under the room's name before it reads the store (cybermonklabs/ygo
+// v1.55.1-legion.1, createRoomPlaceholder, provider/websocket/server.go:1956-2007), and GetDoc
 // answers nothing for it until the load's hook has returned. A caller that took such a room for
 // no room at all - a committed write's publish, which then applies its update nowhere
 // (publishedWithoutARoom) - would leave the room standing behind the update the store took

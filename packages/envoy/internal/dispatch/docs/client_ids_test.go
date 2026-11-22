@@ -920,7 +920,7 @@ func sendStepTwo(t *testing.T, page *docstest.Peer, update []byte) {
 //
 // It waited for the answer to that sync step 1 alone, which came after the answers to the frames
 // before it while the room answered a frame that commits nothing as it read it. Under
-// theorem-labs/ygo v1.55.1-theorem.10 the room answers such a frame once every commit it had made
+// cybermonklabs/ygo v1.55.1-legion.1 the room answers such a frame once every commit it had made
 // when it read the frame is stored (Server.AnswerOnceStored), which can be after it answers the
 // sync step 1 behind it, so a reconnect's own empty sync step 2, answered applied once another
 // person's commit was stored, reached what the page heard after this returned and read as the
