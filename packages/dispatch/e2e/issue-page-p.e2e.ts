@@ -1920,9 +1920,10 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
 // every gated document, so each entry carries Approve and Request changes (decision 213). The
 // root has the large root's shape above - 20 labels, 24 children with 3 done and the
 // 16-character login as its assignee - and the measured title whole, so the properties line is
-// as long as R3's cases. It draws the fixed keys "TWO" and "THREE" and the fixed login
-// (`measuredAssignee`), since a generated key's or login's five more characters change the width
-// being measured: the login's in the properties line.
+// as long as R3's cases. It draws the fixed login (`measuredAssignee`) and keys of its own
+// (`rowKey`, e2e/test.ts): at 1440 px row one has room for a generated key's crumbs, so the key
+// cannot move the reading, while the login sits in the properties line, where a generated
+// login's five more characters change the width being measured.
 // SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa): two
 // roots written with 24 children and their gated documents each, a second context signed in as
 // the long login, and four loads, the header's limit measured after each.
@@ -1931,23 +1932,15 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
 }) => {
   test.setTimeout(240_000);
   const projects = [
-    { project: "TWO", steps: ["criteria", "spec"] },
-    { project: "THREE", steps: ["decisions", "criteria", "spec"] },
+    { logical: "TWO", steps: ["criteria", "spec"] },
+    { logical: "THREE", steps: ["decisions", "criteria", "spec"] },
   ] as const;
-  // The project keys and their issue keys, `TWO-1`, `THREE-1` and on, must be the same text on
-  // every run, and neither the worker, which empties its database only before its first row, nor
-  // Dispatch, which deletes no project, takes away the projects an earlier run made. So the row
-  // empties the database before its seed.
-  await emptyDatabase();
   await phase(
     browser,
     async () => {
       const roots: { key: string; documents: string[]; steps: readonly string[] }[] = [];
-      for (const { project, steps } of projects) {
-        const key = fixedKey(
-          project,
-          "the header's limits hold for the text they are read over (INFRA-1196 decision 398); a generated suffix changes the width being measured"
-        );
+      for (const { logical, steps } of projects) {
+        const key = rowKey(logical);
         await createProject({ key, name: `Gates ${steps.length} steps` });
         await setGatedSteps(key, [...steps]);
         const root = await createIssue({
