@@ -7,9 +7,9 @@
 # — plus a fake `go build -o <path> ...` that installs
 # a tiny stub script at <path> instead of compiling (dev-broker.sh's own isolation logic lives
 # entirely in the shell driver, never in the Go binaries it starts, so a stub proves the driver's
-# behavior without depending on cmd/agent-secrets-devrelay or cmd/broker compiling or running for
+# behavior without depending on cmd/cipher-devrelay or cmd/cipherd compiling or running for
 # real). The broker stub logs the JSON "broker listening" line, addr 127.0.0.1:<its own PID>,
-# exactly like the real cmd/broker does once it binds — using its own PID as a stand-in for the
+# exactly like the real cmd/cipherd does once it binds — using its own PID as a stand-in for the
 # kernel-assigned port a real Listen would report, since two concurrently running stub processes
 # always have distinct PIDs — and then its "broker metrics listening" line, addr
 # 127.0.0.1:2<its own PID>, for the metrics port bound beside it.
@@ -114,6 +114,10 @@ if [[ -n "${DEV_BROKER_TEST_CREATE_FAILS:-}" && "$*" == *"create database"* ]]; 
   echo 'ERROR:  database already exists' >&2
   exit 1
 fi
+if [[ -n "${DEV_BROKER_TEST_DROP_FAILS:-}" && "$*" == *"drop database"* ]]; then
+  echo 'psql: error: connection to server failed: Connection refused' >&2
+  exit 2
+fi
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1 query=""
   [[ "$url" == *\?* ]] && query=${url#*\?}
@@ -133,13 +137,14 @@ chmod +x "${fake_bin_dir}/psql"
 # broker stub logs the issuer, the callers, the exchange's account and read entries, the service
 # logins, the services, the pod registrars, the sign-in client and the metrics address it was
 # configured with, then the JSON "broker listening" line with its addr field, exactly like the
-# real cmd/broker does once it binds — using its own PID as a stand-in for the kernel-assigned
+# real cmd/cipherd does once it binds — using its own PID as a stand-in for the kernel-assigned
 # port a real Listen would report, since two concurrently running stub processes always have
 # distinct PIDs — and the "broker metrics listening" line after it, 2<PID> standing in for that
-# port, with the "airlock proxy listening" line between the two for a broker given a profiles file,
-# 1<PID> standing in for its proxy's port, as the real broker binds a proxy only for a deployment
-# that has one, and then stays alive as the backgrounded "server" process dev-broker.sh waits on
-# and kills during cleanup. The dev-oidc-issuer stub writes each --token's file, logs the
+# port, with the "airlock proxy listening" line between the two for a broker given a profiles file
+# that gives a profile a proxy block, 1<PID> standing in for its proxy's port, as the real broker
+# binds a proxy only for a deployment whose profiles hold one, and then stays alive as the
+# backgrounded "server" process dev-broker.sh waits on and kills during cleanup. The
+# dev-oidc-issuer stub writes each --token's file, logs the
 # --code-flow client, the mode of the secret file it would read and the --sign-in-as person, then
 # logs "issuer listening url=..." as the real one does, its own PID standing in for its port the
 # same way, and stays alive until cleanup kills it. The dev-airlock-stands stub serves its stands
@@ -159,7 +164,7 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$pkg" in
-  */agent-secrets|*/agent-secrets-helper|*/agent-secrets-devrelay)
+  */cipher|*/cipher-helper|*/cipher-devrelay)
     cat >"$out" <<'DEVRELAY'
 #!/usr/bin/env bash
 exit 0
@@ -205,7 +210,7 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
-  */dev-airlock-stands)
+  */dev-proxy-stands)
     cat >"$out" <<'STANDS'
 #!/usr/bin/env bash
 # The front the broker's proxy is named by: it reports the address it bound, its own PID standing
@@ -271,7 +276,7 @@ echo "dev-airlock-stands: stands listening records=http://127.0.0.1:$$" >&2
 exec sleep 999999
 STANDS
     ;;
-  */broker)
+  */cipherd)
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 if [[ $# -ne 0 ]]; then
@@ -284,7 +289,7 @@ echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} fake-secrets=${BROKER_FAKE_SECRETS_FILE:-}" >&2
 echo "fake broker airlock: profiles=${BROKER_PROFILES_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
-if [[ -n "${BROKER_PROFILES_FILE:-}" ]]; then
+if [[ -n "${BROKER_PROFILES_FILE:-}" ]] && jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
 fi
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
@@ -797,6 +802,28 @@ if [[ "$create_status" -eq 0 ]] || ! grep -q 'create database dev_broker_' "$doc
 fi
 printf 'PASS: a run whose create database fails drops no database\n'
 
+# --- A run whose drop database fails (the server gone before its cleanup ran) says so, and
+# never claims a drop that did not happen: the database is still there for someone to drop. ---
+export DEV_BROKER_TEST_DROP_FAILS=1
+run_instance 1 "$log1" "$docker_calls1" "$curl_calls1" "$admin_url"
+unset DEV_BROKER_TEST_DROP_FAILS
+if ! wait_for_ready "$log1"; then
+  cat "$log1" >&2
+  echo "FAIL: the run whose drop will fail never reached ready" >&2
+  exit 1
+fi
+kill -TERM "${instance_pid[1]}"
+wait "${instance_pid[1]}" 2>/dev/null || true
+instance_pid[1]=""
+drop_db=$(grep -o 'drop database if exists dev_broker_[a-z0-9]*' "$docker_calls1" | head -n 1 | awk '{print $NF}')
+if [[ -z "$drop_db" ]] || grep -q "dropped this instance's database" "$log1" \
+  || ! grep -qF "could not drop this instance's database ${drop_db}" "$log1"; then
+  cat "$log1" "$docker_calls1" >&2
+  echo "FAIL: a run whose drop database failed must say it could not drop ${drop_db:-its database}, and never that it dropped it" >&2
+  exit 1
+fi
+printf 'PASS: a run whose drop database fails says so and names the database left behind\n'
+
 # --- A dispatch-pg on another image than dev-postgres.sh's pinned one (an older script's
 # postgres:16) is refused through dev-postgres.sh before this run creates a database or starts a
 # broker, and the refusal prints the dump that moves its databases. ---
@@ -824,7 +851,7 @@ DEV_BROKER_GCP_PREFIX="$gcp_prefix" DEV_BROKER_GCP_KMS_KEY_NAME="$gcp_key" \
   run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
 if ! wait_for_ready "$log1"; then
   cat "$log1" >&2
-  echo "FAIL: a DEV_BROKER_GCP_* run never reached ready" >&2
+  echo "FAIL: a DEV_BROKER_GCP_* run, whose profiles file gives no profile a proxy block, never reached ready" >&2
   exit 1
 fi
 gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
@@ -836,10 +863,25 @@ if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-ar
   echo "FAIL: a DEV_BROKER_GCP_* run does not start its broker on Secret Manager under that prefix and key, with an empty fake secrets file and a profiles file naming none, and say so" >&2
   exit 1
 fi
+printf 'PASS: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME start the broker on Secret Manager under them, with an empty fake secrets file and a profiles file naming no profile\n'
+
+# --- A profiles file that gives no profile a proxy block, as the one under DEV_BROKER_GCP_* is:
+# the broker binds no proxy port for it and logs no line for one (the fake broker does as the real
+# one does), so the stack starts without waiting for that line, points the proxy's front at
+# nothing, and its banner says there is no proxy port. A stack that waited for the line would
+# stop 15 seconds in, never ready. ---
+if grep -qF "dev-broker: broker never logged its proxy's address" "$log1" \
+  || grep -qF '"message":"airlock proxy listening"' "$log1" \
+  || [[ -s "${gcp_workdir}/proxy-backends" ]] \
+  || ! grep -qF "  proxy:               none  (no profile of the profiles file has a proxy block, so the broker binds no proxy port)" "$log1"; then
+  cat "$log1" >&2
+  echo "FAIL: a stack whose profiles file gives no profile a proxy block waited for a proxy port, pointed its front at one, or did not say it has none" >&2
+  exit 1
+fi
 kill -TERM "${instance_pid[1]}"
 wait "${instance_pid[1]}" 2>/dev/null || true
 instance_pid[1]=""
-printf 'PASS: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME start the broker on Secret Manager under them, with an empty fake secrets file and a profiles file naming no profile\n'
+printf 'PASS: a profiles file with no proxy block starts the stack without waiting for a proxy port, and the banner says it has none\n'
 
 for half in DEV_BROKER_GCP_PREFIX DEV_BROKER_GCP_KMS_KEY_NAME; do
   : >"$docker_calls1"
@@ -901,7 +943,7 @@ override_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut
 built="$(sort "${docker_calls1}.go" | tr '\n' ' ')"
 if ! grep -qF "override broker: started with profiles=${override_workdir}/profiles.json" "$log1" \
   || grep -q '^fake broker:' "$log1" \
-  || [[ "$built" != "./cmd/agent-secrets ./cmd/agent-secrets-devrelay ./cmd/agent-secrets-helper ./cmd/dev-airlock-stands ./cmd/dev-oidc-issuer " ]] \
+  || [[ "$built" != "./cmd/cipher ./cmd/cipher-devrelay ./cmd/cipher-helper ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands " ]] \
   || ! grep -qF "dev-broker: built five into ${override_workdir}/bin, and the broker is a copy of DEV_BROKER_BROKER_BIN (${override_broker})" "$log1"; then
   cat "$log1" >&2
   echo "FAIL: a DEV_BROKER_BROKER_BIN run did not start that broker in place of a built one (built: ${built:-nothing})" >&2

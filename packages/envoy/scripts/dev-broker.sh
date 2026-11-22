@@ -10,11 +10,11 @@
 # DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
 # owner=SERVICE tier=agent, which every pod session of that registered service gets without
 # asking and no person's session sees, and the three github-app secrets below) and a profiles
-# file naming the profiles those github-app secrets are served as, then starts cmd/broker against
+# file naming the profiles those github-app secrets are served as, then starts cmd/cipherd against
 # both. Prints the exports a second shell needs to drive the clients against it.
 #
 # The GitHub a github-app secret is minted against is a stand-in this script starts:
-# cmd/dev-airlock-stands, of whose ten stands this stack uses the two GitHub ones: github, plain
+# cmd/dev-proxy-stands, of whose ten stands this stack uses the two GitHub ones: github, plain
 # http, where the broker mints (BROKER_AIRLOCK_TEST_GITHUB_API_BASE names it), and github-tls, the
 # same GitHub over TLS, where a command behind the broker's proxy spends what was minted. It
 # records every call it was sent, at the recording routes the banner names, and the answer it
@@ -32,7 +32,7 @@
 # the one account acme-org. DEMO_GITHUB_APP_CASE_PAIR's names ada, on which the App has two
 # installations whose logins differ only in case (ada and Ada): GitHubApp.Mint keys the released
 # object by the login GitHub answered with and compares a profile's account without regard to
-# case (internal/broker/secrets/githubapp.go), so a profile of ada mints for both and the
+# case (internal/cipher/secrets/githubapp.go), so a profile of ada mints for both and the
 # released object holds two installations, which is no one token to hand over. GitHub itself
 # allows no two accounts whose logins differ only in case: this pair exists to drive that case
 # and stands for nothing real.
@@ -130,7 +130,7 @@
 # dev-postgres.sh creates, starts or reuses, and refuses when it runs an image other than that
 # script's pinned pgvector one, or, with DEV_BROKER_POSTGRES_URL set
 # (postgres://<user>@<host>:<port>/<database>, a role that may create databases), on that server
-# through psql, with no Docker at all. cmd/broker binds before it reports anything and
+# through psql, with no Docker at all. cmd/cipherd binds before it reports anything and
 # logs the address it actually bound; this script waits for that line and reads the real port from
 # it, so a curl success can only ever mean this instance's own broker answered. It reads the
 # metrics port from the broker's "broker metrics listening" line the same way, and prints it in
@@ -169,7 +169,7 @@ POSTGRES_CONTAINER="dispatch-pg"
 
 # The kernel never hands out a port a live listener already holds, so binding 127.0.0.1:0 (an
 # OS-assigned ephemeral port) makes a same-port collision between two dev instances impossible.
-# BROKER_PUBLIC_URL mirrors it (also port 0): cmd/broker/main.go treats a BROKER_PUBLIC_URL whose
+# BROKER_PUBLIC_URL mirrors it (also port 0): cmd/cipherd/main.go treats a BROKER_PUBLIC_URL whose
 # port is 0 as "derive my public URL from whatever address I actually bind," since
 # BROKER_PUBLIC_URL must be set before boot but the real port is only known once Listen succeeds.
 # Both roles' real, reachable value is read from the broker's own "broker listening" log line
@@ -259,7 +259,7 @@ GITHUB_HUMAN_SECRET="DEMO_GITHUB_APP_HUMAN"
 GITHUB_READ_PROFILE="DEMO_GITHUB_READ"
 GITHUB_ADMIN_READ_PROFILE="DEMO_GITHUB_ADMIN_READ"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
-# token carries, the exchange's own audience, and the four accounts, as internal/broker/brokertest's
+# token carries, the exchange's own audience, and the four accounts, as internal/cipher/ciphertest's
 # rig names them, beside the read entry's account below. The exchange entry fixes no session, so
 # a pod names its own — and a pod of such an entry exchanges only under a name its deployment
 # registered for it, which here is the registrar account's one call below. The pod's two token
@@ -284,7 +284,7 @@ EXCHANGE_PROJECT="EXAMPLE"
 # The session name this stack's pod is registered for, the one it exchanges under.
 EXCHANGE_SESSION="example-worker-session"
 # The read entry (see the header), named as BROKER_EXCHANGE_READ_ACCOUNTS' own example in
-# internal/broker/config names it. Its account is a pod account of its own, so dev-oidc-issuer
+# internal/cipher/config names it. Its account is a pod account of its own, so dev-oidc-issuer
 # binds its token to a pod of its own, and it is listed in no other setting: the broker refuses an
 # account that both exchange settings name, since one account mints one kind of token.
 READ_ACCOUNT="system:serviceaccount:example-ns:example-reader"
@@ -336,9 +336,13 @@ cleanup() {
   done
   if [ "$CREATED_DB" = true ]; then
     # Best-effort: cleanup runs on every exit path and must never itself fail, even if the server
-    # is already gone or the drop fails for some other reason.
-    admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null || true
-    echo "dev-broker: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    # is already gone or the drop fails for some other reason. It says which way the drop went, so
+    # a database a failed drop leaves behind is named and not called dropped.
+    if admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null; then
+      echo "dev-broker: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    else
+      echo "dev-broker: could not drop this instance's database $DB_NAME in $POSTGRES_WHERE; drop it by hand" >&2
+    fi
   fi
   echo "dev-broker: workdir kept at $WORK_DIR (rm -rf it once its helper has stopped)" >&2
 }
@@ -381,17 +385,18 @@ fi
 DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
 
 # --- Build the broker, the local issuer, the stand-ins, and the clients a second shell drives it
-# with. ---
+# with. Each entry is <binary>=<command directory under cmd/>. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
-for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
+for entry in broker=cipherd dev-oidc-issuer=dev-oidc-issuer dev-airlock-stands=dev-proxy-stands \
+  agent-secrets=cipher agent-secrets-helper=cipher-helper agent-secrets-devrelay=cipher-devrelay; do
   # DEV_BROKER_BROKER_BIN stands in for the broker's build (the header), so nothing else of the
   # stack differs from a run without it.
-  if [ "$cmd" = broker ] && [ -n "${DEV_BROKER_BROKER_BIN:-}" ]; then
+  if [ "${entry%%=*}" = broker ] && [ -n "${DEV_BROKER_BROKER_BIN:-}" ]; then
     cp "$DEV_BROKER_BROKER_BIN" "$BROKER_BIN"
     continue
   fi
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
+  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/${entry%%=*}" "./cmd/${entry#*=}" )
 done
 # The end of the build, which github-profile-check.sh waits for under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.
@@ -710,13 +715,19 @@ fi
 METRICS_URL="http://${LOGGED_ADDR}/metrics"
 # The proxy's port, which the broker binds with the API's and logs between the two lines above,
 # so by now its line is there; the front is pointed at it, and rereads its backends file when it
-# changes. A broker that logged none never bound the proxy its profiles need.
-if ! await_logged_addr 'airlock proxy listening'; then
-  echo "dev-broker: broker never logged its proxy's address within 15s" >&2
-  exit 1
+# changes. The broker binds it only when a profile of its profiles file has a proxy block, which
+# none under DEV_BROKER_GCP_* has (the profiles file's header), so the line is waited for only
+# then; a broker that logged none for such a file never bound the proxy its profiles need.
+PROXY_BANNER="none  (no profile of the profiles file has a proxy block, so the broker binds no proxy port)"
+if jq -e 'any(.profiles[]; .proxy != null)' "$PROFILES_FILE" >/dev/null; then
+  if ! await_logged_addr 'airlock proxy listening'; then
+    echo "dev-broker: broker never logged its proxy's address within 15s" >&2
+    exit 1
+  fi
+  PROXY_ADDR="$LOGGED_ADDR"
+  printf '%s\n' "$PROXY_ADDR" >"$PROXY_BACKENDS"
+  PROXY_BANNER="$PROXY_URL  (BROKER_AIRLOCK_PROXY_URL, a front over the broker's own proxy port $PROXY_ADDR)"
 fi
-PROXY_ADDR="$LOGGED_ADDR"
-printf '%s\n' "$PROXY_ADDR" >"$PROXY_BACKENDS"
 
 ready=false
 for _ in $(seq 1 30); do
@@ -818,7 +829,7 @@ dev-broker: ready.
   github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once", "repository": "<name>"}: what each token request is answered from then on; the repository is refuse-repository's own, and fail-once answers the next one 503, which the broker retries, and the rest as ordinary)
   github holds:        $GITHUB_HOLDS  (what the App's installations hold, DEV_BROKER_GITHUB_PERMISSIONS; every commit status is for $GITHUB_COMMIT_SHA)
   profiles file:       $PROFILES_FILE  (BROKER_PROFILES_FILE: the profile each github-app secret is served as, and the two proxied ones)
-  proxy:               $PROXY_URL  (BROKER_AIRLOCK_PROXY_URL, a front over the broker's own proxy port $PROXY_ADDR)
+  proxy:               $PROXY_BANNER
   stand-in files:      $STANDS_DIR  (this run's GitHub App key and the stands' certificate authority; the whole report in $STANDS_JSON, its log in $STANDS_LOG)
 
   One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and two human-tier secrets

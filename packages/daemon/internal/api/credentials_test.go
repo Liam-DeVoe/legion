@@ -32,8 +32,8 @@ func (s tokenSource) VerdictToken(ctx context.Context, owner string) (appauth.Le
 	return s.Token(ctx, appauth.SetVerdict, owner)
 }
 
-// InstalledOwners is the owner accounts the App is installed on, which a gh bundle reads from
-// GitHub at every build (appauth.OwnerInstallations): the two these harnesses serve.
+// InstalledOwners is the owner accounts the App is installed on, which a gh bundle reads at
+// every build (appauth.OwnerInstallations): the two these harnesses serve.
 func (tokenSource) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -108,5 +109,8 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		Pace:         cireconcile.RequestPace,
 		PassTimeout:  interval,
 		Instance:     instance.get,
+		// The WARN of a mapped name GitHub could not hold names the request of the settings
+		// route that mends the mapping, read by the route's own package.
+		MappingRepairs: api.MappingRepairs(database.Pool),
 	}, nil
 }

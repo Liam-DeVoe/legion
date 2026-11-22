@@ -113,7 +113,7 @@ func TestMergeGroupHandlerIsRegistered(t *testing.T) {
 	github := newVerdictGitHub()
 	serve := github.serve(t)
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		// The boot reads the mapped repository's own name and default branch.
+		// A read of acme/widgets' own name and default branch is answered.
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets" {
 			_, _ = io.WriteString(w, `{"full_name":"acme/widgets","default_branch":"main"}`)
 			return
@@ -125,7 +125,7 @@ func TestMergeGroupHandlerIsRegistered(t *testing.T) {
 		VerdictRepositories: []config.VerdictRepository{widgetsEntry},
 	}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
-		slog.New(slog.DiscardHandler), verdictBootTokens{loginTokens{login: verdictAppLogin}}, api, nil, time.Now)
+		appauth.NewInstalled(), slog.New(slog.DiscardHandler), verdictBootTokens{loginTokens{login: verdictAppLogin}}, api, nil, time.Now)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

@@ -193,10 +193,11 @@ func (p *reviewerPods) heldPod(issue string) (string, bool) {
 //
 // The round is opened, or kept open, on the issue's blocking claims as any round is
 // (openPodUpdate), under `reviewer start`. It is replaced through the issue's Sandbox
-// (ReplaceIssuePod), there being no process to replace it through, once no claim it asks is left
-// unanswered or its bound has come, and while no operator's suspension and no project's pause
-// holds it. The last word, under the pod's launch turn, refuses the replacement where a claim of
-// the issue records a process by then (a launch kept the pod) or an operator suspended one.
+// (ReplaceIssuePod), there being no process to replace it through, once no claim it waits for is
+// left unanswered (podlessWaiting) or its bound has come, and while no operator's suspension and
+// no project's pause holds it. The last word, under the pod's launch turn, refuses the
+// replacement where a claim of the issue records a process by then (a launch kept the pod) or an
+// operator suspended one.
 func (s *supervision) reviewerPodlessRound(ctx context.Context, issue string, group []supervise.Claim, open string, clock roundClock) bool {
 	held, ok := s.reviewerPods.heldPod(issue)
 	if !ok {
@@ -211,7 +212,7 @@ func (s *supervision) reviewerPodlessRound(ctx context.Context, issue string, gr
 	if open == "" {
 		s.openPodUpdate(ctx, issue, live, held, reviewerStartReason+", image "+image.Image+", now "+image.Configured, clock)
 	}
-	if len(heldByOperator(live, round)) > 0 || clock.held() || (!clock.pastBound(live, round) && len(waitingClaims(live, round)) > 0) {
+	if len(heldByOperator(live, round, clock)) > 0 || clock.held() || (!clock.pastBound(live, round) && len(podlessWaiting(live, round, clock)) > 0) {
 		return true
 	}
 	due := func(ctx context.Context) error {
@@ -223,7 +224,7 @@ func (s *supervision) reviewerPodlessRound(ctx context.Context, issue string, gr
 		if pod, _ := groupPod(now); pod != "" {
 			return fmt.Errorf("%w: a claim of %s records a process in pod %s now", errReplacementNotDue, issue, pod)
 		}
-		if len(heldByOperator(now, round)) > 0 {
+		if len(heldByOperator(now, round, clock)) > 0 {
 			return fmt.Errorf("%w: an operator suspended a claim of %s", errReplacementNotDue, issue)
 		}
 		return nil
@@ -236,6 +237,26 @@ func (s *supervision) reviewerPodlessRound(ctx context.Context, issue string, gr
 		return true
 	}
 	s.log.Info("supervise: the pod a reviewer's start waits on is replaced; no claim ran a process in it", "issue", issue, "round", round, "pod", held)
-	s.endPodUpdates(live, round)
+	s.endPodUpdates(issue, live, round)
 	return true
+}
+
+// podlessWaiting is whom a podless round waits for before its bound: the round's wait set
+// (waitingClaims), and each claim with a session that the daemon suspended, that has not answered
+// the round and has not left it. The pod a reviewer's start waits on runs no process, so its
+// replacement deletes the disk of every role that ever ran in it, and a claim whose agent ran may
+// have left unpushed work there; the round holds that disk for such a claim's answer until its
+// bound. A pod round with a process in it passes such a claim over (roundAsks,
+// roundClock.passesOver, dispatch://INFRA-4109 R1), since a pod that keeps running keeps its
+// disk; this rule is the podless round's alone. A failed claim waits for nothing here either: its
+// launches or prompts ran out, and only a retry brings it back.
+func podlessWaiting(group []supervise.Claim, round string, clock roundClock) []supervise.Claim {
+	waiting := waitingClaims(group, round, clock)
+	for _, c := range group {
+		if c.State == supervise.StateSuspended && c.Session != "" && !answered(c, round) && !c.LeftPodRound(round) &&
+			!slices.ContainsFunc(waiting, func(w supervise.Claim) bool { return w.Token == c.Token }) {
+			waiting = append(waiting, c)
+		}
+	}
+	return waiting
 }

@@ -85,7 +85,7 @@ var tokenCommandLimit = 35 * time.Minute
 const exitPending = 75
 
 // brokerRequestPending is the code the secrets broker refuses a request with while another request
-// of the session for the same name waits (packages/envoy/internal/broker/api,
+// of the session for the same name waits (packages/envoy/internal/cipher/api,
 // handlers_requests.go), which `agent-secrets` prints on stderr and exits exitRefused with. A
 // profile's grant is reused, and its waiting request joined, only for the same target, so while a
 // human-tier profile's request for one owner waits on a person, the request for another owner is
@@ -101,6 +101,30 @@ const exitRefused = 1
 // a TransientError: most often a grant that waits on a person's approval. The run goes on, and the
 // caller's next attempt joins it.
 var ErrCommandPending = errors.New("token_command is still running")
+
+// ErrApprovalPending is a token_command that ended on the secrets broker's request waiting on a
+// person: `agent-secrets` exited 75 (exitPending), or the broker refused it REQUEST_PENDING
+// (brokerRequestPending). Its TransientError carries the command's own failure, which reads as
+// this error too (approvalPending).
+var ErrApprovalPending = errors.New("the secrets broker's request waits on a person's approval")
+
+// approvalPending is a token_command's failure that ErrApprovalPending names, with the failure's
+// own text.
+type approvalPending struct{ err error }
+
+func (e approvalPending) Error() string        { return e.err.Error() }
+func (e approvalPending) Unwrap() error        { return e.err }
+func (e approvalPending) Is(target error) bool { return target == ErrApprovalPending }
+
+// Pending reports a token_command's grant that waits rather than an answer of GitHub's: the
+// command still running past its caller's deadline (ErrCommandPending), or the broker's request
+// waiting on a person (ErrApprovalPending). Each is a TransientError, since a later run may
+// pass, but it is about one owner's grant at the broker, never GitHub's rate limit or its own
+// trouble, so a caller that holds every owner's GitHub calls on GitHub's trouble holds none on it
+// (internal/daemon's reviewAppClient).
+func Pending(err error) bool {
+	return errors.Is(err, ErrCommandPending) || errors.Is(err, ErrApprovalPending)
+}
 
 // releasedInstallation is one installation of a token_command's release.
 type releasedInstallation struct {
@@ -131,9 +155,10 @@ var everyInstallation = mintRequest{set: SetImplementer}
 
 // runTokenCommand returns the release of app's token_command for the request's owner ("" for
 // every installation) and read, keyed by lowercased account login, from a run that outlives ctx
-// (commandRun): ctx ending first returns ErrCommandPending, transient. A release of every
-// installation records its accounts as the App's installations (recordOwners), the set a
-// narrowed run that fails is read against.
+// (commandRun): ctx ending first returns ErrCommandPending in a TransientError, which wraps ctx's
+// error too, so a caller that tells its own context's end by that error reads it as such. A
+// release of every installation records its accounts as the App's installations (recordOwners),
+// the set a narrowed run that fails is read against.
 //
 // The run is keyed by the request's own scope (leaseScope), the key its lease is cached under:
 // a read-only run must never answer a caller that asked for a write token, and one encoding of
@@ -174,7 +199,7 @@ func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, req
 		m.forgetRun(key, run)
 		return run.installations, run.err
 	case <-ctx.Done():
-		return nil, &TransientError{Err: fmt.Errorf("%s for %q is still running after %v (a grant may wait on a person's approval): %w", tokenCommandField, owner, ctx.Err(), ErrCommandPending)}
+		return nil, &TransientError{Err: fmt.Errorf("%s for %q is still running after %w (a grant may wait on a person's approval): %w", tokenCommandField, owner, ctx.Err(), ErrCommandPending)}
 	}
 }
 
@@ -218,9 +243,9 @@ func (m *Manager) recordOwners(installations map[string]releasedInstallation) {
 // execTokenCommand runs app's token_command once, under ctx, for the request's owner and read.
 // A run ctx ended, one that exited 75 (`agent-secrets`' request still waiting for approval), and
 // one the broker refused REQUEST_PENDING (another target's request of the same profile still
-// waiting, brokerRequestPending) are transient; one that exited otherwise, printed too much, or
-// printed no release is the configuration's answer. Its stderr reaches the daemon's and the error
-// with every GitHub token redacted.
+// waiting, brokerRequestPending) are transient, the last two read as ErrApprovalPending too; one
+// that exited otherwise, printed too much, or printed no release is the configuration's answer.
+// Its stderr reaches the daemon's and the error with every GitHub token redacted.
 func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (map[string]releasedInstallation, error) {
 	field := tokenCommandField
 	runCtx, cancel := context.WithCancel(ctx)
@@ -263,7 +288,7 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 			failed = fmt.Errorf("%s failed (%s): %s", field, end, message)
 		}
 		if end.ExitedWith(exitPending) || (end.ExitedWith(exitRefused) && strings.Contains(stderr.String(), brokerRequestPending)) {
-			return nil, &TransientError{Err: failed}
+			return nil, &TransientError{Err: approvalPending{err: failed}}
 		}
 		return nil, failed
 	}
@@ -396,12 +421,12 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 }
 
 // brokerNoInstallation is the secrets broker's refusal of a release for an account the App has no
-// installation on (packages/envoy/internal/broker/secrets/githubapp.go, GitHubApp.Mint), which
+// installation on (packages/envoy/internal/cipher/secrets/githubapp.go, GitHubApp.Mint), which
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
 const brokerNoInstallation = "has no installation on"
 
 // brokerNarrowingRefused is the secrets broker's refusal of a profile it cannot serve for the
-// owner (packages/envoy/internal/broker/secrets/minterr.go, ErrMintNarrowingRefused), carried the
+// owner (packages/envoy/internal/cipher/secrets/minterr.go, ErrMintNarrowingRefused), carried the
 // same way: the profile's permissions, cut to what the installation holds, leave none but
 // metadata (ErrMintEmptyCut), or GitHub answered its token request 422. Either is the key mode's
 // ErrNarrowingRefused by another road.
@@ -465,6 +490,15 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 // it is used for is read-only: the GraphQL viewer read that names the App's bot login and the GET
 // /apps/<slug> that checks the App's id (tokenIdentity), and the token is never cached as a lease
 // nor handed to a role.
+//
+// It asks for the scope InstalledOwners reads in token mode (everyInstallation), so the two share
+// what runTokenCommand shares and keeps of a run: a login read joins a run in flight that an
+// installation read started, or takes a finished run kept for finishedRunKeep and forgets it, as
+// every caller that takes a run does, so the next installation read does not get that release but
+// joins another run in flight or runs the command again. At the boot the login read runs before
+// the key proof (internal/daemon's openWorkflow) and passes only once it has taken a run's
+// release, so the key proof never takes a release the login read was answered with: its first
+// read joins a run in flight or runs the command again.
 func (m *Manager) anyInstallation(ctx context.Context, app config.GitHubApp) (releasedInstallation, error) {
 	installations, err := m.runTokenCommand(ctx, app, everyInstallation)
 	if err != nil {
@@ -533,7 +567,7 @@ func (m *Manager) viewerLogin(ctx context.Context, token string) (string, error)
 		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return "", m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -565,7 +599,7 @@ func (m *Manager) checkAppID(ctx context.Context, slug, appID, token string) err
 		return &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -614,13 +648,13 @@ func (m *Manager) installedFromCommand(ctx context.Context, repo ghrepo.Reposito
 // among them.
 //
 // The read is that answer's one source, so it drops whatever the Manager remembers of that
-// scope's refusal first (forgetNarrowingRefusal) and mints: the mapping's check is made
-// precisely when an operator has changed something — the App's installation above all — and a
-// refusal served from the five minutes one is remembered for would fail the check for an
+// scope's refusal first (forgetNarrowingRefusal) and mints: a repository's preparation makes the
+// check precisely when an operator may have changed something — the App's installation above all
+// — and a refusal served from the five minutes one is remembered for would fail the check for an
 // account the App was just installed on (lease, narrowingRefusalWindow, INFRA-513). A refusal
 // the mint itself meets is remembered as any mint's is: it is GitHub's answer of this moment,
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
-// next mapping read drops it again as this one did.
+// next preparation's check drops it again as this one did.
 func (m *Manager) listInstallation(ctx context.Context, repo ghrepo.Repository) (installed, refused bool, err error) {
 	m.forgetNarrowingRefusal(repo.Owner())
 	lease, err := m.ReadToken(ctx, repo.Owner())
@@ -643,11 +677,10 @@ func (m *Manager) listInstallation(ctx context.Context, repo ghrepo.Repository) 
 			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, err)}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
-			refusalBody(response)
-			return false, true, fmt.Errorf("%s failed (401)", what)
+			return false, true, m.answered(response, refusalBody(response), fmt.Errorf("%s failed (401)", what))
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return false, false, transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
+			return false, false, m.transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
 		}
 		body, err := readBody(response, what, responseBound)
 		if err != nil {

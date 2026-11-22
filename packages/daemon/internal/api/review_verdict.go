@@ -11,13 +11,13 @@ import (
 )
 
 // ReviewerVerdictContract is the daemon contract that gave the reviewer a verdict of its own
-// (version.go's 200): its completion of reviewing names approve or changes on the head its review
+// (version.go's 221): its completion of reviewing names approve or changes on the head its review
 // record names, with testedCommit where that verdict carries the tester's pass to the head, and
 // `POST /legion/v1/review-verdict` takes its verdict on a head that moved past review. A reviewer
 // whose plugin declared an earlier contract knows the tester's words alone, and the daemon still
 // serves its claim while its turn runs and while its pod is in an update round (staleClaim), so
 // its completion is read in those words (reviewerVerdictOf).
-const ReviewerVerdictContract = 200
+const ReviewerVerdictContract = 221
 
 // reviewerVerdictOf is the verdict a reviewer's word sent is, for a claim whose plugin declared
 // contract, and the sentence of its refusal REVIEWER_VERDICT_REQUIRED where the word is none of
@@ -88,7 +88,7 @@ type ReviewVerdictRequest struct {
 // standing, so a reviewer that changes its verdict at one head is heard however often it does.
 func (s *server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
 	var req ReviewVerdictRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -100,34 +100,34 @@ func (s *server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
 		if !grant.Controller {
 			who = "the " + string(grant.Role)
 		}
-		writeFailure(w, http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN", fmt.Sprintf(
 			"review_verdict is the verdict of the reviewer whose completion ended the issue's review round, and this call is %s's; nothing was recorded", who))
 		return
 	}
 	if s.pool == nil || s.records == nil {
-		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
 	}
 	// No plugin before ReviewerVerdictContract offers this call, so its verdict is read in the
 	// reviewer's own two words alone.
 	verdict, refusal := reviewerVerdictOf(req.Verdict, ReviewerVerdictContract)
 	if refusal != "" {
-		writeFailure(w, http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED", refusal)
+		s.writeFailure(w, r, http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED", refusal)
 		return
 	}
 	if req.Commit == "" {
-		writeFailure(w, http.StatusBadRequest, "VERDICT_COMMIT_REQUIRED",
+		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_COMMIT_REQUIRED",
 			"a reviewer's verdict past review is a verdict on the pull request's current head, and this call names no commit: send it again with commit set to that head; nothing was recorded")
 		return
 	}
 	position, err := s.handoffPosition(r.Context(), grant.Issue, claim.RoleReviewer)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
 		return
 	}
 	issue := position.issue
 	if issue == nil {
-		writeFailure(w, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
+		s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return
 	}
 	if position.completedBy != grant.Claim {
@@ -135,12 +135,12 @@ func (s *server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
 		if position.completedBy != "" {
 			recorded = fmt.Sprintf("the review round of %s was ended by the completion of reviewer claim %s, not of this claim %s", issue.Key, position.completedBy, grant.Claim)
 		}
-		writeFailure(w, http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN", fmt.Sprintf(
 			"review_verdict is the verdict of the reviewer whose completion ended the issue's review round, and %s; nothing was recorded", recorded))
 		return
 	}
 	if !record.PastReview(*issue) {
-		writeFailure(w, http.StatusConflict, "VERDICT_NOT_PAST_REVIEW", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "VERDICT_NOT_PAST_REVIEW", fmt.Sprintf(
 			"%s stands in %s: review_verdict is the reviewer's verdict on a head that moved past review, in accepting, retro or merging; in reviewing the reviewer's handoff_complete carries its verdict. Nothing was recorded",
 			issue.Key, record.StandsAt(*issue)))
 		return
@@ -150,21 +150,21 @@ func (s *server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
 		if pr != nil {
 			current = fmt.Sprintf("the head of %s's pull request #%d is %s", issue.Key, pr.Number, pr.HeadSHA)
 		}
-		writeFailure(w, http.StatusConflict, "VERDICT_HEAD_NOT_CURRENT", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "VERDICT_HEAD_NOT_CURRENT", fmt.Sprintf(
 			"this verdict is on %s, and %s: read that head and send the verdict on it; nothing was recorded", req.Commit, current))
 		return
 	}
 	result, err := s.apply(r.Context(), "api", requestFactID("review-verdict"), intake.ReviewVerdict{Issue: issue.Key, Claim: grant.Claim,
 		Verdict: verdict, Commit: req.Commit, TestedCommit: req.TestedCommit, Summary: req.Summary})
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the review verdict's fact")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the review verdict's fact")
 		return
 	}
 	if result.Refusal != nil {
-		writeFailure(w, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
 		return
 	}
 	s.log.Info("api: recorded a review verdict", "issue", issue.Key, "claim", grant.Claim, "phase", issue.Phase,
 		"verdict", verdict, "commit", req.Commit, "testedCommit", req.TestedCommit)
-	writeJSON(w, http.StatusOK, EmptyResponse{})
+	s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, EmptyResponse{})
 }

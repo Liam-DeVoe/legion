@@ -25,7 +25,9 @@ Set `DEV_BROKER_GCP_PREFIX` (`projects/<project number>/secrets/<id prefix>`) an
 Secret Manager as its store under them, with an empty fake secrets file: `GET /v1/settings` then
 describes that store, so `agent-secrets secret` writes the real Secret Manager under the
 credential you choose for it ([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)),
-while the broker serves none of the demo secrets below. One of the two alone is refused (exit 2).
+while the broker serves none of the demo secrets below. Its profiles file names no profile, so the
+broker binds no proxy port and the banner's `proxy:` line says `none`.
+One of the two alone is refused (exit 2).
 
 ## Start the stack
 
@@ -55,13 +57,13 @@ dev-broker: starting broker...
 {"time":"2026-11-20T12:18:58.31806511Z","severity":"INFO","message":"database sign-in","method":"password"}
 {"time":"2026-11-20T12:18:58.31807062Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:38099","client_id":"dev-broker","domain":"example.com"}
 {"time":"2026-11-20T12:19:00.102688928Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
-{"time":"2026-11-20T12:19:00.116899771Z","severity":"INFO","message":"cipherd: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
+{"time":"2026-11-20T12:19:00.116899771Z","severity":"INFO","message":"broker: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
 {"time":"2026-11-20T12:19:00.131371349Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
 {"time":"2026-11-20T12:19:00.13195859Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:42923"}
 {"time":"2026-11-20T12:19:00.131977753Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:35365"}
 {"time":"2026-11-20T12:19:00.131982771Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:43185"}
 {"time":"2026-11-20T12:19:00.132024111Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
-{"time":"2026-11-20T12:19:00.134967315Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused"}
+{"time":"2026-11-20T12:19:00.134967315Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is"}
 {"time":"2026-11-20T12:19:00.134988011Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
 {"time":"2026-11-20T12:19:00.13499594Z","severity":"INFO","message":"pod-session registrars","entries":1,"registration_audience":false}
 {"time":"2026-11-20T12:19:00.135005921Z","severity":"INFO","message":"session account pairs","state":"off","detail":"BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds"}
@@ -110,7 +112,7 @@ script reads the address the broker bound from its `broker listening` line, the 
 metrics port from its `broker metrics listening` line, and the address of its proxy from its
 `airlock proxy listening` line, which it points the proxy's front at: the front is what
 `DEV_BROKER_PROXY_URL` names, bound before the broker so the broker can name it at boot.
-`cipherd: profiles applied` says how many of the profiles file's entries the broker serves and
+`broker: profiles applied` says how many of the profiles file's entries the broker serves and
 refuses, and the SHA-256 of the file it read.
 
 With Docker, the script says `dispatch-pg is already running, reusing it` (or starts it) before it
@@ -188,7 +190,7 @@ secrets as a profile of its own name, whose release is the JSON of its installat
 with those and `administration`, `members` and `organization_administration`.
 The broker asks GitHub for each profile's permissions cut to what the App's installation holds,
 names what the cut left out in the release's `github_left_out` and in one log line for each
-entry, `cipherd: a profile's permission was left out, since the installation does not hold it`,
+entry, `broker: a profile's permission was left out, since the installation does not hold it`,
 and refuses a release whose cut leaves nothing but `metadata` of a profile that asks for more,
 `PROFILE_MINT_REFUSED`.
 The stand's own map of what each installation holds leaves out `issues`, `workflows` and
@@ -238,6 +240,7 @@ $ agent-secrets self
 enrollment_id: 2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
@@ -280,6 +283,7 @@ $ agent-secrets self
 enrollment_id: 7cf72ec3-d10f-46fd-984f-ddd856b229c2
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-11T01:51:13Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 grant: f81251ab-6552-450c-9eca-12a793a29f4c (request 86237327-1f78-4c79-82a5-4f71174e71c5, expires 2026-10-11T01:38:14Z)
@@ -590,16 +594,16 @@ what the stand's installation holds left out: `issues`, which the installation h
 `workflows`:
 
 ```json
-{"time":"2026-11-20T12:19:02.141142511Z","severity":"WARNING","message":"cipherd: a profile's permission was left out, since the installation does not hold it","name":"DEMO_GITHUB_APP","account":"acme-org","permission":"issues"}
-{"time":"2026-11-20T12:19:02.141235956Z","severity":"WARNING","message":"cipherd: a profile's permission was left out, since the installation does not hold it","name":"DEMO_GITHUB_APP","account":"acme-org","permission":"statuses:write"}
-{"time":"2026-11-20T12:19:02.141247275Z","severity":"WARNING","message":"cipherd: a profile's permission was left out, since the installation does not hold it","name":"DEMO_GITHUB_APP","account":"acme-org","permission":"workflows"}
+{"time":"2026-11-20T12:19:02.141142511Z","severity":"WARNING","message":"broker: a profile's permission was left out, since the installation does not hold it","name":"DEMO_GITHUB_APP","account":"acme-org","permission":"issues"}
+{"time":"2026-11-20T12:19:02.141235956Z","severity":"WARNING","message":"broker: a profile's permission was left out, since the installation does not hold it","name":"DEMO_GITHUB_APP","account":"acme-org","permission":"statuses:write"}
+{"time":"2026-11-20T12:19:02.141247275Z","severity":"WARNING","message":"broker: a profile's permission was left out, since the installation does not hold it","name":"DEMO_GITHUB_APP","account":"acme-org","permission":"workflows"}
 ```
 
 ## Reach a secret behind the airlock
 
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
-airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and records every
+airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
 request each one is sent; a profiles file (`BROKER_PROFILES_FILE`), each secret a profile of its
 own name with a proxy block, and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
@@ -717,7 +721,7 @@ this script started, drops its database and prints the workdir it kept.
 ## Let the judge decide a request
 
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
-processes. Three more stand-ins of `cmd/dev-airlock-stands` serve it: a model endpoint, a
+processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
 server, where the broker mints the identity token it presents to the model. Its profiles file
 says who decides each human-tier secret, in each profile's proxy block:
@@ -793,14 +797,14 @@ Manager and KMS. The broker reads that file again on every call it makes to it, 
 how you write a secret here.
 
 The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
-broker process the airlock stack runs. Five more things stand in there. `cmd/dev-airlock-stands`
+broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`
 plays every host a proxy block binds: S and T, which answer one line and record what they were sent,
 the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft
 token endpoint the `azure` kind exchanges at, which also plays the resource host that token is
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
 resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
 at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its five checks, its one model call and
+address, as it does in production. The judge's own run — its six checks, its one model call and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one
@@ -813,4 +817,4 @@ call reaches either process. And the pod session the script enrols stands in for
 daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
 The two brokers start as processes outside any cluster even when the script runs in a pod: it
 empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
-which a deployed broker in a cluster refuses to start without.
+which a deployed broker in a cluster whose profiles hold a proxy block refuses to start without.

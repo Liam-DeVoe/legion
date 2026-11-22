@@ -183,7 +183,7 @@ func TestLegionVerdictAWebhookReviewOfARenamedRepositoryIsRecorded(t *testing.T)
 				t.Fatalf("configure the rename: %v", err)
 			}
 			served := newRepositories("CAPTURE", renames)
-			served.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+			served.fill(ghrepo.MustParse("acme/widgets"))
 			rig.w.repositories = served
 			rig.apply(t, intake.OutsidePullRequest{Repo: tc.webhook, Number: 90, Branch: "feature/faster-builds", HeadSHA: "out-1"})
 			rig.apply(t, intake.OutsideReview{PullRequestReview: intake.PullRequestReview{Repo: tc.webhook, Number: 90, ID: 1,

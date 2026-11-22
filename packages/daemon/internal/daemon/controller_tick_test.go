@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -182,7 +183,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	}
 	tokens := loginTokens{login: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
-		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil, time.Now)
+		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, time.Now)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

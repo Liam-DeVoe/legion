@@ -20,7 +20,7 @@
 #
 # What each check drives:
 #
-#   - p1: the broker logs `cipherd: profiles applied` once, serving every entry of the file and
+#   - p1: the broker logs `broker: profiles applied` once, serving every entry of the file and
 #     refusing none, with the SHA-256 of the file it read; `broker profiles check` of that file
 #     exits 0 and reports each of its profiles added; and a github-app secret that no profile
 #     names, added to the store while the stack runs, is refused by its name, PROFILE_REFUSED
@@ -407,7 +407,7 @@ answers() { # <mode>
 # logged_left_out is the entries the broker's log says the cut of one profile left out, each
 # once, sorted and space-separated.
 logged_left_out() { # <profile>
-	jq -Rr --arg name "$1" 'fromjson? | select(.message == "cipherd: a profile'"'"'s permission was left out, since the installation does not hold it" and .name == $name) | .permission' "$BROKER_LOG" |
+	jq -Rr --arg name "$1" 'fromjson? | select(.message == "broker: a profile'"'"'s permission was left out, since the installation does not hold it" and .name == $name) | .permission' "$BROKER_LOG" |
 		sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
@@ -434,7 +434,7 @@ release() { # <name>
 
 p1_digest="$(sha256sum "$DEV_BROKER_PROFILES_FILE" | cut -d' ' -f1)"
 p1_count="$(jq '.profiles | length' "$DEV_BROKER_PROFILES_FILE")"
-p1_lines="$(jq -Rc 'fromjson? | select(.message == "cipherd: profiles applied") | {served, refused, file_digest}' "$BROKER_LOG")"
+p1_lines="$(jq -Rc 'fromjson? | select(.message == "broker: profiles applied") | {served, refused, file_digest}' "$BROKER_LOG")"
 judge "p1 the broker logged one profiles-applied line, serving all $p1_count of the file's profiles and refusing none, with the SHA-256 of the file it read (it logged: ${p1_lines:-no such line})" \
 	is "{\"served\":$p1_count,\"refused\":0,\"file_digest\":\"$p1_digest\"}" "$p1_lines"
 

@@ -48,7 +48,7 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // lease and pick the directory a command names, not which set a role writes with; Stage 4b's
 // daemon hands each role its own.
 func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	return appauth.GitHubCredential(t.apps, t.repositories, ghrepo.Renames{},
+	return appauth.GitHubCredential(t.apps, servesOneOf(t.repositories), ghrepo.Renames{},
 		t.installed, t.left, slog.Default())(ctx, claim.RoleImplementer, repo)
 }
 
@@ -57,7 +57,7 @@ func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghre
 // pod's refresh asks for the owner its Secret records. It holds the App's read leases, as the
 // daemon's own does.
 func (t implementTokens) ControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	return appauth.ControllerCredential(t.apps, t.repositories, ghrepo.Renames{},
+	return appauth.ControllerCredential(t.apps, servesOneOf(t.repositories), ghrepo.Renames{},
 		t.installed, t.left, slog.Default())(ctx, defaultOwner)
 }
 
@@ -65,10 +65,12 @@ func (t implementTokens) ControllerCredential(ctx context.Context, defaultOwner 
 // now for repo would hold (appauth.GitHubDirs), from the record the last bundle wrote, which is
 // what Credential renders, so the two answers move together as the daemon's own do.
 func (t implementTokens) ProjectDirs(repo ghrepo.Repository, sets []appauth.TokenSet) []string {
-	return appauth.GitHubDirs(t.repositories, ghrepo.Renames{}, t.installed, t.left, sets, repo)
+	return appauth.GitHubDirs(servesOneOf(t.repositories), ghrepo.Renames{}, t.installed, t.left, sets, repo)
 }
 
-// repositories is the run's repositories, as the daemon's mapping would serve them.
+// repositories is the run's repositories, which the harness serves (servesOneOf) as the daemon
+// serves a repository GitHub answers the App installed on (internal/daemon's
+// servesRepository).
 func (t implementTokens) repositories() []ghrepo.Repository { return t.repos }
 
 // resolveApp mints the App's tokens through the token command the script hands the

@@ -688,10 +688,20 @@ func (l leaseTokens) VerdictToken(ctx context.Context, owner string) (appauth.Le
 }
 
 // leaseTokens also answers the owners the App is installed on, which a bundle reads at every
-// build (appauth.OwnerInstallations): the two accounts the pane's project serves repositories
-// of, which is the ordinary deployment.
+// build (appauth.OwnerInstallations): the two accounts the pane's served repositories are on,
+// which is the ordinary deployment.
 func (leaseTokens) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
+}
+
+// servesOneOf is the `served` predicate the daemon hands a gh bundle builder
+// (appauth.GitHubCredential; internal/daemon's servesRepository): whether GitHub answered both role
+// Apps installed on a repository, which here is whether it is one of repos, compared as GitHub
+// compares names, regardless of case.
+func servesOneOf(repos ...ghrepo.Repository) func(ghrepo.Repository) bool {
+	return func(repo ghrepo.Repository) bool {
+		return slices.ContainsFunc(repos, func(served ghrepo.Repository) bool { return strings.EqualFold(served.String(), repo.String()) })
+	}
 }
 
 // A pane whose claim the daemon records no repository for is rendered for that same absent
@@ -705,9 +715,7 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 	ctx := context.Background()
 	var logs strings.Builder
 	bundle := appauth.GitHubCredential(leaseTokens{},
-		func() []ghrepo.Repository {
-			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
-		},
+		servesOneOf(ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")),
 		ghrepo.Renames{}, nil, nil, slog.Default())
 	var mu sync.Mutex
 	var asked []string
@@ -785,9 +793,7 @@ func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
 	var logs strings.Builder
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	credential := appauth.GitHubCredential(pairTokens{},
-		func() []ghrepo.Repository {
-			return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")}
-		},
+		servesOneOf(ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")),
 		pair, nil, nil, slog.Default())
 	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	token, err := claim.NewToken("omp", "LEGION-48", claim.RoleImplementer)
@@ -850,7 +856,7 @@ func TestAWalkBuildsOneBundlePerSetAndRepository(t *testing.T) {
 	var fail atomic.Bool
 	widgets, tools := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("sjawhar/widgets")
 	installs := &countedInstalls{}
-	credential := appauth.GitHubCredential(installs, func() []ghrepo.Repository { return []ghrepo.Repository{widgets, tools} },
+	credential := appauth.GitHubCredential(installs, servesOneOf(widgets, tools),
 		ghrepo.Renames{}, nil, nil, slog.Default())
 	r := &Runtime{
 		stateDir:             t.TempDir(),

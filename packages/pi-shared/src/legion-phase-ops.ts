@@ -8,7 +8,6 @@ import {
   LegionInstant,
   type LegionIssue,
   type LegionPhase,
-  type LegionState,
   legionPlanRatingLoneField,
   legionPlanRatingScale,
   legionPlanReasonRules,
@@ -16,6 +15,7 @@ import {
 import { z } from "zod";
 import {
   type DaemonRestartRetry,
+  LegionDaemonApiError,
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
@@ -58,6 +58,7 @@ export const PHASE_OPS = [
   "request_backward_move",
   "ready_for_update",
   "review_verdict",
+  "read_build",
 ] as const;
 export type PhaseOp = (typeof PHASE_OPS)[number];
 
@@ -250,6 +251,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
       testedCommit: requiredString("review_verdict", "testedCommit").optional(),
       summary: requiredString("review_verdict", "summary"),
     }),
+    // `read_build` takes no field: it reports this process's own build and asks the daemon for
+    // the contract it states, and names no issue.
+    operation("read_build", {}),
   ],
   {
     error: (issue) =>
@@ -333,11 +337,11 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
 }
 
 /** The `legion` tool's sentences on `read_record`, `read_release_records`,
- * `request_backward_move` and `review_verdict`, which a host whose tool states them passes as
+ * `request_backward_move`, `review_verdict` and `read_build`, which a host whose tool states them passes as
  * `before` and `after` (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
-    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. " +
+    "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
     "A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the " +
     "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
     "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
@@ -358,6 +362,15 @@ export const PHASE_OP_SENTENCES = {
     "`testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The " +
     "daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past " +
     "review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). ",
+  readBuild:
+    "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
+    "It also reports the contract the daemon states on its answer to the health route. " +
+    "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
+    "The two numbers can differ, and the answer shows both. " +
+    "Report the version this call answers, never the one at the plugin's path on the image. " +
+    "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
+    "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
+    "read_build reads no project state. ",
 } as const;
 
 /**
@@ -400,7 +413,7 @@ export function legionToolDescription(host: {
     "(VERDICT_ROLE_FORBIDDEN), a tester's or a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
     "is neither approve nor changes (REVIEWER_VERDICT_REQUIRED). `verdict` is pass|pending|fail on a production check report (pending: " +
     "production does not carry the merge yet, or carries it with a requirement only the deploy can show still unobserved and a look " +
-    "still to follow). " +
+    "still to follow; on the check's last look, only for an issue with no such requirement). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -438,9 +451,40 @@ export function legionToolDescription(host: {
   );
 }
 
+/** The plugin build one process loaded, as its host's own `package.json` names it: the package
+ * `name`, its `version`, and the daemon API contract that build speaks
+ * (`legion.daemonApiVersion`, which the client states on every request as `pluginContract` and
+ * `read_build` answers beside the daemon's own). It is the host's manifest and never a path on
+ * the image: an Oh My Pi role's relaunch onto the daemon's contract installs the plugin pair
+ * fresh under the role's state home, so the build at `/opt/legion/pi-legion` is another one. A
+ * Claude Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
+export interface PluginBuild {
+  readonly name: string;
+  readonly version: string;
+  readonly pluginContract: number;
+}
+
+/** The three values of `PluginBuild` read off one host's manifest. `pi-shared` imports no
+ * manifest and is bundled into both plugins, so each host calls this with the `package.json` it
+ * imported (`packages/pi-legion/src/tools.ts`,
+ * `packages/claude-envoy/src/legion-tool.ts`). */
+export function pluginBuildOf(manifest: {
+  readonly name: string;
+  readonly version: string;
+  readonly legion: { readonly daemonApiVersion: number };
+}): PluginBuild {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    pluginContract: manifest.legion.daemonApiVersion,
+  };
+}
+
 export interface PhaseOpRuntime {
   readonly daemon: LegionDaemonClient;
   readonly claim: ClaimCapability;
+  /** The build this process loaded, which `read_build` answers with (`pluginBuildOf`). */
+  readonly build: PluginBuild;
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
    * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
@@ -477,8 +521,12 @@ export async function mintClaimGrant(
   return grantId;
 }
 
-function recordFrom(state: LegionState, issue: string): LegionIssue {
-  const record = state.issues[issue];
+/** One issue's record, read from the record route (`LegionDaemonClient.record`), which answers
+ * about two kilobytes where the whole-project body answers megabytes. The words for an issue
+ * the daemon records nothing of are the ones `read_record` answered while it read the project.
+ * Every other refusal of the route throws as it came. */
+async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<LegionIssue> {
+  const record = await daemon.record(issue);
   if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
   return record;
 }
@@ -486,16 +534,71 @@ function recordFrom(state: LegionState, issue: string): LegionIssue {
 const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
+/** The three words `read_build` answers under `daemonContractNote`, where `daemonContract` is
+ * null: the daemon answered the health route and stated no contract, which a daemon older than
+ * the header does; the daemon answered the route and refused it; or no answer reached this
+ * process at all, which is what a daemon that is down or unreachable leaves. */
+const DAEMON_STATED_NO_CONTRACT = "the daemon stated no contract";
+const DAEMON_REFUSED_ROUTE = "the daemon refused the health route";
+const DAEMON_DID_NOT_ANSWER = "the daemon did not answer at all";
+
+/** The contract the daemon states on its answer to the health route, with the word for an
+ * answer that carries no number. `daemonContract` throws on a refusal and on the transport
+ * failure of a daemon that is down, which is the moment a role most needs to know which build
+ * it runs, so both are answered as the note, and the note says which of the two happened: the
+ * package name, the version and this build's own contract need no request and are reported
+ * whatever the daemon does. */
+async function statedDaemonContract(
+  daemon: LegionDaemonClient
+): Promise<{ readonly contract: number | null; readonly note: string | null }> {
+  let stated: number | undefined;
+  try {
+    stated = await daemon.daemonContract();
+  } catch (error) {
+    // The route is read without a schema, so the client raises no contract error for it: the
+    // daemon answered and refused (`LegionDaemonApiError`, which carries the status), or the
+    // request reached no answer at all and the transport threw.
+    return {
+      contract: null,
+      note: error instanceof LegionDaemonApiError ? DAEMON_REFUSED_ROUTE : DAEMON_DID_NOT_ANSWER,
+    };
+  }
+  return stated === undefined
+    ? { contract: null, note: DAEMON_STATED_NO_CONTRACT }
+    : { contract: stated, note: null };
+}
+
+/** `read_build`: the package name, the version and the contract of the build this process
+ * loaded, and the contract the daemon states on its answer to the health route, null where it
+ * states none or does not answer, with `daemonContractNote` saying which. The three local
+ * values need no request. Every claim session reaches it through `executePhaseOp`, and the
+ * controller's session, which holds no claim, calls it here
+ * (`packages/pi-legion/src/tools.ts`). */
+export async function readBuild(runtime: {
+  readonly daemon: LegionDaemonClient;
+  readonly build: PluginBuild;
+}): Promise<Readonly<Record<string, unknown>>> {
+  const stated = await statedDaemonContract(runtime.daemon);
+  return {
+    plugin: runtime.build.name,
+    version: runtime.build.version,
+    pluginContract: runtime.build.pluginContract,
+    daemonContract: stated.contract,
+    daemonContractNote: stated.note,
+  };
+}
+
 /**
  * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
  * names or of the claim's own when it names none, the window's records and their counts for
  * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
- * `request_backward_move`, `{}` for `review_verdict`, and `{}` for `ready_for_update`, or
- * `{ note }` when its branch-head lookup failed. A refusal throws before any write, minting
- * nothing and posting nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field the
- * operation does not take named first, then an operation this session's claim may not run (a root
- * architect's completion, and a `review_verdict` from any claim but a reviewer's, whichever host
- * runs it), then each problem with the operation's own fields in the order it takes them, and a
+ * `request_backward_move`, `{}` for `review_verdict`, this process's build and the daemon's
+ * stated contract for `read_build`, and `{}` for `ready_for_update`, or `{ note }` when its
+ * branch-head lookup failed. A refusal throws before any write, minting nothing and posting
+ * nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not
+ * take named first, then an operation this session's claim may not run (a root architect's
+ * completion, and a `review_verdict` from any claim but a reviewer's, whichever host runs it),
+ * then each problem with the operation's own fields in the order it takes them, and a
  * completion's `plan_rating` or `plan_reason` without the other; then what the record decides
  * (a check report's verdict, its claim's role against the check's own, its `wake_at`, `pending`
  * or `wake_at` on a phase completion, the issue a completion or a move names), then a refused
@@ -542,7 +645,7 @@ export async function executePhaseOp(
     case "read_record": {
       const named = args.issue?.trim() ?? "";
       const issue = named !== "" ? named : claim.issue;
-      return { record: recordFrom(await daemon.state(), issue) };
+      return { record: await recordFrom(daemon, issue) };
     }
     case "read_release_records":
       return releaseRecords(runtime, args.since);
@@ -651,6 +754,12 @@ export async function executePhaseOp(
               `command. The lookup said: ${failure}`,
           };
     }
+    case "read_build":
+      // The one read of this operation, and it asks for no project state: the health route,
+      // read for its `Legion-Daemon-Contract` header alone (`LegionDaemonClient.daemonContract`
+      // parses no body, so a daemon whose health body this build cannot read still answers the
+      // number). The build is the host's own manifest, passed in at the tool.
+      return readBuild(runtime);
   }
 }
 
@@ -826,12 +935,12 @@ async function completeHandoff(
   // the workflow is refused here as a phase completion, and a phase's completion that outlived
   // the close is posted here as a report and refused `CHECK_LOOK_NOT_SERVED`, before the phase
   // path.
-  // The report's own refusals apply while the record shows the check it is of: the state carries
+  // The report's own refusals apply while the record shows the check it is of: the record carries
   // that object only while the check is open. A refusal here posts nothing and mints nothing.
   // testedCommit is sent as given on either: the daemon refuses it from every role but the
   // reviewer, which reports on no check (VERDICT_ROLE_FORBIDDEN).
   const tested = args.testedCommit === undefined ? {} : { testedCommit: args.testedCommit };
-  const record = recordFrom(await daemon.state(), claim.issue);
+  const record = await recordFrom(daemon, claim.issue);
   if (record.phase === "done") {
     const check = record.check;
     if (check !== undefined) {

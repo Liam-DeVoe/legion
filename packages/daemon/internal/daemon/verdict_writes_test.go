@@ -876,7 +876,7 @@ func TestLegionVerdictAMergeStateReadWaitsOnItsWriteForOneBoundAtMost(t *testing
 // merge-state reads would wait on it. One the entries name under its serving name is queued.
 func TestLegionVerdictQueuesNoWriteOnARepositoryItsEntriesDoNotName(t *testing.T) {
 	served := newRepositories("CAPTURE", transferredCapture)
-	served.set([]mappedRepository{{Repo: ghrepo.MustParse("cybermonklabs/widgets"), Default: true}}, nil)
+	served.fill(ghrepo.MustParse("cybermonklabs/widgets"))
 	writer := newVerdictWriter([]config.VerdictRepository{{Repository: ghrepo.MustParse("cybermonklabs/widgets")}})
 	w := &workflowRuntime{verdicts: writer, repositories: served, log: slog.New(slog.DiscardHandler)}
 	w.queueVerdictWrite("CAPTURE-1", "acme/gadgets", 86, "code")

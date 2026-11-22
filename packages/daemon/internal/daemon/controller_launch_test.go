@@ -157,6 +157,56 @@ func TestTheOperatorsDaemonLaunchesNoController(t *testing.T) {
 	}
 }
 
+// appInstalledNowhere is the workflow's token source of a project whose App is installed on no
+// account: the boot's proof of its key reads no installation (proveAppKeys).
+type appInstalledNowhere struct{ *workflowTokenRecorder }
+
+func (appInstalledNowhere) InstalledOwners(context.Context) ([]string, error) {
+	return nil, nil
+}
+
+// A controller the daemon launches (`controller: daemon`) for a project whose App is installed on
+// no account is told that it has no GitHub owner, under either runtime: the runtime launches it on
+// an empty gh bundle (runtime.ErrNoGitHubOwner), and its launch's addressing says so, from the
+// owners the boot's proof of the App's key read (proveAppKeys, plan.appOwners: under tmux the
+// controller's set's own, under Kubernetes the controller pod's), so it never acts as nobody
+// without a word (dispatch://INFRA-4401 A3, check a-go, item 12). Controls: with the sentence taken
+// out of the controller's addressing (controllerSpawnSpec's addressing without
+// RepositoriesSentence), or with its owners replaced by a non-empty list (RepositoriesSentence
+// given acme), the launch is not told.
+func TestADaemonLaunchedControllerWhoseAppIsInstalledOnNoAccountIsToldItHasNoGitHubOwner(t *testing.T) {
+	const told = "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
+	for _, tc := range []struct {
+		name string
+		// runtime is the configuration's runtime block; nil keeps testConfig's, tmux.
+		runtime func(t *testing.T) config.Runtime
+	}{
+		{name: "tmux"},
+		{name: "kubernetes", runtime: func(t *testing.T) config.Runtime { return kubernetesConfig(t, "https://127.0.0.1:1").Runtime }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := workflowConfig(t, workflowNATS(t))
+			if tc.runtime != nil {
+				cfg.Runtime = tc.runtime(t)
+			}
+			cfg.ControllerLaunch = config.ControllerLaunchDaemon
+			rt := fake.NewRuntime()
+			o := fakeRuntime(rt, &built{})
+			o.workflowTokens = appInstalledNowhere{&workflowTokenRecorder{}}
+			startDaemon(t, cfg, o)
+			project, err := claim.ProjectToken(cfg.Project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			launch := controllerLaunched(t, rt, claim.ControllerToken(project))
+			if !strings.Contains(launch.Prompt.Addressing, told) {
+				t.Fatalf("the controller's addressing under %s is %q, want it to say %q: its App is installed on no account",
+					cfg.Runtime.Name, launch.Prompt.Addressing, told)
+			}
+		})
+	}
+}
+
 // controllerSpawns counts the runtime's spawns of the controller's claim.
 func controllerSpawns(rt *fake.Runtime, token claim.Token) int {
 	spawns := 0

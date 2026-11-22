@@ -69,6 +69,10 @@ trap cleanup EXIT
 cat >"${fake_bin_dir}/psql" <<'EOF'
 #!/usr/bin/env bash
 printf 'psql %s\n' "$*" >>"${DEV_AIRLOCK_TEST_PSQL_CALLS:?}"
+if [[ -n "${DEV_AIRLOCK_TEST_DROP_FAILS:-}" && "$*" == *"drop database"* ]]; then
+  echo 'psql: error: connection to server failed: Connection refused' >&2
+  exit 2
+fi
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1
   path=${url%%\?*}
@@ -104,13 +108,13 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$pkg" in
-  */agent-secrets-helper|*/agent-secrets-devrelay)
+  */cipher-helper|*/cipher-devrelay)
     cat >"$out" <<'NOTHING'
 #!/usr/bin/env bash
 exit 0
 NOTHING
     ;;
-  */agent-secrets)
+  */cipher)
     # The stack runs two forms: `keygen --out <dir>`, which makes the session key and prints its
     # thumbprint, which the enrolment sends; and `renew --pod-token-file <file>`, the session's
     # renewer, which records what it was started with and stays alive until it is stopped.
@@ -168,7 +172,7 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
-  */broker)
+  */cipherd)
     # Logs the whole of what it was configured with, the model judge's settings included, then
     # the JSON lines the stack reads its addresses from, as the real broker writes them: the
     # API port always, the proxy port only with a profiles file, exactly as the real broker binds a
@@ -187,7 +191,7 @@ printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metri
 exec sleep 999999
 BROKER
     ;;
-  */dev-airlock-stands)
+  */dev-proxy-stands)
     # The three modes the stack drives: the stands, which write the files and the JSON report
     # it reads; the front, which reports the address it bound; and the enrolment, which
     # answers an enrollment id and records what it was asked to enrol.
@@ -636,10 +640,18 @@ if ! grep -qF "drop database if exists ${airlock_db};" "$psql_calls"; then
   echo "FAIL: the run did not drop the database it created ($airlock_db)" >&2
   exit 1
 fi
+if ! grep -qF "dev-airlock: dropped this instance's database ${airlock_db}" "$log"; then
+  cat "$log" >&2
+  echo "FAIL: the run dropped its database ($airlock_db) and did not say so" >&2
+  exit 1
+fi
 printf 'PASS: stopping the run stops every one of the %d processes it started and drops the database it created (%s)\n' \
   "${#started_pids[@]}" "$airlock_db"
 
 # --- The negative controls and the idle limit, which the checks turn on from the command line. ---
+# The drops of this run fail, as they do when the server is gone before the cleanup runs: each
+# cleanup must say it could not drop its database, and never claim a drop that did not happen.
+export DEV_AIRLOCK_TEST_DROP_FAILS=1
 run_stack --keep-values --no-kind --idle-seconds 60 --one-broker --judge-skip-checks
 wait_for_ready
 mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -F "profiles=$(exported AIRLOCK_PROFILES_FILE) ")
@@ -659,7 +671,16 @@ if [[ "$judge_line" != *"skip_checks=true"* ]]; then
   exit 1
 fi
 stop_stack
+unset DEV_AIRLOCK_TEST_DROP_FAILS
 printf 'PASS: --keep-values, --no-kind, --idle-seconds 60 and --judge-skip-checks reach the broker as BROKER_AIRLOCK_TEST_KEEP_VALUES, BROKER_AIRLOCK_TEST_NO_KIND, BROKER_AIRLOCK_IDLE_SECONDS and BROKER_JUDGE_TEST_SKIP_CHECKS, and --one-broker starts one\n'
+failed_db=$(grep -o 'drop database if exists dev_airlock_[a-z0-9]*' "$psql_calls" | head -n 1 | awk '{print $NF}')
+if [[ -z "$failed_db" ]] || grep -q "dropped this instance's database" "$log" \
+  || ! grep -qF "dev-airlock: could not drop this instance's database ${failed_db}" "$log"; then
+  cat "$log" "$psql_calls" >&2
+  echo "FAIL: a run whose drops failed must say it could not drop ${failed_db:-its database}, and never that it dropped one" >&2
+  exit 1
+fi
+printf 'PASS: a run whose drop database fails says so and names the database left behind (%s)\n' "$failed_db"
 
 # --- A usage error exits 2 and starts nothing. ---
 for args in "--nope" "--idle-seconds" "--idle-seconds five" "--idle-seconds 5"; do

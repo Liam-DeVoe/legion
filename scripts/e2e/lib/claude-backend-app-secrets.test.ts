@@ -96,6 +96,9 @@ const tools = [
   "flock",
   "ps",
   "sha256sum",
+  // The implement App's token command prints the release with printenv, a program and not a
+  // shell builtin (lib/github-apps.sh, app_token_command).
+  "printenv",
 ];
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-in PATH below is built from.

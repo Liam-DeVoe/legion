@@ -24,13 +24,13 @@ const managedUser = "mona-cat_octo"
 // spell it, which the bundle's directory lowercases.
 var managedIssue = ghrepo.MustParse("Mona-Cat_Octo/widgets")
 
-// servingManagedUser is a daemon whose App is installed on sjawhar and managedUser and whose
-// mapping serves the smoke repository alone, with the daemon's own gh answers
+// servingManagedUser is a daemon whose App is installed on sjawhar and managedUser and which
+// serves the smoke repository alone, with the daemon's own gh answers
 // (appauth.GitHubCredential and appauth.GitHubDirs over the two records their bundles share):
-// the managed user's repository is no repository of the mapping, and an issue on it is run
+// the managed user's repository is no repository the daemon serves, and an issue on it is run
 // because the App is installed on that account.
 func servingManagedUser(o *Options) {
-	served := func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} }
+	served := servesOneOf(func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} })
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	apps := sourceOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, installedOnOwners{managedUser, "sjawhar"})
 	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)

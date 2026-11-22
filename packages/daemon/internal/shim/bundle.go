@@ -1,7 +1,6 @@
 package shim
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -86,14 +84,14 @@ func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 // shell runs, since no runtime pins either on a pane or a pod — in the issue's workspace: the one
 // the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role, or, for
 // the reviewer, whose LEGION_WORKSPACE is its own clone of the issue, the issue's workspace beside
-// it (workspace.IssueWorkspace), since a release keeps the work every other role left there.
-// It reads the working copy's commit first, which is the one jj snapshot the save makes (a
-// reviewer's makes none, below); every
-// read after it is --ignore-working-copy, so the whole save describes one state of the workspace.
-// The bundle is written under the process's temporary directory, never in the workspace, and
-// removed. The budget is a bound on the shim's command context (s.commands) rather than a context
-// of its own, so the shim's own end ends the save's jj and git at once and a command that outlives
-// the budget is still reported as a timeout.
+// it (workspace.IssueWorkspace), since a release keeps the work every other role left there
+// (openWorkspaceAt). It reads the working copy's commit first, which is the one jj snapshot the
+// save makes (a reviewer's makes none, below); every read after it is --ignore-working-copy, so
+// the whole save describes one state of the workspace. The bundle is written under the process's
+// temporary directory, never in the workspace, and removed. The budget is a bound on the shim's
+// command context (s.commands) rather than a context of its own, so the shim's own end ends the
+// save's jj and git at once and a command that outlives the budget is still reported as a
+// timeout.
 func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error) {
 	own := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	dir := workspace.IssueWorkspace(own)
@@ -107,10 +105,12 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 	if dir != own {
 		snapshot = []string{"--ignore-working-copy"}
 	}
-	jj, err := exec.LookPath("jj")
+	opened, done, err := s.openWorkspaceAt("bundle", dir, s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
-		return workspaceSave{}, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to read the workspace with", os.Getenv("PATH"))
+		return workspaceSave{}, err
 	}
+	defer done()
+	dir, jj, run := opened.dir, opened.jj, opened.run
 	git, err := exec.LookPath("git")
 	if err != nil {
 		return workspaceSave{}, fmt.Errorf("worker-shim: git is not on PATH (%s); no git to bundle the workspace with", os.Getenv("PATH"))
@@ -118,13 +118,6 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 	gitDir, err := workspace.GitDir(dir)
 	if err != nil {
 		return workspaceSave{}, fmt.Errorf("worker-shim: %w", err)
-	}
-	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.commands, budget)
-	defer cancel()
-	env, started := s.cfg.Env, time.Now()
-	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
 	}
 	read := func(revset string) ([]string, error) {
 		out, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", revset, "--no-graph", "-T", `commit_id ++ "\n"`)
