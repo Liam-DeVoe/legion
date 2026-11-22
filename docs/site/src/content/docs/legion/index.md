@@ -15,7 +15,7 @@ plan for the issue picks. The default steps are a planner, an implementer that w
 and opens a pull request, a tester and a reviewer, and a merger follows every plan. Each agent is an
 [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, at
+When the change is tested and the reviewer has sent `approve`, the merger merges the pull request itself, at
 the head it read, under the repository's own branch protection. The architect
 accepts the reviewed change before that, and the merge closes the issue. The implementer then
 drives the merged change in production, once your deploy carries it, and records what it saw on

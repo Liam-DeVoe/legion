@@ -86,7 +86,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, the reviewer's `approve` and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion verdict is awaited; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no reviewer's verdict is awaited; without `acceptance:owner`, the last step starts retro.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.

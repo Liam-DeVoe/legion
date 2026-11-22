@@ -75,8 +75,7 @@ When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 
-- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
-  Do not wait for a reviewer phase the task does not have;
+- a required approving review, which no step gives: open a `dispatch ask` naming the base rule;
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in its implementing round.
@@ -92,8 +91,7 @@ When it asks outside `implementing`, it tells you once by `checks-red`, naming t
 You start nothing for the merge.
 
 Past review, where the task has a reviewer step, every push, a forward merge among them, has the daemon ask the reviewer for its verdict on the new head, which it sends with `review_verdict`.
-That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head and `legion-verdict` at that head reads `success`, and send the issue back with `request_backward_move` when its verdict is `changes`.
-An `approve` that carries no tester's pass to the new head moves the issue back to `testing` by itself.
+That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and send the issue back with `request_backward_move` when its verdict is `changes`.
 A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve

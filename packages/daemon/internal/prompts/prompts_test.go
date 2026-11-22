@@ -30,8 +30,9 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	// Every operation the legion tool gives an architect besides register_gate
-	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused.
-	architectOperations := []string{"`release_children`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
+	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused:
+	// review_verdict among them, the owner's verdict past its acceptance.
+	architectOperations := []string{"`release_children`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`review_verdict`", "`read_record`"}
 
 	for _, tc := range []struct {
 		name     string
@@ -326,7 +327,7 @@ func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *t
 				"back to the implementer at once", "even while another still waits", "and so does a check Dispatch could not read",
 				"record no result of your own for it", "its state there is no", "its `observed` saying that the implementer left no result at that head"}},
 		{claim.RoleReviewer, false,
-			[]string{"No other phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`): the tester's is none, and the evidence of each check is the line of your head in `dispatch results`."},
+			[]string{"No other phase completion carries a `verdict`: the tester's carries none (`VERDICT_NOT_TAKEN`), and the owner's acceptance is its `sign_off`. The evidence of each check is the line of your head in `dispatch results`."},
 			[]string{"VERDICT_ROLE_FORBIDDEN", "Tester's verdict:", "A `verdict` is the tester's alone"}},
 		{claim.RoleArchitect, true, []string{architectNoticeReason, architectTestingMove}, retiredArchitectNotice},
 		{claim.RoleArchitect, false, []string{architectNoticeReason, architectTestingMove}, retiredArchitectNotice},

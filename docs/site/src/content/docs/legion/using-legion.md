@@ -125,17 +125,23 @@ template, and the later phases fill in their own lines:
   checklist named for each kind of path: after the approval, the retro recomputes it for the whole
   change, the way those instructions say.
 
-Legion's reviewer posts its review as the review App. A review from anyone with write access to the
-repository, submitted on GitHub while the issue is in `needs_review`, counts the same way:
-**Request changes** sends the work back to the implementer with your comments, and an approval of
-the head can end the round. A review from an account without write access decides nothing, since
-any GitHub account can review a public repository's pull request, and a plain comment moves
+Legion's reviewer posts its findings as a `COMMENT` review, which decides nothing, and sends its
+verdict, `approve` or `changes`, to the daemon. The architect's acceptance is the issue's second
+review step. The daemon writes the required check `legion-verdict` from those verdicts, and from
+the issue's check results at the head where the task has a tester step, and writes `success` only
+where at least one approving review was made by an agent that wrote none of the change. Your own
+review counts one way: **Request changes**, submitted on GitHub from an account of type User with
+write access to the repository, refuses the head it names, and while the reviewer's round is open
+it also sends the work back to the implementer with your comments.
+Your approval of an issue's pull request decides nothing beyond lifting your own earlier request
+for changes. A review from an account without write access decides nothing, since any GitHub
+account can review a public repository's pull request, and a plain comment moves
 nothing. Legion's handoffs are records on the Dispatch issue, never commits, so the pull request's
 file list shows only the change and the merge brings no handoff onto the default branch.
 
 ## Merge
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, as
+When the change is tested, the reviewer has sent `approve` and the architect has signed off, the merger merges the pull request itself, as
 the implement App and at the head it read, which it names as the head GitHub must match. It
 writes the squash commit's message itself — the pull request's title and number, and an empty
 body — so GitHub's own default, which joins every commit message of the branch, never puts
@@ -144,13 +150,15 @@ pull request instead.
 
 The repository's branch protection and code-owner rules decide when it lands: a review
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
-your behalf and changes nobody's right to merge.
+your behalf and changes nobody's right to merge. Where the base requires `legion-verdict` and that
+check reads `failure` for want of an independent review, the merger merges nothing and the
+architect asks you, since only a person can merge that head.
 
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
 waits until the last other issue of its tree is done or parked, so no child's finished work is cut
-off, and then it closes. The architect accepted the change before that, when the reviewer approved
-it, with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
+off, and then it closes. The architect accepted the change before that, after the reviewer sent
+`approve`, with `sign_off` and a comment on the issue summarizing the evidence, the issue's goal and each requirement of
 its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
 worked, so a parent is accepted after its children. After the close the role your project's
 `production_check` names — the tester, unless the setting is `off` — checks the change in
@@ -204,6 +212,6 @@ of the phase the issue stands in, at each boot and then every `controller_wake_i
 | `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
-| `needs_review` | the daemon | The change is under review, once the step before passed (on the default steps, the tester): Legion's reviewer reviews it where the task has a reviewer step, and then, where the task has the architect's acceptance step, the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
+| `needs_review` | the daemon | The change is under review, once the step before passed (on the default steps, the tester): Legion's reviewer reviews it where the task has a reviewer step, and then, where the task has the architect's acceptance step, the architect reads the evidence and accepts the change or sends it back. A request for changes from you counts now. |
 | `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
 | `done` | the daemon at the merge, a person, or the architect that owns a child | Finished: the pull request merged, or, for a child, the architect that owns it closed it because its work is done, folded into another issue or no longer needed. A root whose tree is still running waits in `retro` until the last of it is done or out of the workflow, then closes. The production check that your project's `production_check` opens after a merge — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |

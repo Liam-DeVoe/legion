@@ -117,10 +117,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 }
 
 // An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
-// task's `Steps:` line names rather than a tester's and a reviewer's cycles. A task with no review
-// step on a base whose rules require an approving review leaves a merge only a person or the owner
-// can unblock, and Legion posts no approval of its own, so the merger waits and tells the task's
-// owner which review is missing. This shows the text is loaded, never that a merger follows it.
+// task's `Steps:` line names rather than a tester's and a reviewer's cycles. Every Legion role acts
+// as the one App, the pull request's author, so no step of any task gives a GitHub approval: a base
+// whose rules require an approving review leaves a merge only a person can unblock, and the merger
+// waits and tells the task's owner which review is missing. This shows the text is loaded, never
+// that a merger follows it.
 func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -129,7 +130,7 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
 	for _, phrase := range []string{
 		"Verify that each step your task's Steps line names completed (today's line, on a task with no `Task:` line), and that the retro completed.",
-		"If your task's Steps line names no reviewer step and the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that the task's steps have no review step. Only the owner or a person can give that review or change the plan.",
+		"If the base's rules require an approving review, no step of this task gives one, since every Legion role acts as the one App, the pull request's author, whose approval GitHub refuses: do not merge, do not approve the pull request yourself, and do not return the task. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that only a person can give it.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed merger prompt omits %q", phrase)
@@ -137,6 +138,9 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	}
 	if retired := "Verify tester and reviewer cycles completed"; strings.Contains(text, retired) {
 		t.Errorf("the composed merger prompt still says %q", retired)
+	}
+	if retired := "the task's steps have no review step"; strings.Contains(text, retired) {
+		t.Errorf("the composed merger prompt still says %q, as if a reviewer step gave an approving review", retired)
 	}
 }
 
