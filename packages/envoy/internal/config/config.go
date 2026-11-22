@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/listenfd"
 )
@@ -49,6 +50,13 @@ type Service struct {
 	// connecting as the NATS user its sessions share, which runs fixed names for good and reads no
 	// cutover marker. The fresh naming mode is refused beside it.
 	HostListener bool
+	// EdgeProjects is ENVOY_EDGE_PROJECTS (parseEdgeProjects): the project keys an edge listener
+	// serves, sorted, each once. Non-empty is edge mode, in which the listener runs under the edge
+	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go) and
+	// /v1 admits only a broker token whose projects are all among these (cmd/listener's
+	// EdgeAdmits). Empty, the variable unset or empty, is every other listener, which reads
+	// nothing of it.
+	EdgeProjects []string
 }
 
 func (s Service) ListenAddress() string {
@@ -131,6 +139,10 @@ func Load(defaultPort int) (Service, error) {
 		return Service{}, fmt.Errorf("%s=%s with %s=%s: a host's listener runs fixed names for good, since the NATS user its sessions share holds no selection bucket and no fresh name",
 			bus.ListenerRoleEnvVar, bus.ListenerRoleHost, consumernames.ModeEnvVar, consumernames.ModeFresh)
 	}
+	edgeProjects, err := parseEdgeProjects(os.Getenv(EdgeProjectsEnvVar))
+	if err != nil {
+		return Service{}, err
+	}
 	return Service{
 		AllowedHosts:   allowedHosts,
 		MachineID:      machine,
@@ -143,6 +155,7 @@ func Load(defaultPort int) (Service, error) {
 		ListenSocket:   listenSocket,
 		ConsumerNames:  consumerNames,
 		HostListener:   hostListener,
+		EdgeProjects:   edgeProjects,
 	}, nil
 }
 
@@ -194,4 +207,24 @@ func HostName(host string) string {
 		host = host[1 : len(host)-1]
 	}
 	return strings.TrimSuffix(fold.ASCII(host), ".")
+}
+
+// EdgeProjectsEnvVar names the projects an edge listener serves (Service.EdgeProjects).
+const EdgeProjectsEnvVar = "ENVOY_EDGE_PROJECTS"
+
+// parseEdgeProjects reads ENVOY_EDGE_PROJECTS: project keys separated by commas or white space,
+// read by the rule a broker token's own list is read by (oauthwire.ParseProjects): sorted, each
+// once, at most oauthwire.MaxProjects, and nil when empty. A key that is not a project key, a key
+// named twice and a longer list are refused, naming the variable, and so is a value other than
+// the empty string that names no project (a lone comma, white space): that is a misspelt edge
+// setting, and a listener started from it would serve with no edge rules.
+func parseEdgeProjects(raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(strings.ReplaceAll(raw, ",", " "))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EdgeProjectsEnvVar, err)
+	}
+	if raw != "" && len(projects) == 0 {
+		return nil, fmt.Errorf("%s=%q names no project: set it to the project keys the edge listener serves, or to the empty string for a listener that is no edge", EdgeProjectsEnvVar, raw)
+	}
+	return projects, nil
 }

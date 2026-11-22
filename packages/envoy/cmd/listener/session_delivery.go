@@ -264,11 +264,14 @@ type sessionDelivery struct {
 // the deployed stream's subjects both a registration's stored topics and every consumer filter are
 // judged on (sessionDelivery.stream), and whose consumer naming mode (ENVOY_CONSUMER_NAMES,
 // bus.WithConsumerNames) the connection takes, so the two never name a session's consumer apart.
+// options are the connection's own beside its name and that mode: in edge mode, the listener's
+// inbox prefix (edgeGrant.connectOptions).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), bus.WithConsumerNames(stream.ConsumerNames()))
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(),
+		append([]bus.ConnectOption{bus.WithConsumerNames(stream.ConsumerNames())}, options...)...)
 	if err != nil {
 		return nil, err
 	}
