@@ -100,23 +100,31 @@ import { type RefObject, useLayoutEffect } from "react";
  *     screen that is not a scroller itself. A box sticky only on the inline axis - a pinned cell
  *     of the issues table, sticky with only a `left` - moves with a scroll on the block axis, the
  *     one end room lengthens, so the walk goes on past it to the table's box.
- *   - Is it `main` (`#main-content`) while `main` carries `data-document-scroll`? Then the
- *     document scrolls that content, and the scroller is the document's, `main`, with no test of
- *     overflow, since the document's box grows with its content.
+ *   - Does it carry `data-document-scroll`: `main` (`#main-content`), or, in the new issue page's
+ *     frame, the frame's column? Then the document scrolls that content, and the scroller is the
+ *     document's, that element, with no test of overflow, since its box grows with its content.
  *
  *   `body` never takes room, and a walk that reaches it finds no scroller. Room in `body` lies
  *   below the shell rather than in it, so at the end of the document's scroll it lifts the shell,
  *   and the columns stuck in it, off the top of the screen: under Pending changes over an issue
  *   page's Review margin it pushed the Navigation off and left an empty band at the foot. The
- *   document's own content is in `main`, which takes the room while the document scrolls it.
- * - Why the shell says whether the document scrolls `main`. On a page that fills the screen
+ *   document's own content is in the element that carries `data-document-scroll`, which takes
+ *   the room while the document scrolls it.
+ * - Why the page says where the document's content ends. On a page that fills the screen
  *   `<main>` is a bounded box and the document scrolls nothing: room in `main` there would
  *   squeeze the page above it rather than lengthen it, lift the live view's composer, and hold
  *   itself, with the floats under the composer over that room. No box metric tells a bounded
  *   `main` from one the document scrolls, since a page that fits the window exactly - the issues
- *   table sizes its box to it - reads the same. So `data-document-scroll` on `<main>` (`app.tsx`)
- *   is the shell's statement that the document scrolls main's content: on a page the document
- *   scrolls, outside the new issue page's frame. Only while `main` carries it is `main` a
+ *   table sizes its box to it - reads the same. So `data-document-scroll` is the page's
+ *   statement that the document scrolls the content of the element that carries it: `main` on
+ *   every page the document scrolls outside the new issue page's frame (`app.tsx`), and in the
+ *   frame the frame's column (`IssueOutlinePage.tsx`), the tallest child of the row that holds
+ *   the Contents pane and the column. The room goes in that column, because the Contents pane is
+ *   stuck in the row, which holds it within the row's content box, and that box ends where the
+ *   column does: room in `main` lies below the row, and the row's own bottom padding lies outside
+ *   its content box, and either carried the pane 180px above its place at the end of the
+ *   document's scroll at 1024x500. Room in the column grows the column, the row's content box and
+ *   the pane's range with it. Only while an element carries the statement is that element a
  *   scroller.
  * - Why a box can scroll on the block axis two ways (`scrollsOnBlockAxis`). Its content overflows
  *   it now, with the hook's own end room left out (`scrollHeight - room > clientHeight + 1`). Or
@@ -158,7 +166,8 @@ import { type RefObject, useLayoutEffect } from "react";
  * scroller the floats lie over are in `e2e/issues-table.e2e.ts`: the Review margin's column, the
  * live view's transcript and the Inbox reading pane each scroll their last content clear, the
  * table's last row scrolls clear, and an issue page scrolled to its end keeps the shell's
- * Navigation on the screen.
+ * Navigation on the screen; and `e2e/foot-sweep.e2e.ts` reads every reviewed route and eight
+ * pages, the frame's among them, at every combination of the floats.
  *
  * A scroller's foot is the lower edge of its box, clipped to the screen, as an offset up from the
  * screen's bottom edge, or 0 where the document scrolls its content. Its clearance is how far
@@ -193,22 +202,22 @@ import { type RefObject, useLayoutEffect } from "react";
  *   `::after` as it marks it, and marks any other scroller `padding`: it takes the room as its
  *   inline bottom padding, the larger of its own and the clearance. Its own is read as it is
  *   marked, and again after a window resize, once the inline value is removed. The document's
- *   scroller, `main`, always takes the room that way, as padding: a page sized to the
- *   window reads main's bottom padding as the room it keeps at the foot - the issues table's box
- *   is the window less that padding (`issues-table-layout.ts`) - so a spacer there would lengthen
- *   the document under the box instead, and each scroll to the end and the measure after it would
- *   grow the box by that scroll. Its box grows with the room, or the page it holds gives way to
- *   it, and either way its foot stays 0.
+ *   scroller, the element that carries `data-document-scroll`, always takes the room that way, as
+ *   padding: a page sized to the window reads main's bottom padding as the room it keeps at the
+ *   foot - the issues table's box is the window less that padding (`issues-table-layout.ts`) - so
+ *   a spacer there would lengthen the document under the box instead, and each scroll to the end
+ *   and the measure after it would grow the box by that scroll. Its box grows with the room, or
+ *   the page it holds gives way to it, and either way its foot stays 0.
  *
  * Marking a scroller the walk finds changes its scroll height, never its box, and the hit test
  * reads boxes. A point over the spacer hits the scroller itself, since a pseudo-element is not an
  * element. So such a mark never changes which scroller the next pass finds. The document's
  * padding can move what the floats lie over - the issues table's box gives way to it - but only
- * off the floats, which then lie over that padding, and a point there hits `main` itself, so the
- * mark holds. Each pass finds every scroller under a float, unmarks every scroller marked before
- * that it no longer finds - its attribute, its property and any inline padding - and writes a
- * mark, a property or a padding only where its value changes. So no page keeps end room it no
- * longer needs, and at rest a pass writes nothing.
+ * off the floats, which then lie over that padding, and a point there hits that element itself,
+ * so the mark holds. Each pass finds every scroller under a float, unmarks every scroller marked
+ * before that it no longer finds - its attribute, its property and any inline padding - and
+ * writes a mark, a property or a padding only where its value changes. So no page keeps end room
+ * it no longer needs, and at rest a pass writes nothing.
  *
  * - Why it runs only while a float shows. With no float nothing lies over content, so no scroller
  *   needs room, and a pass reads layout on every scroll. So while no float has a box the hook
@@ -289,8 +298,9 @@ export const MARK_ATTRIBUTE = "data-foot-clearance";
 /** The custom property that holds a scroller's end room, on its own inline style. */
 const CLEARANCE_PROPERTY = "--foot-clearance";
 
-/** The attribute by which the shell states, on `<main>`, that the document scrolls main's content
- *  (`FOOT_LAYERS` says why the hook cannot tell). */
+/** The attribute by which the page states, on `<main>` or, in the new issue page's frame, on the
+ *  frame's column, that the document scrolls that element's content (`FOOT_LAYERS` says why the
+ *  hook cannot tell, and why the frame's room goes in its column). */
 export const DOCUMENT_SCROLL_ATTRIBUTE = "data-document-scroll";
 
 /** The kind of box each computed `display` makes, of those where a spacer can land below the
@@ -473,7 +483,7 @@ function scrollsOnBlockAxis(box: HTMLElement, computed: CSSStyleDeclaration, top
  * `scroll`, whose lower edge lies below the float's top edge and which can scroll on the block
  * axis (`scrollsOnBlockAxis`, read once per pass for each box and held in `blockScrolls`), which
  * is the scroller; a box that is fixed, or sticky on the block axis, under which no scroller is;
- * and `main` while it carries `data-document-scroll`, which is the document's scroller, with a
+ * and an element that carries `data-document-scroll`, which is the document's scroller, with a
  * foot of 0. A walk that reaches `body` finds none.
  */
 function scrollerUnder(
@@ -508,7 +518,7 @@ function scrollerUnder(
     ) {
       return undefined;
     }
-    if (element.id === "main-content" && element.hasAttribute(DOCUMENT_SCROLL_ATTRIBUTE)) {
+    if (element.hasAttribute(DOCUMENT_SCROLL_ATTRIBUTE)) {
       return { byDocument: true, lo: 0, scroller: element };
     }
   }

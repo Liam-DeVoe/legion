@@ -199,3 +199,37 @@ test("a float over an element outside main and inside no scroller gives no eleme
     }
   );
 });
+
+// The new issue page's frame states that the document scrolls its column, the tallest child of
+// the row that holds the stuck Contents pane and the column, and not `main`. A float over the
+// column's last words gives that column the end room, as padding, so the column grows with it,
+// the row's content box with the column, and the pane, held in that box, keeps its place at the
+// end of the document's scroll; room in `main`, below the row, would carry the pane off it.
+// happy-dom lays out no sticky box, so this case reads where the room goes, and the place itself
+// is read in a browser (`e2e/foot-sweep.e2e.ts`, the frame's `:stuck` cells).
+test("a float over the frame's column gives the end room to the column that states the document scrolls it, beside its stuck Contents pane, and none to the row or main", async () => {
+  const height = window.innerHeight;
+  boxes = {
+    column: { bottom: height, top: 100 },
+    contents: { bottom: height, top: 63 },
+    row: { bottom: height, top: 100 },
+    words: { bottom: height - 10, top: height - 40 },
+  };
+  under = "words";
+  await afterAPass(
+    <main data-testid="main" id="main-content">
+      <div data-testid="row" style={{ display: "flex" }}>
+        <aside data-testid="contents" style={{ bottom: "auto", position: "sticky", top: 63 }} />
+        <div data-testid="column" {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}>
+          <p data-testid="words">The tree's last row.</p>
+        </div>
+      </div>
+    </main>,
+    () => {
+      expect(screen.getByTestId("column")).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+      expect(screen.getByTestId("row")).not.toHaveAttribute(MARK_ATTRIBUTE);
+      expect(screen.getByTestId("main")).not.toHaveAttribute(MARK_ATTRIBUTE);
+      expect(document.body).not.toHaveAttribute(MARK_ATTRIBUTE);
+    }
+  );
+});

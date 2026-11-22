@@ -129,6 +129,8 @@ export const realStackReasons: Record<string, string> = {
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
   "followers.e2e.ts": "follower and subscriber writes change what the server delivers",
+  "foot-sweep.e2e.ts":
+    "the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document",
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",

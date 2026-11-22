@@ -17,6 +17,7 @@ import {
   seedAgentStreamConversations,
 } from "./api";
 import { filterPicker } from "./filters";
+import { openWithFloats, routeFloats, seedRefusedMove, updateBanner } from "./foot-floats";
 import { nextFrames } from "./frames";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import { APPROVAL_FOOT, inboxAt, seedApprovalPlace } from "./inbox-pane-scroll";
@@ -539,7 +540,7 @@ function footButtons(scope: Locator, names: string[]): FootControl[] {
  *  change leaves open, and the update banner. */
 function footFloats(page: Page): { pendingChanges: FootElement; update: FootElement } {
   const pending = pendingWrites(page);
-  const banner = page.getByRole("status", { name: "A new version is available" });
+  const banner = updateBanner(page);
   return {
     pendingChanges: {
       name: "Pending changes",
@@ -554,49 +555,6 @@ function footFloats(page: Page): { pendingChanges: FootElement; update: FootElem
       float: true,
     },
   };
-}
-
-/** Routes `page` so that both floats can show: every `PATCH` of the issue `refusedKey` is
- *  refused, which leaves the change pending, and every live process serves one build the page
- *  does not run (`deploymentChanged`), which shows the update banner. */
-async function routeFloats(page: Page, refusedKey: string): Promise<void> {
-  await page.route(`**/api/v1/issues/${refusedKey}`, async (route) => {
-    if (route.request().method() === "PATCH")
-      await route.fulfill({ status: 403, json: { error: "Move refused" } });
-    else await route.continue();
-  });
-  await page.route("**/api/v1/dashboard/builds", (route) =>
-    route.fulfill({
-      json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
-    })
-  );
-}
-
-/** Opens `path` on `page`, routed by `routeFloats`, with both floats shown: a change to
- *  `refusedKey` refused on the issues table, which Pending changes keeps across the load, and
- *  the banner, which the page shows from the builds the route answers. */
-async function openWithFloats(page: Page, refusedKey: string, path: string): Promise<void> {
-  const { pendingChanges, update } = footFloats(page);
-  await page.goto("/projects/CORE/issues");
-  await page.getByRole("checkbox", { name: `Select ${refusedKey}`, exact: true }).check();
-  await page
-    .getByRole("toolbar")
-    .getByRole("button", { name: "Take out of epic" })
-    .click({ timeout: 5_000 });
-  await expect(pendingChanges.box).toContainText(refusedKey);
-  await page.goto(path);
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(update.box).toBeVisible();
-  await expect(pendingChanges.box).toContainText(refusedKey);
-}
-
-/** The project CORE with an epic and an issue in it, whose move out of the epic `routeFloats`
- *  refuses. Answers that issue. */
-async function seedRefusedMove() {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  return createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
 }
 
 /** The box each of `elements` has on the page, with its name and whether it is a float. One that
