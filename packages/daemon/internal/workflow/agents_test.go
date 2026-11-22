@@ -560,6 +560,100 @@ func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
 }
 
+// A keyed agent's next step after a new generation is numbered above every entry its claim was
+// given, whatever rows the generation's clear folded away. In `implementer:a reviewer:b
+// implementer:b`, key b, named reviewer, works steps 2 and 3 and the retro, the last of them on the
+// implementer's row at place 0, so its claim is last given the retro's entry, the role's highest.
+// The re-admission folds the implementer's rows into that one, and step 1 of the new generation
+// raises it and writes key a's claim on it, so no row names key b above the reviewer's. Step 2's
+// start must still carry an entry above the one key b's claim was given: the supervisor reads a
+// start at or below that number as given already and queues nothing (supervise.Machine.given), and
+// the admission pass reads the claim as level with its row (OwedEntry). Before, step 2 was numbered
+// on the rows alone, at the reviewer's entry plus one, below the retro's, and its task never
+// reached key b.
+func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	tickingClock(engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	steps := []string{"implementer:a", "reviewer:b", "implementer:b"}
+	seedStepsPlan(t, pool, root.Key, root.Generation, steps...)
+	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "reviewer")
+	if got := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, ""); got != keyB {
+		t.Fatalf("the reviewer's claim seeded is %q, want key b's %q", got, keyB)
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	if got := issueOf(t, pool, engine, root.Key).Phase; got != phase.Retro {
+		t.Fatalf("%s stands in %s after step 3, want its retro", root.Key, got)
+	}
+	retro := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[0]
+	if retro.Claim != keyB {
+		t.Fatalf("the retro's row names %q, want key b's claim %q", retro.Claim, keyB)
+	}
+	// The supervisor writes what each start queued to the claim (supervise.Machine.queue); the
+	// retro's task is the last key b was queued.
+	seedGivenEntry(t, pool, keyB, retro.Entry)
+
+	readmitRoot(t, pool, engine, root.Key)
+	next := root.Generation + 1
+	seedStepsPlan(t, pool, root.Key, next, steps...)
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	if result := applyFacts(t, pool, engine)("implementer-implement-next", intake.HandoffComplete{Generation: next, Issue: root.Key,
+		Role: claim.RoleImplementer, Claim: keyA, Summary: "done", Commit: "head", HandoffRecord: "implement-3", HandoffVersion: 3}); result.Refusal != nil {
+		t.Fatalf("key a's completion of step 1 of generation %d was refused: %+v", next, result.Refusal)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+	starts := roleStartsOf(t, pool, root.Key, claim.RoleReviewer)
+	start := starts[len(starts)-1]
+	reviewer := roleRowNow(t, pool, engine, root.Key, claim.RoleReviewer)
+	if start.Generation != next || reviewer.Claim != keyB || start.Entry != reviewer.Entry || start.Entry <= retro.Entry {
+		t.Fatalf("step 2's start of generation %d carries the entry %d (generation %d) and the reviewer's row names %q at %d, want key b's claim %q "+
+			"at an entry above %d, the retro's entry key b's claim was given, which the supervisor reads as given already",
+			next, start.Entry, start.Generation, reviewer.Claim, reviewer.Entry, keyB, retro.Entry)
+	}
+}
+
+// Each start of a phase worker names the claim it was queued for (record.SuperviseRequest.Claim),
+// the claim of the agent of the step the task stands at, so the outbox acts on that claim and a
+// start the task has left since never reaches the claim the role's row names by then. In
+// `implementer:a reviewer:b implementer:b`, step 1's start names key a, step 2's and step 3's key
+// b, and so does the retro's, which the agent of the last implementation step runs; the retry of
+// the held retro names key b again. Before, every start named no claim, and the outbox gave each
+// to the worker the role's row named when the row ran.
+func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	tickingClock(engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:b", "implementer:b")
+	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "reviewer")
+	named := func(what string, role claim.Role, want claim.Token) {
+		t.Helper()
+		starts := roleStartsOf(t, pool, root.Key, role)
+		if start := starts[len(starts)-1]; start.Claim != want {
+			t.Fatalf("%s names the claim %q, want %q", what, start.Claim, want)
+		}
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	named("step 1's start", claim.RoleImplementer, keyA)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
+	named("step 2's start", claim.RoleReviewer, keyB)
+	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	named("step 3's start", claim.RoleImplementer, keyB)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	named("the retro's start", claim.RoleImplementer, keyB)
+	holdFrom(t, pool, root.Key, phase.Retro)
+	if result := applyFacts(t, pool, engine)("retry-retro", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision}); result.Refusal != nil {
+		t.Fatalf("the retry of the held retro was refused: %+v", result.Refusal)
+	}
+	named("the held retro's retry", claim.RoleImplementer, keyB)
+}
+
 // completesAs is completes under the claim token, the agent's own, as the route names the claim
 // whose grant reported, which the completion writes on the role's row.
 func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int) {

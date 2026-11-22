@@ -2433,10 +2433,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// entry's own start carries that entry's task, so running this one would hand the worker
 		// work the record has moved past. Finishing it here is what lets a start row be a message
 		// with no state of its own: a row that outlives its entry is harmless rather than
-		// something to rewrite. Two claims of one role keep a row each and number their entries
-		// apart, so a start of another claim than the role's row now names is of a step the task
-		// has left, whatever its number reads, and no entry of one claim is weighed against the
-		// other's (record.StartLeft).
+		// something to rewrite. A phase worker's start also names the claim it was queued for
+		// (record.SuperviseRequest.Claim, workflow's started), and a role's entries rise together,
+		// each above every row of its role (workflow's enter), so the role's row now holds the
+		// highest entry of the role: a start of another step is below it, and a start of another
+		// claim than the row now names is of a step the task has left, whatever its number reads
+		// (record.StartLeft). A start the release before wrote names no claim, and is weighed by
+		// its entry alone.
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
 		// look carries neither and is fenced on its check above, every start of no entry
@@ -2461,9 +2464,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
-	// The claim the row acts on is the one it names, a row that stands for one stored claim of the
-	// issue, and otherwise the claim of the worker on its role's step, which can be the claim of a
-	// key's agent that started on an earlier step of another role (workerOf).
+	// The claim the row acts on is the one it names: the claim a phase worker's start was queued
+	// for, or the one stored claim a row of another op stands for. A row that names none, one the
+	// release before wrote, acts on the claim of the worker on its role's step, which can be the
+	// claim of a key's agent that started on an earlier step of another role (workerOf).
 	token := payload.Claim
 	if token == "" {
 		if !rowsRead {

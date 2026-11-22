@@ -264,3 +264,63 @@ func TestAHeldStartOfAKeyedAgentStoppedSinceIsFinished(t *testing.T) {
 		t.Fatalf("the held start of the tester's step stands, want it finished: key a's agent %s was stopped after it", keyed)
 	}
 }
+
+// A held start is weighed against the claim it names, the claim it was queued for and the one the
+// outbox acts on, never against the claim the role's row names by then. The tester's row of
+// `implementer:a tester:a reviewer` names key a's claim `…-implementer`, stopped after the start was
+// written. A start that names key b, an agent of the tester's role at another step, is no start of
+// key a's: the repair keeps it, and the outbox's own fence decides it. Before, the repair weighed
+// every held start against the claim the row names and finished key b's start for key a's stop.
+// The controls: the same start naming key a is finished, and so is a start the release before
+// wrote, which names no claim and is weighed against the claim of the row, as before.
+func TestAHeldStartIsWeighedAgainstTheClaimItNames(t *testing.T) {
+	const key = "LEGION-312"
+	for _, tc := range []struct {
+		name     string
+		named    string
+		finished bool
+	}{
+		{"a start of key b, named reviewer, while the row names key a, stopped since", "reviewer", false},
+		{"the control: a start naming key a", "implementer", true},
+		{"a start the release before wrote, naming no claim", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedSlottedInPhase(t, pool, testProject, key, "A", phase.Testing, nil)
+			keyed := keyedToken(t, key, "implementer")
+			start := record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+				Task: "Test the widget.", NeedsSlot: true}
+			if tc.named != "" {
+				start.Claim = keyedToken(t, key, claim.Agent(tc.named))
+			}
+			inTx(t, pool, func(tx pgx.Tx) {
+				if err := record.NewStore().PutPhase(context.Background(), tx,
+					record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 2}); err != nil {
+					t.Fatalf("seed the tester's row: %v", err)
+				}
+				if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, start, fixedNow); err != nil {
+					t.Fatalf("queue the tester's held start: %v", err)
+				}
+			})
+			seedStoredClaim(t, pool, key, key, keyed, claim.RoleTester, "retired", "")
+			if _, err := pool.Exec(context.Background(), `update claims set retired_at_write_mark = (select max(write_mark) + 1 from outbox) where token = $1`,
+				string(keyed)); err != nil {
+				t.Fatalf("mark the stop after the held start: %v", err)
+			}
+			admission := newAdmission(t, 1, nil)
+
+			apply(t, pool, admission, "observe", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
+				Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}, workflow.New(record.NewStore(), workflow.Config{Project: testProject,
+				Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil))
+
+			var after int
+			if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'supervise' and issue = $1 and payload->>'role' = 'tester'`,
+				key).Scan(&after); err != nil {
+				t.Fatalf("read the held starts of %s: %v", key, err)
+			}
+			if finished := after == 0; finished != tc.finished {
+				t.Fatalf("the held start naming %q: finished %t, want %t; key a's agent %s was stopped after it", start.Claim, finished, tc.finished, keyed)
+			}
+		})
+	}
+}

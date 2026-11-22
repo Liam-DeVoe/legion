@@ -2790,16 +2790,18 @@ func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 // StartLeft says whether a start of role's phase entry entry, for the claim token, is of work the
 // role has left, read from an issue's phases rows, and answers the entry of the row it weighed the
 // start against: the role's row now (PhaseRowOf), the row of the step the task stands at, or stood
-// at last. A start is of that row's step only when it is for the claim that row names: two claims
-// of one role keep a row each, one for each of their steps, and each claim numbers its entries on
-// its own rows as well as its role's, so an entry of one claim says nothing of the other's, and a
-// start of another claim than the row now names is of another step, whatever its number reads.
-// For the row's own claim, the start is behind when its entry is below the row's. A start that
-// names no claim (token "") acts on the claim of the row now, and a row of no step (an issue with
-// no plan rows keeps one for each role) or one that names no claim is the role's one row, whose
-// claim is the role's (WorkerClaim), so each of them is weighed against the row's entry alone. The
-// outbox's two fences on a start ask it: before it runs one, and again under the claim's lock
-// before the start suspends or re-roles that claim.
+// at last. A role's entries rise together, each step's above every row of its role (workflow's
+// enter), so the row now holds the role's highest entry and a start of another step of the role,
+// or of an earlier run of this one, is below it. A start is of that row's step only when it is for
+// the claim that row names: two claims of one role keep a row each, one for each of their steps,
+// so a start of another claim than the row now names is of another step, whatever its number
+// reads. A phase worker's start names the claim it was queued for (SuperviseRequest.Claim), so the
+// outbox asks this before it runs one, for that claim, and again under the claim's lock before the
+// start suspends or re-roles it. A start that names no claim (token ""), one the release before
+// wrote, acts on the claim of the row now, and a row of no step (an issue with no plan rows keeps
+// one for each role, and a new generation's clear leaves one) or one that names no claim is the
+// role's one row, whose claim is the role's (WorkerClaim), so each of them is weighed against the
+// row's entry alone.
 func StartLeft(rows []PhaseRow, role claim.Role, token claim.Token, entry int64) (int64, bool) {
 	now := PhaseRowOf(rows, role)
 	if token != "" && now.StepTask != "" && now.Claim != "" && now.Claim != token {
