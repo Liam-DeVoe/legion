@@ -775,3 +775,45 @@ func renderStepTextColumns(t *testing.T, rig *renderRig) {
 		t.Errorf("document_block_texts holds the columns %v, want %v as 0121_block_graph.up.sql creates them", columns, want)
 	}
 }
+
+// TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord: over a walk holding an ask's node, the
+// block that shows that ask in the spec, a decision with a reading under it, a reading under the
+// ask and a requirement, the decisions query takes the ask's node, the decision and the reading
+// under the decision, and nothing else; and a record of the decisions query is refused, through
+// ReadQueryRecord and through the walk's own builder, with the error a query no definition names is
+// refused with, so no version records its digest.
+func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
+	issue := refs.Target{Kind: graphstore.KindIssue, ID: "CORE-1"}
+	ask := refs.Target{Kind: graphstore.KindAsk, ID: "5d1f6a3e-0c4b-4f7e-9b1a-2c3d4e5f6a7b"}
+	decision := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#d1"}
+	nodes := []TreeNode{
+		{Kind: issue.Kind, ID: issue.ID, Type: graphstore.SupertagIssue},
+		{Kind: ask.Kind, ID: ask.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#a1", Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: decision.Kind, ID: decision.ID, Parent: issue, Type: refs.DecisionSupertag},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g1", Parent: decision, Type: refs.ReadingSupertag},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g2", Parent: ask, Type: refs.ReadingSupertag},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#r1", Parent: issue, Type: "requirement"},
+	}
+	tree := IssueTree{Issue: issue.ID, Nodes: nodes, Memo: -1, index: map[refs.Target]int{}}
+	for index, node := range nodes {
+		tree.index[node.target()] = index
+	}
+	taken, defined := tree.Takes(graphstore.QueryDecisions)
+	var addresses []string
+	for _, index := range taken {
+		addresses = append(addresses, nodes[index].Address())
+	}
+	want := []string{nodes[1].Address(), nodes[3].Address(), nodes[4].Address()}
+	if !defined || !slices.Equal(addresses, want) {
+		t.Errorf("the decisions query takes %v (defined %t), want %v: the ask's own node, the decision and the reading under it", addresses, defined, want)
+	}
+
+	const refused = `the query "decisions" has no record`
+	if _, err := ReadQueryRecord(context.Background(), nil, issue.ID, graphstore.QueryDecisions, refs.TreeCut{}); err == nil || err.Error() != refused {
+		t.Errorf("ReadQueryRecord of the decisions query answers %v, want it refused: %s", err, refused)
+	}
+	if _, err := tree.QueryRecord(context.Background(), nil, graphstore.QueryDecisions); err == nil || err.Error() != refused {
+		t.Errorf("the walk's record of the decisions query answers %v, want it refused: %s", err, refused)
+	}
+}

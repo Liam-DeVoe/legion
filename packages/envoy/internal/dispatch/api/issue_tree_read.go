@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -39,7 +40,7 @@ import (
 const issueTreePageSize = 12000
 
 // issueTreeViews are the views the tree read answers, each the query of that name.
-var issueTreeViews = []string{graphstore.QuerySpec, graphstore.QueryVerification, graphstore.QueryPlan}
+var issueTreeViews = []string{graphstore.QuerySpec, graphstore.QueryVerification, graphstore.QueryPlan, graphstore.QueryDecisions}
 
 // The roles a node plays in a tree read (model.IssueTreeNode.Role).
 const (
@@ -51,11 +52,13 @@ const (
 // issueTreeQuery is GET /api/v1/issues/{key}/tree's query: the view, the version of the view's
 // query node to read it at, and the cursor of a page past the first.
 type issueTreeQuery struct {
-	// View is the query whose nodes the read answers: spec, verification or plan; absent for the
-	// whole tree.
-	View string `query:"view" enum:"spec,verification,plan"`
+	// View is the query whose nodes the read answers: spec, verification, plan or decisions;
+	// absent for the whole tree.
+	View string `query:"view" enum:"spec,verification,plan,decisions"`
 	// V is a version of the view's query node: the read answers the query as of the store
-	// revision that version's record read. It needs view beside it.
+	// revision that version's record read. It needs view beside it. The decisions query node
+	// records no version of its own yet, so a version of it is answered as any version whose
+	// record the query node does not hold, 404 QUERY_VERSION_NOT_FOUND (issueTreeCut).
 	V int `query:"v"`
 	// Cursor is where a page past the first starts: the cursor the page before it answered.
 	Cursor string `query:"cursor"`
@@ -70,7 +73,7 @@ func (s *server) getIssueTree(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	view := query.Get("view")
 	if query.Has("view") && !slices.Contains(issueTreeViews, view) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "view must be one of spec, verification and plan, or absent for the whole tree")
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "view must be one of spec, verification, plan and decisions, or absent for the whole tree")
 		return
 	}
 	version := 0
@@ -185,6 +188,14 @@ type issueTreeBuilder struct {
 	descend   []string
 	ancestors []string
 
+	// taken is each node of the walk the view's query takes (queryTakes), requirements each
+	// requirement the verification view carries (verificationRequirements), and tied each node
+	// of the walk or the others the spec and the verification views carry as context for a tie of
+	// theirs (readTies), each read once by readContext for a view.
+	taken        map[refs.Target]bool
+	requirements map[refs.Target]bool
+	tied         map[refs.Target]bool
+
 	issues    map[string]*model.IssueTreeIssue
 	texts     map[refs.Target]string
 	asks      map[string]treeAsk
@@ -194,8 +205,12 @@ type issueTreeBuilder struct {
 	positions map[refs.Target]int
 }
 
-// treeAsk is what an ask's row says that its node does not: its question, its state.
-type treeAsk struct{ question, state string }
+// treeAsk is what an ask's row says that its node does not: its question, its state, and the rest
+// of its wording, its options, urgency and multiple.
+type treeAsk struct {
+	question, state string
+	wording         model.IssueTreeAsk
+}
 
 // treeResult is what a result's check_results row and its retraction hold for the tree read: who
 // recorded it and when, and its retraction where one stands.
@@ -312,8 +327,9 @@ func treeIssueOf(target refs.Target) string {
 // each node of another issue whose part_of names a node of the walk, a child's criterion under a
 // comment of the issue among them; each check and plan node of an issue under the issue whose
 // serves names one of the issue's requirements, with the results under each such check, reached
-// through serves (R3, R23); and in the plan view every plan node of the whole tree's ordered read
-// (refs.PlanOrder). Each is read-only, marked with its issue.
+// through serves (R3, R23), which the spec and the decisions views carry none of; and in the plan
+// view every plan node of the whole tree's ordered read (refs.PlanOrder). Each is read-only,
+// marked with its issue.
 func (b *issueTreeBuilder) readOthers() error {
 	rows, err := b.q.Query(b.ctx, `select key from issues where parent_key = $1 order by key`, b.key)
 	if err != nil {
@@ -343,7 +359,7 @@ func (b *issueTreeBuilder) readOthers() error {
 		entry := b.add(child.Node, child.Parent, owner, treeRoleTree)
 		entry.parent, entry.typ, entry.rank, entry.ranked, entry.madeAt = child.Parent, child.Type, child.Rank, child.Ranked, child.MadeAt
 	}
-	if b.view != graphstore.QuerySpec {
+	if b.view != graphstore.QuerySpec && b.view != graphstore.QueryDecisions {
 		if err := b.readServing(); err != nil {
 			return err
 		}
@@ -399,15 +415,15 @@ func (b *issueTreeBuilder) readServing() error {
 	return nil
 }
 
-// servesIntoStatement is, at the cut whose seq bound $2 is, each current serves tuple into the
+// tuplesIntoStatement is, at the cut whose seq bound $2 is, each current tuple of kind $3 into the
 // block nodes $1 names: of each relation the newest tuple at or below the bound, read into its far
 // end through graph_tuples_as_of_in, kept while it asserts.
-const servesIntoStatement = `
+const tuplesIntoStatement = `
 	select newest.to_id, newest.from_kind, newest.from_id
 	from (
 		select distinct on (t.to_id, t.from_kind, t.from_id) t.to_id, t.from_kind, t.from_id, t.asserted
 		from graph_tuples t
-		where t.to_kind = '` + refs.BlockNodeKind + `' and t.to_id = any($1) and t.kind = 'serves'
+		where t.to_kind = '` + refs.BlockNodeKind + `' and t.to_id = any($1) and t.kind = $3
 		  and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= $2
 		order by t.to_id, t.from_kind, t.from_id, t.seq desc
 	) newest
@@ -415,32 +431,37 @@ const servesIntoStatement = `
 	order by newest.to_id, newest.from_kind, newest.from_id collate "C"`
 
 // servesInto is each node whose current serves names one of the requirement blocks requirements,
-// keyed by the requirement, read at cut's seq, the head's where it is a dated cut: the coverage
-// read walks serves from the requirement, so one check serving three requirements is one node
-// under each of the three.
+// keyed by the requirement (tuplesInto): the coverage read walks serves from the requirement, so
+// one check serving three requirements is one node under each of the three.
 func servesInto(ctx context.Context, q queryer, requirements []string, cut refs.TreeCut) (map[string][]refs.Target, error) {
-	serving := map[string][]refs.Target{}
-	if len(requirements) == 0 {
-		return serving, nil
+	return tuplesInto(ctx, q, servesTupleKind, requirements, cut)
+}
+
+// tuplesInto is each node whose current tuple of kind names one of the block nodes blocks, keyed
+// by the block, read at cut's seq, the head's where it is a dated cut.
+func tuplesInto(ctx context.Context, q queryer, kind string, blocks []string, cut refs.TreeCut) (map[string][]refs.Target, error) {
+	into := map[string][]refs.Target{}
+	if len(blocks) == 0 {
+		return into, nil
 	}
 	seq := cut.ReadSeq
 	if cut.Dated || seq == 0 {
 		seq = math.MaxInt64
 	}
-	rows, err := q.Query(ctx, servesIntoStatement, requirements, seq)
+	rows, err := q.Query(ctx, tuplesIntoStatement, blocks, seq, kind)
 	if err != nil {
-		return nil, fmt.Errorf("read the serves into %d requirements: %w", len(requirements), err)
+		return nil, fmt.Errorf("read the %s into %d blocks: %w", kind, len(blocks), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var requirement string
+		var block string
 		var from refs.Target
-		if err := rows.Scan(&requirement, &from.Kind, &from.ID); err != nil {
-			return nil, fmt.Errorf("read the serves into a requirement: %w", err)
+		if err := rows.Scan(&block, &from.Kind, &from.ID); err != nil {
+			return nil, fmt.Errorf("read the %s into a block: %w", kind, err)
 		}
-		serving[requirement] = append(serving[requirement], from)
+		into[block] = append(into[block], from)
 	}
-	return serving, rows.Err()
+	return into, rows.Err()
 }
 
 // readPlanOrder reads the ordered read of the issue's whole tree (refs.PlanOrder) for the plan
@@ -718,7 +739,9 @@ func (b *issueTreeBuilder) keep() {
 // with no view carries each catalogue node a has_kind or constrained_by of a node it holds names, a
 // lens_kind or a constraint the tree does not hold, one level out, and each interaction a
 // changed_by_run of a node it holds names, through the reader's predicate. A view carries its
-// fixed context (viewContext).
+// fixed context (viewContext), and the spec and the verification views the ties of their nodes
+// (readTies). It reads, once, what the view's query takes and the requirements the verification
+// view carries, which inView answers the view's nodes by.
 func (b *issueTreeBuilder) readContext() error {
 	var wanted []refs.Target
 	for _, target := range b.candidates() {
@@ -745,8 +768,31 @@ func (b *issueTreeBuilder) readContext() error {
 		}
 	}
 	if b.view != "" {
+		b.taken = b.queryTakes(b.view)
+		if b.view == graphstore.QueryVerification {
+			b.requirements = b.verificationRequirements()
+		}
 		wanted = append(wanted, b.viewContext()...)
 	}
+	if err := b.addContext(wanted); err != nil {
+		return err
+	}
+	if b.view == graphstore.QuerySpec || b.view == graphstore.QueryVerification {
+		tied, err := b.readTies()
+		if err != nil {
+			return err
+		}
+		if err := b.addContext(tied); err != nil {
+			return err
+		}
+	}
+	return b.placeContext()
+}
+
+// addContext reads what each of wanted states and whether the reader may see it, and adds each
+// one the reader may see, and that the answer holds as no node of its walk or of the others, as a
+// context node, once.
+func (b *issueTreeBuilder) addContext(wanted []refs.Target) error {
 	if err := b.readFacts(wanted); err != nil {
 		return err
 	}
@@ -770,7 +816,68 @@ func (b *issueTreeBuilder) readContext() error {
 			b.context = append(b.context, target)
 		}
 	}
-	return b.placeContext()
+	return nil
+}
+
+// readTies is what the spec and the verification views carry as context for the ties of the nodes
+// they answer - each node their query takes that the reader may see, and their fixed context: each
+// constraint a constrained_by of one of them names, and each decision, and each ask a person
+// answered, whose current shaped tuple names one of them, read into it at the read's cut
+// (tuplesInto). A tie's node the walk or the read of the others took - a decision or an ask of the
+// issue, a constraint written on it - is marked for inView to answer as context (tied), and the
+// rest are answered for addContext to add. A node a tie brings in brings in no tie of its own.
+func (b *issueTreeBuilder) readTies() ([]refs.Target, error) {
+	var viewed []refs.Target
+	for _, target := range b.candidates() {
+		if _, in := b.inView(target); in && b.kept[target] {
+			viewed = append(viewed, target)
+		}
+	}
+	viewed = append(viewed, b.context...)
+	var blocks []string
+	var ties []refs.Target
+	for _, target := range viewed {
+		if target.Kind == refs.BlockNodeKind {
+			blocks = append(blocks, target.ID)
+		}
+		for _, relation := range b.facts[target].Relations {
+			if relation.Kind == graphstore.TupleConstrainedBy && relation.To.Kind == graphstore.KindConstraint && !slices.Contains(ties, relation.To) {
+				ties = append(ties, relation.To)
+			}
+		}
+	}
+	shaping, err := tuplesInto(b.ctx, b.q, refs.TupleShaped, blocks, b.cut)
+	if err != nil {
+		return nil, err
+	}
+	var shapers []refs.Target
+	for _, block := range blocks {
+		for _, from := range shaping[block] {
+			if !slices.Contains(shapers, from) {
+				shapers = append(shapers, from)
+			}
+		}
+	}
+	if err := b.readFacts(shapers); err != nil {
+		return nil, err
+	}
+	for _, shaper := range shapers {
+		decision := shaper.Kind == refs.BlockNodeKind && b.rows[shaper].Supertag == refs.DecisionSupertag
+		answered := shaper.Kind == graphstore.KindAsk && b.facts[shaper].Values[graphstore.TupleAnswerState] == asks.StateAnswered
+		if decision || answered {
+			ties = append(ties, shaper)
+		}
+	}
+	b.tied = map[refs.Target]bool{}
+	var wanted []refs.Target
+	for _, tie := range ties {
+		if entry, held := b.entries[tie]; held && entry.role != treeRoleContext {
+			b.tied[tie] = true
+			continue
+		}
+		wanted = append(wanted, tie)
+	}
+	return wanted, nil
 }
 
 // viewContext is the fixed context of the view beyond what its query takes: on a child issue's
@@ -856,7 +963,7 @@ const requirementBlockType = "requirement"
 
 // readMembers reads, for every node the answer holds, what its own members need from the rows
 // that hold them: each issue's own members, the texts of the items and their blocks, the asks'
-// questions and states, the results' rows and retractions, and the decisions'
+// questions, states and wording, the results' rows and retractions, and the decisions'
 // members through their one builder (decisionread.Decisions).
 func (b *issueTreeBuilder) readMembers() error {
 	answer := b.answered()
@@ -928,12 +1035,16 @@ func (b *issueTreeBuilder) readMembers() error {
 	queueTexts(graphstore.KindComment, `select id::text, body from comments where id = any($1::uuid[])`, comments)
 	queueTexts(graphstore.KindMessage, `select id::text, body from messages where id = any($1::uuid[])`, messages)
 	if len(asks) > 0 {
-		batch.Queue(`select id::text, question, state from asks where id = any($1::uuid[])`, asks).Query(func(rows pgx.Rows) error {
+		batch.Queue(`select id::text, question, state, options, urgency, multiple from asks where id = any($1::uuid[])`, asks).Query(func(rows pgx.Rows) error {
 			for rows.Next() {
 				var id string
 				var ask treeAsk
-				if err := rows.Scan(&id, &ask.question, &ask.state); err != nil {
+				var options []byte
+				if err := rows.Scan(&id, &ask.question, &ask.state, &options, &ask.wording.Urgency, &ask.wording.Multiple); err != nil {
 					return err
+				}
+				if err := json.Unmarshal(options, &ask.wording.Options); err != nil {
+					return fmt.Errorf("decode the options of ask %s: %w", id, err)
 				}
 				b.asks[id] = ask
 				b.texts[refs.Target{Kind: graphstore.KindAsk, ID: id}] = ask.question
@@ -1068,13 +1179,17 @@ func (b *issueTreeBuilder) queryTakes(query string) map[refs.Target]bool {
 }
 
 // inView reports whether the view answers the node a walk or a read of the others took: a node of
-// its query, or of the view's fixed context, each of an issue under the issue read included where
-// the view carries one (readServing, readPlanOrder), on a child issue's spec view its design
-// blocks, and on the verification view the requirements it carries (verificationRequirements).
-func (b *issueTreeBuilder) inView(target refs.Target, taken, requirements map[refs.Target]bool) (string, bool) {
+// its query (taken), or of the view's fixed context, each of an issue under the issue read included
+// where the view carries one (readServing, readPlanOrder), on a child issue's spec view its design
+// blocks, and on the verification view the requirements it carries (requirements); and on the
+// spec and the verification views each node a tie of their nodes brings in (tied, readTies).
+func (b *issueTreeBuilder) inView(target refs.Target) (string, bool) {
 	entry := b.entries[target]
-	if taken[target] {
+	if b.taken[target] {
 		return treeRoleQuery, true
+	}
+	if b.tied[target] {
+		return treeRoleContext, true
 	}
 	switch b.view {
 	case graphstore.QuerySpec:
@@ -1083,7 +1198,7 @@ func (b *issueTreeBuilder) inView(target refs.Target, taken, requirements map[re
 			return treeRoleContext, true
 		}
 	case graphstore.QueryVerification:
-		if entry.walk < 0 && (entry.typ == graphstore.BlockTypeCheck || target.Kind == graphstore.KindResult) || requirements[target] {
+		if entry.walk < 0 && (entry.typ == graphstore.BlockTypeCheck || target.Kind == graphstore.KindResult) || b.requirements[target] {
 			return treeRoleContext, true
 		}
 	case graphstore.QueryPlan:
@@ -1219,13 +1334,9 @@ func (b *issueTreeBuilder) ordered() []refs.Target {
 	if b.view == "" {
 		return order
 	}
-	queryTaken, requirements := b.queryTakes(b.view), map[refs.Target]bool{}
-	if b.view == graphstore.QueryVerification {
-		requirements = b.verificationRequirements()
-	}
 	var viewed []refs.Target
 	for _, target := range order {
-		if role, in := b.inView(target, queryTaken, requirements); in {
+		if role, in := b.inView(target); in {
 			b.entries[target].role = role
 			viewed = append(viewed, target)
 		}
@@ -1427,6 +1538,10 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 		if position, held := b.positions[target]; held {
 			node.Document = &model.IssueTreeDocument{ArtifactID: row.document, Slug: row.slug, Position: position}
 		}
+	}
+	if ask, held := b.asks[target.ID]; held && target.Kind == graphstore.KindAsk {
+		wording := ask.wording
+		node.Ask = &wording
 	}
 	if decision, decided := b.decisions[target]; decided {
 		node.Decision = &decision

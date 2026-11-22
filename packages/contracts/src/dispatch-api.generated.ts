@@ -2088,7 +2088,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One issue's tree as the caller may see it, in the tree's own order, from the scope GET /api/v1/issues/{key} reads in: {issue, view, version, converted, tree, view_of, documents, nodes, tuples, cursor}. With no ?view= it answers every node of the issue's tree but a document, a document version and the prose of a role document - the issue's own node, then each node before its children, ranked siblings by rank and then the rest by when each was made, each tie by the lower id, then each node of the issue whose parent is a node of an issue above - and each child issue, each node of an issue under it placed under one of its nodes, and each check and plan node of an issue under it whose serves names one of its requirements, with each such check's results, read-only and marked with their issue; then, marked as context, each lens_kind and constraint a has_kind or constrained_by of a node it holds names that the tree does not hold, one level out, each interaction a changed_by_run of such a node names, through the caller's visibility, and each decision's decided_by person or session. ?view=spec, verification or plan answers that query's nodes, each role query, and its fixed context, each role context: on a child, the requirements of the issues above that its checks serve and its design blocks; on the verification view, every requirement node of the issue, served or not, so a requirement no check serves is in the answer, and each other requirement a check serves, and on a parent each check of an issue under it serving one of its requirements, with its results; on the plan view, every plan node of the whole tree and each issue as its two halves, each with its position, needs and size from the ordered read, in that one order. ?v= with a view reads the query as of the store revision that version of its query node recorded; a version it holds no such record of is 404 QUERY_VERSION_NOT_FOUND, and v with no view is 400 INVALID_QUERY. Each node: kind and id as the store keys it, block_id, supertag, issue and read_only for a node of another issue, role, parent {kind, id, supertag, first_line, issue}, rank, author, state, visibility, made_at, attributes, text and, for a caller that sent Dispatch-Trees: 1, text_tree, the tree its kind's own read answers; no_conversation where no conversation node stands above it; document {artifact_id, slug, position} on a typed block of a role document; decision, the Decisions read's members, on a decision and an answered ask; result {verdict, retracted, check_version, check_sha256}; check {text_sha256, changed_version}; plan on the plan view; and converted, tree, view_of and documents on an issue. A node the caller may not see is left out, and each node under it stands under the nearest node above it the caller may see, after that node's own children. tuples is every relation between two nodes of the answer, each end named by its kind and id. One page holds at most 12000 nodes; a larger tree answers cursor, the next node, which ?cursor= reads from, and the context on its last page. */
+    /** @description One issue's tree as the caller may see it, in the tree's own order, from the scope GET /api/v1/issues/{key} reads in: {issue, view, version, converted, tree, view_of, documents, nodes, tuples, cursor}. With no ?view= it answers every node of the issue's tree but a document, a document version and the prose of a role document - the issue's own node, then each node before its children, ranked siblings by rank and then the rest by when each was made, each tie by the lower id, then each node of the issue whose parent is a node of an issue above - and each child issue, each node of an issue under it placed under one of its nodes, and each check and plan node of an issue under it whose serves names one of its requirements, with each such check's results, read-only and marked with their issue; then, marked as context, each lens_kind and constraint a has_kind or constrained_by of a node it holds names that the tree does not hold, one level out, each interaction a changed_by_run of such a node names, through the caller's visibility, and each decision's decided_by person or session. ?view=spec, verification, plan or decisions answers that query's nodes, each role query, and its fixed context, each role context: on a child, the requirements of the issues above that its checks serve and its design blocks; on the verification view, every requirement node of the issue, served or not, so a requirement no check serves is in the answer, and each other requirement a check serves, and on a parent each check of an issue under it serving one of its requirements, with its results; on the plan view, every plan node of the whole tree and each issue as its two halves, each with its position, needs and size from the ordered read, in that one order. The decisions view answers each ask of the issue by its own node, each decision and each reading under a decision, keyed and shaped as GET /api/v1/issues/{key}/decisions answers them. The spec and the verification views also answer, as context, each decision and each answered ask whose shaped names one of their nodes and each constraint a constrained_by of one of them names, with those tuples. ?v= with a view reads the query as of the store revision that version of its query node recorded; a version it holds no such record of is 404 QUERY_VERSION_NOT_FOUND, as every version of the decisions query is until that query records one, and v with no view is 400 INVALID_QUERY. Each node: kind and id as the store keys it, block_id, supertag, issue and read_only for a node of another issue, role, parent {kind, id, supertag, first_line, issue}, rank, author, state, visibility, made_at, attributes, text and, for a caller that sent Dispatch-Trees: 1, text_tree, the tree its kind's own read answers; no_conversation where no conversation node stands above it; document {artifact_id, slug, position} on a typed block of a role document; ask {options, urgency, multiple} on an ask, its question its text; decision, the Decisions read's members, on a decision and an answered ask; result {verdict, retracted, check_version, check_sha256}; check {text_sha256, changed_version}; plan on the plan view; and converted, tree, view_of and documents on an issue. A node the caller may not see is left out, and each node under it stands under the nearest node above it the caller may see, after that node's own children. tuples is every relation between two nodes of the answer, each end named by its kind and id. One page holds at most 12000 nodes; a larger tree answers cursor, the next node, which ?cursor= reads from, and the context on its last page. */
     get: operations["getApiV1IssuesByKeyTree"];
     put?: never;
     post?: never;
@@ -5977,6 +5977,11 @@ export interface components {
       offset: number;
       total: number;
     };
+    IssueTreeAsk: {
+      multiple: boolean;
+      options: components["schemas"]["AskOption"][] | null;
+      urgency: string;
+    };
     IssueTreeCheck: {
       changed_version: number;
       text_sha256: string;
@@ -6002,6 +6007,7 @@ export interface components {
       kind: string;
     };
     IssueTreeNode: {
+      ask?: components["schemas"]["IssueTreeAsk"];
       attributes: {
         [key: string]: string;
       } | null;
@@ -12953,7 +12959,7 @@ export interface operations {
   getApiV1IssuesByKeyTree: {
     parameters: {
       query?: {
-        view?: "spec" | "verification" | "plan";
+        view?: "spec" | "verification" | "plan" | "decisions";
         v?: number;
         cursor?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -16435,6 +16441,7 @@ export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput
 export type IssueSteps = components["schemas"]["IssueSteps"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
+export type IssueTreeAsk = components["schemas"]["IssueTreeAsk"];
 export type IssueTreeCheck = components["schemas"]["IssueTreeCheck"];
 export type IssueTreeDocument = components["schemas"]["IssueTreeDocument"];
 export type IssueTreeDocuments = components["schemas"]["IssueTreeDocuments"];
