@@ -56,7 +56,7 @@
 // Almost every assertion is a read of GET /legion/v1/state or of the operator's claim listing.
 // What neither shows is what the proof reads from the daemon's own store: the tester's phases row,
 // for the fence's own input, whether the entry the row stands on was raised by a move back, and
-// for what a refusal must leave unwritten there, the verdict and the handoff commit of the
+// for what a refusal must leave unwritten there, the handoff record and commit of the
 // completion it refused, or, once step 5's completion stands on that row, that completion
 // unchanged; and in step 6 the tester's completions the daemon recorded as processed
 // (processed_events), which a refusal before the fact adds none to.
@@ -265,8 +265,8 @@ func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 		r.key, r.entry, got.PullRequest.Head)
 }
 
-// Step 3. A behind completion at a head the record has left is refused. The tester reports from
-// its own turn its verdict on the head its entry tested, which is the head before the
+// Step 3. A behind completion at a head the record has left is refused. The tester completes from
+// its own turn at the head its entry tested, which is the head before the
 // implementer's push: the daemon refuses it 409 HANDOFF_STALE_ENTRY, the refusal names that head
 // and the head the record holds, nothing is recorded, and the issue stays in testing.
 func (r *behindEntryFenceLive) staleHeadRefused() {
@@ -383,7 +383,7 @@ func (r *behindEntryFenceLive) behindAfterABackwardMove() {
 // refused is the tester's behind completion at commit, from the turn of its first entry, refused:
 // 409 HANDOFF_STALE_ENTRY, its text naming the entries, saying each of says and that nothing was
 // recorded; the issue still in testing on the entry it stood on; and the tester's phases row
-// holding no verdict and no handoff commit, since a refusal before the fact records nothing.
+// holding no handoff record and no handoff commit, since a refusal before the fact records nothing.
 func (r *behindEntryFenceLive) refused(commit string, says ...string) {
 	t := r.t
 	t.Helper()

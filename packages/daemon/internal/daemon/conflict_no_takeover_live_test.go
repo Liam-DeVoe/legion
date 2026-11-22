@@ -382,7 +382,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 // (record.MergeForwardLanded). The tester's turn is still the one its step 1 assignment began. Its
 // completion at h1, the head the merge replaced, naming a handoff record of its own, is refused
 // 409 HANDOFF_HEAD_MERGED_FORWARD and records nothing: the issue stays in testing and the tester's
-// phases row holds no verdict and no commit. Its completion at h2, naming another record of its
+// phases row holds no record and no commit. Its completion at h2, naming another record of its
 // own, is taken, and moves the issue to reviewing.
 func (r *conflictNoTakeoverLive) mergeLands() {
 	t := r.t
