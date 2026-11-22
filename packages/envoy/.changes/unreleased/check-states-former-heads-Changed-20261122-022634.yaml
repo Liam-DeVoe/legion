@@ -39,12 +39,22 @@ body: |-
     issue leaves it to that claim; the answer, positive or negative, is applied by one statement
     and no other path (`pull_request_former_heads_answer`), which under the pull request's lock
     gives the claim back by its token and applies only where the claim is still live, the pull
-    request's generation and its snapshot of heads and base branches are as the claim read them,
-    and each candidate keeps the incarnation read (`pull_request_former_heads.incarnation`, drawn
-    anew at each change of the row), so an answer about a claim that ran out or was taken over, an
-    ended lifecycle, a moved head or a replaced candidate applies nothing and the candidates are
-    read again; a verification's log line counts its HTTP requests apart from its pages
-    (`requests`), and each settle's line its verifications and their requests; so
+    request's generation and its snapshot of heads, base branches and base revisions are as the
+    claim read them, and each candidate keeps the incarnation read
+    (`pull_request_former_heads.incarnation`, drawn anew at each change of the row), so an answer
+    about a claim that ran out or was taken over, an ended lifecycle, a moved head, a base revision
+    stored anew or a replaced candidate applies nothing and the candidates are read again, with
+    the obligation that asked for the read kept; the base revision is the commit the base branch
+    was at when the pull request was last read, which every writer of `pull_request_heads` now
+    stores beside the branch's name (`pull_request_heads.base_sha`, migration `20261122071000`,
+    from GitHub's `base.sha` in a read of the pull request and from the listener's new `base_sha`
+    field of the `pull_request` envelope), since a base branch moves with no change of its name;
+    a row with none, written before this release or by an envelope without the field, names it
+    unknown, so an answer claimed then applies while it stays unknown and a write that stores one
+    refuses it; and where GitHub's list of the commits is capped, each comparison of a verification
+    is made against the head and base revisions its one read of the pull request names, never
+    against the base branch's name; a verification's log line counts its HTTP requests apart from
+    its pages (`requests`), and each settle's line its verifications and their requests; so
     a head left before the release where a result was recorded publishes its states,
     and one with no result is not known and needs none. A result recorded later at a commit that is
     no head of such a pull request and no head it is known to have left is a candidate too: an

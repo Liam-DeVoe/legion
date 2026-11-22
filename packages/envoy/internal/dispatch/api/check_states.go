@@ -457,10 +457,11 @@ const formerHeadsReadClaim = time.Minute
 // requests. unverified is true where a read GitHub did not answer left a candidate undecided;
 // pending where another settle's claim holds a pull request's read, or where an answer applied
 // nothing because what it was read about moved before it was applied (a claim run out or taken
-// over, a lifecycle ended, a head or a base branch moved, a candidate replaced), so a later read
-// decides those candidates. verifications counts the logical reads, one for each pull request
-// whose candidates were read, and requests the requests to GitHub those reads sent: a read of
-// several pages, a page asked again or a comparison is one verification and several requests.
+// over, a lifecycle ended, a head or a base revision stored anew, a candidate replaced), so a
+// later read decides those candidates. verifications counts the logical reads, one for each pull
+// request whose candidates were read, and requests the requests to GitHub those reads sent: a
+// read of several pages, a page asked again or a comparison is one verification and several
+// requests.
 type formerHeadsReads struct {
 	unverified, pending     bool
 	verifications, requests int
@@ -475,33 +476,39 @@ type formerHeadsReads struct {
 // asks GitHub which of them are the pull request's own commits, once
 // (delivery.PullRequestMembership: the pull request's list of commits, and where GitHub's cap of
 // 250 leaves that list short, a comparison of each commit it does not name with the head and the
-// base branch), and applies the answer. Only an answer GitHub gave about a commit decides it: a
-// commit no read answered for, whether a deployment with no App key, a repository the App cannot
-// read, a 404 that says nothing alone, a 5xx or a bound that ended withheld the answer, stays as it
-// is, unverified answers true, and the settle keeps a mark that reads it again after the backoff,
-// so the read comes again once access or configuration returns. Until then a candidate is no
-// former head. Only a failed read of Dispatch's own database is an error.
+// base branch's revision one read of the pull request names), and applies the answer. Only an
+// answer GitHub gave about a commit decides it: a commit no read answered for, whether a
+// deployment with no App key, a repository the App cannot read, a 404 that says nothing alone, a
+// 5xx or a bound that ended withheld the answer, stays as it is, unverified answers true, and the
+// settle keeps a mark that reads it again after the backoff, so the read comes again once access
+// or configuration returns. Until then a candidate is no former head. Only a failed read of
+// Dispatch's own database is an error.
 //
 // The read is made once per pull request, whichever issue's settle makes it: an issue's lease
 // serializes the settles of one issue, and a pull request moves between issues. So a settle first
 // claims the pull request's read, keyed by its identity, which is the same under every issue and
 // every name (pull_request_former_heads_claim), and the claim answers what the read is about: the
-// claim's token, the pull request's generation, a snapshot of its open rows' heads and base
-// branches, and each candidate with its incarnation, read after the claim, since a settle that held
-// the claim before may have decided some since. A claim another settle holds leaves the candidates
-// to that settle: pending answers true, and the settle keeps a mark due after the backoff with no
-// failure counted, which reads them again should that settle stop before it decides them. A claim
-// is taken over once formerHeadsReadClaim has passed, so a process that stopped mid-read holds no
-// pull request for long. The read goes by the name of the pull request's row formerHeadsHeld
-// picks, its canonical name where it has one, which is GitHub's route to it.
+// claim's token, the pull request's generation, a snapshot of its open rows' heads, base branches
+// and the base revisions Dispatch stores for them (pull_request_heads.base_sha, unknown where a
+// row holds none), and each candidate with its incarnation, read after the claim, since a settle
+// that held the claim before may have decided some since. A claim another settle holds leaves the
+// candidates to that settle: pending answers true, and the settle keeps a mark due after the
+// backoff with no failure counted, which reads them again should that settle stop before it
+// decides them. A claim is taken over once formerHeadsReadClaim has passed, so a process that
+// stopped mid-read holds no pull request for long. The read goes by the name of the pull
+// request's row formerHeadsHeld picks, its canonical name where it has one, which is GitHub's
+// route to it.
 //
 // Every answer, positive or negative, is applied by one statement, pull_request_former_heads_answer,
 // and no other path changes a candidate: it brings back everything the claim answered, gives the
 // claim back by its token, and applies only where that claim is still live, the generation and the
 // snapshot are still the pull request's, and each candidate still has the incarnation read; any
 // other answer applies nothing, and pending answers true, so a later settle reads the candidates
-// again. Where a candidate became a former head and the pull request now belongs to another issue
-// than the one settling, it marks that issue owed, so its settle publishes there.
+// again, and publish keeps the obligation that asked for the read. The base branch can move with
+// no change of its name, so an answer read before a write stored the base branch's new revision is
+// about another pull request than the one now stored, whichever way it answered, and applies
+// nothing. Where a candidate became a former head and the pull request now belongs to another
+// issue than the one settling, it marks that issue owed, so its settle publishes there.
 func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (formerHeadsReads, error) {
 	var reads formerHeadsReads
 	pool := c.server.deps.Store.Pool

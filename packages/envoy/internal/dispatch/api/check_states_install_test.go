@@ -174,10 +174,10 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 // install seeded H1, the 251st, where the tester recorded k1 passing; a commit of the base branch,
 // which the head holds too; a commit the head does not hold; a commit the repository does not
 // hold; and a commit whose comparison GitHub fails. The list leaves out what it cannot hold, so
-// what it does not list is decided by comparisons with the head and the base branch #70's own read
-// names: H1 is kept and k1 is published yes there, the three commits outside #70 are dropped, and
-// the one GitHub did not answer for stays a candidate, unverified, with a mark that reads it again
-// after the backoff.
+// what it does not list is decided by comparisons with the head and with the commit #70's own
+// read names its base branch at (base.sha, never the branch's name, which can move): H1 is kept
+// and k1 is published yes there, the three commits outside #70 are dropped, and the one GitHub did
+// not answer for stays a candidate, unverified, with a mark that reads it again after the backoff.
 func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
 	commits := make([]string, 252)
@@ -192,11 +192,11 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	rig.github.setPullCommits(70, commits...)
-	rig.github.setPull(70, h2, "main")
+	rig.github.setPull(70, h2, "main", ciJobBaseSHA)
 	rig.github.setCompare(h2, h1, ciJobCompare{status: "behind"})
-	rig.github.setCompare("main", h1, ciJobCompare{status: "ahead"})
+	rig.github.setCompare(ciJobBaseSHA, h1, ciJobCompare{status: "ahead"})
 	rig.github.setCompare(h2, onBase, ciJobCompare{status: "behind"})
-	rig.github.setCompare("main", onBase, ciJobCompare{status: "behind"})
+	rig.github.setCompare(ciJobBaseSHA, onBase, ciJobCompare{status: "behind"})
 	rig.github.setCompare(h2, absent, ciJobCompare{failed: http.StatusNotFound})
 	rig.github.setAbsentCommit(absent)
 	rig.github.setCompare(h2, unanswered, ciJobCompare{failed: http.StatusBadGateway})
@@ -214,14 +214,14 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 	if pages != 3 || pulls != 1 {
 		t.Fatalf("the settle read %d pages of #70's commits and #70 itself %d times, want 3 pages (100, 100 and 50) and #70 once", pages, pulls)
 	}
-	for _, pair := range [][2]string{{h2, h1}, {"main", h1}, {h2, onBase}, {"main", onBase}, {h2, apart}, {h2, absent}, {h2, unanswered}} {
+	for _, pair := range [][2]string{{h2, h1}, {ciJobBaseSHA, h1}, {h2, onBase}, {ciJobBaseSHA, onBase}, {h2, apart}, {h2, absent}, {h2, unanswered}} {
 		if reads := rig.github.compareReadsOf(pair[0], pair[1]); reads != 1 {
 			t.Fatalf("the comparison %s...%s was read %d times, want once", pair[0][:6], pair[1][:6], reads)
 		}
 	}
-	for _, pair := range [][2]string{{"main", apart}, {"main", absent}, {"main", unanswered}} {
+	for _, pair := range [][2]string{{ciJobBaseSHA, apart}, {ciJobBaseSHA, absent}, {ciJobBaseSHA, unanswered}, {"main", h1}, {"main", onBase}} {
 		if reads := rig.github.compareReadsOf(pair[0], pair[1]); reads != 0 {
-			t.Fatalf("the comparison %s...%s was read %d times, want none: the head's comparison already decided it", pair[0], pair[1][:6], reads)
+			t.Fatalf("the comparison %s...%s was read %d times, want none: the head's comparison already decided it, and no comparison names the base branch by its name", pair[0], pair[1][:6], reads)
 		}
 	}
 	var later int

@@ -9,7 +9,12 @@ body: |-
     Envoy's test writes them, for the Legion daemon's test of the testing move. The description of
     `POST /api/v1/issues/{key}/handoffs/{phase}` says a `test` handoff also waits until each former
     head not read since its issue's last change has been read; regenerated in
-    `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`.
+    `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`. The shared GitHub goldens
+    of a pull request (`fixtures/github-envelopes/pull-request-opened.json`,
+    `pull-request-opened-dotted-repository.json`, `pull-request-synchronize.json`,
+    `pull-request-closed-merged.json`) carry `base_sha`, the commit the base branch was at when
+    GitHub sent the event, which the Envoy listener now sends beside `base_ref`; a consumer that
+    reads neither is unchanged.
 time: 2026-11-22T02:26:34Z
 custom:
     Issue: check-states-former-heads

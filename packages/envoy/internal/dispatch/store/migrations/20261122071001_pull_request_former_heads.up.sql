@@ -97,13 +97,15 @@
 -- pull_request_former_heads_answer, and through no other path. The claim
 -- (pull_request_former_heads_claim) answers what the read is about: the claim's token, the pull
 -- request's generation, a snapshot of its open rows (pull_request_former_heads_snapshot: each row's
--- name, number, head and base branch), and each candidate with its incarnation. The answer brings
--- all of them back with each member and each commit shown outside, and, under the pull request's
--- lock, applies only where the claim with that token is still live, the generation and the
--- snapshot are still the pull request's, and each candidate still has the incarnation the read saw;
--- a positive answer marks it verified, a negative one deletes it. Any other answer, about a claim
--- that ran out or was taken over, about a lifecycle that ended, about heads or a base branch since
--- moved, or about a candidate since replaced, applies nothing, and its candidates are read again.
+-- name, number, head, base branch and the revision of the base branch the row was last read at),
+-- and each candidate with its incarnation. The answer brings all of them back with each member and
+-- each commit shown outside, and, under the pull request's lock, applies only where the claim with
+-- that token is still live, the generation and the snapshot are still the pull request's, and each
+-- candidate still has the incarnation the read saw; a positive answer marks it verified, a
+-- negative one deletes it. Any other answer, about a claim that ran out or was taken over, about a
+-- lifecycle that ended, about a head or a base revision since stored anew, or about a candidate
+-- since replaced, applies nothing, and its candidates are read again: a base branch moves with no
+-- change of its name, so the snapshot names its revision, not the name alone.
 --
 -- pull_request_former_heads_keep() records each insert of a row, open, closed or merged, each
 -- update that moves a row's key, head or state while it is or becomes open, and each delete, by an
@@ -602,11 +604,16 @@ begin
 end $$;
 
 -- The snapshot of the pull request of an identity that GitHub's answer about its commits depends
--- on: each open row of it, by name and number, with its head and its base branch, in one order.
--- It reads only.
+-- on: each open row of it, by name and number, with its head, its base branch and the commit the
+-- base branch was at when the row was last read (pull_request_heads.base_sha, migration
+-- 20261122071000), in one order. The base branch can move with no change of its name, and the
+-- answer is about one base revision, so the snapshot names the revision, and "unknown" where the
+-- row holds none: an answer claimed while it is unknown applies while it stays unknown, and a write
+-- that stores a revision refuses it, so a row of a release before this one neither applies an
+-- answer across a stored change nor waits for one for ever. It reads only.
 create function pull_request_former_heads_snapshot(integer) returns text language sql stable as $$
-  select coalesce(string_agg(lower(head.repo) || '#' || head.number || '@' || head.head_sha || ' onto ' || head.base_ref,
-    ', ' order by lower(head.repo), head.number), '')
+  select coalesce(string_agg(lower(head.repo) || '#' || head.number || '@' || head.head_sha || ' onto ' || head.base_ref
+    || ' at ' || coalesce(head.base_sha, 'unknown'), ', ' order by lower(head.repo), head.number), '')
   from pull_request_heads head
   join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
   where alias.pull = $1 and head.state = 'open'

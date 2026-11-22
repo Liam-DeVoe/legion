@@ -828,10 +828,12 @@ type CommitMembership struct {
 // the list names is a member. The list is whole only where it ended on a page that was not full
 // and names fewer than pullRequestCommitsListed commits, GitHub's cap; then a commit it does not
 // name is outside. Where the list is not whole, a commit it does not name is decided by GitHub's
-// comparisons, which have no such cap, against the head and the base branch one read of the pull
-// request names (GET /repos/{owner}/{repo}/pulls/{number}): the comparison with the head says
+// comparisons, which have no such cap, against the head and the base branch's revision that one
+// read of the pull request names (GET /repos/{owner}/{repo}/pulls/{number}, its head.sha and
+// base.sha), each comparison of the verification against those two commits and never against the
+// base branch's name, which can move between two comparisons: the comparison with the head says
 // whether the head holds the commit (githubapp.Client.CommitOnBranch); a commit the head does not
-// hold is outside, and else the comparison with the base branch decides: held there, outside,
+// hold is outside, and else the comparison with the base revision decides: held there, outside,
 // since the head holds every commit of its base, such as an earlier merged pull request's head;
 // not held there, a member. A comparison GitHub answers 403 or 404 for says nothing alone, since
 // 404 is also its answer for a commit the repository does not have: the commit is then read
@@ -840,8 +842,8 @@ type CommitMembership struct {
 //
 // Every other failure of a read leaves each commit that read would have decided in Unknown, and
 // the first such failure is the error; the commits other reads decided keep their answers. A
-// failed read of the list or of the pull request leaves every commit it would have decided
-// unknown.
+// failed read of the list or of the pull request, or a read of the pull request that names no
+// base revision, leaves every commit it would have decided unknown.
 func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFull string, number int, candidates []string) (CommitMembership, error) {
 	var answer CommitMembership
 	owner, repo, err := refs.SplitGitHubRepo(repoFull)
@@ -886,6 +888,10 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 		answer.Unknown = append(answer.Unknown, unlisted...)
 		return answer, err
 	}
+	if pull.Head.SHA == "" || pull.Base.SHA == "" {
+		answer.Unknown = append(answer.Unknown, unlisted...)
+		return answer, fmt.Errorf("the read of %s#%d names no head or base revision to compare its commits with", repoFull, number)
+	}
 	var failed error
 	for _, sha := range unlisted {
 		answer.Compares++
@@ -907,11 +913,11 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 			continue
 		}
 		answer.Compares++
-		onBase, err := client.CommitOnBranch(ctx, current, owner, repo, pull.Base.Ref, sha)
+		onBase, err := client.CommitOnBranch(ctx, current, owner, repo, pull.Base.SHA, sha)
 		switch {
 		case err != nil:
 			answer.Unknown = append(answer.Unknown, sha)
-			failed = cmp.Or(failed, fmt.Errorf("compare %s with the base branch of %s#%d: %w", sha, repoFull, number, err))
+			failed = cmp.Or(failed, fmt.Errorf("compare %s with the base revision %s of %s#%d: %w", sha, pull.Base.SHA, repoFull, number, err))
 		case onBase:
 			answer.Outside = append(answer.Outside, sha)
 		default:

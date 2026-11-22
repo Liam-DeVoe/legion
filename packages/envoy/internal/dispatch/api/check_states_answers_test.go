@@ -219,9 +219,9 @@ func TestAVerificationIsCountedApartFromTheRequestsItSent(t *testing.T) {
 	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	rig.github.setPullCommits(70, commits...)
-	rig.github.setPull(70, h2, "main")
+	rig.github.setPull(70, h2, "main", ciJobBaseSHA)
 	rig.github.setCompare(h2, h1, ciJobCompare{status: "behind"})
-	rig.github.setCompare("main", h1, ciJobCompare{status: "ahead"})
+	rig.github.setCompare(ciJobBaseSHA, h1, ciJobCompare{status: "ahead"})
 	rig.github.failPullCommitsPageOnce(2, 502)
 	seedInstallCandidates(t, rig, h1)
 	before := len(records.Records())
@@ -229,7 +229,7 @@ func TestAVerificationIsCountedApartFromTheRequestsItSent(t *testing.T) {
 	if got := stateAt(t, rig, rig.issue, h1, "k1"); got != model.PassStandsYes {
 		t.Fatalf("k1 at the 251st commit is published %q, want yes: this test holds nothing", got)
 	}
-	sent := rig.github.pullCommitReadsOf(70) + rig.github.pullReadsOf(70) + rig.github.compareReadsOf(h2, h1) + rig.github.compareReadsOf("main", h1)
+	sent := rig.github.pullCommitReadsOf(70) + rig.github.pullReadsOf(70) + rig.github.compareReadsOf(h2, h1) + rig.github.compareReadsOf(ciJobBaseSHA, h1)
 	if sent != 7 {
 		t.Fatalf("GitHub was asked %d times about #70's commits, want 7: four pages, one of them twice, #70 itself and two comparisons", sent)
 	}

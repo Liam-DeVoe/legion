@@ -92,8 +92,9 @@ type ciJobGitHub struct {
 	pullCommitsHold      map[int]*ciJobHeldRead
 	pullCommitsAnswered  map[int][]*ciJobHeldRead
 	pullCommitsPageFails map[int]int
-	// pulls is GitHub's answer for each pull request itself, by number: its head commit and its
-	// base branch. A pull request it holds none for is 404. pullReads counts those reads.
+	// pulls is GitHub's answer for each pull request itself, by number: its head commit, its base
+	// branch and the commit that branch is at. A pull request it holds none for is 404. pullReads
+	// counts those reads.
 	pulls     map[int]ciJobPull
 	pullReads map[int]int
 	// compares is GitHub's answer for the comparison of two commits or branches, by
@@ -109,10 +110,15 @@ type ciJobGitHub struct {
 // pullCommitsListed is the most commits GitHub lists for one pull request, however many it has.
 const pullCommitsListed = 250
 
-// ciJobPull is GitHub's answer for one pull request: its head commit and its base branch.
+// ciJobPull is GitHub's answer for one pull request: its head commit, its base branch and the
+// commit the base branch is at (base.sha).
 type ciJobPull struct {
-	head, base string
+	head, base, baseSHA string
 }
+
+// ciJobBaseSHA is the commit the base branch of a pull request the fake GitHub answers is at,
+// where a test names no other.
+const ciJobBaseSHA = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
 
 // ciJobCompare is GitHub's answer for one comparison: its status (behind, identical, ahead,
 // diverged), or failed, the HTTP status of a read that failed.
@@ -127,11 +133,11 @@ type ciJobHeldRead struct {
 	entered, release chan struct{}
 }
 
-// setPull has GitHub answer pull request number at head, based on base.
-func (g *ciJobGitHub) setPull(number int, head, base string) {
+// setPull has GitHub answer pull request number at head, based on base, whose head is baseSHA.
+func (g *ciJobGitHub) setPull(number int, head, base, baseSHA string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.pulls[number] = ciJobPull{head: head, base: base}
+	g.pulls[number] = ciJobPull{head: head, base: base, baseSHA: baseSHA}
 }
 
 // setCompare has GitHub answer answer for the comparison of base and head.
@@ -373,7 +379,7 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 		body, _ := json.Marshal(map[string]any{
 			"number": number, "state": "open",
 			"head": map[string]any{"sha": pull.head, "ref": "legion/work", "repo": map[string]any{"full_name": repo}},
-			"base": map[string]any{"ref": pull.base},
+			"base": map[string]any{"ref": pull.base, "sha": pull.baseSHA},
 		})
 		_, _ = w.Write(body)
 	})

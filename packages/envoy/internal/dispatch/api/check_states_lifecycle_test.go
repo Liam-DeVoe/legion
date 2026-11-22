@@ -116,8 +116,8 @@ func TestAnAcceptedFormerHeadLastsUntilTheClose(t *testing.T) {
 
 	rig.github.setPullCommits(70, eachHeadH3)
 	upsertHead(t, rig, 70, eachHeadH3, rig.issue, "A change")
-	rig.github.setPull(70, eachHeadH3, "main")
-	rig.github.setCompare("main", eachHeadH1, ciJobCompare{status: "behind"})
+	rig.github.setPull(70, eachHeadH3, "main", ciJobBaseSHA)
+	rig.github.setCompare(ciJobBaseSHA, eachHeadH1, ciJobCompare{status: "behind"})
 	settleOwed(t, rig)
 	if got := stateAt(t, rig, rig.issue, eachHeadH1, "k1"); got != model.PassStandsYes {
 		t.Fatalf("after a force-push and a base branch that took H1, k1 at H1 is published %q, want yes still", got)
