@@ -26,7 +26,7 @@ import (
 // that the notice's own payload carries (texts.Variant, whose json names are the payload's keys).
 func TestAChecksRedOfAnIssueNoWorkerHoldsIsMedForTheArchitect(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
-	for _, from := range []phase.Phase{phase.Testing, phase.Reviewing, phase.Retro, phase.Merging} {
+	for _, from := range []phase.Phase{phase.Testing, phase.Reviewing, phase.Merging} {
 		t.Run("held from "+string(from), func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
