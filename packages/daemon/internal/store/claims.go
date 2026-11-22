@@ -321,6 +321,15 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 	return queued, nil
 }
 
+// capabilityStates is supervise.CapabilityStates as the text array upsertClaim's crossings read.
+var capabilityStates = func() []string {
+	states := make([]string, len(supervise.CapabilityStates))
+	for i, state := range supervise.CapabilityStates {
+		states[i] = string(state)
+	}
+	return states
+}()
+
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
 // that can queue no publication.
 //
@@ -351,6 +360,13 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// published_since and unpublished_since are taken from SQL the same way, each on its own crossing
+// alone: the write that moves the claim into a state in which the daemon publishes its session as
+// its role's holder (supervise.CapabilityStates) stamps published_since, an insert in such a state
+// included, and the write that moves it out of one stamps unpublished_since. Every other write
+// leaves both where they stand, so a session's write in Dispatch can be judged at the time Dispatch
+// recorded it (record.Store.RoleHoldersAt).
 func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -427,11 +443,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
-		retired_at_write_mark, launch_tree, issue_epoch, holds_gate)
+		retired_at_write_mark, launch_tree, issue_epoch, holds_gate, published_since)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59,
-		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, $60, $61, $62)
+		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, $60, $61, $62,
+		case when $11 = any($63::text[]) then now() end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		launch_tree = excluded.launch_tree, issue_epoch = excluded.issue_epoch, holds_gate = excluded.holds_gate,
@@ -447,6 +464,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		-- retired and left alone by every other write (this function's doc).
 		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
 			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
+		-- The times the claim last entered and left the states its session is published in,
+		-- each taken on its own crossing alone (this function's doc).
+		published_since = case when excluded.state = any($63::text[]) and claims.state <> all($63::text[])
+			then now() else claims.published_since end,
+		unpublished_since = case when excluded.state <> all($63::text[]) and claims.state = any($63::text[])
+			then now() else claims.unpublished_since end,
 		serving_generation = excluded.serving_generation,
 		given_entry = excluded.given_entry,
 		served_entry = excluded.served_entry,
@@ -519,7 +542,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
-		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate,
+		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate, capabilityStates,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)

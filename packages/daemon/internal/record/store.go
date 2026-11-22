@@ -2468,23 +2468,54 @@ type RoleHolder struct {
 // or of one no claim holds. The names are the supervise package's one rule, read here rather than
 // spelled again in SQL, and the holds of an issue's few claims are read in one statement.
 func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
+	held, err := heldRoleSessions(ctx, tx, issue, true)
+	if err != nil {
+		return nil, err
+	}
+	holders := make([]RoleHolder, 0, len(held))
+	for _, h := range held {
+		holders = append(holders, h.RoleHolder)
+	}
+	if len(holders) == 0 {
+		return nil, nil
+	}
+	return holders, nil
+}
+
+// RoleHoldersAt is each claim of issue, in any state, that records a session it holds by
+// LiveRoleHolders' rule, with its state and the times it last entered and left the states in
+// which the daemon publishes its session (RoleHolderAt.PublishedAt says whether it was published
+// at a moment).
+func (s *Postgres) RoleHoldersAt(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolderAt, error) {
+	return heldRoleSessions(ctx, tx, issue, false)
+}
+
+// heldRoleSessions is each claim of issue that records a session it holds (LiveRoleHolders' rule),
+// by role, with its state and its crossing times: of the claims in liveClaimStates alone where
+// live, and of every claim otherwise.
+func heldRoleSessions(ctx context.Context, tx pgx.Tx, issue string, live bool) ([]RoleHolderAt, error) {
 	type candidate struct {
 		token, project, file string
-		holder               RoleHolder
+		holder               RoleHolderAt
 	}
-	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file from claims c
-		where c.issue = $1 and c.session <> '' and c.state = any($2)
-		order by c.role`, issue, liveClaimStates)
+	var states []string
+	if live {
+		states = liveClaimStates
+	}
+	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file, c.state, c.published_since, c.unpublished_since
+		from claims c where c.issue = $1 and c.session <> '' and ($2::text[] is null or c.state = any($2))
+		order by c.role`, issue, states)
 	if err != nil {
-		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+		return nil, fmt.Errorf("read the role holders of %s: %w", issue, err)
 	}
 	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
 		var c candidate
-		err := row.Scan(&c.token, &c.project, &c.holder.Role, &c.holder.Session, &c.file)
+		err := row.Scan(&c.token, &c.project, &c.holder.Role, &c.holder.Session, &c.file, &c.holder.State,
+			&c.holder.PublishedSince, &c.holder.UnpublishedSince)
 		return c, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+		return nil, fmt.Errorf("read the role holders of %s: %w", issue, err)
 	}
 	var claims, projects, kinds, names []string
 	for _, c := range candidates {
@@ -2499,13 +2530,13 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 				on h.project = want.project and h.kind = want.kind and h.name = want.name and h.claim = want.claim`,
 			claims, projects, kinds, names)
 		if err != nil {
-			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+			return nil, fmt.Errorf("read the holds of %s's role holders: %w", issue, err)
 		}
 		for rows.Next() {
 			var token, kind, name string
 			if err := rows.Scan(&token, &kind, &name); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+				return nil, fmt.Errorf("read the holds of %s's role holders: %w", issue, err)
 			}
 			if held[token] == nil {
 				held[token] = map[supervise.Hold]bool{}
@@ -2513,10 +2544,10 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 			held[token][supervise.Hold{Kind: supervise.HoldKind(kind), Name: name}] = true
 		}
 		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+			return nil, fmt.Errorf("read the holds of %s's role holders: %w", issue, err)
 		}
 	}
-	var holders []RoleHolder
+	var holders []RoleHolderAt
 	for _, c := range candidates {
 		names := supervise.RecordedHolds(c.holder.Session, c.file)
 		if len(supervise.UnholdableNames(c.holder.Session, c.file)) > 0 || len(names) == 0 {
@@ -2531,6 +2562,68 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 		}
 	}
 	return holders, nil
+}
+
+// RoleHolderAt is one claim of an issue that records a session it holds (Store.RoleHoldersAt):
+// its role and session, its state now, and the times it last entered and left the states in which
+// the daemon publishes its session as its role's holder (claims.published_since and
+// unpublished_since, which internal/store's upsertClaim stamps on each crossing; nil where no
+// crossing stamped one, as on every claim the release before left).
+type RoleHolderAt struct {
+	RoleHolder
+	State                            supervise.ClaimState
+	PublishedSince, UnpublishedSince *time.Time
+}
+
+// PublishedAt says whether the daemon published the claim's session as its role's holder at at,
+// the moment Dispatch recorded a write of that session, as Dispatch judges the write against the
+// holders published then (decision 24 of dispatch://INFRA-4730). convertedAt is when the
+// project's first boot on this release finished its conversion (TreeConversion.ConvertedAt), nil
+// where none is recorded.
+//
+// A claim published now was published at at where it entered no later than at, or where at comes
+// before its last leave, so at fell before a leave and a re-entry; a nil PublishedSince is a claim
+// published since before this release stamped any entry, published at every at. A claim not
+// published now was published at at only where at comes before its last leave and it entered no
+// later than at, so one that entered and left both after at was not. One whose crossings are both
+// nil has crossed nothing since this release began stamping them: it was published at at only
+// where at comes before the conversion, when the release before still ran it, and not at all where
+// no conversion is recorded.
+//
+// The rule is exact across one leave and one re-entry between at and the moment the write is
+// judged, which the consumer's lag bounds; it cannot place a write in a claim's history of several
+// such cycles in that span, such as one written between an earlier leave and an earlier re-entry,
+// which it reads by the last crossings alone. A claim that left between at and the conversion,
+// under the release before, which stamps nothing, and came back after it reads as published since
+// after at, and its write is set back. The crossings are stamped with the database's transaction
+// time and at is Dispatch's clock, so a write within the skew of the two clocks of a crossing can
+// be placed on the wrong side of it (NearCrossing).
+func (h RoleHolderAt) PublishedAt(at time.Time, convertedAt *time.Time) bool {
+	enteredBy := h.PublishedSince == nil || !h.PublishedSince.After(at)
+	beforeLeave := h.UnpublishedSince != nil && at.Before(*h.UnpublishedSince)
+	switch {
+	case supervise.HoldsCapability(h.State):
+		return enteredBy || beforeLeave
+	case h.PublishedSince == nil && h.UnpublishedSince == nil:
+		return convertedAt != nil && at.Before(*convertedAt)
+	}
+	return beforeLeave && enteredBy
+}
+
+// NearCrossing is the crossing of the claim's that stands within within of at, the later of the
+// two where both do, and whether one does: a write judged that near a crossing may be judged on the
+// wrong side of it, by the skew between Dispatch's clock and the database's (PublishedAt).
+func (h RoleHolderAt) NearCrossing(at time.Time, within time.Duration) (time.Time, bool) {
+	var near time.Time
+	for _, crossing := range []*time.Time{h.PublishedSince, h.UnpublishedSince} {
+		if crossing == nil {
+			continue
+		}
+		if gap := crossing.Sub(at); gap <= within && gap >= -within && crossing.After(near) {
+			near = *crossing
+		}
+	}
+	return near, !near.IsZero()
 }
 
 // SessionHeld reports whether claim_sessions holds, for token in project, every name its record

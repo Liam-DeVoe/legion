@@ -461,6 +461,65 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 	}
 }
 
+// The upgrade stamps no claim's crossings (decision 24 of dispatch://INFRA-4730): the migration
+// adds published_since and unpublished_since null with no backfill, and no step of the first boot's
+// conversion writes either, so every claim the release before left, in each state and a working one
+// among them, reads both null after it, and the repair judges such a claim against the time the
+// conversion ended (record.RoleHolderAt.PublishedAt). The store is migrated to the schema of the
+// release before (every migration but this release's two), seeded with the claim of a root of its
+// own in each state, migrated, and converted as the daemon boots, through its last step. Negative
+// control, run when this was written, failing this test and then reverted: with the conversion's
+// last step stamping published_since on every claim in a published state, the claims registered,
+// ready, working and idle read it set.
+func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
+	ctx := context.Background()
+	st, _ := storeWithholding(t, "legion_claim_crossings", 20261120091044, 20261120095128)
+	states := []string{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
+		"suspended", "failed", "retired"}
+	board := &copyBoard{}
+	for i, state := range states {
+		key := fmt.Sprintf("CAPTURE-%d", i+1)
+		if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+			repo, default_branch, github_repo) values ($1, $1, 'CAPTURE', $1, 'implementing', 1, 'in_progress', $1, 1, 'acme/widgets', 'main', 'acme/widgets')`,
+			key); err != nil {
+			t.Fatalf("record %s on the release before's schema: %v", key, err)
+		}
+		if _, err := st.Pool().Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority) values ('capture', $1, 1, 'workflow')`, key); err != nil {
+			t.Fatalf("open the tree lifecycle of %s: %v", key, err)
+		}
+		seedConversionClaim(t, st.Pool(), key, claim.RoleImplementer, key, state, "")
+		board.listing = append(board.listing, conversionSummary(key, "in_progress", 3, ""))
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate to this release: %v", err)
+	}
+	w := copyRuntime(t, st.Pool(), board, 3)
+	w.projectID = "capture"
+	w.now = func() time.Time { return time.Date(2031, 5, 1, 0, 0, 0, 0, time.UTC) }
+	if err := bootConversionStoppedAt(ctx, w, convertRecord); !errors.Is(err, errStoppedAfterStep) {
+		t.Fatalf("the boot that converts the store ended with %v, want it to reach the last step", err)
+	}
+	if got := conversionDump(t, st.Pool())["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 10 t"}) {
+		t.Fatalf("the conversion is recorded as %q, want its last step and when it ended", got)
+	}
+	rows, err := st.Pool().Query(ctx, `select concat_ws(' ', state, published_since is null, unpublished_since is null) from claims
+		where project = 'capture' order by state`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, state := range slices.Sorted(slices.Values(states)) {
+		want = append(want, state+" t t")
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the claims read %q after the upgrade (state, published_since null, unpublished_since null), want %q: no crossing stamped", got, want)
+	}
+}
+
 // errStoppedAfterStep is what the test's hook stops a boot with after the step it names.
 var errStoppedAfterStep = errors.New("the test stopped the boot after a step of its conversion")
 

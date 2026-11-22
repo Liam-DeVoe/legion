@@ -353,11 +353,14 @@ type Issue struct {
 }
 
 // HeldSessionWrite is one status write of a session the repair holds (Issue.HeldSessionWrites):
-// the session the Dispatch event names, the status it wrote, and the event's Dispatch sequence.
+// the session the Dispatch event names, the status it wrote, the event's Dispatch sequence, and
+// when Dispatch recorded it (intake.DispatchIssue.At), zero where the event carried no time, at
+// which the judgment reads the role holders the daemon had published (RoleHolderAt.PublishedAt).
 type HeldSessionWrite struct {
-	Session string `json:"session"`
-	Status  string `json:"status"`
-	Seq     int64  `json:"seq"`
+	Session string    `json:"session"`
+	Status  string    `json:"status"`
+	Seq     int64     `json:"seq"`
+	At      time.Time `json:"at,omitzero"`
 }
 
 // PendingClose is one close of an issue the daemon queued: the run (Generation) and the phase
@@ -2555,6 +2558,11 @@ type Store interface {
 	// LiveRoleHolders is the session of each live claim of issue, by role, that the claim holds
 	// (claim_sessions holds every name of it for that claim): the set a role-holder publication sends.
 	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
+	// RoleHoldersAt is each claim of issue, in any state, whose session it holds by
+	// LiveRoleHolders' rule, with its state and the times it last entered and left the states its
+	// session is published in, so a write in Dispatch is judged by the holders published when
+	// Dispatch recorded it (RoleHolderAt.PublishedAt).
+	RoleHoldersAt(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolderAt, error)
 	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
 	// changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)

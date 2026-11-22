@@ -20,7 +20,15 @@
 -- claim's issue stored, for the release before (supervise.Claim.LaunchTree, decision 13 of
 -- dispatch://INFRA-4730). issue_epoch is the epoch of the claim's issue's own lifecycle it bound
 -- to, and holds_gate whether the claim's issue held its own gate at its last launch
--- (supervise.Claim.IssueEpoch, HoldsGate).
+-- (supervise.Claim.IssueEpoch, HoldsGate). published_since is when the claim last entered a state
+-- in which the daemon publishes its session as its role's holder (registered, ready, working or
+-- idle: supervise.CapabilityStates), and unpublished_since when it last left one; internal/store's
+-- upsertClaim writes each on that crossing alone, and the repair reads them to judge a session's
+-- write at the time Dispatch recorded it (record.RoleHolderAt.PublishedAt, decision 24 of
+-- dispatch://INFRA-4730). Both are nullable with no default, so the release before's own claim
+-- writes, which name neither, still insert and update. This migration stamps no claim and the
+-- first boot's conversion writes neither, so a claim no crossing has stamped reads null, which
+-- the repair reads against the conversion's time (tree_conversions.converted_at).
 --
 -- The issue lifecycle. issue_lifecycles is the admission and cleanup barrier of one issue, column
 -- for column what tree_lifecycles is for a tree (0033_tree_lifecycle), keyed by the normalized
@@ -92,7 +100,10 @@
 -- its own rule; a write on a child by a session with no claim of the issue's tree, which the
 -- release before takes as a person's move and which that session or a person makes again; and a
 -- write on an issue out of the workflow that the release before would have set back, which stays
--- on the board. It deletes the project's record of the conversion, which clears the state's
+-- on the board. It clears each of the project's claims' crossing times (published_since and
+-- unpublished_since), which the release before neither reads nor writes, so a later upgrade reads
+-- no crossing stamped before the rollback as a crossing after it. It deletes the project's record
+-- of the conversion, which clears the state's
 -- daemon.convertedAt, so the next boot on this release converts what the release before wrote in
 -- between. Last it prints each issue that has a claim not retired with the tree it stores: a
 -- Sandbox whose legion.dev/tree label differs from that tree is relabelled with it before the
@@ -160,6 +171,9 @@
 --     and ((phase <> 'done' and status not in ('triage', 'icebox', 'backlog', 'done'))
 --       or (phase = 'awaiting_person' and (awaiting_ask is not null or awaiting_gate_version is not null) and key = tree and linger_until is null));
 -- update issues set held_session_writes = '[]'::jsonb where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb;
+-- -- The crossing times of the claims of one project, which the release before does not keep.
+-- update claims set published_since = null, unpublished_since = null
+--   where split_part(issue, '-', 1) = '<PROJECT>' and (published_since is not null or unpublished_since is not null);
 -- -- The record of the conversion of one project.
 -- delete from tree_conversions where project = '<PROJECT>';
 -- -- Each issue of one project with a claim not retired, and the tree it stores, for the relabel of its Sandbox.
@@ -176,7 +190,9 @@ alter table issues
 alter table claims
     add column launch_tree text not null default '',
     add column issue_epoch bigint not null default 0 check (issue_epoch >= 0),
-    add column holds_gate boolean not null default false;
+    add column holds_gate boolean not null default false,
+    add column published_since timestamptz,
+    add column unpublished_since timestamptz;
 
 create table issue_lifecycles (
     project text not null,

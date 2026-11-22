@@ -211,6 +211,20 @@ func (r *ownerRig) write(key, status, session string) intake.DispatchIssue {
 // the whole issue, as Dispatch sends one: the record's title, rank and parent, with status.
 func (r *ownerRig) writeAt(key, status, session string, seq int64) intake.DispatchIssue {
 	r.t.Helper()
+	return r.writeEvent(key, status, session, seq, time.Time{})
+}
+
+// writtenAt applies session's write of status on key as the next Dispatch event of key, which
+// Dispatch recorded at at (intake.DispatchIssue.At), and returns it.
+func (r *ownerRig) writtenAt(key, status, session string, at time.Time) intake.DispatchIssue {
+	r.t.Helper()
+	return r.writeEvent(key, status, session, issue(r.t, r.pool, key).LastDispatchSeq+1, at)
+}
+
+// writeEvent applies session's write of status on key as the Dispatch event at seq, recorded at
+// at, zero for an event that carries no time.
+func (r *ownerRig) writeEvent(key, status, session string, seq int64, at time.Time) intake.DispatchIssue {
+	r.t.Helper()
 	recorded := issue(r.t, r.pool, key)
 	r.before[key] = recorded.Phase
 	kind := "issue.updated"
@@ -219,7 +233,7 @@ func (r *ownerRig) writeAt(key, status, session string, seq int64) intake.Dispat
 	}
 	fact := intake.DispatchIssue{Key: key, ResolvedRepo: recorded.Repo, Seq: seq, Type: kind, Status: status,
 		Title: recorded.Title, Rank: recorded.Rank, Parent: deref(recorded.Parent), HandedOver: recorded.HandedOver,
-		ActorSession: session}
+		ActorSession: session, At: at}
 	r.applyEvent(fmt.Sprintf("%s-%d-%s-by-%q", key, seq, status, session), fact)
 	return fact
 }
@@ -287,6 +301,29 @@ func (r *ownerRig) setClaimState(issue string, role claim.Role, state supervise.
 	if _, err := r.pool.Exec(context.Background(), `update claims set state = $3 where issue = $1 and role = $2`, issue, string(role), string(state)); err != nil {
 		r.t.Fatalf("set the %s claim of %s to %s: %v", role, issue, state, err)
 	}
+}
+
+// setClaimCrossings moves the claim of role on issue to state with the times it last entered and
+// left the published states (claims.published_since, unpublished_since; nil for a time no crossing
+// stamped), as the store's claim writes would have stamped them.
+func (r *ownerRig) setClaimCrossings(issue string, role claim.Role, state supervise.ClaimState, published, unpublished *time.Time) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(context.Background(), `update claims set state = $3, published_since = $4, unpublished_since = $5
+		where issue = $1 and role = $2`, issue, string(role), string(state), published, unpublished); err != nil {
+		r.t.Fatalf("set the %s claim of %s to %s with its crossings: %v", role, issue, state, err)
+	}
+}
+
+// convertedAt records that the project's first boot on this release finished its conversion at at
+// (tree_conversions, its last step, 10), the time the repair judges a claim against where no
+// crossing has stamped it (record.RoleHolderAt.PublishedAt).
+func (r *ownerRig) convertedAt(at time.Time) {
+	r.t.Helper()
+	inTx(r.t, r.pool, func(tx pgx.Tx) {
+		if err := record.RecordTreeConversionStep(context.Background(), tx, testProject, 10, &at); err != nil {
+			r.t.Fatal(err)
+		}
+	})
 }
 
 // noticeOwner is the issue whose architect hears a notice of kind about key: the owner walk the
@@ -458,30 +495,27 @@ func TestTheOwningArchitectsBacklogIceboxOrTriageOnAChildSuspendsItsClaims(t *te
 }
 
 // A sub-architect is the architect of an issue above the issues under its own, so its done on one
-// of them stands while its claim is one the daemon publishes as its role's holder, working or idle
-// between turns alike (record.Store.LiveRoleHolders). A sub-architect whose own claim is suspended
-// holds no role Dispatch is told of, so its done is set back, as Dispatch refuses it once R26's
-// refusal is on (decision 24 of dispatch://INFRA-4730).
+// of them stands while its claim was one the daemon published as its role's holder when Dispatch
+// recorded the write, working or idle between turns alike (record.RoleHolderAt.PublishedAt). That
+// holds of a sub-architect whose own claim is suspended after it wrote, since Dispatch judges the
+// write by the holders published then (decision 24 of dispatch://INFRA-4730).
 func TestASubArchitectsDoneOnAnIssueUnderItsOwnStands(t *testing.T) {
+	at := fixedNow.Add(-time.Hour)
+	entered, left := at.Add(-time.Hour), at.Add(5*time.Minute)
 	for _, tc := range []struct {
-		name   string
-		state  supervise.ClaimState
-		stands bool
+		name                   string
+		state                  supervise.ClaimState
+		published, unpublished *time.Time
 	}{
-		{name: "its claim working", state: supervise.StateWorking, stands: true},
-		{name: "its claim idle", state: supervise.StateIdle, stands: true},
-		{name: "its own claim suspended", state: supervise.StateSuspended},
+		{name: "its claim working", state: supervise.StateWorking, published: &entered},
+		{name: "its claim idle", state: supervise.StateIdle, published: &entered},
+		{name: "its own claim suspended after it wrote", state: supervise.StateSuspended, published: &entered, unpublished: &left},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := seedOwnerTree(t, nil)
-			rig.setClaimState(ownerChild, claim.RoleArchitect, tc.state)
-			before := issue(t, rig.pool, ownerGrandchild)
-			fact := rig.write(ownerGrandchild, record.DoneStatus, childArchitect)
-			if tc.stands {
-				rig.assertLeft(ownerGrandchild, record.DoneStatus)
-				return
-			}
-			rig.assertSetBack(before, record.DoneStatus, fact)
+			rig.setClaimCrossings(ownerChild, claim.RoleArchitect, tc.state, tc.published, tc.unpublished)
+			rig.writtenAt(ownerGrandchild, record.DoneStatus, childArchitect, at)
+			rig.assertLeft(ownerGrandchild, record.DoneStatus)
 		})
 	}
 }
@@ -922,15 +956,19 @@ const (
 )
 
 // The repair takes a session's done, backlog, icebox or triage as a person's move where the session
-// holds a claim the daemon publishes as a role holder (registered, ready, working or idle, its
-// session held: record.Store.LiveRoleHolders) as the architect of an issue above the written issue
-// on its Dispatch chain, the parent's and the grandparent's alike, whether or not the written issue
-// or the issues above it are in Legion's work, so that architect's backlog and then done ends at
-// done (decision 24 of dispatch://INFRA-4730, INFRA-3178's R3). It reads the chain the copy of
-// Dispatch holds, never the tree an issue's record stores, so the architect above a child moved
-// under it in Dispatch takes it whatever tree the child was first recorded under. It sets back the
-// write of the issue's own architect, of a sibling's architect, of another role of the parent and
-// of an architect whose claim is suspended or failed, as every other write of an agent of the tree.
+// held a claim the daemon published as a role holder (registered, ready, working or idle, its
+// session held) when Dispatch recorded the write (record.RoleHolderAt.PublishedAt), as the
+// architect of an issue above the written issue on its Dispatch chain, the parent's and the
+// grandparent's alike, whether or not the written issue or the issues above it are in Legion's
+// work, so that architect's backlog and then done ends at done (decision 24 of
+// dispatch://INFRA-4730, INFRA-3178's R3). It reads the chain the copy of Dispatch holds, never the
+// tree an issue's record stores, so the architect above a child moved under it in Dispatch takes it
+// whatever tree the child was first recorded under. It sets back the write of the issue's own
+// architect, of a sibling's architect, of another role of the parent and of an architect whose
+// claim was suspended or failed when the write was made, as every other write of an agent of the
+// tree. A claim no crossing has stamped since this release began is published at any time where it
+// is published now; where it is not, it was published only before the project's conversion
+// (tree_conversions.converted_at), and never where no conversion is recorded.
 //
 // A write on an issue whose chain is unknown is held (record.Issue.HeldSessionWrites), and so is
 // each later session write, until the chain is known; then the list is judged in Dispatch's order,
@@ -945,24 +983,90 @@ const (
 // repair taking the architect's write only while the written issue is in Legion's work, "an issue
 // out of Legion's work: the architect's backlog and then done" ends at backlog; with it reading the
 // issue's stored tree (issues.tree) instead of the Dispatch chain, the architect above the moved
-// child is set back.
+// child is set back; with every claim whose published_since is null judged by the conversion's
+// time, the claim published since before this release and released after the write is set back;
+// with that judgment made of a claim published now too, the working claim written after the
+// conversion is set back; and with a claim no crossing stamped never published, the suspended
+// claim written before the conversion is set back.
 func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
+	// The claim is judged as it stood when Dispatch recorded the write (intake.DispatchIssue.At),
+	// by the times it last entered and left the published states, whatever state it stands in
+	// when the write is applied.
+	at := fixedNow.Add(-time.Hour)
+	before, after := func(d time.Duration) *time.Time { v := at.Add(-d); return &v }, func(d time.Duration) *time.Time { v := at.Add(d); return &v }
 	for _, tc := range []struct {
-		state  supervise.ClaimState
-		stands bool
+		state                  supervise.ClaimState
+		published, unpublished *time.Time
+		stands                 bool
 	}{
-		{state: supervise.StateRegistered, stands: true},
-		{state: supervise.StateReady, stands: true},
-		{state: supervise.StateWorking, stands: true},
-		{state: supervise.StateIdle, stands: true},
-		{state: supervise.StateSuspended},
-		{state: supervise.StateFailed},
+		{state: supervise.StateRegistered, published: before(time.Hour), stands: true},
+		{state: supervise.StateReady, published: before(time.Hour), stands: true},
+		{state: supervise.StateWorking, published: before(time.Hour), stands: true},
+		{state: supervise.StateIdle, published: before(time.Hour), stands: true},
+		{state: supervise.StateSuspended, published: before(time.Hour), unpublished: before(5 * time.Minute)},
+		{state: supervise.StateFailed, published: before(time.Hour), unpublished: before(5 * time.Minute)},
 	} {
 		t.Run("the parent's architect, its claim "+string(tc.state), func(t *testing.T) {
 			rig := seedOwnerTree(t, nil)
-			rig.setClaimState(ownerRoot, claim.RoleArchitect, tc.state)
+			rig.setClaimCrossings(ownerRoot, claim.RoleArchitect, tc.state, tc.published, tc.unpublished)
 			before := issue(t, rig.pool, ownerChild)
-			fact := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+			fact := rig.writtenAt(ownerChild, record.DoneStatus, rootArchitect, at)
+			if tc.stands {
+				rig.assertLeft(ownerChild, record.DoneStatus)
+				return
+			}
+			rig.assertSetBack(before, record.DoneStatus, fact)
+		})
+	}
+	for _, tc := range []struct {
+		name                   string
+		state                  supervise.ClaimState
+		published, unpublished *time.Time
+		// converted is when the project's conversion ended, nil where none is recorded.
+		converted *time.Time
+		// untimed is a write whose event carries no Dispatch time, judged by the claim as it
+		// stands when the write is applied.
+		untimed bool
+		stands  bool
+	}{
+		{name: "written before its idle release and applied after it", state: supervise.StateSuspended,
+			published: before(time.Hour), unpublished: after(5 * time.Minute), stands: true},
+		{name: "published since before this release, written before its idle release and after the conversion", state: supervise.StateSuspended,
+			unpublished: after(5 * time.Minute), converted: before(2 * time.Hour), stands: true},
+		{name: "written after its idle release", state: supervise.StateSuspended,
+			published: before(time.Hour), unpublished: before(5 * time.Minute)},
+		{name: "left its published states after the write and back before it is applied", state: supervise.StateWorking,
+			published: after(10 * time.Minute), unpublished: after(5 * time.Minute), stands: true},
+		{name: "entered and left its published states both after the write", state: supervise.StateSuspended,
+			published: after(5 * time.Minute), unpublished: after(10 * time.Minute)},
+		{name: "not published when the write was made, registered before it is applied", state: supervise.StateRegistered,
+			published: after(5 * time.Minute)},
+		{name: "left its published states before the write, registered again before it is applied", state: supervise.StateRegistered,
+			published: after(5 * time.Minute), unpublished: before(10 * time.Minute)},
+		{name: "a write with no Dispatch time, released before it is applied", state: supervise.StateSuspended,
+			published: before(time.Hour), unpublished: after(5 * time.Minute), untimed: true},
+		{name: "working with no crossing stamped, written before the conversion", state: supervise.StateWorking,
+			converted: after(5 * time.Minute), stands: true},
+		{name: "working with no crossing stamped, written after the conversion", state: supervise.StateWorking,
+			converted: before(5 * time.Minute), stands: true},
+		{name: "suspended with no crossing stamped, written before the conversion", state: supervise.StateSuspended,
+			converted: after(5 * time.Minute), stands: true},
+		{name: "suspended with no crossing stamped, written after the conversion", state: supervise.StateSuspended,
+			converted: before(5 * time.Minute)},
+		{name: "suspended with no crossing stamped and no conversion recorded", state: supervise.StateSuspended},
+	} {
+		t.Run("the parent's architect, "+tc.name, func(t *testing.T) {
+			rig := seedOwnerTree(t, nil)
+			rig.setClaimCrossings(ownerRoot, claim.RoleArchitect, tc.state, tc.published, tc.unpublished)
+			if tc.converted != nil {
+				rig.convertedAt(*tc.converted)
+			}
+			before := issue(t, rig.pool, ownerChild)
+			writtenAt := at
+			if tc.untimed {
+				writtenAt = time.Time{}
+			}
+			fact := rig.writtenAt(ownerChild, record.DoneStatus, rootArchitect, writtenAt)
 			if tc.stands {
 				rig.assertLeft(ownerChild, record.DoneStatus)
 				return
@@ -1102,6 +1206,16 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 		rig.findChainTop()
 		rig.judgeHeld(ownerChild)
 		rig.assertJudged(ownerChild, record.DoneStatus, record.ReassertStatusWrite(record.DoneStatus, before.Status, done.Seq))
+	})
+	t.Run("held on an unknown chain: the architect above's done written before its idle release, judged after it", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		done := rig.writtenAt(ownerChild, record.DoneStatus, rootArchitect, at)
+		rig.assertHeld(ownerChild, record.HeldSessionWrite{Session: rootArchitect, Status: record.DoneStatus, Seq: done.Seq, At: at})
+		rig.setClaimCrossings(ownerRoot, claim.RoleArchitect, supervise.StateSuspended, before(time.Hour), after(5*time.Minute))
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, record.DoneStatus)
 	})
 }
 

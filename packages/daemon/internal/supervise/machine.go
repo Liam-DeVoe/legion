@@ -4377,14 +4377,15 @@ func StoredClaim(c Claim) Claim {
 	return c
 }
 
+// CapabilityStates are the claim states of a registered agent with a running process
+// (HoldsCapability), the one list of them: the states in which the daemon publishes a claim's
+// session as its role's holder, which the store reads in SQL (record.Store.LiveRoleHolders, the
+// times internal/store's putClaim writes when a claim enters or leaves them).
+var CapabilityStates = []ClaimState{StateRegistered, StateReady, StateWorking, StateIdle}
+
 // HoldsCapability says whether a claim in state has a registered agent with a running process.
 func HoldsCapability(state ClaimState) bool {
-	switch state {
-	case StateRegistered, StateReady, StateWorking, StateIdle:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(CapabilityStates, state)
 }
 
 // SaidReady is whether a claim in state has an agent that said it can be prompted: ready, working

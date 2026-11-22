@@ -212,21 +212,22 @@ var chainRows = []chainRow{
 			{opRegister, "INFRA-9011", "GATE_ROOT_ONLY"}}},
 	// C in work under B, its own architect failed. R18: a failed claim does not hold its role, so
 	// its notices go to the nearest architect above it in Legion's work that does, B's. R26's
-	// repair: B's architect, released for being idle, holds no claim the daemon publishes as a role
-	// holder (suspended, record.Store.LiveRoleHolders), so its backlog on C is set back as an agent
-	// of C's gate root's (decision 24 of dispatch://INFRA-4730).
+	// repair: B's architect wrote its backlog on C while its claim was published, before its idle
+	// release (seed's writtenAt), so the repair, judging the write by the holders published when
+	// Dispatch recorded it, takes it as the move of the architect above (decision 24 of
+	// dispatch://INFRA-4730), though the claim is released by the time the write is applied.
 	{key: "INFRA-9012", shape: "C in work under B, its architect failed",
 		parent: "INFRA-9011", status: "testing", phase: phase.Testing, tree: "INFRA-9010", slot: true, architect: failedClaim,
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: heldPlace(record.HeldAwaitingChildren, "INFRA-9013"),
-		repairs: map[string]string{"INFRA-9011": setBack, "INFRA-9012": setBack, outsideWriter: personsMove},
+		repairs: map[string]string{"INFRA-9011": personsMove, "INFRA-9012": setBack, outsideWriter: personsMove},
 		calls:   []chainCall{{opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	// D at todo under C. R19: an issue under a parent in Legion's work starts on todo, whatever its
 	// label, once every gate above it is open (A's is). R18: C's architect failed, so B's. R26's
-	// repair: B's released architect's backlog is set back, as on C.
+	// repair: B's architect's backlog, written before its idle release, is taken, as on C.
 	{key: "INFRA-9013", shape: "D at todo under C, three deep",
 		parent: "INFRA-9012", status: "todo", phase: phase.Admitted, tree: "INFRA-9010",
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: placeActive, starts: true,
-		repairs: map[string]string{"INFRA-9011": setBack, outsideWriter: personsMove},
+		repairs: map[string]string{"INFRA-9011": personsMove, outsideWriter: personsMove},
 		calls:   []chainCall{{opRelease, "INFRA-9011", taken}, {opRelease, "INFRA-9012", taken}}},
 
 	// An issue at work under a parent on the backlog under an issue in work: the state R24
@@ -822,6 +823,10 @@ type chainDaemon struct {
 	grants   *credential.Grants
 	restore  string
 	tokens   map[claim.Token]string
+	// writtenAt is when Dispatch recorded each session write the table makes: after every live
+	// claim of the fixture was written, and before a claim released for being idle was released
+	// (seed).
+	writtenAt time.Time
 }
 
 // newChainDaemon is the daemon of project over a store seeded with the fixture's rows of that
@@ -967,6 +972,12 @@ insert into step_starts_rollback (issue, tree, taken_at)
 		}
 		epochs[row.key] = lifecycle.Epoch
 	}
+	// A claim released for being idle is written live first and released after the moment every
+	// session write the table makes is written at (writtenAt), as an architect's write is made
+	// while it holds its role and its idle release follows: the release's write stamps the
+	// claim's leave of the published states (claims.unpublished_since) after that moment, so the
+	// repair judges the write by the holders published when Dispatch recorded it.
+	var released []supervise.Claim
 	for _, row := range d.rows {
 		if row.architect == "" {
 			continue
@@ -980,7 +991,7 @@ insert into step_starts_rollback (issue, tree, taken_at)
 		case suspendedByOperator:
 			c.State, c.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByOperator
 		case releasedForIdle:
-			c.State, c.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+			released = append(released, c)
 		}
 		if err := d.st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("seed the architect claim of %s: %v", row.key, err)
@@ -989,6 +1000,13 @@ insert into step_starts_rollback (issue, tree, taken_at)
 		// one the daemon publishes as its role's holder (record.Store.LiveRoleHolders).
 		if _, err := d.st.HoldSessions(ctx, token, c.Token, supervise.RecordedHolds(c.Session, c.SessionFile)); err != nil {
 			t.Fatalf("hold the session of the architect claim of %s: %v", row.key, err)
+		}
+	}
+	d.writtenAt = time.Now().UTC()
+	for _, c := range released {
+		c.State, c.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+		if err := d.st.PutClaim(ctx, c); err != nil {
+			t.Fatalf("release the architect claim of %s for being idle: %v", c.Issue, err)
 		}
 	}
 }
@@ -1063,7 +1081,8 @@ func (d *chainDaemon) repairs(answer func(key, label, value string)) {
 				labels = []string{dispatch.LegionLabel}
 			}
 			fact := intake.DispatchIssue{Key: row.key, Seq: chainSeq + 1, Type: "issue.updated", Status: "backlog", Title: row.key, Parent: row.parent,
-				Rank: rankOf(row.key), HandedOver: row.labelled, Labels: labels, ActorSession: sessionOf(writer), ResolvedRepo: chainRepo, Blockers: row.blockedBy}
+				Rank: rankOf(row.key), HandedOver: row.labelled, Labels: labels, ActorSession: sessionOf(writer), ResolvedRepo: chainRepo, Blockers: row.blockedBy,
+				At: d.writtenAt}
 			answer(row.key, repairLabel(writer), d.undone(func(tx pgx.Tx) string {
 				if _, err := intake.ApplyFact(ctx, rolledBack{tx}, "chain-decisions", "repair:"+row.key+":"+writer, fact, d.handlers...); err != nil {
 					return "the fact failed: " + err.Error()

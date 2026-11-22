@@ -18,7 +18,7 @@ import (
 const issueFactsVersion = 20261120095128
 
 // 20261120095128 gives each issue its own facts (dispatch://INFRA-4730): six columns of issues,
-// three of claims, two of outbox, the issue lifecycle and the conversion's record, and the outbox
+// five of claims, two of outbox, the issue lifecycle and the conversion's record, and the outbox
 // kind retention_end. Before it the claims table has no issue_epoch and the outbox refuses a
 // retention_end row, which are the negative controls read first.
 //
@@ -138,6 +138,10 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 		if err := store.CheckLaunch(ctx, c); err != nil {
 			t.Errorf("launch check of %s after the migration: %v", c.Token, err)
 		}
+	}
+	var stamped int
+	if err := store.Pool().QueryRow(ctx, `select count(*) from claims where published_since is not null or unpublished_since is not null`).Scan(&stamped); err != nil || stamped != 0 {
+		t.Fatalf("claims written before the migration stamped with a crossing = %d, %v; want none: no crossing has been written yet", stamped, err)
 	}
 
 	var issue *record.Issue

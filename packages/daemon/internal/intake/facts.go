@@ -55,7 +55,12 @@ type DispatchIssue struct {
 	// daemon's own status write from a user or an untyped actor: the event of a write the daemon
 	// made is the daemon talking to itself, which moves no issue (workflow's dispatchIssue).
 	ActorSession string
-	DaemonActor  bool
+	// At is when Dispatch recorded the event (its envelope's created_at), zero for a fact no event
+	// carries a time for. The repair judges a session's write by the role holders the daemon had
+	// published at this moment, as Dispatch judged it, rather than when the consumer applies it
+	// (workflow's architectAbovesMove, record.RoleHolderAt.PublishedAt).
+	At          time.Time
+	DaemonActor bool
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
 	// own, else its nearest ancestor's, else its project's default; empty when it resolves to none.
 	// The workflow takes it when it first records the issue, and never after.

@@ -272,19 +272,19 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "Dispatch issue created",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.created",
 			file:    "dispatch/issue-created.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}, At: mark(1, "2026-09-23T00:46:14.704977Z").At},
 		},
 		{
 			name:    "Dispatch issue updated",
 			subject: "notifications.dispatch.issue.CAPTURE-3.issue.updated",
 			file:    "dispatch/issue-updated.json",
-			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, At: mark(2, "2026-09-23T00:45:37.517455Z").At},
 		},
 		{
 			name:    "Dispatch issue closed",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.closed",
 			file:    "dispatch/issue-closed.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, At: mark(6, "2026-09-23T00:46:30.649108Z").At},
 		},
 		{
 			name:    "Dispatch artifact version",
@@ -642,7 +642,8 @@ func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t
 	if err != nil {
 		t.Fatalf("decode of an event without resolved_repo = %v, want it decoded", err)
 	}
-	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{}}
+	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{},
+		At: time.Date(2026, 9, 23, 0, 45, 37, 517455000, time.UTC)}
 	if !reflect.DeepEqual(decoded.Fact, want) {
 		t.Fatalf("fact = %#v, want %#v", decoded.Fact, want)
 	}
@@ -1812,6 +1813,35 @@ func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	}
 	if issue, ok := daemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "" || !issue.DaemonActor {
 		t.Fatalf("fact = %#v, want the daemon's own actor", daemon.Fact)
+	}
+}
+
+// An issue event carries the time Dispatch recorded it (its envelope's created_at) onto the fact
+// (DispatchIssue.At), so the repair judges a session's write by the role holders the daemon had
+// published then, as Dispatch judged it, however late the consumer applies it.
+func TestAnIssueEventCarriesItsDispatchTime(t *testing.T) {
+	data, err := os.ReadFile("testdata/dispatch/issue-updated.json")
+	if err != nil {
+		t.Fatalf("read captured issue.updated envelope: %v", err)
+	}
+	var envelope struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("decode captured envelope: %v", err)
+	}
+	var event struct {
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &event); err != nil || event.CreatedAt.IsZero() {
+		t.Fatalf("the captured event's created_at = %v, %v; want a time: this test proves nothing", event.CreatedAt, err)
+	}
+	got, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, data)
+	if err != nil {
+		t.Fatalf("decode the captured event: %v", err)
+	}
+	if issue, ok := got.Fact.(DispatchIssue); !ok || !issue.At.Equal(event.CreatedAt) {
+		t.Fatalf("fact = %#v, want it at %s, the time Dispatch recorded the event", got.Fact, event.CreatedAt)
 	}
 }
 

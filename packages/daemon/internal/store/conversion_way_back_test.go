@@ -130,8 +130,10 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 // rows are what that release's own re-admission would have written; LEGION's record of the
 // conversion is gone; one reassert status write in the release before's shape sets back the held
 // writes of the record in the workflow that Dispatch shows at another status, at the last held
-// write's sequence, no row is queued for any other, and every held list of LEGION is empty; and
-// OTHER's rows, record and held writes stand as they were.
+// write's sequence, no row is queued for any other, and every held list of LEGION is empty; the
+// crossing times of LEGION's claims (published_since, unpublished_since) are cleared, so a later
+// upgrade reads none stamped before the rollback; and OTHER's rows, record, held writes and claim
+// crossings stand as they were.
 //
 // What this cannot show is the earlier daemon running, whose binary is not here (its decode is
 // the copy above), and the relabel of a Sandbox, which the block's last statement prints the
@@ -175,9 +177,15 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		exec("seed the claim "+string(token), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, tree_epoch, launch_tree)
-			values ($1, 'legion', $2, $3, $4, 1, '', '', 'working', 0, 0, 0, 0, 1, $3)`, string(token), root, c.issue, string(c.role))
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, tree_epoch, launch_tree, published_since, unpublished_since)
+			values ($1, 'legion', $2, $3, $4, 1, '', '', 'working', 0, 0, 0, 0, 1, $3, now() - interval '1 hour', now() - interval '2 hours')`,
+			string(token), root, c.issue, string(c.role))
 	}
+	// Another project's claim keeps the crossings its own daemon stamped.
+	exec("seed OTHER's claim", `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, tree_epoch, launch_tree, published_since, unpublished_since)
+		values ('other-other-other-7-architect', 'other', $1, $1, 'architect', 1, '', '', 'working', 0, 0, 0, 0, 1, $1,
+			now() - interval '1 hour', now() - interval '2 hours')`, other)
 	for _, project := range []string{"LEGION", "OTHER"} {
 		exec("record the conversion of "+project, `insert into tree_conversions (project, step, converted_at) values ($1, 10, now())`, project)
 	}
@@ -361,10 +369,16 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		[]string{"LEGION-1 1 workflow false", "LEGION-2 1 workflow false", "LEGION-3 1 workflow false"}; !slices.Equal(lifecycles, want) {
 		t.Errorf("the tree lifecycles read %q after the way back, want %q: one open for each converted root", lifecycles, want)
 	}
-	if claims, want := rowsAsText(t, store, `select token || ' ' || tree || ' ' || tree_epoch from claims order by token`), []string{
+	if claims, want := rowsAsText(t, store, `select token || ' ' || tree || ' ' || tree_epoch from claims where project = 'legion' order by token`), []string{
 		"legion-legion-legion-1-architect LEGION-1 1", "legion-legion-legion-2-architect LEGION-2 1", "legion-legion-legion-2-implementer LEGION-2 1",
 	}; !slices.Equal(claims, want) {
 		t.Errorf("the claims read %q after the way back, want %q: each claim of a converted root names its tree, bound to its epoch", claims, want)
+	}
+	if crossed, want := rowsAsText(t, store, `select token || ' ' || (published_since is not null) || ' ' || (unpublished_since is not null) from claims order by token`), []string{
+		"legion-legion-legion-1-architect false false", "legion-legion-legion-2-architect false false", "legion-legion-legion-2-implementer false false",
+		"other-other-other-7-architect true true",
+	}; !slices.Equal(crossed, want) {
+		t.Errorf("the claims' crossings read %q after the way back, want %q: LEGION's cleared, so a later upgrade reads no crossing stamped before the rollback, and OTHER's as its daemon stamped them", crossed, want)
 	}
 	if conversions, want := rowsAsText(t, store, `select project from tree_conversions order by project`), []string{"OTHER"}; !slices.Equal(conversions, want) {
 		t.Errorf("the conversions recorded after the way back are %q, want %q: LEGION's goes, which clears its daemon.convertedAt", conversions, want)
