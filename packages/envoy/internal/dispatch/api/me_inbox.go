@@ -236,6 +236,14 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 	if request.limit, request.offset, err = parseLimitOffset(query); err != nil {
 		return meInboxRequest{}, err
 	}
+	// The Dismissed view is a pile that only grows, so its read answers one page at a time: with
+	// no limit it answers myRepliesDismissedPage entries, as GET /api/v1/me/replies does, and the
+	// arms are cut to that page before the walk (meInboxDismissedCut). A limit above it is refused
+	// by its key above, as it is in every state.
+	if request.limit == nil && request.state == myRepliesStateDismissed {
+		page := myRepliesDismissedPage
+		request.limit = &page
+	}
 	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
 		cursor, err := parseMeInboxCursor(raw, request.state)
 		if err != nil {
@@ -1524,8 +1532,9 @@ func meInboxPageRows(shape meInboxShape) string {
 // project (meInboxVisible) here, the owner in the fragment the cut ends - so no row the page would
 // answer lies past a row the cut took and the page dropped. And a request narrowed by relation
 // kind keeps the whole arm, since whether a row holds one of those kinds is the walk's to say,
-// which the cut comes before; no caller sends one to this state. With no limit the cut takes every
-// row, as the read answers every entry then.
+// which the cut comes before; no caller sends one to this state. The request always holds a limit
+// under this state, since one it does not name is myRepliesDismissedPage (parseMeInboxRequest), so
+// the cut always takes one page.
 func meInboxDismissedCut(kind, id, moment string) string {
 	return `
 		  and (` + moment + `, ` + id + `) < (coalesce(` + meInboxCursorMoment + `::timestamptz, 'infinity'),

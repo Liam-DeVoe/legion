@@ -1322,12 +1322,14 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/me/inbox?state=<state>`: the caller's own Inbox from the one read, newest
-   *  activity first, every entry of it, since no `limit` is asked for. `inbox` holds the open asks
-   *  that wait on the caller - the asks handed to them, and the asks on the issues assigned to
-   *  them that nobody has handed on - beside their Reply and Agent rows, read or not; `unread`
-   *  holds the threads they wrote in that somebody else has written in since, and the one-off
-   *  messages they sent an agent session that it answered. The route reads the caller's own
-   *  `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
+   *  activity first. `inbox` and `unread` answer every entry of it, since no `limit` is asked for;
+   *  `dismissed` answers one page of 200, newest dismissal first, with a `next_cursor` while more
+   *  follow, since the server bounds that state's read. `inbox` holds the open asks that wait on
+   *  the caller - the asks handed to them, and the asks on the issues assigned to them that nobody
+   *  has handed on - beside their Reply and Agent rows, read or not; `unread` holds the threads
+   *  they wrote in that somebody else has written in since, and the one-off messages they sent an
+   *  agent session that it answered. The route reads the caller's own `person` scope and refuses
+   *  a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
   async meInbox(state: InboxListState): Promise<MeInboxResponse> {
     return this.#json("GET", ["api", "v1", "me", "inbox"], undefined, { state });
   }
