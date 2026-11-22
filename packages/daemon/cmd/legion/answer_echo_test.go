@@ -116,9 +116,9 @@ func TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes(t *testing.
 
 // TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes: the daemon's state, read by `legion
 // controller start` for the repository mapping and by `legion state`, holds a value its reader
-// cannot take - a time that is not one, a mapped repository that is no `owner/name` - and the
+// cannot take - a time that is not one, a live repository that is no `owner/name` - and the
 // error names the member and holds none of the value: encoding/json's errors, time.Time's and
-// ghrepo.Parse's quote it, so the state decodes through oauth2call.Answer.Decode and the mapped
+// ghrepo.Parse's quote it, so the state decodes through oauth2call.Answer.Decode and the live
 // repository is named by its place.
 func TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes(t *testing.T) {
 	stateServing := func(t *testing.T, body string) *httptest.Server {
@@ -135,7 +135,7 @@ func TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes(t *testing.T) {
 		return server
 	}
 	repositories := func(inner string) string {
-		return `{"repositories":{"owners":[],"mapped":[],"refused":[],"withoutWebhookApp":[],"caches":[]` + inner + `}}`
+		return `{"repositories":{"owners":[],"live":[],"refused":[],"withoutWebhookApp":[],"caches":[]` + inner + `}}`
 	}
 	for _, tc := range []struct {
 		name, body, names string
@@ -147,8 +147,8 @@ func TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes(t *testing.T) {
 			read: readRepositories,
 		},
 		{
-			name: "repositories-mapped", names: "repositories.mapped",
-			body: repositories(`,"mapped":[{"repo":"acme/widgets","default":true},{"repo":"` + echoProbe + `","default":false}]`),
+			name: "repositories-live", names: "repositories.live",
+			body: repositories(`,"live":[{"repo":"acme/widgets","default":true},{"repo":"` + echoProbe + `","default":false}]`),
 			read: readRepositories,
 		},
 		{
