@@ -2927,7 +2927,9 @@ GATES = [
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
-                                 "and test (__tests__/ and __fixtures__/); its modules import only one another, node: and bun:"),
+                                 "and test (__tests__/ and __fixtures__/); its modules import one another, node: and bun:, "
+                                 "and its analyse test @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, "scripts/conflicts/__tests__/analyse.test.ts imports @legion/test-fixtures/version-control-tools"),
     ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")),
 
     gate("broker_client", "broker-client", reads=reads(
