@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -415,7 +416,8 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 // (R8, spec requirement r-lens-trigger), in the order the lens read answers, the seq
 // of each lens's first part_of. A, then B triggered by A, then C, on the spec. Through the pointer
 // route, a triggered_by from A to B, a retarget of B's trigger from A to C and a trigger of B by
-// itself are each 400 INVALID_POINTER naming the tuple and both lenses by address, and store
+// itself are each 400 INVALID_POINTER naming the tuple and both lenses by address, the lens the
+// tuple goes out of before the lens it points at (the one lens twice for B by itself), and store
 // nothing. A then moves to the requirement and back to the spec through the store, so its newest
 // part_of is later than B's and C's: the read still answers A first and the same three writes are
 // refused the same way, so a move changes neither the order nor the rule. C triggered by B is
@@ -443,8 +445,13 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 				b.Address, c.Address},
 			{"a trigger of B by itself", pointer(b, map[string]any{"action": pointerAppend, "to": b.Address}), b.Address, b.Address},
 		} {
-			requireRefused(t, refused.name+" "+when, refused.response, http.StatusBadRequest, "INVALID_POINTER",
-				graphstore.TupleTriggeredBy, refused.near, refused.far)
+			// The answer names the near end of the refused tuple ("from") before its far end
+			// ("at"), and a lens that triggers itself once as each.
+			answer := requireRefused(t, refused.name+" "+when, refused.response, http.StatusBadRequest, "INVALID_POINTER",
+				graphstore.TupleTriggeredBy)
+			if !graphstoretest.NamesInOrder(answer.Error, refused.near, refused.far) {
+				t.Errorf("%s %s is refused %q, want it to name %s and then %s", refused.name, when, answer.Error, refused.near, refused.far)
+			}
 		}
 		if _, after := rig.counts(graphstore.KindLens, graphstore.TupleTriggeredBy); after != triggers {
 			t.Errorf("the store holds %d triggered_by tuples %s, and held %d before", after, when, triggers)

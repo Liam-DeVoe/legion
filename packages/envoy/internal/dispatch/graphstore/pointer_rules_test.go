@@ -200,20 +200,28 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 
 	t.Run("each refusal, through every append path", func(t *testing.T) {
 		hasKindAtAConstraint := pointerTuple(KindLens, lensTradeOff, TupleHasKind, KindConstraint, constraintHeld)
-		// What a refusal names besides its tuple's kind: the kinds of the tuple's two ends and the
-		// kinds its rule allows, a lens and a lens_kind for has_kind, a requirement, a lens_kind and a
-		// constraint for constrained_by. These are the has_kind from a lens at a constraint's, and
-		// the constrained_by from a paragraph's.
+		// What a refusal names besides its tuple's kind, part by part (pointerNames): in its near
+		// end and in its far end the kind of that end, and in its rule the kinds the rule allows -
+		// a lens and a lens_kind for has_kind, a requirement, a lens_kind and a constraint for
+		// constrained_by, a risk and a check for prevented_by, a risk, a lens and the pre-mortem
+		// kind for a risk's part_of. These are the has_kind from a lens at a constraint's, the
+		// constrained_by from a paragraph's, and the part_of from a risk at a lens of kind
+		// inversion's, which names that kind in its far end.
 		var (
-			hasKindNames     = []string{KindLens, KindConstraint, KindLensKind}
-			constrainedNames = []string{"paragraph", KindConstraint, blockTypeRequirement, KindLensKind}
+			hasKindRule      = []string{KindLens, KindLensKind}
+			constrainedRule  = []string{blockTypeRequirement, KindLensKind, KindConstraint}
+			hasKindNames     = pointerNames{from: []string{KindLens}, to: []string{KindConstraint}, rule: hasKindRule}
+			constrainedNames = pointerNames{from: []string{"paragraph"}, to: []string{KindConstraint}, rule: constrainedRule}
+			underInversion   = pointerNames{from: []string{KindRisk}, to: []string{KindLens, kindInversion},
+				rule: []string{KindRisk, KindLens, LensKindPreMortem}}
 		)
 		for _, refused := range []struct {
 			name  string
 			write func(context.Context, pgx.Tx) error
-			// kind is the refused tuple's kind, and names what the refusal's words name besides it.
+			// kind is the refused tuple's kind, and names what each part of the refusal names
+			// besides it.
 			kind  string
-			names []string
+			names pointerNames
 			// retracted marks the retraction of a lens's has_kind with none asserted in its place.
 			retracted bool
 			// sentinel is the refusal the write answers when it is not an InvalidPointerError.
@@ -223,28 +231,28 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				write: tuplesOnly(hasKindAtAConstraint), kind: TupleHasKind, names: hasKindNames},
 			{name: "Write, has_kind out of a node that is no lens",
 				write: tuplesOnly(pointerTuple(KindRisk, riskPlaced, TupleHasKind, KindLensKind, kindInversion)),
-				kind:  TupleHasKind, names: []string{KindRisk, KindLensKind, KindLens}},
+				kind:  TupleHasKind, names: pointerNames{from: []string{KindRisk}, to: []string{KindLensKind}, rule: hasKindRule}},
 			{name: "Write, a second has_kind",
 				write:    tuplesOnly(pointerTuple(KindLens, lensInversion, TupleHasKind, KindLensKind, kindTradeOff)),
 				sentinel: ErrLensKindAsserted},
 			{name: "Write, a has_kind retracted with none asserted in its place",
 				write: tuplesOnly(retracted(pointerTuple(KindLens, lensTradeOff, TupleHasKind, KindLensKind, kindTradeOff))),
-				kind:  TupleHasKind, names: []string{KindLens}, retracted: true},
+				kind:  TupleHasKind, names: pointerNames{from: []string{KindLens}}, retracted: true},
 			{name: "Write, a lens triggered by itself",
 				write: tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensInversion)),
-				kind:  TupleTriggeredBy, names: []string{KindLens, lensInversion}},
+				kind:  TupleTriggeredBy, names: triggerNames(lensInversion, lensInversion)},
 			{name: "Write, constrained_by out of a paragraph",
 				write: tuplesOnly(pointerTuple(blockKind, fixture.paragraph, TupleConstrainedBy, KindConstraint, constraintHeld)),
 				kind:  TupleConstrainedBy, names: constrainedNames},
 			{name: "Write, constrained_by at a node that is no constraint",
 				write: tuplesOnly(pointerTuple(blockKind, fixture.requirement, TupleConstrainedBy, KindLens, lensInversion)),
-				kind:  TupleConstrainedBy, names: []string{blockTypeRequirement, KindLens, KindConstraint}},
+				kind:  TupleConstrainedBy, names: pointerNames{from: []string{blockTypeRequirement}, to: []string{KindLens}, rule: constrainedRule}},
 			{name: "Write, prevented_by at a block that is no check",
 				write: tuplesOnly(pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.paragraph)),
-				kind:  TuplePreventedBy, names: []string{KindRisk, "paragraph", BlockTypeCheck}},
+				kind:  TuplePreventedBy, names: pointerNames{from: []string{KindRisk}, to: []string{"paragraph"}, rule: []string{KindRisk, BlockTypeCheck}}},
 			{name: "Write, a risk under an inversion",
 				write: tuplesOnly(pointerTuple(KindRisk, riskAstray, TuplePartOf, KindLens, lensInversion)),
-				kind:  TuplePartOf, names: []string{KindRisk, KindLens, kindInversion, LensKindPreMortem}},
+				kind:  TuplePartOf, names: underInversion},
 			{name: "Caused, has_kind held for the cause at a node that is no lens_kind",
 				write: func(ctx context.Context, tx pgx.Tx) error {
 					return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: hasKindAtAConstraint}}}, NoEvent)
@@ -275,7 +283,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				err = refused.write(ctx, tx)
 				if refused.sentinel != nil {
 					requireAlreadyAsserted(t, err, refused.sentinel)
-				} else if refusal := requirePointerRefused(t, err, refused.kind, refused.names...); refusal.Retracted != refused.retracted {
+				} else if refusal := requirePointerRefused(t, err, refused.kind, refused.names); refusal.Retracted != refused.retracted {
 					t.Errorf("the refusal %q is a retraction's %t, want %t", refusal.Error(), refusal.Retracted, refused.retracted)
 				}
 				// The refused write's transaction is abandoned, as its caller abandons it, and
@@ -297,7 +305,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				pointerTuple(KindLens, lens, TupleHasKind, KindLensKind, kindInversion),
 				pointerTuple(KindRisk, risk, TuplePartOf, KindLens, lens),
 			})
-			requirePointerRefused(t, err, TuplePartOf, KindRisk, KindLens, kindInversion, LensKindPreMortem)
+			requirePointerRefused(t, err, TuplePartOf, underInversion)
 			if err := tx.Rollback(ctx); err != nil {
 				t.Fatalf("roll the refused write back: %v", err)
 			}
@@ -526,7 +534,7 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 		t.Run(write.name, func(t *testing.T) {
 			// The refusal names both projects, which tell it from the refusal of a retired
 			// document's check.
-			requireCheckRefused(t, ctx, database, write.write, foreign, address, ownProjects, before, pointerProject, "FAR")
+			requireCheckRefused(t, ctx, database, write.write, foreign, address, ownProjects, before, []string{pointerProject}, []string{"FAR"})
 		})
 	}
 	requireNoNode(t, ctx, database, KindRisk, "risk-astray-project")
@@ -622,17 +630,17 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 			}
 			defer tx.Rollback(ctx)
 			err = refused.write(ctx, tx)
-			refusal := requirePointerRefused(t, err, TupleTriggeredBy, KindLens, refused.near, refused.to)
+			refusal := requirePointerRefused(t, err, TupleTriggeredBy, triggerNames(refused.near, refused.to))
 			named, ok := refusal.NamedAt(KindLens, refused.near, addressOf(refused.near))
 			if ok && refused.to != refused.near {
 				named, ok = named.NamedAt(KindLens, refused.to, addressOf(refused.to))
 			}
-			// Named at both lenses' addresses, the refusal names each lens by its address and
-			// neither by its id.
-			if !ok || !graphstoretest.NamesAsAWord(named.Error(), addressOf(refused.near), addressOf(refused.to)) ||
-				graphstoretest.NamesAsAWord(named.Error(), refused.near) || graphstoretest.NamesAsAWord(named.Error(), refused.to) {
-				t.Errorf("the refusal named at both lenses' addresses reads %v (named %t), want it to name %s and %s, and neither lens by its id",
-					named, ok, addressOf(refused.near), addressOf(refused.to))
+			// Named at both lenses' addresses, the refusal names each lens by its address, in the
+			// end it is, and neither lens by its id.
+			if !ok || graphstoretest.NamesAsAWord(named.Error(), refused.near) || graphstoretest.NamesAsAWord(named.Error(), refused.to) {
+				t.Errorf("the refusal named at both lenses' addresses reads %v (named %t), want it named, and naming neither lens by its id", named, ok)
+			} else {
+				requireNamedByRole(t, named, triggerNames(addressOf(refused.near), addressOf(refused.to)))
 			}
 			if other, ok := refusal.NamedAt(KindLens, lensPreMortemBare, addressOf(lensPreMortemBare)); ok {
 				t.Errorf("the refusal named at a lens it does not name reads %q, want it not named", other.Error())
@@ -699,7 +707,7 @@ func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 		t.Run(write.name, func(t *testing.T) {
 			// The refusal names its check's document as retired, which tells it from the refusal of
 			// a check of another project.
-			requireCheckRefused(t, ctx, database, write.write, check, address, fixture.check, before, "retired")
+			requireCheckRefused(t, ctx, database, write.write, check, address, fixture.check, before, nil, []string{"retired"})
 		})
 	}
 	requireNoNode(t, ctx, database, KindRisk, "risk-astray-retired")
@@ -732,12 +740,13 @@ func checkOf(t *testing.T, ctx context.Context, database *store.Store, project s
 }
 
 // requireCheckRefused runs write in a transaction of its own and fails unless the store refuses
-// it before anything is appended: an InvalidPointerError of a prevented_by tuple naming the check
-// block check and each of names, which NamedAt names at address, naming the check there by that
-// address and by its id no more, and naming no other far end, other, there; and the log holding
-// before tuples once the write is rolled back.
+// it before anything is appended: an InvalidPointerError of a prevented_by tuple whose near end
+// names each of near and whose far end names the check block check and each of far, which NamedAt
+// names at address, its far end naming the check there by that address and each of far, its near
+// end each of near, and the refusal naming the check by its id no more, and naming no other far
+// end, other, there; and the log holding before tuples once the write is rolled back.
 func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Store, write func(context.Context, pgx.Tx) error,
-	check, address, other string, before int, names ...string) {
+	check, address, other string, before int, near, far []string) {
 	t.Helper()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -745,10 +754,11 @@ func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Stor
 	}
 	defer tx.Rollback(ctx)
 	err = write(ctx, tx)
-	refusal := requirePointerRefused(t, err, TuplePreventedBy, append([]string{check}, names...)...)
-	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || !graphstoretest.NamesAsAWord(named.Error(), append([]string{address}, names...)...) ||
-		graphstoretest.NamesAsAWord(named.Error(), check) {
-		t.Errorf("the refusal named at %s reads %v (named %t), want it to name %s and %q, and %s no more", address, named, ok, address, names, check)
+	refusal := requirePointerRefused(t, err, TuplePreventedBy, pointerNames{from: near, to: append([]string{check}, far...)})
+	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || graphstoretest.NamesAsAWord(named.Error(), check) {
+		t.Errorf("the refusal named at %s reads %v (named %t), want it named, and naming %s no more", address, named, ok, check)
+	} else {
+		requireNamedByRole(t, named, pointerNames{from: near, to: append([]string{address}, far...)})
 	}
 	if named, ok := refusal.NamedAt(blockKind, other, address); ok {
 		t.Errorf("the refusal named at another far end reads %q, want it not named", named.Error())
@@ -782,11 +792,23 @@ func retracted(tuple Tuple) Tuple {
 	return tuple
 }
 
+// pointerNames is what a test holds each part of a refusal of a pointer to name, each a word of its
+// own (graphstoretest.NamesAsAWord): from its near end (InvalidPointerError.From), to its far end
+// (To), and rule what its rule lets through (Rule). A part is asked for no name it does not carry.
+type pointerNames struct{ from, to, rule []string }
+
+// triggerNames is what the refusal of a triggered_by from the lens near at the lens far names:
+// near in its near end and far in its far end, each beside the kind lens, and that kind in its
+// rule. A lens that triggers itself is named in both ends.
+func triggerNames(near, far string) pointerNames {
+	return pointerNames{from: []string{KindLens, near}, to: []string{KindLens, far}, rule: []string{KindLens}}
+}
+
 // requirePointerRefused fails unless err is the store's refusal of a pointer at a node its rule
 // does not allow: the sentinel a route answers 400 INVALID_POINTER for, as the typed refusal of a
-// tuple of kind whose words name each of names (graphstoretest.NamesAsAWord). It answers that
-// refusal.
-func requirePointerRefused(t *testing.T, err error, kind string, names ...string) *InvalidPointerError {
+// tuple of kind each of whose parts names what names holds it to (requireNamedByRole). It answers
+// that refusal.
+func requirePointerRefused(t *testing.T, err error, kind string, names pointerNames) *InvalidPointerError {
 	t.Helper()
 	if !errors.Is(err, ErrInvalidPointer) {
 		t.Fatalf("the write answered %v, want ErrInvalidPointer", err)
@@ -795,10 +817,31 @@ func requirePointerRefused(t *testing.T, err error, kind string, names ...string
 	if !errors.As(err, &refusal) {
 		t.Fatalf("the write answered %v, which is no InvalidPointerError", err)
 	}
-	if refusal.Kind != kind || !graphstoretest.NamesAsAWord(refusal.Error(), names...) {
-		t.Errorf("the refusal of a %s tuple reads %q, want a %s tuple's naming %q", refusal.Kind, refusal.Error(), kind, names)
+	if refusal.Kind != kind {
+		t.Errorf("the refusal %q is of a %s tuple, want a %s tuple's", refusal.Error(), refusal.Kind, kind)
 	}
+	requireNamedByRole(t, refusal, names)
 	return refusal
+}
+
+// requireNamedByRole fails unless the near end of refusal names each of names.from, its far end
+// each of names.to and its rule each of names.rule, naming each part that does not: a refusal that
+// names its far end where its near end belongs names both, so only each part read on its own
+// tells it from one that names each where it belongs.
+func requireNamedByRole(t *testing.T, refusal *InvalidPointerError, names pointerNames) {
+	t.Helper()
+	for _, part := range []struct {
+		role, words string
+		names       []string
+	}{
+		{"near end (From)", refusal.From, names.from},
+		{"far end (To)", refusal.To, names.to},
+		{"rule (Rule)", refusal.Rule, names.rule},
+	} {
+		if !graphstoretest.NamesAsAWord(part.words, part.names...) {
+			t.Errorf("the refusal %q reads %q in its %s, want it to name %q there", refusal.Error(), part.words, part.role, part.names)
+		}
+	}
 }
 
 // requireAlreadyAsserted fails unless err is want, which a route answers 409

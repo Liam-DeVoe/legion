@@ -2,11 +2,12 @@
 // tuple store and no code of the store reads: the tuple kinds of the base attributes
 // (BaseAttributes), the store writers the source scans hold every write of the store to
 // (WriteFunctions), the visibility a test's write reserves a node for its author under
-// (VisibilityFor), and the rule a test holds a refusal's words to, each name a word of its own
-// (NamesAsAWord). It is an ordinary package rather than a _test.go file because Go cannot share
-// test-only code across packages, and it imports nothing of graphstore, so graphstore's own tests
-// can import it: they hold each copy kept here of a value of graphstore to that value
-// (graphstore's TestGraphstoretestBaseAttributesAreTheStoresOwn and
+// (VisibilityFor), and the rules a test holds a refusal's words to: each name a word of its own
+// (NamesAsAWord), and each after the one before it (NamesInOrder). It is an ordinary package
+// rather than a _test.go file because Go cannot share test-only code across packages, and it
+// imports nothing of graphstore, so graphstore's own tests can import it: they hold each copy kept
+// here of a value of graphstore to that value (graphstore's
+// TestGraphstoretestBaseAttributesAreTheStoresOwn and
 // TestGraphstoretestVisibilitiesAreTheStoresOwn). What a test seeds through the store's own
 // writers, which imports graphstore, is graphseedtest's.
 package graphstoretest
@@ -53,15 +54,40 @@ func WriteFunctions() []string {
 // address a comma or a colon follows is a word, and one that only begins a longer word, as a
 // lens's address begins its finding's `<lens address>#b-<id>`, is none.
 func NamesAsAWord(text string, names ...string) bool {
-	var words []string
-	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
-		words = append(words, strings.Trim(word, "\"'`()[]:;."))
-	}
-	spaced := " " + strings.Join(words, " ") + " "
+	spaced := spacedWords(text)
 	for _, name := range names {
 		if !strings.Contains(spaced, " "+name+" ") {
 			return false
 		}
 	}
 	return true
+}
+
+// NamesInOrder is whether text names each of names as words of its own, as NamesAsAWord reads
+// them, each after the one before it: a refusal that names the near end of a tuple before its
+// far end names the two in that order, and one that names one node at both ends names it twice.
+func NamesInOrder(text string, names ...string) bool {
+	spaced := spacedWords(text)
+	// from is where the next name is looked for: the space after the last name found, which
+	// begins the word after it.
+	from := 0
+	for _, name := range names {
+		at := strings.Index(spaced[from:], " "+name+" ")
+		if at < 0 {
+			return false
+		}
+		from += at + 1 + len(name)
+	}
+	return true
+}
+
+// spacedWords is the words of text as NamesAsAWord reads them, joined by one space, with a space
+// before the first and after the last, so a name is a word of text, or a run of its words, where
+// the name with a space at each side stands in it.
+func spacedWords(text string) string {
+	var words []string
+	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
+		words = append(words, strings.Trim(word, "\"'`()[]:;."))
+	}
+	return " " + strings.Join(words, " ") + " "
 }
