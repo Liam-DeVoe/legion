@@ -1554,15 +1554,19 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 	}
 }
 
-// reMarkWithheldGap re-marks sessionID's entry with the repository gap mark it still owes, a frame
-// that carried the mark having been answered nak (onReply): the frame did not reach the client, so
-// the mark is not lost to it. It runs off onReply's callback, in its own goroutine, within
+// reMarkWithheldGap re-marks sessionID's entry with a fresh repository gap mark, a frame that carried
+// a mark having been answered nak (onReply): the frame did not reach the client, so the mark is not
+// lost to it. It writes a fresh id, never the frame's own mark, so the relay loop's clear of that
+// mark as sent (repositoryGapSent) can never take the re-mark's: it forgets this process's noted mark
+// first, so noteRepositoryGap mints a new one. The worst case is then one redundant notice at a later
+// run, never a lost one. It runs off onReply's callback, in its own goroutine, within
 // sendRequestBudget, since the write is a KV read and write that must not stall the other
 // sessions' receipts that one callback carries. A write that fails is logged; the session's next
 // relay run sends the mark (owedRepositoryGap).
 func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
 	defer cancel()
+	m.forgetRepositoryGap(sessionID)
 	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
 		m.logger.Warn("session relay could not re-mark a withheld gap frame's session; its next run sends the mark",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -1574,7 +1578,9 @@ func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 // single further run after it. onReply's own goroutine let two naks of one session re-mark at once,
 // so noteRepositoryGap's read and write could interleave and leave the in-memory mark and the
 // entry's mark different, sending the session one redundant gap notice; holding one in flight keeps
-// them one.
+// the re-marks of one session serialized against each other. Against the relay loop's own
+// noteRepositoryGap they are not serialized, but a re-mark writes a fresh id (reMarkWithheldGap), so
+// the worst their overlap can do is leave one redundant gap notice for a later run, never lose one.
 func (m *sessionRelays) scheduleReMark(sessionID string) {
 	m.reMarkMu.Lock()
 	if m.reMarking == nil {

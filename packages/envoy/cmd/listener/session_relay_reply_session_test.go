@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -568,15 +569,16 @@ func TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten(t *testing.T) {
 	requireStillPending(t, rig.consumers, sessionID, seq)
 }
 
-// N2: two re-marks of one session, the second asked while the first is in flight, never run at
+// N2/N6: two re-marks of one session, the second asked while the first is in flight, never run at
 // once, so noteRepositoryGap's read and write cannot interleave and leave the in-memory mark and
-// the entry's mark diverged, which would send the session a second, redundant gap notice. onReply
-// runs each nak'd gap-marked frame's re-mark off its callback; scheduleReMark holds one in flight
-// per session and folds a re-mark asked meanwhile into a single further run after it. Control: with
-// scheduleReMark reverted to a plain `go m.reMark`, the second re-mark runs while the first is in
-// flight and the first select fails.
+// the entry's mark diverged, which would send the session a second, redundant gap notice. The two
+// naks are driven through onReply, which hands each nak'd gap-marked frame's re-mark to scheduleReMark;
+// scheduleReMark holds one in flight per session and folds a re-mark asked meanwhile into a single
+// further run after it. The second re-mark's folding is read from reMarkAgain under reMarkMu, not
+// waited out on a clock. Control: with onReply's call site reverted to a plain `go m.reMark`,
+// scheduleReMark is never reached, reMarking is never set, and the first check fails.
 func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
-	relays := &sessionRelays{logger: logging.New("test")}
+	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
 	relays.reMark = func(string) {
@@ -584,22 +586,73 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 		<-release
 	}
 	const sessionID = "ses_remark_serial"
-	relays.scheduleReMark(sessionID)
-	<-entered                        // the first re-mark is in flight, held on release
-	relays.scheduleReMark(sessionID) // a second re-mark asked while the first runs
-	select {
-	case <-entered:
-		close(release)
-		t.Fatal("two re-marks of one session ran at once: the second did not wait for the first")
-	case <-time.After(500 * time.Millisecond):
-		// The second re-mark did not run while the first was in flight: one is held per session.
+	frameFor := func(token string) {
+		run := &relayRun{sessionID: sessionID, outstanding: map[string]*relayFrame{}}
+		frame := &relayFrame{run: run, acker: &countingAcker{}, sentAt: time.Now(), delivered: 1, gapMark: "a-gap-mark"}
+		relays.framesMu.Lock()
+		relays.frames[token] = frame
+		run.outstanding[token] = frame
+		relays.framesMu.Unlock()
 	}
-	close(release)
-	// The re-mark the fold held still runs once the first finishes, so the session's owed mark is
-	// not dropped.
+	nak := func(token string) {
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + sessionID + "." + token, Data: []byte(relayReplyNak)})
+	}
+	frameFor("TOKENOFTHEFIRSTREMARKFRAME01")
+	frameFor("TOKENOFTHESECONDREMARKFRAME1")
+	// The first nak: onReply hands the re-mark to scheduleReMark, whose run blocks on release here.
+	// onReply itself returns at once, so this call does not block.
+	nak("TOKENOFTHEFIRSTREMARKFRAME01")
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("the held re-mark never ran after the first finished; the session's owed mark is dropped")
+		t.Fatal("onReply never started the first re-mark")
+	}
+	// The second nak of the same session while the first re-mark is in flight: scheduleReMark folds
+	// it into reMarkAgain rather than running it at once.
+	nak("TOKENOFTHESECONDREMARKFRAME1")
+	relays.reMarkMu.Lock()
+	running, folded := relays.reMarking[sessionID], relays.reMarkAgain[sessionID]
+	relays.reMarkMu.Unlock()
+	if !running {
+		close(release)
+		t.Fatal("the first re-mark is not tracked in flight: onReply did not run it through scheduleReMark")
+	}
+	if !folded {
+		close(release)
+		t.Fatal("the second re-mark was not folded into reMarkAgain: two re-marks of one session could run at once")
+	}
+	// The folded re-mark runs once the first finishes, so the session's owed mark is not dropped.
+	close(release)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the folded re-mark never ran after the first finished; the session's owed mark is dropped")
+	}
+}
+
+// N7: a withheld-gap re-mark that completes before the relay loop clears the frame's own mark as sent
+// must not lose the gap notice. The re-mark writes a fresh id (reMarkWithheldGap), so the loop's
+// repositoryGapSent of the frame's mark X cannot take the re-mark's: the entry keeps a mark, owed to
+// the session's next relay run. Control (head): the re-mark reused X, the loop cleared X as sent, and
+// the entry ended with no mark - the notice owed nowhere.
+func TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice(t *testing.T) {
+	rig := newEdgeRig(t)
+	m := &sessionRelays{sessions: rig.deps.sessions, logger: logging.New("test")}
+	m.reMark = m.reMarkWithheldGap
+	ctx := context.Background()
+	const sessionID = "ses_remark_before_clear"
+	if err := rig.deps.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	// The relay loop noted mark X for a withheld event and published frame F carrying X; F was nak'd,
+	// so a re-mark is owed. The nak's re-mark completes before the loop's repositoryGapSent.
+	mark, err := m.noteRepositoryGap(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("the loop's mark: %v", err)
+	}
+	m.reMarkWithheldGap(sessionID)
+	m.repositoryGapSent(ctx, sessionID, mark)
+	if owed, stored := m.owedRepositoryGap(sessionID), storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap; owed == "" && stored == "" {
+		t.Errorf("a re-mark before the loop's clear lost the gap notice: owed=%q stored=%q", owed, stored)
 	}
 }
