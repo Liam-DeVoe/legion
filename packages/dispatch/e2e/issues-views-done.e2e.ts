@@ -1188,3 +1188,138 @@ test("Open sorts by Time waiting, Time in Legion phase and Worker state as the b
     await daemon.close();
   }
 });
+
+// R5 and the Design's date range filter, found by INFRA-3221's tester: a Closed window the list
+// route refuses is never what Done asks it for. A window whose To comes before its From, picked in
+// the Closed filter's panel or written in an address, holds no time and so no close; a day count
+// past the earliest date a read can send holds every close. Neither draws a failed read.
+// SLOW(>=2s): ACME seeded, and Done opened over three windows, one of them picked in its panel.
+test("a Closed window the list route would refuse draws no failed read: To before From lists no row, and a count past every date lists every done row", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const refused: string[] = [];
+    page.on("response", (response) => {
+      if (response.url().includes("/api/v1/issues") && response.status() >= 400)
+        refused.push(`${response.status()} ${new URL(response.url()).search}`);
+    });
+    const table = issuesTable(page);
+    const failed = page.getByRole("alert").filter({ hasText: /Could not load/ });
+    const noRow = page.getByText("No issues match these filters.");
+    const done = await listIssuesWhere({ project: ACME, status: ["done"] });
+
+    // To before From, picked in the panel: the picker keeps it out of the address, or Done lists
+    // no row, since such a window holds no close.
+    await page.goto(`/projects/${ACME}/issues?view=done`);
+    await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+    await page
+      .getByRole("button", { name: /^Filter Closed/ })
+      .first()
+      .click();
+    await page.getByLabel("Closed from").fill("2026-11-10");
+    await page.getByLabel("Closed to").fill("2026-11-03");
+    await page.getByRole("button", { exact: true, name: "Apply" }).click();
+    await expect
+      .poll(
+        async () => !new URL(page.url()).searchParams.has("f.closed") || (await noRow.isVisible()),
+        { message: "the picked window To before From: left out, or listed as no row" }
+      )
+      .toBe(true);
+    await expect(failed).toBeHidden();
+    expect(refused).toEqual([]);
+
+    // The same window in an address: no row.
+    await page.goto(`/projects/${ACME}/issues?view=done&f.closed=2026-11-10..2026-11-03`);
+    await expect(noRow).toBeVisible();
+    await expect(failed).toBeHidden();
+    expect(refused).toEqual([]);
+
+    // 750,000 days reaches back past the year 0, a date the route cannot read: every done row.
+    await page.goto(`/projects/${ACME}/issues?view=done&f.closed=750000d`);
+    await expect.poll(async () => (await rowKeys(table)).length).toBe(done.length);
+    await expect(failed).toBeHidden();
+    expect(refused).toEqual([]);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R2 and the Design's Loading, found by INFRA-3221's tester: a page read none of whose rows carries
+// `closed_at` (an older server while a release rolls out) lists no row, and the tab and the pager
+// count the rows the table lists, so neither counts the rows that page left out.
+// SLOW(>=2s): ACME seeded, and Done opened over page reads whose rows lose their closed_at.
+test("a Done page none of whose rows carries closed_at lists no row and counts none on its tab or its pager", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.route(/\/api\/v1\/issues\?.*sort=-closed_at/, async (route) => {
+      const response = await route.fetch();
+      const body: { issues?: Partial<IssueSummary>[] } = await response.json();
+      for (const issue of body.issues ?? []) delete issue.closed_at;
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`/projects/${ACME}/issues?view=done`);
+    await expect(page.getByText("No issues match these filters.")).toBeVisible();
+    expect([tabName("Done"), tabName("Done", 0)]).toContain(
+      await page.getByRole("tab", { name: /^Done/ }).getAttribute("aria-label")
+    );
+    await expect(page.getByText(/^Rows 1–/)).toHaveCount(0);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R2, found by INFRA-3221's tester: the open tab counts the rows the table lists. While the page
+// read of a newly picked Closed window is out, Done shows no count of the window before it beside
+// the rows it lists.
+// SLOW(>=2s): ACME seeded, and Done narrowed to one day while that page read is held.
+test("while a newly picked Closed window's page read is out, Done's tab counts no rows the table does not list", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const table = issuesTable(page);
+    await page.goto(`/projects/${ACME}/issues?view=done`);
+    await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const { promise: asked, resolve: ask } = Promise.withResolvers<void>();
+    await page.route(/\/api\/v1\/issues\?.*closed_since=/, async (route) => {
+      ask();
+      await gate;
+      await route.continue();
+    });
+    await page
+      .getByRole("button", { name: /^Filter Closed/ })
+      .first()
+      .click();
+    await page.getByRole("button", { exact: true, name: "1 day" }).click();
+    await asked;
+    const listed = (await rowKeys(table)).length;
+    expect([tabName("Done", undefined, true), tabName("Done", listed, true)]).toContain(
+      await page.getByRole("tab", { name: /^Done/ }).getAttribute("aria-label")
+    );
+    release();
+    const day = await listIssuesWhere({
+      project: ACME,
+      status: ["done"],
+      closed_since: new Date(Date.now() - DAY).toISOString(),
+    });
+    await expect(page.getByRole("tab", { name: /^Done/ })).toHaveAttribute(
+      "aria-label",
+      tabName("Done", day.length, true)
+    );
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
