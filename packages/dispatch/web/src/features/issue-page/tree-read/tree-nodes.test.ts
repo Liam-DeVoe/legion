@@ -25,6 +25,7 @@ import {
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
+import { NODE_TYPE_NAMES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
@@ -1561,4 +1562,28 @@ test("an ask block's row draws the asks read's question, not the options its blo
     reading(words),
   ]);
   expect(row?.options?.map((option) => option.label)).toEqual(["1024 px", "1280 px"]);
+});
+
+// R3 and R5: a document is no node, so a requirement whose stored source cites one - its
+// `From:` line - carries a chip that opens it, at its own address and named by the page's word
+// for a document; the source is the tree read's text of the block, whatever its words drop.
+test("a requirement whose From line cites a document carries its chip from the tree read's text", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const cites = `dispatch://${KEY}/artifact/notes-md`;
+  const issue = { ...issueDetails(), artifacts: [...(issueDetails().artifacts ?? []), notes] };
+  const words = "The measurements behind it are kept.";
+  const { root } = drawn(
+    answer([
+      block("r-cites", "requirement", KEY, SPEC, 0, {
+        text: `${words}\nFrom: ${cites}`,
+        text_tree: reading(words),
+      }),
+    ]),
+    { issue }
+  );
+
+  expect(
+    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
+    "the requirement draws no chip for the document its From line cites"
+  ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });
