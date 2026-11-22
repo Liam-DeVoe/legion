@@ -191,17 +191,27 @@ func (e *Engine) moveBackToTesting(ctx context.Context, tx pgx.Tx, issue record.
 // push in accepting, retro or merging, a retro commit and an implementer's correction among them,
 // leaves a head with no legion-verdict, which cannot merge until the reviewer's verdict there is
 // written. A merge forward's landing asks in mergeForwardLanded, so this is every other move. The
-// ask is the review row a landing writes (record.MergeForwardReview), from the head the push left
-// to the head it made, which wakes a released reviewer: a new outbox kind or payload key would be
-// one the release before it cannot read (spec R15). Its executor delivers it while the issue stands
-// past its review at that head (leftMergeForwardAt). A tree that lingers, where every role is
-// suspended, asks nothing.
+// ask names the range the reviewer has not judged: from the head of its last verdict
+// (verdictSince), so a second push before it answers still asks about every commit since that
+// verdict, to the head the push made; a push back to the head of that verdict asks nothing. It is
+// the review row a landing writes (record.MergeForwardReview), which wakes a released reviewer: a
+// new outbox kind or payload key would be one the release before it cannot read (spec R15). Its
+// executor delivers it while the issue stands past its review at that head (leftMergeForwardAt).
+// A tree that lingers, where every role is suspended, asks nothing.
 func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, from string) error {
 	if !record.PastReview(issue) || from == "" || from == pr.HeadSHA {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
+	}
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	if err != nil {
+		return err
+	}
+	since := verdictSince(reviewer, pr.HeadSHA, from)
+	if since == "" {
+		return nil
 	}
 	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key}}, nil)
 	if err != nil {
@@ -210,11 +220,46 @@ func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	at := record.StandsAt(issue)
 	for _, to := range addressed {
 		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview,
-			Head: from, Landed: pr.HeadSHA, Base: cmp.Or(pr.Base, issue.DefaultBranch), Phase: at, PullRequest: pr.Number}); err != nil {
+			Head: since, Landed: pr.HeadSHA, Base: cmp.Or(pr.Base, issue.DefaultBranch), Phase: at, PullRequest: pr.Number}); err != nil {
 			return err
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the head moved past review; the reviewer is asked for its verdict", "issue", issue.Key, "tree", issue.Tree,
-		"phase", at, "pullRequest", pr.Number, "head", from, "landed", pr.HeadSHA)
+		"phase", at, "pullRequest", pr.Number, "head", since, "landed", pr.HeadSHA)
 	return nil
+}
+
+// verdictSince is the head the round's recorded reviewer last gave its verdict on (its row's
+// decision, which its completion of reviewing and each verdict past review write), and "" where
+// that verdict names head itself, so no verdict is owed there. A row that holds no decision - a
+// round a release before the reviewer's verdict decided - answers otherwise, the head the caller
+// knows the reviewer was last asked about.
+func verdictSince(reviewer record.PhaseRow, head, otherwise string) string {
+	if decided := reviewer.Decision; decided != nil && decided.Head != "" {
+		if decided.Head == head {
+			return ""
+		}
+		return decided.Head
+	}
+	return otherwise
+}
+
+// owedVerdict is the head of the round's recorded reviewer's last verdict where the head of
+// issue's open pull request pr is another one, so the reviewer's verdict at pr's head is owed
+// before it merges (verdictSince), and "" where none is owed. Where the reviewer's row holds no
+// decision, a landed merge forward's ask of the reviewer stands in (mergeForwardReviewOwed). The
+// merger's task reads it (task).
+func (e *Engine) owedVerdict(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) (string, error) {
+	if pr == nil || pr.State != record.PullRequestOpen {
+		return "", nil
+	}
+	reviewer, err := e.phaseRow(ctx, tx, issue, claim.RoleReviewer)
+	if err != nil {
+		return "", err
+	}
+	otherwise := ""
+	if mergeForwardReviewOwed(*pr) {
+		otherwise = pr.MergeForward.Head
+	}
+	return verdictSince(reviewer, pr.HeadSHA, otherwise), nil
 }

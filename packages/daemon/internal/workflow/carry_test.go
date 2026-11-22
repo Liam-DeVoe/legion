@@ -419,3 +419,105 @@ func TestAnAskPastReviewIsDeliveredWhileItsHeadStands(t *testing.T) {
 		t.Fatalf("the ask at %s once the issue went back to testing is left as %q, want it undelivered", headThree, why)
 	}
 }
+
+// verdictAsks is every ask of a verdict past review LEGION-208's outbox holds (the merge-forward
+// review rows), in the order written.
+func verdictAsks(t *testing.T, pool *pgxpool.Pool) []record.MergeForwardMessage {
+	t.Helper()
+	asks := []record.MergeForwardMessage{}
+	for _, message := range mergeForwardMessages(t, pool) {
+		if message.Step == record.MergeForwardReview {
+			asks = append(asks, message)
+		}
+	}
+	return asks
+}
+
+// Spec R5: each push past review asks the round's recorded reviewer for its verdict at the new
+// head, from the head the reviewer last gave its verdict on, so two pushes before the reviewer
+// answers each ask about the whole range the reviewer has not judged: from headOne, where its
+// approve stands, to headTwo and then to headThree, and never from headTwo, which no verdict
+// named. Once the reviewer's verdict names headThree, the next push asks from headThree.
+func TestAnAskPastReviewNamesTheHeadOfTheReviewersLastVerdict(t *testing.T) {
+	pool := seedPastReview(t, phase.Retro, "retro")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	push := func(from, to string) {
+		t.Helper()
+		applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+			Branch: "legion/LEGION-208", Base: "main", Before: from, HeadSHA: to})
+	}
+	ask := func(from, to string) record.MergeForwardMessage {
+		return record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview, Head: from, Landed: to, Base: "main",
+			Phase: phase.Retro, PullRequest: 42}
+	}
+	push(headTwo, headThree)
+	if got, want := verdictAsks(t, pool), []record.MergeForwardMessage{ask(headOne, headThree)}; !slices.Equal(got, want) {
+		t.Fatalf("the second push asked %+v, want %+v: the range from the head of the reviewer's last verdict", got, want)
+	}
+	applyRefusingNothing(t, pool, engine, pastReviewVerdict("approve", headThree, headOne))
+	push(headThree, headEarlier)
+	if got, want := verdictAsks(t, pool), []record.MergeForwardMessage{ask(headOne, headThree), ask(headThree, headEarlier)}; !slices.Equal(got, want) {
+		t.Fatalf("the push after the verdict at %s asked %+v, want %+v", headThree, got, want)
+	}
+}
+
+// Spec R5: the merger merges a head that moved past review only once legion-verdict at that head
+// is success. So the merger started in merging is told so whenever the head it starts at is not
+// the head of the reviewer's last verdict, a push of any kind having moved it there, and is told
+// nothing of it once the reviewer's verdict names that head.
+func TestTheMergerWaitsForTheVerdictAtAHeadAnyPushMovedPastReview(t *testing.T) {
+	const waits = " only once legion-verdict at that head is success."
+	for _, tc := range []struct {
+		name    string
+		verdict bool
+	}{{name: "a push past review the reviewer has not judged"}, {name: "the reviewer's verdict at the pushed head", verdict: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedPastReview(t, phase.Retro, "retro")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			if tc.verdict {
+				applyRefusingNothing(t, pool, engine, pastReviewVerdict("approve", headTwo, headOne))
+			}
+			applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer,
+				Claim: "implement-claim", Summary: "retro done", Commit: headTwo})
+			if got := issuePhase(t, pool); got != phase.Merging {
+				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
+			}
+			task := startTask(t, pool, claim.RoleMerger)
+			if told := strings.Contains(task, "merge head "+headTwo+waits); told == tc.verdict {
+				t.Fatalf("the merger's task reads %q; told to wait for legion-verdict at %s = %t, want %t", task, headTwo, told, !tc.verdict)
+			}
+			if !tc.verdict && !strings.Contains(task, "the reviewer's verdict at head "+headOne) {
+				t.Fatalf("the merger's task reads %q, want it to name %s, the head of the reviewer's last verdict", task, headOne)
+			}
+		})
+	}
+}
+
+// A round held from reviewing can become stuck on GitHub's merge state while held: the reviewer
+// approved the head, and the read GitHub answers `blocked` for it lands during the hold. The retry
+// that ends the hold is then the fact that tells the architect, and its review-stuck notice names
+// the round's facts as its summary: the head, the reviewer, and how long ago the reviewer gave its
+// verdict, never an empty summary.
+func TestARetriedRoundStuckOnItsMergeStateTellsTheRoundsFacts(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergeStateRound(t, pool, record.MergeStateUnread)
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	apply("verdict", reviewerVerdict("approve", headOne, ""))
+	apply("failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer})
+	apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
+		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
+	if told := reviewStuckNotices(t, pool); len(told) != 0 {
+		t.Fatalf("review-stuck notices before the retry = %+v, want none: the round was held", told)
+	}
+	later := applyFacts(t, pool, mergingEngineAt(time.Date(2026, 9, 23, 2, 0, 0, 0, time.UTC)))
+	later("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision})
+	told := reviewStuckNotices(t, pool)
+	if len(told) != 1 {
+		t.Fatalf("review-stuck notices after the retry = %+v, want one", told)
+	}
+	for _, want := range []string{"head " + headOne, "reviewer " + string(reviewClaim), "2h0m ago"} {
+		if !strings.Contains(told[0].Summary, want) {
+			t.Fatalf("the notice's summary is %q, want it to name %q", told[0].Summary, want)
+		}
+	}
+}
