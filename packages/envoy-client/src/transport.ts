@@ -293,8 +293,11 @@ export type EnvoyClientConfig = {
    * The host's reading that its session's stop has begun (R24 of dispatch://INFRA-3589): the
    * stop gate. It is read before each attempt and before each retry, and once it answers true a
    * call of the session's registration or role state is refused before anything is sent
-   * (`STOP_GATE`, `EnvoyStoppingError`). An attempt already sent is not cancelled, and its answer
-   * is read as before. Unset, the session never reads as stopping.
+   * (`STOP_GATE`). A call none of whose attempts was sent throws `EnvoyStoppingError`. A call
+   * whose retry the gate refuses after an earlier attempt was sent ends with that attempt's own
+   * outcome, as a call whose retries ran out does: that attempt may have landed. An attempt
+   * already sent is not cancelled, and its answer is read as before. Unset, the session never
+   * reads as stopping.
    */
   readonly stopping?: () => boolean;
 };
@@ -993,10 +996,13 @@ const STOP_GATE: { readonly [Call in EnvoyCall]: "refused" | "sent" } = {
 };
 
 /**
- * A call the stop gate refused (`STOP_GATE`): the host's stop had begun
- * (`EnvoyClientConfig.stopping`) before an attempt of the call was sent, so that attempt reached
- * no listener. Where an earlier attempt was sent and failed, the gate refused its retry. A caller
- * tells this refusal apart by its class (`instanceof EnvoyStoppingError`); `call` names the call.
+ * A call the stop gate refused (`STOP_GATE`) before any attempt of it was sent: the host's stop
+ * had begun (`EnvoyClientConfig.stopping`), so the call reached no listener. An attempt that
+ * reached no route of the listener (`RequestOptions.onNotSent`) counts as not sent. A call an
+ * earlier attempt of which was sent never throws this: when the gate refuses its retry, it throws
+ * that attempt's own error, as a call whose retries ran out does, since that attempt may have
+ * landed. A caller tells this refusal apart by its class (`instanceof EnvoyStoppingError`);
+ * `call` names the call.
  */
 export class EnvoyStoppingError extends Error {
   override readonly name = "EnvoyStoppingError";
@@ -1228,6 +1234,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     const refusedByStop = (): boolean => gated && config.stopping?.() === true;
     // The last bus-outage 503 an attempt got, where the caller asked for it (`busUnansweredStands`).
     let busUnanswered: EnvoyApiError | undefined;
+    // Whether an attempt reached the listener, answered or not: one the listener may have acted
+    // on. A `notSent` attempt reached no route of it.
+    let sent = false;
+    // What the call throws where no attempt follows the last failed one: the error that attempt
+    // ends the call with, as each branch below says.
+    let lastEnd: (() => unknown) | undefined;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
       const outcome = await attemptOnce(
@@ -1237,54 +1249,57 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         options.actingSession,
         refusedByStop
       );
-      if ("stopping" in outcome)
+      if ("stopping" in outcome) {
+        // A retry the gate refused after an attempt was sent ends the call as its retries running
+        // out would: that attempt may have landed, so its own outcome is the call's answer. Only
+        // a call none of whose attempts was sent says it was not sent.
+        if (sent && lastEnd !== undefined) throw lastEnd();
         throw new EnvoyStoppingError(call, init.method ?? "GET", shown(url));
+      }
+      let end: () => unknown;
       if ("unanswered" in outcome) {
         options.onUnanswered?.();
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
-        throw busUnanswered ?? outcome.unanswered;
-      }
-      if ("notSent" in outcome) {
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
-        options.onNotSent?.();
-        throw busUnanswered ?? outcome.notSent;
-      }
-      const { response, body } = outcome;
-      if (response.ok) return body;
+        sent = true;
+        end = () => busUnanswered ?? outcome.unanswered;
+      } else if ("notSent" in outcome) {
+        end = () => {
+          options.onNotSent?.();
+          return busUnanswered ?? outcome.notSent;
+        };
+      } else {
+        const { response, body } = outcome;
+        if (response.ok) return body;
 
-      // A body that is not the listener's error JSON was written by something in its place, which
-      // can echo the request back: the error names it in one redacted line with the tokens this
-      // client presents, and a redirect, which is never followed (`attemptOnce`), by the origin it
-      // pointed at (`EnvoyApiError`).
-      const redacted = tokens();
-      const error = new EnvoyApiError(
-        {
-          method: init.method ?? "GET",
-          url: shown(url),
-          status: response.status,
-          responseBody: body,
-        },
-        { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
-      );
-      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
-      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
-      if (response.status >= 500) {
+        // A body that is not the listener's error JSON was written by something in its place,
+        // which can echo the request back: the error names it in one redacted line with the
+        // tokens this client presents, and a redirect, which is never followed (`attemptOnce`),
+        // by the origin it pointed at (`EnvoyApiError`).
+        const redacted = tokens();
+        const error = new EnvoyApiError(
+          {
+            method: init.method ?? "GET",
+            url: shown(url),
+            status: response.status,
+            responseBody: body,
+          },
+          { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
+        );
+        // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a
+        // 429 `sender_rate_limited`: the agent reads its sentence and decides when to send it
+        // again.
+        if (response.status < 500) throw error;
         options.onUnanswered?.();
+        sent = true;
         if (options.busUnansweredStands === true && isBusUnanswered(error)) busUnanswered = error;
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
         // A 5xx that names a reason is the listener's refusal of the call, which stands.
-        throw error.reason === undefined ? (busUnanswered ?? error) : error;
+        end = () => (error.reason === undefined ? (busUnanswered ?? error) : error);
       }
-      throw error;
+      lastEnd = end;
+      if (attempt + 1 < tries) {
+        await waitForRetry(retryDelayMs);
+        continue;
+      }
+      throw end();
     }
     throw new Error("Envoy request exhausted retries");
   };

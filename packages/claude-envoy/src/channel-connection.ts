@@ -274,6 +274,9 @@ export interface ChannelInbound {
  * why an open failed; a token the broker refused is told on `warn` until the session holds the
  * socket and tells its own outage (`ListenerRelay.reportOutagesTo`), which the session's first
  * accepted registration ends. `signal` aborting (the process is stopping) ends either wait at once.
+ * `stopping` is the session's stop reading (R24 of dispatch://INFRA-3589): once it answers true,
+ * the relay socket opens no socket again and closes for good instead (`ListenerRelayOptions`).
+ * Unset, the session never reads as stopping.
  */
 export async function dialChannelInbound(
   inbound: ChannelInboundSettings,
@@ -283,6 +286,7 @@ export async function dialChannelInbound(
   warn: (text: string, dialError?: unknown) => void,
   dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
   signal?: AbortSignal,
+  stopping?: () => boolean,
 ): Promise<ChannelInbound> {
   if ("natsUrls" in inbound) {
     return { ...(await dialChannelNats(inbound, name, warn, dial, signal)), liveView: true }
@@ -303,6 +307,9 @@ export async function dialChannelInbound(
         ),
       ),
       log: (line) => warn(line),
+      // A socket that closes once the stop has begun is not opened again: the stop drains the
+      // connection only after its hand-back.
+      ...(stopping === undefined ? {} : { stopping }),
     },
     signal,
   )
@@ -356,6 +363,12 @@ export interface ChannelReopenerOptions {
   /** Aborts when the server stops: it ends a dial's waits and its redials, and closes a connection
    *  a dial opened after it. */
   readonly signal: AbortSignal
+  /** The session's stop reading (`dialChannelInbound`): a relay socket opens no socket again
+   *  once it answers true. */
+  readonly stopping: () => boolean
+  /** Writes one warning of a dial on the server's stderr, through the server's tell gate
+   *  (`./stop-gates`): a relay socket's lines come here for its whole life. */
+  readonly warn: (text: string) => void
   /** Stops the token keeper the server holds now and holds `stop` in its place: the one the
    *  server's teardown stops. */
   readonly swapKeeper: (stop: () => void) => void
@@ -367,7 +380,7 @@ export interface ChannelReopenerOptions {
 
 /**
  * A server's `ChannelSessionOptions.reopen`: a new connection once the session's closed for good,
- * opened as the server's first one was (`dialChannelInbound`), warning of each redial on stderr,
+ * opened as the server's first one was (`dialChannelInbound`), warning of each redial on `warn`,
  * until one opens or the server stops. A relay socket opens again on its own after every close, so
  * it closes for good only as the server closes it; a NATS connection is what this replaces in a
  * running session. The closed connection's token keeper stops before the dial, and the new one's is
@@ -391,11 +404,12 @@ export function channelReopener(options: ChannelReopenerOptions): ReopenConnecti
       options.session,
       options.name,
       (text, dialError) => {
-        process.stderr.write(`envoy-channel: ${text}\n`)
+        options.warn(text)
         if (dialError !== undefined) failed(dialError)
       },
       connect,
       options.signal,
+      options.stopping,
     )
     if (options.signal.aborted) {
       next.stop()

@@ -9,7 +9,11 @@ import {
 import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
-import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
+import {
+  claimEnvoyRole,
+  claimRefusedForStop,
+  onEnvoyRoleRegained,
+} from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
@@ -31,6 +35,13 @@ export interface ClaimSession {
    * registers), or in a session that boots no claim of its own, such as the controller's, which
    * claims its role for itself (`src/controller-session.ts`). */
   readonly firstTurnStarted: () => void;
+  /** The session's stop has begun (`legion.ts` calls it at `session_shutdown`), R24 of
+   * dispatch://INFRA-3589: the boot's signal aborts, so its deferred role claim is not made, a
+   * failed `claims/ready` is neither said nor sent again, and a claim that fails from then on
+   * says nothing and exits nothing. A claim Envoy refuses because the session's stop has begun
+   * (`claimRefusedForStop`) is that same stop: in RPC mode a SIGTERM stops Envoy's session with
+   * no `session_shutdown`. */
+  readonly stop: () => void;
 }
 
 /**
@@ -76,7 +87,9 @@ export function attributionInputs(
  *
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
- * A 4xx registration refusal, and any failure after a registration, exit the process.
+ * A 4xx registration refusal, and any failure after a registration, exit the process, except
+ * once the session's stop has begun ({@link ClaimSession.stop}): the stop ends the process
+ * itself, and an exit in its middle would cut its role release and its DELETE short.
  */
 export function createClaimSession(deps: {
   readonly daemon: () => LegionDaemonClient;
@@ -95,6 +108,8 @@ export function createClaimSession(deps: {
   // reported, which does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
   let reportFirstTurn: (() => void) | undefined;
   let turnStarted = false;
+  // Aborts as the session's stop begins: the boot's signal (`LegionClaimHost.signal`).
+  const stopped = new AbortController();
 
   const boot = async (
     context: SessionContext,
@@ -123,7 +138,16 @@ export function createClaimSession(deps: {
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
       // so no claim subscribes to one.
-      claimRole: (role) => claimEnvoyRole(sessionID, role, context),
+      claimRole: async (role) => {
+        try {
+          await claimEnvoyRole(sessionID, role, context);
+        } catch (error) {
+          // Envoy refused the claim because the session's stop has begun: the stop is this
+          // boot's too, so the failure ends the claim step quietly (`claimRoleAtFirstTurn`).
+          if (claimRefusedForStop(error)) stopped.abort();
+          throw error;
+        }
+      },
       onFirstTurn: (started) => {
         reportFirstTurn = started;
         if (turnStarted) started();
@@ -133,8 +157,12 @@ export function createClaimSession(deps: {
       firstTurnBoundMs: claimFirstTurnBoundMs(process.env, logger),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
+      signal: stopped.signal,
       stopping: "exiting so the daemon launches it again",
-      stop: () => deps.exitProcess(1),
+      // A boot the session's stop overtook exits nothing: the stop ends the process itself.
+      stop: () => {
+        if (!stopped.signal.aborted) deps.exitProcess(1);
+      },
     });
   };
 
@@ -160,5 +188,6 @@ export function createClaimSession(deps: {
       turnStarted = true;
       reportFirstTurn?.();
     },
+    stop: () => stopped.abort(),
   };
 }

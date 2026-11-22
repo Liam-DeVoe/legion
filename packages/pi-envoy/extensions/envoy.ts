@@ -193,6 +193,7 @@ import {
   type LegionRoleClaim,
   type LegionRoleClaimInstance,
   legionRoleClaimBridge,
+  RoleClaimStoppingError,
 } from "@legion/pi-shared/role-claim-bridge";
 import { dispatchCommandHead } from "@legion/pi-shared/shell-command";
 import {
@@ -3327,13 +3328,10 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A role claim the model or a plugin asks for once this session's stop has begun is refused
   // (R24 of dispatch://INFRA-3589). The stop hands back every role this process holds and deletes
   // the session's record next, and a move whose claim was in flight when the stop began keeps
-  // nothing of it. Both the plugin bridge's claim and the tool say the same sentence.
+  // nothing of it. Both the plugin bridge's claim and the tool say the same sentence
+  // (`RoleClaimStoppingError`), which the Legion boot reads as its session's stop.
   const refuseClaimWhileStopping = (role: string): void => {
-    if (shuttingDown) {
-      throw new Error(
-        `this session is stopping, so it claims no role: role ${role} is not held here`
-      );
-    }
+    if (shuttingDown) throw new RoleClaimStoppingError(role);
   };
 
   // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
@@ -4704,8 +4702,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     cardWake.cancel();
     // A session event once the stop has begun moves nothing (R24 of dispatch://INFRA-3589): it
     // would deregister the session the host left, end a role and run a pass, and the stop hands
-    // the roles back and deletes the record next.
-    if ((await isSubagent(context)) || shuttingDown) return;
+    // the roles back and deletes the record next. The stop is read before the subagent check too,
+    // which can publish the transcript and log a failed publish outside the tell gate, and again
+    // after its wait.
+    if (shuttingDown || (await isSubagent(context)) || shuttingDown) return;
     const host = context.sessionManager.getSessionId();
     noteMove(host, { kind: reason });
     lastHeard = host;
@@ -4749,7 +4749,8 @@ export default function envoyExtension(hostApi: PiApi): void {
     reason: SessionSwitchReason | undefined,
     context: SessionContext
   ): Promise<void> => {
-    if (!(await isSubagent(context)) && !shuttingDown) {
+    // The stop is read before the subagent check, as `rebind` reads it, and again after its wait.
+    if (!shuttingDown && !(await isSubagent(context)) && !shuttingDown) {
       bindDispatchSession(context.sessionManager.getSessionId(), context.ui);
     }
     await rebind(reason, context);
@@ -4836,10 +4837,6 @@ export default function envoyExtension(hostApi: PiApi): void {
     // at a time, and a command of the session the host left runs on until it is killed here. A
     // `!` that arrives from here on is refused saying so (`runShellCommandTurn`).
     for (const running of runningShellCommands.values()) running.stop();
-    if (publishedInterface !== undefined) {
-      const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);
-      if (bound !== -1) publishedInterface.roleClaim.instances.splice(bound, 1);
-    }
     // This session is about to deregister with the listener, so it stops being an address a
     // reply can reach: a subagent still running in this process must report none rather than
     // name it, and a dead entry must not be what makes some other session ambiguous.
@@ -4909,6 +4906,13 @@ export default function envoyExtension(hostApi: PiApi): void {
       agentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
+      // The instance stayed on the role-claim bridge while the stop ran: a claim the bridge
+      // routed to this session meanwhile was refused naming the stop (`RoleClaimStoppingError`),
+      // rather than reaching another instance or none. It leaves the bridge now.
+      if (publishedInterface !== undefined) {
+        const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);
+        if (bound !== -1) publishedInterface.roleClaim.instances.splice(bound, 1);
+      }
     }
   };
 

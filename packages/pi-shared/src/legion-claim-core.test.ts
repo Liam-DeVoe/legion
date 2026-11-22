@@ -373,6 +373,26 @@ test("a 4xx at claims/ready is not retried: one ready, then the agent stops, wit
   await booted.claimed;
 });
 
+// The host stops while its boot's `claims/ready` is on the wire, and the daemon answers 503 (R24
+// of dispatch://INFRA-3589): the boot sends no ready again, says nothing, and stops nothing; the
+// host's stop ends the agent itself.
+test("a 5xx at claims/ready after the host's signal aborted is not retried, says nothing and stops nothing", async () => {
+  const stopping = new AbortController();
+  const { host, steps, lines } = claimHost({
+    ready: () => {
+      stopping.abort();
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+    },
+    overrides: { signal: stopping.signal },
+  });
+  const booted = await bootLegionClaim(host);
+  await booted.claimed;
+
+  expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
+  expect(steps).not.toContain("stop");
+  expect(lines).toEqual([]);
+});
+
 test("the name is taken at the host's first-turn callback and not before it", async () => {
   const { host, steps, firstTurn, regain } = claimHost({});
 

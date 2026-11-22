@@ -3,19 +3,28 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import type { ChannelSession } from "./envoy-channel-server"
 import { roleStateFile, type SessionIdentity, writePersistedRole } from "./session-identity"
+import { createStopGates } from "./stop-gates"
 
 /**
  * The session of a channel server whose Envoy takes no inbound messages, for `why`: no NATS
  * consumer, nothing registered with the listener (which would route a delivery to a deaf process),
  * an empty inbox, and following a topic refused naming `why`. A role an explicit `envoy_role_set`
  * claimed through the listener is still persisted, so a later server with NATS takes it back.
+ *
+ * `stopping` is the server's stop reading (R24 of dispatch://INFRA-3589). The session reads as
+ * stopping from then on, and from `shutdown()` on: the role tool claims nothing, and a claim the
+ * listener answers after that leaves no record (the write gate).
  */
 export function inboundOffChannelSession(options: {
   readonly identity: SessionIdentity
   readonly stateDirectory: string
   readonly why: string
+  readonly stopping: () => boolean
 }): ChannelSession {
   const { identity, stateDirectory, why } = options
+  let shutDown = false
+  const stopping = (): boolean => shutDown || options.stopping()
+  const gates = createStopGates(stopping)
   return {
     delivery: { enqueue: async () => false, inbox: () => [] },
     topics: () => [],
@@ -31,16 +40,20 @@ export function inboundOffChannelSession(options: {
     observe: () => undefined,
     messageOf: () => undefined,
     async rememberRole(role) {
+      // A stopping session keeps no role: a claim the listener granted after the stop began is
+      // not held here and leaves no record.
+      if (!gates.writes()) return
       await writePersistedRole(roleStateFile(stateDirectory, identity.id), {
         session_id: identity.id,
         role,
       })
     },
-    // It registers nothing and deletes no record, so no claim lands behind a DELETE of its own,
-    // and it never reads as stopping. Once the server's stop has begun, the client's stop gate
-    // refuses the role tool's claim instead (`createEnvoyClient`'s `stopping`).
-    stopping: () => false,
-    shutdown: async () => undefined,
+    // It registers nothing and deletes no record. Once the stop has begun, the role tool refuses
+    // a claim (`refuseClaimWhileStopping`), and so does the client's stop gate.
+    stopping,
+    shutdown: async () => {
+      shutDown = true
+    },
   }
 }
 

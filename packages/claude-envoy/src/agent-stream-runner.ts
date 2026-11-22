@@ -69,8 +69,9 @@ export interface AgentStreamOptions {
    *  rather than a person (`./agent-stream-claude`, `PANE_SEEDED_COMMAND`). */
   readonly isPane?: boolean
   readonly now?: () => number
-  /** Where a failure that must not stop the session is written; the server's stderr by default. */
-  readonly warn?: (text: string) => void
+  /** Where a failure that must not stop the session is written: the server's stderr, through its
+   *  tell gate (`./stop-gates`), so a read the link's close at the stop ends says nothing. */
+  readonly warn: (text: string) => void
   /**
    * Takes every event this stream reads, before the stream records it. The link's events have one
    * consumer and this is it, so whatever else needs them - the router of a person's messages, and
@@ -144,10 +145,8 @@ export interface AgentStreamRunner {
  * publishes no settings and no commands, and its conversation stays empty.
  */
 export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner {
-  const { link } = options
+  const { link, warn } = options
   const now = options.now ?? Date.now
-  const warn =
-    options.warn ?? ((text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`))
   /** The id both subjects name now; it moves with the mod's own id after a `/clear`. */
   let session = options.sessionId
   /** The viewer's control subject, on the session's connection now (`./control-subscription`). */

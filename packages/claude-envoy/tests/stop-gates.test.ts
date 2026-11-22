@@ -26,3 +26,11 @@ test("once the stop has begun, a stderr line of the server's own is dropped, the
     stderr.mockRestore()
   }
 })
+
+test("once the stop has begun, the stop's own failed drain and close of its connection are written", () => {
+  const gates = createStopGates(() => true)
+
+  expect(gates.tells("envoy-channel: draining the broker connection failed — timeout\n")).toBe(true)
+  expect(gates.tells("envoy-channel: closing the broker connection failed — closed\n")).toBe(true)
+  expect(gates.tells("envoy-channel: a delivery failed — the mod link closed\n")).toBe(false)
+})

@@ -305,8 +305,20 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
 
 /** Runs a ready request, retrying only one that can pass on its own: a 5xx or a network failure.
  * Each Legion host's claim (pi-legion's claim session, claude-envoy's Legion claim) sends its
- * `claims/ready` through it, at boot and after each role regain. */
-export async function callReadyWithRetry(label: string, call: () => Promise<void>): Promise<void> {
+ * `claims/ready` through it, at boot and after each role regain. Each failed attempt is said on
+ * `log`, the host's own writer.
+ *
+ * `signal` aborts when the host stops (R24 of dispatch://INFRA-3589). From then on nothing is
+ * said and no attempt is made: a wait for the next attempt ends at once, and the call throws the
+ * last attempt's error. */
+export async function callReadyWithRetry(
+  label: string,
+  call: () => Promise<void>,
+  host: { readonly log: (line: string) => void; readonly signal?: AbortSignal | undefined }
+): Promise<void> {
+  const { log, signal } = host;
+  // Read afresh at each use: the abort comes while an attempt or a wait is pending.
+  const stopped = (): boolean => signal?.aborted === true;
   for (let attempt = 1; ; attempt++) {
     try {
       await call();
@@ -316,17 +328,25 @@ export async function callReadyWithRetry(label: string, call: () => Promise<void
         error instanceof LegionDaemonApiError
           ? error.status >= 500 && error.status < 600
           : isNetworkOrTimeoutError(error);
-      if (!retryable) throw error;
+      if (!retryable || stopped()) throw error;
       if (attempt === READY_RETRY_ATTEMPTS) {
-        console.error(`[legion] ${label} failed after ${attempt} attempts: ${messageFor(error)}`);
+        log(`${label} failed after ${attempt} attempts: ${messageFor(error)}`);
         throw error;
       }
-      console.error(
-        `[legion] ${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying: ${messageFor(error)}`
+      log(
+        `${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying: ${messageFor(error)}`
       );
       const retryDelay = Promise.withResolvers<void>();
-      setTimeout(retryDelay.resolve, READY_RETRY_DELAY_MS);
+      const timer = setTimeout(retryDelay.resolve, READY_RETRY_DELAY_MS);
+      const stop = (): void => {
+        clearTimeout(timer);
+        retryDelay.resolve();
+      };
+      if (stopped()) stop();
+      else signal?.addEventListener("abort", stop, { once: true });
       await retryDelay.promise;
+      signal?.removeEventListener("abort", stop);
+      if (stopped()) throw error;
     }
   }
 }

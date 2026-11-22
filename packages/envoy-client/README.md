@@ -421,7 +421,10 @@ and a re-assertion) and `getRole`. The one list is `STOP_GATE` in `transport.ts`
 calls still go: its DELETE (`unregisterSession`) and its hand-back of each role hold
 (`stopCallsOf(client).handBack`). A `send` and a `publish` still go too: they carry a message the
 model asked for before or as the stop began, and losing it is worse than sending it. An attempt
-already sent when the stop begins is not cancelled, and its answer is read as before.
+already sent when the stop begins is not cancelled, and its answer is read as before. A retry the
+gate refuses after an earlier attempt was sent ends the call with that attempt's own error, as a
+call whose retries ran out ends: that attempt may have landed. Only a call none of whose attempts
+was sent throws `EnvoyStoppingError`.
 
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has

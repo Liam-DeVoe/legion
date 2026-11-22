@@ -19,8 +19,14 @@ export interface StopGates {
 }
 
 /** The stop's own stderr lines, each by how it begins: the only lines the tell gate lets through
- *  once the stop has begun. The stop's DELETE that failed is the one. */
-export const STOP_LINES: readonly string[] = ["envoy-channel: session deregistration failed — "]
+ *  once the stop has begun. The stop's DELETE that failed is one; the drain and the close of the
+ *  session's connection that failed, which only the stop's shutdown runs
+ *  (`ChannelTopics.close`), are the others. */
+export const STOP_LINES: readonly string[] = [
+  "envoy-channel: session deregistration failed — ",
+  "envoy-channel: draining the broker connection failed — ",
+  "envoy-channel: closing the broker connection failed — ",
+]
 
 /** The gates of one stop reading, `stopping`: a session's, or its server's. */
 export function createStopGates(stopping: () => boolean): StopGates {

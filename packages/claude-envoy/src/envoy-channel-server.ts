@@ -553,6 +553,9 @@ export function createChannelDelivery(input: {
   readonly configFile: SessionConfigFile
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
+  /** Writes one stderr line of the queue's own: the session's tell gate (`StopGates.stderr`), so
+   *  a notice queued before the stop that fails after it says nothing. */
+  readonly stderr: (line: string) => void
 }): ChannelDeliveryPath {
   const inbox: ChannelInboxEntry[] = []
   let tail = Promise.resolve()
@@ -563,7 +566,7 @@ export function createChannelDelivery(input: {
     tail = run.then(
       () => undefined,
       (error: unknown) => {
-        process.stderr.write(`envoy-channel: a delivery failed — ${messageFor(error)}\n`)
+        input.stderr(`envoy-channel: a delivery failed — ${messageFor(error)}\n`)
       },
     )
     return run
@@ -605,7 +608,7 @@ export function createChannelDelivery(input: {
   // (`./user-turn-router`).
   const passOverLateBtw = (rendered: RenderInboundResult): boolean => {
     if (rendered.delivery?.mode !== "btw") return false
-    process.stderr.write(
+    input.stderr(
       `envoy-channel: passing over late BTW ${rendered.envelope?.event_id ?? "unknown"}: it was asked while this session was not taking messages\n`,
     )
     return true
@@ -620,7 +623,7 @@ export function createChannelDelivery(input: {
       // message, and dropped with a log line when it does not.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
-        process.stderr.write(
+        input.stderr(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
         return postDispatchReply(input.identity, input.configFile, rejected, {
@@ -628,7 +631,7 @@ export function createChannelDelivery(input: {
         }).then(
           () => false,
           (error: unknown) => {
-            process.stderr.write(
+            input.stderr(
               `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
@@ -636,7 +639,7 @@ export function createChannelDelivery(input: {
         )
       }
       if (rendered.malformedDelivery === true) {
-        process.stderr.write(
+        input.stderr(
           "envoy-channel: dropping malformed Dispatch targeted delivery without a reply address\n",
         )
         return tail.then(() => false)
@@ -828,12 +831,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /** The record the router above reads and writes, kept so a shutdown can wait for its writes
    *  and so the live view can read which Dispatch message a row is (`messageOf`). */
   let turns: UserTurnState | undefined
-  const delivery = createChannelDelivery({
-    identity,
-    notifier: options.notifier,
-    configFile: options.configFile,
-    router: () => router,
-  })
   const userTopics = new Set<string>()
   let heldRole: string | undefined
   // Whether this session's stop has begun (R24 of dispatch://INFRA-3589): from the server's
@@ -854,6 +851,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // apart, and the write gate refuses every role record and ledger entry. A relay frame already
   // past `deliverRelayed`'s read is a delivered message, not a notice: it passes no gate.
   const gates = createStopGates(() => shuttingDown)
+  const delivery = createChannelDelivery({
+    identity,
+    notifier: options.notifier,
+    configFile: options.configFile,
+    router: () => router,
+    stderr: gates.stderr,
+  })
   /** A notice card of Envoy's own (`ChannelDeliveryPath.notice`), through the tell gate: one the
    *  gate drops resolves at once, shown to nobody. */
   const showNotice = (content: string, addressed?: string): Promise<void> =>
@@ -1295,7 +1299,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
   // the one NATS subscription this process makes is the relay's (`openRelay`).
-  const followedTopics: ChannelTopics = createChannelTopics(() => connection)
+  const followedTopics: ChannelTopics = createChannelTopics(() => connection, {
+    stderr: gates.stderr,
+  })
 
   /**
    * Drops removed topics from the followed set and the registry entry, its failure reported
@@ -2960,7 +2966,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // No registration happens here, so the title is stamped directly.
       stampOnce(() => identity.id)
-      session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
+      session = inboundOffChannelSession({
+        identity,
+        stateDirectory,
+        why: inbound.off,
+        stopping: () => stopping,
+      })
     } else {
       starting =
         "relaySetting" in inbound
@@ -2982,6 +2993,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         },
         connect,
         booting.signal,
+        // The relay socket opens no socket again once the server's stop has begun, the start's
+        // wait included: the session reads the same stop from `startSignal`.
+        () => stopping,
       ).catch((error: unknown) => {
         // A stop asked for while the token or the dial was awaited, as in the start below.
         if (stopping) return undefined
@@ -3004,6 +3018,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
         session: currentSessionId,
         name: natsName,
         signal: booting.signal,
+        stopping: () => stopping,
+        warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop
@@ -3057,6 +3073,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
         agentStream = startAgentStream({
           connection,
           liveView: dialled.liveView,
+          // Through the server's tell gate: a read the link's close at the stop ends says nothing.
+          warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
           ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),

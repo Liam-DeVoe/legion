@@ -60,12 +60,14 @@ export interface LegionClaimHost {
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
   /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
-   *  from then on, and a claim the listener answered 503 is not made again after it. */
+   *  from then on, a claim the listener answered 503 is not made again after it, and a failed
+   *  `claims/ready` is neither said nor sent again (`callReadyWithRetry`). */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
-  /** Writes one line to the agent's log. */
+  /** Writes one line to the agent's log: every line of the boot's, the `claims/ready` retries'
+   *  included. */
   readonly log: (line: string) => void;
   /** What `stop` does, as a log line names it: `exiting so the daemon launches it again`. */
   readonly stopping: string;
@@ -114,7 +116,9 @@ export interface LegionClaimBoot {
  * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
  * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
  * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
- * the path a death inside a turn already takes.
+ * the path a death inside a turn already takes. A failure after a registration once the host's
+ * `signal` aborted - the host stopping - is neither logged nor stopped on: the host's stop ends
+ * the agent itself.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
@@ -151,11 +155,11 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
-    await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    await callReadyWithRetry("claims/ready", () => daemon.ready(ready), host);
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
       try {
-        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready));
+        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready), host);
         host.log(`re-ran claims/ready after role ${role} was ${reason}`);
       } catch (error) {
         host.log(
@@ -164,7 +168,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       }
     });
   } catch (error) {
-    stopAfterRegistration(host, claim.claimToken, error);
+    if (host.signal?.aborted !== true) stopAfterRegistration(host, claim.claimToken, error);
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };

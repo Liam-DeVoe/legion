@@ -542,7 +542,12 @@ export async function runCodexEnvoyServer(): Promise<void> {
   try {
     const { inbound } = envoy
     if ("off" in inbound) {
-      session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
+      session = inboundOffChannelSession({
+        identity: id,
+        stateDirectory,
+        why: inbound.off,
+        stopping: () => stopping.signal.aborted,
+      })
     } else {
       // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
       // seed, no credential, or the session's broker token, which is then kept renewed and, at a
@@ -561,6 +566,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
         warn,
         connect,
         stopping.signal,
+        // The relay socket opens no socket again once the server's stop has begun.
+        () => stopping.signal.aborted,
       ).catch((error: unknown) => {
         if (isStopping) return undefined
         throw error
@@ -583,6 +590,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
         session: () => id.id,
         name: natsName,
         signal: stopping.signal,
+        stopping: () => stopping.signal.aborted,
+        warn,
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop

@@ -775,6 +775,9 @@ export default function legionExtension(pi: PiApi): void {
     if (!subagentEvent(context)) claimSession.firstTurnStarted();
   });
   pi.on("session_shutdown", async (_event, context) => {
+    // The session's stop has begun: its claim boot claims nothing from here on, and a claim that
+    // fails says nothing and exits nothing (R24 of dispatch://INFRA-3589).
+    claimSession.stop();
     clearStartupTurn(context.sessionManager.getSessionId());
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();

@@ -2,9 +2,17 @@ import { expect, spyOn, test } from "bun:test"
 import * as fsPromises from "node:fs/promises"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import { agentStreamControlSubject } from "@legion/contracts"
+import { createEnvoyClient } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { modSocketPath } from "../hooks/mod-protocol"
 import { legion } from "../package.json" with { type: "json" }
-import { startChannelSession } from "../src/envoy-channel-server"
+import {
+  type ChannelNotifier,
+  executeEnvoyTool,
+  startChannelSession,
+} from "../src/envoy-channel-server"
+import { inboundOffChannelSession } from "../src/envoy-off"
 import { startLegionClaim } from "../src/legion-claim"
 import {
   readPersistedRole,
@@ -15,6 +23,8 @@ import {
   writeSessionHandoff,
 } from "../src/session-identity"
 import {
+  deliveryRaw,
+  directSubject,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -22,7 +32,9 @@ import {
   useScratchState,
   waitFor,
 } from "./channel-session-harness"
+import { type FakeMod, startFakeMod } from "./fake-mod"
 import { isolatePaneEnvironment } from "./pane-environment"
+import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS, startReopenServer } from "./reopen-server"
 
 // A session whose stop has begun registers, unsubscribes and claims nothing, and writes no role
 // record (R24 of dispatch://INFRA-3589), whichever path is still running when the stop begins:
@@ -235,3 +247,136 @@ test("a stop that begins after the start's flush registers nothing, claims nothi
     await channel.shutdown()
   }
 })
+
+// A frame queued before the stop whose write fails after the stop began: the queue's failure line
+// is a stderr line of the session's own, so its tell gate drops it.
+test("a delivery queued before the stop that fails after the stop began says nothing on stderr", async () => {
+  const booting = new AbortController()
+  const writing = held()
+  const failing = held()
+  const notifier: ChannelNotifier = {
+    notification: async () => {
+      writing.resolve()
+      await failing.promise
+      throw new Error("the bridge did not take the message")
+    },
+  }
+  const channel = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      notifier,
+      startSignal: booting.signal,
+    }),
+  )
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  try {
+    const delivered = channel.delivery
+      .enqueue({ subject: directSubject, raw: deliveryRaw })
+      .catch(() => false)
+    await writing.promise
+    // The server's stop: the abort is the session's stop reading.
+    booting.abort()
+    failing.resolve()
+    expect(await delivered).toBe(false)
+    await settled()
+
+    expect(written.filter((line) => line.includes("a delivery failed"))).toEqual([])
+  } finally {
+    stderr.mockRestore()
+    await channel.shutdown()
+  }
+})
+
+// An inbound-off session (`./envoy-off`) reads the server's stop too: a role claim that was on the
+// wire when the stop began is refused when its answer comes, and leaves no record.
+test("inbound-off: an envoy_role_set claim the listener answers after the stop began keeps no record", async () => {
+  const stateDirectory = scratchState()
+  const identity = new SessionIdentity("ses_inbound_off", "/tmp")
+  let stopping = false
+  const session = inboundOffChannelSession({
+    identity,
+    stateDirectory,
+    why: "no NATS server is configured",
+    stopping: () => stopping,
+  })
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    // The server's stop begins while the claim is on the wire; the listener grants it.
+    fetch: async () => {
+      stopping = true
+      return Response.json({
+        session_id: identity.id,
+        machine_id: "devbox",
+        dir: "/work",
+        topics: ["notifications.role.reviewer"],
+      })
+    },
+  })
+
+  await expect(
+    executeEnvoyTool(
+      { identity, client, session, clientInstanceID: "a1b2c3d4e5f60718293a4b5c6d7e8f90" },
+      "envoy_role_set",
+      { role: "reviewer" },
+    ),
+  ).rejects.toThrow(
+    "this session is stopping, so it claims no role: role reviewer is not held here",
+  )
+  await session.rememberRole("reviewer")
+  expect(await readPersistedRole(roleStateFile(stateDirectory, identity.id))).toBeUndefined()
+})
+
+// The live view's reads of the mod are on the wire when the server's stop begins; the stop closes
+// the mod's link, which rejects them. The view's warnings go through the server's tell gate, which
+// drops them. Whole processes: the mod is `./fake-mod`, which never answers those reads.
+test(
+  "the live view's reads the stop's close of the mod link ends say nothing on stderr",
+  async () => {
+    const sessionId = "ses_view_at_stop"
+    const run = await startReopenServer({
+      sessionId,
+      env: (stateDirectory) => ({
+        CLAUDE_CODE_SESSION_ID: sessionId,
+        CLAUDE_PLUGIN_DATA: stateDirectory,
+      }),
+    })
+    let mod: FakeMod | undefined
+    try {
+      const socketPath = modSocketPath(sessionId, { XDG_RUNTIME_DIR: run.stateDirectory })
+      if (socketPath === undefined) throw new Error("the session names no mod socket")
+      const never = new Promise<never>(() => undefined)
+      mod = await startFakeMod(socketPath, {
+        sessionId,
+        answers: { "session.model": () => never, "command.list": () => never },
+      })
+      await waitFor(
+        async () => run.broker.subscribed.includes(agentStreamControlSubject(sessionId)),
+        "the live view started",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      // An event of the conversation: the view reads the session's model and commands.
+      await mod.send({ kind: "turn-start", turnId: "turn-at-stop" })
+      const asked = mod
+      await waitFor(
+        async () => asked.madeOf("session.model").length > 0,
+        "the live view's read of the model on the wire",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+
+      run.server.kill("SIGTERM")
+      await run.server.exited
+      await run.stderrEnded
+
+      expect(run.stderr()).not.toContain("the live view could not read")
+    } finally {
+      await mod?.stop()
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)

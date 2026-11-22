@@ -215,3 +215,38 @@ test("a notice a switch raises after the stop began is dropped by the tell gate"
     await fixture.handlers.get("session_shutdown")?.({}, after);
   }
 });
+
+// A session whose subagent check could not publish its transcript at the start asks again at the
+// next session event. Once the stop has begun, a session event does nothing: the check does not
+// run, so it publishes no transcript and logs no failed publish outside the tell gate.
+test("a session event after the stop began runs no subagent check", async () => {
+  const session = "ses_event_after_stop";
+  globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?event-after-stop");
+  const fixture = createPi();
+  let publishes = 0;
+  const base = host(session, [], [], []);
+  // The transcript's publish fails, so the check's answer is not kept: each event asks again.
+  const context: SessionContext = {
+    ...base,
+    sessionManager: {
+      ...base.sessionManager,
+      ensureOnDisk: async () => {
+        publishes += 1;
+        throw new Error("another writer holds the transcript's publish lock");
+      },
+    },
+  };
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  await fixture.handlers.get("session_shutdown")?.({}, context);
+  const before = publishes;
+
+  await fixture.handlers.get("session_switch")?.({ reason: "new" }, context);
+  await fixture.handlers.get("session_branch")?.({}, context);
+  await fixture.handlers.get("session_tree")?.({}, context);
+  await settle();
+
+  expect(publishes).toBe(before);
+});

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import {
   createEnvoyClient,
+  EnvoyApiError,
   type EnvoyClient,
   EnvoyStoppingError,
   type SubscribeInput,
@@ -141,7 +142,7 @@ describe("the stop gate", () => {
     expect(published.envelope.event_id).toBe(ENVELOPE.event_id);
   });
 
-  test("a registration whose fetch started before the stop is answered as before, and a retry after the stop is not sent", async () => {
+  test("a registration whose fetch started before the stop is answered as before, and a retry after the stop is not sent and ends the call with the sent attempt's answer", async () => {
     let stopping = false;
     const fetched: string[] = [];
     const answers: (() => void)[] = [];
@@ -175,10 +176,53 @@ describe("the stop gate", () => {
     for (const go of answers.splice(0)) go();
 
     expect((await accepted).topics).toEqual([...REGISTRATION.topics]);
-    // The 503 asks for a retry, which the gate refuses: no third request is made.
+    // The 503 asks for a retry, which the gate refuses: no third request is made, and the call
+    // ends with the 503 its sent attempt got, as a call whose retries ran out does.
     const error = await failed;
-    expect(error).toBeInstanceOf(EnvoyStoppingError);
+    expect(error).not.toBeInstanceOf(EnvoyStoppingError);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect((error as EnvoyApiError).details.status).toBe(503);
     expect(fetched).toEqual(["POST /v1/interests/subscribe", "POST /v1/interests/subscribe"]);
+  });
+
+  test("a call whose first attempt got a 5xx or no answer, and whose retry the gate refuses, rejects with that attempt's own error; one whose first attempt the gate refuses rejects with EnvoyStoppingError", async () => {
+    // Each fetch begins the stop as it answers: the retry that follows meets the gate.
+    let stopping = false;
+    const fetched: string[] = [];
+    const answering = (answer: () => Response) =>
+      createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+          fetched.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
+          stopping = true;
+          return answer();
+        },
+        stopping: () => stopping,
+      });
+
+    const busy = answering(() => Response.json({ error: "the listener failed" }, { status: 503 }));
+    const afterBusy = await refusal(busy.setRole({ sessionID: SESSION, role: "reviewer" }));
+    expect(afterBusy).toBeInstanceOf(EnvoyApiError);
+    expect((afterBusy as EnvoyApiError).details.status).toBe(503);
+    expect(fetched).toEqual(["POST /v1/roles/set"]);
+
+    stopping = false;
+    fetched.splice(0);
+    const silent = answering(() => {
+      throw new Error("the connection reset before an answer");
+    });
+    const afterSilence = await refusal(silent.getRole("reviewer"));
+    expect(afterSilence).not.toBeInstanceOf(EnvoyStoppingError);
+    expect((afterSilence as Error).message).toStartWith(
+      "GET http://listener/v1/roles/reviewer got no answer"
+    );
+    expect(fetched).toEqual(["GET /v1/roles/reviewer"]);
+
+    // Already stopping as the call starts: nothing is sent, and the call says so.
+    fetched.splice(0);
+    const first = await refusal(busy.setRole({ sessionID: SESSION, role: "reviewer" }));
+    expect(first).toBeInstanceOf(EnvoyStoppingError);
+    expect(fetched).toEqual([]);
   });
 
   test("control: with no stop reading, every call is sent", async () => {
