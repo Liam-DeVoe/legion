@@ -17,7 +17,10 @@
  *  policy evaluates its rules, so a sign-in path of Dispatch counts against the sign-in rule and
  *  not the host's catch-all. A rule fails when its peak, the most of its requests inside any one
  *  window of `seconds` (a sliding window, not a clock minute), is above half its `count`. A run
- *  that recorded no request is UNKNOWN: there is nothing to read a peak from.
+ *  that recorded no request is UNKNOWN: there is nothing to read a peak from. So is a rule whose
+ *  host the run asked nothing, whose peak of 0 says nothing of that host; and so is a rule the
+ *  run stayed under where the run was cut short (a step it never reached), whose requests are not
+ *  a whole run's. A cut run above half a rule's count still fails it.
  */
 
 /** One TSV row of the driver: `row`, `want`, `got` and the row's verdict. */
@@ -170,8 +173,13 @@ export interface Judged {
   readonly hostPeaks: { readonly host: string; readonly perMinute: number }[];
 }
 
-/** Judges the run's `requests` against `limits` (the module's header says how). */
-export function judgeLimits(limits: readonly Limit[], requests: readonly Counted[]): Judged {
+/** Judges the run's `requests` against `limits` (the module's header says how). `cut`, where set,
+ *  says why the run's requests are not a whole run's. */
+export function judgeLimits(
+  limits: readonly Limit[],
+  requests: readonly Counted[],
+  cut?: string
+): Judged {
   if (requests.length === 0) {
     return {
       rows: [
@@ -200,14 +208,29 @@ export function judgeLimits(limits: readonly Limit[], requests: readonly Counted
   const rows = [...limits]
     .sort((a, b) => a.priority - b.priority || a.seconds - b.seconds)
     .map((limit): Row => {
-      const most = peak(byPriority.get(limit.priority) ?? [], limit.seconds * 1000);
+      const row = `limit-${limit.priority}-${limit.seconds}s`;
       const path = limit.match === "any" ? "" : ` ${limit.path}`;
-      return {
-        row: `limit-${limit.priority}-${limit.seconds}s`,
-        want: `at most ${limit.count / 2} requests in ${limit.seconds} s to ${limit.host} ${limit.match}${path} (half of ${limit.count})`,
-        got: `peak ${most} in ${limit.seconds} s from ${limit.host}`,
-        verdict: most * 2 > limit.count ? "FAIL" : "PASS",
-      };
+      const want = `at most ${limit.count / 2} requests in ${limit.seconds} s to ${limit.host} ${limit.match}${path} (half of ${limit.count})`;
+      if (!byHost.has(limit.host)) {
+        return {
+          row,
+          want,
+          got: `the run asked ${limit.host} nothing, so no peak of it can be read`,
+          verdict: "UNKNOWN",
+        };
+      }
+      const most = peak(byPriority.get(limit.priority) ?? [], limit.seconds * 1000);
+      const got = `peak ${most} in ${limit.seconds} s from ${limit.host}`;
+      if (most * 2 > limit.count) return { row, want, got, verdict: "FAIL" };
+      if (cut !== undefined) {
+        return {
+          row,
+          want,
+          got: `${got}, but ${cut}, so no whole run was counted`,
+          verdict: "UNKNOWN",
+        };
+      }
+      return { row, want, got, verdict: "PASS" };
     });
   const hostPeaks = [...byHost.entries()]
     .map(([host, times]) => ({ host, perMinute: peak(times, 60_000) }))

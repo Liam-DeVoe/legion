@@ -95,6 +95,10 @@ export interface StackRuns {
   /** The edge's two hosts of this stack, as the limits file names them. */
   readonly outsideHost: string;
   readonly edgeHost: string;
+  /** The `host` each registration the edge took named, in order, and each request a listener
+   *  route or the exchange refused for its credential or its topics. */
+  readonly registrationHosts: readonly string[];
+  readonly edgeRefusals: readonly string[];
 }
 
 /** The rate rules of this stack, in the edge's shape: the broker's two exact paths and the
@@ -389,6 +393,8 @@ if (import.meta.main) {
           oneRequest: await run("oneRequest", { OUTSIDE_EDGE_LIMITS: oneRequestLimits }),
           outsideHost,
           edgeHost,
+          registrationHosts: edge.hosts,
+          edgeRefusals: edge.refusals,
         };
         console.log(JSON.stringify(runs));
       } finally {

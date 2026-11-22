@@ -16,11 +16,12 @@
  * `-t` filter.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
- * would kill a process its row is still using: the outside driver's `hold`, which three rows of
- * `outside-edge-hold.test.ts` send SIGTERM while it runs, the probe the seven driven rows of
- * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
- * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
- * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the hosts of the
+ * would kill a process its row is still using: the outside driver's `hold`, which six rows of
+ * `outside-edge-hold.test.ts` drive, signalling it or reading its end as it comes, the probe the
+ * seven driven rows of `delivery-live-probe.test.ts` read line by line and stop, the runner the
+ * interrupted-runner row of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of
+ * `round-robin-proxy.test.ts` and `plain-http-proxy.test.ts` start, the fake Envoy of
+ * `fake-envoy.test.ts`, the hosts of the
  * fake Dispatches and of the stand-in edges that `fakeHost` of `outside-path-reach-fixtures.ts`
  * starts, one for each fake a row of the four `outside-path-reach*` test files or of the three
  * `outside-edge-refusals*` ones asks for, and the processes `local-instance-support.test.ts`
@@ -79,13 +80,19 @@
  *   out of DISPATCH_E2E_PG_BIN. 247 s x 3 = 741 s, so twelve and a half minutes. A later run of
  *   it, on 2026-11-21 at a load average of about 1160 with one more `t5` run, took 227 s.
  * - `outsideEdgeBrowser`, against 21.58 s: the largest of the 11 runs of the outside driver that
- *   start Chromium against `outside-edge-origin-stand-in.ts` in `outside-edge.test.ts`, six of them
- *   at once, on that developer box at a load average of about 1160 on 2026-11-21. 21.58 s x 3 =
- *   64.74 s, so 75 s.
+ *   started Chromium against `outside-edge-origin-stand-in.ts` in `outside-edge.test.ts`, six of
+ *   them at once, on that developer box at a load average of about 1160 on 2026-11-21. 21.58 s x 3
+ *   = 64.74 s, so 75 s. The 24 runs of that kind on 2026-11-22, at a load average of 720 to 840,
+ *   took 8.73 s at most, eight of them at once.
+ * - `outsideEdgePageWait`, against 35.29 s: the largest of the runs of `outside-edge.test.ts` that
+ *   wait out one of the driver's own 30 s bounds, a page or a read that never answers (the
+ *   sign-in that never loads, 35.29 s; the rest 32.08 s to 34.80 s), on that developer box at a
+ *   load average of 720 to 840 on 2026-11-22, four at once. 35.29 s x 3 = 105.86 s, so 110 s.
  * - `outsideEdgeHold`, against 68.73 s: the hold of `outside-edge-hold.test.ts` that ends at its
  *   own 60 s, the longest of that file's holds in two runs on that developer box at a load average
  *   of about 380 on 2026-11-21 (61.36 s in the other); the holds ended by release or refused took
- *   12.85 s or less. 68.73 s x 3 = 206.19 s, so 210 s.
+ *   12.85 s or less, and 11.83 s or less in the 20 rows' run at a load average of about 700 on
+ *   2026-11-22. 68.73 s x 3 = 206.19 s, so 210 s.
  * - `wholeIndexSweep`, against 82 s: the one run of `restricted-sweep-judging.test.ts` over the
  *   whole route index, about 400 requests to that file's fake Dispatch, each a curl and a jq. On
  *   the dev box at a load of 500 to 1200, with two more runs of that file and a run of
@@ -106,8 +113,9 @@
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a driver run against the stand-in origin after
- * 75 s, a hold of the outside driver after 3.5 minutes, a whole-index sweep after 5 minutes, a
- * listing after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9
+ * 75 s, one that waits out its own 30 s page bound after 110 s, a hold of the outside driver after
+ * 3.5 minutes, a whole-index sweep after 5 minutes, a listing after 6 minutes, the generation after
+ * 6.5 minutes, a run of the edge check after 9
  * minutes, the outside driver's stack after 12.5 minutes, and the two-stack build after 30
  * minutes. A row's limit is what `rowLimit` reads from the bounds of
  * what the row waits for, plus 30 s for its own work, so the child's bound fires before the row's
@@ -153,6 +161,9 @@ export const bounds = Object.freeze({
   /** One run of the outside driver that starts Chromium against a stand-in origin and nothing
    *  else: no stack, no Go build. */
   outsideEdgeBrowser: 75_000,
+  /** One run of the outside driver against a stand-in origin that waits out one of the driver's
+   *  own 30 s bounds on a page or a read, Chromium's or its own, before it ends. */
+  outsideEdgePageWait: 110_000,
   /** One `hold` of the outside driver against a stand-in edge, which ends at its own 60 s at the
    *  longest: no browser, no stack. */
   outsideEdgeHold: 210_000,
@@ -868,10 +879,11 @@ async function drain(
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Eleven files of this directory run children that are
+ *  This never throws for an exit status. Thirteen files of this directory run children that are
  *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
  *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts`,
- *  `outside-agent-acceptance.test.ts`, `outside-agent-public.test.ts`,
+ *  `outside-agent-acceptance.test.ts`, `outside-agent-public.test.ts`, `outside-edge.test.ts`,
+ *  `outside-edge-hold.test.ts`,
  *  `outside-edge-refusals.test.ts` (through `outside-edge-refusals-fixtures.ts`),
  *  `replace-blocks-guard.test.ts`, `round-robin-proxy.test.ts`, `unit-repeat.test.ts` and
  *  `visual-run.test.ts` - so a helper that always threw

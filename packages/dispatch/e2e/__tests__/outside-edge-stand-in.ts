@@ -6,9 +6,12 @@
  *  The listener half is envoy-client's relay socket stand-in
  *  (`@legion/envoy-client/test/relay-socket-stand-in`): its relay socket, its token exchange and
  *  its token checks, with the two listener routes a session's registration and send need served
- *  through its `routes` hook, and a peer that answers through its `deliver`.
+ *  through its `routes` hook, and a peer that answers through its `deliver`. Each listener route
+ *  takes only the session's own token and proof, and a registration only the session's own
+ *  topic, as the edge listener takes them (`outside-edge-credentials.ts`); each refusal is kept in
+ *  `refusals`.
  *  - `POST /v1/interests/subscribe` takes a registration and answers it as a listener does
- *    (`@legion/envoy-client/test/subscribe-answer`).
+ *    (`@legion/envoy-client/test/subscribe-answer`), keeping the `host` it names.
  *  - `POST /v1/messages/send` takes a send. To the peer, `outside-e2e ping <nonce> at <ms>` is
  *    answered `outside-e2e pong <nonce> at <ms>` and then `outside-e2e hello <nonce> at <ms>`, as
  *    the developer box's peer answers, each delivered to the sender's relay socket as the listener
@@ -24,9 +27,10 @@
  *  - `POST /v1/oauth/token`'s device-code grant reads that login back from the fake broker by its
  *    code (`/v1/machine-logins/lookup`): pending is `authorization_pending`, approved answers a
  *    DPoP-bound pair naming the credential the approval minted; a refresh mints a new pair. Every
- *    other grant goes on to the stand-in's exchange.
+ *    other grant goes on to the stand-in's exchange, which takes only a subject token one of those
+ *    pairs carried.
  *  The DPoP proofs of the device grant are not checked here: the relay stand-in checks the proofs
- *  of the trade and the socket, which are the ones the listener checks.
+ *  of the trade and the socket, and the listener routes check theirs.
  */
 
 import { randomBytes, randomInt } from "node:crypto";
@@ -37,6 +41,7 @@ import {
 } from "@legion/envoy-client/test/relay-socket-stand-in";
 import { consumerDelivery, TEST_STREAM_ID } from "@legion/envoy-client/test/subscribe-answer";
 import type { RecordResponse } from "../../web/src/api/types";
+import { sessionRefusal, topicRefusal, tradeRefusal } from "./outside-edge-credentials";
 
 /** One machine login the fake broker holds: the code its page selects it by, and its record. */
 interface MachineLogin {
@@ -55,10 +60,13 @@ export interface EdgeStandIn {
   readonly url: string;
   readonly relay: RelaySocketStandIn;
   /** Every session registered and not ended; every session a registration named, ended ones
-   *  too, in order; and every send, in order. */
+   *  too, in order, and the `host` each named; every send, in order; and every request a listener
+   *  route or the exchange refused, with why. */
   readonly registered: Set<string>;
   readonly registrations: string[];
+  readonly hosts: string[];
   readonly sends: { readonly from: string; readonly to: string; readonly message: string }[];
+  readonly refusals: string[];
   /** Puts one more pending machine login for `person` under `code` into the fake broker: the
    *  tailnet leg's code, which the driver approves beside its own. */
   addMachineLogin(code: string, person: string): Promise<void>;
@@ -130,7 +138,11 @@ export function startEdgeStandIn(options: {
   const authorizations = new Map<string, Authorization>();
   const registered = new Set<string>();
   const registrations: string[] = [];
+  const hosts: string[] = [];
   const sends: EdgeStandIn["sends"] = [];
+  const refusals: string[] = [];
+  // Every access token a device login was answered, which alone the exchange takes as a subject.
+  const issued = new Set<string>();
   let sequence = 0;
 
   const putLogins = async (): Promise<void> => {
@@ -215,9 +227,11 @@ export function startEdgeStandIn(options: {
     return Array.isArray(rows) ? rows.map((row) => String(Reflect.get(row, "credential_id"))) : [];
   };
 
-  const loginAnswer = (credential: string): Response =>
-    Response.json({
-      access_token: `edge-login-${randomBytes(16).toString("hex")}`,
+  const loginAnswer = (credential: string): Response => {
+    const accessToken = `edge-login-${randomBytes(16).toString("hex")}`;
+    issued.add(accessToken);
+    return Response.json({
+      access_token: accessToken,
       token_type: "DPoP",
       expires_in: 900,
       refresh_token: `edge-refresh-${randomBytes(16).toString("hex")}`,
@@ -227,6 +241,13 @@ export function startEdgeStandIn(options: {
         .toISOString()
         .replace(/\.\d{3}Z$/, "Z"),
     });
+  };
+
+  /** `refusal`, kept in `refusals` with `what` it refused, or undefined where there is none. */
+  const refused = async (what: string, refusal: Response | undefined) => {
+    if (refusal !== undefined) refusals.push(`${what}: ${await refusal.clone().text()}`);
+    return refusal;
+  };
 
   const token = async (request: Request): Promise<Response | undefined> => {
     const form = new URLSearchParams(await request.text());
@@ -245,8 +266,9 @@ export function startEdgeStandIn(options: {
       case "refresh_token":
         return loginAnswer("refreshed");
       default:
-        // The exchange: the relay stand-in's own trade mints the session's token.
-        return undefined;
+        // The exchange: the relay stand-in's own trade mints the session's token, for a subject
+        // token one of the pairs above carried.
+        return refused("the exchange", tradeRefusal(form, issued));
     }
   };
 
@@ -259,6 +281,8 @@ export function startEdgeStandIn(options: {
     const from = field("source_session");
     const to = field("target_session");
     const message = field("message");
+    const refusal = await refused("a send", await sessionRefusal(request, relay, from));
+    if (refusal !== undefined) return refusal;
     sends.push({ from, to, message });
     if (to !== options.peer && to !== options.silentPeer) {
       return Response.json(
@@ -317,10 +341,16 @@ export function startEdgeStandIn(options: {
       if (request.method === "POST" && pathname === "/v1/oauth/token") return token(request);
       if (request.method === "POST" && pathname === "/v1/interests/subscribe") {
         const body: unknown = await request.json();
-        const session =
-          typeof body === "object" && body !== null ? String(Reflect.get(body, "session_id")) : "";
+        const field = (name: string) =>
+          typeof body === "object" && body !== null ? Reflect.get(body, name) : undefined;
+        const session = String(field("session_id"));
+        const refusal =
+          (await refused("a registration", await sessionRefusal(request, standIn, session))) ??
+          (await refused("a registration", topicRefusal(session, field("topics"))));
+        if (refusal !== undefined) return refusal;
         registered.add(session);
         registrations.push(session);
+        hosts.push(String(field("host")));
         return Response.json({
           session_id: session,
           machine_id: "outside-edge-stand-in",
@@ -333,7 +363,13 @@ export function startEdgeStandIn(options: {
         return send(request, standIn);
       const ended = /^\/v1\/sessions\/([^/]+)$/.exec(pathname);
       if (request.method === "DELETE" && ended !== null) {
-        registered.delete(decodeURIComponent(ended[1] ?? ""));
+        const session = decodeURIComponent(ended[1] ?? "");
+        const refusal = await refused(
+          "an unregister",
+          await sessionRefusal(request, standIn, session)
+        );
+        if (refusal !== undefined) return refusal;
+        registered.delete(session);
         return Response.json({ deleted: true });
       }
       return undefined;
@@ -347,7 +383,9 @@ export function startEdgeStandIn(options: {
     relay,
     registered,
     registrations,
+    hosts,
     sends,
+    refusals,
     addMachineLogin,
     lookup,
     seedApproved,

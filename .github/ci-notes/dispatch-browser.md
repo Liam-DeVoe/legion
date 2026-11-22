@@ -769,12 +769,12 @@ counts its pull of the same digest at (the time a browser step spent before its 
 first output on the run that found the need; the pull took 13 s in run 44480885813), and the
 connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min, and the outside driver's step adds its
-16 min (its own section below): 32 min 15 s -> 33 min. The dashboard step now also starts
+18 min (its own section below): 34 min 15 s -> 35 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. The Google sign-in step adds its own two minutes
 (.github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs gives its measurement):
-32 min 15 s + 2 min = 34 min 15 s -> 35 min. With budgets on the steps, the
+34 min 15 s + 2 min = 36 min 15 s -> 37 min. With budgets on the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
@@ -914,10 +914,12 @@ e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts` 30
 1.15 = 347 s would give 6 min, but packages/dispatch/e2e/__tests__/bounded-subprocess.ts bounds
 the stack child at three times its largest reading, 750 s, and the rows wait 780 s for it, so a
 6-minute step would kill a stuck stack before the bound names it. The file's other rows run one
-after another beside that row: the input rows and the control rows took about 100 s together,
-and the longest control row's own limit is 105 s, less than the stack's green 227 s. 780 s and
-100 s -> 15 min, and one more for the step's own start: 16 min. It costs nothing on a green run,
-which ends in the minutes its readings take.
+after another beside that row: the input rows and the control rows took 188 s together at a load
+average of 720 to 840 on 2026-11-22 (about 100 s before the sign-in and device-login control rows
+were added), and the longest control row's own limit is 200 s (a short wait, four page waits at
+once and 30 s), less than the stack's 780 s. 780 s and 188 s -> 17 min, and one more for the
+step's own start: 18 min.
+It costs nothing on a green run, which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone
 

@@ -13,7 +13,9 @@
  *                 OUTSIDE_BROKER_URL for a device login of this machine for the signed-in person,
  *                 whose page must be on the outside origin; the browser types the code on that
  *                 page and approves it, and the poll must answer a DPoP-bound pair (row
- *                 `device-login`). With OUTSIDE_TAILNET_USER_CODE set, the same page then
+ *                 `device-login`): a broker nothing answers, at the start or at every poll until
+ *                 the 5-minute deadline, is UNKNOWN; a refusal, expiry or denial it answered is
+ *                 FAIL. With OUTSIDE_TAILNET_USER_CODE set, the same page then
  *                 approves that code too, in the same browser session, and prints
  *                 `APPROVED <code>` (row `tailnet-code`), else fails naming the code.
  *    3. relay     the device login is traded for the session's broker credential, the session
@@ -25,12 +27,18 @@
  *                 socket within OUTSIDE_EDGE_REPLY_SECONDS (row `relay`), else the row fails
  *                 naming the peer. The peer's `outside-e2e hello <nonce> …` that follows is
  *                 answered `outside-e2e reply <nonce> at <Unix ms>`, so the peer does not wait.
+ *                 The session's unregister at the end is printed with its answer
+ *                 (`outside-edge: session <session>: unregistered`, or why not).
  *    4. limits    every request of the run, the browser's and this process's, is counted
  *                 (`outside-edge-count.ts`) and judged against the edge's rate rules in
  *                 OUTSIDE_EDGE_LIMITS (`outside-edge-limits.ts` says the file and the rule): a
  *                 row per threshold, which fails above half of it, naming the host; and a line per
- *                 host with its peak per minute.
- *  A step whose step before it failed is UNKNOWN, never run on nothing.
+ *                 host with its peak per minute. A threshold of a host the run asked nothing, or
+ *                 one a run that did not reach every step stayed under, is UNKNOWN, not PASS.
+ *  A step whose step before it failed is UNKNOWN, never run on nothing. Step 1 passes only where
+ *  the passkey signed the person in at the link's origin, made one passkey, set a cookie there and
+ *  named the person (`GET /auth/whoami`); a page or a read that gets no answer within 30 s is
+ *  UNKNOWN, any other answer short of that FAIL.
  *
  *  Inputs, each refused by name, UNKNOWN and exit 2, when missing or malformed:
  *    OUTSIDE_INVITE_URL     the owner's enrollment link, https://<outside origin>/enroll#<token>.
@@ -55,11 +63,13 @@
  *  Optional: OUTSIDE_TAILNET_USER_CODE (above); OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to
  *  600); OUTSIDE_EDGE_TSV, the file the rows are also written to (`<state>/outside-edge.tsv` when
  *  unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each origin be http://127.0.0.1 or http://localhost,
- *  and nothing else, for this driver's own test.
+ *  and nothing else, for this driver's own test. Chromium is started with none of the OUTSIDE_*
+ *  variables, and every registration at the listener names the machine `outside-edge-e2e`.
  *
  *  `approve <code>` approves one more device-login code on the outside origin's machine-login
  *  page, in the browser state `run` kept in OUTSIDE_EDGE_STATE, and records its credential; it
- *  prints `APPROVED <code>` and exits 0, or `FAIL: <code> ...` (1) or `UNKNOWN: <code> ...` (2).
+ *  prints `APPROVED <code>` and exits 0, or `FAIL: <code> ...` (1) where the page answered short
+ *  of an approval, or `UNKNOWN: <code> ...` (2) where the page did not load or could not be driven.
  *  Another check that starts a device login of its own calls it with the code it was given.
  *
  *  `revoke` lists the person's machine logins (`GET /api/v1/machine-logins`) with the kept cookie
@@ -69,8 +79,9 @@
  *  fails its row: the person's own list is where they end it. A row passes only when the list,
  *  read again after the revoke answered 2xx, no longer holds the credential; a list that gave no
  *  answer, before or after, reads UNKNOWN. OUTSIDE_EDGE_REVOKE_KEEP names one approved code whose
- *  login it leaves live, with no row: the login a delisting window measures ending, which the
- *  person's removal ends and not this revoke.
+ *  login it leaves live, with no row, in either form the driver takes (`ABCD-EFGH`, `abcdefgh`):
+ *  the login a delisting window measures ending, which the person's removal ends and not this
+ *  revoke. An empty kept cookie is refused, UNKNOWN, as it is by `t5`.
  *
  *  `t5` is the browser's half of a delisting window: with OUTSIDE_T5_DEADLINE (Unix seconds) and
  *  OUTSIDE_T5_TSV, it asks `/auth/whoami` with the kept cookie at most every 5 s until it is
@@ -81,23 +92,32 @@
  *  did, with that session's broker credential traded for with the kept device login, and holds
  *  its relay socket and registration live for a check that acts as the person's session. It reads
  *  OUTSIDE_EDGE_STATE, OUTSIDE_PROJECT, OUTSIDE_BROKER_URL and OUTSIDE_LISTENER_URL (and
- *  OUTSIDE_EDGE_ALLOW_HTTP), no link and no peer. Once the listener took the registration it
- *  writes its pid and its start (field 22 of `/proc/<pid>/stat`) to `held` and prints
- *  `HELD <session>`; it holds until SIGTERM, or until
- *  OUTSIDE_EDGE_HOLD_SECONDS have passed (1200 when unset; 60 to 3600), then unregisters the
- *  session, writes `released` (`unregistered`, or why not) and prints `RELEASED <session>`: 0, or
- *  2 where the unregister failed. A registration the listener did not take is
- *  `UNKNOWN: <why>` (2) with no `held`, and so is a flush before it that got no answer within
- *  10 s, which sends none; a held socket the listener closed is printed with its close code, the
- *  session is not registered again, and the exit is 2. A SIGTERM before `held` is written holds
- *  nothing: before the registration is sent, none is sent; while the listener answers it, the
- *  session is unregistered once answered; either way `UNKNOWN: no session held: …` (2).
+ *  OUTSIDE_EDGE_ALLOW_HTTP), no link and no peer. It writes its pid and its start (field 22 of
+ *  `/proc/<pid>/stat`) to `holder` as it starts, and the same to `held` once the listener took
+ *  the registration, and prints `HELD <session>`. While held, it renews the registration every
+ *  OUTSIDE_EDGE_RENEW_SECONDS (90 when unset; 1 to 90), as a session host does, and registers the
+ *  session again on the socket the relay client opens after a routine close (4401, the socket's
+ *  token lapsed; 1012, the listener stops). It holds until SIGTERM, or until
+ *  OUTSIDE_EDGE_HOLD_SECONDS have passed (1200 when unset; 60 to 3600), then closes the socket,
+ *  unregisters the session, writes `released` and prints `RELEASED <session>`: `released` says
+ *  `unregistered`, exit 0, only where the session stayed registered to the end and the listener
+ *  answered the unregister; a failed unregister is exit 2 naming it. A registration the listener
+ *  did not take is `UNKNOWN: <why>` (2) with no `held`, and so is a flush before it that got no
+ *  answer within 10 s, which sends none, and a refusal of the relay subject; while held, any
+ *  other close of the socket, a socket not open again within 30 s of a routine close, and a
+ *  renewal or registration the listener refused each end the hold `UNKNOWN: …` (2), naming why,
+ *  with the session unregistered and registered no more. A SIGTERM before `held` is written
+ *  holds nothing: before the registration is sent, none is sent; while the listener answers it,
+ *  the session is unregistered once answered; either way `UNKNOWN: no session held: …` (2). Every
+ *  end after `holder` is written writes `released` naming it.
  *
- *  `release` ends that hold, reading OUTSIDE_EDGE_STATE alone: SIGTERM to the pid `held` names,
- *  up to 15 s for it to end, then `RELEASED <session>` (0) when `released` says `unregistered`,
- *  else `UNKNOWN: <why>` (2). No `held` is `UNKNOWN: no session is held`; a pid whose process did
- *  not start when `held` says is `UNKNOWN: the held process is gone`, and is not signalled; and a
- *  holder still running after the 15 s is sent SIGKILL.
+ *  `release` ends that hold, reading OUTSIDE_EDGE_STATE alone, whether or not it holds yet:
+ *  SIGTERM to the pid `holder` names, up to 15 s for it to end, then `RELEASED <session>` (0)
+ *  when `released` says `unregistered`, else `UNKNOWN: <why>` (2). No `holder` is
+ *  `UNKNOWN: no session is held`; a pid whose process did not start when `holder` says is
+ *  `UNKNOWN: the held process is gone`, and is not signalled; and a holder still running after
+ *  the 15 s is sent SIGKILL. A hold refused at its inputs leaves none of `holder`, `held` and
+ *  `released` an earlier hold wrote.
  *
  *  Output: each row as `row<TAB>want<TAB>got<TAB>PASS|FAIL|UNKNOWN` on stdout and in the TSV
  *  file, then the verdict: `PASS` (exit 0) when every row passed, `FAIL: <rows>` (exit 1) when
@@ -128,7 +148,8 @@ import {
   type KeptDeviceLogin,
   startDeviceLogin,
 } from "@legion/cipher-client/device-login";
-import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import { BrokerTradeFailedError } from "@legion/cipher-client/token-errors";
+import { EnvelopeSchema, legacyAgentSubject, SESSION_LIVE_WINDOW_MS } from "@legion/contracts";
 import type { RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 import {
@@ -137,10 +158,11 @@ import {
   createConsumerDelivery,
   type InboundUnavailable,
 } from "@legion/envoy-client/consumer-delivery";
+import { DEFAULT_HEARTBEAT_MS } from "@legion/envoy-client/envoy-settings";
 import { connectListenerRelay, type ListenerRelay } from "@legion/envoy-client/listener-relay";
 import { registerWithRelay } from "@legion/envoy-client/relay-registration";
 import { createEnvoyClient, type EnvoyClient } from "@legion/envoy-client/transport";
-import { type BrowserContext, chromium, type Page } from "@playwright/test";
+import { type Browser, type BrowserContext, chromium, type Page } from "@playwright/test";
 import { addVirtualPasskey } from "../virtual-passkey";
 import { count, counted } from "./outside-edge-count";
 import {
@@ -153,13 +175,27 @@ import {
 } from "./outside-edge-limits";
 
 /** The name every device login of this driver gives its machine, in place of this machine's own
- *  host name, which its output must not carry. */
+ *  host name, which its output must not carry. Every registration at the listener names it too, as
+ *  its `host` (`machineID()` of `@legion/envoy-client/machine` reads ENVOY_MACHINE_ID before the
+ *  kernel's host name, and the driver sets it to this before any command runs): the listener keeps
+ *  that `host` and shows it in its session lists. */
 const DEVICE_HOST = deviceLoginHost("outside-edge-e2e");
 /** How long one page step waits for what it waits on. */
 const PAGE_MS = 30_000;
 /** How long the relay socket's first open and the device login's poll may take at most. */
 const OPEN_MS = 30_000;
 const LOGIN_MS = 5 * 60_000;
+
+/** Starts Chromium with this process's environment but the driver's own inputs (`OUTSIDE_*`),
+ *  which name the link, the state directory and the edge's origins: the browser has no use for
+ *  them, and its processes are no place to keep them. */
+function launchBrowser(): Promise<Browser> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && !name.startsWith("OUTSIDE_")) env[name] = value;
+  }
+  return chromium.launch({ env });
+}
 
 /** A run that cannot start: what it could not read, which is UNKNOWN. */
 class Refused extends Error {}
@@ -210,23 +246,32 @@ class Rows {
   }
 }
 
-/** Whether `error`, or an error it was caused by, is a request that reached nobody: no
- *  connection, no name, a reset or a timeout. Such a step proved nothing, so it is UNKNOWN; any
- *  answer at all is evidence, so every other error is a FAIL. */
+/** The names the runtime gives a request that reached nobody: no connection, no name, a reset
+ *  or a timeout, as an error's `name` or `code` holds them, and as `errorClass`
+ *  (`@legion/contracts/log-text`) writes them into a cipher-client error's text. */
+const UNREACHED: Readonly<Record<string, true>> = {
+  TimeoutError: true,
+  ECONNREFUSED: true,
+  ConnectionRefused: true,
+  ENOTFOUND: true,
+  ECONNRESET: true,
+  ETIMEDOUT: true,
+  FailedToOpenSocket: true,
+};
+
+/** Whether `error`, or an error it was caused by, is a request that reached nobody. Such a step
+ *  proved nothing, so it is UNKNOWN; any answer at all is evidence, so every other error is a
+ *  FAIL. */
 function unreached(error: unknown): boolean {
   for (let at: unknown = error; at instanceof Error; at = at.cause) {
     const code = "code" in at ? at.code : undefined;
-    if (
-      at.name === "TimeoutError" ||
-      code === "ECONNREFUSED" ||
-      code === "ConnectionRefused" ||
-      code === "ENOTFOUND" ||
-      code === "ECONNRESET" ||
-      code === "ETIMEDOUT" ||
-      code === "FailedToOpenSocket"
-    ) {
-      return true;
-    }
+    if (Object.hasOwn(UNREACHED, at.name)) return true;
+    if (typeof code === "string" && Object.hasOwn(UNREACHED, code)) return true;
+    // The cipher-client's failed request to the broker keeps no cause and no code, since the
+    // library's error can hold an answer that carries a token (`brokerRefusal`), and ends its
+    // text with the failure's class instead (`…: ECONNREFUSED`, `…: TimeoutError`): read there.
+    const said = at instanceof BrokerTradeFailedError ? /: ([A-Za-z]+)$/.exec(at.message) : null;
+    if (said?.[1] !== undefined && Object.hasOwn(UNREACHED, said[1])) return true;
   }
   return false;
 }
@@ -363,20 +408,38 @@ function countBrowser(context: BrowserContext): void {
   for (const page of context.pages()) sockets(page);
 }
 
+/** What a page's own JSON read got: its answer, or why none came. */
+type PageAnswer =
+  | { readonly status: number; readonly body: unknown }
+  | { readonly unanswered: string };
+
 /** A JSON read the page's own script makes, from its origin with its cookie, so the browser
- *  counts it as it counts the page's other requests. */
-async function pageRead(page: Page, path: string): Promise<{ status: number; body: unknown }> {
-  return page.evaluate(async (at) => {
-    const response = await fetch(at, { headers: { Accept: "application/json" } });
-    const text = await response.text();
-    let body: unknown = text;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      // Not JSON: the text itself is what a refusal says.
-    }
-    return { status: response.status, body };
-  }, path);
+ *  counts it as it counts the page's other requests. It waits PAGE_MS at most: a read that got no
+ *  answer by then, or none at all, is `unanswered`, with why. */
+async function pageRead(page: Page, path: string): Promise<PageAnswer> {
+  return page.evaluate(
+    async ({ at, ms }) => {
+      try {
+        const response = await fetch(at, {
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(ms),
+        });
+        const text = await response.text();
+        let body: unknown = text;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          // Not JSON: the text itself is what a refusal says.
+        }
+        return { status: response.status, body };
+      } catch (error) {
+        return {
+          unanswered: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        };
+      }
+    },
+    { at: path, ms: PAGE_MS }
+  );
 }
 
 /** What the machine-login page answered one code. */
@@ -387,9 +450,22 @@ type Approval =
 /**
  * Approves `code` on `origin`'s machine-login page as the browser's signed-in person: it types the
  * code, looks it up, presses Approve, and reads the credential the page then names. A page that
- * did not load is unread; one that loaded and did not approve is a refusal, with what it said.
+ * did not load is unread, and so is one the driver could not drive (a box that takes no typing, a
+ * button that cannot be pressed); one that loaded and did not approve is a refusal, with what it
+ * said.
  */
 async function approveOnPage(page: Page, origin: string, code: string): Promise<Approval> {
+  try {
+    return await approveSteps(page, origin, code);
+  } catch (error) {
+    return {
+      refused: `the machine-login page could not be driven: ${messageOf(error)}`,
+      unread: true,
+    };
+  }
+}
+
+async function approveSteps(page: Page, origin: string, code: string): Promise<Approval> {
   try {
     await page.goto(`${origin}/credentials/machine`, { timeout: PAGE_MS });
   } catch (error) {
@@ -401,8 +477,8 @@ async function approveOnPage(page: Page, origin: string, code: string): Promise<
   } catch {
     return { refused: "the machine-login page shows no code box", unread: false };
   }
-  await box.fill(code);
-  await page.getByRole("button", { name: "Look up" }).click();
+  await box.fill(code, { timeout: PAGE_MS });
+  await page.getByRole("button", { name: "Look up" }).click({ timeout: PAGE_MS });
   const approve = page.getByRole("button", { name: "Approve" });
   const alert = page.getByRole("alert");
   try {
@@ -416,7 +492,7 @@ async function approveOnPage(page: Page, origin: string, code: string): Promise<
       unread: false,
     };
   }
-  await approve.click();
+  await approve.click({ timeout: PAGE_MS });
   const approved = page.getByText(/^Approved\. /);
   try {
     await approved.or(alert).first().waitFor({ timeout: PAGE_MS });
@@ -485,7 +561,7 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     });
     return undefined;
   }
-  await create.click();
+  await create.click({ timeout: PAGE_MS });
   const signedIn = page.getByText(/^Signed in as /);
   try {
     await signedIn.or(alert).first().waitFor({ timeout: PAGE_MS });
@@ -507,6 +583,17 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     });
     return undefined;
   }
+  // Where the sign-in landed: the link's origin, the outside one, and no other.
+  const landed = new URL(page.url()).origin;
+  if (landed !== inputs.origin) {
+    rows.add({
+      row: "sign-in",
+      want,
+      got: `the passkey signed the person in at ${landed}, not at the link's origin`,
+      verdict: "FAIL",
+    });
+    return undefined;
+  }
   // The passkey itself, kept so `t5` can try it again once the person is off the list: a virtual
   // authenticator lives only as long as its page, and the browser's saved state holds no key.
   const { credentials } = await passkey.cdp.send("WebAuthn.getCredentials", {
@@ -523,6 +610,15 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
   }
   keep(inputs.state, "passkey.json", JSON.stringify(credentials[0]));
   const whoami = await pageRead(page, "/auth/whoami");
+  if ("unanswered" in whoami) {
+    rows.add({
+      row: "sign-in",
+      want,
+      got: `GET /auth/whoami got no answer: ${whoami.unanswered}`,
+      verdict: "UNKNOWN",
+    });
+    return undefined;
+  }
   const login = member(whoami.body, "login");
   if (whoami.status !== 200 || typeof login !== "string" || login === "") {
     rows.add({
@@ -533,19 +629,41 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     });
     return undefined;
   }
+  // The person's cookie, which `revoke` and `t5` read: a sign-in that set none signed nobody in
+  // for them, whatever the page said.
+  const cookie = (await context.cookies(inputs.origin))
+    .map((one) => `${one.name}=${one.value}`)
+    .join("; ");
+  if (cookie === "") {
+    rows.add({
+      row: "sign-in",
+      want,
+      got: `the sign-in set no cookie for ${inputs.origin}`,
+      verdict: "FAIL",
+    });
+    return undefined;
+  }
   rows.add({
     row: "sign-in",
     want,
-    got: `signed in at ${new URL(page.url()).origin} as the invited person`,
+    got: `signed in at ${landed} as the invited person`,
     verdict: "PASS",
   });
 
   const projects = await pageRead(page, "/api/v1/projects");
-  const keys = Array.isArray(projects.body)
-    ? projects.body.map((one) => String(member(one, "key"))).sort()
-    : undefined;
   const wantProjects = `GET /api/v1/projects lists exactly [${inputs.project}]`;
-  if (projects.status !== 200 || keys === undefined) {
+  const keys =
+    "status" in projects && Array.isArray(projects.body)
+      ? projects.body.map((one) => String(member(one, "key"))).sort()
+      : undefined;
+  if ("unanswered" in projects) {
+    rows.add({
+      row: "projects",
+      want: wantProjects,
+      got: `got no answer: ${projects.unanswered}`,
+      verdict: "UNKNOWN",
+    });
+  } else if (projects.status !== 200 || keys === undefined) {
     rows.add({
       row: "projects",
       want: wantProjects,
@@ -570,12 +688,7 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
   // What `approve`, `revoke` and a later step read, each this run's own and mode 0600.
   await context.storageState({ path: join(inputs.state, "browser.json") });
   chmodSync(join(inputs.state, "browser.json"), 0o600);
-  const cookies = await context.cookies(inputs.origin);
-  keep(
-    inputs.state,
-    "cookie",
-    cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
-  );
+  keep(inputs.state, "cookie", cookie);
   keep(inputs.state, "person", login);
   keep(inputs.state, "origin", inputs.origin);
   return login;
@@ -630,13 +743,30 @@ async function deviceLogin(
     return undefined;
   }
   const stop = new AbortController();
-  const deadline = setTimeout(
-    () => stop.abort(new Error("the poll got no approval within 5 minutes")),
-    LOGIN_MS
+  const late = new Error("the poll got no approval within 5 minutes");
+  const deadline = setTimeout(() => stop.abort(late), LOGIN_MS);
+  // Whether the broker answered any poll, and how the last poll it did not answer failed: the
+  // poll asks again on every request that reached nobody (`finishDeviceLogin`), so a deadline that
+  // came with no answer at all is a broker nobody reached, UNKNOWN, not a refusal.
+  let brokerAnswered = false;
+  let lastUnanswered = "no poll was sent";
+  const pollFetch = Object.assign(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      try {
+        const answer = await fetch(input, init);
+        brokerAnswered = true;
+        return answer;
+      } catch (error) {
+        lastUnanswered = messageOf(error);
+        throw error;
+      }
+    },
+    { preconnect: fetch.preconnect }
   );
   const polled = finishDeviceLogin(started, {
     path: join(inputs.state, "device-login.json"),
     sleep: (ms) => pause(ms, stop.signal),
+    fetch: pollFetch,
   });
   // A failure of the poll is read below, after the page; it must not go unhandled meanwhile.
   polled.catch(() => undefined);
@@ -657,11 +787,14 @@ async function deviceLogin(
   try {
     login = await polled;
   } catch (error) {
+    const unanswered = error === late && !brokerAnswered;
     rows.add({
       row: "device-login",
       want,
-      got: `approved on the page, then the poll: ${messageOf(error)}`,
-      verdict: unreached(error) ? "UNKNOWN" : "FAIL",
+      got: unanswered
+        ? `approved on the page, then the broker answered no poll within 5 minutes: ${lastUnanswered}`
+        : `approved on the page, then the poll: ${messageOf(error)}`,
+      verdict: unanswered || unreached(error) ? "UNKNOWN" : "FAIL",
     });
     return undefined;
   } finally {
@@ -776,22 +909,47 @@ function aborted(signal: AbortSignal): Promise<never> {
   return promise;
 }
 
-/** Registers `session` at the listener as a session host does: its relay subject held on its
- *  open socket first, then the registration, which names the session's own agent subject alone
- *  and asks for consumer delivery. Throws where the listener did not take it: `NothingSent` where
- *  no registration went out, because the flush failed or got no answer within FLUSH_MS, or
- *  because `stop` aborted first, while the flush waited or before the registration was sent. */
-async function registerSession(
+/** The session's relay subject, held on its relay socket (`ListenerRelay.subscribe`, which the
+ *  relay client takes again on every socket it opens after), each frame of it handed to
+ *  `delivery`. A listener that refuses the subject answers an `err` frame, which ends the
+ *  subscription with an error: `refused` rejects with it, and `failure` answers it once it came,
+ *  so the refusal fails the registration that waits on it, and nothing leaves it unread. */
+interface RelaySubject {
+  readonly refused: Promise<never>;
+  failure(): unknown;
+}
+
+function holdRelaySubject(socket: ListenerRelay, delivery: ConsumerDelivery): RelaySubject {
+  const subscription = socket.subscribe(delivery.subject);
+  const refused = Promise.withResolvers<never>();
+  // Read by whichever wait it ends, and by none where none is waiting: never unhandled.
+  refused.promise.catch(() => undefined);
+  let failed: unknown;
+  void (async () => {
+    try {
+      for await (const message of subscription) delivery.receive(message);
+    } catch (error) {
+      failed = error;
+      refused.reject(error);
+    }
+  })();
+  return { refused: refused.promise, failure: () => failed };
+}
+
+/** Registers `session` at the listener on the socket that holds its relay subject, as a session
+ *  host does after each open: a flush first, so the listener has read the subject's `sub` before
+ *  the registration asks for its consumer, then the registration (`sendRegistration`). Throws
+ *  where the listener did not take it: `NothingSent` where no registration went out, because the
+ *  flush failed, got no answer within FLUSH_MS or met a refusal of the subject, or because `stop`
+ *  aborted first, while the flush waited or before the registration was sent. */
+async function registerOnSocket(
   session: string,
   socket: ListenerRelay,
   client: EnvoyClient,
   delivery: ConsumerDelivery,
+  subject: RelaySubject,
   stop?: AbortSignal
 ): Promise<void> {
-  const subscription = socket.subscribe(delivery.subject);
-  void (async () => {
-    for await (const message of subscription) delivery.receive(message);
-  })();
   const bound = AbortSignal.timeout(FLUSH_MS);
   const flushed = socket.flush();
   // The flush a bound or a stop left rejects once the socket closes, and nothing reads that.
@@ -799,10 +957,12 @@ async function registerSession(
   try {
     await Promise.race([
       flushed,
+      subject.refused,
       aborted(stop === undefined ? bound : AbortSignal.any([bound, stop])),
     ]);
   } catch (error) {
-    // What ended the wait: `stop`, whose reason the combined signal carries, or the flush.
+    // What ended the wait: `stop`, whose reason the combined signal carries, the flush, or the
+    // listener's refusal of the subject.
     if (stop !== undefined && error === stop.reason) {
       throw new NothingSent("stopped while the flush waited", true, { cause: error });
     }
@@ -814,6 +974,18 @@ async function registerSession(
       { cause: error }
     );
   }
+  await sendRegistration(session, client, delivery, stop);
+}
+
+/** The registration itself, which names the session's own agent subject alone and asks for
+ *  consumer delivery on its relay subject; a renewal sends it again as it is, the subject being
+ *  held already. Not sent once `stop` aborted (`NothingSent`). */
+async function sendRegistration(
+  session: string,
+  client: EnvoyClient,
+  delivery: ConsumerDelivery,
+  stop?: AbortSignal
+): Promise<void> {
   await registerWithRelay({
     relay: delivery,
     ownAgentSubject: legacyAgentSubject(session),
@@ -924,7 +1096,7 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
     frame.done();
   });
   try {
-    await registerSession(session, socket, client, delivery);
+    await registerOnSocket(session, socket, client, delivery, holdRelaySubject(socket, delivery));
     // The session the listener took, for a later step that acts as this person's session.
     keep(inputs.state, "session", session);
     await client.send({
@@ -939,7 +1111,7 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
       got: `the session could not register or send: ${messageOf(error)}`,
       verdict: unreached(error) ? "UNKNOWN" : "FAIL",
     });
-    await close(delivery, socket, client, session);
+    await leave(delivery, socket, client, session);
     return;
   }
   const late = setTimeout(
@@ -958,20 +1130,35 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
     rows.add({ row: "relay", want, got: messageOf(error), verdict: "FAIL" });
   } finally {
     clearTimeout(late);
-    await close(delivery, socket, client, session);
+    await leave(delivery, socket, client, session);
   }
 }
 
-/** Leaves the listener: the registration, the delivery and the socket. */
+/** Leaves the listener: the registration, the delivery and the socket. Answers the unregister's
+ *  own answer, `unregistered` or why not. */
 async function close(
   delivery: ConsumerDelivery,
   socket: ListenerRelay,
   client: EnvoyClient,
   session: string
-): Promise<void> {
+): Promise<string> {
   delivery.close();
-  await unregister(client, session);
+  const unregistered = await unregister(client, session);
   await socket.close();
+  return unregistered;
+}
+
+/** Step 3's end: `close`, and its unregister's answer printed, since a session the listener still
+ *  holds stays registered until its record lapses, and the run's output says so. */
+async function leave(
+  delivery: ConsumerDelivery,
+  socket: ListenerRelay,
+  client: EnvoyClient,
+  session: string
+): Promise<void> {
+  console.log(
+    `outside-edge: session ${session}: ${await close(delivery, socket, client, session)}`
+  );
 }
 
 async function run(env: NodeJS.ProcessEnv): Promise<number> {
@@ -1001,14 +1188,20 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
   const rows = new Rows(inputs.tsv, [token, decoded]);
   console.log(`outside-edge: origin ${inputs.origin}`);
   console.log(`outside-edge: time ${new Date().toISOString()}`);
-  const browser = await chromium.launch();
+  // Why the run's requests are not a whole run's, once a step was not run: step 4 does not pass a
+  // threshold on such a count.
+  let cut: string | undefined;
+  const notRun = (row: string, want: string, why: string) => {
+    cut ??= `the run did not reach ${row}: ${why}`;
+    rows.add({ row, want, got: `not run: ${why}`, verdict: "UNKNOWN" });
+  };
+  let browser: Browser | undefined;
   try {
+    browser = await launchBrowser();
     const context = await browser.newContext();
     countBrowser(context);
     const page = await context.newPage();
     const person = await signIn(page, context, inputs, rows);
-    const notRun = (row: string, want: string, why: string) =>
-      rows.add({ row, want, got: `not run: ${why}`, verdict: "UNKNOWN" });
     if (person === undefined) {
       notRun("device-login", "a device login approved on the page", "the sign-in did not pass");
       if (inputs.tailnetCode !== undefined)
@@ -1027,18 +1220,19 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
       else await relay(inputs, rows);
     }
   } catch (error) {
-    // An error no step read, such as a page closed under a step: the run judged nothing more, and
-    // its text goes through the rows, which withhold the token.
+    // An error no step read, such as a page closed under a step or a browser that did not start:
+    // the run judged nothing more, and its text goes through the rows, which withhold the token.
+    cut = `the run stopped: ${messageOf(error)}`;
     rows.add({
       row: "stopped",
       want: "every step judged",
-      got: `the run stopped: ${messageOf(error)}`,
+      got: cut,
       verdict: "UNKNOWN",
     });
   } finally {
-    await browser.close();
+    await browser?.close();
   }
-  const judged = judgeLimits(inputs.limits, counted);
+  const judged = judgeLimits(inputs.limits, counted, cut);
   for (const { host, perMinute } of judged.hostPeaks) {
     console.log(`outside-edge: peak ${host} ${perMinute} requests in 60 s`);
   }
@@ -1046,7 +1240,8 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
   return rows.finish();
 }
 
-/** `approve <code>`: one more code, approved in the kept browser state. */
+/** `approve <code>`: one more code, approved in the kept browser state. A browser that does not
+ *  start, or a kept state it cannot load, is UNKNOWN (2), as a page it could not drive is. */
 async function approve(env: NodeJS.ProcessEnv, code: string | undefined): Promise<number> {
   if (code === undefined || !USER_CODE.test(code)) {
     console.log(`UNKNOWN: ${code ?? "(none)"} is no device-login code (XXXX-XXXX)`);
@@ -1063,22 +1258,32 @@ async function approve(env: NodeJS.ProcessEnv, code: string | undefined): Promis
     console.log(`UNKNOWN: ${code} not approved: ${error.message}`);
     return 2;
   }
-  const browser = await chromium.launch();
+  let browser: Browser | undefined;
+  let approval: Approval;
   try {
+    browser = await launchBrowser();
     const context = await browser.newContext({ storageState: join(state, "browser.json") });
-    const approval = await approveOnPage(await context.newPage(), origin, code);
-    if ("credential" in approval) {
-      recordApproval(state, code, approval.credential);
-      console.log(`APPROVED ${code}`);
-      return 0;
-    }
-    console.log(
-      `${approval.unread ? "UNKNOWN" : "FAIL"}: ${code} not approved: ${approval.refused}`
-    );
-    return approval.unread ? 2 : 1;
+    approval = await approveOnPage(await context.newPage(), origin, code);
+  } catch (error) {
+    approval = { refused: `the browser could not be driven: ${messageOf(error)}`, unread: true };
   } finally {
-    await browser.close();
+    await browser?.close();
   }
+  if ("credential" in approval) {
+    recordApproval(state, code, approval.credential);
+    console.log(`APPROVED ${code}`);
+    return 0;
+  }
+  console.log(`${approval.unread ? "UNKNOWN" : "FAIL"}: ${code} not approved: ${approval.refused}`);
+  return approval.unread ? 2 : 1;
+}
+
+/** The person's cookie `run` kept: refused where it is empty, since a read with it would be a
+ *  read with no cookie, which says nothing of the person. */
+function keptCookie(state: string): string {
+  const cookie = kept(state, "cookie");
+  if (cookie === "") throw new Refused("OUTSIDE_EDGE_STATE's cookie is empty: the run kept none");
+  return cookie;
 }
 
 /** `revoke`: every credential the run approved, ended on the person's own list. */
@@ -1091,17 +1296,20 @@ async function revoke(env: NodeJS.ProcessEnv): Promise<number> {
   try {
     state = required(env, "OUTSIDE_EDGE_STATE");
     origin = kept(state, "origin");
-    cookie = kept(state, "cookie");
+    cookie = keptCookie(state);
     person = kept(state, "person");
     const keep = (env.OUTSIDE_EDGE_REVOKE_KEEP ?? "").trim();
     if (keep !== "" && !USER_CODE.test(keep)) {
       throw new Refused("OUTSIDE_EDGE_REVOKE_KEEP is no device-login code (XXXX-XXXX)");
     }
+    // One code in either form the driver takes, `ABCD-EFGH` or `abcdefgh`, as the broker reads a
+    // typed code: upper-cased, the hyphen dropped.
+    const bare = (code: string) => code.replaceAll("-", "").toUpperCase();
     approvals = kept(state, "approved.tsv")
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => line.split("\t"))
-      .filter(([code]) => code !== keep);
+      .filter(([code = ""]) => keep === "" || bare(code) !== bare(keep));
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
     const rows = new Rows(undefined);
@@ -1292,7 +1500,7 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
     deadlineMs = Number(deadline) * 1000;
     const state = required(env, "OUTSIDE_EDGE_STATE");
     origin = kept(state, "origin");
-    cookie = kept(state, "cookie");
+    cookie = keptCookie(state);
     credential = storedPasskey(kept(state, "passkey.json"));
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
@@ -1353,8 +1561,9 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
     });
     return rows.finish();
   }
-  const browser = await chromium.launch();
+  let browser: Browser | undefined;
   try {
+    browser = await launchBrowser();
     const page = await (await browser.newContext()).newPage();
     const passkey = await addVirtualPasskey(page);
     await passkey.cdp.send("WebAuthn.addCredential", {
@@ -1439,16 +1648,17 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
       verdict: "UNKNOWN",
     });
   } finally {
-    await browser.close();
+    await browser?.close();
   }
   return rows.finish();
 }
 
-/** What `hold` reads: where the session reaches the edge, the session `run` kept, and how long
- *  it is held at most. */
+/** What `hold` reads: where the session reaches the edge, the session `run` kept, how long it is
+ *  held at most, and how often its registration is renewed. */
 interface HoldInputs extends SessionPlace {
   readonly session: string;
   readonly seconds: number;
+  readonly renewMs: number;
 }
 
 /** A session `run` keeps (`relay`). */
@@ -1458,11 +1668,29 @@ const KEPT_SESSION = /^outside-e2e-[0-9a-f]{12}$/;
 const HOLD_SECONDS = 1200;
 const HOLD_LEAST_SECONDS = 60;
 const HOLD_MOST_SECONDS = 3600;
+/** How often a held registration is renewed when OUTSIDE_EDGE_RENEW_SECONDS is unset, and the
+ *  most that may name: as a session host renews its own (`DEFAULT_HEARTBEAT_MS`, 90 s), under a
+ *  third of the listener's window (`SESSION_LIVE_WINDOW_MS`, 300 s), past which the listener's
+ *  record of the session lapses and is relayed no more. */
+const RENEW_MOST_SECONDS = DEFAULT_HEARTBEAT_MS / 1000;
+/** The close codes after which the relay client opens the held socket again as a routine, and the
+ *  hold registers the session again on the new socket: 4401, the socket's token lapsed (an edge
+ *  relay token lasts at most 300 s, and the listener closes the socket within 25 s of its
+ *  expiry), and 1012, the listener is stopping. The relay client opens again at once after either
+ *  (`@legion/envoy-client/listener-relay`'s header). Any other close, 4403 for a revoked token
+ *  among them, ends the hold. */
+const ROUTINE_CLOSES: ReadonlySet<number> = new Set([4401, 1012]);
 /** How long `release` waits for the holder to end after its SIGTERM. */
 const RELEASE_MS = 15_000;
 /** The relay client's line for a socket the listener closed (`ListenerRelay`'s own), which names
  *  the close code and reason. */
 const CLOSED_LINE = / closed \((.+)\); it opens again in [0-9]+ ms$/;
+/** What a hold keeps in OUTSIDE_EDGE_STATE: `holder`, its pid and start, from its start, which
+ *  `release` signals; `held`, the same, once the listener took the registration, which a check
+ *  waits for; and `released`, how the hold ended. */
+const HOLDER = "holder";
+const HELD = "held";
+const RELEASED = "released";
 
 function holdInputs(env: NodeJS.ProcessEnv): HoldInputs {
   const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
@@ -1482,6 +1710,13 @@ function holdInputs(env: NodeJS.ProcessEnv): HoldInputs {
       `OUTSIDE_EDGE_HOLD_SECONDS must be a whole number of seconds from ${HOLD_LEAST_SECONDS} to ${HOLD_MOST_SECONDS}`
     );
   }
+  const renew = (env.OUTSIDE_EDGE_RENEW_SECONDS ?? "").trim() || String(RENEW_MOST_SECONDS);
+  const renewSeconds = Number(renew);
+  if (!/^[0-9]+$/.test(renew) || renewSeconds < 1 || renewSeconds > RENEW_MOST_SECONDS) {
+    throw new Refused(
+      `OUTSIDE_EDGE_RENEW_SECONDS must be a whole number of seconds from 1 to ${RENEW_MOST_SECONDS}`
+    );
+  }
   const session = kept(state, "session");
   if (!KEPT_SESSION.test(session)) {
     throw new Refused("OUTSIDE_EDGE_STATE's session is no session the driver kept");
@@ -1496,42 +1731,74 @@ function holdInputs(env: NodeJS.ProcessEnv): HoldInputs {
     broker: broker.origin,
     listener: listener.origin,
     seconds,
+    renewMs: renewSeconds * 1000,
   };
 }
 
-/** How a hold ended. */
-type HoldEnd = { readonly by: "SIGTERM" | "time" } | { readonly by: "close"; readonly why: string };
+/** How a held session's hold ended: at SIGTERM; once its time passed; at a close of its socket
+ *  that is no routine one (`ROUTINE_CLOSES`); or with its registration lost, `why` saying how: a
+ *  renewal or a registration on a reopened socket that the listener did not take, a socket that
+ *  did not open again in time, or the listener's refusal of its relay subject. */
+type HoldEnd =
+  | { readonly by: "SIGTERM" | "time" }
+  | { readonly by: "close" | "lost"; readonly why: string };
 
 /**
  * `hold`: the session `run` kept, registered at the listener again and held live, for a check that
- * acts as the person's session. It trades for the session's broker credential with the kept
- * device login, opens its relay socket and registers it as step 3 does; once the listener took the
- * registration it writes its pid and its start (field 22 of `/proc/<pid>/stat`) to `held` and
- * prints `HELD <session>`. At SIGTERM, or once
- * OUTSIDE_EDGE_HOLD_SECONDS have passed, it unregisters the session (at most UNREGISTER_MS),
- * closes the socket, writes `released`, `unregistered` or why not, and prints
- * `RELEASED <session>`: 0, or 2 where the unregister failed. A socket the listener closes ends the
- * hold too, and the session is not registered again: it prints the close with its code, writes
- * `released` naming the close, and exits 2.
+ * acts as the person's session. It writes its pid and its start (field 22 of `/proc/<pid>/stat`)
+ * to `holder` first, so `release` can end it from then on. It trades for the session's broker
+ * credential with the kept device login, opens its relay socket and registers it as step 3 does;
+ * once the listener took the registration it writes the same to `held` and prints
+ * `HELD <session>`.
+ *
+ * While held, the session stays registered as a session host keeps its own: the registration is
+ * renewed every OUTSIDE_EDGE_RENEW_SECONDS (90, a host's heartbeat, when unset), and a routine
+ * close of the socket (`ROUTINE_CLOSES`: 4401, its token lapsed, which an edge relay token does
+ * within 300 s; 1012, the listener stops) is followed by the relay client's reopen, after which
+ * the session registers again on the new socket. Any other close, a reopen that does not come
+ * within OPEN_MS, a renewal or registration the listener does not take, and a refusal of the
+ * relay subject each end the hold: it prints `UNKNOWN: …` naming why, ends the registration,
+ * writes `released` naming why, and exits 2.
+ *
+ * At SIGTERM, or once OUTSIDE_EDGE_HOLD_SECONDS have passed, it closes the socket first, so the
+ * relay client opens none again and no registration follows, waits for a registration already on
+ * the wire, unregisters the session (at most UNREGISTER_MS), writes `released`, and prints
+ * `RELEASED <session>`. `released` says `unregistered` only where the session was held registered
+ * to the end, its last registration the listener took within the listener's window
+ * (SESSION_LIVE_WINDOW_MS), and the listener answered the unregister: exit 0. A failed unregister
+ * is `released` naming it, exit 2; a registration that lapsed is `UNKNOWN: …`, exit 2.
  *
  * A SIGTERM before the session is held holds nothing, so a holder its caller gives up on ends
  * before its caller sends SIGKILL: while the socket opens or its flush waits, the hold sends no
  * registration and exits 2 at once; while the listener answers one, the hold waits for that
  * answer (the client's bound), unregisters the session (UNREGISTER_MS) and exits 2. Neither
- * writes `held`.
+ * writes `held`; each writes `released` naming why.
  */
 async function hold(env: NodeJS.ProcessEnv): Promise<number> {
   // Taken from the start: a SIGTERM before the session is held stops the hold before it sends a
-  // registration, or ends the registration it sent.
-  const ended = Promise.withResolvers<HoldEnd>();
+  // registration, or ends the registration it sent. `stop` aborts at every end, so no
+  // registration is sent once the hold is ending.
   const stop = new AbortController();
+  const ended = Promise.withResolvers<HoldEnd>();
+  let end: HoldEnd | undefined;
+  const finish = (how: HoldEnd) => {
+    if (end !== undefined) return;
+    end = how;
+    stop.abort(new Error("why" in how ? how.why : how.by));
+    ended.resolve(how);
+  };
   const terminated = () => {
     log("hold got SIGTERM");
-    stop.abort(new Error("SIGTERM"));
-    ended.resolve({ by: "SIGTERM" });
+    finish({ by: "SIGTERM" });
   };
   process.on("SIGTERM", terminated);
   try {
+    // A hold before this one wrote these, and they say nothing of this one: gone before any other
+    // input is read, so a hold refused below leaves none that `release` would read as its own.
+    const named = (env.OUTSIDE_EDGE_STATE ?? "").trim();
+    if (named !== "") {
+      for (const file of [HOLDER, HELD, RELEASED]) rmSync(join(named, file), { force: true });
+    }
     let inputs: HoldInputs;
     try {
       inputs = holdInputs(env);
@@ -1541,8 +1808,8 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
       return 2;
     }
     const { state, session } = inputs;
-    // `release` signals the pid `held` names only while that pid's process started when this one
-    // did, so a pid another process took after this one ended is never signalled.
+    // `release` signals the pid `holder` names only while that pid's process started when this
+    // one did, so a pid another process took after this one ended is never signalled.
     const holder = procStat(process.pid)?.start;
     if (holder === undefined) {
       console.log(
@@ -1550,40 +1817,41 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
       );
       return 2;
     }
-    // A hold before this one wrote these, and they say nothing of this one.
-    rmSync(join(state, "held"), { force: true });
-    rmSync(join(state, "released"), { force: true });
+    keep(state, HOLDER, `${process.pid} ${holder}`);
+    // An end before the session is held: printed, and written to `released`, which a `release`
+    // that stopped this hold reads.
+    const unheld = (why: string): number => {
+      keep(state, RELEASED, why);
+      console.log(`UNKNOWN: ${why}`);
+      return 2;
+    };
     const credential = sessionCredential(inputs, session);
-    // The close of the held socket, as the relay client logs it just after it reports the close.
-    let closedWith = "no close code was logged";
-    const logClose = (line: string) => {
+    // Each close of the held socket, as the relay client logs it just after it reports the close
+    // (`disconnect`): one line a close, read in order with those reports below.
+    const closes: string[] = [];
+    const logRelay = (line: string) => {
       log(line);
       const closed = CLOSED_LINE.exec(line);
-      if (closed?.[1] !== undefined) closedWith = closed[1];
+      if (closed?.[1] !== undefined) closes.push(closed[1]);
     };
-    const notSent = `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent`;
-    // The open ends at OPEN_MS, or at a SIGTERM, whose reason the combined signal then carries.
+    const notSent = `no session held: SIGTERM came before ${session} was registered, and no registration was sent`;
+    // The open ends at OPEN_MS, or at a SIGTERM.
     const opening = AbortSignal.any([AbortSignal.timeout(OPEN_MS), stop.signal]);
     let socket: ListenerRelay;
     try {
       socket = await connectListenerRelay(
-        { url: inputs.listener, session, credential, outage, log: logClose },
+        { url: inputs.listener, session, credential, outage, log: logRelay },
         opening
       );
     } catch (error) {
-      console.log(
-        opening.aborted && opening.reason === stop.signal.reason
+      return unheld(
+        end?.by === "SIGTERM"
           ? notSent
-          : `UNKNOWN: the relay socket of ${session} did not open: ${messageOf(error)}`
+          : `the relay socket of ${session} did not open: ${messageOf(error)}`
       );
-      return 2;
     }
+    // Read from now, so no report of the socket is missed, and taken in order once it is held.
     const statuses = socket.status();
-    void (async () => {
-      for await (const status of statuses) {
-        if (status.type === "disconnect") ended.resolve({ by: "close", why: closedWith });
-      }
-    })();
     const client = createEnvoyClient({
       baseUrl: inputs.listener,
       fetch: globalThis.fetch,
@@ -1591,56 +1859,148 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     });
     // The held session reads nothing itself: each frame is taken, so none waits on it.
     const delivery = sessionDelivery(session, socket, (frame) => frame.done());
+    const subject = holdRelaySubject(socket, delivery);
+    // When the registration the listener last took was sent.
+    let registeredAt = Date.now();
     try {
-      await registerSession(session, socket, client, delivery, stop.signal);
+      await registerOnSocket(session, socket, client, delivery, subject, stop.signal);
     } catch (error) {
       if (error instanceof NothingSent) {
         // Nothing was sent, so there is nothing to unregister.
         delivery.close();
         await socket.close();
-      } else {
-        await close(delivery, socket, client, session);
+        return unheld(
+          error.byStop ? notSent : `the listener did not register ${session}: ${messageOf(error)}`
+        );
       }
-      console.log(
-        error instanceof NothingSent && error.byStop
-          ? notSent
-          : `UNKNOWN: the listener did not register ${session}: ${messageOf(error)}`
+      const unregistered = await close(delivery, socket, client, session);
+      return unheld(
+        `the listener did not register ${session}: ${messageOf(error)}; ${unregistered}`
       );
-      return 2;
     }
-    if (stop.signal.aborted) {
-      // The SIGTERM came while the listener answered: the session it took is ended at once.
+    const refusedSubject = subject.failure();
+    if (end !== undefined || refusedSubject !== undefined) {
+      // The SIGTERM came while the listener answered, or the listener refused the subject after
+      // it took the registration: the session it took is ended at once.
       delivery.close();
       const unregistered = await unregister(client, session);
       await socket.close();
-      console.log(
-        `UNKNOWN: no session held: SIGTERM came while the listener answered the registration of ${session}; ${unregistered}`
+      return unheld(
+        end !== undefined
+          ? `no session held: SIGTERM came while the listener answered the registration of ${session}; ${unregistered}`
+          : `the listener refused the relay subject of ${session} after it took the registration: ${messageOf(refusedSubject)}; ${unregistered}`
       );
-      return 2;
     }
-    keep(state, "held", `${process.pid} ${holder}`);
+    keep(state, HELD, `${process.pid} ${holder}`);
     console.log(`HELD ${session}`);
-    const timer = setTimeout(() => ended.resolve({ by: "time" }), inputs.seconds * 1000);
-    const end = await ended.promise;
+
+    // Held: renewed at its cadence, registered again on each socket a routine close reopens, one
+    // registration after another, and lost at the first the listener does not take.
+    let renewal: Timer | undefined;
+    let reopening: { readonly why: string; readonly timer: Timer } | undefined;
+    let registering: Promise<void> = Promise.resolve();
+    const registerAgain = (what: string, onSocket: boolean): void => {
+      registering = registering.then(async () => {
+        if (end !== undefined) return;
+        const sent = Date.now();
+        try {
+          if (onSocket) {
+            await registerOnSocket(session, socket, client, delivery, subject, stop.signal);
+          } else {
+            await sendRegistration(session, client, delivery, stop.signal);
+          }
+        } catch (error) {
+          // A hold that is ending says why itself; a routine close that came while this one
+          // flushed reopens the socket, and the session registers again on the new one.
+          if (end !== undefined || (error instanceof NothingSent && reopening !== undefined)) {
+            return;
+          }
+          finish({ by: "lost", why: `${what} failed: ${messageOf(error)}` });
+          return;
+        }
+        registeredAt = sent;
+        log(`the listener took ${what} of ${session}`);
+        clearTimeout(renewal);
+        renewal = setTimeout(() => registerAgain("the renewal", false), inputs.renewMs);
+      });
+    };
+    renewal = setTimeout(() => registerAgain("the renewal", false), inputs.renewMs);
+    subject.refused.catch((error: unknown) =>
+      finish({ by: "lost", why: `the listener refused its relay subject: ${messageOf(error)}` })
+    );
+    void (async () => {
+      for await (const status of statuses) {
+        if (status.type === "disconnect") {
+          const why = closes.shift() ?? "no close code was logged";
+          if (!ROUTINE_CLOSES.has(Number.parseInt(why, 10))) {
+            finish({ by: "close", why });
+            return;
+          }
+          clearTimeout(renewal);
+          clearTimeout(reopening?.timer);
+          reopening = {
+            why,
+            timer: setTimeout(
+              () =>
+                finish({
+                  by: "lost",
+                  why: `its relay socket did not open again within ${OPEN_MS / 1000} s of the close (${why})`,
+                }),
+              OPEN_MS
+            ),
+          };
+          log(
+            `the listener closed the held socket of ${session} (${why}), a routine close: it opens again, and ${session} registers again on it`
+          );
+        } else if (status.type === "reconnect" && reopening !== undefined) {
+          clearTimeout(reopening.timer);
+          const after = reopening.why;
+          reopening = undefined;
+          registerAgain(
+            `the registration on its new relay socket after the close (${after})`,
+            true
+          );
+        }
+      }
+    })();
+    const timer = setTimeout(() => finish({ by: "time" }), inputs.seconds * 1000);
+    const how = await ended.promise;
     clearTimeout(timer);
-    if (end.by === "close") {
-      // Closed first, so the relay client opens no socket again for the session.
-      await socket.close();
-      delivery.close();
-      const unregistered = await unregister(client, session);
-      keep(state, "released", `the listener closed the held socket (${end.why}); ${unregistered}`);
+    clearTimeout(renewal);
+    clearTimeout(reopening?.timer);
+    // Closed first, so the relay client opens no socket again and no registration follows the end.
+    await socket.close();
+    delivery.close();
+    // A registration on the wire when the hold ended is answered before the unregister, which it
+    // would otherwise write back; `stop` keeps any other from being sent.
+    await registering;
+    const unregistered = await unregister(client, session);
+    if (how.by === "close") {
+      keep(state, RELEASED, `the listener closed the held socket (${how.why}); ${unregistered}`);
       console.log(
-        `UNKNOWN: the listener closed the held socket of ${session} (${end.why}); it was not registered again`
+        `UNKNOWN: the listener closed the held socket of ${session} (${how.why}); it was not registered again`
       );
+      return 2;
+    }
+    if (how.by === "lost") {
+      const why = `the hold of ${session} lost its registration: ${how.why}; ${unregistered}`;
+      keep(state, RELEASED, why);
+      console.log(`UNKNOWN: ${why}`);
       return 2;
     }
     log(
-      `the hold of ${session} ends: ${end.by === "time" ? `${inputs.seconds} s passed` : "SIGTERM"}`
+      `the hold of ${session} ends: ${how.by === "time" ? `${inputs.seconds} s passed` : "SIGTERM"}`
     );
-    delivery.close();
-    const unregistered = await unregister(client, session);
-    await socket.close();
-    keep(state, "released", unregistered);
+    // Held registered to the end: no registration was lost, and the last the listener took is
+    // inside its window, which a hold whose process stalled past its renewals would not be.
+    const age = Date.now() - registeredAt;
+    if (age >= SESSION_LIVE_WINDOW_MS) {
+      const why = `the registration of ${session} lapsed before the hold ended: the last the listener took was sent ${Math.round(age / 1000)} s before; ${unregistered}`;
+      keep(state, RELEASED, why);
+      console.log(`UNKNOWN: ${why}`);
+      return 2;
+    }
+    keep(state, RELEASED, unregistered);
     console.log(`RELEASED ${session}`);
     return unregistered === "unregistered" ? 0 : 2;
   } finally {
@@ -1664,7 +2024,7 @@ function procStat(pid: number): { readonly state: string; readonly start: string
   return state === undefined || start === undefined ? undefined : { state, start };
 }
 
-/** Whether the holder `held` names still runs: the process at `pid` is the one that started at
+/** Whether the holder `holder` names still runs: the process at `pid` is the one that started at
  *  `start`, and it has not ended (a zombie, ended and not yet reaped, has). */
 function holderRuns(pid: number, start: string): boolean {
   const stat = procStat(pid);
@@ -1672,13 +2032,15 @@ function holderRuns(pid: number, start: string): boolean {
 }
 
 /**
- * `release`: ends the hold whose process `held` names, by its pid and its start. It sends that
- * process SIGTERM and waits up to RELEASE_MS for it to end, then prints `RELEASED <session>` (0)
- * when `released` says `unregistered`, else `UNKNOWN: <why>` (2): no `held` at all, `released`
- * naming why the session was not unregistered, or a holder still running at the end of the wait,
- * which is sent SIGKILL. A pid whose process did not start when `held` says is no holder's any
- * more, and is not signalled: the held process is gone. A hold that ended wrote `released`, and
- * its pid is not signalled either.
+ * `release`: ends the hold whose process `holder` names, by its pid and its start, which the hold
+ * writes before anything else, so a hold not yet holding is ended as a holding one is. It sends
+ * that process SIGTERM and waits up to RELEASE_MS for it to end, then prints `RELEASED <session>`
+ * (0) when `released` says `unregistered`, which the hold writes only where it held the session
+ * registered to its end and the listener answered the unregister, else `UNKNOWN: <why>` (2): no
+ * `holder` at all, `released` naming why, or a holder still running at the end of the wait, which
+ * is sent SIGKILL. A pid whose process did not start when `holder` says is no holder's any more,
+ * and is not signalled: the held process is gone. A hold that ended wrote `released`, and its pid
+ * is not signalled either.
  */
 async function release(env: NodeJS.ProcessEnv): Promise<number> {
   let state: string;
@@ -1687,13 +2049,13 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
   let session: string;
   try {
     state = required(env, "OUTSIDE_EDGE_STATE");
-    if (!existsSync(join(state, "held"))) {
+    if (!existsSync(join(state, HOLDER))) {
       console.log("UNKNOWN: no session is held");
       return 2;
     }
-    const named = /^([1-9][0-9]*) ([0-9]+)$/.exec(kept(state, "held"));
+    const named = /^([1-9][0-9]*) ([0-9]+)$/.exec(kept(state, HOLDER));
     if (named === null) {
-      throw new Refused("OUTSIDE_EDGE_STATE's held names no process and its start");
+      throw new Refused("OUTSIDE_EDGE_STATE's holder names no process and its start");
     }
     pid = Number(named[1]);
     start = named[2] ?? "";
@@ -1703,7 +2065,7 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
     console.log(`UNKNOWN: ${error.message}`);
     return 2;
   }
-  const released = join(state, "released");
+  const released = join(state, RELEASED);
   if (!existsSync(released)) {
     if (!holderRuns(pid, start)) {
       // The hold may have ended, writing `released`, since the read above.
@@ -1739,7 +2101,7 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
     console.log(`UNKNOWN: the holder ${pid} of ${session} ended and wrote no released`);
     return 2;
   }
-  const said = kept(state, "released");
+  const said = kept(state, RELEASED);
   if (said !== "unregistered") {
     console.log(`UNKNOWN: ${session} was not released: ${said}`);
     return 2;
@@ -1751,6 +2113,8 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
 if (import.meta.main) {
   const [command = "run", argument] = Bun.argv.slice(2);
   const env = process.env;
+  // Every registration names this as its machine (DEVICE_HOST's doc), never this machine's own.
+  env.ENVOY_MACHINE_ID = DEVICE_HOST;
   let code: number;
   switch (command) {
     case "run":

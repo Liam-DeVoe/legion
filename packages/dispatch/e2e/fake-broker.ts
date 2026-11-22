@@ -277,17 +277,23 @@ const server = Bun.serve({
       };
       return Response.json(body);
     }
-    // A revoke of one of them, as the broker's revoke-by-approver takes it: a row listed for the
-    // approver the body names leaves every list; any other id is unknown to that approver.
+    // A revoke of one of them, as the broker's revoke-by-approver answers it
+    // (internal/cipher/api/handlers_ui_machinelogin.go): a body that names nobody is 400
+    // APPROVER_REQUIRED; an id no login has is 404 NOT_FOUND; a login listed for nobody the body
+    // names is 403 NOT_APPROVER, ending nothing; a login listed for that person leaves every list.
     const revoked = /^\/v1\/launcher-credentials\/([^/]+)\/revoke-by-approver$/.exec(url.pathname);
     if (request.method === "POST" && revoked !== null) {
       const credentialID = decodeURIComponent(revoked[1] ?? "");
-      const { approver } = (await request.json()) as { approver?: string };
-      const found = state.launcherCredentials.find(
-        (row) => row.credential_id === credentialID && row.listedFor === approver
-      );
-      if (found === undefined) {
-        return brokerError(404, "NOT_FOUND", "no machine login of that approver has that id");
+      const { approver = "" } = (await request.json()) as { approver?: string };
+      if (approver === "") {
+        return brokerError(400, "APPROVER_REQUIRED", "approver is required");
+      }
+      const rows = state.launcherCredentials.filter((row) => row.credential_id === credentialID);
+      if (rows.length === 0) {
+        return brokerError(404, "NOT_FOUND", "no machine login has that id");
+      }
+      if (!rows.some((row) => row.listedFor === approver)) {
+        return brokerError(403, "NOT_APPROVER", `${approver} may not revoke this machine login`);
       }
       state = {
         ...state,

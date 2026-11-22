@@ -991,27 +991,36 @@ step before it failed is `UNKNOWN`, never run on nothing:
 
 1. The owner's link enrolls a passkey on Chromium's virtual authenticator
    (`e2e/virtual-passkey.ts`), which signs the person in at the link's origin, and
-   `GET /api/v1/projects` must list exactly `OUTSIDE_PROJECT`; a project beside it is named.
+   `GET /api/v1/projects` must list exactly `OUTSIDE_PROJECT`; a project beside it is named. The
+   step passes only where the sign-in landed at the link's origin, made one passkey, set a cookie
+   there and named the person; a page or read with no answer within 30 s is `UNKNOWN`.
 2. The broker client (`@legion/cipher-client/device-login`) asks the broker for a device login of
    this machine, and the browser approves its code on the outside origin's machine-login page,
-   with `OUTSIDE_TAILNET_USER_CODE` beside it when set (`APPROVED <code>`).
+   with `OUTSIDE_TAILNET_USER_CODE` beside it when set (`APPROVED <code>`). A broker nothing
+   answers, at the start or in every poll until the 5-minute deadline, is `UNKNOWN`; a refusal,
+   an expired code or a denial the broker answered is `FAIL`.
 3. The device login's broker credential opens the session's relay socket at the listener
    (`@legion/envoy-client/listener-relay`), the session registers
-   (`@legion/envoy-client/relay-registration`) and is kept in `OUTSIDE_EDGE_STATE`'s `session`
-   once the listener took it, sends `outside-e2e ping <nonce> at <ms>` to the peer, and the peer's
-   `outside-e2e pong <nonce> …` must come back on the socket within `OUTSIDE_EDGE_REPLY_SECONDS`
-   (30), else the row names the peer.
+   (`@legion/envoy-client/relay-registration`), naming the machine `outside-edge-e2e` and never
+   this one, and is kept in `OUTSIDE_EDGE_STATE`'s `session` once the listener took it, sends
+   `outside-e2e ping <nonce> at <ms>` to the peer, and the peer's `outside-e2e pong <nonce> …`
+   must come back on the socket within `OUTSIDE_EDGE_REPLY_SECONDS` (30), else the row names the
+   peer. The session's unregister is printed with its answer.
 4. Every request of the run, the browser's and the process's, is judged against the rate rules
    of `OUTSIDE_EDGE_LIMITS`, `priority host match path count seconds` lines
    (`e2e/acceptance/outside-edge-limits.ts` says how a request finds its rule): a row per
    threshold, which fails when the run's peak in any window of its length is above half its
-   count, naming the host.
+   count, naming the host. A threshold of a host the run asked nothing, or one a run that did
+   not reach every step stayed under, is `UNKNOWN`.
 
 `bun e2e/acceptance/outside-edge.ts approve <code>` approves one more code in the browser state
 the run kept in `OUTSIDE_EDGE_STATE` (another check that starts a device login of its own calls
-it), and `revoke` ends each recorded device login on the person's own machine-logins list, a row
-each, but the one `OUTSIDE_EDGE_REVOKE_KEEP` names: a row passes only when the list, read again
-after the revoke, no longer holds the login, and reads `UNKNOWN` when the list gave no answer.
+it), `UNKNOWN` where the page could not be driven, and `revoke` ends each recorded device login on
+the person's own machine-logins list, a row each, but the one `OUTSIDE_EDGE_REVOKE_KEEP` names. That
+variable names one device-login code, matched whatever its letter case and with or without its
+hyphen, so `ABCD-EFGH` and `abcdefgh` keep the same login; it is no list and no prefix. A row passes
+only when the list, read again after the revoke, no longer holds the login, and reads `UNKNOWN`
+when the list gave no answer, before the revoke or after it.
 `t5` is the browser's half of a delisting window: until `OUTSIDE_T5_DEADLINE` it asks
 `/auth/whoami` with the kept cookie, and once that is answered 401 it tries the kept passkey in a
 fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
@@ -1024,46 +1033,69 @@ a page names it.
 `hold` registers the session the run kept at the listener again and holds it live, for a check
 that acts as the person's session: it reads `OUTSIDE_EDGE_STATE`, `OUTSIDE_PROJECT`,
 `OUTSIDE_BROKER_URL` and `OUTSIDE_LISTENER_URL` and no link or peer, writes its pid and its start
-(field 22 of `/proc/<pid>/stat`) to `held` and prints `HELD <session>` once the listener took the
-registration, and holds until SIGTERM or
-`OUTSIDE_EDGE_HOLD_SECONDS` (1200, from 60 to 3600). Then it unregisters the session, writes
-`released` (`unregistered`, or why not) and prints `RELEASED <session>`, exiting 2 where the
-unregister failed. A registration the listener refused is `UNKNOWN` with no `held`, as is a flush
-before it that got no answer within 10 s, which sends none; a held socket the listener closed is
-printed with its close code and not registered again, exit 2. A SIGTERM before `held` is written
-holds nothing: before the registration is sent, none is sent; while the listener answers it, the
-session is unregistered once answered; either way `UNKNOWN: no session held: …`, exit 2.
-`release`, with `OUTSIDE_EDGE_STATE` alone, sends the holder SIGTERM, waits up to 15 s, and prints
-`RELEASED <session>` only when `released` says `unregistered`; a holder still running then is
-sent SIGKILL, exit 2. A pid whose process did not start when `held` says is not signalled:
-`UNKNOWN: the held process is gone`, exit 2.
+(field 22 of `/proc/<pid>/stat`) to `holder` as it starts and to `held` once the listener took the
+registration, prints `HELD <session>`, and holds until SIGTERM or `OUTSIDE_EDGE_HOLD_SECONDS`
+(1200, from 60 to 3600). While held it keeps the session registered as a session host does: it
+renews the registration every `OUTSIDE_EDGE_RENEW_SECONDS` (90, from 1 to 90; the listener's record
+of a session lapses 5 minutes after its last registration), and after a routine close of the
+socket (4401, its token lapsed, which an edge relay token does within 300 s; 1012, the listener
+stops) it registers the session again on the socket the relay client opens. At its end it closes
+the socket, unregisters the session, writes `released` and prints `RELEASED <session>`;
+`released` says `unregistered`, exit 0, only where the session stayed registered to the end and
+the listener answered the unregister, and a failed unregister is exit 2. A registration or a relay
+subject the listener refused is `UNKNOWN` with no `held`, as is a flush before it that got no
+answer within 10 s, which sends none. While held, any other close, a socket not open again within
+30 s of a routine close, and a renewal or registration the listener refused each end the hold
+`UNKNOWN`, naming why, with the session unregistered and not registered again, exit 2. A SIGTERM
+before `held` is written holds nothing: before the registration is sent, none is sent; while the
+listener answers it, the session is unregistered once answered; either way
+`UNKNOWN: no session held: …`, exit 2. `release`, with `OUTSIDE_EDGE_STATE` alone, sends the
+process `holder` names SIGTERM, held yet or not, waits up to 15 s, and prints `RELEASED <session>`
+only when `released` says `unregistered`; a holder still running then is sent SIGKILL, exit 2. A
+pid whose process did not start when `holder` says is not signalled:
+`UNKNOWN: the held process is gone`, exit 2. A hold refused at its inputs removes the files an
+earlier hold left.
 
 `bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts
 e2e/__tests__/outside-edge-hold.test.ts` drives it. The input rows run anywhere. The control rows
 run the driver against an outside origin stand-in (`e2e/__tests__/outside-edge-origin-stand-in.ts`):
 `t5` against each answer of the passkey sign-in that is not its refusal (no answer, 404, 429,
-another code), `revoke` against a revoke that ends nothing and a list that gives no answer, the run
-against a link whose page does not load or names the link, and the request counter against the
-relay client's socket. Those that start Chromium skip where Playwright's Chromium is not
-installed. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against envoy-client's
-relay socket stand-in with a device login the real broker client made: held then released,
-held until its 60 s, a hold time out of range, a refused registration, a closed held socket, a
-failed unregister, nothing to release, a holder that ignores SIGTERM, a held pid whose process
-started at another time, which is not signalled, a flush the listener never answers, and a
-SIGTERM while the socket opens, while the flush waits and while the listener answers the
-registration, each against a listener that answers late or not at all. The stack rows start one
-stack of the harness under `DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`),
-with an edge stand-in that serves the broker's device grant and the listener on envoy-client's
-relay socket stand-in (`e2e/__tests__/outside-edge-stand-in.ts`), and run the driver once per
-case: a person on one project passes, keeps the one session the listener took, and `hold` and
-`release` hold and end it, then `approve`, `revoke` and `t5` before and after the owner takes them
-off, and `t5` for a person still listed, whose restored passkey signs them in; a person on a
-second project fails step 1 naming it; a peer that never answers fails step 3 naming the peer; a
-threshold of 1 fails step 4 naming the host. They need `DISPATCH_E2E_PG_BIN` or
-`DISPATCH_E2E_PG_IMAGE`, Chromium and the built dashboard (`bun run build:web`), and skip with the
-reason printed without a Postgres provider. CI runs them in
-`.github/workflows/dispatch-browser.yaml`'s two-process job, and the rows of
-`outside-edge-hold.test.ts` in `ci.yaml`'s `dispatch-ui` job with the rest of `e2e/__tests__`.
+another code), `revoke` against a revoke that ends nothing and a list that gives no answer before
+or after the revoke, the run against a link whose page does not load or names the link, step 1
+against each way a sign-in falls short after its page loaded (no Create button, no sign-in, a
+refusal, no passkey, another origin, no cookie, no person, no answer), step 2 against each way a
+device login falls short (no broker, a refusal, another origin's page, no code box, a box that
+takes no typing, no answer, a refused code or approval, no credential, a denied poll), `approve`
+against a page it cannot drive, Chromium's environment, which holds none of the driver's
+inputs, and the request counter against the relay client's socket. Those that start Chromium
+skip where Playwright's Chromium is not installed. A row reads the fake broker's revoke of a
+machine login. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against
+envoy-client's relay socket stand-in, whose listener routes take only the session's own token and
+topic (`e2e/__tests__/outside-edge-credentials.ts`), with a device login the real broker client
+made: held then released, naming the machine `outside-edge-e2e`; held until its 60 s; a hold or
+renewal time out of range; a refused registration or relay subject; a held socket closed 4403; a
+failed unregister; nothing to release; files an earlier hold left; a holder that ignores
+SIGTERM; a held pid whose process started at another time, which is not signalled; a flush the
+listener never answers; a SIGTERM while the socket opens, while the flush waits and while the
+listener answers the registration; a release before `held`; tokens that last 3 s, closed 4401 at
+each lapse, and the listener's stop (1012), registered again on each new socket; a registration
+that lapses after 5 s unrenewed, held past it; a refused renewal; and a SIGTERM while a closed
+socket opens again, which sends no registration after it. They skip where there is no `/proc`,
+and the rows that wait out real time skip under `DISPATCH_UNIT_REPEAT`, which
+`bun run test:repeat` sets. The stack rows start one stack of the harness under
+`DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`), with an edge stand-in that
+serves the broker's device grant and the listener on envoy-client's relay socket stand-in
+(`e2e/__tests__/outside-edge-stand-in.ts`), taking only the session's own credential, and run the
+driver once per case: a person on one project passes, keeps the one session the listener took,
+names the machine `outside-edge-e2e` in each registration, and `hold` and `release` hold and end
+it, then `approve`, `revoke` and `t5` before and after the owner takes them off, and `t5` for a
+person still listed, whose restored passkey signs them in; a person on a second project fails
+step 1 naming it; a peer that never answers fails step 3 naming the peer; a threshold of 1 fails
+step 4 naming the host. They need `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, Chromium and
+the built dashboard (`bun run build:web`), and skip with the reason printed without a Postgres
+provider. CI runs them in `.github/workflows/dispatch-browser.yaml`'s two-process job, which only
+the full lane runs, and the rows of `outside-edge-hold.test.ts` in `ci.yaml`'s `dispatch-ui` job
+with the rest of `e2e/__tests__`.
 
 `e2e/acceptance/restricted-sweep.sh` is the driver of the check `c-restricted-sweep`: a read sweep
 of a deployment as a restricted member, for the objects of one project whose access list does not

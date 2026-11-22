@@ -12,9 +12,10 @@
  *  them. A rerun of a file keeps the modules its first run loaded, so only the first run of each
  *  file is cold: run that lane with `--reruns 1`. The harness lane is
  *  `bun run test:harness e2e/__tests__`. The tool runs the lane from this package's directory,
- *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter. It
- *  prints the seed before the run starts, so a run killed midway still names its seed. During the
- *  run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
+ *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter, and
+ *  sets DISPATCH_UNIT_REPEAT=1 for Bun's run (`repeatMarker`). It prints the seed before the run
+ *  starts, so a run killed midway still names its seed. During the run it prints only Bun's
+ *  summary lines. Bun's whole output goes to `<out>/bun.log`.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
@@ -83,6 +84,15 @@ const lanes: Readonly<Record<Lane, LaneScript>> = {
   "web-cold": { script: "test:web:cold", target: "web/src" },
   harness: { script: "test:harness", target: "e2e/__tests__" },
 };
+
+/** What the tool sets for the Bun run of every lane, so a row can tell it runs many times over.
+ *  Rows that wait out a span of real time skip under it: e2e/__tests__/outside-edge-hold.test.ts's
+ *  60 s hold, 15 s release, 10 s flush and its rows on short tokens and a short lapse, each a
+ *  process of its own on the real clock. Twenty reruns of them would spend about half an hour of
+ *  a harness leg waiting, past the 30-minute step dispatch-unit-repeat.yaml gives it, and the
+ *  waits find no fault a single run does not; each runs once a run in ci.yaml's dispatch-ui job,
+ *  with the rest of e2e/__tests__. */
+const repeatMarker = { DISPATCH_UNIT_REPEAT: "1" } as const;
 
 const laneNames = Object.keys(lanes);
 
@@ -959,7 +969,13 @@ export async function runLane(
       "--reporter=junit",
       `--reporter-outfile=${junitPath}`,
     ],
-    { cwd: packageDirectory, stdin: "ignore", stdout: "pipe", stderr: "pipe" }
+    {
+      cwd: packageDirectory,
+      env: { ...process.env, ...repeatMarker },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    }
   );
   const memory: MemorySample[] = [];
   const sample = () => {

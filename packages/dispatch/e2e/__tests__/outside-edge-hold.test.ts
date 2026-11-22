@@ -3,26 +3,42 @@
  *  session, then ended. The rows run them against a stand-in of the edge: envoy-client's relay
  *  socket stand-in (`@legion/envoy-client/test/relay-socket-stand-in`), its broker's trade and its
  *  socket, with the device login's grants, the registration and its end served through its
- *  `routes`. Each row first makes a device login with the real broker client and keeps it, and a
- *  session, where `run` keeps them, then runs the driver with the variables a check gives it and
- *  no other: `hold` with OUTSIDE_PROJECT, OUTSIDE_BROKER_URL, OUTSIDE_LISTENER_URL and
- *  OUTSIDE_EDGE_STATE (and OUTSIDE_EDGE_ALLOW_HTTP, for the stand-in's http), `release` with
- *  OUTSIDE_EDGE_STATE alone. Each way a hold ends is a row, and so is each refusal: a hold time
- *  outside 60 to 3600 s, a listener that refuses the registration, a listener that closes the held
- *  socket, an unregister that fails, no hold to release, a holder that ignores SIGTERM, and a held
- *  pid whose process started at another time, which release does not signal. So is each way a
- *  hold ends before it holds anything: a flush the listener never answers, which fails at its
- *  bound; and a SIGTERM while the socket opens, while the flush waits, and while the listener
- *  answers the registration, after which no registration stands. For the first three a mute
- *  listener (`startMuteListener`) takes the socket and answers nothing on it. The rows start no
- *  browser and no stack, so they run wherever `e2e/__tests__` runs; they read `/proc`, as `hold`
- *  and `release` do. */
+ *  `routes`, each taking only the session's own credential (`outside-edge-credentials.ts`). Each
+ *  row first makes a device login with the real broker client and keeps it, and a session, where
+ *  `run` keeps them, then runs the driver with the variables a check gives it and no other: `hold`
+ *  with OUTSIDE_PROJECT, OUTSIDE_BROKER_URL, OUTSIDE_LISTENER_URL and OUTSIDE_EDGE_STATE (and
+ *  OUTSIDE_EDGE_ALLOW_HTTP, for the stand-in's http), `release` with OUTSIDE_EDGE_STATE alone.
+ *
+ *  Each way a hold ends is a row, and so is each refusal: a hold time outside 60 to 3600 s, a
+ *  listener that refuses the registration or the relay subject, a listener that closes the held
+ *  socket for good, an unregister that fails, no hold to release, a holder that ignores SIGTERM,
+ *  and a held pid whose process started at another time, which release does not signal. So is
+ *  each way a hold stays held, against a stand-in whose tokens last 3 s, closing the socket 4401
+ *  at each lapse, and one whose registrations lapse after 5 s unrenewed, as the real listener's
+ *  last at most 300 s and 5 minutes: two token lapses and the listener's own stop (1012), each
+ *  registered again on the new socket, and a hold renewed past the lapse; a renewal the listener
+ *  refuses ends it, and a SIGTERM while a closed socket opens again sends no registration after
+ *  it. So is each way a hold ends before it holds anything: a flush the listener never answers,
+ *  which fails at its bound; a SIGTERM while the socket opens, while the flush waits, and while
+ *  the listener answers the registration, after which no registration stands; a `release` that
+ *  comes before `held`; and files an earlier hold left, which a refused hold must not leave for
+ *  `release` to read. For the flush rows a mute listener (`startMuteListener`) takes the socket
+ *  and answers nothing on it. The rows start no browser and no stack, so they run wherever
+ *  `e2e/__tests__` runs; they read `/proc`, as `hold` and `release` do, and skip where there is
+ *  none.
+ *
+ *  The rows that wait out a span of real time - the 60 s hold, the 15 s release, the 10 s flush,
+ *  and the rows on short tokens and a short lapse, each some seconds - skip under
+ *  DISPATCH_UNIT_REPEAT, which `bun run test:repeat` (`e2e/tools/unit-repeat.ts`) sets: its
+ *  harness lane runs this directory 20 times under a 30-minute step, and these rows would spend
+ *  minutes of it each run waiting, finding no fault a single run does not. Each `hold` is a
+ *  process of its own on the real clock, so no fake timer can drive these waits. */
 
 import { describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -48,30 +64,58 @@ import {
   watch,
   whether,
 } from "./bounded-subprocess";
+import { sessionRefusal, topicRefusal, tradeRefusal } from "./outside-edge-credentials";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driver = join(dispatchPackage, "e2e/acceptance/outside-edge.ts");
+/** The machine name every registration of the driver names (its DEVICE_HOST). */
+const deviceHost = deviceLoginHost("outside-edge-e2e");
+/** A row that waits out a span of real time, skipped in the repeat lane (this file's head). */
+const realTimeRow = process.env.DISPATCH_UNIT_REPEAT === "1" ? test.skip : test;
 
 /** The edge stand-in of these rows, and what it was asked. */
 interface HoldEdge {
   readonly relay: RelaySocketStandIn;
-  /** The session each registration named, and each unregister, in order. */
+  /** The session each registration named, in order, taken or refused; when each registration it
+   *  took was taken, and the `host` each named; each unregister; and each request a listener route
+   *  or the exchange refused for its credential or its topics, with why. */
   readonly registrations: string[];
+  readonly taken: number[];
+  readonly hosts: string[];
   readonly unregisters: string[];
+  readonly refusals: string[];
 }
 
 /** Starts the edge: the relay socket stand-in, which trades and serves the socket, with the
- *  device login's two grants, approved at once, the registration and its end. `registration`
- *  and `unregister` are the statuses those two answer, 200 where unset; with `answerAfter`, the
- *  registration is answered only once that settles. */
+ *  device login's two grants, approved at once, the registration and its end, each listener route
+ *  taking only the session's own token and proof and a registration only the session's own topic
+ *  (`outside-edge-credentials.ts`), and the exchange only a subject token the device grant
+ *  issued. `registration` and `unregister` are the statuses those two answer, 200 where unset;
+ *  with `refuseAfter`, every registration after that many is refused 403; with `answerAfter`,
+ *  the registration is answered only once that settles. */
 function startHoldEdge(
-  answers: { registration?: number; unregister?: number; answerAfter?: Promise<unknown> } = {}
+  answers: {
+    registration?: number;
+    refuseAfter?: number;
+    unregister?: number;
+    answerAfter?: Promise<unknown>;
+  } = {}
 ): HoldEdge {
   const registrations: string[] = [];
+  const taken: number[] = [];
+  const hosts: string[] = [];
   const unregisters: string[] = [];
-  const pair = () =>
-    Response.json({
-      access_token: `hold-login-${randomBytes(16).toString("hex")}`,
+  const refusals: string[] = [];
+  const issued = new Set<string>();
+  const refused = async (what: string, refusal: Response | undefined) => {
+    if (refusal !== undefined) refusals.push(`${what}: ${await refusal.clone().text()}`);
+    return refusal;
+  };
+  const pair = () => {
+    const accessToken = `hold-login-${randomBytes(16).toString("hex")}`;
+    issued.add(accessToken);
+    return Response.json({
+      access_token: accessToken,
       token_type: "DPoP",
       expires_in: 900,
       refresh_token: `hold-refresh-${randomBytes(16).toString("hex")}`,
@@ -81,6 +125,7 @@ function startHoldEdge(
         .toISOString()
         .replace(/\.\d{3}Z$/, "Z"),
     });
+  };
   const relay = startRelaySocketStandIn({
     routes: async (request, standIn) => {
       const { pathname } = new URL(request.url);
@@ -94,25 +139,37 @@ function startHoldEdge(
         });
       }
       if (request.method === "POST" && pathname === "/v1/oauth/token") {
-        const grant = new URLSearchParams(await request.text()).get("grant_type");
+        const form = new URLSearchParams(await request.text());
+        const grant = form.get("grant_type");
         if (grant === "urn:ietf:params:oauth:grant-type:device_code" || grant === "refresh_token")
           return pair();
-        // The exchange: the stand-in's own trade mints the session's token.
-        return undefined;
+        // The exchange: the stand-in's own trade mints the session's token, for a subject token
+        // the device grant issued.
+        return refused("the exchange", tradeRefusal(form, issued));
       }
       if (request.method === "POST" && pathname === "/v1/interests/subscribe") {
         const body: unknown = await request.json();
-        const session =
-          typeof body === "object" && body !== null ? String(Reflect.get(body, "session_id")) : "";
+        const field = (name: string) =>
+          typeof body === "object" && body !== null ? Reflect.get(body, name) : undefined;
+        const session = String(field("session_id"));
+        const refusal =
+          (await refused("a registration", await sessionRefusal(request, standIn, session))) ??
+          (await refused("a registration", topicRefusal(session, field("topics"))));
+        if (refusal !== undefined) return refusal;
         registrations.push(session);
         await answers.answerAfter;
-        const status = answers.registration ?? 200;
+        const status =
+          answers.refuseAfter !== undefined && registrations.length > answers.refuseAfter
+            ? 403
+            : (answers.registration ?? 200);
         if (status !== 200) {
           return Response.json(
             { error: "the stand-in refuses this registration", code: "registration_refused" },
             { status }
           );
         }
+        taken.push(Date.now());
+        hosts.push(String(field("host")));
         return Response.json({
           session_id: session,
           machine_id: "outside-edge-hold-stand-in",
@@ -123,7 +180,13 @@ function startHoldEdge(
       }
       const ended = /^\/v1\/sessions\/([^/]+)$/.exec(pathname);
       if (request.method === "DELETE" && ended !== null) {
-        unregisters.push(decodeURIComponent(ended[1] ?? ""));
+        const session = decodeURIComponent(ended[1] ?? "");
+        const refusal = await refused(
+          "an unregister",
+          await sessionRefusal(request, standIn, session)
+        );
+        if (refusal !== undefined) return refusal;
+        unregisters.push(session);
         const status = answers.unregister ?? 200;
         if (status !== 200) {
           return Response.json({ error: "the stand-in refuses this unregister" }, { status });
@@ -133,7 +196,26 @@ function startHoldEdge(
       return undefined;
     },
   });
-  return { relay, registrations, unregisters };
+  return { relay, registrations, taken, hosts, unregisters, refusals };
+}
+
+/** Closes the held socket of `session` 4401 each time the token it was opened with has lapsed, as
+ *  the listener closes an open socket at its next check after its token's expiry (the listener
+ *  checks every 20 s; this every 100 ms, on the real clock the token lapses on, since the hold
+ *  that trades for it is another process). Answers how many sockets it closed, and its stop. */
+function closeAtTokenLapse(edge: HoldEdge, session: string): { closes(): number; stop(): void } {
+  const closed = new Set<string>();
+  const timer = setInterval(() => {
+    const opened = edge.relay.upgrades
+      .filter((one) => one.session === session && one.status === 101)
+      .at(-1);
+    if (opened === undefined || closed.has(opened.token)) return;
+    const token = edge.relay.minted.find((one) => one.value === opened.token);
+    if (token === undefined || token.expiresAt > Date.now()) return;
+    closed.add(opened.token);
+    edge.relay.close(4401, "the token lapsed", session);
+  }, 100);
+  return { closes: () => closed.size, stop: () => clearInterval(timer) };
 }
 
 /** A state directory as `run` leaves it for `hold`: a device login made with the real broker
@@ -195,10 +277,15 @@ interface DrivenHold {
   kill(): void;
 }
 
-function driveHold(broker: string, listener: string, state: string): DrivenHold {
+function driveHold(
+  broker: string,
+  listener: string,
+  state: string,
+  extra: Record<string, string> = {}
+): DrivenHold {
   const child = Bun.spawn(["bun", driver, "hold"], {
     cwd: dispatchPackage,
-    env: holdEnv(broker, listener, state),
+    env: { ...holdEnv(broker, listener, state), ...extra },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -382,7 +469,7 @@ function namedBy(path: string): { readonly pid: number; readonly start: number }
 }
 
 /** A holder that takes SIGTERM and goes on, printing that it took it. Once its handler is in
- *  place it writes `<pid> <start>` to `at`, as `hold` names itself in `held`, so a SIGTERM sent
+ *  place it writes `<pid> <start>` to `at`, as `hold` names itself in `holder`, so a SIGTERM sent
  *  after that reaches the handler. */
 function stubbornHolder(at: string): Promise<BoundedRun> {
   const holder = runBounded({
@@ -406,394 +493,682 @@ setInterval(() => undefined, 1_000);`,
   return holder;
 }
 
+/** The times of `edge`'s 101 upgrades of `session`: each socket the hold opened. */
+function socketsOpened(edge: HoldEdge, session: string): number[] {
+  return edge.relay.upgrades
+    .filter((one) => one.session === session && one.status === 101)
+    .map((one) => one.at);
+}
+
 // One row after another, not at once: the edge stand-in answers from this process, and each
 // bounded child that ends holds this process's event loop while it reads the process table
 // (`stopTree`), about 1 s a child on a box of 19,739 processes on 2026-11-21. Nine rows at once
 // stacked those reads until the stand-in answered a hold's trade too late and `held` came after
 // the short bound; one row at a time, no other row's children end while a hold waits on it.
-describe("hold and release, against an edge stand-in", () => {
-  test(
-    "hold registers the kept session and holds its socket until release ends it, unregistered",
-    async () => {
-      const edge = startHoldEdge();
-      const { state, session } = await keptState(edge);
-      try {
-        const held = hold(edge, state);
-        await heldBy(state, held);
-        // While held: the session registered once, its socket open, its relay subject taken.
-        expect(edge.registrations).toEqual([session]);
-        expect(edge.relay.sockets(session)).toBe(1);
-        expect(edge.relay.subs).toContainEqual({
-          session,
-          subject: standInDeliverSubject(session),
+describe.skipIf(!existsSync("/proc/self/stat"))(
+  "hold and release, against an edge stand-in",
+  () => {
+    test(
+      "hold registers the kept session under the device login's machine name and holds its socket until release ends it, unregistered",
+      async () => {
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        try {
+          const held = hold(edge, state);
+          await heldBy(state, held);
+          // While held: the session registered once, its socket open, its relay subject taken.
+          expect(edge.registrations).toEqual([session]);
+          expect(edge.relay.sockets(session)).toBe(1);
+          expect(edge.relay.subs).toContainEqual({
+            session,
+            subject: standInDeliverSubject(session),
+          });
+          // The registration names the device login's machine name, never this machine's, and
+          // carried the session's own token and topic alone.
+          expect(edge.hosts).toEqual([deviceHost]);
+          expect(edge.hosts).not.toContain(hostname());
+          expect(edge.refusals).toEqual([]);
+          const { pid, start } = namedBy(join(state, "held")) ?? { pid: 0, start: 0 };
+          expect(pid).toBeGreaterThan(0);
+          expect(start).toBe(startOf(pid));
+          expect(namedBy(join(state, "holder"))).toEqual({ pid, start });
+          expect(modeOf(join(state, "held"))).toBe(0o600);
+          expect(modeOf(join(state, "holder"))).toBe(0o600);
+          expect(edge.unregisters).toEqual([]);
+          const released = await release(state);
+          expect(released.stdout).toBe(`RELEASED ${session}\n`);
+          expect(released.code).toBe(0);
+          const ran = await held;
+          expect(ran.stdout).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(ran.code).toBe(0);
+          expect(ran.stderr).toContain(`the hold of ${session} ends: SIGTERM`);
+          expect(readFileSync(join(state, "released"), "utf8")).toBe("unregistered");
+          expect(modeOf(join(state, "released"))).toBe(0o600);
+          expect(edge.unregisters).toEqual([session]);
+          expect(edge.registrations).toEqual([session]);
+          expect(edge.refusals).toEqual([]);
+          await eventually("the held socket's close", () => edge.relay.sockets(session) === 0);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short", "short")
+    );
+
+    realTimeRow(
+      "hold ends itself once OUTSIDE_EDGE_HOLD_SECONDS have passed since the listener took the session, the least of them, 60",
+      async () => {
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, edge.relay.url, state, {
+          OUTSIDE_EDGE_HOLD_SECONDS: "60",
         });
-        const { pid, start } = namedBy(join(state, "held")) ?? { pid: 0, start: 0 };
-        expect(pid).toBeGreaterThan(0);
-        expect(start).toBe(startOf(pid));
-        expect(modeOf(join(state, "held"))).toBe(0o600);
-        expect(edge.unregisters).toEqual([]);
-        const released = await release(state);
-        expect(released.stdout).toBe(`RELEASED ${session}\n`);
-        expect(released.code).toBe(0);
-        const ran = await held;
-        expect(ran.stdout).toBe(`HELD ${session}\nRELEASED ${session}\n`);
-        expect(ran.code).toBe(0);
-        expect(ran.stderr).toContain(`the hold of ${session} ends: SIGTERM`);
-        expect(readFileSync(join(state, "released"), "utf8")).toBe("unregistered");
-        expect(modeOf(join(state, "released"))).toBe(0o600);
-        expect(edge.unregisters).toEqual([session]);
-        expect(edge.registrations).toEqual([session]);
-        await eventually("the held socket's close", () => edge.relay.sockets(session) === 0);
-      } finally {
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("outsideEdgeHold", "short", "short")
-  );
+        try {
+          // The hold is another process on the real clock, and 60 s is the least it takes, so this
+          // row spends that minute, counted from when the listener took the registration, before
+          // which the hold's time had not begun.
+          const code = await holding.ended();
+          const endedAt = Date.now();
+          expect(edge.taken).toHaveLength(1);
+          expect(endedAt - (edge.taken[0] ?? endedAt)).toBeGreaterThanOrEqual(60_000);
+          expect(holding.stdout(), holding.stderr()).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(code).toBe(0);
+          expect(holding.stderr()).toContain(`the hold of ${session} ends: 60 s passed`);
+          expect(edge.unregisters).toEqual([session]);
+          // The hold ended on its own: release reads what it wrote and signals no process.
+          const released = await release(state);
+          expect(released.stdout).toBe(`RELEASED ${session}\n`);
+          expect(released.code).toBe(0);
+        } finally {
+          holding.kill();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short")
+    );
 
-  test(
-    "hold ends itself once OUTSIDE_EDGE_HOLD_SECONDS have passed, the least of them, 60",
-    async () => {
-      const edge = startHoldEdge();
-      const { state, session } = await keptState(edge);
-      try {
-        // The hold is another process on the real clock, and 60 s is the least it takes, so this
-        // row spends that minute.
-        const started = performance.now();
-        const ran = await hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "60" });
-        expect(performance.now() - started).toBeGreaterThanOrEqual(60_000);
-        expect(ran.stdout).toBe(`HELD ${session}\nRELEASED ${session}\n`);
-        expect(ran.code).toBe(0);
-        expect(ran.stderr).toContain(`the hold of ${session} ends: 60 s passed`);
-        expect(edge.unregisters).toEqual([session]);
-        // The hold ended on its own: release reads what it wrote and signals no process.
-        const released = await release(state);
-        expect(released.stdout).toBe(`RELEASED ${session}\n`);
-        expect(released.code).toBe(0);
-      } finally {
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("outsideEdgeHold", "short")
-  );
+    test(
+      "a hold time outside 60 to 3600 s, or a renewal outside 1 to 90 s, is refused, naming the variable, and registers nothing",
+      async () => {
+        const edge = startHoldEdge();
+        const { state } = await keptState(edge);
+        try {
+          const cases = [
+            ...["59", "3601", "1e3", "-60"].map((seconds) => ({
+              env: { OUTSIDE_EDGE_HOLD_SECONDS: seconds },
+              said: "OUTSIDE_EDGE_HOLD_SECONDS must be a whole number of seconds from 60 to 3600",
+            })),
+            ...["0", "91"].map((seconds) => ({
+              env: { OUTSIDE_EDGE_RENEW_SECONDS: seconds },
+              said: "OUTSIDE_EDGE_RENEW_SECONDS must be a whole number of seconds from 1 to 90",
+            })),
+          ];
+          const runs = await Promise.all(cases.map(({ env }) => hold(edge, state, env)));
+          for (const [index, ran] of runs.entries()) {
+            expect(ran.stdout).toBe(`UNKNOWN: no session held: ${cases[index]?.said}\n`);
+            expect(ran.code).toBe(2);
+          }
+          expect(existsSync(join(state, "held"))).toBe(false);
+          expect(existsSync(join(state, "holder"))).toBe(false);
+          expect(edge.registrations).toEqual([]);
+          expect(edge.relay.upgrades).toEqual([]);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit({
+        atOnce: [
+          "outsideEdgeHold",
+          "outsideEdgeHold",
+          "outsideEdgeHold",
+          "outsideEdgeHold",
+          "outsideEdgeHold",
+          "outsideEdgeHold",
+        ],
+      })
+    );
 
-  test(
-    "a hold time outside 60 to 3600 s is refused, naming the variable, and registers nothing",
-    async () => {
-      const edge = startHoldEdge();
-      const { state } = await keptState(edge);
-      try {
-        const runs = await Promise.all(
-          ["59", "3601", "1e3", "-60"].map((seconds) =>
-            hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: seconds })
-          )
-        );
-        for (const ran of runs) {
-          expect(ran.stdout).toBe(
-            "UNKNOWN: no session held: OUTSIDE_EDGE_HOLD_SECONDS must be a whole number of seconds from 60 to 3600\n"
+    test(
+      "a listener that refuses the registration: UNKNOWN naming it, no held, and release reads why",
+      async () => {
+        const edge = startHoldEdge({ registration: 403 });
+        const { state, session } = await keptState(edge);
+        try {
+          const ran = await hold(edge, state);
+          const why = `the listener did not register ${session}: `;
+          expect(ran.stdout).toStartWith(`UNKNOWN: ${why}`);
+          expect(ran.stdout).toContain("the stand-in refuses this registration");
+          expect(ran.stdout).not.toContain("HELD");
+          expect(ran.code).toBe(2);
+          expect(edge.registrations).toEqual([session]);
+          expect(existsSync(join(state, "held"))).toBe(false);
+          expect(readFileSync(join(state, "released"), "utf8")).toStartWith(why);
+          const released = await release(state);
+          expect(released.stdout).toStartWith(`UNKNOWN: ${session} was not released: ${why}`);
+          expect(released.code).toBe(2);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short")
+    );
+
+    test(
+      "a listener that refuses the relay subject: UNKNOWN naming it, no registration sent, no held",
+      async () => {
+        const edge = startHoldEdge();
+        edge.relay.refuseOwnSubject = true;
+        const { state, session } = await keptState(edge);
+        try {
+          const ran = await hold(edge, state);
+          expect(ran.stdout, ran.stderr).toBe(
+            `UNKNOWN: the listener did not register ${session}: the listener's relay socket refused the subject ${standInDeliverSubject(session)} (subject_not_granted), so no registration was sent\n`
           );
           expect(ran.code).toBe(2);
+          expect(edge.registrations).toEqual([]);
+          expect(existsSync(join(state, "held"))).toBe(false);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
         }
-        expect(existsSync(join(state, "held"))).toBe(false);
-        expect(edge.registrations).toEqual([]);
-        expect(edge.relay.upgrades).toEqual([]);
-      } finally {
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit({ atOnce: ["outsideEdgeHold", "outsideEdgeHold", "outsideEdgeHold"] })
-  );
+      },
+      rowLimit("outsideEdgeHold")
+    );
 
-  test(
-    "a listener that refuses the registration: UNKNOWN naming it, no held, and nothing to release",
-    async () => {
-      const edge = startHoldEdge({ registration: 403 });
-      const { state, session } = await keptState(edge);
-      try {
-        const ran = await hold(edge, state);
-        expect(ran.stdout).toStartWith(`UNKNOWN: the listener did not register ${session}: `);
-        expect(ran.stdout).toContain("the stand-in refuses this registration");
-        expect(ran.stdout).not.toContain("HELD");
-        expect(ran.code).toBe(2);
-        expect(edge.registrations).toEqual([session]);
-        expect(existsSync(join(state, "held"))).toBe(false);
-        const released = await release(state);
-        expect(released.stdout).toBe("UNKNOWN: no session is held\n");
-        expect(released.code).toBe(2);
-      } finally {
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("outsideEdgeHold", "short")
-  );
-
-  test(
-    "a listener that closes the held socket: the close and its code printed, no second registration, exit 2",
-    async () => {
-      const edge = startHoldEdge();
-      const { state, session } = await keptState(edge);
-      try {
-        const held = hold(edge, state);
-        await heldBy(state, held);
-        edge.relay.close(1011, "the stand-in ends the held socket", session);
-        const ran = await held;
-        const closed = "1011 the stand-in ends the held socket";
-        expect(ran.stdout).toBe(
-          `HELD ${session}\nUNKNOWN: the listener closed the held socket of ${session} (${closed}); it was not registered again\n`
-        );
-        expect(ran.code).toBe(2);
-        expect(edge.registrations).toEqual([session]);
-        expect(edge.unregisters).toEqual([session]);
-        expect(readFileSync(join(state, "released"), "utf8")).toBe(
-          `the listener closed the held socket (${closed}); unregistered`
-        );
-        const released = await release(state);
-        expect(released.stdout).toBe(
-          `UNKNOWN: ${session} was not released: the listener closed the held socket (${closed}); unregistered\n`
-        );
-        expect(released.code).toBe(2);
-      } finally {
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("outsideEdgeHold", "short", "short")
-  );
-
-  test(
-    "an unregister that fails: RELEASED and exit 2, released naming the failure, and release UNKNOWN",
-    async () => {
-      const edge = startHoldEdge({ unregister: 500 });
-      const { state, session } = await keptState(edge);
-      try {
-        const held = hold(edge, state);
-        await heldBy(state, held);
-        const released = await release(state);
-        expect(released.stdout).toStartWith(
-          `UNKNOWN: ${session} was not released: the unregister failed: `
-        );
-        expect(released.code).toBe(2);
-        const ran = await held;
-        expect(ran.stdout).toBe(`HELD ${session}\nRELEASED ${session}\n`);
-        expect(ran.code).toBe(2);
-        expect(edge.unregisters).toEqual([session]);
-        expect(readFileSync(join(state, "released"), "utf8")).toStartWith(
-          "the unregister failed: "
-        );
-      } finally {
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("outsideEdgeHold", "short", "short")
-  );
-
-  test(
-    "release with no hold: UNKNOWN: no session is held",
-    async () => {
-      const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
-      try {
-        const released = await release(state);
-        expect(released.stdout).toBe("UNKNOWN: no session is held\n");
-        expect(released.code).toBe(2);
-      } finally {
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "release sends SIGKILL to a holder still running 15 s after its SIGTERM, and exits 2",
-    async () => {
-      const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
-      const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
-      writeFileSync(join(state, "session"), session, { mode: 0o600 });
-      try {
-        const holder = stubbornHolder(join(state, "held"));
-        await eventually(
-          "the holder's held file",
-          () => namedBy(join(state, "held")) !== undefined
-        );
-        const { pid } = namedBy(join(state, "held")) ?? { pid: 0 };
-        expect(pid).toBeGreaterThan(0);
-        const started = performance.now();
-        const released = await release(state);
-        expect(performance.now() - started).toBeGreaterThanOrEqual(15_000);
-        expect(released.stdout).toBe(
-          `UNKNOWN: the holder ${pid} of ${session} still ran 15 s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered\n`
-        );
-        expect(released.code).toBe(2);
-        const ran = await holder;
-        expect(ran.stdout).toBe("took SIGTERM\n");
-        expect(ran.code).not.toBe(0);
-        expect(() => process.kill(pid, 0)).toThrow();
-      } finally {
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("short", "short", "short")
-  );
-
-  test(
-    "release signals no process at the held pid that started at another time: the held process is gone",
-    async () => {
-      // The row above is this one's control: the same holder, named by its own start, takes the
-      // SIGTERM. Here `held` names its pid with another start, as a pid a later process took.
-      const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
-      const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
-      writeFileSync(join(state, "session"), session, { mode: 0o600 });
-      const ready = join(state, "ready");
-      const holder = stubbornHolder(ready);
-      let alive = 0;
-      try {
-        await eventually("the holder's ready file", () => namedBy(ready) !== undefined);
-        const { pid, start } = namedBy(ready) ?? { pid: 0, start: 0 };
-        expect(pid).toBeGreaterThan(0);
-        alive = pid;
-        writeFileSync(join(state, "held"), `${pid} ${start + 1}`, { mode: 0o600 });
-        const released = await release(state);
-        expect(() => process.kill(pid, 0)).not.toThrow();
-        process.kill(pid, "SIGKILL");
-        alive = 0;
-        const ran = await holder;
-        expect(released.stdout).toBe("UNKNOWN: the held process is gone\n");
-        expect(released.code).toBe(2);
-        // It took no SIGTERM, which it would have printed.
-        expect(ran.stdout).toBe("");
-      } finally {
-        // A row that failed before the holder was ended ends it here, rather than at its bound;
-        // one that ended already throws, and is left so.
+    test(
+      "a listener that closes the held socket for good (4403): the close and its code printed, no second registration, exit 2",
+      async () => {
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
         try {
-          if (alive > 0) process.kill(alive, "SIGKILL");
-        } catch {}
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("short", "short", "short")
-  );
-
-  test(
-    "a flush the listener never answers fails at its bound, naming it, and sends no registration",
-    async () => {
-      const edge = startHoldEdge();
-      const mute = await startMuteListener(true);
-      const { state, session } = await keptState(edge);
-      try {
-        const ran = await hold(edge, state, {}, mute.url);
-        expect(ran.stdout, ran.stderr).toBe(
-          `UNKNOWN: the listener did not register ${session}: the relay socket's flush got no answer within 10 s, so no registration was sent\n`
-        );
-        expect(ran.code).toBe(2);
-        expect(existsSync(join(state, "held"))).toBe(false);
-        // The flush's ping reached the listener, and nothing but the upgrade did: no
-        // registration, so no unregister either.
-        expect(mute.opcodes).toContain(0x9);
-        expect(mute.requests).toHaveLength(1);
-        expect(mute.requests[0]).toStartWith(`GET /v1/sessions/${session}/relay `);
-      } finally {
-        mute.stop();
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("outsideEdgeHold")
-  );
-
-  test(
-    "a SIGTERM while the relay socket opens ends the hold, which sends no registration and holds nothing",
-    async () => {
-      const edge = startHoldEdge();
-      const mute = await startMuteListener(false);
-      const { state, session } = await keptState(edge);
-      const holding = driveHold(edge.relay.url, mute.url, state);
-      try {
-        await eventually(
-          "the relay socket's upgrade at the listener",
-          () => mute.requests.length > 0
-        );
-        process.kill(holding.pid, "SIGTERM");
-        const code = await holding.ended();
-        expect(holding.stdout(), holding.stderr()).toBe(
-          `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
-        );
-        expect(code).toBe(2);
-        expect(existsSync(join(state, "held"))).toBe(false);
-        for (const line of mute.requests) {
-          expect(line).toStartWith(`GET /v1/sessions/${session}/relay `);
+          // Its least time, so a hold that took this close for a routine one ends in a minute.
+          const held = hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "60" });
+          await heldBy(state, held);
+          edge.relay.close(4403, "the token was revoked", session);
+          const ran = await held;
+          const closed = "4403 the token was revoked";
+          expect(ran.stdout).toBe(
+            `HELD ${session}\nUNKNOWN: the listener closed the held socket of ${session} (${closed}); it was not registered again\n`
+          );
+          expect(ran.code).toBe(2);
+          expect(edge.registrations).toEqual([session]);
+          expect(edge.unregisters).toEqual([session]);
+          expect(readFileSync(join(state, "released"), "utf8")).toBe(
+            `the listener closed the held socket (${closed}); unregistered`
+          );
+          const released = await release(state);
+          expect(released.stdout).toBe(
+            `UNKNOWN: ${session} was not released: the listener closed the held socket (${closed}); unregistered\n`
+          );
+          expect(released.code).toBe(2);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
         }
-        expect(edge.registrations).toEqual([]);
-      } finally {
-        holding.kill();
-        mute.stop();
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("short", "outsideEdgeHold")
-  );
+      },
+      rowLimit("outsideEdgeHold", "short", "short")
+    );
 
-  test(
-    "a SIGTERM while the flush waits for its pong ends the hold, which sends no registration",
-    async () => {
-      const edge = startHoldEdge();
-      const mute = await startMuteListener(true);
-      const { state, session } = await keptState(edge);
-      const holding = driveHold(edge.relay.url, mute.url, state);
-      try {
-        await eventually("the flush's ping at the listener", () => mute.opcodes.includes(0x9));
-        process.kill(holding.pid, "SIGTERM");
-        const code = await holding.ended();
-        expect(holding.stdout(), holding.stderr()).toBe(
-          `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
-        );
-        expect(code).toBe(2);
-        expect(existsSync(join(state, "held"))).toBe(false);
-        expect(mute.requests).toHaveLength(1);
-        expect(mute.requests[0]).toStartWith(`GET /v1/sessions/${session}/relay `);
-      } finally {
-        holding.kill();
-        mute.stop();
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("short", "outsideEdgeHold")
-  );
+    test(
+      "an unregister that fails: RELEASED and exit 2, released naming the failure, and release UNKNOWN",
+      async () => {
+        const edge = startHoldEdge({ unregister: 500 });
+        const { state, session } = await keptState(edge);
+        try {
+          const held = hold(edge, state);
+          await heldBy(state, held);
+          const released = await release(state);
+          expect(released.stdout).toStartWith(
+            `UNKNOWN: ${session} was not released: the unregister failed: `
+          );
+          expect(released.code).toBe(2);
+          const ran = await held;
+          expect(ran.stdout).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(ran.code).toBe(2);
+          expect(edge.unregisters).toEqual([session]);
+          expect(readFileSync(join(state, "released"), "utf8")).toStartWith(
+            "the unregister failed: "
+          );
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short", "short")
+    );
 
-  test(
-    "a SIGTERM while the listener answers the registration leaves no session held and none registered",
-    async () => {
-      const answer = Promise.withResolvers<void>();
-      const edge = startHoldEdge({ answerAfter: answer.promise });
-      const { state, session } = await keptState(edge);
-      const holding = driveHold(edge.relay.url, edge.relay.url, state);
-      try {
-        await eventually("the registration at the listener", () => edge.registrations.length > 0);
-        process.kill(holding.pid, "SIGTERM");
-        // The listener answers once the hold has taken the SIGTERM, which it says on stderr; a
-        // hold that never says so is answered at the short bound, and is judged by what it did.
-        await whether(() => holding.stderr().includes("outside-edge: hold got SIGTERM\n"));
-        answer.resolve();
-        const code = await holding.ended();
-        expect(holding.stdout(), holding.stderr()).toBe(
-          `UNKNOWN: no session held: SIGTERM came while the listener answered the registration of ${session}; unregistered\n`
-        );
-        expect(code).toBe(2);
-        expect(existsSync(join(state, "held"))).toBe(false);
-        expect(edge.registrations).toEqual([session]);
-        expect(edge.unregisters).toEqual([session]);
-      } finally {
-        answer.resolve();
-        holding.kill();
-        edge.relay.stop();
-        rmSync(state, { force: true, recursive: true });
-      }
-    },
-    rowLimit("short", "short", "outsideEdgeHold")
-  );
-});
+    test(
+      "release with no hold: UNKNOWN: no session is held",
+      async () => {
+        const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
+        try {
+          const released = await release(state);
+          expect(released.stdout).toBe("UNKNOWN: no session is held\n");
+          expect(released.code).toBe(2);
+        } finally {
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short")
+    );
+
+    test(
+      "a hold refused at its inputs leaves no holder, held or released an earlier hold wrote, so release reads no hold",
+      async () => {
+        const edge = startHoldEdge();
+        const { state } = await keptState(edge);
+        try {
+          // What an earlier hold left once it ended released, naming a pid no process has.
+          for (const [file, text] of [
+            ["holder", `${2 ** 22 + 1} 1`],
+            ["held", `${2 ** 22 + 1} 1`],
+            ["released", "unregistered"],
+          ] as const) {
+            writeFileSync(join(state, file), text, { mode: 0o600 });
+          }
+          const ran = await hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "59" });
+          expect(ran.stdout).toStartWith("UNKNOWN: no session held: OUTSIDE_EDGE_HOLD_SECONDS ");
+          expect(ran.code).toBe(2);
+          for (const file of ["holder", "held", "released"]) {
+            expect(existsSync(join(state, file)), file).toBe(false);
+          }
+          const released = await release(state);
+          expect(released.stdout).toBe("UNKNOWN: no session is held\n");
+          expect(released.code).toBe(2);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short")
+    );
+
+    realTimeRow(
+      "release sends SIGKILL to a holder still running 15 s after its SIGTERM, and exits 2",
+      async () => {
+        const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
+        const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
+        writeFileSync(join(state, "session"), session, { mode: 0o600 });
+        try {
+          const holder = stubbornHolder(join(state, "holder"));
+          await eventually(
+            "the holder's holder file",
+            () => namedBy(join(state, "holder")) !== undefined
+          );
+          const { pid } = namedBy(join(state, "holder")) ?? { pid: 0 };
+          expect(pid).toBeGreaterThan(0);
+          const started = performance.now();
+          const released = await release(state);
+          expect(performance.now() - started).toBeGreaterThanOrEqual(15_000);
+          expect(released.stdout).toBe(
+            `UNKNOWN: the holder ${pid} of ${session} still ran 15 s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered\n`
+          );
+          expect(released.code).toBe(2);
+          const ran = await holder;
+          expect(ran.stdout).toBe("took SIGTERM\n");
+          expect(ran.code).not.toBe(0);
+          expect(() => process.kill(pid, 0)).toThrow();
+        } finally {
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "short", "short")
+    );
+
+    test(
+      "release signals no process at the held pid that started at another time: the held process is gone",
+      async () => {
+        // The row above is this one's control: the same holder, named by its own start, takes the
+        // SIGTERM. Here `holder` names its pid with another start, as a pid a later process took.
+        const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
+        const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
+        writeFileSync(join(state, "session"), session, { mode: 0o600 });
+        const ready = join(state, "ready");
+        const holder = stubbornHolder(ready);
+        let alive = 0;
+        try {
+          await eventually("the holder's ready file", () => namedBy(ready) !== undefined);
+          const { pid, start } = namedBy(ready) ?? { pid: 0, start: 0 };
+          expect(pid).toBeGreaterThan(0);
+          alive = pid;
+          writeFileSync(join(state, "holder"), `${pid} ${start + 1}`, { mode: 0o600 });
+          const released = await release(state);
+          expect(() => process.kill(pid, 0)).not.toThrow();
+          process.kill(pid, "SIGKILL");
+          alive = 0;
+          const ran = await holder;
+          expect(released.stdout).toBe("UNKNOWN: the held process is gone\n");
+          expect(released.code).toBe(2);
+          // It took no SIGTERM, which it would have printed.
+          expect(ran.stdout).toBe("");
+        } finally {
+          // A row that failed before the holder was ended ends it here, rather than at its bound;
+          // one that ended already throws, and is left so.
+          try {
+            if (alive > 0) process.kill(alive, "SIGKILL");
+          } catch {}
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "short", "short")
+    );
+
+    realTimeRow(
+      "a flush the listener never answers fails at its bound, naming it, and sends no registration",
+      async () => {
+        const edge = startHoldEdge();
+        const mute = await startMuteListener(true);
+        const { state, session } = await keptState(edge);
+        try {
+          const ran = await hold(edge, state, {}, mute.url);
+          expect(ran.stdout, ran.stderr).toBe(
+            `UNKNOWN: the listener did not register ${session}: the relay socket's flush got no answer within 10 s, so no registration was sent\n`
+          );
+          expect(ran.code).toBe(2);
+          expect(existsSync(join(state, "held"))).toBe(false);
+          // The flush's ping reached the listener, and nothing but the upgrade did: no
+          // registration, so no unregister either.
+          expect(mute.opcodes).toContain(0x9);
+          expect(mute.requests).toHaveLength(1);
+          expect(mute.requests[0]).toStartWith(`GET /v1/sessions/${session}/relay `);
+        } finally {
+          mute.stop();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold")
+    );
+
+    test(
+      "a SIGTERM while the relay socket opens ends the hold, which sends no registration and holds nothing",
+      async () => {
+        const edge = startHoldEdge();
+        const mute = await startMuteListener(false);
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, mute.url, state);
+        try {
+          await eventually(
+            "the relay socket's upgrade at the listener",
+            () => mute.requests.length > 0
+          );
+          process.kill(holding.pid, "SIGTERM");
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(
+            `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
+          );
+          expect(code).toBe(2);
+          expect(existsSync(join(state, "held"))).toBe(false);
+          for (const line of mute.requests) {
+            expect(line).toStartWith(`GET /v1/sessions/${session}/relay `);
+          }
+          expect(edge.registrations).toEqual([]);
+        } finally {
+          holding.kill();
+          mute.stop();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "outsideEdgeHold")
+    );
+
+    test(
+      "a SIGTERM while the flush waits for its pong ends the hold, which sends no registration",
+      async () => {
+        const edge = startHoldEdge();
+        const mute = await startMuteListener(true);
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, mute.url, state);
+        try {
+          await eventually("the flush's ping at the listener", () => mute.opcodes.includes(0x9));
+          process.kill(holding.pid, "SIGTERM");
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(
+            `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
+          );
+          expect(code).toBe(2);
+          expect(existsSync(join(state, "held"))).toBe(false);
+          expect(mute.requests).toHaveLength(1);
+          expect(mute.requests[0]).toStartWith(`GET /v1/sessions/${session}/relay `);
+        } finally {
+          holding.kill();
+          mute.stop();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "outsideEdgeHold")
+    );
+
+    test(
+      "a SIGTERM while the listener answers the registration leaves no session held and none registered",
+      async () => {
+        const answer = Promise.withResolvers<void>();
+        const edge = startHoldEdge({ answerAfter: answer.promise });
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, edge.relay.url, state);
+        try {
+          await eventually("the registration at the listener", () => edge.registrations.length > 0);
+          process.kill(holding.pid, "SIGTERM");
+          // The listener answers once the hold has taken the SIGTERM, which it says on stderr; a
+          // hold that never says so is answered at the short bound, and is judged by what it did.
+          await whether(() => holding.stderr().includes("outside-edge: hold got SIGTERM\n"));
+          answer.resolve();
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(
+            `UNKNOWN: no session held: SIGTERM came while the listener answered the registration of ${session}; unregistered\n`
+          );
+          expect(code).toBe(2);
+          expect(existsSync(join(state, "held"))).toBe(false);
+          expect(edge.registrations).toEqual([session]);
+          expect(edge.unregisters).toEqual([session]);
+        } finally {
+          answer.resolve();
+          holding.kill();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "short", "outsideEdgeHold")
+    );
+
+    test(
+      "a release before held stops the hold, which sends no registration, and reads why it held nothing",
+      async () => {
+        const edge = startHoldEdge();
+        // A listener that never opens the socket: the hold is opening it, and holds nothing yet.
+        const mute = await startMuteListener(false);
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, mute.url, state);
+        try {
+          await eventually(
+            "the relay socket's upgrade at the listener",
+            () => mute.requests.length > 0
+          );
+          expect(existsSync(join(state, "held"))).toBe(false);
+          const why = `no session held: SIGTERM came before ${session} was registered, and no registration was sent`;
+          const released = await release(state);
+          expect(released.stdout).toBe(`UNKNOWN: ${session} was not released: ${why}\n`);
+          expect(released.code).toBe(2);
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(`UNKNOWN: ${why}\n`);
+          expect(code).toBe(2);
+          expect(edge.registrations).toEqual([]);
+        } finally {
+          holding.kill();
+          mute.stop();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "short", "outsideEdgeHold")
+    );
+
+    realTimeRow(
+      "a hold outlasts two token lapses (4401) and the listener's stop (1012), registering again on each new socket, and ends RELEASED",
+      async () => {
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        // Each token the broker mints from now lasts 3 s, as an edge relay token lasts 300 s at most.
+        edge.relay.tokenSeconds = 3;
+        try {
+          const held = hold(edge, state);
+          await heldBy(state, held);
+          const lapses = closeAtTokenLapse(edge, session);
+          try {
+            await eventually(
+              "two token lapses, each followed by a registration on the socket opened after it",
+              () =>
+                lapses.closes() >= 2 &&
+                socketsOpened(edge, session).length >= 3 &&
+                edge.taken.length >= socketsOpened(edge, session).length
+            );
+          } finally {
+            lapses.stop();
+          }
+          // The listener stops (1012): the socket opens again at once, its token its own.
+          edge.relay.tokenSeconds = 3600;
+          const sockets = socketsOpened(edge, session).length;
+          const registered = edge.taken.length;
+          edge.relay.close(1012, "the listener is stopping", session);
+          await eventually(
+            "a registration on the socket opened after the listener's stop",
+            () => socketsOpened(edge, session).length > sockets && edge.taken.length > registered
+          );
+          // Every socket the hold opened was registered on after it opened, before the next.
+          const opened = socketsOpened(edge, session);
+          for (const [index, at] of opened.entries()) {
+            const next = opened[index + 1] ?? Number.POSITIVE_INFINITY;
+            expect(
+              edge.taken.some((one) => one >= at && one < next),
+              `socket ${index}: ${JSON.stringify({ opened, taken: edge.taken })}`
+            ).toBe(true);
+          }
+          const released = await release(state);
+          expect(released.stdout).toBe(`RELEASED ${session}\n`);
+          expect(released.code).toBe(0);
+          const ran = await held;
+          expect(ran.stdout, ran.stderr).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(ran.code).toBe(0);
+          expect(ran.stderr).toContain("(4401 the token lapsed), a routine close");
+          expect(ran.stderr).toContain("(1012 the listener is stopping), a routine close");
+          expect(edge.unregisters).toEqual([session]);
+          expect(edge.refusals).toEqual([]);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short", "short", "short", "short")
+    );
+
+    realTimeRow(
+      "a hold renews its registration, so a listener whose record of it lapses 5 s after the last still holds it past that, and ends RELEASED",
+      async () => {
+        // The listener's record lapses 5 minutes after the session's last registration; here 5 s,
+        // and the hold renews every 1 s, as a host renews every 90 s.
+        const lapseMs = 5_000;
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        try {
+          const held = hold(edge, state, { OUTSIDE_EDGE_RENEW_SECONDS: "1" });
+          await heldBy(state, held);
+          const heldAt = Date.now();
+          await eventually(
+            "the lapse passed since the hold took the session, and 2 s more",
+            () => Date.now() - heldAt > lapseMs + 2_000
+          );
+          // Registered all along: no gap between two registrations, or since the last, reached the
+          // lapse.
+          const times = [...edge.taken, Date.now()];
+          const gaps = times.slice(1).map((at, index) => at - (times[index] ?? at));
+          expect(Math.max(...gaps), JSON.stringify(times)).toBeLessThan(lapseMs);
+          const released = await release(state);
+          expect(released.stdout).toBe(`RELEASED ${session}\n`);
+          expect(released.code).toBe(0);
+          const ran = await held;
+          expect(ran.stdout, ran.stderr).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(ran.code).toBe(0);
+          expect(new Set(edge.registrations)).toEqual(new Set([session]));
+          expect(edge.refusals).toEqual([]);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short", "short")
+    );
+
+    test(
+      "a renewal the listener refuses ends the hold UNKNOWN, unregistered, and release reads why",
+      async () => {
+        const edge = startHoldEdge({ refuseAfter: 1 });
+        const { state, session } = await keptState(edge);
+        try {
+          // Its least time, so a hold that went on past the refusal ends in a minute.
+          const ran = await hold(edge, state, {
+            OUTSIDE_EDGE_RENEW_SECONDS: "1",
+            OUTSIDE_EDGE_HOLD_SECONDS: "60",
+          });
+          const why = `the hold of ${session} lost its registration: the renewal failed: `;
+          expect(ran.stdout, ran.stderr).toStartWith(`HELD ${session}\nUNKNOWN: ${why}`);
+          expect(ran.stdout).toContain("the stand-in refuses this registration");
+          expect(ran.stdout).toEndWith("; unregistered\n");
+          expect(ran.code).toBe(2);
+          expect(edge.registrations).toEqual([session, session]);
+          expect(edge.unregisters).toEqual([session]);
+          expect(readFileSync(join(state, "released"), "utf8")).toStartWith(why);
+          const released = await release(state);
+          expect(released.stdout).toStartWith(`UNKNOWN: ${session} was not released: ${why}`);
+          expect(released.code).toBe(2);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short")
+    );
+
+    test(
+      "a SIGTERM while a routinely closed socket opens again sends no registration after it, and the hold ends RELEASED",
+      async () => {
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, edge.relay.url, state);
+        try {
+          await eventually("the hold's held", () => existsSync(join(state, "held")));
+          // The socket closes as at its token's lapse, and the listener refuses every open from
+          // now, so the hold is opening it again when its SIGTERM comes.
+          edge.relay.refuseUpgrades = 503;
+          const closedAt = Date.now();
+          edge.relay.close(4401, "the token lapsed", session);
+          await eventually("an open of the socket refused after its close", () =>
+            edge.relay.upgrades.some(
+              (one) => one.session === session && one.status === 503 && one.at >= closedAt
+            )
+          );
+          const terminatedAt = Date.now();
+          process.kill(holding.pid, "SIGTERM");
+          // The listener takes opens again: a hold still opening would register on the new socket.
+          edge.relay.refuseUpgrades = undefined;
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(code).toBe(0);
+          expect(edge.taken.filter((at) => at >= terminatedAt)).toEqual([]);
+          expect(edge.registrations).toEqual([session]);
+          expect(edge.unregisters).toEqual([session]);
+        } finally {
+          holding.kill();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "short", "outsideEdgeHold")
+    );
+  }
+);

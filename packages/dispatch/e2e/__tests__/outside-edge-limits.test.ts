@@ -146,6 +146,49 @@ describe("outside-edge-limits.ts", () => {
     expect(verdictOf(judged.rows)).toBe("UNKNOWN");
   });
 
+  test("a rule whose host the run asked nothing is UNKNOWN, never a pass at a peak of 0", () => {
+    // A limits file that names another host than the run's: every rule of that host would pass
+    // at a peak of 0, which says nothing of it.
+    const limits = parseLimits(`${edgeLimits}\n4000 other.edge.example any - 10 60`);
+    const judged = judgeLimits(limits, requests(`https://${dispatch}/`, 3));
+    expect(rowNamed(judged.rows, "limit-4000-60s")).toEqual({
+      row: "limit-4000-60s",
+      want: "at most 5 requests in 60 s to other.edge.example any (half of 10)",
+      got: "the run asked other.edge.example nothing, so no peak of it can be read",
+      verdict: "UNKNOWN",
+    });
+    expect(rowNamed(judged.rows, "limit-1000-60s").verdict).toBe("UNKNOWN");
+    // A host the run asked, whose rule no request matched, still reads its peak of 0.
+    expect(rowNamed(judged.rows, "limit-3000-60s")).toMatchObject({
+      got: `peak 0 in 60 s from ${dispatch}`,
+      verdict: "PASS",
+    });
+    expect(verdictOf(judged.rows)).toBe("UNKNOWN");
+  });
+
+  test("a run cut short passes no rule: one it stayed under is UNKNOWN, one it went over fails", () => {
+    const limits = parseLimits(`3010 ${dispatch} any - 4 60`);
+    const cut = "the run did not reach relay: the sign-in did not pass";
+    const under = judgeLimits(limits, requests(`https://${dispatch}/`, 2), cut);
+    expect(rowNamed(under.rows, "limit-3010-60s")).toEqual({
+      row: "limit-3010-60s",
+      want: `at most 2 requests in 60 s to ${dispatch} any (half of 4)`,
+      got: `peak 2 in 60 s from ${dispatch}, but ${cut}, so no whole run was counted`,
+      verdict: "UNKNOWN",
+    });
+    expect(verdictOf(under.rows)).toBe("UNKNOWN");
+    const over = judgeLimits(limits, requests(`https://${dispatch}/`, 3), cut);
+    expect(rowNamed(over.rows, "limit-3010-60s")).toMatchObject({
+      got: `peak 3 in 60 s from ${dispatch}`,
+      verdict: "FAIL",
+    });
+    // The control: the same count from a whole run passes.
+    expect(
+      rowNamed(judgeLimits(limits, requests(`https://${dispatch}/`, 2)).rows, "limit-3010-60s")
+        .verdict
+    ).toBe("PASS");
+  });
+
   test("no row is UNKNOWN, and a FAIL outweighs an UNKNOWN", () => {
     expect(verdictOf([])).toBe("UNKNOWN");
     const row = (verdict: Row["verdict"]): Row => ({ row: "r", want: "w", got: "g", verdict });
