@@ -154,14 +154,15 @@ const (
 	// holds, found by the lookup or made by another client between the lookup and the create,
 	// opening, raising and updating nothing: CreateMissingCopiedBucket's.
 	//
-	// Its create is nats.go's (CreateKeyValue), the normal path's. JetStream answers a create of
-	// a stream that exists with the same configuration as done, which changes nothing, and with
-	// another as "stream name already in use". nats.go follows that answer with an update only
-	// when the stream it then reads equals the configuration asked for in all but the discard
-	// policy and direct get, its metadata included (nats.go@v1.53.1 kv.go:525-545). nats-server
-	// 2.15.1, the hubs' version, answers every stream with metadata of its own (_nats.ver,
-	// _nats.level, _nats.req.level), which that configuration never carries, so there the update
-	// is never sent (infra/buckets, TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs).
+	// Its create is the normal path's: nats.go's CreateKeyValue made one request at a time
+	// (createBucketStream). JetStream answers a create of a stream that exists with the same
+	// configuration as done, which changes nothing, and with another as "stream name already in
+	// use". The create follows that answer, as nats.go does, with an update only when the stream it
+	// then reads equals the configuration asked for in all but the discard policy and direct get,
+	// its metadata included (nats.go@v1.55.0 kv.go:534-543). nats-server 2.15.1, the hubs'
+	// version, answers every stream with metadata of its own (_nats.ver, _nats.level,
+	// _nats.req.level), which that configuration never carries, so there the update is never sent
+	// (infra/buckets, TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs).
 	createOnly
 )
 

@@ -87,9 +87,10 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 		!strings.Contains(logged[0], " "+bus.SessionBucket+" ") || !strings.Contains(logged[0], " on "+uri+",") {
 		t.Fatalf("create --break-glass logged %q, want one line naming break-glass, the operator, the bucket and the hub", stderr)
 	}
-	// The run's read, the create's own lookup (bus.CreateMissingCopiedBucket), the create, and the
-	// handle open after it, each counted once however often the bus sent it (distinctSends).
-	if got, want := distinctSends(t, requests.take(t), resends), []string{"INFO." + stream, "INFO." + stream, "CREATE." + stream, "INFO." + stream}; !slices.Equal(got, want) {
+	// The run's read, the create's own lookup (bus.CreateMissingCopiedBucket), the create, the
+	// lookup after it, which waits for the member to apply the create, and the handle open, each
+	// counted once however often the bus sent it (distinctSends).
+	if got, want := distinctSends(t, requests.take(t), resends), []string{"INFO." + stream, "INFO." + stream, "CREATE." + stream, "INFO." + stream, "INFO." + stream}; !slices.Equal(got, want) {
 		t.Fatalf("create --break-glass sent %v to the bucket's stream, want %v", got, want)
 	}
 	created, err := js.StreamInfo(stream)
@@ -463,11 +464,12 @@ func distinctSends(t *testing.T, requests []string, logs *logtest.Recorder) []st
 //     and the run is refused there, having sent the bucket's stream its two reads alone. The control
 //     is the open the normal path takes (bus.CreateCopiedBucket), which raises a bucket its lookup
 //     finds with a stream update.
-//   - Between the create's lookup and its create - at the account info nats.go asks for before
-//     every create - the racer makes the role-claim bucket with the discard policy and direct get
-//     of a KV made before nats-server 2.7.2 and 2.9. The hub answers the create "stream name
-//     already in use"; nats.go reads the stream and sends no update, since the hub's metadata keeps
-//     the two configurations apart (bus, createOnly); and the run is refused.
+//   - Between the create's lookup and its create - at the account info the create asks for first,
+//     as nats.go does (bus, createBucketStream) - the racer makes the role-claim bucket with the
+//     discard policy and direct get of a KV made before nats-server 2.7.2 and 2.9. The hub answers
+//     the create "stream name already in use"; the create reads the stream, as nats.go does, and
+//     sends no update, since the hub's metadata keeps the two configurations apart (bus,
+//     createOnly); and the run is refused.
 //
 // Each request is counted once however often the bus sent it (distinctSends): the hold keeps the
 // run's next request from the hub for as long as the racer takes, and a lookup held past its read

@@ -103,20 +103,27 @@ func TestCreateMissingCopiedBucketLeavesABucketItFindsAsItIs(t *testing.T) {
 // A create-only open whose create the server answers "stream name already in use" - another client
 // made the bucket between its lookup and its create, with another configuration - answers
 // ErrBucketExists named for the create, at once, with no handle: it neither waits a member out
-// for that bucket nor opens it. The member here answers the lookup as one that has not applied the
-// other client's create does, and the create as the cluster does (behindMember). The control is
-// CreateCopiedBucket with the same member, which waits the member out and opens the bucket.
+// for that bucket nor opens it. The member here answers the lookup, and the create's read of the
+// stream after that answer (createBucketStream), as one that has not applied the other client's
+// create does, and sends the create to the server, which answers it as the cluster does
+// (behindMember). The control is CreateCopiedBucket with the same member, which waits the member
+// out and opens the bucket. A member whose misses were not all taken would hold nothing: the open
+// never met the member behind.
 func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T) {
 	stream := "KV_" + SessionBucket
 	_, uri := testnats.Start(t)
 	conn, js := serverJetStream(t, uri)
 	config, _ := CopiedBucketConfig(SessionBucket, 1)
+	// Another configuration: two values a key, where the session bucket keeps one. The server
+	// answers a create equal to the stream it holds as made, and this one "already in use".
+	config.History = 2
 	if _, err := js.CreateKeyValue(&config); err != nil {
 		t.Fatalf("create the bucket another client made: %v", err)
 	}
 
+	// The lookup and the create's read of the stream.
 	member := &behindMember{JetStreamContext: js}
-	member.misses.Store(1)
+	member.misses.Store(2)
 	start := time.Now()
 	kv, err := CreateMissingCopiedBucket(t.Context(), conn, member, SessionBucket, 1)
 	waited := time.Since(start)
@@ -126,12 +133,22 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 	if waited >= refusalWait {
 		t.Fatalf("the refusal took %s, want it answered within %s rather than waited out", waited.Round(time.Millisecond), refusalWait)
 	}
+	if creates := member.created(); len(creates) != 1 || !errors.Is(creates[0], nats.ErrStreamNameAlreadyInUse) {
+		t.Fatalf("the create-only open's creates were answered %v, want one answered %v", creates, nats.ErrStreamNameAlreadyInUse)
+	}
+	if left := member.misses.Load(); left != 0 {
+		t.Fatalf("the member was behind for %d reads the create-only open never made, so this row holds nothing", left)
+	}
 
+	// The lookup, the create's read of the stream and the lookup after the create.
 	control := &behindMember{JetStreamContext: js}
-	control.misses.Store(1)
+	control.misses.Store(3)
 	kv, err = CreateCopiedBucket(t.Context(), conn, control, SessionBucket, 1)
 	if err != nil || kv.Bucket() != SessionBucket {
 		t.Fatalf("control: CreateCopiedBucket with the same member = %v, want the bucket opened", err)
+	}
+	if left := control.misses.Load(); left != 0 {
+		t.Fatalf("control: the member was behind for %d reads CreateCopiedBucket never made", left)
 	}
 }
 
@@ -158,13 +175,13 @@ func TestAnUnansweredCreateOfAMissingCopiedBucketIsSentAgain(t *testing.T) {
 }
 
 // A create-only open answers with a handle only once the member answering has applied its create
-// (wrapKeyValue, awaitBucketApplied): a clustered create is answered once the metadata group
-// commits it, and a member that has not applied it yet answers a read of the bucket's stream
-// "stream not found" (bucketAppliedInterval). The relay passes the lookup, and sends the first
-// handle open after the create to a stream that is not there, which the server answers as such a
-// member does; the open reads again and gets the bucket. Without the wait, the open fails on that
-// first answer. A real cluster cannot stand in here: its member catches up before the handle open
-// asks, run after run.
+// (awaitBucketApplied): a clustered create is answered once the metadata group commits it, and a
+// member that has not applied it yet answers a read of the bucket's stream "stream not found"
+// (bucketAppliedInterval). The relay passes the lookup, and sends the first lookup after the
+// create to a stream that is not there, which the server answers as such a member does; the
+// lookup is taken again and gets the bucket. Without the wait, the open fails on that first
+// answer. A real cluster cannot stand in here: its member catches up before the lookup asks, run
+// after run.
 func TestCreateMissingCopiedBucketWaitsForTheMemberToApplyItsCreate(t *testing.T) {
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(SessionBucket))
 	conn, js := relayedJetStream(t, relay)
@@ -173,13 +190,13 @@ func TestCreateMissingCopiedBucketWaitsForTheMemberToApplyItsCreate(t *testing.T
 	relay.misdirect(1, 1, openSubject("envoy_not_applied_yet"))
 	kv, err := CreateMissingCopiedBucket(t.Context(), conn, js, SessionBucket, 1)
 	if err != nil {
-		t.Fatalf("a create-only open whose member first answered its handle open \"stream not found\" = %v, want the bucket opened once the member has it", err)
+		t.Fatalf("a create-only open whose member first answered its lookup after the create \"stream not found\" = %v, want the bucket opened once the member has it", err)
 	}
-	// Three reads ride the bucket's STREAM.INFO up to here: the lookup, the handle open answered
-	// "stream not found", and the handle open that found the bucket. The stream read below is a
-	// fourth.
-	if sends := relay.sent(); sends != 3 {
-		t.Fatalf("reads of the bucket's stream sent = %d, want 3: the lookup, the open answered as a member behind, and the open again", sends)
+	// Four reads ride the bucket's STREAM.INFO up to here: the lookup, the lookup after the create
+	// answered "stream not found", that lookup again, which found the bucket, and the handle open.
+	// The stream read below is a fifth.
+	if sends := relay.sent(); sends != 4 {
+		t.Fatalf("reads of the bucket's stream sent = %d, want 4: the lookup, the lookup after the create answered as a member behind, that lookup again, and the handle open", sends)
 	}
 	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle: %v", err)
