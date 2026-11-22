@@ -705,8 +705,13 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
-		// With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that breaks the rule.
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: parentStatusConflictBody{}}},
+		Refusals: []routeAnswer{
+			// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+			// over an open child of another project (refuseOpenForeignChildren).
+			{Status: http.StatusConflict, Body: foreignChildOpenError{}},
+			// With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that breaks the rule.
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
 	},
 	"POST /api/v1/issues/{key}/status-change": {
 		Status: http.StatusOK, Response: statusChangeAnswer{}, Request: statusChangeInput{},

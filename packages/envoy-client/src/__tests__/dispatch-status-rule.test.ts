@@ -775,6 +775,113 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "",
     ]);
   });
+
+  // A reparent is refused for the parent the call names, which the issue is not under yet: a
+  // status change of that issue with --include-parent moves the issues above it now and leaves
+  // the reparent refused, and issue-update refuses --include-parent beside --parent. So the
+  // caller is told to move the named parent first, then to send the reparent again.
+  test("a refused reparent says to move the parent it names first, then to send the reparent again", async () => {
+    const moveParentFirst = (parent: string) =>
+      expect.stringMatching(
+        new RegExp(
+          `dispatch issue-update --issue ${parent} --status\\b.*\\bdispatch issue-update\\b.*--parent\\b`
+        )
+      );
+
+    // Under a done parent: ACME-8, under ACME-7, to ACME-4.
+    const doneRefusal = doneParentRefusal("ACME-8");
+    patchAnswer = doneRefusal;
+    const underDone = await run(["issue-update", "--issue", "ACME-8", "--parent", "ACME-4"]);
+    expect(underDone.code).toBe(1);
+    expect(underDone.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(doneRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      moveParentFirst("ACME-4"),
+      "",
+    ]);
+
+    // Under a parent out of work: ACME-6, in work, to ACME-1 on the backlog, in the words
+    // Dispatch answers such a reparent with.
+    const outOfWork: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. ACME-1 (backlog) is the parent of ACME-6 and is not in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [
+          { key: "ACME-1", title: "Epic on the backlog", status: "backlog", relation: "parent" },
+        ],
+      },
+    };
+    patchAnswer = outOfWork;
+    const underBacklog = await run(["issue-update", "--issue", "ACME-6", "--parent", "ACME-1"]);
+    expect(underBacklog.code).toBe(1);
+    expect(underBacklog.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(outOfWork)}`,
+      "ACME-1 [backlog] Epic on the backlog",
+      moveParentFirst("ACME-1"),
+      "",
+    ]);
+  });
+
+  // A reparent that also writes a status is refused for a child against that status. The flags
+  // that move the children go with --status alone, so the caller is told to run the status change
+  // first, in a call of its own, and the reparent after it, without --status.
+  test("a reparent beside --status refused for a child says to run the status change first, then the reparent", async () => {
+    const childRefusal: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. ACME-5 (todo) is a child of ACME-4 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [{ key: "ACME-5", title: "Child in work", status: "todo", relation: "child" }],
+      },
+    };
+    patchAnswer = childRefusal;
+    const reparent = await run([
+      "issue-update",
+      "--issue",
+      "ACME-4",
+      "--parent",
+      "ACME-7",
+      "--status",
+      "backlog",
+    ]);
+    expect(reparent.code).toBe(1);
+    expect(reparent.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(childRefusal)}`,
+      "ACME-5 [todo] Child in work",
+      expect.stringMatching(
+        /--unlink-children\b.*--include-children\b.*--status alone\b.*\bfirst\b.*\bdispatch issue-update --issue ACME-4 --parent ACME-7\b(?! --status)/
+      ),
+      "",
+    ]);
+  });
+
+  // A status change beside another field is refused for its parent. --include-parent goes with
+  // --status alone, so the caller is told to send the other change in a call of its own.
+  test("a status change beside --title refused for its parent says --include-parent goes with --status alone", async () => {
+    const parentRefusal = doneParentRefusal("ACME-5");
+    patchAnswer = parentRefusal;
+    const retitle = await run([
+      "issue-update",
+      "--issue",
+      "ACME-5",
+      "--status",
+      "in_progress",
+      "--title",
+      "Child back in work",
+    ]);
+    expect(retitle.code).toBe(1);
+    expect(retitle.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(parentRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      expect.stringMatching(
+        /dispatch issue-update --status\b.*--include-parent\b.*--status alone\b/
+      ),
+      "",
+    ]);
+  });
 });
 
 describe("dispatch issues --json", () => {
