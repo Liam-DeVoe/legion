@@ -47,7 +47,6 @@ import {
   decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
-  decisionsViewServedGate,
   decisionTimes,
   drawnNodes,
   footLineGate,
@@ -67,7 +66,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t-tree";
-import { idReadsOf } from "./issue-page-u";
+import { decisionsViewServedGate, idReadsOf } from "./issue-page-u";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 

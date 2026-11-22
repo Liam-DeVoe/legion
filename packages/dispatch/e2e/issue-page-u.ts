@@ -2,12 +2,9 @@ import { expect, type Page, type Request, type Route } from "@playwright/test";
 
 import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
-import {
-  mergeTreePages,
-  type TreeIdReads,
-} from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { baseUrl, editArtifact, getIssue, listIssueAsks, userHeaders } from "./api";
-import { asPlanner } from "./issue-layout-seed-support";
+import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { editArtifact, getIssue, listIssueAsks } from "./api";
+import { asPlanner, blockNodeIn, readTree, treePath } from "./issue-layout-seed-support";
 import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { presetCount, presetToggle } from "./issue-page";
 import { blockNode } from "./issue-page-g";
@@ -16,8 +13,9 @@ import { drawnRowReadings, type RowReading, steadily } from "./issue-page-t";
 import {
   type DecisionsRead,
   type DecisionsReadWatch,
+  type Gate,
+  OWED_BY,
   type TreeView,
-  treePath,
   treeReadRoute,
 } from "./issue-page-t-tree";
 import type { ApiRequests } from "./traffic";
@@ -29,12 +27,19 @@ import type { ApiRequests } from "./traffic";
  * files export them. It keeps its own `releaseFilter`, since the file that holds the original is
  * a spec file (`e2e/issue-page-t.e2e.ts`).
  *
- * - **The server's answer.** `decisionNodesOf` is the decision nodes the tree read
- *   (`GET /api/v1/issues/{key}/tree`) answers for some blocks, every page its cursor names read
- *   once as alice; `decisionSumOf` is the `text_sha256` one of them carries, and `decisionSum`
- *   that of one block as the tree read answers it now. `viewNodesOf` is the nodes one view of
- *   the tree answers (`?view=`). `heldDecisionsRead` is the decisions read that the gate on the
- *   seeds written as decision nodes (`decisionNodesGate`) reads.
+ * - **The server's answer.** `e2e/issue-layout-seed-support.ts` holds the reads of the tree read
+ *   (`GET /api/v1/issues/{key}/tree`) the rows share with the seeds: `readTree` is the read of
+ *   the whole tree or of one view (`?view=`), every page its cursor names read once as alice;
+ *   `decisionNodesOf` is the decision nodes it answers for some blocks, `decisionSumOf` the
+ *   `text_sha256` one of them carries, `decisionSum` that of one block as the tree read answers
+ *   it now, and `blockNodeIn` the node of one block out of a read's nodes. They stand there, and
+ *   not here, because a seed keeps a decision by the sum `decisionSum` reads, and this file
+ *   imports the seeds through `e2e/issue-page-t.ts`: a seed that imported this file would close
+ *   an import cycle. The `treePath` there is a copy of the one `e2e/issue-page-t-tree.ts` holds,
+ *   which that file does not export. Here, `viewNodesOf` is the nodes one view of the tree
+ *   answers, `heldDecisionsRead` the decisions read that the gate on the seeds written as
+ *   decision nodes (`decisionNodesGate`) reads, and `decisionsViewServedGate` the gate on the
+ *   server serving the tree read's Decisions view.
  * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (the
  *   `<slug>#b-<block id>`), `blockRowId` the id the row of a seed's block carries, a decision's
  *   or a statement's, by that block's node in a tree read, `askRowId` an ask's (its block's node
@@ -54,83 +59,6 @@ import type { ApiRequests } from "./traffic";
  *   its words.
  */
 
-/**
- * Issue `key`'s tree read, or the read of one of its views, as alice reads it: every page its
- * cursor names, the pages merged as the page merges them (`mergeTreePages`). A cursor the read
- * names twice fails the read rather than walk the same pages again.
- */
-async function readTree(key: string, view: TreeView | null): Promise<IssueTreeRead> {
-  const headers = await userHeaders("alice");
-  const pages: IssueTreeRead[] = [];
-  const cursors = new Set<string>();
-  let cursor: string | null = null;
-  do {
-    const url = new URL(treePath(key), baseUrl);
-    if (view !== null) url.searchParams.set("view", view);
-    if (cursor !== null) url.searchParams.set("cursor", cursor);
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(
-        `GET ${url.pathname}${url.search} failed: ${response.status} ${await response.text()}`
-      );
-    }
-    const answered = (await response.json()) as IssueTreeRead;
-    pages.push(answered);
-    cursor = answered.cursor;
-    if (cursor !== null && cursors.has(cursor)) {
-      throw new Error(`${url.pathname} names the cursor ${cursor} twice`);
-    }
-    if (cursor !== null) cursors.add(cursor);
-  } while (cursor !== null);
-  const [first, ...rest] = pages;
-  if (first === undefined) throw new Error(`${treePath(key)} answered no page`);
-  return mergeTreePages([first, ...rest]);
-}
-
-/** The node of this issue tagged `supertag` whose block is `block`, out of `nodes`, the nodes
- *  `what` answers: the read names a block by its store id and carries its block id beside it
- *  (`block_id`). A block no node of `nodes` is fails, naming the block. */
-function blockNodeIn(
-  nodes: readonly IssueTreeNode[],
-  supertag: string,
-  block: string,
-  what: string
-): IssueTreeNode {
-  const node = nodes.find(
-    (one) =>
-      one.supertag === supertag && one.issue === undefined && (one.block_id ?? one.id) === block
-  );
-  if (node === undefined) throw new Error(`${what} holds no ${supertag} node "${block}"`);
-  return node;
-}
-
-/** The decision nodes of issue `key` whose blocks are `blocks`, in that order, from one tree
- *  read as it answers now. */
-export async function decisionNodesOf(
-  key: string,
-  blocks: readonly string[]
-): Promise<IssueTreeNode[]> {
-  const nodes = (await readTree(key, null)).nodes ?? [];
-  return blocks.map((block) => blockNodeIn(nodes, "decision", block, `${key}'s tree read`));
-}
-
-/** The `text_sha256` the tree read answers on `node`, a decision node of issue `key`, in the
- *  model's decision it carries (`decision`): the sum a Keep of the words the node holds carries. */
-export function decisionSumOf(key: string, node: IssueTreeNode): string {
-  const sum = node.decision?.text_sha256;
-  if (sum === undefined || sum === "") {
-    throw new Error(`${key}'s tree read answers no text_sha256 on its decision node ${node.id}`);
-  }
-  return sum;
-}
-
-/** The `text_sha256` the tree read answers on issue `key`'s decision node `block`, every page its
- *  cursor names read: the sum a Keep of the words as they stand now carries. */
-export async function decisionSum(key: string, block: string): Promise<string> {
-  const [node] = await decisionNodesOf(key, [block]);
-  return decisionSumOf(key, node);
-}
-
 /** The nodes the read of issue `key`'s view `view` answers, every page its cursor names. */
 export async function viewNodesOf(key: string, view: TreeView): Promise<IssueTreeNode[]> {
   return (await readTree(key, view)).nodes ?? [];
@@ -147,6 +75,20 @@ export async function heldDecisionsRead(
   watch: DecisionsReadWatch
 ): Promise<DecisionsRead> {
   return watch.read() ?? { answer: await readTree(key, "decisions"), kind: "view" };
+}
+
+/** The model's Decisions view of the tree read, as the server serves it: issue `key`'s tree read
+ *  with `view=decisions` answers, read through the signed-in page's own request context. It is
+ *  met by the server's answer, never by whether the page asked for the view, so a press of
+ *  Decisions that sends no view read fails its row. */
+export async function decisionsViewServedGate(page: Page, key: string): Promise<Gate> {
+  const response = await page.request.get(`${treePath(key)}?view=decisions`);
+  return {
+    met: response.ok(),
+    owed:
+      "owed until the server serves the tree read's Decisions view on this branch's base: the " +
+      `tree read answers ${response.status()} to view=decisions here; ${OWED_BY}`,
+  };
 }
 
 /** The issue read and the asks read, as alice reads them: what `treeIdOf` names a node by. */

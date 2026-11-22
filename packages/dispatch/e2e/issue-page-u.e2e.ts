@@ -5,6 +5,7 @@ import { CONTROL_LABELS, NODE_STATE_WORDS } from "../web/src/features/issue-page
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
+import { decisionNodesOf, decisionSum, decisionSumOf } from "./issue-layout-seed-support";
 import { gotoIssue, issueRead, phase } from "./issue-page";
 import {
   drawnRows,
@@ -28,7 +29,6 @@ import {
   convertedGate,
   decisionNodesGate,
   decisionsReadOf,
-  decisionsViewServedGate,
   heldAnswer,
   owedUnless,
   type TreeView,
@@ -40,10 +40,8 @@ import {
   askOfNode,
   askRowId,
   blockRowId,
-  decisionNodesOf,
   decisionRowId,
-  decisionSum,
-  decisionSumOf,
+  decisionsViewServedGate,
   type FilterReading,
   heldDecisionsRead,
   holdTreeReads,
@@ -74,8 +72,8 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * `drawnRows`, `parentOfRow` and `unfoldEveryBranch` (`e2e/issue-page-g.ts`), `pickPreset`
  * (`e2e/issue-page-i.ts`), `waitingCount` (`e2e/issue-page-p.ts`), the readers of the Decisions
  * view (`e2e/issue-page-q.ts`), `watchApiRequests` (`e2e/traffic.ts`), the helpers of
- * `e2e/issue-page-t.ts` and the rows' own
- * (`e2e/issue-page-u.ts`).
+ * `e2e/issue-page-t.ts`, the reads of the tree read the rows share with the seeds
+ * (`e2e/issue-layout-seed-support.ts`) and the rows' own (`e2e/issue-page-u.ts`).
  *
  * The rows are the two of the Verification document's browser checks, by their titles:
  *

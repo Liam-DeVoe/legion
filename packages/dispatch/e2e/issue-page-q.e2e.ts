@@ -9,9 +9,10 @@ import {
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
-import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
+import { getArtifact, getAsk, listComments } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
+import { decisionNodesOf } from "./issue-layout-seed-support";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
@@ -191,7 +192,8 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
 
       // The answered ask draws its question and options; with the focus on it, the person's
       // answer character for character as the store holds it, by who answered, with no reading
-      // under it: the section of decisions.md that restates it is no row of the filter.
+      // under it: the person's answer is the answered ask itself, and no other node that restates
+      // it is a row of the filter.
       const asked = nodeRow(page, seeded.optionedAskId).first();
       await asked.focus();
       await expect
@@ -594,9 +596,8 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
       state: "kept",
       stateWord: `${NODE_STATE_WORDS.decision.kept} alice`,
     });
-    const kept = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
-      (decision) => decision.block_id === seeded.tiedNewer
-    )?.kept;
+    const [newerNode] = await decisionNodesOf(seeded.key, [seeded.tiedNewer]);
+    const kept = newerNode.decision?.kept;
     expect(kept?.kept_by, "the server holds no Keep by alice of the newer decision").toBe("alice");
     await expect
       .poll(() => focusedNodeId(page), {
