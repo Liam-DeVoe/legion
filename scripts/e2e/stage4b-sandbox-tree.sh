@@ -6492,8 +6492,8 @@ for want in "#$pr_number" "$child3" "$child4"; do
     fail "the pr-merged notice on $tree1's architect does not name $want: $(cut -c1-300 <<<"$merged_notice")"
 done
 state_file merged-waiting
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) != null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
-  fail "the merge freed $tree1's slot or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
+jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
+  fail "the merge left $tree1 holding an admission slot in merging, which keeps none, or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
 dispatch_status_is "$tree1" retro >/dev/null ||
   fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at its merge, want the retro it stands in: the done is the close's"
 lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'select(.tree == $tree)' | grep -c . || true)
@@ -6501,7 +6501,7 @@ lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'selec
   fail "the daemon lingered tree $tree1 at its merge ($lingered times) while $child3 and $child4 were still in the workflow"
 merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
 case $merge_claims in *suspended*) fail "the merge suspended a claim of $tree1 while its tree still ran: $merge_claims" ;; esac
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, its slot kept, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
+note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, no slot as merging keeps none, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
 # The children leave one at a time, and only the last park closes the root. A parked child leaves
 # the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
 # role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release

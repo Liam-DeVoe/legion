@@ -76,8 +76,9 @@ const (
 // `needs_review` or `retro` (a send-back) is implementing" is read by.
 var sentBackStatuses = []string{statusTesting, statusNeedsReview, statusRetro}
 
-// phaseOrder is the workflow's order of the phases a fallback timeline names, the order the
-// daemon's table moves an issue through. One rule reads it: a role's first event starts that
+// phaseOrder is the order of the default steps' phases a fallback timeline names, the order the
+// daemon's table of today's line (phase.Order) moves an issue with no plan rows through; it reads
+// no task's own order. One rule reads it: a role's first event starts that
 // role's phase only where the issue has not reached that phase already (phaseSteps).
 var phaseOrder = []string{
 	phaseDesign, legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting,
@@ -101,11 +102,13 @@ var rolePhase = map[string]string{
 	"merger":      legion.PhaseMerging,
 }
 
-// handoffStarts is the phase each handoff word starts, as the daemon's phase.Handoff pairs them:
-// the planner's `plan` starts implementing, the implementer's `implement` starts testing, the
-// tester's `test` starts reviewing and the reviewer's `review` starts accepting ("Accepting
-// starts at the `review` handoff"). The spec's "a handoff starts the next phase" is this map: a
-// handoff ends the phase it names and leaves no hour between the two. Retro and merging write
+// handoffStarts is the phase each handoff word (the daemon's phase.Handoff names them) starts in
+// the default steps: the planner's `plan` starts implementing, the implementer's `implement`
+// starts testing, the tester's `test` starts reviewing and the reviewer's `review` starts
+// accepting ("Accepting starts at the `review` handoff"). It reads no task's own order, so on a
+// task whose steps stand in another order it still names the phase that follows in the default
+// steps. The spec's "a handoff starts the next phase" is this map: a handoff ends the phase it
+// names and leaves no hour between the two. Retro and merging write
 // none, since each reports the commit it stands on, and accepting ends at the architect's
 // sign-off, which is no handoff (the daemon's phase.Handoff); a word Legion never writes names no
 // phase.
