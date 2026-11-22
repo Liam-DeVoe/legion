@@ -68,11 +68,11 @@ export const quarantine: readonly QuarantineEntry[] = [
 ];
 
 /** A row a commit on main fixed, which a quarantine entry is not: the row stays in every gating
- *  lane, and the nightly's check counts only the flakes of runs whose head holds `fixed`, so a
- *  row flaky twice in runs without its fix does not ask for an entry after it. Once the commit
- *  is older than the check's 14 days every flake it reads is after the fix, so the entry does
- *  nothing, and the check names it for its owner to delete. The check fails on a fix whose
- *  commit is not on main. */
+ *  lane, and the nightly's check counts only the flakes of runs whose head holds `fixed`, or that
+ *  GitHub's compare cannot place, so a row flaky twice in runs without its fix does not ask for
+ *  an entry after it. Once the commit is older than the check's 14 days every flake it reads is
+ *  after the fix, so the entry does nothing, and the check names it for its owner to delete. The
+ *  check fails on a fix whose commit is not on main. */
 export interface FixEntry {
   readonly file: string;
   readonly project: string;
