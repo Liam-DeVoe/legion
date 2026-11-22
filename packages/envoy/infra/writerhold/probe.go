@@ -44,8 +44,9 @@ func probeAdmitted(ctx context.Context, op *Operator) (map[string]string, error)
 
 // The inputs of `hold set`'s intent that record its admitted probe: the identity the hub admitted
 // under prepare (the token's issuer, the subject the auth service's verifier answers for it, and
-// its audiences), and the sha256 of the whole token it presented then with that token's expiry,
-// the exact match each later dial tries first. The token itself is never recorded.
+// its audiences, a JSON array, so an audience holding a space reads back whole), and the sha256 of
+// the whole token it presented then with that token's expiry, the exact match each later dial
+// tries first. The token itself is never recorded.
 const (
 	probeTokenInput    = "probe_token_sha256"
 	probeIssuerInput   = "probe_issuer"
@@ -56,19 +57,23 @@ const (
 
 // probeRecordInputs are credential's record as `hold set`'s intent holds it.
 func probeRecordInputs(credential ProbeCredential) map[string]string {
+	audience, err := json.Marshal(credential.Audience)
+	if err != nil {
+		panic(err) // a []string always encodes
+	}
 	return map[string]string{
 		probeTokenInput:    credential.TokenSHA256,
 		probeIssuerInput:   credential.Issuer,
 		probeSubjectInput:  credential.Subject,
-		probeAudienceInput: strings.Join(credential.Audience, " "),
+		probeAudienceInput: string(audience),
 		probeExpiryInput:   credential.Expiry.UTC().Format(time.RFC3339),
 	}
 }
 
 // useProbeRecord makes the admitted-probe record of d, this hold's signed journal, the one Probe
 // counts a refusal against: the one the latest set intent that recorded one holds, or none. A
-// record whose expiry does not read is UNKNOWN. Each command calls it before its first dial, and it
-// drops the issuer's keys an earlier command kept, so each command reads them afresh.
+// record whose expiry or audiences do not read is UNKNOWN. Each command calls it before its first
+// dial, and it drops the issuer's keys an earlier command kept, so each command reads them afresh.
 func (op *Operator) useProbeRecord(d holdrecord.Done) error {
 	op.probe = nil
 	op.probeKeys = probeKeys{}
@@ -80,8 +85,12 @@ func (op *Operator) useProbeRecord(d holdrecord.Done) error {
 		if err != nil {
 			return unknownf(StepProbe, err, "read this hold's admitted-probe record: its %s", probeExpiryInput)
 		}
+		var audience []string
+		if err := json.Unmarshal([]byte(o.Inputs[probeAudienceInput]), &audience); err != nil {
+			return unknownf(StepProbe, err, "read this hold's admitted-probe record: its %s", probeAudienceInput)
+		}
 		op.probe = &ProbeCredential{TokenSHA256: o.Inputs[probeTokenInput], Issuer: o.Inputs[probeIssuerInput],
-			Subject: o.Inputs[probeSubjectInput], Audience: strings.Fields(o.Inputs[probeAudienceInput]), Expiry: expiry}
+			Subject: o.Inputs[probeSubjectInput], Audience: audience, Expiry: expiry}
 	}
 	return nil
 }
@@ -171,8 +180,8 @@ func (op *Operator) unproven(ctx context.Context, raw string, now time.Time) str
 		case errors.Is(err, oidc.ErrExpired):
 			return fmt.Sprintf("%s, and (c) the token presented has lapsed: %v", why, err)
 		case err != nil:
-			return fmt.Sprintf("%s, and (b) the token presented is not the admitted one and does not prove its identity (issuer %s, subject %s, audience %s): %v",
-				why, p.Issuer, p.Subject, strings.Join(p.Audience, " "), err)
+			return fmt.Sprintf("%s, and (b) the token presented is not the admitted one and does not prove its identity (issuer %s, subject %s, audience %q): %v",
+				why, p.Issuer, p.Subject, p.Audience, err)
 		}
 		expiry = proved.Expiry
 	}
@@ -249,7 +258,7 @@ func (k *probeKeys) prove(ctx context.Context, p ProbeCredential, raw string) (P
 	case proved.Subject != p.Subject:
 		return ProbeCredential{}, fmt.Errorf("it names the subject %q, not the recorded subject", proved.Subject)
 	case !slices.Equal(proved.Audience, p.Audience):
-		return ProbeCredential{}, fmt.Errorf("its audience is %q, not the recorded audience", strings.Join(proved.Audience, " "))
+		return ProbeCredential{}, fmt.Errorf("its audience is %q, not the recorded audience %q", proved.Audience, p.Audience)
 	}
 	return proved, nil
 }
