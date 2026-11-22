@@ -448,3 +448,100 @@ func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 		t.Errorf("PutClearingGap dropped the writer's gap mark on a lost race: gap=%q, want relay-mark", stored.RepositoryGap)
 	}
 }
+
+// N1b: PutClearingGap keeps a writer's gap mark and delivery mode when the session's own
+// registration has already caught up in this registry's cache before the clearing write - the
+// ordering the lost-race row above does not reach, because the write then lands on its first try
+// against the cache's fence. The claim refresh decides clearForged on a leader read that finds a
+// RePublished record (StoredByWriter false); the session's own writer's record, a relay's mark and a
+// consumer delivery on it then land and the cache applies them; PutClearingGap must not clear them.
+// Control (b785a2a6db..5bc0ed7f6f's head): the fast cache path writes the caller's empty mark and
+// delivery, so the entry ends gap="" delivery="".
+func TestPutClearingGapKeepsAWritersGapMarkAndDeliveryWhenTheCacheHasCaughtUp(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	other := openBindingRegistry(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const sessionID, mark = "ses_clear_gap_cached", "relay-mark"
+	if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e1"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	body, err := json.Marshal(map[string]any{"session_id": sessionID, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
+		"projects": []string{"PRIV"}, "title": "forged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, sessionID, body)
+	awaitApplied(t, r, sessionID, stored)
+	if _, own, err := r.StoredByWriter(ctx, sessionID); err != nil || own {
+		t.Fatalf("precondition: StoredByWriter over the RePublish = %t, %v; want false (the refresh's clearForged)", own, err)
+	}
+	// The session's own writer's record lands, then a relay marks it, and this registry's cache
+	// applies both before PutClearingGap reads its fence.
+	if err := other.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e2"}); err != nil {
+		t.Fatalf("the writer's registration: %v", err)
+	}
+	if err := other.SetRepositoryGap(ctx, sessionID, mark); err != nil {
+		t.Fatalf("the relay's mark: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		cached, err := r.Get(sessionID)
+		return err == nil && cached.RepositoryGap == mark && cached.Delivery == DeliveryConsumer
+	})
+	// The refresh's write, as roleSetHandler makes it under clearForged.
+	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
+	}
+	after, own, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !own {
+		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
+	}
+	if after.RepositoryGap != mark {
+		t.Errorf("PutClearingGap dropped the writer's gap mark the cache had already applied: gap=%q, want %q", after.RepositoryGap, mark)
+	}
+	if after.Delivery != DeliveryConsumer {
+		t.Errorf("PutClearingGap cleared the writer's delivery mode: delivery=%q, want %q", after.Delivery, DeliveryConsumer)
+	}
+}
+
+// N8: PutWithin carries no gap mark from a record DecodeEntry refuses for the key - a writer's plain
+// put that names another session, which every reader reads as absent. The cache drops such a record,
+// so the next PutWithin reads it by direct get at its true sequence and would otherwise carry its
+// mark. Control: a record that names its own key carries its mark, as designed.
+func TestPutWithinCarriesNoMarkFromARecordDecodeEntryRefuses(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	carried := func(sessionID, names string) string {
+		t.Helper()
+		if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+			t.Fatalf("register %s: %v", sessionID, err)
+		}
+		body, err := json.Marshal(map[string]any{"session_id": names, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
+			"projects": []string{"PRIV"}, "repository_gap": "mark-of-" + names})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision, err := r.watcher.KV().Legacy().Put(sessionID, body)
+		if err != nil {
+			t.Fatalf("plain put at %s: %v", sessionID, err)
+		}
+		awaitApplied(t, r, sessionID, revision)
+		if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+			t.Fatalf("re-register %s: %v", sessionID, err)
+		}
+		stored, own, err := r.StoredByWriter(ctx, sessionID)
+		if err != nil || !own {
+			t.Fatalf("read %s: own=%t err=%v", sessionID, own, err)
+		}
+		return stored.RepositoryGap
+	}
+	if own := carried("ses_q2_own", "ses_q2_own"); own == "" {
+		t.Fatal("CONTROL: PutWithin carried no mark from a record naming its own key; the row cannot tell")
+	}
+	if other := carried("ses_q2_victim", "ses_q2_someone_else"); other != "" {
+		t.Errorf("PutWithin carried the gap mark %q of a record every reader reads as absent", other)
+	}
+}
