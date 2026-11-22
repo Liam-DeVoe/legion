@@ -1982,6 +1982,19 @@ func (w *w5Rig) roleNotices(token claim.Token) []w5Notice {
 	return w.noticesOn(notify.RoleTopicPrefix + string(token))
 }
 
+// forwardHolds is whether a forward the stream stored on session's own subject, in either of its
+// forms, holds text: the read of a role message the rig sent that session itself.
+func (w *w5Rig) forwardHolds(session, text string) bool {
+	for _, subject := range []string{"notifications.agent." + session, "notifications.agent.*." + session} {
+		for _, stored := range w.nats.storedOn(subject) {
+			if strings.Contains(string(stored.data), text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // forwardedTo is every notice the listener forwarded to session for topic, oldest first: a role
 // message reaches its holder as a forward the stream stores on the session's own subject, in
 // either of its forms, with the role topic kept in the envelope. Each is a copy the session is

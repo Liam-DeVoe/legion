@@ -721,8 +721,8 @@ func (r *w5Run) firstBlock() {
 		r.checkMarked(name, before, t0)
 	}
 	r.checkNoControllerNotice(w5FirstBlock, t0, "first-block")
-	r.checkNoArchitectNotice(t0)
 	r.checkRelaunchedAtTheMark(before, t0)
+	r.checkNoArchitectNotice(t0)
 
 	sleepUntil(t0.Add(w5GuardRead))
 	r.guardHolds()
@@ -786,10 +786,10 @@ func (r *w5Run) checkNoControllerNotice(names []string, from time.Time, label st
 // forwards the stream stored for the architect's session: no notice of a claim out of reach is
 // written for it or reaches it, since the daemon relaunches the claim and a person reads what a
 // relaunch cannot fix in R6's line. A notice is of a claim out of reach by its kind, or by a reason
-// that says a session has not registered with Envoy. The reader of the forwards must have seen the
-// architect's other notices over the run, so that none of this kind is no blind read.
+// that says a session has not registered with Envoy. So that none is no blind read, the rig then
+// sends the relaunched architect a role message of its own and reads it among those forwards.
 func (r *w5Run) checkNoArchitectNotice(from time.Time) {
-	arch := r.c("architect").token
+	arch := r.c("architect")
 	ofReach := func(kind, reason string) bool {
 		return kind == w5NoticeClaimOutOfReach || strings.Contains(reason, "registered with Envoy")
 	}
@@ -805,20 +805,23 @@ func (r *w5Run) checkNoArchitectNotice(from time.Time) {
 		}
 	}
 	sort.Strings(rows)
-	session := r.session(arch)
-	all := r.forwardedTo(session, notify.RoleTopicPrefix+string(arch))
+	session := r.session(arch.token)
+	topic := notify.RoleTopicPrefix + string(arch.token)
 	var reached []string
-	for _, n := range all {
+	for _, n := range r.forwardedTo(session, topic) {
 		reason, _ := n.raw["reason"].(string)
 		if !n.at.Before(from) && ofReach(n.kind, reason) {
 			reached = append(reached, n.String())
 		}
 	}
-	r.record("first block: the architect's session %s was forwarded %d notices over the run", session, len(all))
 	r.check("no-notice-of-a-claim-out-of-reach-reaches-the-architect", len(rows) == 0 && len(reached) == 0,
 		"notice rows of a claim out of reach from %s: %v; forwards of one to the architect's session: %v", clockAt(from), rows, reached)
-	r.check("the-architects-forwards-are-read", len(all) > 0,
-		"the stream holds %d forwards to the architect's session %s on its role topic over the run, want some, or the read above saw nothing", len(all), session)
+	canary := "W5-ARCH-CANARY-" + r.suffix
+	row := r.enqueueRow(arch.key, record.RoleMessage{Role: string(arch.token),
+		Body: canary + ": a role message the rig sends the architect, so that the read of its forwards is seen to read one."})
+	seen := waitFor(5*time.Minute, func() bool { return r.forwardHolds(session, canary) })
+	r.check("the-architects-forwards-are-read", seen,
+		"the rig's role message (row %d) reached the architect's session %s within 5 minutes: %t", row, session, seen)
 }
 
 // checkRelaunchedAtTheMark reads the daemon's own relaunch of the implementer, the architect and
@@ -1338,15 +1341,14 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	time.Sleep(2 * time.Minute)
 	start := r.block("tenth")
 	session := r.session(tenth.token)
+	// Its last registration before the block, read before its process ends: a session whose
+	// process exits leaves the listener's list at once.
+	seen := r.registeredLast(session)
+	r.record("tenth: its last registration as the listener's own list shows it at the block: %s", clockAt(seen))
 	launch := r.runtime.current(tenth.token)
 	launchesBefore := len(r.runtime.launchesOf(tenth.token))
 	_ = killGroup(launch.pane.pid)
 	r.record("tenth: killed its process group (pid %d, generation %d) at %s", launch.pane.pid, launch.spec.Generation, clockAt(time.Now()))
-	// Its last registration before the block, read a minute into it, before any launch the block
-	// keeps from registering could have moved it.
-	sleepUntil(start.Add(time.Minute))
-	seen := r.registeredLast(session)
-	r.record("tenth: its last registration as the listener's own list shows it a minute into the block: %s", clockAt(seen))
 	var series []string
 	maxDeaths := 0
 	var markedAt time.Time
