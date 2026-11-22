@@ -12,12 +12,14 @@ import (
 	"time"
 	"weak"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -861,6 +863,110 @@ func TestAJoinedTransactionsReadOfADocumentNoRoomHoldsLoadsNoRoom(t *testing.T) 
 	if held := pool.held.Load(); held != 0 {
 		t.Fatalf("the pool holds %d bytes once the transaction ended and the waiter was served, want none", held)
 	}
+}
+
+// streamEveryFold makes service's store stream every log of several rows rather than read it into
+// memory (foldRead, foldBufferLimit), and answers that store and its rooms pool.
+func streamEveryFold(t *testing.T, service *Service) (*PgVersioned, *pgxpool.Pool) {
+	t.Helper()
+	versioned, ok := service.persistence.(*PgVersioned)
+	if !ok {
+		t.Fatalf("the service reads through %T, whose folds this test cannot make stream", service.persistence)
+	}
+	versioned.foldBufferLimit = 1
+	rooms, err := service.store.Pool.Rooms()
+	if err != nil {
+		t.Fatalf("the rooms pool: %v", err)
+	}
+	return versioned, rooms
+}
+
+// A document load whose fold streams its rows waits for its grant of the pod's load concurrency
+// holding no connection of the rooms pool: it takes the grant before the transaction that streams
+// the rows begins (loadStored). Before, the fold took it inside that transaction, holding its rooms
+// connection while it waited.
+func TestADocumentLoadsStreamedFoldWaitsForItsGrantHoldingNoRoomsConnection(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	document, _ := twoRowDocument(t, service, 51, 16<<10)
+	versioned, rooms := streamEveryFold(t, service)
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	filler := fillPoolBut(t, pool, 0)
+	loaded := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, document)
+		loaded <- err
+	}()
+	select {
+	case <-waits:
+	case err := <-loaded:
+		t.Fatalf("the load finished (%v) while the pool was full, want it waiting for its grant", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the load never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	if held := rooms.Stat().AcquiredConns(); held != 0 {
+		t.Fatalf("the streamed fold waits for its grant holding %d connections of the rooms pool, want none", held)
+	}
+	filler.release()
+	if err := answeredWithin(t, loaded, "the load, once the pool had room"); err != nil {
+		t.Fatalf("the load: %v", err)
+	}
+}
+
+// A transaction holding its first document's fork, beside a streamed fold that waits for the bytes
+// the transaction holds, reads a later document from the store through the rooms pool's one free
+// connection and finishes: the fold holds no rooms connection while it waits (loadStored), so the
+// read takes that connection, reads the stored log, gives the connection back, and is refused busy
+// for the one slot its streamed rows take, which the full pool lacks past the fork's grant. Before,
+// the fold waited holding that connection, and the transaction's read waited for it, until this
+// test's bound.
+func TestAJoinedTransactionsColdReadBesideAStreamedFoldWaitingForItsBytesFinishes(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	written, _ := residentGrantDocuments(t, service, []int{52}, []int{16 << 10})
+	streaming, _ := twoRowDocument(t, service, 53, 16<<10)
+	later := createIssueDocument(t, service.store, 54, "Written whole by this test.")
+	storeHistory(t, service, later, grantTestState(t, 16<<10))
+	versioned, rooms := streamEveryFold(t, service)
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, written[0]); err != nil {
+		t.Fatalf("the transaction's write of its first document: %v", err)
+	}
+	filler := fillPoolBut(t, pool, 0)
+	// Every connection of the rooms pool but one is held, so the streamed fold and the
+	// transaction's read need the same one.
+	for range store.RoomsPoolSize - 1 {
+		conn, err := rooms.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("hold a connection of the rooms pool: %v", err)
+		}
+		t.Cleanup(conn.Release)
+	}
+	folded := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, streaming)
+		folded <- err
+	}()
+	select {
+	case <-waits:
+	case err := <-folded:
+		t.Fatalf("the streamed fold finished (%v) while the pool was full, want it waiting for the transaction's bytes", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the streamed fold never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	err := answeredWithin(t, applyGrantEdit(service, joined, later), "the transaction's cold write of its later document, beside the streamed fold")
+	requireGrantShort(t, err, "the transaction's cold write of its later document, whose streamed rows take a slot the full pool lacks")
+	end()
+	filler.release()
+	if err := answeredWithin(t, folded, "the streamed fold, once the transaction gave its grant back"); err != nil {
+		t.Fatalf("the streamed fold: %v", err)
+	}
+	requireHeading(t, service, later, true)
 }
 
 // A browser's first sync's answer weighs the room once it holds a grant and tops the grant up

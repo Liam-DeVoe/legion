@@ -271,11 +271,14 @@ const bufferedFolds = store.RoomsPoolSize
 // (declaredStructs), which the fold's document is built of. What they hold is bounded by foldSlots
 // outside the pool. Rows streamed past foldBuffer are not in hand at once, so the grant is taken
 // before they are read, on their bytes alone, which at foldBufferBytes already weigh within 5% of
-// a whole slot, past which copyWeight weighs nothing more. A log of one update takes nothing of
-// its own: it is returned as stored, and whoever decodes it takes the grant (documentThrough). The
-// buffered fold's slot is taken before the load grant's first take, never the other way about but
-// for a transaction whose grant holds bytes, which takes its slot only where one is free at once
-// (above).
+// a whole slot, past which copyWeight weighs nothing more. A document load takes it before it holds
+// its rooms connection at all, one slot whole, for every take the fold makes (loadStored), so the
+// take here takes nothing more and no fold of a document load takes a grant holding a rooms
+// connection (loadSlots); a compaction's fold takes it here, holding its compaction connection.
+// A log of one update takes nothing of its own: it is returned as stored, and whoever decodes it
+// takes the grant (documentThrough). The buffered fold's slot is taken before the load grant's
+// first take, never the other way about but for a transaction whose grant holds bytes, which takes
+// its slot only where one is free at once (above).
 //
 // A grant that held nothing as the read began is the read's alone, and ctx marks it so for use
 // (ownedBy): the fold's read-back and the decode of its runs, which hold nothing they built as

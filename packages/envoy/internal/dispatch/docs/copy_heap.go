@@ -80,7 +80,12 @@ import (
 //
 // Every taker takes its bytes before it takes a database connection, so no grant is held behind
 // a connection pool a holder of another grant could fill, and a wait a request's context ends is
-// answered errWriteBusy, the API's 503 DOC_SERVICE_UNAVAILABLE. The copy a read of a resident
+// answered errWriteBusy, the API's 503 DOC_SERVICE_UNAVAILABLE. Of the rooms pool, which a
+// holder of the pool can need while it holds - a transaction's cold read of a later document -
+// the order is the rule's other half: a holder takes its pool grant before any rooms connection,
+// and takes no pool grant while it holds one. A document load's fold of rows in memory takes its
+// grant once its rooms transaction has committed, and a load whose rows stream takes it, one slot
+// whole, before that transaction begins (loadStored, foldRead). The copy a read of a resident
 // room takes while the room's replica is busy (holdLive, snapshotDocument) takes nothing: its
 // callers hand it no request context to bound a wait by.
 
@@ -219,8 +224,9 @@ const loadSlotsName = "load"
 //
 // A decode's grant, held between its take and its release, decodes, renders or reads the rows of
 // the transaction it already holds, takes no lock held across a wait, takes no pooled connection
-// - a fold covers the grant holding its own transaction's connection alone, or, once that
-// transaction has ended, none (foldRead), and a room's load gives its grant back before
+// - a fold of a document load covers the grant holding no connection, its rows read and its rooms
+// transaction committed or not yet begun (loadStored, foldRead), a compaction's fold its own
+// compaction connection alone, and a room's load gives its grant back before
 // onLoadDocument reads the store - and runs no update observer, since ygo decodes nothing of a
 // loading room's state and no holder commits on a resident room.
 //

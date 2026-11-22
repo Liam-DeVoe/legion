@@ -137,9 +137,9 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 // checkpoint when one exists, read as every document load reads (loadStored): in one
 // repeatable-read transaction on the rooms pool, folded once that transaction has committed when
 // the rows total at most foldBufferBytes, so a fold holds no connection a room load waits for, and
-// inside it while it streams them when they total more; and noted once it has read more than one
-// row. A room's load decodes the state it returns once more, in the room's load hook
-// (onLoadDocument).
+// inside it while it streams them when they total more, under a grant taken before that
+// transaction began; and noted once it has read more than one row. A room's load decodes the state
+// it returns once more, in the room's load hook (onLoadDocument).
 func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
 	var update []byte
 	stamp, err := p.loadStored(ctx, room, func(ctx context.Context, head persistence.Version, updates updateSource) (err error) {
@@ -156,10 +156,26 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 // updates: in one repeatable-read read-only transaction on the rooms pool, the stamp of the state
 // at their head and the count and bytes of the rows at or below it (readStoredLog), then those
 // rows, which it hands use with the head to fold (foldRead): once the transaction has committed
-// when they total at most foldBufferBytes, while it streams them inside it when they total more. A
-// room with no stored update commits and hands use nothing. It returns the stamp it read, and once
-// its transaction has ended it notes the room (noted) when it read more than one row: one row has
-// nothing to fold, and any later append notes the room itself.
+// when they total at most foldBufferBytes, while it streams them inside it when they total more.
+// A room with no stored update commits and hands use nothing. It returns the stamp it read, and
+// once its transaction has ended it notes the room (noted) when it read more than one row: one row
+// has nothing to fold, and any later append notes the room itself.
+//
+// The fold's grant of the pod's load concurrency is the grant ctx carries, or one of this read's
+// own given back as it returns (withLoadSlot), and it is never taken while the read holds its
+// rooms connection (loadSlots): a fold of rows in memory takes it once its transaction has
+// committed (foldRead), and a read that streams its rows takes it before the transaction that
+// streams them begins. Such a read's every take - its rows' weight, its read-back's, the decode
+// of its runs or of its one row (documentThrough) - is past what the rows' bytes alone tell the
+// read ahead of the rows themselves, and none is past one slot (copyWeight), so the read gives its
+// connection back, takes one slot whole - a first take, waiting holding nothing of the pool, or,
+// on a grant that already holds bytes, what one slot is past them only where the pool gives it at
+// once (loadSlot.take) - and reads the stored log again in a transaction of its own, whose fold
+// then takes nothing more. The rows' bytes past foldBufferBytes already weigh within 5% of that
+// slot (copyWeight), which is what the streamed fold took before. Before, it took that inside the
+// transaction, waiting for the pool holding its rooms connection, so a holder of the pool that
+// needed a rooms connection - a transaction's cold read of a later document - waited for it while
+// the fold waited for the bytes that holder held.
 func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, error) {
 	if err := ctx.Err(); err != nil {
 		return DocumentStamp{}, err
@@ -168,31 +184,53 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx 
 	if err != nil {
 		return DocumentStamp{}, err
 	}
+	ctx, slot, release := withLoadSlot(ctx)
+	defer release()
+	ctx = slot.ownedBy(ctx)
+	for {
+		stamp, streams, err := p.loadStoredOnce(ctx, rooms, room, slot, use)
+		if !streams {
+			return stamp, err
+		}
+		if err := slot.take(ctx, loadSlotBytes); err != nil {
+			return DocumentStamp{}, err
+		}
+	}
+}
+
+// loadStoredOnce is one attempt of loadStored's read in a transaction of its own on rooms. It
+// answers streams, having ended its transaction and read nothing more, where the rows would stream
+// (past foldBufferBytes) and slot does not hold one whole slot yet, for loadStored to take that
+// slot holding no rooms connection and read again.
+func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, room string, slot *loadSlot, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, bool, error) {
 	tx, err := rooms.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return DocumentStamp{}, fmt.Errorf("begin document load: %w", err)
+		return DocumentStamp{}, false, fmt.Errorf("begin document load: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	stored, err := readStoredLog(ctx, tx, room)
 	if err != nil {
-		return DocumentStamp{}, err
+		return DocumentStamp{}, false, err
 	}
 	head := persistence.Version(stored.stamp.Version)
 	if head == 0 {
 		if err := tx.Commit(ctx); err != nil {
-			return DocumentStamp{}, fmt.Errorf("commit document load: %w", err)
+			return DocumentStamp{}, false, fmt.Errorf("commit document load: %w", err)
 		}
-		return stored.stamp, nil
+		return stored.stamp, false, nil
+	}
+	if stored.bytes > p.foldBuffer() && slot.bytes < loadSlotBytes {
+		return DocumentStamp{}, true, nil
 	}
 	if err := p.foldRead(ctx, tx, room, head, stored.rows, stored.bytes, "document load", func(ctx context.Context, updates updateSource) error {
 		return use(ctx, head, updates)
 	}); err != nil {
-		return DocumentStamp{}, err
+		return DocumentStamp{}, false, err
 	}
 	if stored.rows > 1 {
 		p.noted(room, int64(head))
 	}
-	return stored.stamp, nil
+	return stored.stamp, false, nil
 }
 
 // Head is the version Load folds the room up to now, read through the pool that owns loads, as
