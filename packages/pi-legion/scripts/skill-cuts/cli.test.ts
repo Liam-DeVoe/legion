@@ -14,7 +14,12 @@ import {
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
+import {
+  SessionEntry,
+  type SessionMessage,
+  skillHeaderPath,
+  stripSkillHeader,
+} from "../skill-scenarios/transcript";
 import { type ArmName, buildArm } from "./arms";
 import { LISTING_MEASURE, ListingMeasure } from "./build";
 import { capturePaths } from "./capture";
@@ -2353,6 +2358,148 @@ describe("behaviour: written cases and the report's descriptions", () => {
     const reported = await cli(report(s));
     expect(reported.stdout.split("\n")).toContain(
       "screened cases, old against none in the screen: 3 ties, 1 floor (0 of 10 in both), 1 ceiling (10 of 10 in both), 1 reverse gap (none above old); a floor or a ceiling is a tie too"
+    );
+  }, 60_000);
+
+  // Catches: a case the arm with no skill fails by construction, since its real step reads a file
+  // of the skill that arm does not have, counted beside the verdict with no word that says so.
+  test("report names the screened cases whose real step reads a file of the skill other than SKILL.md, and counts the others", async () => {
+    const s = scenario("report-step-reads", f1File(2), [
+      { id: "c04" },
+      { id: "c05" },
+      { id: "c06" },
+    ]);
+    // Where F1's profile installed alpha, as its first `[Skill file: …]` line shows it.
+    const installed = path.dirname(skillHeaderPath(messages[2]?.content?.[0]?.text ?? "") ?? "");
+    /** The cases of `s` again in its cases file, each id of `targets` with a real step that reads
+     *  that path or URL. */
+    const reading = (targets: Record<string, string>) => {
+      const cases = s.cases.map((c) => {
+        const target = targets[c.id];
+        if (target === undefined) return c;
+        const content = [
+          ...(c.realStep.content ?? []),
+          { type: "toolCall", id: `read_${c.id}`, name: "read", arguments: { path: target } },
+        ];
+        return { ...c, realStep: { ...c.realStep, content } };
+      });
+      writeFileSync(s.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    };
+    reading({
+      c04: "skill://alpha/references/x.md",
+      c05: `${installed}/references/x.md`,
+    });
+    /** Writes the results of the three cases under `out`, compared with `compared`. */
+    const write = (out: string, compared: "none" | "new") => {
+      // The compared arm's screen passes, and no skill's: none of 10 where the cut is compared.
+      const other = (passes: number) => ({
+        [compared]: passes,
+        none: compared === "new" ? 0 : passes,
+      });
+      writeMadeUpResult(
+        out,
+        "c04",
+        { screen: { old: 10, ...other(0) }, confirm: { old: 40, [compared]: 0 } },
+        { compared }
+      );
+      writeMadeUpResult(out, "c05", { screen: { old: 10, ...other(0) } }, { compared });
+      writeMadeUpResult(
+        out,
+        "c06",
+        { screen: { old: 8, ...other(4) }, confirm: { old: 40, [compared]: 20 } },
+        { compared }
+      );
+    };
+    write(s.out, "none");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const line =
+      "cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: 2 of 3 screened (c04 reads references/x.md; c05 reads references/x.md); the 1 screened case with no such read: 1 informative, 1 flagged, 1 confirmed losses (a description beside the registered rule, which it does not change)";
+    expect(lines).toContain(line);
+    // It comes after the lines of the cases by kind.
+    expect(lines.indexOf(line)).toBeGreaterThan(lines.indexOf("screened written cases: none"));
+    // The cases line still counts every screened case: the line changes no count of the rule.
+    expect(reported.stdout).toContain(
+      "cases: 3 screened, 3 informative, 3 flagged, 2 confirmed losses;"
+    );
+
+    // With the cut compared, no skill is in the screen too, and the line is the same.
+    const cut = { ...s, out: path.join(s.dir, "out-new") };
+    write(cut.out, "new");
+    const withCut = await cli(report(cut));
+    expect({ code: withCut.code, stderr: withCut.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(withCut.stdout.split("\n")).toContain(line);
+
+    // A read of SKILL.md, and of a path inside the skill that is no file of --old, is no such read.
+    reading({
+      c04: "skill://alpha",
+      c05: `${installed}/references/missing.md`,
+    });
+    const none = await cli(report(s));
+    expect(none.stdout.split("\n")).toContain(
+      "cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: none of 3 screened; the 3 screened cases with no such read: 3 informative, 3 flagged, 2 confirmed losses (a description beside the registered rule, which it does not change)"
+    );
+  }, 60_000);
+
+  // Catches: a report that stops at one case whose arms buildArm refuses, or counts that case
+  // among the cases that read a file of the skill or among the others.
+  test("report names a screened case whose arms buildArm refuses as one whose reads cannot be told, and still exits 0", async () => {
+    const s = scenario("report-step-untold", f1File(2), [
+      { id: "c04" },
+      { id: "c05" },
+      { id: "c07" },
+    ]);
+    // c07's messages open with a `/skill:alpha` prompt the user typed, a block the arms cannot
+    // rebuild, so buildArm refuses its arms; its result records a drop at confirm, after its
+    // screen, so it is a screened case.
+    const typed: SessionMessage = {
+      role: "custom",
+      customType: "skill-prompt",
+      content: [{ type: "text", text: "# Alpha\n\nThe user's prompt." }],
+      display: true,
+      details: { name: "alpha", path: "/skills/alpha/SKILL.md" },
+      attribution: "user",
+      timestamp: 1795139983600,
+    };
+    const read = { type: "toolCall", id: "read_c04", name: "read" };
+    const cases = s.cases.map((c) =>
+      c.id === "c04"
+        ? {
+            ...c,
+            realStep: {
+              ...c.realStep,
+              content: [
+                ...(c.realStep.content ?? []),
+                { ...read, arguments: { path: "skill://alpha/references/x.md" } },
+              ],
+            },
+          }
+        : c.id === "c07"
+          ? {
+              ...c,
+              messages: [typed, ...c.messages],
+              skillReads: c.skillReads.map((index) => index + 1),
+            }
+          : c
+    );
+    writeFileSync(s.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const screens: Record<string, { old: number; none: number }> = {
+      c04: { old: 10, none: 0 },
+      c05: { old: 8, none: 4 },
+      c07: { old: 10, none: 0 },
+    };
+    for (const [id, screen] of Object.entries(screens)) {
+      writeMadeUpResult(s.out, id, { screen }, { compared: "none" });
+    }
+    const file = caseResultFile(s.out, "c07");
+    const dropped = { dropped: UNREADABLE, droppedAt: "confirm" };
+    const made = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify(CaseResult.parse({ ...made, ...dropped })));
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout.split("\n")).toContain(
+      `cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: 1 of 3 screened (c04 reads references/x.md); c07: its reads cannot be told (case c07: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block (one text part that ends "Skill: <its details.path>")); the 1 screened case with no such read: 1 informative, 1 flagged, 0 confirmed losses (a description beside the registered rule, which it does not change)`
     );
   }, 60_000);
 

@@ -155,7 +155,17 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   is written into the runner), or that none was given. A screened case is one whose screen runs
   are counted and that is not dropped at screen. Beside the verdict, as descriptions that
   change no rule: each kind's screened cases (their ids), how many are informative, and each
-  screen arm's passes summed over them; the mean over the screened cases of old's screen pass
+  screen arm's passes summed over them; the screened cases whose real step reads a file of the
+  skill other than SKILL.md (`cases whose real step reads a file of the skill other than SKILL.md,
+  which the arm with no skill does not have, so it fails them by construction: <n> of <screened>
+  screened (<id> reads <path>; …)`, or `none of <screened> screened`), a read being a `read` of
+  `skill://<skill>/<path>` or of a path that ends with the skill's installed directory and
+  `/<path>`, `<path>` a file of `--old`, as the arms tell a read of a file of the skill; the arm
+  with no skill, in the screen whatever is compared, fails such a step whatever the skill's text
+  teaches; a screened case whose arms the runner cannot build (`buildArm` throws) is named in it
+  as `<id>: its reads cannot be told (<the first line of why>)` and counted in neither, and the
+  line gives how many of the other screened cases are informative, flagged and confirmed losses;
+  the mean over the screened cases of old's screen pass
   rate less the compared arm's, over all of them and over each kind's, with a 95% interval
   clustered by case (each case's difference is one observation, so the interval is Student's t
   over the cases; one case has none, and a kind with no screened case has no mean); and how many

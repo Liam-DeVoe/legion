@@ -308,6 +308,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
+import { readCalls } from "../skill-scenarios/transcript";
 import {
   type Arm,
   type ArmDirs,
@@ -329,7 +330,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, caseKind, loadCases, Thinking, textLines } from "./cases";
+import { type Case, caseKind, loadCases, skillReadFile, Thinking, textLines } from "./cases";
 import {
   configFrom,
   fileDigests,
@@ -3551,6 +3552,60 @@ function shapesLine(b: Behaviour, score: SkillScore): string {
   return `screened cases, old against ${b.compared} in the screen: ${counted(shapes.ties, "tie")}, ${counted(shapes.floors, "floor")} (0 of ${SCREEN_RUNS} in both), ${counted(shapes.ceilings, "ceiling")} (${SCREEN_RUNS} of ${SCREEN_RUNS} in both), ${counted(shapes.reverse, "reverse gap")} (${b.compared} above old); a floor or a ceiling is a tie too`;
 }
 
+/** The files of `files` (paths inside `old` of its files other than SKILL.md) that case `c`'s
+ *  real step reads, each once, in order, as the arms tell a read of a file of the skill: a `read`
+ *  of `skill://<skill>/<path>` (cases.ts's `skillReadFile`) or of a path that ends with
+ *  `<installed dir>/<path>`, the installed directory the arms show (`buildArm`'s, of the arm with
+ *  no skill, which reads no directory and writes nothing). */
+function stepSkillReads(c: Case, old: string, files: readonly string[]): string[] {
+  const arm = buildArm(c, "none", { old }, path.join(tmpdir(), SCRATCH_DIR));
+  const read = readCalls([{ message: c.realStep }]).flatMap(({ target }) => {
+    const file =
+      skillReadFile(arm.skill, target) ??
+      files.find((each) => target.endsWith(`${arm.installedDir}/${each}`));
+    return file !== undefined && files.includes(file) ? [file] : [];
+  });
+  return [...new Set(read)];
+}
+
+/** The report's line of the screened cases whose real step reads a file of the skill under `old`
+ *  other than SKILL.md (`stepSkillReads`), each with the files it reads: the arm with no skill
+ *  does not have that file, so it fails such a step whatever the skill's text teaches; each
+ *  screened case whose arms `buildArm` refuses, as one whose reads cannot be told, with the first
+ *  line of why, counted in neither; and how many of the other screened cases are informative,
+ *  flagged and confirmed losses. A description beside the registered rule, which it does not
+ *  change. */
+function stepReadsLine(b: Behaviour, score: SkillScore, old: string): string {
+  const files = readdirSync(old, { recursive: true, encoding: "utf8" }).filter(
+    (file) => file !== "SKILL.md" && isFile(path.join(old, file))
+  );
+  const screened = score.cases.filter(
+    (each) => each.screen.state === "counted" && each.drop?.stage !== "screen"
+  );
+  const reading: string[] = [];
+  const untold: string[] = [];
+  const others: CaseScore[] = [];
+  for (const each of screened) {
+    const c = b.cases.find((candidate) => candidate.id === each.caseId);
+    let read: string[];
+    try {
+      read = c === undefined ? [] : stepSkillReads(c, old, files);
+    } catch (error) {
+      const why = messageFor(error).split("\n")[0];
+      untold.push(`; ${each.caseId}: its reads cannot be told (${why})`);
+      continue;
+    }
+    if (read.length === 0) others.push(each);
+    else reading.push(`${each.caseId} reads ${read.join(" and ")}`);
+  }
+  const which =
+    reading.length === 0
+      ? `none of ${screened.length} screened`
+      : `${reading.length} of ${screened.length} screened (${reading.join("; ")})`;
+  const count = (keep: (each: CaseScore) => boolean) => others.filter(keep).length;
+  return `cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: ${which}${untold.join("")}; the ${counted(others.length, "screened case")} with no such read: ${count((each) => each.informative)} informative, ${count((each) => each.flagged)} flagged, ${count((each) => each.loss)} confirmed losses (a description beside the registered rule, which it does not change)`;
+}
+
 /** The report's line of the judge's identity (judge.ts's `judgeIdentity`): the SHA-256 of
  *  `prompts/judge.md` and its pinned settings, and how many stages of the results record it,
  *  record another, and record none (a stage made before the identity was recorded). */
@@ -3679,9 +3734,10 @@ function dropLines(b: Behaviour, score: SkillScore): string[] {
   ];
 }
 
-/** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. A
- *  dropped case's line gives the stage that dropped it, why, and each stage it ran. */
-function reportCommand(given: Behaviour): void {
+/** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures, `old`
+ *  being the old text's directory (`--old`). A dropped case's line gives the stage that dropped it,
+ *  why, and each stage it ran. */
+function reportCommand(given: Behaviour, old: string): void {
   const results = readResults(given);
   const b = { ...given, compared: recordedCompared(given.out, results) ?? given.compared };
   const score = scored(b, results);
@@ -3745,7 +3801,12 @@ function reportCommand(given: Behaviour): void {
     );
   }
   lines.push(kindLine(b, score));
-  lines.push(...screenedKindLines(b, score), meanLine(b, score), shapesLine(b, score));
+  lines.push(
+    ...screenedKindLines(b, score),
+    stepReadsLine(b, score, old),
+    meanLine(b, score),
+    shapesLine(b, score)
+  );
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
     return `${CONTROLS[name].step} not judged ${CONTROLS[name].wanted} ${count}`;
@@ -3994,7 +4055,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         : { file: limits, text: readBytes(limits, "the limits text").toString("utf8") },
   };
   if (report) {
-    reportCommand(behaviour);
+    reportCommand(behaviour, given.old);
     return EXIT.ok;
   }
   // The served-sessions refusal stops the session cases only: a skill with written cases is
