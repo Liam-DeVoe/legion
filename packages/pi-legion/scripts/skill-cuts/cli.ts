@@ -165,11 +165,12 @@
  *   rest of the file runs; so is, at the stage whose capture finds it, a case whose subagent's
  *   agent autoloads the skill and whose messages hold no block of it (capture.ts's
  *   InjectionRefused, `autoload-no-block`). A case whose file read whole by path of its copy an
- *   arm's text (`--old`, `--new`) holds in a form the arms do not rebuild (build.ts's
+ *   arm's text (`--old`, `--new`, `--ours`) holds in a form the arms do not rebuild (build.ts's
  *   `pathFormIn`: arms.ts's `pathFormFault`, or a directory) is dropped at screen too, before
  *   any model call, as `path-form: <arm>: <fault>`, and the rest of the file runs: build-cases
  *   checks the old text and only a `--new` it was given, so a case built before the cut had a
- *   text reaches the screen unchecked against it.
+ *   text reaches the screen unchecked against it, and every case reaches it unchecked against
+ *   ours.
  * - `report` (no model call) prints the compared arm (no skill informs and clears nothing; ours is
  *   a bundle where it replaced a skill of our name that a profile held), each case's passes per
  *   arm and stage (and the history reads the ours arm removed), and for a dropped case the stage
@@ -178,8 +179,9 @@
  *   kind and the informative cases of each; the drops by each judge control, by
  *   `model-not-served`, by `unreadable-directory`, by `listing-misses`, by
  *   `injection-unrebuildable` (with the cases of each of its kinds), by `path-form` (by the arm
- *   its reason names) and by `reads-past-last-round`; the control case, and each dropped case it
- *   replaced; with ours compared, ours against old over all screened cases and over those with
+ *   its reason names: old and new, and ours where it is the compared arm) and by
+ *   `reads-past-last-round`; the control case, and each dropped case it replaced; with ours
+ *   compared, ours against old over all screened cases and over those with
  *   no removed read; each model of the cases; the skill's verdict and its reason (score.ts;
  *   `keeps` is printed "no loss detected by the registered rule", or "no loss of no skill …" with
  *   no skill compared), with how many of its screened cases have a listing that could not be
@@ -2053,8 +2055,6 @@ type InjectionKind = z.infer<typeof InjectionKind>;
 /** How the drop of a case begins whose file, read whole by path, an arm's text holds in a form
  *  the arms do not rebuild (`pathFormDrop`); then the arm, then the fault. */
 const PATH_FORM = "path-form";
-/** The arms whose texts a path-form drop checks: the two the screen and the confirm run. */
-const PATH_FORM_ARMS = ["old", "new"] as const;
 
 /** Everything the runner keeps of one case: why it was dropped, if it was, and the stage that
  *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model, the listing, a
@@ -2396,10 +2396,10 @@ function injectionDrop(c: Case): { reason: string; kinds: InjectionKind[] } | un
   return { reason: `${INJECTION_UNREBUILDABLE}: ${kinds.join(", ")}: ${texts}`, kinds };
 }
 
-/** The drop at screen of case `c` when an arm's text of `dirs` (old, new) holds a file the case
- *  reads whole by path from its copy (`pathCopy`, cases.ts's `pathReadFile`) in a form the arms
- *  do not rebuild (build.ts's `pathFormIn`: arms.ts's `pathFormFault`, or a directory), on which
- *  buildArm would throw at the capture; undefined when it holds none. Its reason is
+/** The drop at screen of case `c` when an arm's text of `dirs` (old, new, ours) holds a file the
+ *  case reads whole by path from its copy (`pathCopy`, cases.ts's `pathReadFile`) in a form the
+ *  arms do not rebuild (build.ts's `pathFormIn`: arms.ts's `pathFormFault`, or a directory), on
+ *  which buildArm would throw at the capture; undefined when it holds none. Its reason is
  *  `path-form: <arm>: <fault>`. */
 function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
   if (c.pathCopy === undefined) return undefined;
@@ -2411,7 +2411,7 @@ function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
     const file = pathReadFile(c, target);
     return file === undefined ? [] : [file];
   });
-  const found = pathFormIn(files, dirs);
+  const found = pathFormIn(files, { old: dirs.old, new: dirs.new, ours: dirs.ours?.dir });
   return found === undefined ? undefined : `${PATH_FORM}: ${found.arm}: ${found.fault}`;
 }
 
@@ -4012,12 +4012,15 @@ function reportCommand(
     .map((kind) => `${kind} ${injected.filter((kinds) => kinds.includes(kind)).length}`)
     .join(", ");
   // Each case dropped for a file read by path an arm's text holds in a form the arms do not
-  // rebuild, by the arm its reason names (`pathFormDrop`).
+  // rebuild, by the arm its reason names (`pathFormDrop`): old and new, and ours where it is the
+  // compared arm.
   const formed = drops.filter((reason) => reason.startsWith(`${PATH_FORM}: `));
-  const byArm = PATH_FORM_ARMS.map(
-    (arm) =>
-      `${arm} ${formed.filter((reason) => reason.startsWith(`${PATH_FORM}: ${arm}: `)).length}`
-  ).join(", ");
+  const byArm = ["old", "new", ...(b.compared === "ours" ? ["ours"] : [])]
+    .map(
+      (arm) =>
+        `${arm} ${formed.filter((reason) => reason.startsWith(`${PATH_FORM}: ${arm}: `)).length}`
+    )
+    .join(", ");
   lines.push(
     `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}), ${unscreened} unscreened, ${notRun} not run`
   );

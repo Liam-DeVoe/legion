@@ -3508,6 +3508,60 @@ describe("behaviour: a case whose new text holds a file it reads by path in a fo
       `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}), `
     );
   }, 60_000);
+
+  // Catches: a screen with ours compared that checks only the old and new texts, so buildArm's
+  // throw on our file fails the whole command at the capture.
+  test("with ours compared, a case whose file read by path our text holds in such a form is dropped at screen as path-form: ours, and counted under ours", async () => {
+    const s = withOurs(
+      scenario("path-form-ours", LOSS_SKILL(), [{ id: "c-wide" }, { id: "c-plain" }]),
+      "ours",
+      OURS_SKILL()
+    );
+    const [wide, plain] = s.cases;
+    writeSkill(s.ours?.dir ?? "", {
+      "references/wide.md": Array.from({ length: 301 }, (_, n) => `Line ${n + 1}.`).join("\n"),
+    });
+    recordCaptures({ ...s, cases: s.cases.filter((c) => c.id === "c-plain") }, [
+      "old",
+      "ours",
+      "none",
+    ]);
+    // c-wide's message 5 reads that file whole by its path in its copy, which the old text lacks.
+    const dir = "/home/dev/skills/alpha";
+    const target = `${dir}/references/wide.md`;
+    const messages = structuredClone(wide?.messages ?? []);
+    for (const part of messages[5]?.content ?? []) {
+      if (part.type === "toolCall") part.arguments = { path: target };
+    }
+    const read = messages[6];
+    if (read !== undefined) {
+      read.content = [{ type: "text", text: `[${target}#${snapshotTag("Line 1.")}]\n1:Line 1.` }];
+      read.details = { totalLines: 1, rowPrefixes: true };
+      read.isError = false;
+    }
+    writeFileSync(
+      s.casesFile,
+      [{ ...wide, messages, skillReads: [2, 4, 6], pathCopy: { dir } }, plain]
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    answer = behaviourStandIn;
+    const from = recorder.requests.length;
+    const ran = await cli(comparedArgs("screen", s, "ours"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const fault =
+      "path-form: ours: references/wide.md has 301 lines, and a read by path shows 300, then the end of each block past them";
+    expect(ran.stdout).toContain(`case c-wide: dropped: ${fault}`);
+    expect(requestsSince(from).filter((request) => request.body.includes("Case c-wide"))).toEqual(
+      []
+    );
+    expect(result(s.out, "c-plain").stages.screen?.state).toBe("counted");
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout).toContain(`case c-wide: dropped at screen: ${fault}`);
+    expect(reported.stdout).toContain("1 path-form (old 0, new 0, ours 1)");
+  }, 60_000);
 });
 
 /** The run records of `informative` cases screened as informative (old and new pass each run,

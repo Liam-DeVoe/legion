@@ -1092,10 +1092,9 @@ copy (a read of our skill of the same name, a Legion fork's among them, is `not-
 profile must install the set's copy, and each case's `cut` holds the set's id; `--reprofile`
 finds each case's cut or set by its `cut`. A session's reads of the skill are its `skill://` reads
 and its reads of the skill's files by path, by the count's rule (a path or URL that, its read
-selector taken
-off, ends `<skill>/SKILL.md` or holds `skills/<skill>/references/`). A case is built from a
-successful `skill://` read, or from a successful whole read by path (no selector) that those rules
-place at the cut repository's copy, by the path as read, as the count places it. That copy's
+selector taken off, ends `<skill>/SKILL.md` or holds `skills/<skill>/references/`). A case is built
+from a successful `skill://` read, or from a successful whole read by path (no selector) that those
+rules place at the cut repository's copy, by the path as read, as the count places it. That copy's
 directory is the path up to the skill's directory, resolved as Oh My Pi's read resolves a path: an
 absolute path as it is, a relative one against the session's working directory (its header's `cwd`),
 and one under `~` against the home directory the session ran under, the part of its transcript's
@@ -1116,13 +1115,13 @@ or in `--new`'s, is dropped as `path-form`, so no `behaviour` run fails on it. `
 (the session form only: `--written` and `--reprofile` refuse it, since they check no read by
 path): a build before the cut has a text checks the old text alone, and its summary's `inputs`
 record `new: null`; a build goes on from a summary only with the same choice (given where it was
-given,
-absent where it was absent), and is refused otherwise, naming both. `behaviour screen` then drops a
-case whose new text holds such a file before any model call, as `path-form: <arm>: <fault>`, and
-runs the rest of the file. A session whose work at the skill's read is on the skill's own text
-(writing, editing or rewriting it or a copy of it, reviewing, testing, grading, scoring or
-comparing it) is no case of the skill's behaviour, since its next step works on the text and does
-not follow it: the case reader answers `{"step": null, "material": {"why": …}}` for it
+given, absent where it was absent), and is refused otherwise, naming both. `behaviour screen`
+then drops a case whose new text, or ours (`--ours`), holds such a file before any model call, as
+`path-form: <arm>: <fault>`, and runs the rest of the file. A session whose work at the skill's
+read is on the skill's own text (writing, editing or rewriting it or a copy of it, reviewing,
+testing, grading, scoring or comparing it) is no case of the skill's behaviour, since its next
+step works on the text and does not follow it: the case reader answers
+`{"step": null, "material": {"why": …}}` for it
 (prompts/case.md), and the build drops it as `skill-as-material`, counted with the other drops.
 Any other read of the
 skill's files before the step that the case neither holds nor names is still `read-by-path`. A
@@ -1648,10 +1647,9 @@ written case records no time of its step): a top-level session's at its start, i
 build, and its listing measured against the earliest subagent of it spawned under that build; a
 subagent's at its root's last prompt build before its start. The summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
-detail, or
-`model-not-served` for a session on a model the gateway does not serve). A case's `model` is the
-context session's when the gateway serves it; else the served model with the most reading
-sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
+detail, or `model-not-served` for a session on a model the gateway does not serve). A case's
+`model` is the context session's when the gateway serves it; else the served model with the most
+reading sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
 else the served model with the most reading sessions summed over the `--model-pool` files (each a
 models file of a skill of the set: give the flag once per file); with none, the build fails
 (exit 1). The `written-case` reader (`prompts/written-case.md`) is called once: it reads the base

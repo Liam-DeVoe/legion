@@ -1768,17 +1768,22 @@ function readText(read: SkillRead, message: SessionMessage | undefined): string 
 }
 
 /** Why the arms do not answer a whole read by path of one of `files` (paths inside the cut's copy)
- *  in Oh My Pi's form from the old text or the new (arms.ts's `pathFormFault`), or undefined: the
- *  arm whose text it is, its directory and the fault. With no new text (a build-cases run given no
- *  `--new`), the old text alone. A file a text lacks they answer as not found; one a text holds as
- *  a directory they do not answer. cli.ts's behaviour screen drops a case on it too. */
+ *  in Oh My Pi's form from the old text, the new or ours (arms.ts's `pathFormFault`), or
+ *  undefined: the arm whose text it is, its directory and the fault. With no new text (a
+ *  build-cases run given no `--new`), the old text alone, and ours where given (the arm of ours
+ *  answers such a read from our file at the same path inside the skill). A file a text lacks they
+ *  answer as not found; one a text holds as a directory they do not answer. cli.ts's behaviour
+ *  screen drops a case on it too. */
 export function pathFormIn(
   files: readonly string[],
-  texts: { readonly old: string; readonly new?: string | undefined }
-): { readonly arm: "old" | "new"; readonly dir: string; readonly fault: string } | undefined {
-  const arms: (readonly ["old" | "new", string])[] = [
+  texts: { readonly old: string; readonly new?: string | undefined; readonly ours?: string }
+):
+  | { readonly arm: "old" | "new" | "ours"; readonly dir: string; readonly fault: string }
+  | undefined {
+  const arms: (readonly ["old" | "new" | "ours", string])[] = [
     ["old", texts.old],
     ...(texts.new === undefined ? [] : [["new", texts.new] as const]),
+    ...(texts.ours === undefined ? [] : [["ours", texts.ours] as const]),
   ];
   for (const file of new Set(files)) {
     for (const [arm, dir] of arms) {
