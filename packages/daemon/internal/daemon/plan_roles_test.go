@@ -7,8 +7,9 @@
 // the model prober-model: the real store, the real outbox and the real Dispatch of this package's
 // tests, each role's agent over the worker stream, the owner's plan given with register_plan.
 // GitHub's REST API and the panes are stood in for, each pane answering with the model its launch's
-// spec named. The second boots it over the rig of an earlier release's store (newSliceFourRig,
-// deployment_roles_test.go), stopped below the migration of the roles a plan defines.
+// spec named. The second boots it over the rig of an earlier release's store
+// (newEarlierReleaseRig, deployment_roles_test.go), stopped below the migration of the roles a plan
+// defines.
 package daemon
 
 import (
@@ -50,7 +51,7 @@ func planWithProber(model string, block bool) string {
 	return ":::plan_role{#prober type=\"testing\" model=\"" + model + "\"}\n" + planProberPrompt + "\n:::\n\n" + text
 }
 
-// v-own-role. The deployment lists prober-model; the owner's plan defines prober (type testing,
+// The deployment lists prober-model; the owner's plan defines prober (type testing,
 // that model, a prompt) and task a with `implementer prober`. The prober starts after the
 // implementer's step passed, with the plan's prompt between Legion's parts and the plan's model; its
 // task holds the task block's text and the implementer's report; the read of the issue's steps
@@ -225,10 +226,10 @@ func (r *deploymentRolesRig) proberLaunched(model, prompt, bot string) error {
 	return nil
 }
 
-// R20: an issue that ran before a plan could define a role goes on under this release. The store
-// holds every migration below plan_roles, applied by hand (storeOfSliceFour), and the record of one
-// issue whose owner's plan `implementer tester reviewer` stands at step 2, the implementer's step
-// done and the tester's claim a launch the earlier daemon began (seedSliceFourIssue). This release's
+// An issue that ran before a plan could define a role goes on under this release. The store holds
+// every migration below plan_roles, applied by hand (storeBelow), and the record of one issue
+// whose owner's plan `implementer tester reviewer` stands at step 2, the implementer's step done
+// and the tester's claim a launch the earlier daemon began (seedIssueAtTesting). This release's
 // migrations then run on it, plan_roles among them, as a deploy runs them, and the whole daemon
 // boots on it. The tester's pass moves task a to step 3, the reviewer starts with the task of step 3
 // of 3, and plan_roles holds no row of the issue: the plan of the release before stays a plan that
@@ -240,7 +241,7 @@ func (r *deploymentRolesRig) proberLaunched(model, prompt, bot string) error {
 // plan_roles row; the daemon's boot then fails at its read of the issue's plan, and the test fails
 // before the tester's pass.
 func TestAnIssueThatRanBeforePlanRolesGoesOn(t *testing.T) {
-	r := newSliceFourRig(t, planRolesMigration)
+	r := newEarlierReleaseRig(t, planRolesMigration)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
 		t.Fatalf("after the tester's pass %s's task a stands at %s %d, want step 3", r.key, kind, position)

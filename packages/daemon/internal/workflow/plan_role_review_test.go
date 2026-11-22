@@ -13,7 +13,7 @@ import (
 )
 
 // A step of the type review whose role the owner's plan defines gets the commit its run before
-// read, as a role of the deployment's does (v-review-range for a role of a plan): the plan defines
+// read, as a reviewer and a role of the deployment's do: the plan defines
 // critic, of the type review, and task a is `implementer critic`; the critic's first task names no
 // commit, it fails at X, the implementer pushes Y, and the critic's second task names X. The
 // deployment defines no critic, so the type that keeps the commit is the one the plan's role block
