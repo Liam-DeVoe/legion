@@ -549,7 +549,8 @@ export const LENS_ANSWERS = freeze({
   loading_kinds: "Loading lens kinds…",
   kinds_failed: "Could not load the lens kinds.",
   examining: "Examining…",
-  /** A refusal with 404, of an invocation and of a chain's read alike. */
+  /** A refusal with 404, of an invocation and of a chain's read alike, or of an invocation with
+   *  409 `NODE_GONE`. */
   gone: "This is no longer here.",
   failed: "Could not examine this through a lens.",
   loading_chain: "Loading the chain…",

@@ -123,12 +123,15 @@ export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean
   return <ActAndMenu act={act} on={on} tabStops={tabStops} />;
 }
 
-/** What a refused invocation says: the node is gone (404), or anything else. */
+/** What a refused invocation says: the node is gone (404, or 409 `NODE_GONE`), or anything else. */
 type Refusal = "gone" | "failed";
 
 function refusalOf(error: Error | undefined): Refusal | undefined {
   if (error === undefined) return undefined;
-  return error instanceof ApiError && error.status === 404 ? "gone" : "failed";
+  if (!(error instanceof ApiError)) return "failed";
+  return error.status === 404 || (error.status === 409 && error.code === "NODE_GONE")
+    ? "gone"
+    : "failed";
 }
 
 function ActAndMenu({
