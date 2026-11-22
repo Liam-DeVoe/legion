@@ -493,8 +493,11 @@ test("lists each skill with at least 20 own-copy sessions", async () => {
     kind: "read",
     files: list.length,
     hashes: list,
+    // Each file's one read, with a call key of its own: its hash with `c` for its first digit.
+    calls: Object.fromEntries(list.map((hash) => [hash, [`c${hash.slice(1)}`]])),
     unpaired: 0,
     unpaired_hashes: [],
+    unpaired_calls: {},
   });
   const nov23 = NOV_20 + 3 * DAY_MS;
   // With F14's one session each: alpha-skill-one 21 own-copy sessions, alpha-skill-two 19, and
@@ -519,4 +522,44 @@ test("lists each skill with at least 20 own-copy sessions", async () => {
   expect(written.atLeast20).toEqual([{ set: "alpha-set", skill: "alpha-skill-one", own: 21 }]);
   const markdown = readFileSync(path.join(out, "exemplar-count.md"), "utf8");
   expect(markdown).toContain("- alpha-set alpha-skill-one: 21 sessions");
+});
+
+// Catches: a read that a fork and its parent both hold, the two written on different days and so
+// in two queries, counted as two sessions, or counted in the file of the earlier query rather than
+// in the file whose hash sorts first (count.sql's rule, as attribute.ts's countOnce applies it).
+test("a read two files of two queries hold counts in one session, the file whose hash sorts first", async () => {
+  // A parent file of 2026-11-23's query reads alpha-skill-two by its Skill call; its fork, written
+  // on 2026-11-24, copies that read's line, so both files hold its call key. The fork's hash sorts
+  // first.
+  const [parent, fork, key] = ["f14e0000000000b0", "f14e0000000000a0", "f14f000000000001"];
+  const query = (day: number, file: string) => {
+    const row = {
+      ...{ row: "count", store: "store_a", day: "2026-11-21", skill: "alpha-skill-two" },
+      ...{ copy: "alpha-set:alpha-skill-two", kind: "read", files: 1, hashes: [file] },
+      ...{ calls: { [file]: [key] }, unpaired: 0, unpaired_hashes: [], unpaired_calls: {} },
+    };
+    const from = NOV_20 + day * DAY_MS;
+    const summary = summaryOnly("store_a", from, from + DAY_MS).split("\n")[2] ?? "";
+    return [" total", "-".repeat(40), ` ${JSON.stringify(row)}`, summary, "(2 rows)", ""].join(
+      "\n"
+    );
+  };
+  const rows = tree(at("fork-rows"), {
+    ...PLANTED_ROWS,
+    "store_a/2026-11-23.txt": query(3, parent),
+    "store_a/2026-11-24.txt": query(4, fork),
+  });
+  const out = at("fork-out");
+  const ran = await setCount(argsOf(plantedConfig, rows, out));
+  expect(ran.err).toBe("");
+  expect(ran.code).toBe(0);
+  // With F14's (c), two own-copy sessions of alpha-skill-two, not three: the fork's, not the
+  // parent's.
+  expect(
+    readFileSync(path.join(out, "sessions", "alpha-set", "alpha-skill-two.jsonl"), "utf8")
+  ).toBe(
+    `${JSON.stringify({ store: "store_a", hash: H.c })}\n${JSON.stringify({ store: "store_a", hash: fork })}\n`
+  );
+  const table = parseTsv(readFileSync(path.join(out, "exemplar-count.tsv"), "utf8"));
+  expect(table.find((row) => row.skill === "alpha-skill-two")?.own_sessions).toBe("2");
 });

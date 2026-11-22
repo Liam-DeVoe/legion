@@ -629,6 +629,15 @@ upstream's raw GitHub URL. A scratch script wrote the file: each row as psql pri
 JSON (`"key" : value`, in count.sql's key order), under a header `total` and a rule of dashes as
 wide as the widest row, and the footer `(12 rows)`.
 
+The rows first had no `calls` and `unpaired_calls`, the shape of an earlier count.sql, which
+`attribute.ts`'s `readCount` now refuses. A second scratch script added both to each count row,
+in count.sql's key order and psql's shape (`"calls" : { "<hash>" : ["<key>"] }` after `hashes`,
+`"unpaired_calls" : {}` after `unpaired_hashes`, as in `F7-count-first.txt`): `calls` holds the
+row's one file with a call key of the row's own, `f14c000000000001` to `f14c00000000000b` in the
+file's row order (so (a)'s file holds two keys, one in each of its rows, and so does (d)'s), and
+no row holds an unpaired call. It then widened the rule of dashes to the widest row again and
+centred `total` over it. No other value changed.
+
 ## F12: a craft list, and GitHub's answers for its lines (`F12-*`)
 
 Made up, read from no system, in the shape of the craft list a person writes (`craftlist.ts`):
