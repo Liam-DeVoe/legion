@@ -517,6 +517,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a phase-ended message without a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren}, reason: "carries the open children"},
 		{name: "a phase-ended message whose dropped merge forward names no head", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Base: "main"}}, reason: droppedMergeForwardRefusal},
 		{name: "a phase-ended message whose dropped merge forward names no base", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de"}}, reason: droppedMergeForwardRefusal},
+		{name: "a phase-ended message whose dropped merge forward names no role", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main"}}, reason: droppedMergeForwardRoleRefusal},
+		{name: "a phase-ended message whose dropped merge forward names a role no merge forward is asked of", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleTester}}, reason: droppedMergeForwardRoleRefusal},
 		{name: "a task retirement that names no phase", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2}, reason: "names the role and the phase"},
 		{name: "a task retirement that carries a task", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2, Phase: phase.Implementing, Task: "implement"}, reason: "carries no task"},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
@@ -726,6 +728,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a pending-basis seed of no request", row: OutboxRow{ID: 61, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"generation":2}`)}, reason: "a pending-basis seed names"},
 		{name: "a re-parent seed with an unknown field", row: OutboxRow{ID: 62, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","tree":"LEGION-300","ran":"it ran as a tree of its own","told":true}`)}, reason: "unknown field"},
 		{name: "a re-parent seed of no tree", row: OutboxRow{ID: 63, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","ran":"it ran as a tree of its own"}`)}, reason: "a re-parent seed names"},
+		{name: "a stored phase-ended row whose dropped merge forward names no role", row: OutboxRow{ID: 64, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"awaiting_children","reason":"LEGION-209 is open","mergeForward":{"head":"c0de","base":"main"}}`)}, reason: droppedMergeForwardRoleRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
@@ -744,6 +747,11 @@ const checkLookRefusal = "a supervise check look names a start of the implemente
 // dropped merge forward (PhaseEnded.MergeForward) with no head or no base: the message names both
 // to the worker it goes to.
 const droppedMergeForwardRefusal = "a phase-ended message that names a dropped merge forward names its head and its base"
+
+// droppedMergeForwardRoleRefusal is the validation's words for a phase-ended message whose
+// dropped merge forward names no role, or a role no merge forward is asked of: the role is the
+// one the message names the merge forward to, the implementer or the merger.
+const droppedMergeForwardRoleRefusal = "a phase-ended message that names a dropped merge forward names the role it was asked of, the implementer or the merger"
 
 // A phase_ended row decodes strictly (DecodeOutboxPayload) whether or not it names a merge
 // forward the move into awaiting_children dropped before it landed: a row a release before this

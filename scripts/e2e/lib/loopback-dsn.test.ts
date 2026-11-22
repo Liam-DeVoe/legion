@@ -430,17 +430,25 @@ function traced(call: string, dsn: string): { code: number; trace: string; answe
 
 // Each helper turns the shell's xtrace off for itself, so under `bash -x` the DSN's password is
 // on no line of its own trace. A caller's own line that passes the DSN still carries it, which
-// require_loopback_env avoids by taking the variable's name: its call holds no DSN at all.
+// require_loopback_env and run_database_url_env avoid by taking the variable's name: their calls
+// hold no DSN at all.
 describe("lib/loopback-dsn.sh's helpers trace no DSN of their own", () => {
   const dsn = `postgres://legion_test:${password}@127.0.0.1:5433/postgres?sslmode=disable`;
 
-  test("require_loopback_env reads the DSN by its variable's name, and the trace holds none of it", () => {
-    const run = traced(`require_loopback_env answer ${variable} "${what}"`, dsn);
-    expect(run.trace).toContain(`+ require_loopback_env answer ${variable} `);
-    expect(run.trace).not.toContain(password);
-    expect(run.code).toBe(0);
-    expect(run.answer).toBe("127.0.0.1");
-  });
+  const byName: [string, string][] = [
+    ["require_loopback_env", `require_loopback_env answer ${variable} "${what}"`],
+    ["run_database_url_env", `run_database_url_env answer ${variable} ppd_1 "${what}"`],
+  ];
+  for (const [name, call] of byName) {
+    test(`${name} reads the DSN by its variable's name, and the trace holds none of it`, () => {
+      const run = traced(call, dsn);
+      expect(run.trace).toContain(`+ ${name} answer ${variable} `);
+      expect(run.trace).not.toContain(password);
+      expect(run.code).toBe(0);
+      // The stand-in python3 answers 127.0.0.1 for the host and the rebuilt string alike.
+      expect(run.answer).toBe("127.0.0.1");
+    });
+  }
 
   const callers: [string, string][] = [
     ["require_loopback_dsn", `require_loopback_dsn answer ${variable} "$${variable}" "${what}"`],

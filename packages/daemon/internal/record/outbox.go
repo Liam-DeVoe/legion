@@ -871,12 +871,12 @@ type CatchUp struct {
 // ended carries neither, and reads as registered on the root's own document.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
-// (TreeGate.Required, RequiredSteps over the steps the tree is gated on), so a deployment that
-// gates nothing carries the one spec entry with Gated false: that registration opens the step at
-// once and asks no person, which is what the policy word `off` said. The list replaced that
-// word, because one word cannot name a list and each entry now says its own step's part of it. A
-// criteria row the architect registered beside a deployment that gates spec alone of the two is
-// an entry with Gated true, since that row holds the tree as the spec's does.
+// (TreeGate.Required: the steps the tree is gated on, or spec alone where none), so a deployment
+// that gates nothing carries the one spec entry with Gated false: that registration opens the
+// step at once and asks no person, which is what the policy word `off` said. The list replaced
+// that word, because one word cannot name a list and each entry now says its own step's part of
+// it. A criteria row the architect registered beside a deployment that gates spec alone of the two
+// is an entry with Gated true, since that row holds the tree as the spec's does.
 type CatchUpGate struct {
 	Step         DesignStep    `json:"step"`
 	Gated        bool          `json:"gated"`
@@ -1730,8 +1730,9 @@ type PhaseEnded struct {
 // it was to merge forward onto that head, and Role the role it was asked of (MergeForward.Asked):
 // the implementer, or the merger for an ask made in merging. Its one writer, workflow's
 // awaitChildren, sets Role on every value, and no release before this one wrote a row that carries
-// the type, since such a release refuses a row with `mergeForward` (PhaseEnded), so no reader
-// meets an empty role.
+// the type, since such a release refuses a row with `mergeForward` (PhaseEnded). The row's
+// validation refuses a dropped merge forward whose role is neither of the two, so no reader meets
+// an empty role.
 type DroppedMergeForward struct {
 	Head string     `json:"head"`
 	Base string     `json:"base"`
@@ -2719,6 +2720,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if dropped := value.MergeForward; dropped != nil && (dropped.Head == "" || dropped.Base == "") {
 			return fmt.Errorf("a phase-ended message that names a dropped merge forward names its head and its base; it names head %q and base %q", dropped.Head, dropped.Base)
+		}
+		// The role is one MergeForwardAsker names, which awaitChildren writes on every dropped merge
+		// forward (DroppedMergeForward.Role): a row with another role, or none, would address its
+		// message to no role that was asked.
+		if dropped := value.MergeForward; dropped != nil && dropped.Role != claim.RoleImplementer && dropped.Role != claim.RoleMerger {
+			return fmt.Errorf("a phase-ended message that names a dropped merge forward names the role it was asked of, the implementer or the merger; it names %q", dropped.Role)
 		}
 	case HookPrompt:
 		if value.Hook == "" {

@@ -294,9 +294,9 @@ done
 [[ -z "$log_model_requests" || -n "${ANTHROPIC_BASE_URL:-}" ]] ||
   refuse "--log-model-requests needs ANTHROPIC_BASE_URL: the proxy it starts forwards every request there"
 
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-# The DSN itself is read by libpq alone, further down: run_database_url reads which host it
+# The DSN itself is read by libpq alone, further down: run_database_url_env reads which host it
 # names, and rebuilds it to name this run's own database.
 [ -r "$model_key_file" ] ||
   refuse "the model key file $model_key_file is not readable: both sessions run their turns on it (SESSION_DELIVERY_MODEL_KEY_FILE names another)"
@@ -332,7 +332,7 @@ done
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
-# lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
+# lib/loopback-dsn.sh for run_database_url_env, the helper a proof that writes a PostgreSQL server
 # reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
 # await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
 # rig: its await_port_file and keep_port, written for the pid map below, are its own, and
@@ -350,7 +350,8 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # connection string cannot carry as well. Its answer is the connection string the run keeps, and
 # its refusal is the line this script prints.
 database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$database_url"
+database_url=''
+run_database_url_env database_url LEGION_TEST_PG_DSN "$database" "this run creates and force-drops a database there" || refuse "$database_url"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
