@@ -383,13 +383,20 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty. The name of each
-// step's agent (planStepAgentMigration) adds a column to plan_steps, so its way back runs first,
-// as the guide's list says: left recorded, its version would keep the roll forward from adding the
-// column to the plan_steps it creates again, and every later write of a plan would fail.
+// the plan's tables and columns, so the roll forward creates them again empty.
+//
+// Each later migration that stands on those tables or columns has its way back run first, newest
+// first, as the guide's list and each header say. The key of a phases row by its step
+// (phaseStepKeyMigration) holds step_task and step_place, which the plan's way back drops, so
+// left recorded its version would keep the roll forward from writing that key again. The name of
+// each step's agent (planStepAgentMigration) adds a column to plan_steps: left recorded, its
+// version would keep the roll forward from adding the column to the plan_steps it creates again,
+// and every later write of a plan would fail. The roles a plan defines (planRolesMigration) are
+// a table whose foreign key stands on issue_plans, and the drop of issue_plans is refused while
+// that table stands.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
-	for _, name := range []string{planStepAgentMigration, inFlightPlanMigration} {
+	for _, name := range []string{phaseStepKeyMigration, planStepAgentMigration, planRolesMigration, inFlightPlanMigration} {
 		r.exec(strings.ReplaceAll(r.headerTransaction(name), "<PROJECT>", r.cfg.Project))
 	}
 }
@@ -425,6 +432,10 @@ func (r *stepRecordsRig) headerTransaction(suffix string) string {
 // planStepAgentMigration is the migration that adds plan_steps.agent, the name of each step's
 // agent.
 const planStepAgentMigration = "_plan_step_agent.up.sql"
+
+// phaseStepKeyMigration is the migration that keys a phases row by the issue, the role and the
+// step the row runs.
+const phaseStepKeyMigration = "_phase_step_key.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the
