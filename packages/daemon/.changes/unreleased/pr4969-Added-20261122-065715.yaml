@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  The `legion.yaml` key `consumer_names` (`fixed` or `fresh`; `fixed` when absent) says how the
+  daemon names its durable consumers. `fixed` runs today's names. In `fresh` mode each creation of
+  `legion-go-<project>-<kind>` is a new name, `<logical>~<nuid>`, which the record in the daemon's
+  database selects. The table is `intake_consumers`, and migration
+  `20261121001600_intake_consumers` creates it. Each call on such a name goes on a NATS connection
+  named `<logical>/<nuid>`. The daemon refuses fresh mode until the operator's convert has marked
+  the project's store `done`, and it deletes no consumer. In fixed mode the daemon stops at its
+  boot, and at any later NATS reconnect, once the operator's convert has marked the project's
+  store `done`. The boot logs the mode before any NATS connect, and `legion state` reports it as
+  `settings.consumer_names`. `legion start --check-config` refuses any other value. A failed
+  step on a fresh name writes one ERROR line,
+  `intake: a durable consumer's physical name could not be settled`. The daemon's NATS
+  connections keep no reconnect buffer: a publish made while a connection is cut now fails at
+  once and is not sent after the reconnect.
+time: 2026-11-22T06:57:15Z
+custom:
+    Issue: pr4969
