@@ -266,7 +266,7 @@ func requireNamesNone(t *testing.T, asked, body string, names ...string) {
 }
 
 // The edge names a role's holder only when that holder is a session of the reader's projects
-// (edgeScope.holder): a role of the reader's project can be claimed by any session, and its claim
+// (edgeScope.holderConfirmed): a role of the reader's project can be claimed by any session, and its claim
 // record can be written by any writer of the role bucket, so a holder outside the reader's
 // projects is no holder the edge names, in a role read or in the answers of a role send. A PRIV
 // role's claim names S_pub, a live in-house session of PUB, under a distinctive process, and
