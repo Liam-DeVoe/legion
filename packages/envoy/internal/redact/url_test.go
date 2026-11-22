@@ -359,7 +359,9 @@ func TestErrorPrintsOnlyTheClassAfterARedirect(t *testing.T) {
 // the broker's /v1/ appended to a clean endpoint, as Cause passes a broker route: the error the
 // *url.Error wraps, its dial address and all. It prints the class alone for the same failure when
 // the endpoint holds a user name, when net/http names another URL (a redirect's target), and when
-// the URL named does not begin with the endpoint.
+// the URL named does not begin with the endpoint, or only begins with its text: a route that goes
+// on past the endpoint's path without a "/" (`…/model` beside `…/models/…`), or a port that goes
+// on past the endpoint's (`http://h:1` beside `http://h:10/…`).
 func TestCauseAtPassesTheFailureOfTheClientsOwnURL(t *testing.T) {
 	const own = "http://127.0.0.1:1/models/embeddings?api-version=2024-05-01-preview"
 	_, err := http.Post(own, "application/json", nil)
@@ -371,13 +373,31 @@ func TestCauseAtPassesTheFailureOfTheClientsOwnURL(t *testing.T) {
 		t.Fatalf("Cause = %v, want the class alone for a route outside /v1/ (the row's control)", got)
 	}
 	for name, call := range map[string]struct{ raw, callURL string }{
-		"an endpoint holding a user name":   {"http://madeuptoken0123" + "@" + "127.0.0.1:1/models", own},
-		"another URL than the client's own": {"http://127.0.0.1:1/models", "http://127.0.0.1:1/models/chat/completions"},
-		"an own URL not under the endpoint": {"http://127.0.0.1:2/models", own},
-		"an own URL under another endpoint": {"http://127.0.0.1:1/other", own},
+		"an endpoint holding a user name":          {"http://madeuptoken0123" + "@" + "127.0.0.1:1/models", own},
+		"another URL than the client's own":        {"http://127.0.0.1:1/models", "http://127.0.0.1:1/models/chat/completions"},
+		"an own URL not under the endpoint":        {"http://127.0.0.1:2/models", own},
+		"an own URL under another endpoint":        {"http://127.0.0.1:1/other", own},
+		"a route that only begins with the path's": {"http://127.0.0.1:1/model", own},
 	} {
 		if got := CauseAt(err, call.raw, call.callURL); got.Error() != ClassRefused || !errors.Is(got, err) {
 			t.Errorf("%s: CauseAt = %v, want the class alone, unwrapping to the failure", name, got)
+		}
+	}
+	for raw, callURL := range map[string]string{
+		"http://127.0.0.1:1":        "http://127.0.0.1:10/models/embeddings",
+		"http://127.0.0.1:1/models": "http://127.0.0.1:1/modelsX/embeddings",
+	} {
+		if ownCall(raw, callURL) {
+			t.Errorf("ownCall(%q, %q) = true, want false: the URL only begins with the endpoint's text", raw, callURL)
+		}
+	}
+	for raw, callURL := range map[string]string{
+		"http://127.0.0.1:1":         "http://127.0.0.1:1/models/embeddings",
+		"http://127.0.0.1:1/models/": "http://127.0.0.1:1/models/embeddings?api-version=x",
+		"HTTP://127.0.0.1:1/models":  own,
+	} {
+		if !ownCall(raw, callURL) {
+			t.Errorf("ownCall(%q, %q) = false, want true", raw, callURL)
 		}
 	}
 }

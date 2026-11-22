@@ -325,14 +325,20 @@ func CauseAt(err error, raw, callURL string) error {
 }
 
 // ownCall reports whether callURL begins with raw, a clean URL: its scheme in any case, since
-// net/url lowers it, then the rest of raw as written, a trailing "/" aside.
+// net/url lowers it, then the rest of raw as written, a trailing "/" aside, and then nothing or a
+// "/", "?" or "#". A URL that only begins with raw's text (`http://h:1` beside `http://h:10/x`,
+// `…/models` beside `…/modelsX/…`) is another server's or another route's.
 func ownCall(raw, callURL string) bool {
 	if !clean(raw) {
 		return false
 	}
 	n := strings.Index(raw, "://") + len("://")
 	base := strings.TrimRight(raw, "/")
-	return len(callURL) >= len(base) && strings.EqualFold(callURL[:n], raw[:n]) && strings.HasPrefix(callURL[n:], base[n:])
+	if len(callURL) < len(base) || !strings.EqualFold(callURL[:n], raw[:n]) || !strings.HasPrefix(callURL[n:], base[n:]) {
+		return false
+	}
+	rest := callURL[len(base):]
+	return rest == "" || strings.ContainsRune("/?#", rune(rest[0]))
 }
 
 // printable answers the *url.Error err holds, if any, the text of the failure under it that may
