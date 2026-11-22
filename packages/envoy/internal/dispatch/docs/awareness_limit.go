@@ -152,8 +152,9 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 
 // awarenessLimitConn is a document socket's connection under ygo's websocket reader. It reads the
 // frames the socket's peer sends and hands ygo an awareness message holding only the clients the
-// socket may hold; a message begun once the socket has ended (end), none at all; and every other
-// message as it arrived.
+// socket may hold; a message begun once the socket has ended (end), none at all; a message the
+// page completes once the socket has ended, never its last byte; and every other message as it
+// arrived.
 type awarenessLimitConn struct {
 	net.Conn
 	room string
@@ -176,6 +177,15 @@ type awarenessLimitConn struct {
 	// key is the masking key of the frame last read; the rewritten frames reuse it, as a frame a
 	// client sends must be masked (gorilla/websocket conn.go:861).
 	key [4]byte
+	// completing is set while the bytes on out and through end a message: the frame they carry is
+	// the final frame of a data message. Read holds back that message's last byte, the one whose
+	// arrival lets ygo apply the message, until it has it from the page and has asked end.
+	completing bool
+	// abandoned is set once Read has dropped a message's last byte because the socket had ended:
+	// ygo's reader is then part way through that message, so no byte may reach it again, and Read
+	// discards what the page sends until ygo closes the connection.
+	abandoned bool
+	last      [1]byte
 }
 
 // newAwarenessLimitConn is the filter over conn, reading pending - what the upgrade's hijack
@@ -191,10 +201,43 @@ func newAwarenessLimitConn(conn net.Conn, room string, pending []byte, end *sock
 
 // Read hands ygo the rewritten stream: it reads whole frames from the socket until it has bytes
 // for ygo, as the socket's own reads would block until a frame arrives.
+//
+// A message is applied once ygo's reader has its last byte, and R1 of INFRA-5142 is that no
+// message the page completes after the socket's end is applied, whenever that message began. So
+// Read decides each message at its completion: it hands over every byte of a message's final
+// frame but the last, takes that last byte off the page, and only then asks end. A socket that has
+// not ended gets the byte, and ygo the message. A socket that has ended does not: the message stays
+// incomplete in ygo's reader for good, Read hands over nothing more, and it discards what the page
+// sends until ygo closes the connection, as it does once it acts on the end.
 func (c *awarenessLimitConn) Read(p []byte) (int, error) {
+	if c.abandoned {
+		return 0, c.discard()
+	}
 	for c.out.Len() == 0 && c.through == 0 {
 		if err := c.readFrame(); err != nil {
 			return 0, err
+		}
+	}
+	if c.completing {
+		if left := int64(c.out.Len()) + c.through; left > 1 {
+			if int64(len(p)) >= left {
+				p = p[:left-1]
+			}
+		} else {
+			if c.through == 1 {
+				if _, err := io.ReadFull(c.src, c.last[:]); err != nil {
+					return 0, err
+				}
+				c.through = 0
+				c.out.Write(c.last[:])
+			}
+			if c.end.refusesMessage() {
+				slog.Debug("dispatch: drop a message a document socket's page completed after the socket ended", "room", c.room)
+				c.out.Reset()
+				c.abandoned = true
+				return 0, c.discard()
+			}
+			c.completing = false
 		}
 	}
 	if c.out.Len() > 0 {
@@ -206,6 +249,15 @@ func (c *awarenessLimitConn) Read(p []byte) (int, error) {
 	read, err := c.src.Read(p)
 	c.through -= int64(read)
 	return read, err
+}
+
+// discard reads and drops what the page sends until the connection ends, and returns how it
+// ended: the read error, or io.EOF for a source that ended without one.
+func (c *awarenessLimitConn) discard() error {
+	if _, err := io.Copy(io.Discard, c.src); err != nil {
+		return err
+	}
+	return io.EOF
 }
 
 // readFrame reads the next websocket frame the socket sent and puts what ygo is to read of it on
@@ -223,6 +275,9 @@ func (c *awarenessLimitConn) readFrame() error {
 	opcode := header[0] & 0x0f
 	final := header[0]&finalFrame != 0
 	starts := opcode == gws.BinaryMessage
+	// What this frame puts on out and through ends a message when it is the final frame of a data
+	// message, whatever the filter makes of it; Read decides that message at its last byte.
+	c.completing = final && (starts || opcode == gws.TextMessage || opcode == continuationFrame)
 	if (starts || opcode == gws.TextMessage) && c.mode != limitPassing && payload >= 0 && c.end.refusesMessage() {
 		// The socket has ended: a message the page begins now, binary or text (ygo reads either),
 		// reaches ygo as nothing, and so do the frames that continue it. That holds in every mode

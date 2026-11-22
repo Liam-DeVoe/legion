@@ -31,7 +31,7 @@ import (
 
 // socketEnd is one document socket's end, as its connection keeps it: once own or request has
 // ended, the connection lets out only the rest of the message already going out and a close
-// frame, and hands ygo no message the page sends.
+// frame, and ygo applies no message the page completes from then on, whenever it began.
 //
 // Writes: it reads the frames ygo writes, whole or split over writes, and decides each as its
 // header completes. Before the end every frame goes out. After it, a frame goes out only if it is
@@ -43,10 +43,14 @@ import (
 // upgrader makes in one write before any frame (processHeaderConn reads the same), and goes out
 // as it is.
 //
-// Reads: the awareness filter asks it as each data frame the page sends that could begin a
-// message of gorilla's arrives (refusesMessage), whatever message the filter holds open, and a
-// message begun after the end reaches ygo as nothing at all (awareness_limit.go, readFrame). Only
-// the continuation frames of a message the page began before the end reach ygo after it.
+// Reads: the awareness filter asks it twice for each message the page sends (refusesMessage).
+// It asks as each data frame arrives that could begin a message of gorilla's, whatever message the
+// filter holds open, and a message begun after the end reaches ygo as nothing at all
+// (awareness_limit.go, readFrame). And it asks at each message's completion: the filter takes the
+// last byte of the message's final frame off the page before it asks, and hands that byte to ygo
+// only if the socket has not ended (awareness_limit.go, Read). So a message the page began before
+// the end and completes after it - its first bytes passed to gorilla, or held by the filter - is
+// never applied either: gorilla never holds it whole.
 type socketEnd struct {
 	// own is the socket's own context, which ygo serves it on and a revoke cancels; request is the
 	// request's context as ServeHTTP received it, which the API cancels.

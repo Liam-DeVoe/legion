@@ -1011,12 +1011,13 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // page reopens it at once: the live socket with contracts.LiveSocketMaxAgeClose (liveSocket.write),
 // and the document socket with the close frame ygo sends for that cause. From the cancel on - this
 // one or the refusal's, whose cancel has no cause - that document socket carries no room update,
-// only the message already going out and the close, and the room takes no message its page begins
-// sending: the document service reads this request's context itself, as well as the socket's own,
-// each time it decides a frame either way (docs/socket_end.go). The reopened socket's upgrade
-// carries a fresh assertion, judged again as any upgrade is, so no socket is served past its
-// assertion and none is cut as if its person had gone. An expired assertion that is wrong in any
-// other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
+// only the message already going out and the close, and the room takes no message its page
+// completes, whenever that message began: the document service reads this request's context
+// itself, as well as the socket's own, each time it decides a frame either way
+// (docs/socket_end.go). The reopened socket's upgrade carries a fresh assertion, judged again as
+// any upgrade is, so no socket is served past its assertion and none is cut as if its person had
+// gone. An expired assertion that is wrong in any other way (a key IAP withdrew, a person no
+// longer admitted) is a refusal like any other.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())
