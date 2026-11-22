@@ -1699,9 +1699,9 @@ const legionSuspendedBy = z.enum([
   "released",
 ]);
 
-/** `api.AgentActionResponse`, what four of the actions on an agent (stop, retry, suspend, resume,
- * compact and fresh session of one agent, named by its issue and role) answer, the controller's
- * and an architect's alike: stop, retry, suspend and resume
+/** `api.AgentActionResponse`, what four of the actions on an agent (stop, retry, suspend,
+ * resume_agent, compact and fresh session of one agent, named by its issue and role) answer, the
+ * controller's and an architect's alike: stop, retry, suspend and resume
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, contract
  * 215): the claim's `state` after the request — `retired` after a stop; `suspended` after a
  * suspension that landed, and still `working` or `launching` with

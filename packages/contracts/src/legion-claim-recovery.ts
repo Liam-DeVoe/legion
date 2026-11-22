@@ -15,8 +15,8 @@ import { LEGION_ROLES } from "./legion-roles";
 const nonEmptyString = z.string().min(1);
 
 /** `api.ClaimRequest`, what either of the two claim recoveries names: the claim on `role` of
- * `issue`, under the caller's grant, the project controller's or an architect's for the claims of
- * the issues it owns (below). The two are actions on an agent (stop, retry, suspend, resume,
+ * `issue`, under the caller's grant, the project controller's or an architect's for the agents of
+ * the issues it owns (below). The two are actions on an agent (stop, retry, suspend, resume_agent,
  * compact and fresh session of one agent, named by its issue and role); the controller's other
  * four (`POST /legion/v1/agents/stop|retry|suspend|resume`, contract 215) take the same body and
  * the same door, and answer `LegionAgentActionResponse` (`legion-api.ts`). The project's controller
