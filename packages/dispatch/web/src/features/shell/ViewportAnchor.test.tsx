@@ -1946,6 +1946,50 @@ test("a scroll another script made records nothing, and the row a host keeps sta
   }
 });
 
+// A host that takes its box over draws its rows under 1,000 px of other content, as Details draws
+// its history under its sections. The reader's focus is on r10's control, in view. A key then
+// moves the focus out of the list, to a control in the content above it, and the page's own
+// script scrolls the box to that control, as `t o` lands on Collaborators: the rows now lie wholly
+// below the view. Content between the view and the rows then grows, as the collaborators' list
+// that `t o` opens lands: nothing in view moves. Keeping r10's place scrolled the box down by the
+// growth, and the control the focus was on went out of the view above. Found by the tester on a
+// running build at 390 px: after Load older and `t o`, Collaborators went from 77 to -1,265 px in
+// four runs of seven.
+test("a scroll another script made that leaves the kept row wholly outside the view lets content above the rows grow and moves nothing in view", () => {
+  listTop = 1000;
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  try {
+    box.scroller.scrollTop = 1200;
+    // The reader's scroll, reported by the box's own scroll event, which user-event has no form for.
+    fireEvent.scroll(box.scroller);
+    const control = rowOf("r10").querySelector<HTMLElement>("button");
+    if (control === null) throw new Error("r10 button missing");
+    control.focus();
+    expect(controlTop("r10")).toBe(280);
+
+    // A key moves the focus to the control above the rows, and the page's script scrolls to it.
+    outside.focus();
+    box.scroller.scrollTop = 0;
+    // The next frame reports that scroll with the box's own scroll event, which user-event has no form for.
+    fireEvent.scroll(box.scroller);
+    box.frameEnds();
+    expect(viewportTop("r1")).toBe(1000);
+
+    // Content between the view and the rows grows by 300 px, in no commit of the anchor's.
+    listTop += 300;
+    box.resized();
+    expect(
+      box.scroller.scrollTop,
+      "content that grew below the view scrolled the box to a row the reader cannot see"
+    ).toBe(0);
+  } finally {
+    box.unmount();
+    outside.remove();
+  }
+});
+
 /** `List` with the host taking its box over, every row's control drawn but `bare`'s. */
 function ListWithout({ bare, rows: drawn }: { bare: string; rows: string[] }): ReactNode {
   return (
