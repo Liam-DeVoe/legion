@@ -15,15 +15,15 @@ import { LEGION_ROLES } from "./legion-roles";
 const nonEmptyString = z.string().min(1);
 
 /** `api.ClaimRequest`, what either of the two recoveries names: the agent on `role` of
- * `issue`, under the caller's grant, the project controller's or an architect's for the agents of
- * the issues it owns (below). The two are actions on an agent (stop, retry, suspend, resume_agent,
- * compact and fresh session of one agent, named by its issue and role); the controller's other
- * four (`POST /legion/v1/agents/stop|retry|suspend|resume`, contract 227) take the same body and
- * the same door, and answer `LegionAgentActionResponse` (`legion-api.ts`). The project's controller
- * is no role here, so no body can name its agent (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the
- * daemon's refusal of the controller's own agent, belongs to the operator's door, and this one
- * never gives it. Nor can a body name another project's agent: the daemon builds the token from
- * its own project, so such a claim is one it does not supervise (`NO_CLAIM`).
+ * `issue`, under the caller's controller grant. The two are actions on an agent (stop, retry,
+ * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role); the
+ * controller's other four (`POST /legion/v1/agents/stop|retry|suspend|resume`, contract 227) take
+ * the same body and the same door, and answer `LegionAgentActionResponse` (`legion-api.ts`). The
+ * project's controller is no role here, so no body can name its agent (`INVALID_ROLE`);
+ * `NOT_THE_CONTROLLER`, the daemon's refusal of the controller's own agent, belongs to the
+ * operator's door, and this one never gives it. Nor can a body name another project's agent: the
+ * daemon builds the token from its own project, so such a claim is one it does not supervise
+ * (`NO_CLAIM`).
  *
  * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past
  * a suspension the operator holds, held for the agent's turn or landed, before it reads anything
@@ -37,27 +37,13 @@ const nonEmptyString = z.string().min(1);
  * takes the compaction's own refusal below, whose sentence names the operator's `legion claims
  * resume` as what starts the agent.
  *
- * The same six agent actions take an architect's grant for the agents of the issues it owns alone
- * (contract 227): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
- * tree `ISSUE_OUTSIDE_TREE` (403), one of its own tree it does not own (for a sub-architect, its
- * tree's root and a sibling's issues) `ISSUE_NOT_OWNED` (403), and the architect's own agent
- * `OWN_AGENT` (403). Each is refused `SUSPENDED_BY_OPERATOR` (409) for an agent the operator's
- * suspension holds and `SUSPENDED_BY_CONTROLLER` (409) for one the controller's holds, held or
- * landed, and the architect's resume, suspend, stop and `fresh_session` are refused
- * `SUSPENDED_BY_DAEMON` (409) for an agent the daemon suspended: an architect's resume lifts an
- * architect's suspension alone, and its suspend and stop reach a released agent and no other
- * suspension of the daemon's. The architect's retry and `fresh_session` of an agent that failed or
- * that a stop retired are refused `ISSUE_OUT_OF_WORKFLOW` (409) while its issue is out of
- * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
- * suspension is recorded as `architect`, which the controller's `resume_agent` lifts too.
- *
  * While the project is paused, every action of the door that would start a turn of an agent —
  * `resume_agent`, `retry` and `fresh_session`, which start its session again, and `compact`,
  * whose end sends its task again — is refused `PROJECT_PAUSED` (409, contract 227) with the
- * `pause` that stands, for the controller and an architect alike, and nothing of the claim
- * changes: an agent the pause stopped is the project's resume's to bring back. A suspension above
- * the caller is refused in its own code first, bar under the controller's `compact`, which the
- * door lets past it. `stop` and `suspend` start nothing and still run.
+ * `pause` that stands, and nothing of the claim changes: an agent the pause stopped is the
+ * project's resume's to bring back. A suspension above the caller is refused in its own code
+ * first, bar under the controller's `compact`, which the door lets past it. `stop` and `suspend`
+ * start nothing and still run.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim
@@ -86,8 +72,7 @@ const nonEmptyString = z.string().min(1);
  * whose claim is stored working and that a suspension is held over takes that code too, in the
  * words of the hold, except where the door refuses that suspension first, held or landed, because
  * it outranks the caller: the operator's for the controller's `fresh_session`
- * (`SUSPENDED_BY_OPERATOR`), and the operator's or the controller's for an architect's
- * `fresh_session` and `compact` (`SUSPENDED_BY_OPERATOR`, `SUSPENDED_BY_CONTROLLER`). No agent
+ * (`SUSPENDED_BY_OPERATOR`). No agent
  * with no process behind it takes it at either door, and nor does an agent whose process nobody
  * read. Both give `CLAIM_UNSETTLED` for an agent whose claim has no settled state: one
  * queued, one with a launch in flight, one a suspension is held over in any state but working (a

@@ -53,13 +53,12 @@ export interface LegionControllerToolSession {
 
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
-/** The actions on one agent, each naming the agent by `issue` and `role`: the two recoveries and
- * the four the operator runs as `legion claims` commands, which the daemon serves the controller
- * for its project's agents and an architect for the agents of the issues it owns, on routes of
- * their own. Declared before every other list of the tool's operations, which take them from
- * here: an agent action added to this list is offered to both session kinds that have them, takes
- * the agent's two fields, and reaches its own branch of `execute`, so none can fall through into
- * another operation's. */
+/** The controller's actions on one agent of its project, each naming the agent by `issue` and
+ * `role`: the two recoveries and the four the operator runs as `legion claims` commands, which the
+ * daemon serves the controller alone, on routes of their own. Declared before every other list of
+ * the tool's operations, which take them from here: an agent action added to this list is offered
+ * to the controller, takes the agent's two fields, and reaches its own branch of `execute`, so
+ * none can fall through into another operation's. */
 const AGENT_ACTIONS = [
   "fresh_session",
   "compact",
@@ -78,10 +77,9 @@ const isAgentAction = (operation: string): operation is AgentAction =>
 const AGENT_FIELDS = ["issue", "role"] as const;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and so are the agent actions
- * (`AGENT_ACTIONS`); `read_build` is every session's: the controller holds a claim like any
- * other role and reads its own build the same way. An operation two kinds hold is one `op` value,
- * listed once (`toolSchema`). */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and `read_build` is every
+ * session's: the controller holds a claim like any other role and reads its own build the same
+ * way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -95,7 +93,6 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
-    ...AGENT_ACTIONS,
     "read_build",
   ],
   "phase-worker": [
@@ -436,15 +433,13 @@ function readState(state: LegionState, parameters: Record<string, unknown>): Too
 }
 
 /** The tool's one object schema, `op` choosing the operation; its fields and the `op` values are
- * in the order `tools.test.ts` pins. The `op` values are the architect's operations and then the
- * controller's that the architect does not have, each once. */
+ * in the order `tools.test.ts` pins. */
 function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    // `read_build` and the agent actions belong to the architect's roster and the
-    // controller's, and the enum names every value once, so the two rosters are joined through a
-    // set.
+    // `read_build` belongs to the architect's roster and the controller's, and the enum names
+    // every value once, so the two rosters are joined through a set.
     op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
     issue: phaseOp.issue,
     since: phaseOp.since,
@@ -523,10 +518,7 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * `handoff_complete` is refused here only for the root architect's session, and finds what it
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
- * operation. The operations of `OPERATIONS.controller` belong to the controller: `read_state`,
- * `set_status`, `replace_pod`, `pause` and `resume` to it alone, and the agent actions
- * (`AGENT_ACTIONS`) to it and to an architect, whose reach the daemon limits to the agents of
- * the issues it owns. */
+ * operation. The operations of `OPERATIONS.controller` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -579,11 +571,10 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
-    // retry_or_escalate, its sign_off and the controller's operations, and the architect's limit
-    // on the agent actions to the issues it owns: the exact text tools.test.ts pins, so a
-    // change to the shared template cannot reach an Oh My Pi agent unnoticed. The rules for
-    // ending a child are the words of the daemon's record.EndChildRule, and the sentence after
-    // them is the daemon's record.StatusNotTakenYet (both in
+    // retry_or_escalate, its sign_off and the controller's operations: the exact text
+    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
+    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule,
+    // and the sentence after them is the daemon's record.StatusNotTakenYet (both in
     // packages/daemon/internal/record/project.go). These tests hold the copies together: the
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
@@ -641,7 +632,7 @@ export function createLegionTool(deps: {
         "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
         "ready_for_update, and it replaces the pod once each role has answered, no turn runs and each role's report " +
         "since its last turn names no running background work, or at the round's bound whatever the roles said. A " +
-        "suspension by the operator, the controller or an architect over a role the round asks keeps the " +
+        "suspension by the operator or the controller over a role the round asks keeps the " +
         "pod past the bound, until a resume of that role lifts it. The controller's own suspension counts too, so a controller that " +
         "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
         "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
@@ -728,27 +719,6 @@ export function createLegionTool(deps: {
         "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
         "in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +
-        "An architect has the same six agent actions, fresh_session, compact, stop, retry, suspend and " +
-        "resume_agent (issue, role), for the agents of the issues it owns alone: a root architect owns every issue of " +
-        "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on an agent " +
-        "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
-        "architect another tree's agent (ISSUE_OUTSIDE_TREE), an agent of an issue of its tree that it does not own, " +
-        "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own agent " +
-        "(OWN_AGENT). It refuses " +
-        "each of the six for an agent the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for an " +
-        "agent the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
-        "waits for a turn to end, before any refusal of its claim's state. The request leaves the agent as it was, but " +
-        "where fresh_session's own suspension of the agent ran first, or where fresh_session left behind the session " +
-        "its claim recorded, so the agent starts in a new session once it is started: ask the holder to lift its suspension. " +
-        "An architect's suspension is recorded as architect. An architect's resume_agent lifts it, and the " +
-        "controller's resume_agent and the operator's resume lift it too. An architect's resume_agent, suspend, stop and " +
-        "fresh_session are refused for an agent the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
-        "of such an agent is refused too, since retry reaches no suspended agent. Its suspend takes " +
-        "over an agent the daemon released, and its stop retires one. " +
-        "An architect's retry and fresh_session are refused for an agent that failed or that a stop " +
-        "retired while its issue is parked or closed, or its tree's root is parked, closed or " +
-        "signed off (ISSUE_OUT_OF_WORKFLOW). The daemon's own rules start that work again when the " +
-        "issue and its tree are back in the workflow. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. " +
@@ -763,7 +733,7 @@ export function createLegionTool(deps: {
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
-        "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
+        "naming the pause that stands), since each would start a turn: only the project's " +
         "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. An agent a " +
         "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
         "suspension, or the operator's legion claims resume, lifts it. ",
@@ -788,7 +758,9 @@ export function createLegionTool(deps: {
         const active = session(context);
         const operation = requiredString(parameters, "legion", "op");
         if (!OPERATIONS[active.kind].includes(operation)) {
-          throw new Error(`${operation} is not available to a ${active.kind} session`);
+          throw new Error(
+            `${operation} is not available to ${active.kind === "architect" ? "an" : "a"} ${active.kind} session`
+          );
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
@@ -810,30 +782,24 @@ export function createLegionTool(deps: {
         }
         assertOperationInput(parameters, operation);
         const client = daemon();
-        if (active.kind === "controller" && operation === "read_state") {
-          return readState(await client.state(), parameters);
-        }
-        if (isAgentAction(operation)) {
-          // Validated whole before its grant is minted: the controller's with its registration's
-          // secret, an architect's with its claim's. The daemon decides which agents each reaches.
-          const issue = requiredString(parameters, operation, "issue");
-          const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-          if (role === undefined) {
-            throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
-          }
-          const grantId =
-            active.kind === "controller"
-              ? (await controllerGrant(active.sessionID)).grantId
-              : await mintClaimGrant(client, active);
-          return await agentAction(client, operation, { grantId, issue, role });
-        }
         if (active.kind === "controller") {
           // A controller session holds no claim, so it cannot reach `executePhaseOp`, which
           // mints from one. It answers the same values here: this build's package, version and
-          // contract, and the contract the daemon states on the health route. Its read_state is
-          // answered above, before the agent actions.
+          // contract, and the contract the daemon states on the health route.
           if (operation === "read_build") {
             return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
+          }
+          if (operation === "read_state") return readState(await client.state(), parameters);
+          if (isAgentAction(operation)) {
+            // Validated whole before its grant is minted with the registration's secret. The
+            // daemon decides which agents it reaches.
+            const issue = requiredString(parameters, operation, "issue");
+            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
+            if (role === undefined) {
+              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            return await agentAction(client, operation, { grantId, issue, role });
           }
           // The project's pause and its resume name no issue: the daemon acts on its own project.
           // Each is validated whole before its grant is minted, and each answer is the daemon's

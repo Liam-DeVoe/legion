@@ -4,8 +4,8 @@ body: |-
   the pod that issue runs in, asks each role of the pod to push its work and answer
   `ready_for_update`, and replaces the pod once each role has answered, no turn runs and each
   role's report since its last turn names no running background work, or at the round's bound. A
-  suspension by the operator, the controller or an architect over a role the round asks keeps the
-  pod past the bound until a resume lifts it. The controller's own suspension counts too, so a
+  suspension by the operator or the controller over a role the round asks keeps the pod past the
+  bound until a resume lifts it. The controller's own suspension counts too, so a
   controller that suspended a role and then asks `replace_pod` waits on itself, and the round comes
   back as `update-stalled`. The answer is the round, its reasons and whether the request opened it.
   It is the one way the controller removes an issue pod whose workspace may hold work. The daemon

@@ -163,8 +163,8 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
-  // resume (contract 227): the claim's state after each, and who holds a suspension over the agent.
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 227):
+  // the claim's state after each, and who holds a suspension over the agent.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,
@@ -448,8 +448,8 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
-  // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
-  // resume (contract 227): the claim's `state`, and who holds a suspension over it.
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 227):
+  // the claim's `state`, and who holds a suspension over it.
   "agent-action": LegionAgentActionResponse,
 };
 
@@ -2661,8 +2661,8 @@ const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimsResponse: true,
 };
 
-/** The one session-facing exception: four of the six agent actions of the controller and of an
- * architect (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
+/** The one session-facing exception: four of the controller's six agent actions
+ * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume_agent lifts it. The
  * reason the guard exists does not reach them: they arrived with contract 227, so only a plugin at
  * that contract or later calls them, and no reader of these bodies predates the key. The schema
@@ -2716,9 +2716,9 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 227, to the four agent
-// actions of the controller and of an architect (agentActionSchemas), and nowhere else; this
-// holds that for every schema the module exports, present and future.
+// `suspendedBy` is served to the operator's bearer and, from contract 227, to the controller's four
+// agent actions (agentActionSchemas), and nowhere else; this holds that for every schema the
+// module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
@@ -2757,25 +2757,6 @@ test("no session-facing response carries suspendedBy", () => {
   for (const name of Object.keys(agentActionFixtures)) {
     expect(fixtures, name).toContain(name);
   }
-});
-
-// An architect's suspension is a source of its own (contract 227, #4065): the
-// agent actions' answer names it, landed or held, while the state, which the walk above holds
-// to no suspender at all, still names none.
-test("the agent actions name an architect's suspension", () => {
-  expect(LegionAgentActionResponse.parse({ state: "suspended", suspendedBy: "architect" })).toEqual(
-    { state: "suspended", suspendedBy: "architect" }
-  );
-  expect(
-    LegionAgentActionResponse.parse({
-      state: "working",
-      suspensionHeld: true,
-      suspensionHeldBy: "architect",
-    }).suspensionHeldBy
-  ).toBe("architect");
-  expect(
-    LegionAgentActionResponse.safeParse({ state: "suspended", suspendedBy: "tree" }).success
-  ).toBeFalse();
 });
 
 test("the state golden shows a claim's capability report beside its locator", () => {

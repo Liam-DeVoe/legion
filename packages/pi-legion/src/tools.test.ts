@@ -293,7 +293,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
   "ready_for_update, and it replaces the pod once each role has answered, no turn runs and each role's report " +
   "since its last turn names no running background work, or at the round's bound whatever the roles said. A " +
-  "suspension by the operator, the controller or an architect over a role the round asks keeps the " +
+  "suspension by the operator or the controller over a role the round asks keeps the " +
   "pod past the bound, until a resume of that role lifts it. The controller's own suspension counts too, so a controller that " +
   "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
   "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
@@ -380,27 +380,6 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
   "in its own codes. The four " +
   "refuse role controller as fresh_session and compact do. " +
-  "An architect has the same six agent actions, fresh_session, compact, stop, retry, suspend and " +
-  "resume_agent (issue, role), for the agents of the issues it owns alone: a root architect owns every issue of " +
-  "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on an agent " +
-  "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
-  "architect another tree's agent (ISSUE_OUTSIDE_TREE), an agent of an issue of its tree that it does not own, " +
-  "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own agent " +
-  "(OWN_AGENT). It refuses " +
-  "each of the six for an agent the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for an " +
-  "agent the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
-  "waits for a turn to end, before any refusal of its claim's state. The request leaves the agent as it was, but " +
-  "where fresh_session's own suspension of the agent ran first, or where fresh_session left behind the session " +
-  "its claim recorded, so the agent starts in a new session once it is started: ask the holder to lift its suspension. " +
-  "An architect's suspension is recorded as architect. An architect's resume_agent lifts it, and the " +
-  "controller's resume_agent and the operator's resume lift it too. An architect's resume_agent, suspend, stop and " +
-  "fresh_session are refused for an agent the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
-  "of such an agent is refused too, since retry reaches no suspended agent. Its suspend takes " +
-  "over an agent the daemon released, and its stop retires one. " +
-  "An architect's retry and fresh_session are refused for an agent that failed or that a stop " +
-  "retired while its issue is parked or closed, or its tree's root is parked, closed or " +
-  "signed off (ISSUE_OUT_OF_WORKFLOW). The daemon's own rules start that work again when the " +
-  "issue and its tree are back in the workflow. " +
   "Each refusal says what the claim does now and which operation reaches each state. It " +
   "names no moment to come back at: ask again later, and read the claim's state in " +
   "read_state. " +
@@ -415,7 +394,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
   "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
   "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
-  "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
+  "naming the pause that stands), since each would start a turn: only the project's " +
   "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. An agent a " +
   "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
   "suspension, or the operator's legion claims resume, lifts it. " +
@@ -432,10 +411,10 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
   { kind: "controller", sessionID: "ses_controller" },
 ];
 
-const toolFor = (active: LegionToolSession, daemon = recordingDaemon({}).daemon) =>
+const toolFor = (active: LegionToolSession) =>
   createLegionTool({
     pi,
-    daemon,
+    daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
@@ -490,16 +469,16 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_release_records",
         "handoff_complete",
         "ready_for_update",
+        "read_build",
+        "read_state",
+        "set_status",
+        "replace_pod",
         "fresh_session",
         "compact",
         "stop",
         "retry",
         "suspend",
         "resume_agent",
-        "read_build",
-        "read_state",
-        "set_status",
-        "replace_pod",
         "pause",
         "resume",
       ],
@@ -770,7 +749,12 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   for (const session of [architect, worker]) {
     await expect(run(session, { op: "read_state" })).resolves.toMatchObject({
       isError: true,
-      content: [{ type: "text", text: `read_state is not available to a ${session.kind} session` }],
+      content: [
+        {
+          type: "text",
+          text: `read_state is not available to ${session.kind === "architect" ? "an" : "a"} ${session.kind} session`,
+        },
+      ],
     });
     await expect(
       run(session, { op: "set_status", issue: "LEGION-208", status: "todo" })
@@ -778,7 +762,10 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     await expect(run(session, { op: "replace_pod", issue: "LEGION-208" })).resolves.toMatchObject({
       isError: true,
       content: [
-        { type: "text", text: `replace_pod is not available to a ${session.kind} session` },
+        {
+          type: "text",
+          text: `replace_pod is not available to ${session.kind === "architect" ? "an" : "a"} ${session.kind} session`,
+        },
       ],
     });
   }
@@ -2234,10 +2221,9 @@ test("the controller asks for the replacement of an issue's pod with its own gra
 
 // The architect's operation set, pinned whole: every `op` the tool's schema lists that an
 // architect's session is not refused as unavailable. It is the tree's workflow operations, the
-// phase ops, the six agent actions the daemon serves an architect for the issues it owns, and
-// read_build, which every session holds; the controller's read_state, set_status and replace_pod
-// stay the controller's alone.
-test("an architect's operation set is the tree's operations and the six agent actions", async () => {
+// phase ops and read_build, which every session holds; the controller's read_state, set_status,
+// replace_pod and the six agent actions stay the controller's alone.
+test("an architect's operation set is the tree's operations and none of the agent actions", async () => {
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
@@ -2249,7 +2235,7 @@ test("an architect's operation set is the tree's operations and the six agent ac
       const result = await tool.execute("", { op }, undefined, undefined, context());
       const refused = result.content.some(
         (part) =>
-          part.type === "text" && part.text === `${op} is not available to a architect session`
+          part.type === "text" && part.text === `${op} is not available to an architect session`
       );
       if (!refused) available.push(op);
     }
@@ -2265,99 +2251,44 @@ test("an architect's operation set is the tree's operations and the six agent ac
       "read_release_records",
       "handoff_complete",
       "ready_for_update",
-      "fresh_session",
-      "compact",
-      "stop",
-      "retry",
-      "suspend",
-      "resume_agent",
       "read_build",
     ]);
   }
 });
 
-// An architect's agent actions name the claim by issue and role, as the controller's do, and
-// mint the architect's own claim grant rather than a controller grant: the daemon reads the tree
-// and the issue from that grant and refuses every agent of an issue it does not own. Each returns
-// the daemon's answer whole.
-test("an architect acts on an agent of an issue it owns with its own grant", async () => {
-  const answers = {
-    freshSession: {},
-    compact: { compacted: true },
-    stopAgent: { state: "retired" },
-    retryAgent: { state: "launching" },
-    suspendAgent: { state: "suspended", suspendedBy: "architect" },
-    resumeAgent: { state: "launching" },
-  };
-  const { calls, daemon } = recordingDaemon({ answers });
-  const architect = claimSession("architect");
-  const tool = toolFor(architect, daemon);
-  const run = (parameters: Record<string, unknown>) =>
-    tool.execute("", parameters, undefined, undefined, context());
-
-  for (const [op, route] of [
-    ["fresh_session", "freshSession"],
-    ["compact", "compact"],
-    ["stop", "stopAgent"],
-    ["retry", "retryAgent"],
-    ["suspend", "suspendAgent"],
-    ["resume_agent", "resumeAgent"],
-  ] as const) {
-    const answer = answers[route];
-    await expect(run({ op, issue: "LEGION-209", role: "tester" })).resolves.toEqual({
-      content: [{ type: "text", text: JSON.stringify(answer) }],
-      details: answer,
+// An agent action from an architect's session, named whole with its issue and role, is refused by
+// the operation's name as every operation outside its kind's list is, before a grant is minted or
+// a request sent.
+test("an architect's agent action is refused as unavailable before any grant", async () => {
+  for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
+    const { calls, daemon } = recordingDaemon({});
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => architect,
     });
-    expect(calls.slice(-2)).toEqual([
-      [
-        "grant",
-        { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
-      ],
-      [route, { grantId: "grant-208", issue: "LEGION-209", role: "tester" }],
-    ]);
-  }
-
-  // Refused before any mint, as the controller's are: a missing role, the controller's role, a
-  // missing issue and a field none of the six takes.
-  const before = calls.length;
-  for (const [parameters, message] of [
-    [{ op: "stop", issue: "LEGION-209" }, "stop requires role architect"],
-    [{ op: "compact", issue: "LEGION-209", role: "controller" }, "compact requires role architect"],
-    [{ op: "suspend", role: "tester" }, "suspend requires issue"],
-    [
-      { op: "resume_agent", issue: "LEGION-209", role: "tester", reason: "why" },
-      'resume_agent does not accept field "reason"; it takes issue, role',
-    ],
-  ] as const) {
-    const result = await run(parameters);
-    expect(result.isError).toBe(true);
-    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
-  }
-  expect(calls).toHaveLength(before);
-
-  // The daemon's refusals reach the architect in their own code and words: another tree's agent,
-  // an agent of an issue of its tree it does not own, its own agent, and an agent the controller's
-  // suspension holds.
-  for (const [route, op, path, status, code] of [
-    ["stopAgent", "stop", "/legion/v1/agents/stop", 403, "ISSUE_OUTSIDE_TREE"],
-    ["retryAgent", "retry", "/legion/v1/agents/retry", 403, "ISSUE_NOT_OWNED"],
-    ["suspendAgent", "suspend", "/legion/v1/agents/suspend", 403, "OWN_AGENT"],
-    ["resumeAgent", "resume_agent", "/legion/v1/agents/resume", 409, "SUSPENDED_BY_CONTROLLER"],
-  ] as const) {
-    const refusing = recordingDaemon({
-      answers: {
-        [route]: new LegionDaemonApiError("POST", path, status, code, "refused"),
-      },
-    });
-    const refused = await toolFor(architect, refusing.daemon).execute(
-      "",
-      { op, issue: "LEGION-209", role: "tester" },
-      undefined,
-      undefined,
-      context()
-    );
-    expect(refused.isError).toBe(true);
-    expect(refused.content).toEqual([{ type: "text", text: expect.stringContaining(code) }]);
+    for (const op of ["fresh_session", "compact", "stop", "retry", "suspend", "resume_agent"]) {
+      await expect(
+        tool.execute(
+          "",
+          { op, issue: "LEGION-209", role: "tester" },
+          undefined,
+          undefined,
+          context()
+        )
+      ).resolves.toEqual({
+        content: [{ type: "text", text: `${op} is not available to an architect session` }],
+        details: {},
+        isError: true,
+      });
+    }
+    expect(calls).toEqual([]);
   }
 });
 
@@ -2582,7 +2513,10 @@ test("pause and resume are offered to no architect and no phase worker", async (
     for (const parameters of [{ op: "pause", reason: "the provider is down" }, { op: "resume" }]) {
       await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
         content: [
-          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+          {
+            type: "text",
+            text: `${parameters.op} is not available to ${session.kind === "architect" ? "an" : "a"} ${session.kind} session`,
+          },
         ],
         details: {},
         isError: true,

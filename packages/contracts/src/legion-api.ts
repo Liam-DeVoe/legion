@@ -1691,33 +1691,30 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; an `operator`, a
- * `controller` and an `architect` one hold against the daemon's rules, ranked in that order: the
- * controller's `resume_agent` lifts its own and an architect's and never the operator's, and an
- * architect's `resume_agent` lifts an architect's alone (contract 227). */
+ * the claim's phase and its pending task until the next wake for its role; an `operator` and a
+ * `controller` one hold against the daemon's rules, ranked in that order: the controller's
+ * `resume_agent` lifts its own and never the operator's (contract 227). */
 const legionSuspendedBy = z.enum([
   "unknown",
   "operator",
   "controller",
-  "architect",
   "daemon",
   "exit",
   "released",
 ]);
 
-/** `api.AgentActionResponse`, what four of the actions on an agent (stop, retry, suspend,
- * resume_agent, compact and fresh session of one agent, named by its issue and role) answer, the
- * controller's and an architect's alike: stop, retry, suspend and resume
+/** `api.AgentActionResponse`, what four of the controller's actions on an agent (stop, retry,
+ * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role)
+ * answer: stop, retry, suspend and resume
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, contract
  * 227): the claim's `state` after the request — `retired` after a stop; `suspended` after a
  * suspension that landed, and still `working` or `launching` with
  * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
  * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
  * whose start its issue's phase queued. `suspendedBy` (while the claim is suspended) and
- * `suspensionHeldBy` (while one is held) say who holds the suspension: `architect` for an
- * architect's, which an architect's `resume_agent` and the controller's lift; `controller` for
- * the controller's own, which its `resume_agent` and the operator's resume lift and an
- * architect's does not; and `operator` for the operator's, which only the operator lifts. These
+ * `suspensionHeldBy` (while one is held) say who holds the suspension: `controller` for the
+ * controller's own, which its `resume_agent` and the operator's resume lift; and `operator` for
+ * the operator's, which only the operator lifts. These
  * routes are the one session-facing surface that names a suspender, since no plugin below
  * contract 227 calls them; the state does not ("no session-facing response carries suspendedBy"
  * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no

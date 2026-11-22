@@ -1,10 +1,10 @@
 kind: Added
 body: |-
   The response schema of four of the actions on an agent (stop, retry, suspend, resume_agent,
-  compact and fresh session of one agent, named by its issue and role) that the controller and a
-  tree's architect hold (`stop`, `retry`, `suspend`, `resume_agent`): the claim's state, and who
-  suspended the agent or holds a suspension of it for its turn. `suspendedBy` and `suspensionHeldBy` take
-  `architect` as well as `controller`. Every field of it is optional, since no plugin code reads
+  compact and fresh session of one agent, named by its issue and role) that the controller holds
+  (`stop`, `retry`, `suspend`, `resume_agent`): the claim's state, and who suspended the agent or
+  holds a suspension of it for its turn. `suspendedBy` and `suspensionHeldBy` take `controller`
+  for the controller's own suspension. Every field of it is optional, since no plugin code reads
   one: the `legion` tool hands the answer on whole. The daemon's table of answers
   (`answers.json`) names it `agent-action`, and its `state`, `suspendedBy` and
   `suspensionHeldBy` are rows of `enumerated-fields.json`. The daemon API contract moves to 227.
