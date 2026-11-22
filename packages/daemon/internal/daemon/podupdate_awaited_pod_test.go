@@ -1040,3 +1040,110 @@ func TestPodUpdateNamesNothingForAClaimWhoseOwnRetryReplacesThePodAndRegistersBe
 		t.Errorf("the issue was written %q, want nothing: the implementer never had a worker in the round's pod", messages)
 	}
 }
+
+// Two claims of the issue, the implementer and the tester, both with no session and queued for
+// their first launch, are refused for want of the pod's round, so both launches wait on the pod
+// and no role process runs there. The round is posted to both as a way to the pod (postedClaims).
+// The implementer's retry replaces the round's pod (roundPodEndsAtLaunch). Then the tester's retry
+// runs, before the sweep that ends the round: the round's pod is gone, so its launch comes up in
+// the pod that replaced it. The round ends as a launch's replacement (endRoundALaunchReplaced).
+//
+// Neither claim ever had a worker in the round's pod, so the issue is written nothing about either
+// (lostClaim's exception for a member with no session whose launch waits on the pod). At the
+// launch that replaced the pod, both claims stood so; by the end, both record a process in the new
+// pod.
+//
+// Red at 571fbdce72 (tester, INFRA-4425): the launch's replacement keeps the exception for the
+// launching claim alone (launchRound's exempt), so the line names the tester under
+// unansweredMembers, and the issue is written "These roles did not answer the update round before
+// the replacement. No process of these roles ran in the pod: tester (launching)."
+func TestPodUpdateNamesNothingForAnotherClaimWithNoSessionWhoseRetryFollowsTheReplacement(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateQueued},
+	)
+	implementer, tester := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]
+	rig.drifts(podUpdateExchangeDrift)
+	// The runtime refuses each start of either claim for the identity until the test lets that
+	// claim's retry through to the fake's own launch, which asks RoundPodEnds of a live pod first
+	// and builds a new pod for a launch into one that was replaced, as the Sandbox runtime does.
+	var letImplementer, letTester atomic.Bool
+	rig.rt.OnSpawn = func(context.Context) error {
+		spawns := rig.rt.CallsOf("Spawn")
+		spec := spawns[len(spawns)-1].Spec
+		switch {
+		case spec.Claim == implementer && letImplementer.Load(), spec.Claim == tester && letTester.Load():
+			return nil
+		case spec.Claim != implementer && spec.Claim != tester:
+			return nil
+		}
+		return fmt.Errorf("launch %s: %w", spec.Claim, &runtime.AwaitingPodRound{
+			Pod:    awaitedLocator(spec.Claim, podUpdatePod, spec.Generation),
+			Reason: "pod legion-legion-484 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+		})
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		token := rig.tokens[role]
+		m, ok := rig.sup.Machine(token)
+		if !ok {
+			t.Fatalf("the %s is not supervised", role)
+		}
+		if _, err := m.ReleaseUncertainLaunch(rig.ctx); err != nil {
+			t.Fatalf("release the %s's unfinished launch: %v", role, err)
+		}
+		if err := m.Handle(rig.ctx, supervise.RequestSpawn{Claim: token}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the %s's first launch answered %v, want the runtime's wait for its pod's round", role, err)
+		}
+		if c := rig.claimOf(role); c.Session != "" || c.Locator != nil || podOf(c.AwaitsPod) != podUpdatePod {
+			t.Fatalf("the refused %s has session %q and process %+v, waiting on %+v; want no session and no process, waiting on pod %s",
+				role, c.Session, c.Locator, c.AwaitsPod, podUpdatePod)
+		}
+	}
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the sweep that opened the round replaced the pod %+v, want no replacement before the next sweep: the retries are to come first", calls)
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		conn := fake.NewConn()
+		rig.conns.Register(rig.tokens[role], conn)
+		rig.workers[role] = conn
+	}
+
+	// The implementer's retry replaces the round's pod; the tester's, refused again, waits.
+	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(implementer, podUpdateIssue, podUpdatePod)})
+	letImplementer.Store(true)
+	rig.retryLaunch()
+	if atLaunch := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(atLaunch) != 1 || atLaunch[0].Spec.Claim != implementer {
+		t.Fatalf("the round's pod was replaced at a launch %+v, want once, by the implementer's retry", atLaunch)
+	}
+	rig.awaitClaim(claim.RoleImplementer, "its retry to record a process", func(c supervise.Claim) bool { return c.Locator != nil })
+
+	// The tester's next retry, before any sweep, comes up in the pod that replaced the round's.
+	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(tester, podUpdateIssue, podUpdatePod)})
+	letTester.Store(true)
+	rig.retryLaunch()
+	c := rig.awaitClaim(claim.RoleTester, "its retry to record a process", func(c supervise.Claim) bool { return c.Locator != nil })
+	if pod := podOf(c.Locator); pod == "" || pod == podUpdatePod {
+		t.Fatalf("the tester came up in pod %q, want the pod that replaced the round's %s", pod, podUpdatePod)
+	}
+
+	rig.awaitSwept(claim.RoleImplementer, "its round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.awaitSwept(claim.RoleTester, "its round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.tick()
+	rig.tick()
+	rig.settleAll()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Errorf("ReplacePod called %+v, want the implementer's replacement at its launch alone", calls)
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 || lines[0]["atLaunch"] != true {
+		t.Fatalf("the replacement was logged %+v, want one line of a replacement at a launch", lines)
+	}
+	wantField(t, lines[0], "unansweredMembers")
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Errorf("the issue was written %q, want nothing: neither claim ever had a worker in the round's pod", messages)
+	}
+}
