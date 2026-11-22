@@ -44,7 +44,12 @@ import { fileURLToPath } from "node:url";
 
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
-import { Interrupted, type PipedRunning, Supervisor } from "./local-instance-support";
+import {
+  Interrupted,
+  interruptedBefore,
+  type PipedRunning,
+  Supervisor,
+} from "./local-instance-support";
 
 const dispatchPackage = fileURLToPath(new URL("..", import.meta.url));
 const heldPortScript = fileURLToPath(
@@ -151,14 +156,6 @@ function refusal(watched: Watched, given: number, what: string): Error {
   return new Error(
     `The Dispatch e2e harness cannot start: ${head}${where}. Its last lines:\n${lines}`
   );
-}
-
-/** The Interrupted a wait of the start throws when the caller's signal aborts it: it names what
- *  the start was waiting for and for how long, so a start whose caller ended it at that caller's
- *  deadline says which process never came up. */
-function interruptedBefore(fact: string, since: number): Interrupted {
-  const seconds = ((Date.now() - since) / 1000).toFixed(1);
-  return new Interrupted(`interrupted ${seconds} s into the wait, before ${fact}`);
 }
 
 /** Waits for the listener's report and, for a listener with a health path, for that path to

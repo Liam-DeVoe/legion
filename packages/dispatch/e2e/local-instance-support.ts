@@ -28,6 +28,16 @@ function untilAborted<T>(step: Promise<T>, signal: AbortSignal | undefined): Pro
   return promise;
 }
 
+/** The Interrupted a wait of a harness start throws when the caller's signal aborts it
+ *  (`serving` and `keepPort` in e2e/harness-start.ts, `ready` in e2e/harness-postgres.ts). Those
+ *  waits have no bound of their own, so the caller's deadline is their hang guard, and this names
+ *  what the wait was for and how long it had waited: a start its caller ended says which process
+ *  never came up. `fact` is what would have ended the wait; `since` the `Date.now()` it began. */
+export function interruptedBefore(fact: string, since: number): Interrupted {
+  const seconds = ((Date.now() - since) / 1000).toFixed(1);
+  return new Interrupted(`interrupted ${seconds} s into the wait, before ${fact}`);
+}
+
 interface Running {
   readonly name: string;
   readonly child: ChildProcess;
