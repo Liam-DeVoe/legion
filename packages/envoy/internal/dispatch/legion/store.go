@@ -110,8 +110,8 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string) (Setting
 }
 
 // PutSettings sets the daemon a project is read from, and answers the row as it stands. created_by
-// is the actor that first set the project's setting, as repo_projects.created_by is the actor that
-// first mapped a repository: a later write changes the URL and the time and keeps it.
+// is the actor that first set the project's setting: a later write changes the URL and the time
+// and keeps it.
 //
 // The write forgets how far the project's observations had followed its daemon, in its own
 // transaction (settingWritten): the intake then has no starting point for the project, and reads
