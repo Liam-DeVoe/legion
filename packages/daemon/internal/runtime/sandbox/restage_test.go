@@ -456,7 +456,7 @@ func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) 
 		if g.secret(roleSecretName(name, role)) == nil {
 			continue
 		}
-		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.SetFor(role)), staticCredentialExpiry)
+		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(roleSet(role)), staticCredentialExpiry)
 		editSecret(g, roleSecretName(name, role), func(secret *corev1.Secret) {
 			secret.Data[GitHubHostsKey(repositoryDirectory)] = []byte(rendered.Hosts)
 			secret.Data[GitHubConfigKey(repositoryDirectory)] = []byte(rendered.Config)

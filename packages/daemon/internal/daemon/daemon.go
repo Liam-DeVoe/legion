@@ -1051,13 +1051,21 @@ type plan struct {
 // every launch of a daemon with a workflow has an answer to name; a daemon with no GitHub App has
 // none, and its addressing names no owner. GitHubDirs itself names nothing until a bundle is
 // built, since no pod may be compared against the boot's read, so it is not what this asks.
+//
+// A role SetFor keeps no set for holds no bundle, so its container holds no directory and it is
+// named no owner; its launch then fails at its git identity with SetFor's refusal
+// (workflowRuntime.identity).
 func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 	return func(role claim.Role) []string {
+		set, err := appauth.SetFor(role)
+		if err != nil {
+			return nil
+		}
 		owners, read := p.installed.Owners()
 		if !read {
 			return nil
 		}
-		sets := []appauth.TokenSet{appauth.SetFor(role)}
+		sets := []appauth.TokenSet{set}
 		if runtimeName == "kubernetes" {
 			sets = sandbox.PodTokenSets(role)
 		}

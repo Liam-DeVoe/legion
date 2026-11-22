@@ -1480,11 +1480,18 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // the one place both callers reach — a launch's spec (specs.SpawnSpec) and a working copy's
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.
+//
+// A role SetFor keeps no set for is minted nothing, and the identity fails with SetFor's refusal
+// (appauth.ErrNoTokenSet), so the launch of a claim on that role fails rather than the daemon.
 func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
 	served := w.repositories.serving(recorded)
-	lease, err := w.tokens.Token(ctx, appauth.SetFor(role), served.Owner())
+	set, err := appauth.SetFor(role)
 	if err != nil {
-		return runtime.GitIdentity{}, fmt.Errorf("mint the %s lease for %s on %s: %w", appauth.SetFor(role), role, served, err)
+		return runtime.GitIdentity{}, fmt.Errorf("mint the lease for %s on %s: %w", role, served, err)
+	}
+	lease, err := w.tokens.Token(ctx, set, served.Owner())
+	if err != nil {
+		return runtime.GitIdentity{}, fmt.Errorf("mint the %s lease for %s on %s: %w", set, role, served, err)
 	}
 	return lease.Identity, nil
 }

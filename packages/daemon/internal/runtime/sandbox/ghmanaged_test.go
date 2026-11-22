@@ -66,7 +66,7 @@ func TestAManagedUsersIssueLaunchesWithItsOwnersDirectory(t *testing.T) {
 	if got := string(secret.Data[GitHubDefaultKey]); got != managedUser {
 		t.Errorf("the tester's Secret records the default %q, want %s", got, managedUser)
 	}
-	want := "ghs_" + string(appauth.SetFor(claim.RoleTester)) + "_" + managedUser + "_write"
+	want := "ghs_" + string(roleSet(claim.RoleTester)) + "_" + managedUser + "_write"
 	if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(managedUser)]); err != nil || token != want {
 		t.Errorf("the tester's Secret holds %q (%v) for %s, want %q, that owner's own lease", token, err, managedUser, want)
 	}

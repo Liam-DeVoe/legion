@@ -150,8 +150,12 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			app := string(appauth.SetFor(role))
-			if refuse.Load() && appauth.SetFor(role) == appauth.SetImplementer {
+			set, err := appauth.SetFor(role)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
+			app := string(set)
+			if refuse.Load() && set == appauth.SetImplementer {
 				return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 			}
 			owner := strings.ToLower(repo.Owner())
@@ -194,7 +198,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	g.r.refreshGitHubCredentials(g.ctx)
 	var want []string
 	for _, role := range claim.Roles {
-		if appauth.SetFor(role) != appauth.SetImplementer {
+		if roleSet(role) != appauth.SetImplementer {
 			want = append(want, roleSecretName(issue, role))
 		}
 	}
@@ -204,10 +208,10 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	for _, role := range claim.Roles {
 		secret := g.secret(roleSecretName(issue, role))
 		lease := second
-		if appauth.SetFor(role) == appauth.SetImplementer {
+		if roleSet(role) == appauth.SetImplementer {
 			lease = first
 		}
-		app := string(appauth.SetFor(role))
+		app := string(roleSet(role))
 		for owner, expected := range map[string]string{"sjawhar": "ghs_" + app + "_" + lease, "acme": "ghs_" + app + "_" + lease + "_read"} {
 			if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != expected {
 				t.Errorf("%s's %s hosts.yml holds %q (%v), want %q", role, owner, token, err, expected)
@@ -266,7 +270,10 @@ func TestATickBuildsOneBundlePerSetAndRepository(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			set := appauth.SetFor(role)
+			set, err := appauth.SetFor(role)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
 			asked, _ := built.LoadOrStore(set, new(atomic.Int64))
 			asked.(*atomic.Int64).Add(1)
 			if fail.Load() && set == appauth.SetImplementer {
@@ -336,7 +343,7 @@ func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 	var asked atomic.Pointer[string]
 	asked.Store(new(string))
 	logs := &lockedLog{}
-	app := string(appauth.SetFor(claim.RoleController))
+	app := string(roleSet(claim.RoleController))
 	// The project served sjawhar alone when the controller's pod was launched, and has since
 	// gained acme, which sorts before it.
 	bundle := func(dflt string) ghconfig.Bundle {
@@ -896,7 +903,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
 	role := claim.RoleArchitect
-	app := appauth.SetFor(role)
+	app := roleSet(role)
 	name := roleSecretName(issue, role)
 	write := leaseNamed(app, "cybermonklabs", "write")
 	if repo, named := fetchRepository(g.pod(issue)); !named || repo.String() != recordedSmoke.String() {
@@ -967,7 +974,7 @@ func renamedIssueOnBothOwners(t *testing.T) (g *rig, pod, name string, app appau
 	}))
 	g.spawn(rootSpec(t))
 	pod = SandboxName(rootToken)
-	return g, pod, roleSecretName(pod, claim.RoleArchitect), appauth.SetFor(claim.RoleArchitect), logs
+	return g, pod, roleSecretName(pod, claim.RoleArchitect), roleSet(claim.RoleArchitect), logs
 }
 
 // staleGhKeys records dflt as the default of every role's Secret of the issue pod named pod, and
@@ -1220,7 +1227,7 @@ func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *tes
 				g.r.refreshGitHubCredentials(g.ctx)
 
 				for _, role := range roles {
-					secret, app := g.secret(roleSecretName(pod, role)), appauth.SetFor(role)
+					secret, app := g.secret(roleSecretName(pod, role)), roleSet(role)
 					want := map[string]string{"cybermonklabs": leaseNamed(app, "cybermonklabs", "write"), "sjawhar": leaseNamed(app, "sjawhar", "write")}
 					if got := hostsTokens(t, secret, dirs...); !maps.Equal(got, want) {
 						t.Errorf("%s: the tick left %s's directories holding %v, want %v: a live pod's tokens are refreshed whichever directory a bundle built now routes its repository to",

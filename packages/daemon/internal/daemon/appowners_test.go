@@ -169,6 +169,11 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 							runtimeName, role, got, want, role)
 					}
 				}
+				// A role with no token set holds no bundle at all (appauth.SetFor), so no
+				// container of it holds a directory and it is told no owner.
+				if got := owners("deployer"); got != nil {
+					t.Errorf("under %s, appOwners(deployer) = %q, want none: the role has no token set", runtimeName, got)
+				}
 			}
 		})
 	}

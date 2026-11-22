@@ -573,12 +573,15 @@ func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
 // podTokenSets are the sets a pod of kind holds a bundle of, one per role (appauth.SetFor): every
 // workflow role's for an issue pod, and the controller's alone for the project controller's. It
 // is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
-// appauth.LeftOut).
+// appauth.LeftOut). A role SetFor keeps no set for holds no bundle, so it adds no set: its bundle
+// fails with SetFor's refusal, and with it every launch of a pod of its kind (gitHubBundles).
 func podTokenSets(kind podKind) []appauth.TokenSet {
 	roles := kind.roles()
 	sets := make([]appauth.TokenSet, 0, len(roles))
 	for _, role := range roles {
-		sets = append(sets, appauth.SetFor(role))
+		if set, err := appauth.SetFor(role); err == nil {
+			sets = append(sets, set)
+		}
 	}
 	return sets
 }

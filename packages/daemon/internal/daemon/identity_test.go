@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -71,5 +72,49 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	}
 	if _, err := s.SpawnSpec(context.Background(), c); err == nil || !strings.Contains(err.Error(), "github_app_not_installed") {
 		t.Fatalf("SpawnSpec with no identity = %v, want the lease failure", err)
+	}
+}
+
+// askedTokens is roleTokens that counts the write leases it is asked for.
+type askedTokens struct {
+	roleTokens
+	asked int
+}
+
+func (t *askedTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	t.asked++
+	return t.roleTokens.Token(ctx, set, owner)
+}
+
+// A claim on a role that has no token set fails its start with appauth's refusal, which names the
+// role, and nothing is minted for it: its launch is told no owner its App reaches (plan.appOwners),
+// since its container holds no bundle, and its git identity (workflowRuntime.identity) is minted
+// with the role's set, which SetFor answers that role none of. The start fails rather than the
+// daemon.
+func TestAClaimWhoseRoleHasNoSetFailsItsStart(t *testing.T) {
+	stateDir := t.TempDir()
+	role := claim.Role("deployer")
+	token := claim.Token("legion-s1-s1-1-" + string(role))
+	c := supervise.Claim{Token: token, Issue: "S1-1", Tree: "S1-1", Role: role}
+	if err := os.MkdirAll(filepath.Join(stateDir, "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rolePromptPath(stateDir, token), []byte("deploy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tools := ghrepo.MustParse("zeta/tools")
+	p := plan{repositories: renamedRepositories([]string{tools.String()}, ghrepo.Renames{}), installed: appauth.NewInstalled(), left: appauth.NewLeftOut()}
+	p.installed.RecordProof([]string{tools.Owner()})
+	tokens := &askedTokens{}
+	w := &workflowRuntime{tokens: tokens, repositories: p.repositories}
+	s := specs{stateDir: stateDir, project: "s1", appOwners: p.appOwners("tmux"), identity: w.identity,
+		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return tools, "main", nil }}
+
+	_, err := s.SpawnSpec(context.Background(), c)
+	if !errors.Is(err, appauth.ErrNoTokenSet) || !strings.Contains(err.Error(), `"deployer"`) {
+		t.Fatalf("SpawnSpec of a claim on the role deployer = %v, want appauth.ErrNoTokenSet naming the role", err)
+	}
+	if tokens.asked != 0 {
+		t.Errorf("the start asked for %d write leases, want none: the role has no set to mint one with", tokens.asked)
 	}
 }
