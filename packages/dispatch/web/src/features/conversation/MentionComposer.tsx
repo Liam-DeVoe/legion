@@ -72,6 +72,7 @@ import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
+import { modHeld } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {
@@ -1366,10 +1367,12 @@ export function MentionComposer({
               : undefined
           }
           onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+            // `$mod+K` opens the reference picker: Ctrl+K, or Cmd+K on a Mac, where a text
+            // field keeps Control+K, which deletes to the end of the line (`modHeld`).
             if (
               owner.kind === "issue" &&
               !compact &&
-              (event.ctrlKey || event.metaKey) &&
+              modHeld(event) &&
               event.key.toLowerCase() === "k"
             ) {
               event.preventDefault();

@@ -12,12 +12,26 @@ import {
   DIALOG_SCOPE,
   type KeyBinding,
   type Keymap,
+  modHeld,
   useKeymap,
   useKeymapScope,
 } from "./keymap";
 import { NO_PERSON_KEYS } from "./keymap-catalogue";
 import { setActionKeys } from "./keymap-keys";
 import { userPreferenceStorageKey } from "./userPreference";
+
+// A handler outside the registry that takes a `$mod` key itself (the comment box's Ctrl+K) reads
+// the press as the registry reads `$mod`: Cmd alone on a Mac, where a text field keeps Control+K,
+// and Ctrl alone elsewhere.
+test("modHeld is Cmd alone on a Mac and Ctrl alone elsewhere", () => {
+  const press = (ctrlKey: boolean, metaKey: boolean) => ({ ctrlKey, metaKey });
+  expect(modHeld(press(false, true), true), "Cmd on a Mac").toBe(true);
+  expect(modHeld(press(true, false), true), "Control on a Mac").toBe(false);
+  expect(modHeld(press(true, true), true), "Control and Cmd on a Mac").toBe(false);
+  expect(modHeld(press(true, false), false), "Ctrl elsewhere").toBe(true);
+  expect(modHeld(press(false, true), false), "Meta elsewhere").toBe(false);
+  expect(modHeld(press(false, false), false), "no modifier").toBe(false);
+});
 
 interface Harness {
   advance: (ms: number) => void;

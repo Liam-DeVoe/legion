@@ -23,6 +23,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import { modKey } from "./keyboard-palette";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
@@ -165,9 +166,10 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await commentBody.focus();
     }
 
-    // D12: Ctrl+K opens a real dialog; Escape dismisses only the picker, restores focus to
-    // the composer, and leaves the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press("Control+k");
+    // D12: Ctrl+K (Cmd+K under a Mac's user agent, as the iPhone project's is: `modKey`) opens a
+    // real dialog; Escape dismisses only the picker, restores focus to the composer, and leaves
+    // the composer's own draft (and, on phone, the sheet) open.
+    await commentBody.press(`${await modKey(page)}+k`);
     const picker = page.getByRole("dialog", { name: "Reference picker" });
     await expect(picker).toBeVisible();
     await page.keyboard.press("Escape");

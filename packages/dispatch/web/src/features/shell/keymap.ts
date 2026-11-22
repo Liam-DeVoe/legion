@@ -307,6 +307,16 @@ function holdsMeta(combo: KeyCombo, isMac: boolean): boolean {
   return combo.meta || (combo.mod && isMac);
 }
 
+/** Whether a key press holds the platform's `$mod` and not the other of Ctrl and Cmd: Cmd on a
+ *  Mac, Ctrl elsewhere, as `matchesCombo` reads `$mod`. For a handler outside the registry that
+ *  takes a `$mod` key itself, so a Mac text field keeps its Control keys there too. */
+export function modHeld(
+  press: { readonly ctrlKey: boolean; readonly metaKey: boolean },
+  isMac: boolean = IS_MAC
+): boolean {
+  return isMac ? press.metaKey && !press.ctrlKey : press.ctrlKey && !press.metaKey;
+}
+
 /** Whether two combos are one key press on the platform, as `matchesCombo` reads a press: on a
  *  Mac `$mod+k` is `Meta+k` and not `Control+k`, and elsewhere the other way round. */
 export function sameCombo(a: KeyCombo, b: KeyCombo, isMac: boolean): boolean {
