@@ -134,7 +134,6 @@ var exampleServices = []config.NATSService{
 	{Kind: config.NATSDaemon, Account: daemonAccount, Issuers: []string{""}, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon", Issuers: []string{""}},
-	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Issuers: []string{""}, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -221,10 +220,11 @@ func TestAServiceTokenIsTakenFromTheIssuersItsEntryNames(t *testing.T) {
 	}
 }
 
-// An edge listener's connection is refused whatever issuer signed its token: one its entry names
-// and one it does not are both refused held_to_projects (scopeGrant), since this build holds no
-// edge listener's grant, and neither is refused as an unlisted account instead.
-func TestAnEdgeListenersConnectionIsRefusedFromEveryIssuer(t *testing.T) {
+// An edge listener's token is taken only from an issuer its entry names, as every Kubernetes
+// service's is: its token of the issuer its entry names is answered with the edge's grant
+// (natsgrant.Edge), and its token of another issuer is refused as an account no entry lists,
+// never answered with that grant.
+func TestAnEdgeListenersTokenIsTakenFromTheIssuersItsEntryNames(t *testing.T) {
 	now := time.Now()
 	services, err := config.ParseNATSServices("edge-listener/edge-a/PRIV="+edgeAccount+"=first", twoIssuers)
 	require.NoError(t, err)
@@ -233,15 +233,64 @@ func TestAnEdgeListenersConnectionIsRefusedFromEveryIssuer(t *testing.T) {
 		"edge-of-second": {account: edgeAccount, issuer: "second", issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
-	for raw := range tokens {
-		t.Run(raw, func(t *testing.T) {
-			_, err := Decide(t.Context(), deps, services, serviceRequest(raw))
-			var refused *Refusal
-			require.True(t, errors.As(err, &refused), "%v", err)
-			require.Equal(t, labelHeldToProjects, refused.Label)
-			require.Equal(t, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a", refused.Reason)
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-of-first"))
+	require.NoError(t, err)
+	want, err := natsgrant.Edge("edge-a", []string{"PRIV"})
+	require.NoError(t, err)
+	require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
+	_, err = Decide(t.Context(), deps, services, serviceRequest("edge-of-second"))
+	var refused *Refusal
+	require.True(t, errors.As(err, &refused), "%v", err)
+	require.Equal(t, labelServiceNotListed, refused.Label)
+	require.Equal(t, "service not listed: "+edgeAccount, refused.Reason)
+}
+
+// An edge listener's entry, read as BROKER_NATS_SERVICES writes it, is answered with the edge's
+// grant for its machine id and the projects the entry lists (natsgrant.Edge), named for its
+// machine id and expiring with its token, and that grant passes the guard every answer passes. The
+// grant publishes the role subjects of those projects and no other project's: an entry of two
+// projects publishes both, an entry of one the one. It is not the listener's grant, which
+// publishes every notification topic.
+func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"edge-token": {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for _, test := range []struct {
+		entry    string
+		projects []string
+	}{
+		{entry: "edge-listener/edge-a/PRIV=" + edgeAccount, projects: []string{"PRIV"}},
+		{entry: "edge-listener/edge-a/PRIV,OTHER=" + edgeAccount, projects: []string{"OTHER", "PRIV"}},
+	} {
+		t.Run(test.entry, func(t *testing.T) {
+			services, err := config.ParseNATSServices(test.entry, oneIssuer)
+			require.NoError(t, err)
+			decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
+			require.NoError(t, err)
+			want, err := natsgrant.Edge("edge-a", test.projects)
+			require.NoError(t, err)
+			require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
+			for _, project := range test.projects {
+				require.Contains(t, decision.Grant.Publish, "notifications.role."+project+".>")
+				require.Contains(t, decision.Grant.Publish, "notifications.envoy.exceptions.notifications.role."+project+".>")
+			}
+			require.NotContains(t, decision.Grant.Publish, "notifications.role.INFRA.>")
+			require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
+			require.Nil(t, guard(decision.Grant))
 		})
 	}
+}
+
+// An edge listener's entry whose projects natsgrant.Edge refuses - one config.ParseNATSServices would not
+// have read, a wildcard among them - is answered with no grant, which the guard refuses as an open
+// direction, and never with a grant built of that list.
+func TestAnEdgeEntryWhoseProjectsEdgeRefusesGetsNoGrant(t *testing.T) {
+	grant := serviceGrant(config.NATSService{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"*"}})
+	require.Equal(t, natsgrant.Permissions{}, grant)
+	refused := guard(grant)
+	require.NotNil(t, refused)
+	require.Equal(t, labelOpenDirection, refused.Label)
 }
 
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
@@ -273,7 +322,6 @@ func TestRefusals(t *testing.T) {
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
-		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
@@ -317,9 +365,6 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
-		// An edge listener's entry parses, so that the broker's API reads its projects, and this
-		// build has no grant to answer its connection with.
-		{"an edge listener, whose grant this broker does not have", deps, nil, serviceRequest("edge-token"), labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx

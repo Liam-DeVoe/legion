@@ -35,7 +35,11 @@ body: |-
   the first issuer of the list alone for an entry that names none, and refuses one of another
   issuer as it refuses an account no entry lists.
   An `edge-listener` entry of `BROKER_NATS_SERVICES` names its issuers as the other entries do,
-  and `GET /v1/project-repositories` refuses its edge listener's token from another issuer
+  after its account:
+  `edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>[=<issuer name>[,<issuer name>…]]`. The NATS
+  auth service answers its edge listener's connection with the edge listener's grant, a
+  Kubernetes account's only for its token of an issuer the entry takes, and
+  `GET /v1/project-repositories` refuses its edge listener's token from another issuer
   `403 NOT_AN_EDGE_LISTENER`.
   `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in `BROKER_K8S_OIDC_ISSUER` and separated by
   commas, the issuers whose tokens the token exchange takes. It is required with
