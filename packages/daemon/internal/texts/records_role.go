@@ -41,8 +41,9 @@ const (
 
 // GateMovedRecord is the message that the design gate of the tree opened or closed (workflow's
 // tellGateMoved): the gate (a Gate word), the step, the step's document (a dispatch:// link that
-// names the tree's root), the artifact id, the version, and what the move does to a merge the
-// gate holds (a Merge word).
+// names the issue the document is of: the tree's root, or, for a gate the root carried, the old
+// root whose document a person approves), the artifact id, the version, and what the move does to
+// a merge the gate holds (a Merge word).
 type GateMovedRecord struct {
 	RoleHead
 	Gate     string `json:"gate"`
@@ -82,28 +83,42 @@ const (
 // MemoryKillRecord is the message to a role whose process was stopped for memory (workflow's
 // MemoryKillMessage): what stopped it (a Kill word), the
 // process's executable and pid, how much it held, the pod's memory reading and its limit, each in
-// binary units.
+// binary units, and where heavy work runs (HeavyWorkRuns, MemoryKillHeavyWork): main's note said
+// so after every cause, as dispatch://INFRA-3557's W4 has it say, and R8 of
+// dispatch://INFRA-3686 keeps it as a field.
 type MemoryKillRecord struct {
 	RoleHead
-	Cause     string `json:"cause"`
-	Process   string `json:"process"`
-	PID       int    `json:"pid"`
-	Size      string `json:"size"`
-	PodMemory string `json:"pod_memory"`
-	Limit     string `json:"limit"`
+	Cause         string `json:"cause"`
+	Process       string `json:"process"`
+	PID           int    `json:"pid"`
+	Size          string `json:"size"`
+	PodMemory     string `json:"pod_memory"`
+	Limit         string `json:"limit"`
+	HeavyWorkRuns string `json:"heavy_work_runs"`
 }
 
+// MemoryKillHeavyWork is where heavy work runs, which every memory-kill message says
+// (MemoryKillRecord.HeavyWorkRuns): where the deployment's instructions say, not in the pod
+// (main's "Heavy work … runs where your deployment's instructions say, not in this pod").
+const MemoryKillHeavyWork = "where_deployment_instructions_say"
+
 // MergeForwardAskRecord is the merge-forward ask to the implementer (record.MergeForwardMessage,
-// its ask): the pull request, the head that conflicts with its base, the base, the phase the issue
-// stays in, and why the daemon acted (record.ConflictWhy's word). The base is absent where the
-// daemon has not recorded it (record.PullRequest.Base).
+// its ask): the pull request, the head that conflicts with its base, the base, that the head
+// conflicts with its base (HeadConflictsWithBase, true on every ask), the phase the issue stays
+// in, why the daemon acted (record.ConflictWhy's word), and the branch the implementer pushes
+// the merge to (PushTo, the issue branch). The base is absent where the daemon has not recorded it
+// (record.PullRequest.Base); the conflict is stated all the same. dispatch://INFRA-4374's R0 and
+// R1 have the ask say that the head conflicts with its base and that the implementer merges the
+// base forward and pushes, and R8 of dispatch://INFRA-3686 keeps both as fields.
 type MergeForwardAskRecord struct {
 	RoleHead
-	PullRequest   string      `json:"pull_request"`
-	Head          string      `json:"head"`
-	ConflictsWith string      `json:"conflicts_with,omitempty"`
-	Phase         phase.Phase `json:"phase"`
-	Why           string      `json:"why"`
+	PullRequest           string      `json:"pull_request"`
+	Head                  string      `json:"head"`
+	ConflictsWith         string      `json:"conflicts_with,omitempty"`
+	HeadConflictsWithBase bool        `json:"head_conflicts_with_base"`
+	Phase                 phase.Phase `json:"phase"`
+	Why                   string      `json:"why"`
+	PushTo                string      `json:"push_to"`
 }
 
 // MergeForwardHoldRecord is the message to the tester, the reviewer or the merger that holds the
@@ -282,11 +297,25 @@ func NewUpdateAsk(issue, round, pod string, images, settings []string, endsAt ti
 }
 
 // MergeQueueRemovalRecord is the message to the merger that its pull request left the merge
-// queue (record.MergeQueueRemoval): the pull request, the head that left the queue, and
-// whether no read of GitHub succeeded, so the daemon does not know whether GitHub merged it.
+// queue (record.MergeQueueRemoval): the pull request, the head that left the queue, whether no
+// read of GitHub succeeded, so the daemon does not know whether GitHub merged it, that the event as
+// the daemon got it names no reason for the removal (EventReason, QueueEventReasonNone), and that
+// the merger reads the pull request and its removals on GitHub (ReadOn, QueueReadOnGitHub), read
+// or unread. dispatch://INFRA-3274's R1 has the message say the last two, and R8 of
+// dispatch://INFRA-3686 keeps them as fields.
 type MergeQueueRemovalRecord struct {
 	RoleHead
 	PullRequest string `json:"pull_request"`
 	Head        string `json:"head"`
 	Unread      bool   `json:"unread,omitempty"`
+	EventReason string `json:"event_reason"`
+	ReadOn      string `json:"read_on"`
 }
+
+// What every merge-queue-removal message says of its event and of where the merger reads the
+// removal (MergeQueueRemovalRecord.EventReason and ReadOn): GitHub's event names no reason for
+// the removal, so the merger reads the pull request and its removals on GitHub.
+const (
+	QueueEventReasonNone = "none"
+	QueueReadOnGitHub    = "github"
+)

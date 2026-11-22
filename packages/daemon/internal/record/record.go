@@ -450,8 +450,10 @@ type ParkedDecision struct {
 	// answer's text and the options it chose, a reply's body, a resolution's note, a changes
 	// request's reason. They are on the row, not only on the fact, because the send-time rewrite
 	// of a start task builds the task again from what the rows named (DecisionMark). Their time
-	// is the act's own, where At is the time the daemon kept the decision. Nil for a decision
-	// that carries none, an approval, and for a row an older daemon kept.
+	// is the act's own, where At is the time the daemon kept the decision. An approval and a
+	// carried gate's opening carry no words but that time and the person (the daemon's
+	// noticeWords). Nil for a decision whose event named no time, and for a row an older daemon
+	// kept.
 	Words *ActWords
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
@@ -1549,6 +1551,25 @@ type DesignGate struct {
 	// root's architect writes its spec again: the mark belongs to the generation whose approval it
 	// records.
 	EverOpened bool
+	// DocumentIssue is the issue whose document ArtifactID is, which a person approves and by
+	// whose key Dispatch sends that document's events: Issue itself for a document its own
+	// architect registered (workflow's gateRegistered), and, for a row a hand-over carried onto a
+	// re-admitted orphan (admit's readmit), the issue whose document the carried row is bound to,
+	// which the carry knows: the old row's own DocumentOf, the old root where that row records
+	// none. "" on a row an older daemon wrote, which nothing recorded it for: such a row reads as
+	// its own issue's document (DocumentOf), as every row read before, until an artifact event of
+	// the carried document names the issue it was sent by (workflow's applyArtifact), or the
+	// migration's backfill named it (20261122040952_design_gate_document_issue.up.sql).
+	DocumentIssue string
+}
+
+// DocumentOf is the issue whose document the gate row is bound to (DocumentIssue), its own issue
+// where the row records none.
+func (g DesignGate) DocumentOf() string {
+	if g.DocumentIssue != "" {
+		return g.DocumentIssue
+	}
+	return g.Issue
 }
 
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that

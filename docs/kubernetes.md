@@ -2690,11 +2690,11 @@ Its migration `20261118092930_person_words` adds four columns, three `jsonb` col
   The resume of a root that waited on the person names that person beside the reason of the request.
 
 **The order with the release that merges a conflicting head forward.**
-This release's first two migrations, `20261118092930_person_words` and `20261118101218_update_drift_items`, come before `20261119003157_conflict_reads_and_merge_forward` of cybermonklabs/legion#4464, and its third, `20261122011615_production_check_reported_at`, comes after it.
+This release's first two migrations, `20261118092930_person_words` and `20261118101218_update_drift_items`, come before `20261119003157_conflict_reads_and_merge_forward` of cybermonklabs/legion#4464, and its third and fourth, `20261122011615_production_check_reported_at` and `20261122040952_design_gate_document_issue`, come after it.
 `Migrate` applies every migration that a database has not recorded, in version order.
-So an upgrade of a database that neither release migrated applies the first two of this release, then that one, then the third of this release.
-An upgrade of a database that release migrated finds that one recorded and applies the three of this release, although the versions of the first two are lower.
-None of the four touches what another adds: the three of this release add columns and touch no `outbox_kind_check`, and that one writes the kind check, which holds every kind this release queues.
+So an upgrade of a database that neither release migrated applies the first two of this release, then that one, then the third and the fourth of this release.
+An upgrade of a database that release migrated finds that one recorded and applies the four of this release, although the versions of the first two are lower.
+None of the five touches what another adds: the four of this release add columns, and the fourth fills its column on some rows, and they touch no `outbox_kind_check`, and that one writes the kind check, which holds every kind this release queues.
 A rollback past this release is a roll forward (below).
 A rollback past that release alone, to a daemon that sends a conflicting head back, takes the steps of [its own section](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase), which touch none of this release's columns.
 
@@ -2751,6 +2751,32 @@ update production_checks set reported_at = null;
 A check whose time is cleared costs one thing: the look that its standing wake starts gives the summary and its author with no time.
 This migration adds no key to an outbox payload.
 
+**The issue of a design gate row's document needs one statement.**
+The migration `20261122040952_design_gate_document_issue` adds one `text` column, `design_gates.document_issue`.
+It holds the issue whose document a gate row is bound to.
+A root's own registration writes the root itself.
+A hand-over that carries a gate onto a root of its own copies each row of the old root, and the copy names the old root, or the issue that the old row names.
+The architect's `catch-up` (`gates[].document`) and the `gate-moved` message (`document`) name the document of that issue, so a carried root's texts name the old root's document, which a person approves.
+The migration fills the column for a carried row where the store records the old root: the root's hand-over row of its generation says that the gate came with it, `issues.handed_over_from` still names the tree that the root left, and the old root holds a row on the same document.
+Every other row holds null, and a row that holds null names its own issue's document, as every row named before the migration.
+The store records no old root for such a carried row: the promotion that opens a root's own tree clears `issues.handed_over_from`, and the re-admission of an old root clears that root's rows.
+An artifact event of the carried document fills the column of such a row with the issue that the event is of.
+An earlier image names the column in none of its reads or writes, so it reads every gate and ignores the column.
+Its writes also do not clear the column.
+When it registers a root's own document on a row that a carried copy held, the row keeps the old root.
+After a roll forward, this release can then name the old root's document for the root's own document.
+To prevent this, run this statement with the daemon stopped, before the roll forward:
+
+```sql
+-- The old root that an earlier daemon's registration can leave on a row of the root's own document:
+-- a row whose named issue holds no row on the same document.
+update design_gates g set document_issue = null
+where not exists (select 1 from design_gates old where old.issue = g.document_issue and old.artifact_id = g.artifact_id);
+```
+
+The statement also clears a carried row whose old root no longer holds a row on that document, and that costs one thing: until an artifact event of its document fills the column again, such a row names its own issue's document, as the earlier release named every row.
+This migration adds no key to an outbox payload.
+
 **The earlier release refuses the outbox rows that this release writes.**
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
 This release adds fields to the payloads that its outbox queues:
@@ -2771,7 +2797,11 @@ This release adds fields to the payloads that its outbox queues:
 
 - A phase-finished notice of a role's own move back carries `moved_back`.
 
-- An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim a project's pause stopped and still owes a launch.
+- An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim a project's pause stopped and still owes a launch, and whether a claim that it lists left the round's pod (`update.waiting[].left_round`).
+
+- A `check_wake` row of the retry of a look nobody reported carries `retry`, and the look it starts names a retry (`woken_by: retry`).
+  A `check_wake` row with no `retry`, such as one an earlier release queued, starts a look that names the checking role's own wake (`woken_by: named`) with the row's reason in its summary block, whatever words that reason opens with.
+  So a retry that an earlier release queued is told to the checking role as its own wake, with the daemon's words of that retry as the summary.
 
 - A pr-merged notice whose close waits carries `status_not_taken_yet` and `end_child_rule`, and a children-first notice carries `end_child_rule`: the sentence on a status the daemon has not taken yet and the rules for ending a child, word for word.
 
@@ -3367,6 +3397,7 @@ The migrations recorded above this one are these.
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261122011615_production_check_reported_at, of dispatch://INFRA-3686 too, adds `production_checks.reported_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
+20261122040952_design_gate_document_issue, of dispatch://INFRA-3686 too, adds `design_gates.document_issue` and fills it on a carried row whose old root the store records, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

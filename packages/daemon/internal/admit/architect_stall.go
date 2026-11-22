@@ -111,11 +111,12 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 }
 
 // ArchitectStalledNotice is the architect-stalled controller notice of root for arm: the
-// architect's role, the arm, the root's phase, and what the record says for that arm (facts, which
-// the arm's own reading fills).
+// architect's role, the arm, the arm in the words the controller's skill quotes it by
+// (record.ArchitectStallArm.Words, the notice's reason), the root's phase, and what the record
+// says for that arm (facts, which the arm's own reading fills).
 func ArchitectStalledNotice(root record.Issue, arm record.ArchitectStallArm, facts texts.ArchitectStalledRecord) texts.ArchitectStalledRecord {
 	facts.NoticeHead = texts.NoticeHead{Kind: texts.ArchitectStalled, Issue: root.Key}
-	facts.Role, facts.Arm, facts.Phase = claim.RoleArchitect, string(arm), root.Phase
+	facts.Role, facts.Arm, facts.Reason, facts.Phase = claim.RoleArchitect, string(arm), arm.Words(), root.Phase
 	return facts
 }
 

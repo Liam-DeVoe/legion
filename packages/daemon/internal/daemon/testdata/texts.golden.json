@@ -266,6 +266,26 @@
     },
     {
       "kind": "root-resume",
+      "variant": "approved-no-gate",
+      "sample": 1,
+      "reader": "architect",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1010",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: approved\ndocument: \"dispatch://ALPHA-1010/spec\"\nversion: 5\ngate_armed: true"
+    },
+    {
+      "kind": "root-resume",
+      "variant": "approved-no-gate",
+      "sample": 2,
+      "reader": "architect",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2010",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: approved\ndocument: \"dispatch://BRAVO-2010/spec\"\nversion: 6\ngate_armed: false"
+    },
+    {
+      "kind": "root-resume",
       "variant": "ask",
       "sample": 1,
       "reader": "architect",
@@ -2267,6 +2287,40 @@
         "cap": 5,
         "counted": 5,
         "conflict_rounds": 2
+      }
+    },
+    {
+      "kind": "pr-blocked",
+      "variant": "cap-no-conflict",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "pr-blocked on ALPHA-1100",
+      "payload": {
+        "kind": "pr-blocked",
+        "issue": "ALPHA-1100",
+        "cap": 6,
+        "counted": 6,
+        "conflict_rounds": 0
+      }
+    },
+    {
+      "kind": "pr-blocked",
+      "variant": "cap-no-conflict",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "pr-blocked on BRAVO-2100",
+      "payload": {
+        "kind": "pr-blocked",
+        "issue": "BRAVO-2100",
+        "cap": 7,
+        "counted": 7,
+        "conflict_rounds": 0
       }
     },
     {
@@ -5471,7 +5525,7 @@
           "refusedReadsOmitted": 2,
           "sizes": [
             {
-              "path": "scratch/rcsg zatwcrxqu ybzoaxp fuzv ff\\nback\\slash",
+              "path": "scratch/rcsg zatwcrxqu ybzoaxp fuzv ff\\nback\\\\slash",
               "bytes": 12884901888,
               "bytesOverHour": 11811160064,
               "bytesOverDay": 2147483648
@@ -8768,6 +8822,122 @@
     },
     {
       "kind": "update-stalled",
+      "variant": "marks",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1250",
+      "summary": "update-stalled on ALPHA-1250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "ALPHA-1250",
+        "update": {
+          "round": "pod:4bea21aa-038c-210f-c02e-84d899927102",
+          "pod": "pod-8ec20b4e-2fe5-fdb9-227c-2971fb0c6771",
+          "waiting": [
+            {
+              "claim": "legion-alpha-alpha-1250-implementer",
+              "role": "implementer",
+              "state": "suspended",
+              "suspended_by": "unknown"
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-tester",
+              "role": "tester",
+              "state": "suspended",
+              "suspended_by": "operator"
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-reviewer",
+              "role": "reviewer",
+              "state": "suspended",
+              "suspended_by": "released"
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-planner",
+              "role": "planner",
+              "state": "suspended",
+              "suspended_by": "pause"
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-merger",
+              "role": "merger",
+              "state": "suspended",
+              "suspended_by": "daemon",
+              "left_round": true
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-architect",
+              "role": "architect",
+              "state": "suspended",
+              "suspended_by": "exit"
+            }
+          ]
+        },
+        "holds": "operator"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "marks",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2250",
+      "summary": "update-stalled on BRAVO-2250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "BRAVO-2250",
+        "update": {
+          "round": "pod:863e395a-8647-474d-223e-60870e5f34f0",
+          "pod": "pod-f0986195-2fdc-4b75-4a46-7201142b58e6",
+          "waiting": [
+            {
+              "claim": "legion-bravo-bravo-2250-implementer",
+              "role": "implementer",
+              "state": "suspended",
+              "suspended_by": "unknown"
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-tester",
+              "role": "tester",
+              "state": "suspended",
+              "suspended_by": "operator"
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-reviewer",
+              "role": "reviewer",
+              "state": "suspended",
+              "suspended_by": "released"
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-planner",
+              "role": "planner",
+              "state": "suspended",
+              "suspended_by": "pause"
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-merger",
+              "role": "merger",
+              "state": "suspended",
+              "suspended_by": "daemon",
+              "left_round": true
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-architect",
+              "role": "architect",
+              "state": "suspended",
+              "suspended_by": "exit"
+            }
+          ]
+        },
+        "holds": "operator"
+      }
+    },
+    {
+      "kind": "update-stalled",
       "variant": "no-pod",
       "sample": 1,
       "reader": "controller",
@@ -9527,6 +9697,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "ALPHA-1240",
+        "reason": "the architect's claim cannot be reached",
         "arm": "claim-unreachable",
         "claim_state": "failed",
         "relaunch_failing": true
@@ -9546,6 +9717,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "BRAVO-2240",
+        "reason": "the architect's claim cannot be reached",
         "arm": "claim-unreachable",
         "claim_state": "retired"
       }
@@ -9564,6 +9736,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "ALPHA-1240",
+        "reason": "the root is slow before its gate",
         "bound": "1h30m0s",
         "arm": "slow-before-gate",
         "since": "2026-11-18T04:30:00Z",
@@ -9586,6 +9759,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "BRAVO-2240",
+        "reason": "the root is slow before its gate",
         "bound": "1h30m0s",
         "arm": "slow-before-gate",
         "since": "2027-04-07T11:45:00Z",
@@ -9608,6 +9782,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "ALPHA-1240",
+        "reason": "the root is slow before its gate",
         "bound": "1h30m0s",
         "entry": 7,
         "arm": "slow-before-gate",
@@ -9630,6 +9805,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "BRAVO-2240",
+        "reason": "the root is slow before its gate",
         "bound": "1h30m0s",
         "entry": 8,
         "arm": "slow-before-gate",
@@ -9652,6 +9828,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "ALPHA-1240",
+        "reason": "the architect took nothing",
         "bound": "10m0s",
         "entry": 4,
         "arm": "took-nothing",
@@ -9674,6 +9851,7 @@
         "role": "architect",
         "phase": "admitted",
         "issue": "BRAVO-2240",
+        "reason": "the architect took nothing",
         "bound": "10m0s",
         "entry": 5,
         "arm": "took-nothing",
@@ -10448,7 +10626,8 @@
         "pid": 4001,
         "size": "4.00 GiB",
         "pod_memory": "7.00 GiB",
-        "limit": "8.00 GiB"
+        "limit": "8.00 GiB",
+        "heavy_work_runs": "where_deployment_instructions_say"
       }
     },
     {
@@ -10468,7 +10647,8 @@
         "pid": 4002,
         "size": "5.00 GiB",
         "pod_memory": "8.00 GiB",
-        "limit": "8.00 GiB"
+        "limit": "8.00 GiB",
+        "heavy_work_runs": "where_deployment_instructions_say"
       }
     },
     {
@@ -10488,7 +10668,8 @@
         "pid": 4001,
         "size": "4.00 GiB",
         "pod_memory": "8.00 GiB",
-        "limit": "8.00 GiB"
+        "limit": "8.00 GiB",
+        "heavy_work_runs": "where_deployment_instructions_say"
       }
     },
     {
@@ -10508,7 +10689,8 @@
         "pid": 4002,
         "size": "5.00 GiB",
         "pod_memory": "9.00 GiB",
-        "limit": "8.00 GiB"
+        "limit": "8.00 GiB",
+        "heavy_work_runs": "where_deployment_instructions_say"
       }
     },
     {
@@ -10692,7 +10874,9 @@
         "kind": "merge-queue-removal",
         "issue": "ALPHA-1260",
         "pull_request": "alpha-works/alpha-tower#1301",
-        "head": "57b098bda74170bdcf40740f6be8462a1b7f69a5"
+        "head": "57b098bda74170bdcf40740f6be8462a1b7f69a5",
+        "event_reason": "none",
+        "read_on": "github"
       }
     },
     {
@@ -10708,7 +10892,9 @@
         "kind": "merge-queue-removal",
         "issue": "BRAVO-2260",
         "pull_request": "bravo-labs/bravo-yard#1302",
-        "head": "99962098db3d7a1b0fc7135a7b48db3d23c705bd"
+        "head": "99962098db3d7a1b0fc7135a7b48db3d23c705bd",
+        "event_reason": "none",
+        "read_on": "github"
       }
     },
     {
@@ -10725,7 +10911,9 @@
         "issue": "ALPHA-1260",
         "pull_request": "alpha-works/alpha-tower#1301",
         "head": "80f7af039639f6de35a39d3f87a6a430d6a013c4",
-        "unread": true
+        "unread": true,
+        "event_reason": "none",
+        "read_on": "github"
       }
     },
     {
@@ -10742,7 +10930,9 @@
         "issue": "BRAVO-2260",
         "pull_request": "bravo-labs/bravo-yard#1302",
         "head": "4d0b3ab945619d47d433aaeb82f70cdd1eb4d069",
-        "unread": true
+        "unread": true,
+        "event_reason": "none",
+        "read_on": "github"
       }
     },
     {
@@ -10760,8 +10950,10 @@
         "pull_request": "alpha-works/alpha-tower#1401",
         "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
         "conflicts_with": "main-knboh",
+        "head_conflicts_with_base": true,
         "phase": "testing",
-        "why": "required-check-not-green"
+        "why": "required-check-not-green",
+        "push_to": "legion/ALPHA-1260"
       }
     },
     {
@@ -10779,8 +10971,10 @@
         "pull_request": "bravo-labs/bravo-yard#1402",
         "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
         "conflicts_with": "main-esxue",
+        "head_conflicts_with_base": true,
         "phase": "reviewing",
-        "why": "base-requires-current"
+        "why": "base-requires-current",
+        "push_to": "legion/BRAVO-2260"
       }
     },
     {
@@ -10797,8 +10991,10 @@
         "issue": "ALPHA-1260",
         "pull_request": "alpha-works/alpha-tower#1451",
         "head": "d46dd3ec615afa00ec455d4d887aaf98ea7d41c0",
+        "head_conflicts_with_base": true,
         "phase": "testing",
-        "why": "base-rules-unread"
+        "why": "base-rules-unread",
+        "push_to": "legion/ALPHA-1260"
       }
     },
     {
@@ -10815,8 +11011,10 @@
         "issue": "BRAVO-2260",
         "pull_request": "bravo-labs/bravo-yard#1452",
         "head": "f7ab29ca4d43ee8dda0d9f7a646cf308c321345d",
+        "head_conflicts_with_base": true,
         "phase": "reviewing",
-        "why": "base-rules-unread"
+        "why": "base-rules-unread",
+        "push_to": "legion/BRAVO-2260"
       }
     },
     {

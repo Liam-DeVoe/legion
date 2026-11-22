@@ -543,10 +543,12 @@ type Notice struct {
 	// Hold is what held the issue (a held notice's variant word, which its urgency rule reads),
 	// and what holds the held issue a checks-red notice is of, in the same words.
 	Hold string `json:"hold,omitempty"`
-	// The review round cap (pr-blocked).
-	Cap            int `json:"cap,omitempty"`
-	Counted        int `json:"counted,omitempty"`
-	ConflictRounds int `json:"conflict_rounds,omitempty"`
+	// The review round cap (pr-blocked). ConflictRounds is a pointer so a pr-blocked notice keeps
+	// its 0 on the wire: its record names the conflict rounds not counted on every cap
+	// (texts.PRBlockedRecord), and every other notice carries none.
+	Cap            int  `json:"cap,omitempty"`
+	Counted        int  `json:"counted,omitempty"`
+	ConflictRounds *int `json:"conflict_rounds,omitempty"`
 	// The pull request as owner/name#n, and the issues a merged pull request's close waits for.
 	PullRequest string   `json:"pull_request,omitempty"`
 	WaitingFor  []string `json:"waiting_for,omitempty"`
@@ -1099,8 +1101,10 @@ const (
 )
 
 // Words is the arm in words, as an operator's summary of the state prints it (cmd/legion's
-// entrySummary) and as the reason of an architect-stalled notice an older daemon queued began.
-// An arm nothing here names reads as its own value, which no caller writes.
+// entrySummary) and as the reason of an architect-stalled notice gives it (admit's
+// ArchitectStalledNotice), word for word as the controller's skill quotes it; the reason of a
+// notice an older daemon queued began with it and went on. An arm nothing here names reads as its
+// own value, which no caller writes.
 func (a ArchitectStallArm) Words() string {
 	switch a {
 	case ArchitectTookNothing:
@@ -1674,12 +1678,17 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 // look starts nothing; OpenedAt is the check instance it was named for
 // (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
 // its looks from one again — zero names no instance and is not fenced. Reason is what the wake
-// is, for the look's wake and the log: the agent's own wake, or the retry of a look nobody
-// reported.
+// is, for the look's wake and the log: the checking agent's summary on its pending report, or the
+// daemon's words of the retry of a look nobody reported. Retry marks the latter (workflow's
+// endLook): the look it starts names it as a retry (woken_by: retry). A row with no mark is the
+// agent's own wake, whose reason is the agent's summary whatever words it opens with, and so is a
+// row an earlier release queued, which marked none: a retry it queued reads as the agent's wake,
+// its reason, the daemon's words of that retry, carried as the summary.
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`
 	Reason   string    `json:"reason"`
+	Retry    bool      `json:"retry,omitempty"`
 }
 
 func (CheckWakeDue) OutboxKind() OutboxKind { return OutboxKindCheckWake }
@@ -1854,13 +1863,18 @@ func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRe
 
 // Record is the message for issue's merger, where repo is the repository the record holds the
 // pull request under (PullRequest.Repo): the kind's record, with the pull request as
-// owner/name#n, the head that left the queue and whether no read of GitHub succeeded.
+// owner/name#n, the head that left the queue, whether no read of GitHub succeeded, and, read or
+// unread, that GitHub's event names no reason for the removal and that the merger reads the pull
+// request and its removals on GitHub (texts.QueueEventReasonNone, texts.QueueReadOnGitHub), which
+// dispatch://INFRA-3274's R1 has the message say.
 func (p MergeQueueRemoval) Record(issue, repo string) texts.MergeQueueRemovalRecord {
 	return texts.MergeQueueRemovalRecord{
 		RoleHead:    texts.RoleHead{Kind: texts.MergeQueueRemoval, Issue: issue},
 		PullRequest: texts.PullRequestRef(repo, p.Number),
 		Head:        p.Head,
 		Unread:      p.Unread,
+		EventReason: texts.QueueEventReasonNone,
+		ReadOn:      texts.QueueReadOnGitHub,
 	}
 }
 
@@ -1991,17 +2005,20 @@ func (p MergeForwardMessage) Kind() texts.Kind {
 // holds the pull request under (PullRequest.Repo): the record of the step's kind, with the pull
 // request as owner/name#n, the head that conflicted, the base where the record holds one, and the
 // phase the issue stays in. The ask and the hold name why the daemon acted; the landed and the
-// review name the head the merge left. What each reader does with its message - the merge in the
-// issue workspace and the push with no handoff and no completion, the stop of every write and of
-// a completion at the old head, the read of what the merge changed, and the approval of the new
-// head with the roles it tells - is its prompt's (internal/prompts/go/worker-common.md and the
-// prompt of each role).
+// review name the head the merge left. The ask also says that the head conflicts with its base,
+// whether or not the record holds the base, and names the issue branch the implementer pushes the
+// merge to (claim.IssueBranch), which dispatch://INFRA-4374's R0 and R1 have it say. What each
+// reader does with its message - the merge in the issue workspace and the push with no handoff
+// and no completion, the stop of every write and of a completion at the old head, the read of what
+// the merge changed, and the approval of the new head with the roles it tells - is its prompt's
+// (internal/prompts/go/worker-common.md and the prompt of each role).
 func (p MergeForwardMessage) Record(issue, repo string) any {
 	head := texts.RoleHead{Kind: p.Kind(), Issue: issue}
 	pull := texts.PullRequestRef(repo, p.PullRequest)
 	switch p.Step {
 	case MergeForwardAsk:
-		return texts.MergeForwardAskRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why)}
+		return texts.MergeForwardAskRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, HeadConflictsWithBase: true,
+			Phase: p.Phase, Why: string(p.Why), PushTo: claim.IssueBranch(issue)}
 	case MergeForwardHold:
 		return texts.MergeForwardHoldRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why)}
 	case MergeForwardLanded:

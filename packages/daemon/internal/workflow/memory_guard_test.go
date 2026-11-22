@@ -126,10 +126,11 @@ func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *te
 }
 
 // memoryKill is the memory-kill message of LEGION-209 for memoryGuardKillReport's sizes, with
-// cause, the process and the pod's memory reading the cause names.
+// cause, the process and the pod's memory reading the cause names, and where heavy work runs,
+// which every cause says.
 func memoryKill(cause, process, pod string) texts.MemoryKillRecord {
 	return texts.MemoryKillRecord{RoleHead: texts.RoleHead{Kind: texts.MemoryKill, Issue: "LEGION-209"}, Cause: cause, Process: process,
-		PID: 4242, Size: "812.40 MiB", PodMemory: pod, Limit: "4.00 GiB"}
+		PID: 4242, Size: "812.40 MiB", PodMemory: pod, Limit: "4.00 GiB", HeavyWorkRuns: texts.MemoryKillHeavyWork}
 }
 
 // Sizes are written in the largest binary unit they reach, with two decimals, and in whole bytes

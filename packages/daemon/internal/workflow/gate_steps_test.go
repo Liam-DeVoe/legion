@@ -444,8 +444,9 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 // A hand-over carries a copy of every step of its old root's gate, and each copy holds the new
 // root's work until it is open. The carry itself is admission's (internal/admit's test of this
 // name drives it); here the new root holds the two copies the carry left, its architect's
-// catch-up says the gate was carried and names both steps, and the approval of the old root's
-// Verification document opens the copy that was closed, which starts the new root's first phase.
+// catch-up says the gate was carried and names both steps, each on the old root's document the
+// copy is bound to, and the approval of the old root's Verification document opens the copy that
+// was closed, which starts the new root's first phase.
 func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
@@ -473,8 +474,8 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 		t.Fatalf("the catch-up says handed over %t, carried %t; want both of a root whose gate came with it", caught.HandedOver, caught.Carried)
 	}
 	want := []record.CatchUpGate{
-		{Step: record.DesignStepCriteria, Gated: true, Document: "dispatch://LEGION-209/artifact/verification-md", Artifact: criteriaDoc, Version: 2, Approved: 1},
-		{Step: record.DesignStepSpec, Gated: true, Document: "dispatch://LEGION-209/spec", Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
+		{Step: record.DesignStepCriteria, Gated: true, Document: "dispatch://" + gatedRoot + "/artifact/verification-md", Artifact: criteriaDoc, Version: 2, Approved: 1},
+		{Step: record.DesignStepSpec, Gated: true, Document: "dispatch://" + gatedRoot + "/spec", Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
 	}
 	if fmt.Sprint(caught.Gates) != fmt.Sprint(want) {
 		t.Fatalf("the catch-up states %#v, want one entry for each carried step: %#v", caught.Gates, want)

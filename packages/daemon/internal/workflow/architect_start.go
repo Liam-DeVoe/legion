@@ -434,8 +434,10 @@ func gateActs(steps []record.DesignStep) []string {
 }
 
 // gateSteps is where a root's design gate stands, one step per entry, in the deployment's order:
-// the step, its document as a dispatch:// link, the version registered (0 where it is not), and
-// its state: unregistered, approved, changes requested or unanswered. It reads
+// the step, its document as a dispatch:// link (of the issue the step's row records it of,
+// record.DesignGate.DocumentIssue, the old root's for a row a hand-over carried, and root's own
+// where the row records none or the step has no row), the version registered (0 where it is not),
+// and its state: unregistered, approved, changes requested or unanswered. It reads
 // record.RequiredSteps rather than the gated list, so a deployment that gates no step still
 // reports the one registration that opens its gate, whose state is registered, since under that
 // deployment no person approves anything. A changes request below the registered version is an
@@ -445,7 +447,11 @@ func gateSteps(root string, gate record.TreeGate) []texts.ArchitectGate {
 	gates := make([]texts.ArchitectGate, 0, len(steps))
 	for _, step := range steps {
 		row, registered := gate.Rows[step]
-		at := texts.ArchitectGate{Step: string(step.OrSpec()), Document: stepRef(root, step), Version: row.LatestVersion}
+		owner := root
+		if registered && row.DocumentIssue != "" {
+			owner = row.DocumentIssue
+		}
+		at := texts.ArchitectGate{Step: string(step.OrSpec()), Document: stepRef(owner, step), Version: row.LatestVersion}
 		switch {
 		case !registered:
 			at.State = texts.GateUnregistered

@@ -187,10 +187,13 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 }
 
 // SuspendedByPause is what an update-stalled notice's suspended_by says of a claim that a
-// project's pause stopped and still owes a launch (the daemon's podHolds.owes): the round asks it
-// once its agent is ready and waits for it, where it passes over a claim the daemon's idle release
-// suspended. The claim's own source is released for both (supervise.SuspendedByReleased), so this
-// word is the notice's, read from the pause's hold of the pod.
+// project's pause stopped and still owes a launch (the daemon's podHolds.owedLaunch), whether or
+// not the claim answered the round: the pause, and no idle release of the claim's pod, suspended
+// it. Before the round's bound the round asks such a claim once its agent is ready and waits for
+// it while it has not answered (podHolds.owes); the notice is told only past the bound, where no
+// answer holds the round, so the word names who suspended the claim and nothing the round waits
+// for. The claim's own source is released (supervise.SuspendedByReleased), as an idle release's
+// is, so this word is the notice's, read from the pause's hold of the pod.
 const SuspendedByPause = "pause"
 
 // UpdateWaiting is one claim an update-stalled notice lists (record.UpdateWaiting is this type):
@@ -200,12 +203,16 @@ const SuspendedByPause = "pause"
 // unknown for a suspension of the daemon's own), or SuspendedByPause for a claim a project's pause
 // stopped and still owes a launch. A claim not suspended yet names operator too where its machine
 // holds the operator's suspension for its agent's turn or launch (supervise.Claim.SuspensionHeld).
+// LeftRound says that the claim left the round's pod (supervise.Claim.LeftPodRound): its process
+// came up in another pod while the round was open, so the round asks it nothing, and an operator's
+// suspension of it does not hold the round's pod.
 type UpdateWaiting struct {
 	Claim       string     `json:"claim"`
 	Role        claim.Role `json:"role,omitempty"`
 	State       string     `json:"state"`
 	Answered    bool       `json:"answered,omitempty"`
 	SuspendedBy string     `json:"suspended_by,omitempty"`
+	LeftRound   bool       `json:"left_round,omitempty"`
 }
 
 // ProviderErrorsRecord is the notice that a role ended turns in a row in a provider error
@@ -257,10 +264,17 @@ type TreeMember struct {
 // from whether or not a pause came first) and the pause it is of (PauseID, none for a
 // confirmation). A slow-before-gate arm that counted from a confirmation names the entry
 // confirmed (Entry).
+//
+// Reason is the arm in the words skills/legion-controller/references/wakes.md quotes it by ("the
+// architect took nothing", "the architect's claim cannot be reached", "the root is slow before its
+// gate", record.ArchitectStallArm.Words), word for word as main's reason began: that skill reads
+// the notice's reason as beginning with its arm, and R8 of dispatch://INFRA-3686 keeps a sentence
+// a skill names by its words.
 type ArchitectStalledRecord struct {
 	NoticeHead
 	Role             claim.Role  `json:"role,omitempty"`
 	Arm              string      `json:"arm"`
+	Reason           string      `json:"reason,omitempty"`
 	Phase            phase.Phase `json:"phase,omitempty"`
 	Entry            int64       `json:"entry,omitempty"`
 	QueuedAt         time.Time   `json:"queued_at,omitzero"`

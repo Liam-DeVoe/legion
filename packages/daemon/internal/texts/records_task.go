@@ -108,11 +108,14 @@ type PhaseResumeRecord struct {
 // The gate of the step in question now, wherever that step has a gate, whatever the act: its
 // document as a dispatch:// link (Document), its latest version, whether it is open, and whether
 // the design gate is armed. A step with no gate, as a question asked before any step of the gate
-// was registered has, names none of these: GateOpen and GateArmed are nil, and the task states no
-// gate state, as main's resume wrote no gate sentence for it. A document an approval, a changes
-// request or a version answered the wait on is that document too. LaterChangesVersion is a changes
-// request made after the wait began that did not answer it, made on that document, whose reason
-// goes in the later_reason block with its author and time.
+// was registered has, names no gate state: GateOpen is nil, as main's resume wrote no gate
+// sentence for it, and so is GateArmed, but on an approval (ActApproved). An approval of such a
+// step names GateArmed all the same, since whether the design gate is armed is what says whether
+// a person approved (main's "Your %s %s on %s was approved." under an armed gate, and "The design
+// gate on %s is off, so no approval of your %s %s is asked for." under one that is not). A
+// document an approval, a changes request or a version answered the wait on is that document too.
+// LaterChangesVersion is a changes request made after the wait began that did not answer it, made
+// on that document, whose reason goes in the later_reason block with its author and time.
 //
 // What is still with the person: the asks (dispatch:// links), and ApprovalRequest, the version of
 // the document whose approval request is with the person. What waits on the architect: the asks

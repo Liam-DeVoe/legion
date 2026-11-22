@@ -37,17 +37,32 @@ body: |-
   to whole days. The look that a pending report's wake starts names when the daemon recorded that
   report on the block of its summary (`at`), which the check keeps (`production_checks.reported_at`,
   migration `20261122011615_production_check_reported_at`); the look of a check recorded before it
-  names no time. An update-stalled notice names who suspended each suspended claim it lists
-  (`suspended_by: operator` for the claims the operator must resume, an operator's suspension held
-  for a claim's turn among them, and `suspended_by: pause` for a claim a project's pause stopped
-  and still owes a launch, apart from an idle release's `released`), a phase-finished notice of a
-  role's own move back says so whether or not the role gave words (`moved_back: true`), a let-go
-  notice says of each child whether Dispatch's listing still holds it (`listed`), an unslotted
-  notice names why an awaiting root cannot resume by a word (`unresumable: label-removed`,
-  `left-workflow` or `claimed`) with the holder of its Dispatch claim (`claimed_by`), an
-  architect-stalled notice that counted from a confirmation of its entry names that entry
-  (`entry`), and a root's resume names its gate step's document whatever the act (`document`) and
-  names no gate state for a step with no gate. A root's start task of a gate that stands part way
+  names no time. The wake of the retry of a look nobody reported is marked on its `check_wake` row
+  (`retry`), and only that mark makes the look it starts a retry (`woken_by: retry`); any other
+  wake is the checking role's own, whose summary is its words whatever they open with. An
+  update-stalled notice names who suspended each suspended claim it lists (`suspended_by:
+  operator` for the operator's suspension, one held for a claim's turn among them, and
+  `suspended_by: pause` for a claim a project's pause stopped and still owes a launch, answered or
+  not, apart from an idle release's `released`) and each claim that left the round's pod
+  (`left_round: true`), whose suspension holds no pod; a phase-finished notice of a role's own move
+  back says so whether or not the role gave words (`moved_back: true`), a let-go notice says of
+  each child whether Dispatch's listing still holds it (`listed`), an unslotted notice names why an
+  awaiting root cannot resume by a word (`unresumable: label-removed`, `left-workflow` or
+  `claimed`) with the holder of its Dispatch claim (`claimed_by`), an architect-stalled notice
+  names its arm in the words the controller's skill quotes (`reason`) and, where it counted from a
+  confirmation of its entry, that entry (`entry`), a pr-blocked notice names its conflict rounds
+  not counted, 0 included (`conflict_rounds`), a merge-queue-removal message says that the event
+  names no reason and that the merger reads GitHub (`event_reason: none`, `read_on: github`), a
+  merge-forward ask says that the head conflicts with its base and where to push
+  (`head_conflicts_with_base: true`, `push_to`), a memory-kill message says where heavy work runs
+  (`heavy_work_runs`), a volume-near-full notice writes each backslash of a name as `\\` as well as
+  each line break, so two names stay two values, and a root's resume names its gate step's
+  document whatever the act (`document`), names no gate state for a step with no gate, and names
+  whether the design gate is armed on an approval of such a step (`gate_armed`). A gate row records
+  the issue whose document it is bound to (`design_gates.document_issue`, migration
+  `20261122040952_design_gate_document_issue`), so the catch-up and the gate-moved message of a
+  root that carried its old root's gate name the old root's document, and a parked decision's
+  notice names when the person made it (`at`). A root's start task of a gate that stands part way
   takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`). A woken role's task of
   a message to its role topic says that a kept copy whose hour ended before the session came back
   does not reach it (`expired_does_not_reach: true`), and of a message to its session that a

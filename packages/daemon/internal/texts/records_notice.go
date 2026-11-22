@@ -169,12 +169,14 @@ type HeldRecord struct {
 }
 
 // PRBlockedRecord is the notice that an issue reached the review round cap (workflow's
-// recordRound): the cap, the rounds counted and the conflict rounds not counted.
+// recordRound): the cap, the rounds counted and the conflict rounds not counted, 0 included, since
+// dispatch://INFRA-1442's R5 has the notice name how many conflict rounds were not counted, as
+// main's cap message did on every cap ("%d conflict rounds not counted").
 type PRBlockedRecord struct {
 	NoticeHead
 	Cap            int `json:"cap"`
 	Counted        int `json:"counted"`
-	ConflictRounds int `json:"conflict_rounds,omitempty"`
+	ConflictRounds int `json:"conflict_rounds"`
 }
 
 // PRMergedRecord is the notice that an issue's pull request merged (workflow's merged and

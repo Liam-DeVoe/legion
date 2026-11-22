@@ -231,7 +231,8 @@ func architectWakeMarks(t *testing.T, pool *pgxpool.Pool, root string, generatio
 }
 
 // assertArchitectWakes reads root's wakes against the arms it must raise, in the order the pass
-// raises them, each wake naming root, its architect and the arm that raised it, and no reason.
+// raises them, each wake naming root, its architect and the arm that raised it, and as its reason
+// that arm in the words the controller's skill quotes it by (record.ArchitectStallArm.Words).
 func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []record.ArchitectStallArm, why string) {
 	t.Helper()
 	wakes := architectWakes(t, pool, root)
@@ -239,8 +240,8 @@ func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []
 		t.Fatalf("the architect wakes of %s = %+v, want one for each of %v: %s", root, wakes, arms, why)
 	}
 	for i, arm := range arms {
-		if wakes[i].Arm != string(arm) || wakes[i].Issue != root || wakes[i].Role != claim.RoleArchitect || wakes[i].Reason != "" {
-			t.Errorf("the wake %d of %s = %+v, want the %s arm of the architect of %s, with no reason: %s", i, root, wakes[i], arm, root, why)
+		if wakes[i].Arm != string(arm) || wakes[i].Issue != root || wakes[i].Role != claim.RoleArchitect || wakes[i].Reason != arm.Words() {
+			t.Errorf("the wake %d of %s = %+v, want the %s arm of the architect of %s, with the arm's words %q as its reason: %s", i, root, wakes[i], arm, root, arm.Words(), why)
 		}
 	}
 }

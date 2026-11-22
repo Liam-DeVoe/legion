@@ -118,7 +118,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
-	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
+	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version, DocumentIssue: fact.Issue}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
 	if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion < version {
@@ -583,7 +583,8 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	}
 	e.logOnCommit(ctx, "workflow: a gate above the version Dispatch holds is reset to it", "issue", issue.Key,
 		"artifact", gate.ArtifactID, "step", gate.Step, "gate_version", gate.LatestVersion, "dispatch_version", fact.Read.Version)
-	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version}
+	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version,
+		DocumentIssue: gate.DocumentIssue}
 	ungated := !e.gatesStep(gate.Step)
 	if ungated {
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
@@ -927,6 +928,12 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err != nil {
 		return err
 	}
+	// A carried row an older daemon wrote records no issue of its document (record.DesignGate's
+	// DocumentIssue). The event is of that issue, by whose key Dispatch sends it, so the row takes
+	// it here, and the gate-moved message this write may send names that issue's document.
+	if carried && updated.DocumentIssue == "" {
+		updated.DocumentIssue = fact.Key
+	}
 	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
 	}
@@ -1002,7 +1009,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
 func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
-	document string, version int, open bool) error {
+	owner, document string, version int, open bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -1031,7 +1038,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	moved := GateMovedMessage(root.Tree, step, document, version, open)
+	moved := gateMovedOn(root.Tree, owner, step, document, version, open)
 	for _, to := range told {
 		if err := e.roleMessage(ctx, tx, to.issue, to.token, moved, texts.UrgencyOf(texts.GateMoved, to.role, texts.Variant{})); err != nil {
 			return err
@@ -1042,19 +1049,28 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	return nil
 }
 
-// GateMovedMessage is the gate-moved message of tree's design gate: whether it opened or closed
-// (a texts.Gate word), the step and its own document's reference with the artifact id, never "spec
-// version" (under more than one gated step the version the event carries is that step's
-// document's, and a message naming the spec would send a reader to the wrong one, INFRA-1272),
-// the version, and what the move does to a merge the gate holds: released at the opening, held
-// while it is closed.
+// GateMovedMessage is the gate-moved message of tree's design gate whose step's document is the
+// tree's root's own (gateMovedOn).
 func GateMovedMessage(tree string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
+	return gateMovedOn(tree, tree, step, artifact, version, open)
+}
+
+// gateMovedOn is the gate-moved message of tree's design gate, whose step's document is owner's:
+// whether the gate opened or closed (a texts.Gate word), the step and the reference of the
+// document of owner it reviews, with the artifact id, never "spec version" (under more than one
+// gated step the version the event carries is that step's document's, and a message naming the
+// spec would send a reader to the wrong one, INFRA-1272), the version, and what the move does to a
+// merge the gate holds: released at the opening, held while it is closed. owner is tree itself,
+// or, for a gate the tree's root carried from a closed tree, the old root whose document the copy
+// is bound to and a person approves (putGateTold, record.DesignGate.DocumentOf), the document the
+// carried-gate-opened notice of the same approval names.
+func gateMovedOn(tree, owner string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
 	gate, merge := texts.GateClosed, texts.MergeHeld
 	if open {
 		gate, merge = texts.GateOpened, texts.MergeReleased
 	}
 	return texts.GateMovedRecord{RoleHead: texts.RoleHead{Kind: texts.GateMoved, Issue: tree}, Gate: gate, Step: string(step.OrSpec()),
-		Document: stepRef(tree, step), Artifact: artifact, Version: version, Merge: merge}
+		Document: stepRef(owner, step), Artifact: artifact, Version: version, Merge: merge}
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
@@ -1077,7 +1093,8 @@ func GateMovedMessage(tree string, step record.DesignStep, artifact string, vers
 // that record is no part of whether a gate is open.
 //
 // version and the row's own document are what the message names, so a reader is sent to the
-// document that moved rather than to the spec.
+// document that moved rather than to the spec: the document of the issue the row records it of
+// (record.DesignGate.DocumentOf), the old root's for a row a hand-over carried.
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
@@ -1093,7 +1110,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.DocumentOf(), gate.ArtifactID, version, stands)
 }
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue

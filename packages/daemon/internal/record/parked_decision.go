@@ -100,8 +100,10 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 // The kept row carries the person's words of the decision (ParkedDecision.Words), since a start
 // task names them and its send-time rewrite reads them back from the row. The caller gives them:
 // the words the decision's event carried, or a changes request's reason, by the person who
-// requested the changes (the daemon's noticeWords); a carried gate's reason is the daemon's own
-// sentence, never a person's, and is given as none.
+// requested the changes, and for an approval or a carried gate's opening the person and the time
+// of the act alone (the daemon's noticeWords), so the notice names when the person made the
+// decision; a carried gate's reason is the daemon's own sentence, never a person's, and is given as
+// none.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.

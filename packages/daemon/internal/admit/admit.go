@@ -1529,6 +1529,9 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 				return fmt.Errorf("read the gates of re-admitted orphan %s: %w", stored.Key, err)
 			}
 			for _, gate := range gates {
+				// The copy stays bound to the old row's document, which is the old row's own
+				// document issue, or the old root's where that row records none.
+				gate.DocumentIssue = gate.DocumentOf()
 				gate.Issue = stored.Key
 				if err := a.store.PutGate(ctx, tx, gate); err != nil {
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)

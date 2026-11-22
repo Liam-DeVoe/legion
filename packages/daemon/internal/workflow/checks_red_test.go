@@ -440,7 +440,7 @@ func TestAConflictOnAPullRequestWithNoRecordedBaseAsksTheMergeForward(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if message.Base != "" || strings.Contains(string(published), "conflicts_with") || !strings.Contains(string(published), `"head":"`+conflictHead+`"`) {
+		if message.Base != "" || strings.Contains(string(published), `"conflicts_with":`) || !strings.Contains(string(published), `"head":"`+conflictHead+`"`) {
 			t.Fatalf("the merge-forward %s to the %s is %s, want the head and no base", message.Step, message.Role, published)
 		}
 	}

@@ -146,6 +146,10 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	// pr-closed-unmerged, pull-request-missing.
 	b.notice(r, "cap", arch, workflow.PRBlockedNotice(issue.Key, 3+r.n, 3+r.n, r.n),
 		goldenWant("issue", issue.Key, "cap", 3+r.n, "counted", 3+r.n, "conflict_rounds", r.n))
+	// A cap reached with no conflict round names its conflict rounds all the same, 0
+	// (dispatch://INFRA-1442's R5).
+	b.notice(r, "cap-no-conflict", arch, workflow.PRBlockedNotice(issue.Key, 5+r.n, 5+r.n, 0),
+		goldenWant("issue", issue.Key, "cap", 5+r.n, "counted", 5+r.n, "conflict_rounds", 0))
 	b.notice(r, "outside-merging", arch, workflow.PRMergedNotice(issue.Key, pr, phase.Reviewing, nil),
 		goldenWant("issue", issue.Key, "pull_request", ref, "phase", phase.Reviewing))
 	waiting := []string{r.key(102), r.key(103), r.key(104)}[:1+r.n]
@@ -359,8 +363,9 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "detail", detail))
 
 	// volume-near-full: a sweep that left the volume above its low mark, with a name a role
-	// chose that holds a line break, a size read in part, a walk that was cut and lists the
-	// launcher's bound cut; and the report of a trimmer that switched itself off.
+	// chose that holds a line break (and, in the second rendering, a backslash, which is written
+	// as Go writes it too, so the two names stay two values), a size read in part, a walk that was
+	// cut and lists the launcher's bound cut; and the report of a trimmer that switched itself off.
 	pod := "pod-" + r.id("volume/pod")
 	sweep := record.VolumeNearFull{PodUID: pod, Trimmer: r.id("volume/trimmer"), Episode: 1 + r.n,
 		RaisedBy:  []string{shimwire.VolumeEpisodeFirst, shimwire.VolumeEpisodeRise}[r.n-1],
@@ -379,7 +384,7 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", issue.Key, "volume.podUid", pod, "volume.trimmer", sweep.Trimmer, "volume.episode", sweep.Episode,
 			"volume.raisedBy", sweep.RaisedBy, "volume.usedBytes", sweep.UsedBytes, "volume.freeBytes", sweep.FreeBytes,
 			"volume.freedBytes", sweep.FreedBytes, "volume.stopReason", sweep.StopReason, "volume.refusedReads", sweep.RefusedReads,
-			"volume.sizes[0].path", strings.ReplaceAll(sweep.Sizes[0].Path, "\n", `\n`), "volume.sizes[0].bytesOverDay", sweep.Sizes[0].BytesOverDay,
+			"volume.sizes[0].path", strings.NewReplacer(`\`, `\\`, "\n", `\n`).Replace(sweep.Sizes[0].Path), "volume.sizes[0].bytesOverDay", sweep.Sizes[0].BytesOverDay,
 			"volume.sizes[1].refused", sweep.Sizes[1].Refused, "volume.sizesAt", sweep.SizesAt, "volume.sizesPartial", true,
 			"volume.sizesMissing[0].path", sweep.SizesMissing[0].Path, "volume.sizesOmitted", r.n))
 	off := record.VolumeNearFull{PodUID: pod, Trimmer: r.id("volume/off-trimmer"), Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
@@ -495,6 +500,38 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 			goldenWant("issue", stall.issue, "holds", texts.HoldsOperator, "update.round", stall.round, "update.pod", stall.pod,
 				"update.waiting[1].role", claim.RoleTester, "update.waiting[1].suspended_by", string(supervise.SuspendedByOperator),
 				"update.waiting[2].suspended_by", string(supervise.SuspendedByReleased)))
+		// Every word suspended_by can say, as tellLateRound writes them (waitingOf, then
+		// pauseStopped over the round's pause holds): an unknown source, the operator's own
+		// suspension, an idle release, a project's pause that still owes the planner a launch,
+		// the daemon's own suspension, which the merger also took after its process came up in
+		// another pod during the round (left_round), and a root's exit.
+		marks := stall
+		marks.holds, marks.round = texts.HoldsOperator, supervise.PodRoundPrefix+r.id("update/marks-round")
+		marked := func(role claim.Role, by supervise.SuspendSource) supervise.Claim {
+			c := member(role, supervise.StateSuspended, by)
+			c.UpdateRound = marks.round
+			return c
+		}
+		left := marked(claim.RoleMerger, supervise.SuspendedByDaemon)
+		left.UpdateLeftRound = marks.round
+		listed := noticeClaims([]supervise.Claim{
+			marked(claim.RoleImplementer, supervise.SuspendedByUnknown),
+			marked(claim.RoleTester, supervise.SuspendedByOperator),
+			marked(claim.RoleReviewer, supervise.SuspendedByReleased),
+			marked(claim.RolePlanner, supervise.SuspendedByReleased),
+			left,
+			marked(claim.RoleArchitect, supervise.SuspendedByExit),
+		})
+		marks.waiting = pauseStopped(waitingOf(marks.round, listed), listed,
+			podHolds{{Pause: 40 + int64(r.n), Issue: stall.issue, Owed: []claim.Role{claim.RolePlanner}}})
+		b.notice(r, "marks", ctl, updateStalledNotice(marks),
+			goldenWant("issue", stall.issue, "holds", texts.HoldsOperator, "update.round", marks.round, "update.pod", stall.pod,
+				"update.waiting[0].suspended_by", string(supervise.SuspendedByUnknown),
+				"update.waiting[1].suspended_by", string(supervise.SuspendedByOperator),
+				"update.waiting[2].suspended_by", string(supervise.SuspendedByReleased),
+				"update.waiting[3].suspended_by", texts.SuspendedByPause,
+				"update.waiting[4].suspended_by", string(supervise.SuspendedByDaemon), "update.waiting[4].left_round", true,
+				"update.waiting[5].suspended_by", string(supervise.SuspendedByExit)))
 		for _, hold := range []string{texts.HoldsNoProcess, texts.HoldsNoPod, texts.HoldsPodUnread} {
 			held := stall
 			held.holds = hold

@@ -86,7 +86,7 @@ Hand an item back with a reply in its thread that leaves the turn with the perso
 Close an item that you no longer need instead of handing it back.
 When nothing is still with the person and the gate is armed and closed, hand the request back once the document is ready: request approval again and register that version with `register_gate`, or answer in the request's thread while that thread is open (`request_open`). Handing the request back starts your next wait, so end your turn after it.
 Handing an item back while the gate is not open starts your next wait, so end your turn after it.
-Where the gate is not armed (`gate_armed: false`), no person approves the document: when it is ready, register it at its current version, which opens the gate with no approval.
+Where the gate is closed and not armed (`gate_open: false` and `gate_armed: false`), no person approves the document: when it is ready, register it at its current version, which opens the gate with no approval.
 A changes request asks you to revise the document as the person asks in its reason, except where the gate is open and armed: a person then approved the document after that review, so it asks for no revision now.
 A changes request made after the wait began that did not answer it (`later_changes_version`, with its reason in the `later_reason` block) asks the same revision.
 A newer version that handed the approval request back to you (`act: version`) asks you to read that version and the request's thread.

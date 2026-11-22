@@ -1292,12 +1292,15 @@ func hasLineBreak(text string) bool {
 	return strings.IndexFunc(text, isLineBreak) >= 0
 }
 
-// lineEscaped is text on one line with every character of it kept: each character that breaks a
-// line (isLineBreak) written as Go writes it in a string, `\n` for a line feed and `\u2028` for
-// the line separator, and every other byte as it was. Text with no line break is returned as it
-// is.
+// lineEscaped is text on one line with every character of it kept, two different texts never
+// written alike: each character that breaks a line (isLineBreak) and each backslash written as Go
+// writes it in a string (escapedInLine), `\n` for a line feed, `\u2028` for the line separator and
+// `\\` for a backslash, and every other byte as it was. The backslash is written so too because a
+// name a role chose may hold one followed by an `n`, which would otherwise read as the line feed
+// of another name (main wrote each such name with %q, which tells the two apart). Text that holds
+// neither is returned as it is.
 func lineEscaped(text string) string {
-	at := strings.IndexFunc(text, isLineBreak)
+	at := strings.IndexFunc(text, escapedInLine)
 	if at < 0 {
 		return text
 	}
@@ -1309,16 +1312,23 @@ func lineEscaped(text string) string {
 		b.WriteString(text[:at])
 		b.WriteString(quoted[1 : len(quoted)-1])
 		text = text[at+size:]
-		at = strings.IndexFunc(text, isLineBreak)
+		at = strings.IndexFunc(text, escapedInLine)
 	}
 	b.WriteString(text)
 	return b.String()
 }
 
-// linesEscaped is list with each item lineEscaped, and list itself where no item holds a line
-// break, so the list the caller holds is never written to.
+// escapedInLine is whether lineEscaped writes r as Go writes it in a string: a line break
+// (isLineBreak) or a backslash.
+func escapedInLine(r rune) bool { return r == '\\' || isLineBreak(r) }
+
+// needsEscape is whether lineEscaped changes text: it holds a line break or a backslash.
+func needsEscape(text string) bool { return strings.IndexFunc(text, escapedInLine) >= 0 }
+
+// linesEscaped is list with each item lineEscaped, and list itself where no item needs it
+// (needsEscape), so the list the caller holds is never written to.
 func linesEscaped(list []string) []string {
-	if !slices.ContainsFunc(list, hasLineBreak) {
+	if !slices.ContainsFunc(list, needsEscape) {
 		return list
 	}
 	escaped := make([]string, len(list))
@@ -1499,21 +1509,21 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // its faults, each a recovered panic with its stack, the trimmer's identifier and what raised its
 // episode — and each is written on one line with every character kept (lineEscaped): a value of
 // a daemon text is one line of the card that shows it, a name a role chose is told as it is on
-// the disk, and a fault keeps its stack. The lists the caller's report holds are copied before
-// any of them is written, never written in place. How the architect reads the fields — a sweep
-// told in the past, since the frame carries no time for it and the launcher holds a report
-// through an outage; a negative freedBytes as the volume growing while the sweep ran; a size as
-// the apparent size of the files at or under its path, with a file linked under several names
-// counted under each; a size with a refused read as a lower bound; the bound that left entries
-// out of a list; a line break written as Go writes it; and the report of a switched-off trimmer,
-// which no sweep made — is the architect's prompt's (prompts/go/architect-common.md), as every
-// reading guide of a daemon text is.
+// the disk and apart from every other name, and a fault keeps its stack. The lists the caller's
+// report holds are copied before any of them is written, never written in place. How the
+// architect reads the fields — a sweep told in the past, since the frame carries no time for it
+// and the launcher holds a report through an outage; a negative freedBytes as the volume growing
+// while the sweep ran; a size as the apparent size of the files at or under its path, with a file
+// linked under several names counted under each; a size with a refused read as a lower bound; the
+// bound that left entries out of a list; a line break and a backslash written as Go writes them;
+// and the report of a switched-off trimmer, which no sweep made — is the architect's prompt's
+// (prompts/go/architect-common.md), as every reading guide of a daemon text is.
 func VolumeNearFullNotice(issue string, sweep record.VolumeNearFull) texts.VolumeNearFullRecord {
 	sweep.PodUID, sweep.Trimmer = lineEscaped(sweep.PodUID), lineEscaped(sweep.Trimmer)
 	sweep.RaisedBy, sweep.StopReason = lineEscaped(sweep.RaisedBy), lineEscaped(sweep.StopReason)
 	sweep.RefusedReads, sweep.Faults = linesEscaped(sweep.RefusedReads), linesEscaped(sweep.Faults)
 	if slices.ContainsFunc(sweep.Sizes, func(size record.VolumeSize) bool {
-		return hasLineBreak(size.Path) || hasLineBreak(size.Refused)
+		return needsEscape(size.Path) || needsEscape(size.Refused)
 	}) {
 		sizes := make([]record.VolumeSize, len(sweep.Sizes))
 		for i, size := range sweep.Sizes {
@@ -1523,7 +1533,7 @@ func VolumeNearFullNotice(issue string, sweep record.VolumeNearFull) texts.Volum
 		sweep.Sizes = sizes
 	}
 	if slices.ContainsFunc(sweep.SizesMissing, func(missing record.VolumeMissing) bool {
-		return hasLineBreak(missing.Path) || hasLineBreak(missing.Reason)
+		return needsEscape(missing.Path) || needsEscape(missing.Reason)
 	}) {
 		missing := make([]record.VolumeMissing, len(sweep.SizesMissing))
 		for i, one := range sweep.SizesMissing {
@@ -1685,7 +1695,9 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 // and cut to shimwire.MemoryKillExecutableBytes there, with none of its arguments, which the role
 // that started it already has), its pid, how much it held, and the pod's memory against its
 // limit: the anonymous memory reading for the guard, the memory counter for the kernel. The sizes
-// are binary units a reader can compare at a glance (binarySize).
+// are binary units a reader can compare at a glance (binarySize). Every cause says where heavy work
+// runs (texts.MemoryKillHeavyWork), as main's note ended every cause with it and
+// dispatch://INFRA-3557's W4 has the guard's note say it.
 func MemoryKillMessage(issue string, report shimwire.LauncherMemoryKill) texts.MemoryKillRecord {
 	cause, pod := texts.KillGuard, report.ReadingBytes
 	switch report.Cause {
@@ -1695,7 +1707,8 @@ func MemoryKillMessage(issue string, report shimwire.LauncherMemoryKill) texts.M
 		cause, pod = texts.KillKernelProtected, report.CounterBytes
 	}
 	return texts.MemoryKillRecord{RoleHead: texts.RoleHead{Kind: texts.MemoryKill, Issue: issue}, Cause: cause, Process: report.Executable,
-		PID: report.PID, Size: binarySize(report.SizeBytes), PodMemory: binarySize(pod), Limit: binarySize(report.LimitBytes)}
+		PID: report.PID, Size: binarySize(report.SizeBytes), PodMemory: binarySize(pod), Limit: binarySize(report.LimitBytes),
+		HeavyWorkRuns: texts.MemoryKillHeavyWork}
 }
 
 // binaryUnits are the units binarySize writes a size of a KiB or more in, smallest first.

@@ -1847,8 +1847,10 @@ func TestARoleMessageOfAKindCarriesItsRecord(t *testing.T) {
 
 // The role-message rows of their own outbox kinds build their kind's record from the row's
 // fields: an update round's ask with the round's drift and the facts every ask gives, a removal
-// from the merge queue with the pull request in the repository the record holds it under, and
-// each message of a merge forward as its step's kind, the base left out where the row names none.
+// from the merge queue with the pull request in the repository the record holds it under, and,
+// read or unread, that the event names no reason and that the merger reads GitHub, and each message
+// of a merge forward as its step's kind, the base left out where the row names none, the ask
+// stating the conflict and the issue branch it pushes to.
 func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 	ends := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -1857,7 +1859,8 @@ func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 	}{
 		{MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Reviewing, PullRequest: 42, Why: ConflictCheckNotGreen},
 			texts.MergeForwardAskRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardAsk, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
-				Head: "c0de", ConflictsWith: "main", Phase: phase.Reviewing, Why: string(ConflictCheckNotGreen)}},
+				Head: "c0de", ConflictsWith: "main", HeadConflictsWithBase: true, Phase: phase.Reviewing, Why: string(ConflictCheckNotGreen),
+				PushTo: claim.IssueBranch("LEGION-208")}},
 		{MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 			texts.MergeForwardHoldRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardHold, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
 				Head: "c0de", Phase: phase.Merging, Why: string(ConflictMergeNext)}},
@@ -1881,7 +1884,8 @@ func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 	}
 	removal := MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true}
 	if got, want := removal.Record("LEGION-208", "sjawhar/legion"), (texts.MergeQueueRemovalRecord{
-		RoleHead: texts.RoleHead{Kind: texts.MergeQueueRemoval, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42", Head: "c0de", Unread: true}); !reflect.DeepEqual(got, want) {
+		RoleHead: texts.RoleHead{Kind: texts.MergeQueueRemoval, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42", Head: "c0de", Unread: true,
+		EventReason: texts.QueueEventReasonNone, ReadOn: texts.QueueReadOnGitHub}); !reflect.DeepEqual(got, want) {
 		t.Errorf("the merge-queue removal's record is %+v, want %+v", got, want)
 	}
 }

@@ -482,6 +482,17 @@ func (b *goldenBuild) rootResumes(r goldenRendering) {
 	add("approved", record.Awaiting{GateVersion: version, Artifact: art, AnsweredBy: record.AnsweredByApproval,
 		AnsweredDetail: fmt.Sprintf("version %d", version)}, open, []record.RootAsk{still},
 		goldenWant("act", texts.ActApproved, "document", spec, "version", version, "with_person[0]", link(still.Ask)))
+	// An approval of a step with no gate row yet (the next gated step, which nobody has registered,
+	// after the approval of the first answered the wait): no gate state but whether the design gate
+	// is armed, which says whether a person approved, armed in the first rendering and off in the
+	// second.
+	{
+		armed := r.n == 1
+		waiting := record.Awaiting{GateVersion: version, Artifact: art, AnsweredBy: record.AnsweredByApproval,
+			AnsweredDetail: fmt.Sprintf("version %d", version), AnsweredAt: &at}
+		b.task(r, "approved-no-gate", claim.RoleArchitect, key, workflow.RootResume(key, waiting, record.DesignStepSpec, nil, []string{art}, nil, armed),
+			goldenWant("issue", key, "act", texts.ActApproved, "document", spec, "version", version, "gate_armed", armed))
+	}
 	// A changes request, with its reason by the person who asked.
 	{
 		reason := r.words("resume/changes", 600) + " " + goldenHostile[r.n-1][4]
@@ -567,7 +578,7 @@ func (b *goldenBuild) checkLooks(r goldenRendering) {
 	retry := r.words("look/retry", 80)
 	retried := want(texts.WokenByRetry)
 	retried["retry_of"] = retry
-	b.task(r, "retry", check.Role, issue.Key, workflow.CheckLook(issue, check, "check wake", "the retry of a look nobody reported: "+retry, false), retried)
+	b.task(r, "retry", check.Role, issue.Key, workflow.CheckLook(issue, check, "check retry", "the retry of a look nobody reported: "+retry, false), retried)
 	unmerged := check
 	unmerged.MergeSHA = ""
 	last := want(texts.WokenByBound)

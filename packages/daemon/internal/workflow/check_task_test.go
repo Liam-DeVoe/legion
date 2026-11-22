@@ -31,7 +31,7 @@ var checkTaskWakes = []struct {
 	{"the merge", wakeMerge, "merge-43", texts.WokenByMerge, "", ""},
 	{"the agent's own wake", wakeNamed, "production runs yesterday's build; the release train runs at 09:00", texts.WokenByNamed, "",
 		"production runs yesterday's build; the release train runs at 09:00"},
-	{"the retry of a look nobody reported", wakeNamed, retryOfLook + "look bound", texts.WokenByRetry, "look bound", ""},
+	{"the retry of a look nobody reported", wakeRetry, retryOfLook + "look bound", texts.WokenByRetry, "look bound", ""},
 	{"the bound", wakeBound, boundText(14*24*time.Hour) + " since the issue closed", texts.WokenByBound, "", ""},
 }
 

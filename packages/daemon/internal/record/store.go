@@ -1698,7 +1698,7 @@ func scannedMark(seq *int64, at *time.Time) EventMark {
 	return mark
 }
 
-const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, coalesce(told_changes_by, ''), told_changes_seq, told_changes_at, ever_opened`
+const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, coalesce(told_changes_by, ''), told_changes_seq, told_changes_at, ever_opened, coalesce(document_issue, '')`
 
 // scanGate reads a gate row in the shape PutGate writes: an approval's mark only with the approval,
 // a told changes request's reason and mark only with its version. An older daemon, which knows none
@@ -1710,7 +1710,7 @@ func scanGate(row scanner) (DesignGate, error) {
 	var approvedAt, toldAt *time.Time
 	var step string
 	if err := row.Scan(&gate.Issue, &step, &gate.ArtifactID, &gate.LatestVersion, &gate.ApprovedVersion, &approvedSeq, &approvedAt,
-		&gate.ToldChangesVersion, &gate.ToldChangesReason, &gate.ToldChangesBy, &toldSeq, &toldAt, &gate.EverOpened); err != nil {
+		&gate.ToldChangesVersion, &gate.ToldChangesReason, &gate.ToldChangesBy, &toldSeq, &toldAt, &gate.EverOpened, &gate.DocumentIssue); err != nil {
 		return DesignGate{}, err
 	}
 	gate.Step = DesignStep(step)
@@ -1825,6 +1825,11 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 // reason and mark only with its version (scanGate). It is the single writer of every gate change,
 // so it is also the only place ever_opened can rise.
 //
+// The issue whose document the row is bound to (DesignGate.DocumentIssue) is written where the
+// gate names it. A write that names none keeps the one the row holds while the row stays on the
+// same document, so a writer that builds the gate afresh (a reset of its version) cannot drop it,
+// and takes none on a new document, which the row's own issue registered.
+//
 // A gate built with no step is written as DesignStepSpec (DesignStep.OrSpec, the one place that
 // rule is written). Go names no missing field at build time, so a caller that forgets the step
 // would otherwise be found only by the stored column's check, at run time, in whatever deployment
@@ -1845,18 +1850,20 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	// otherwise put out a mark a past approval lit. What counts as opened is the one statement of
 	// it (GateOpen), which classify.DesignGateOpen calls too.
 	_, err := tx.Exec(ctx, `insert into design_gates (issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at,
-		told_changes_version, told_changes_reason, told_changes_by, told_changes_seq, told_changes_at, ever_opened)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, nullif($10::text, ''), $11, $12, $13)
+		told_changes_version, told_changes_reason, told_changes_by, told_changes_seq, told_changes_at, ever_opened, document_issue)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, nullif($10::text, ''), $11, $12, $13, nullif($14::text, ''))
 		on conflict (issue, step) do update set artifact_id = excluded.artifact_id,
 		latest_version = excluded.latest_version, approved_version = excluded.approved_version,
 		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at,
 		told_changes_version = excluded.told_changes_version, told_changes_reason = excluded.told_changes_reason,
 		told_changes_by = excluded.told_changes_by,
 		told_changes_seq = excluded.told_changes_seq, told_changes_at = excluded.told_changes_at,
-		ever_opened = design_gates.ever_opened or excluded.ever_opened`,
+		ever_opened = design_gates.ever_opened or excluded.ever_opened,
+		document_issue = case when excluded.artifact_id = design_gates.artifact_id
+			then coalesce(excluded.document_issue, design_gates.document_issue) else excluded.document_issue end`,
 		gate.Issue, string(step), gate.ArtifactID, gate.LatestVersion, gate.ApprovedVersion, approvedSeq, approvedAt,
 		gate.ToldChangesVersion, toldReason, toldBy, toldSeq, toldAt,
-		gate.EverOpened || GateOpen(gate))
+		gate.EverOpened || GateOpen(gate), gate.DocumentIssue)
 	if err != nil {
 		return fmt.Errorf("put design gate for %s: %w", gate.Issue, err)
 	}

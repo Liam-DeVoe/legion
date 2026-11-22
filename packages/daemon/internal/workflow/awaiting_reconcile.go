@@ -680,15 +680,18 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 // wherever the step has a gate, whatever the act, as main named it in each sentence of the gate
 // ("Your <doc> is not approved at version N", "the approval request for <doc> version N", "When the
 // <doc> is ready"), its latest version, whether the gate is open and whether it is armed. A step
-// with no gate row (gateInQuestion's nil, a question asked before any step was registered) names
-// no gate state, as main's resume wrote no gate sentence for it (`case gate == nil`). An open
-// gate keeps texts.DesignApprovedWake word for word, since the daemon sends no design-approved
-// notice to a root waiting on a person (applyArtifact, gateRegistered), so this resume is that
-// root's design-approved wake. A wait the gates.design: off rule answered (gateOffAnswer) says so
-// (GateOffAtAnswer), so it is never read as a person's approval. A changes request the gate records
-// as told after the wait began that did not answer it, which no notice told (tellChangesOnce), is
-// named with its version, the document of step it was made on and its reason in a block of its
-// own.
+// with no gate row (gateInQuestion's nil, a question asked before any step was registered, or the
+// step after the one whose approval answered the wait) names no gate state, as main's resume wrote
+// no gate sentence for it (`case gate == nil`), but on an approval, which names whether the design
+// gate is armed all the same: that is what says whether a person approved, as main said it from
+// armed alone ("Your %s %s on %s was approved." or "The design gate on %s is off, so no approval
+// of your %s %s is asked for."). An open gate keeps texts.DesignApprovedWake word for word, since
+// the daemon sends no design-approved notice to a root waiting on a person (applyArtifact,
+// gateRegistered), so this resume is that root's design-approved wake. A wait the gates.design:
+// off rule answered (gateOffAnswer) says so (GateOffAtAnswer), so it is never read as a person's
+// approval. A changes request the gate records as told after the wait began that did not answer
+// it, which no notice told (tellChangesOnce), is named with its version, the document of step it
+// was made on and its reason in a block of its own.
 //
 // What is still with the person (withHuman): the asks as dispatch:// links, and the version whose
 // approval request is with them. What waits on the architect: the asks on its turn, a tree
@@ -709,6 +712,7 @@ func RootResume(key string, waiting record.Awaiting, step record.DesignStep, gat
 		detail, gateOff := strings.CutSuffix(waiting.AnsweredDetail, gateOffAnswer)
 		task.Act, task.Document, task.GateOffAtAnswer = texts.ActApproved, stepRef(key, step), gateOff
 		task.Version, _ = detailVersion(detail)
+		task.GateArmed = &armed
 	case record.AnsweredByChanges:
 		task.Act, task.Document = texts.ActChangesRequested, stepRef(key, step)
 		version, reason := changesOfDetail(waiting.AnsweredDetail)

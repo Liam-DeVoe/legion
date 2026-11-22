@@ -322,8 +322,10 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
 // whether its old root's gate came with it, and each design-gate step the root must hold open, its
-// document as a dispatch:// link (stepRef, as the start task's gateSteps names it) and how it
-// stands. A child's architect owns the child and every issue whose recorded parent chain
+// document as a dispatch:// link (stepRef, as the start task's gateSteps names it, of the issue
+// whose document the step's row is bound to, gateDocumentIssue: the old root's for a row a carried
+// gate brought) and
+// how it stands. A child's architect owns the child and every issue whose recorded parent chain
 // reaches it (record.Beneath), at the child's own generation: a child registers no gate and no
 // hand-over creates one, so its catch-up states no step and is neither handed over nor carried.
 //
@@ -350,6 +352,12 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		if err != nil {
 			return texts.CatchUpFacts{}, err
 		}
+		var carriedFrom map[record.DesignStep]record.DesignGate
+		if catchUp.Carried && issue.HandedOverFrom != "" {
+			if carriedFrom, err = store.GatesOf(ctx, tx, issue.HandedOverFrom); err != nil {
+				return texts.CatchUpFacts{}, err
+			}
+		}
 		required := classify.RequiredSteps(steps)
 		catchUp.Gates = make([]texts.CatchUpGate, 0, len(required))
 		for _, step := range required {
@@ -359,6 +367,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 				if recorded.ApprovedVersion != nil {
 					stated.Approved = *recorded.ApprovedVersion
 				}
+				stated.Document = stepRef(gateDocumentIssue(recorded, carriedFrom), step)
 			} else {
 				stated.Unregistered = true
 			}
@@ -399,6 +408,26 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		return texts.CatchUpFacts{}, err
 	}
 	return catchUp, nil
+}
+
+// gateDocumentIssue is the issue whose document row, a gate row of a root, is bound to: the one the
+// row records (record.DesignGate.DocumentIssue), which a root's own registration and a hand-over's
+// carry write. A row an older daemon wrote records none. For such a row of a carried root that
+// still names the tree it left (record.Issue.HandedOverFrom, which the promotion that opens its own
+// tree clears), carriedFrom is that old root's rows, and a row of the old root on the same
+// artifact is the row the carry copied: its own document issue, or the old root, is the copy's, as
+// the migration that added the column backfills it (20261122040952). Every other row is its own
+// issue's document, as every row read before that migration: the store records nothing else.
+func gateDocumentIssue(row record.DesignGate, carriedFrom map[record.DesignStep]record.DesignGate) string {
+	if row.DocumentIssue != "" {
+		return row.DocumentIssue
+	}
+	for _, old := range carriedFrom {
+		if old.ArtifactID == row.ArtifactID {
+			return old.DocumentOf()
+		}
+	}
+	return row.Issue
 }
 
 // unreleasedChildren is each child the Dispatch mirror shows under an issue of owned, the issues

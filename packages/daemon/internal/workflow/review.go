@@ -1586,7 +1586,8 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *r
 }
 
 // PRBlockedNotice is the pr-blocked notice of issue, which reached the review round cap: the cap
-// (roundCap), the rounds counted and the conflict rounds not counted.
+// (roundCap), the rounds counted and the conflict rounds not counted, 0 included, as
+// dispatch://INFRA-1442's R5 has it name them.
 func PRBlockedNotice(issue string, roundCap, counted, conflictRounds int) texts.PRBlockedRecord {
 	return texts.PRBlockedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRBlocked, Issue: issue}, Cap: roundCap, Counted: counted,
 		ConflictRounds: conflictRounds}

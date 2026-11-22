@@ -3,6 +3,7 @@ package daemon
 import (
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -39,9 +40,13 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: goldenSkippedKeys},
 	{kind: texts.PhaseResume, from: "workflow/effects.go:ResumePhaseTask, continueLine",
 		keys: []string{"issue", "title", "phase"}},
-	{kind: texts.RootResume, from: "workflow/awaiting_reconcile.go:resumeTask (the root, the gate's version, open or closed, armed, and the gate step's document, " +
-		"which each sentence of the gate named: Your <doc> is not approved at version N, the approval request for <doc> version N, When the <doc> is ready)",
+	{kind: texts.RootResume, variants: []string{"approved", "changes-requested", "version", "retracted", "closed", "ask", "reply", "turn", "declined"},
+		from: "workflow/awaiting_reconcile.go:resumeTask (the root, the gate's version, open or closed, armed, and the gate step's document, " +
+			"which each sentence of the gate named: Your <doc> is not approved at version N, the approval request for <doc> version N, When the <doc> is ready)",
 		keys: []string{"issue", "document_version", "gate_open", "gate_armed"}, links: []string{"document"}},
+	{kind: texts.RootResume, variants: []string{"approved-no-gate"}, from: "workflow/awaiting_reconcile.go:resumeTask (an approval of a step with no gate row: " +
+		"Your <doc> version N on <KEY> was approved, under an armed gate, or The design gate on <KEY> is off, so no approval of your <doc> version N is asked for)",
+		keys: []string{"issue", "version", "gate_armed"}, links: []string{"document"}},
 	{kind: texts.RootResume, variants: []string{"approved", "changes-requested", "version"}, from: "workflow/awaiting_reconcile.go:resumeTask (the version answered)",
 		keys: []string{"version"}},
 	{kind: texts.RootResume, variants: []string{"retracted", "closed", "ask", "reply", "turn", "declined"}, from: "workflow/awaiting_reconcile.go:resumeTask (the ask)",
@@ -513,6 +518,30 @@ var goldenKept = []goldenKeptOf{
 		},
 		keys:   []string{"count", "counts"},
 		values: func(want map[string]string) map[string]string { return map[string]string{"count": want["count"]} }},
+	{kind: texts.MergeQueueRemoval, what: "that the event as the daemon got it names no reason for the removal, and that the merger reads the pull request and its removals on GitHub, read or unread",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact or a step that it has the text give stays as a field) and dispatch://INFRA-3274's R1",
+		keys:   []string{"event_reason", "read_on"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"event_reason": texts.QueueEventReasonNone, "read_on": texts.QueueReadOnGitHub}
+		}},
+	{kind: texts.MergeForwardAsk, what: "that the head conflicts with its base, where the record holds no base too, and the branch the implementer pushes the merge to",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact or a step that it has the text give stays as a field) and dispatch://INFRA-4374's R0 and R1",
+		keys:   []string{"head_conflicts_with_base", "push_to"},
+		values: func(want map[string]string) map[string]string {
+			return map[string]string{"head_conflicts_with_base": "true", "push_to": claim.IssueBranch(want["issue"])}
+		}},
+	{kind: texts.MemoryKill, what: "where heavy work runs: where the deployment's instructions say, not in the pod, as main's note said after every cause",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-3557's W4",
+		keys:   []string{"heavy_work_runs"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"heavy_work_runs": texts.MemoryKillHeavyWork}
+		}},
+	{kind: texts.ArchitectStalled, what: "the arm in the words the controller's skill quotes it by, word for word as main's reason began",
+		keptBy: "skills/legion-controller/references/wakes.md, which names each arm by its words, and R8 of dispatch://INFRA-3686 (the architect's ruling)",
+		keys:   []string{"reason"},
+		values: func(want map[string]string) map[string]string {
+			return map[string]string{"reason": record.ArchitectStallArm(want["arm"]).Words()}
+		}},
 }
 
 // goldenShapeKept is, for each shape of the root architect's start, the facts and the first act
