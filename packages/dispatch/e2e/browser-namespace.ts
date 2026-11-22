@@ -101,7 +101,9 @@ let toldHost = false;
 
 /** The network a run's Chromium gets: what `DISPATCH_E2E_BROWSER_NETWORK` names; unset, `host`
  *  on CI, else `own` unless `refusal` says why this machine makes no namespace, which the run's
- *  own process (not a worker) says once. Any other value is refused rather than read as either. */
+ *  own process (not a worker) says once, on stderr: stdout carries what a `--list --reporter=json`
+ *  run prints, which a line of its own there would make no JSON. Any other value is refused
+ *  rather than read as either. */
 export function browserNetwork(
   env: NodeJS.ProcessEnv = process.env,
   refusal: () => string | undefined = namespaceRefusal
@@ -119,7 +121,7 @@ export function browserNetwork(
   if (refused === undefined) return "own";
   if (!toldHost && env.TEST_WORKER_INDEX === undefined) {
     toldHost = true;
-    console.log(
+    console.error(
       `e2e: Chromium runs on the host's network, where a network the host adds or removes fails ` +
         `the requests waiting for a connection: this machine made no network namespace for it ` +
         `(${refused}). ${browserNetworkVariable}=own makes that an error.`
