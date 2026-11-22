@@ -1120,9 +1120,10 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 		return nil, KeptApproval{}, err
 	}
 	var approval KeptApproval
-	err = tx.QueryRow(ctx, `select step, approved_version, latest_version from readmitted_approvals
+	err = tx.QueryRow(ctx, `select step, readmitted_approvals.artifact, approved_version, latest_version from readmitted_approvals
 		join issues owner on owner.key = readmitted_approvals.issue
-		where readmitted_approvals.issue = $1 and `+approvalNameable, tree).Scan(&approval.Step, &approval.Approved, &approval.Latest)
+		where readmitted_approvals.issue = $1 and `+approvalNameable, tree).Scan(&approval.Step, &approval.Artifact,
+		&approval.Approved, &approval.Latest)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, KeptApproval{}, fmt.Errorf("read the approval kept for %s: %w", tree, err)
 	}
@@ -1158,10 +1159,12 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 }
 
 func (s *Postgres) KeepReadmittedApproval(ctx context.Context, tx pgx.Tx, root string, approval KeptApproval) error {
-	if _, err := tx.Exec(ctx, `insert into readmitted_approvals (issue, step, approved_version, latest_version) values ($1, $2, $3, $4)
-		on conflict (issue) do update set step = excluded.step, approved_version = excluded.approved_version,
-		latest_version = excluded.latest_version, claimed_by = null, held_by_claim = null, held_by_delivery = null`,
-		root, string(approval.Step), approval.Approved, approval.Latest); err != nil {
+	if _, err := tx.Exec(ctx, `insert into readmitted_approvals (issue, step, artifact, approved_version, latest_version)
+		values ($1, $2, $3, $4, $5)
+		on conflict (issue) do update set step = excluded.step, artifact = excluded.artifact,
+		approved_version = excluded.approved_version, latest_version = excluded.latest_version,
+		claimed_by = null, held_by_claim = null, held_by_delivery = null`,
+		root, string(approval.Step), approval.Artifact, approval.Approved, approval.Latest); err != nil {
 		return fmt.Errorf("keep the approval of %s's %s step at version %d below version %d: %w",
 			root, approval.Step, approval.Approved, approval.Latest, err)
 	}

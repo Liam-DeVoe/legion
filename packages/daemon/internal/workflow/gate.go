@@ -287,7 +287,7 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if superseded := SupersedingApproval(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
 		Artifact: artifact, Version: version, Mark: mark}); superseded != nil {
 		e.logOnCommit(ctx, "workflow: a changes request an approval followed is not told", "issue", key, "version", version,
-			"approved", superseded.Version)
+			"approved", superseded.By)
 		return nil
 	}
 	place := "none"

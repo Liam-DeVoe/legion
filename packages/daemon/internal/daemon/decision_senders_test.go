@@ -19,17 +19,21 @@ import (
 // senderModule is the import path every package the walk reads lives under.
 const senderModule = "github.com/sjawhar/legion/daemon/internal/"
 
-// decisionPredicate is the one predicate that decides whether a person's recorded review of a
-// design document is still their word (workflow.SupersedingApproval), and decisionRule the rule it asks
-// (classify.ReviewSuperseded), each as go/types names it (types.Func.FullName). resumeSend is the
-// daemon's render of a start that carries a person's answered wait (record.SuperviseRequest's
-// Awaiting) at each send of its task, and resumeSendCaller the send of a held task that asks it
-// for such a delivery.
+// decisionPredicate is the one predicate that decides whether a person's recorded decision on a
+// design document is still their word (workflow.SupersedingApproval), and decisionRule and
+// approvalRule the two rules it asks, of a changes request (classify.ReviewSuperseded) and of an
+// approval (classify.DesignApprovalStands), each as go/types names it (types.Func.FullName).
+// resumeSend is the daemon's render of a start that carries a person's answered wait
+// (record.SuperviseRequest's Awaiting) at each send of its task, and resumeSendCaller the send of
+// a held task that asks it for such a delivery. newsSend is the daemon's ask, at each send of a
+// task that carries news of an approved version, whether an item the task carries still stands.
 const (
 	decisionPredicate = senderModule + "workflow.SupersedingApproval"
 	decisionRule      = senderModule + "classify.ReviewSuperseded"
+	approvalRule      = senderModule + "classify.DesignApprovalStands"
 	resumeSend        = "(*" + senderModule + "daemon.workflowRuntime).resumeTaskNow"
 	resumeSendCaller  = "(*" + senderModule + "daemon.workflowRuntime).rootTask"
+	newsSend          = senderModule + "daemon.itemStands"
 )
 
 // ruleAskers is every function of the three packages that may ask the rule itself, with why.
@@ -101,7 +105,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 
 // Every sender of a person's design decision asks the one predicate whether that decision is
 // still the person's word (workflow.SupersedingApproval), so no sender decides it for itself and
-// no sender asks the rule itself (dispatch://INFRA-3136/spec R2).
+// no sender asks either rule itself (dispatch://INFRA-3136/spec R2).
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //
@@ -118,12 +122,15 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     start of a resume, whose task the daemon renders at each send from that wait (resumeSend),
 //     so such a function reaches what that render reaches. The resume itself writes one
 //     (workflow.Engine.ResumeAwaitedRoot), and so does the sweep's send of a resume's entry whose
-//     start was lost (workflow.Engine.SendArchitectStart); or
+//     start was lost (workflow.Engine.SendArchitectStart);
 //   - publishes a record.Notice it holds: hands a value of that type, however it was made (a
 //     row's payload, its Published copy, a conversion), to one of envoyPublishes. A notice the
 //     workflow queued is published where it is delivered (the outbox's deliverNotice), and a
 //     relay to the controller where its row runs (the outbox's controllerNotice): each can be long
-//     after the workflow or the relay asked, so the publish is a send of its own.
+//     after the workflow or the relay asked, so the publish is a send of its own; or
+//   - is the news's ask of an item it tells (newsSend, the daemon's itemStands): an item names a
+//     person's approval of a version, and a send of the task that carries it tells that approval
+//     to its audience, so the ask of whether it still stands is a sender's.
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
@@ -165,9 +172,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // there for a new sender to read. Such a function passes only where storedTaskReaders names it,
 // with why its read sends no person's review.
 //
-// And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
-// reading of an approval request (ruleAskers), so the guards the predicate holds, which its doc
-// lists, live in one place.
+// And each rule is asked by the predicate alone: the changes-request rule
+// (classify.ReviewSuperseded) by it and by the one reading of an approval request (ruleAskers),
+// and the approval rule (classify.DesignApprovalStands) by it and nothing else, so the guards the
+// predicate holds, which its doc lists, live in one place.
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any
@@ -194,8 +202,9 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 			t.Errorf("%s no longer holds the review sentence %q: name the phrase it renders now in decisionReviewSentences", sentence.renderer, sentence.phrase)
 		}
 	}
-	if predicate := walk.byName[decisionPredicate]; predicate == nil || !predicate.asks {
-		t.Fatalf("the walk found no %s asking %s: it reads the predicate under that name", short(decisionPredicate), short(decisionRule))
+	if predicate := walk.byName[decisionPredicate]; predicate == nil || !predicate.asks || !predicate.asksApproval {
+		t.Fatalf("the walk found no %s asking %s and %s: it reads the predicate under that name", short(decisionPredicate),
+			short(decisionRule), short(approvalRule))
 	}
 	senders := walk.decisionSenders()
 	for _, s := range senders {
@@ -213,7 +222,7 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 		for _, loop := range f.keptLoops {
 			if !walk.reaches(loop.calls) {
 				t.Errorf("%s (%s) ranges over kept decisions at %s and writes each one into text, but asks %s about none of them, "+
-					"directly or through a function it calls: it names a decision without knowing whether a later approval superseded it",
+					"directly or through a function it calls: it names a decision without knowing whether it is still the person's word",
 					f.short(), f.at, loop.at, short(decisionPredicate))
 			}
 		}
@@ -222,6 +231,11 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 				t.Errorf("%s (%s) asks %s itself: ask %s, which holds the guards that choose whether the rule is asked of a review, so "+
 					"no copy of them can drift", f.short(), f.at, short(decisionRule), short(decisionPredicate))
 			}
+		}
+		if f.asksApproval && f.name != decisionPredicate {
+			t.Errorf("%s (%s) asks %s itself: ask %s, which holds the guards that choose whether the rule is asked of an approval, so "+
+				"no sender decides for itself whether a person's approval is still their word", f.short(), f.at, short(approvalRule),
+				short(decisionPredicate))
 		}
 		if len(f.storedTasks) > 0 {
 			why, named := storedTaskReaders[f.name]
@@ -272,6 +286,11 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 				"the wait the send renders it from", name)
 		}
 	}
+	// The news's ask of an item it tells (newsSend) is a sender of a person's approval: the walk
+	// has to see it, or it proves nothing of the news.
+	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.name == newsSend }) {
+		t.Errorf("the walk found no news sender (%s) in internal/daemon", short(newsSend))
+	}
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.pkg == "daemon" }) {
 		t.Error("the walk found no sender in internal/daemon")
 	}
@@ -298,6 +317,8 @@ type decisionFunc struct {
 	queuesResume bool
 	// publishes are the positions where the body hands a record.Notice to one of envoyPublishes.
 	publishes []string
+	// asksApproval is whether the body names classify.DesignApprovalStands.
+	asksApproval bool
 }
 
 func (f *decisionFunc) short() string { return short(f.name) }
@@ -379,6 +400,9 @@ func (w *decisionWalk) decisionSenders() []decisionSender {
 		if f.queuesResume {
 			add(f, fmt.Sprintf("writes a start that carries a person's answered wait, whose task the daemon renders at each send (%s)",
 				short(resumeSend)))
+		}
+		if f.name == newsSend {
+			add(f, "asks whether the approval a news item names still stands, at each send of the task that tells it")
 		}
 		if len(f.publishes) > 0 {
 			add(f, fmt.Sprintf("publishes a record.Notice it holds, at %s", strings.Join(f.publishes, ", ")))
@@ -525,6 +549,7 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	}
 	f.calls = callsIn(fn.Body)
 	f.asks = slices.Contains(f.calls, decisionRule)
+	f.asksApproval = slices.Contains(f.calls, approvalRule)
 	f.picks = slices.Contains(f.calls, senderModule+"record.SpecDecision")
 	assigned := localAssignments(info, fn.Body)
 	// written is every field selector an assignment writes, which reads nothing of the field. The

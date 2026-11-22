@@ -530,10 +530,11 @@ const (
 // (Store.ForgetKeptDecisions) or by the confirmation of the delivery that holds it (HeldBy). A
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
-// a release never leaves it kept with nobody to name it again. A design decision that a later
-// approval superseded is deleted unnamed, by the task that asks it or by the clear of a
-// generation, before it deletes the approval's gate (workflow.ForgetSuperseded, the one forget,
-// which Store.ClearGeneration is handed): nothing of it is left to tell.
+// a release never leaves it kept with nobody to name it again. A design decision that is no
+// longer the person's word is deleted unnamed, by the task that asks it or by the clear of a
+// generation, before it deletes the gate that records what took its place
+// (workflow.ForgetSuperseded, the one forget, which Store.ClearGeneration is handed): nothing of
+// it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
@@ -2176,10 +2177,12 @@ type Store interface {
 	// member's whole record, done ones included.
 	TreeMembersRun(ctx context.Context, tx pgx.Tx, tree string) (bool, error)
 	// KeepReadmittedApproval keeps, for root's next architect start, the step whose document a
-	// person approved, the version they approved and that document's latest version, which its
-	// re-admission found above the approved one before it cleared the old generation's gate; a
-	// later keep replaces it, KEPT again. The step is what the start task names the document by,
-	// so an architect told to request approval again is sent to the document the person reviewed.
+	// person approved, that document, the version they approved and that document's latest
+	// version, which its re-admission found above the approved one before it cleared the old
+	// generation's gate; a later keep replaces it, KEPT again. The step is what the start task
+	// names the document by, so an architect told to request approval again is sent to the
+	// document the person reviewed, and the document is what the start asks the approval of
+	// (KeptApproval.Artifact).
 	KeepReadmittedApproval(ctx context.Context, tx pgx.Tx, root string, approval KeptApproval) error
 	// DropReadmittedApproval deletes the pair root keeps, if any: a re-admission whose gate holds no
 	// stale approval, or under gates.design off, leaves nothing an earlier one kept.
@@ -2243,8 +2246,8 @@ type Store interface {
 	//
 	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue, and
 	// every changes request the outbox holds on one (QueuedChanges), while that issue's gates
-	// stand, and forget deletes each one a later approval superseded. The clear deletes those
-	// gates, and a gate is the only record of the approval that superseded a decision: a start or
+	// stand, and forget deletes each one that is no longer the person's word. The clear deletes
+	// those gates, and a gate is the only record of what took a decision's place: a start or
 	// catch-up that names a kept decision after the clear, or the delivery of a queued request or
 	// the publish of its relay, asks a gate that is gone or new, and the decision would read as the
 	// person's word again. A person who requested changes and then approved the latest version as

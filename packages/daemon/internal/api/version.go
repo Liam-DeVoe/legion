@@ -3135,7 +3135,7 @@ package api
 // table (request_shapes_test.go's pluginRequests), so 225's request records hold its three
 // fields and a later type that stops reading one of them is red.
 //
-// The daemon ships four store migrations with it.
+// The daemon ships five store migrations with it.
 // `20261112012123_issue_repository_correction.up.sql` adds the four `issues` columns the keys are
 // read from, `workspace_bundles.repo`, the third restore outcome `refused_repository`, the table
 // `workspace_bundles_refused` a bundle of that outcome is moved to, and the two `claims` columns
@@ -3165,6 +3165,12 @@ package api
 // holds that issue's pod, marking no release of it again, until the rule
 // workflow.IdleHoldBundleTooLarge states ends the hold. An older daemon neither reads nor writes
 // the table, and marks such a release again on each idle pass, as before this release.
+// `20261122212816_readmitted_approval_artifact.up.sql` adds `readmitted_approvals.artifact`, the
+// document whose approval a root's re-admission kept, so its architect's start asks the kept
+// approval of that document; every row already there takes the empty string. An earlier daemon
+// names the column in no statement, and its keep of an approval over a row this release kept
+// leaves the column as it stood, the document of the earlier approval, which the rollback
+// docs/kubernetes.md gives under this contract clears.
 //
 // This release's image pins Oh My Pi v18.18.6-sami.20261119-162325 (`.omp-pin`), which main's
 // #4402 moved the pin to while this change was open. It carries all of

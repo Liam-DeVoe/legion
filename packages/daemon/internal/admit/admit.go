@@ -1594,7 +1594,7 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 			unregistered = true
 		case gate.ApprovedVersion != nil && *gate.ApprovedVersion < gate.LatestVersion:
 			return a.store.KeepReadmittedApproval(ctx, tx, key, record.KeptApproval{
-				Step: step, Approved: *gate.ApprovedVersion, Latest: gate.LatestVersion})
+				Step: step, Artifact: gate.ArtifactID, Approved: *gate.ApprovedVersion, Latest: gate.LatestVersion})
 		}
 	}
 	if unregistered {

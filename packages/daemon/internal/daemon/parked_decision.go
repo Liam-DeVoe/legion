@@ -49,11 +49,11 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // root with no record), or handled before under the same key, by an earlier run or another row
 // carrying the same notice, whose own line said what became of it.
 //
-// A decision the person has since answered with a later approval is not relayed: the gates of the
-// issue it was made on, as the record holds them now, are asked (decisionSuperseded), and the
-// controller is not told to act on a review the person's own approval took the place of. The
-// relay carries the notice's facts of the review (record.RelayParkedDecision), so the publish of a
-// relayed changes request asks again of the same decision (controllerNotice).
+// A decision that is no longer the person's word is not relayed: the gates of the issue it was
+// made on, as the record holds them now, are asked (decisionSuperseded), and the controller is not
+// told to act on a review the person's own approval took the place of, nor on an approval the gate
+// no longer holds. The relay carries the notice's facts of the review (record.RelayParkedDecision),
+// so the publish of a relayed changes request asks again of the same decision (controllerNotice).
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -62,7 +62,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
 	outcome, fresh, recorded := record.RelayNone, false, false
-	var superseded *workflow.Approval
+	var superseded *workflow.Supersession
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
@@ -103,9 +103,12 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision handled before under this key", args...)
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+	case superseded != nil && superseded.By == nil:
+		r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
+			append(args, "version", notice.Version, "approved", superseded.By)...)
 	case superseded != nil:
 		r.log.Info("outbox parked decision not relayed: the person's approval followed it",
-			append(args, "version", notice.Version, "approved", superseded.Version)...)
+			append(args, "version", notice.Version, "approved", superseded.By)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
 	case outcome == record.RelayKept:
@@ -120,16 +123,17 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	return nil
 }
 
-// decisionSuperseded is the approval that took the place of the spec decision notice carries on
-// issue, nil while that decision is still the person's word, by the one predicate
+// decisionSuperseded is what took the place of the spec decision notice carries on issue, nil
+// while that decision is still the person's word, by the one predicate
 // (workflow.SupersedingApproval) over the gate of issue as tx reads it: the gate of the step whose
 // document notice.Ref names, asked of the version the notice carries, Dispatch's mark of the
 // review (record.Notice.Review) and the document reviewed (record.Notice.Artifact), which this
 // release puts on every design decision's notice and on the relay of one
 // (workflow.NoticeSuperseded). A notice an earlier release queued carries no mark and no
-// document, and is asked at its version alone. The line each caller logs for a superseded
-// decision names the approved version.
-func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Approval, error) {
+// document, and is asked at its version alone. The line each caller logs for a decision that no
+// longer stands names the approved version that took its place, or none where no approval did
+// (workflow.Supersession.By).
+func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Supersession, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {
 		return nil, err
