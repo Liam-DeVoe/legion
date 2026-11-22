@@ -1938,6 +1938,13 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Digest is what an approval of a document's version covers, the value
+	// artifact_version_text_sha256 answers for it and a review's content_sha256 pins: the digest of
+	// the record of its query where the pass that stated the version recorded one on its
+	// version_renders row, and else the sha256 of its stored markdown, so a version of a document no
+	// query covers answers its markdown's. The version read and the artifact read's version list
+	// answer it; every other read of a version, and a file's or an image's version, answers none.
+	Digest *string `json:"digest,omitempty"`
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A

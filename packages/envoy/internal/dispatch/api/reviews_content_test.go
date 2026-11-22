@@ -158,6 +158,96 @@ func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
 	}
 }
 
+// A document's version answers digest, what an approval of it covers, on the version read and on
+// the artifact read's version list alike. The issue is born converted, so version 1 of its spec
+// holds the version_renders row its pass recorded, and answers its record's digest
+// (recordedDigest), which is not the sha256 of its markdown. An upload of notes.md, which no query
+// covers, and a version of the spec written straight into artifact_versions as an older build
+// wrote one, which no pass has stated, each answer the sha256 of their stored markdown. A review
+// of version 1 pins that version's digest, as its approval on the artifact read names it. The
+// version read's sha256 names the bytes it answers in every case.
+func TestAVersionAnswersTheDigestAnApprovalCovers(t *testing.T) {
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	issue := createInteractionIssue(t, handler, "DGST", "A version's digest", revisedSpec)
+	spec := issue.PrimaryArtifactID
+	specBytes := contentHash(versionMarkdown(t, handler, spec, 1))
+	recorded := recordedDigest(t, database, issue.Key, graphstore.QuerySpec, spec, 1)
+	if recorded == specBytes {
+		t.Fatalf("version 1 of the spec records %s, the sha256 of its markdown, want its record's digest", recorded)
+	}
+	digest := requireVersionDigest(t, handler, "version 1 of the converted spec", spec, 1, recorded, specBytes)
+
+	notesMarkdown := "# Notes\n\nNo query covers this document.\n"
+	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "notes.md", "content": notesMarkdown,
+	}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload notes.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	notes := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact
+	if notes.Kind != "doc" {
+		t.Fatalf("notes.md is a %s, want a document", notes.Kind)
+	}
+	notesBytes := contentHash(versionMarkdown(t, handler, notes.ID, 1))
+	requireVersionDigest(t, handler, "version 1 of notes.md", notes.ID, 1, notesBytes, notesBytes)
+
+	review := reviewDocument(t, handler, spec, "alice", "approved", "")
+	if review.Version != 1 || review.ContentSHA256 == nil || *review.ContentSHA256 != digest {
+		t.Fatalf("alice's approval of version %d pins %s, want version 1's digest %s", review.Version, deref(review.ContentSHA256), digest)
+	}
+	read := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+spec, nil, "alice"))
+	if approval := read.Approval; approval == nil || approval.ContentSHA256 == nil || *approval.ContentSHA256 != digest {
+		t.Fatalf("the spec's approval = %#v, want it to pin version 1's digest %s", approval, digest)
+	}
+
+	older := "The spec's opening words, as an older build stored them.\n"
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		select artifact_id, 2, $2, authors from artifact_versions where artifact_id = $1 and number = 1
+	`, spec, older); err != nil {
+		t.Fatalf("write version 2 as an older build would: %v", err)
+	}
+	requireVersionDigest(t, handler, "version 2 of the spec, which no pass stated", spec, 2, contentHash(older), contentHash(older))
+}
+
+// requireVersionDigest fails unless version number of the document artifactID answers digest as
+// its digest on the version read and on the artifact read's version list, and bytes as the
+// version read's sha256, naming the read that differs; it answers the digest the version read
+// answers.
+func requireVersionDigest(t *testing.T, handler http.Handler, what, artifactID string, number int, digest, bytes string) string {
+	t.Helper()
+	version := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/versions/"+strconv.Itoa(number), nil, "alice")
+	if version.Code != http.StatusOK {
+		t.Fatalf("%s: the version read: status=%d body=%s", what, version.Code, version.Body.String())
+	}
+	answered := decodeBody[model.Version](t, version)
+	if answered.Digest == nil || *answered.Digest != digest {
+		t.Errorf("%s: the version read answers digest %q, want %s", what, deref(answered.Digest), digest)
+	}
+	if answered.SHA256 == nil || *answered.SHA256 != bytes {
+		t.Errorf("%s: the version read answers sha256 %q, want %s", what, deref(answered.SHA256), bytes)
+	}
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("%s: the artifact read: status=%d body=%s", what, read.Code, read.Body.String())
+	}
+	listed := -1
+	versions := decodeBody[model.Artifact](t, read).Versions
+	for index := range versions {
+		if versions[index].Number == number {
+			listed = index
+		}
+	}
+	if listed < 0 {
+		t.Errorf("%s: the artifact read's version list holds no version %d", what, number)
+	} else if listedDigest := versions[listed].Digest; listedDigest == nil || *listedDigest != digest {
+		t.Errorf("%s: the artifact read's version list answers digest %q, want %s", what, deref(listedDigest), digest)
+	}
+	return deref(answered.Digest)
+}
+
 // restoreEvents is what the issue's event log holds of version number of the document artifactID:
 // the artifact.approved of a review of that version, if any, and the version's artifact.version,
 // each as the log lists it; the zero carryEvent where the log holds none.

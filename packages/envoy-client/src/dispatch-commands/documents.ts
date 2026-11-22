@@ -390,7 +390,9 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
   // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
   // token, from the text's asks (liveTextAsks). A version read prints the stored bytes, which are
-  // the record a person approved, and names none.
+  // the record a person approved, and names none. It names the version's digest under its bytes'
+  // hash: what an approval of the version covers, which the approval line's content sha256 is
+  // compared with. A server that predates it answers none.
   const answered = version === undefined ? answeredAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
@@ -399,6 +401,9 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
     ...answered,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
+      : []),
+    ...("digest" in document && document.digest !== undefined
+      ? [`Digest: sha256:${document.digest}`]
       : []),
     ...(approval === undefined ? [] : [approval]),
   ];

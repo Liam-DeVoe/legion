@@ -1256,7 +1256,9 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	// The artifact read is the one read of a list of versions that answers each one's digest, what
+	// an approval of it covers (artifactVersionDigestsStatement).
+	artifact, err := s.readArtifactForRequest(r.Context(), s.deps.Store.Pool, r, artifactVersionDigestsStatement)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -2082,7 +2084,7 @@ func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) 
 	if err != nil {
 		return nil, err
 	}
-	if err := loadArtifactDetails(ctx, q, artifactPointers(artifacts)); err != nil {
+	if err := loadArtifactDetails(ctx, q, artifactPointers(artifacts), artifactVersionsStatement); err != nil {
 		return nil, err
 	}
 	return artifacts, nil
@@ -2122,36 +2124,38 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 }
 
 // queueArtifactDetails queues in b what a list of artifacts carries beside its rows - every
-// artifact's versions in one statement rather than a query per artifact, and every document's
-// latest review and open approval request (queueApprovals) - and returns the apply that fills
-// them in once the batch is closed. The statements are queued in that order wherever artifacts
-// are read with their details: the issue read queues them beside its other reads
-// (readIssueDetails), and a read of its own sends them as a batch of its own (loadArtifactDetails).
-// The apply fills the versions first, since an approval's state reads them (applyApprovals), and
-// leaves an artifact with no version a non-nil empty list (applyVersions). No artifact queues
-// nothing and its apply fills nothing.
-func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
-	versions := map[string][]model.Version{}
+// artifact's versions in one statement rather than a query per artifact, read by versions
+// (artifactVersionsStatement, or artifactVersionDigestsStatement for a read that answers each
+// version's digest), and every document's latest review and open approval request
+// (queueApprovals) - and returns the apply that fills them in once the batch is closed. The
+// statements are queued in that order wherever artifacts are read with their details: the issue
+// read queues them beside its other reads (readIssueDetails), and a read of its own sends them as
+// a batch of its own (loadArtifactDetails). The apply fills the versions first, since an
+// approval's state reads them (applyApprovals), and leaves an artifact with no version a non-nil
+// empty list (applyVersions). No artifact queues nothing and its apply fills nothing.
+func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact, versions string) func() {
+	byArtifact := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
-		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
-			return scanVersionsByArtifact(rows, versions)
+		b.Queue(versions, ids).Query(func(rows pgx.Rows) error {
+			return scanVersionsByArtifact(rows, byArtifact)
 		})
 	}
 	approvals := queueApprovals(b, artifacts)
 	return func() {
-		applyVersions(artifacts, versions)
+		applyVersions(artifacts, byArtifact)
 		approvals()
 	}
 }
 
-// loadArtifactDetails sends queueArtifactDetails's statements as a batch of their own on q, for a
-// read that queues nothing else: an issue's artifacts (loadArtifacts), a project's
-// (listProjectArtifacts), one artifact read by id (loadArtifact) and one read by ref_key or as
-// an issue's spec (loadArtifactRow). The batch holds q's connection until its results close, so
+// loadArtifactDetails sends queueArtifactDetails's statements, its versions read by versions, as
+// a batch of their own on q, for a read that queues nothing else: an issue's artifacts
+// (loadArtifacts), a project's (listProjectArtifacts), one artifact read by id (loadArtifact), one
+// read as an issue's spec (loadArtifactRow), a renamed one (renameArtifact) and the one a request
+// names (readArtifactForRequest). The batch holds q's connection until its results close, so
 // nothing else reads the database in between.
-func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
+func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact, versions string) error {
 	batch := &pgx.Batch{}
-	apply := queueArtifactDetails(batch, artifacts)
+	apply := queueArtifactDetails(batch, artifacts, versions)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -2178,30 +2182,47 @@ func parseArtifactID(id string) (string, error) {
 	return parsed.String(), nil
 }
 
+// loadArtifactForRequest reads the artifact the request names with the details every artifact
+// read carries, its versions with no digest (readArtifactForRequest).
 func (s *server) loadArtifactForRequest(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
+	return s.readArtifactForRequest(ctx, q, r, artifactVersionsStatement)
+}
+
+// readArtifactForRequest reads the row of the artifact the request names (artifactRowForRequest)
+// and then its details, its versions read by versions (loadArtifactDetails): two round trips, as
+// every read of an artifact with its details costs once its row is found.
+func (s *server) readArtifactForRequest(ctx context.Context, q queryer, r *http.Request, versions string) (model.Artifact, error) {
+	artifact, err := s.artifactRowForRequest(ctx, q, r)
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}, versions); err != nil {
+		return model.Artifact{}, err
+	}
+	return artifact, nil
+}
+
+// artifactRowForRequest reads the row alone of the artifact the request names: an agent's
+// conversation's by its slug (agentArtifactRow), an issue's or a project's by its slug or its
+// unambiguous filename (resolveDocumentReference), or any artifact by its id.
+func (s *server) artifactRowForRequest(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
 	if r.PathValue("session_id") != "" {
-		return s.loadAgentArtifact(ctx, q, r)
+		return agentArtifactRow(ctx, q, r)
 	}
 	if key := r.PathValue("key"); key != "" {
 		target := artifactTarget{Project: key}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/issues/") {
 			target = artifactTarget{IssueKey: &key}
 		}
-		return s.loadArtifactByDocumentReference(ctx, q, target, r.PathValue("slug"))
+		return resolveDocumentReference(ctx, s, q, target, r.PathValue("slug"),
+			func(refKey string) (model.Artifact, error) { return artifactRowByRefKey(ctx, q, refKey) },
+			func(id string) (model.Artifact, error) { return loadArtifactRowByID(ctx, q, id) },
+		)
 	}
-	return s.loadArtifact(ctx, q, r.PathValue("id"))
+	return loadArtifactRowByID(ctx, q, r.PathValue("id"))
 }
 
 const documentHintLimit = 8
-
-// loadArtifactByDocumentReference reads an issue's or a project's artifact at slug reference, or
-// the one document whose filename it is.
-func (s *server) loadArtifactByDocumentReference(ctx context.Context, q queryer, target artifactTarget, reference string) (model.Artifact, error) {
-	return resolveDocumentReference(ctx, s, q, target, reference,
-		func(refKey string) (model.Artifact, error) { return s.loadArtifactByRefKey(ctx, q, refKey) },
-		func(id string) (model.Artifact, error) { return s.loadArtifact(ctx, q, id) },
-	)
-}
 
 // resolveDocumentReference is the one resolution of an issue's or a project's document reference,
 // shared by the full read and the summary: the artifact at slug reference (byRefKey, given the
@@ -2442,29 +2463,30 @@ func (s *server) loadArtifact(ctx context.Context, q queryer, id string) (model.
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}); err != nil {
+	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}, artifactVersionsStatement); err != nil {
 		return model.Artifact{}, err
 	}
 	return artifact, nil
 }
 
-func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
-	return s.loadArtifactRow(ctx, q, q.QueryRow(ctx, `
+// artifactRowByRefKey reads the row alone of the artifact at refKey, answering the 404 every
+// artifact read answers where none is (scanArtifactOrNotFound).
+func artifactRowByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
+	return scanArtifactOrNotFound(q.QueryRow(ctx, `
 		select `+artifactColumns+`
 		from artifacts where ref_key = $1
 	`, refKey))
 }
 
-// loadArtifactRow reads one artifact from the row a lookup by ref_key or by any other column
-// returns, with the details every artifact read carries - its versions, and its approval when it
-// is a document - in one batch (loadArtifactDetails), so the read costs that lookup and one
-// round trip more.
+// loadArtifactRow reads one artifact from the row a lookup by any column returns, with the details
+// every artifact read carries - its versions, and its approval when it is a document - in one batch
+// (loadArtifactDetails), so the read costs that lookup and one round trip more.
 func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifactOrNotFound(row)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}); err != nil {
+	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}, artifactVersionsStatement); err != nil {
 		return model.Artifact{}, err
 	}
 	return artifact, nil
@@ -2472,8 +2494,8 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 
 // scanArtifactOrNotFound reads the artifact's own row, answering the 404 every artifact read
 // answers for a row that is not there, the one idRoutes names for these routes. It is the step
-// both reads of an artifact share: the one that goes on to carry the versions and the approval
-// (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
+// every read of an artifact shares: the one that goes on to carry the versions and the approval
+// (loadArtifactRow) and those that take the row alone (loadArtifactRowByID, artifactRowByRefKey).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifact(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -2592,14 +2614,35 @@ func lookupArtifactByNameOrSlug(ctx context.Context, q queryer, target artifactT
 // sha256. The size never reads a document's markdown (model.VersionSize).
 const versionColumns = `v.number, v.named, v.summary, v.authors, v.created_at, ` + model.VersionSize + `, v.mime, v.sha256`
 
-// artifactVersionsStatement reads the versions of every artifact in $1 at once, so a list of
-// artifacts costs one statement rather than one per artifact. Ordering by the artifact first
-// leaves each artifact's own versions in `order by v.number`, the order one artifact's read
-// answers; scanVersionsByArtifact keys them by the artifact id the columns end on.
-const artifactVersionsStatement = `
-		select ` + versionColumns + `, v.artifact_id::text
+// versionDigest is the SQL a document version's Digest is selected with over artifact_versions
+// aliased v (model.Version): artifact_version_text_sha256, the one function a review's
+// content_sha256 is pinned from, so a version answers what an approval of it covers. A file's or an
+// image's version stores no markdown and holds no version_renders row, so it selects null. Where
+// no row records a digest, the function hashes the version's stored markdown, which no other read
+// of a version list reads (model.VersionSize), so only the two reads that answer a digest select
+// it: the version read (loadVersion) and the artifact read's list (artifactVersionDigestsStatement).
+const versionDigest = `artifact_version_text_sha256(v.artifact_id, v.number)`
+
+// artifactVersionsSelecting is the statement that reads the versions of every artifact in $1 at
+// once, so a list of artifacts costs one statement rather than one per artifact. Ordering by the
+// artifact first leaves each artifact's own versions in `order by v.number`, the order one
+// artifact's read answers. After versionColumns each row holds the version's artifact id, which
+// scanVersionsByArtifact keys it by, and then digest, which it reads as the version's Digest.
+func artifactVersionsSelecting(digest string) string {
+	return `
+		select ` + versionColumns + `, v.artifact_id::text, ` + digest + `
 		from artifact_versions v where v.artifact_id = any($1::uuid[]) order by v.artifact_id, v.number
 	`
+}
+
+var (
+	// artifactVersionsStatement reads a list's versions with no digest: every read of a list of
+	// versions but the artifact read's answers none, so none of them reads a version's markdown.
+	artifactVersionsStatement = artifactVersionsSelecting(`null::text`)
+	// artifactVersionDigestsStatement reads them with each version's digest (versionDigest), which
+	// the artifact read answers (getArtifact).
+	artifactVersionDigestsStatement = artifactVersionsSelecting(versionDigest)
+)
 
 // scanVersion reads versionColumns from row; extra receives the columns after them.
 func scanVersion(row pgx.Row, extra ...any) (model.Version, error) {
@@ -2620,15 +2663,17 @@ func scanVersion(row pgx.Row, extra ...any) (model.Version, error) {
 	return version, nil
 }
 
-// scanVersionsByArtifact reads the rows artifactVersionsStatement returns into versions, keyed by
-// artifact id.
+// scanVersionsByArtifact reads the rows artifactVersionsStatement or
+// artifactVersionDigestsStatement returns into versions, keyed by artifact id.
 func scanVersionsByArtifact(rows pgx.Rows, versions map[string][]model.Version) error {
 	for rows.Next() {
 		var artifactID string
-		version, err := scanVersion(rows, &artifactID)
+		var digest *string
+		version, err := scanVersion(rows, &artifactID, &digest)
 		if err != nil {
 			return err
 		}
+		version.Digest = digest
 		versions[artifactID] = append(versions[artifactID], version)
 	}
 	return rows.Err()
@@ -2667,16 +2712,17 @@ func (s *server) loadVersions(ctx context.Context, q queryer, artifactID string)
 }
 
 // loadVersion reads one version of a document but its bytes, which the content route answers as
-// the renderer answers them (docs.RenderVersion) and sizes and digests from that answer.
+// the renderer answers them (docs.RenderVersion) and sizes and hashes from that answer, with the
+// digest an approval of the version covers (versionDigest).
 func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int) (model.Version, error) {
 	var version model.Version
 	var authors []byte
 	if err := q.QueryRow(ctx, `
-		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256
+		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, `+versionDigest+`
 		from artifact_versions v where v.artifact_id = $1 and v.number = $2
 	`, artifactID, number).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
-		&version.MIME, &version.SHA256,
+		&version.MIME, &version.SHA256, &version.Digest,
 	); err != nil {
 		return model.Version{}, err
 	}

@@ -179,7 +179,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read a document's metadata and current version, with the room the document is edited in (room: its issue room's tree artifact, or its own id) and the fragment of that room that holds it (fragment). An issue's tree artifact (kind tree) reads as a document does. */
+    /** @description Read a document's metadata and current version, with the room the document is edited in (room: its issue room's tree artifact, or its own id) and the fragment of that room that holds it (fragment). Each version of a document in versions carries digest, what an approval of that version covers, as GET /api/v1/artifacts/{id}/versions/{number} answers it; no other read of a list of versions carries it. An issue's tree artifact (kind tree) reads as a document does. */
     get: operations["getApiV1ArtifactsById"];
     put?: never;
     post?: never;
@@ -577,7 +577,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. One renderer answers a document's version, JSON and download alike, and names what its bytes are in the Dispatch-Render-Source header: tree for a version the server rendered from the issue's tree, rendered again from the tree as of that version's time; stored for every other version, its stored markdown byte for byte; none for a version that stores no markdown, whose answer holds no bytes and is no document. A version's size and sha256 are those of the bytes answered. A version's author carries proven: true only when the credential of every write that author made to the version proved it. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. One renderer answers a document's version, JSON and download alike, and names what its bytes are in the Dispatch-Render-Source header: tree for a version the server rendered from the issue's tree, rendered again from the tree as of that version's time; stored for every other version, its stored markdown byte for byte; none for a version that stores no markdown, whose answer holds no bytes and is no document. A version's size and sha256 are those of the bytes answered. A document's version also answers digest, what an approval of it covers and a review's content_sha256 pins (artifact_version_text_sha256): the digest of its query's record where the pass that stated the version recorded one, and otherwise the sha256 of its stored markdown, which a version of a document no query covers always answers; so an approval is compared with digest, not with sha256. A version's author carries proven: true only when the credential of every write that author made to the version proved it. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1418,7 +1418,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue document by slug or unambiguous filename. */
+    /** @description Read an issue document by slug or unambiguous filename, as GET /api/v1/artifacts/{id} reads it, each version of a document carrying its digest. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlug"];
     put?: never;
     post?: never;
@@ -2811,7 +2811,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read a project document by slug or unambiguous filename. */
+    /** @description Read a project document by slug or unambiguous filename, as GET /api/v1/artifacts/{id} reads it, each version of a document carrying its digest. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlug"];
     put?: never;
     post?: never;
@@ -3813,6 +3813,7 @@ export interface components {
       authors: components["schemas"]["Actor"][] | null;
       /** Format: date-time */
       created_at: string;
+      digest?: string;
       markdown: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       markdown_tree?: {
@@ -7588,6 +7589,7 @@ export interface components {
       authors: components["schemas"]["Actor"][] | null;
       /** Format: date-time */
       created_at: string;
+      digest?: string;
       mime?: string;
       named: boolean;
       number: number;

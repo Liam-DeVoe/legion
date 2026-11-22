@@ -773,6 +773,9 @@ else
   person_send POST "/api/v1/artifacts/$artifact/reviews" '{"state":"approved"}'
   want_status 201 review "$dev_login approves the spec of $both"
   pass review "$dev_login approved $both's spec, answering the request that named both"
+  # A review pins the digest of what the person approved, the version read's digest: for a document
+  # a query covers, as both of these are, its record's digest, which is not the sha256 of its
+  # markdown. The version read's sha256 still names the bytes it answers.
   for document in spec.md verification.md; do
     artifact_id review "$both" "$document"
     get "/api/v1/artifacts/$artifact/versions/1"
@@ -780,17 +783,38 @@ else
     jq -j .markdown "$work/body" >"$work/approved-$document"
     h1="$(sha256sum "$work/approved-$document" | cut -d' ' -f1)"
     expect review "$document version read names its own bytes" "\"$h1\"" '.sha256'
+    d1="$(jq -er .digest "$work/body")" || fail review "$document version 1 names its digest" "$(body)"
+    [[ "$d1" != "$h1" ]] ||
+      fail review "$document version 1's digest is its record's, not its markdown's sha256" "$d1 = $h1"
+    pass review "$document version 1's digest is its record's, not its markdown's sha256"
+    printf '%s' "$d1" >"$work/digest-$document"
     person_send GET "/api/v1/artifacts/$artifact/reviews"
     want_status 200 review "$both's $document reviews answer"
     expect review "$both's $document carries one approved person's review" \
       '[["approved","person",1]]' '[.[] | [.state, .kind, .version]]'
-    expect review "$both's $document review names the sha256 of the bytes approved" \
-      "\"$h1\"" '.[0].content_sha256'
+    expect review "$both's $document review names the digest of the version approved" \
+      "\"$d1\"" '.[0].content_sha256'
     expect review "$both's $document review was hashed at approval" '"insert"' '.[0].content_sha256_source'
+    get "/api/v1/artifacts/$artifact"
+    want_status 200 review "$both's $document answers"
+    expect review "$both's $document approval names the digest of the version approved" \
+      "\"$d1\"" '.approval.content_sha256'
+    expect review "$both's $document version list names version 1's digest" \
+      "\"$d1\"" '.versions[] | select(.number == 1) | .digest'
+    run review "read $document version 1 through the CLI" doc-read --issue "$both" \
+      --artifact "$document" --version 1
+    grep -qF "Content: sha256:$h1" "$work/out" ||
+      fail review "the CLI names $document version 1's bytes" "$(<"$work/out")"
+    grep -qF "Digest: sha256:$d1" "$work/out" ||
+      fail review "the CLI names $document version 1's digest" "$(<"$work/out")"
+    grep -qF "content sha256:$d1" "$work/out" ||
+      fail review "the CLI's approval line names $document version 1's digest" "$(<"$work/out")"
+    pass review "the CLI names $document version 1's bytes, and its digest on its line and the approval's"
   done
 
   artifact_id review "$both" spec.md
   h1="$(sha256sum "$work/approved-spec.md" | cut -d' ' -f1)"
+  d1="$(<"$work/digest-spec.md")"
   cp "$work/approved-spec.md" "$work/revised-spec.md"
   printf '\nA new line the person has not approved.\n' >>"$work/revised-spec.md"
   # This upload replaces the spec whole, so it names the token of the version it replaces, through the multipart
@@ -804,15 +828,16 @@ else
   expect review "version 2 read names its own bytes" "\"$h2\"" '.sha256'
   person_send GET "/api/v1/artifacts/$artifact/reviews"
   want_status 200 review "the person's review still answers after the edit"
-  expect review "the review does not follow the latest bytes" "\"$h1\"" '.[0].content_sha256'
+  expect review "the review does not follow the latest version" "\"$d1\"" '.[0].content_sha256'
   get "/api/v1/artifacts/$artifact"
   want_status 200 review "the changed document answers"
   expect review "an unapproved edit leaves the approval stale" '"stale"' '.approval.state'
-  expect review "the stale approval still names the approved bytes" "\"$h1\"" '.approval.content_sha256'
+  expect review "the stale approval still names the approved version's digest" "\"$d1\"" '.approval.content_sha256'
   run review "read the approved spec version through the CLI" doc-read --issue "$both" --version 1
   grep -qF "Content: sha256:$h1" "$work/out" || fail review "the CLI names version 1's bytes" "$(<"$work/out")"
-  grep -qF "content sha256:$h1" "$work/out" || fail review "the CLI names the approval's bytes" "$(<"$work/out")"
-  pass review "the CLI's approved-version content and approval hashes match"
+  grep -qF "Digest: sha256:$d1" "$work/out" || fail review "the CLI names version 1's digest" "$(<"$work/out")"
+  grep -qF "content sha256:$d1" "$work/out" || fail review "the CLI names the approval's digest" "$(<"$work/out")"
+  pass review "the CLI's approved-version digest and approval digest match"
   run review "read the changed spec version through the CLI" doc-read --issue "$both" --version 2
   grep -qF "Content: sha256:$h2" "$work/out" || fail review "the CLI names version 2's bytes" "$(<"$work/out")"
   pass review "the CLI's latest-version content differs from its stale approval"
@@ -831,6 +856,17 @@ else
   expect review "a request naming the spec alone records nothing on the Verification document" \
     '[]' '[.[] | [.state, .kind, .version]]'
 fi
+
+# A document no query covers has no record, so its version's digest is the sha256 of its markdown.
+printf '# Notes\n\nNo query covers this document.\n' >"$work/notes.md"
+upload review "$both" notes.md "$work/notes.md"
+artifact_id review "$both" notes.md
+get "/api/v1/artifacts/$artifact/versions/1"
+want_status 200 review "$both's notes.md version 1 answers"
+hn="$(jq -j .markdown "$work/body" | sha256sum | cut -d' ' -f1)"
+expect review "notes.md version read names its own bytes" "\"$hn\"" '.sha256'
+expect review "notes.md, which no query covers, answers its markdown's sha256 as its digest" \
+  "\"$hn\"" '.digest'
 
 # --- reading: every result of a check, each commit whole, and one the repository does not hold ---
 
