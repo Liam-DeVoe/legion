@@ -551,7 +551,10 @@ var planSettings = []string{
 // values) and under a generic plan alike. The generic plan is the one at risk: it cannot assume
 // what an address parameter holds, so an arm whose index depends on the bound value loses it
 // there, and a fixture this small never reaches a generic plan on its own
-// (api.TestListIssueAsksOpenQueryUsesAsksOpenIndex says why), so the mode is forced.
+// (api.TestListIssueAsksOpenQueryUsesAsksOpenIndex says why), so the mode is forced. The one scan
+// carrying no index condition it takes is the partial index of the comments whose pointers the
+// store does not hold, ANDed beside the key index of an arm over a comment's pointers
+// (scansNoIndexServes, migration 20261122100121).
 func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 	fixture := newBacklinkFixture(t)
 	ctx := context.Background()
@@ -594,7 +597,7 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 					"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
 						types, literals, planSettings...),
 				} {
-					if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+					if unkeyed := scansNoIndexServes(t, plan); len(unkeyed) > 0 {
 						t.Errorf("the %s backlink count over %s excluding %v reads %s under its %s plan, which no index serves:\n%s",
 							toKind, shape.name, exclusions, strings.Join(unkeyed, ", "), mode, plan)
 					}
@@ -613,6 +616,46 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 			}
 		}
 	}
+}
+
+// unstoredCommentsIndex is the partial index of the comments whose pointers the store does not
+// hold, comments (id) where not tuples_stored (migration 20261122100121_comments_tuples_unstored),
+// which the block-index tick's catch-up passes walk. Its predicate is the test each arm over a
+// comment's pointers makes of its row (pointersNotStored), so the planner may AND the whole of it
+// into the bitmap that arm's own index builds: a Bitmap Index Scan with no index condition, whose
+// rows are exactly those the arm's test admits, and which the migration keeps near empty. The
+// arm's own index still serves the read, by the arm's key, beside it.
+const unstoredCommentsIndex = "comments_tuples_unstored"
+
+// scansNoIndexServes is every scan of plan ScansWithoutIndexCond names but one kind: a Bitmap Index
+// Scan of unstoredCommentsIndex that a BitmapAnd of a Bitmap Heap Scan on comments ANDs with a
+// scan carrying an index condition, which RequireIndexKeyed holds to its index's first key. That
+// is the one read without an index condition this test takes: the same index read alone, under a
+// BitmapAnd with no keyed scan, or under any other node, is still named, as is any other index.
+func scansNoIndexServes(t *testing.T, plan json.RawMessage) []string {
+	t.Helper()
+	unkeyed := explaintest.ScansWithoutIndexCond(t, plan)
+	beside := "Bitmap Index Scan using " + unstoredCommentsIndex
+	for _, scan := range explaintest.BitmapHeapScans(t, plan, "comments") {
+		if scan.Bitmap.Type != "BitmapAnd" {
+			continue
+		}
+		narrowing, keyed := 0, false
+		for _, member := range scan.BitmapIndexScans {
+			switch {
+			case member.Index == unstoredCommentsIndex && member.IndexCond == "":
+				narrowing++
+			case member.IndexCond != "":
+				keyed = true
+			}
+		}
+		for ; keyed && narrowing > 0; narrowing-- {
+			if at := slices.Index(unkeyed, beside); at >= 0 {
+				unkeyed = slices.Delete(unkeyed, at, at+1)
+			}
+		}
+	}
+	return unkeyed
 }
 
 // backlinkAddressShape is one way the count binds the addresses it counts for, as
