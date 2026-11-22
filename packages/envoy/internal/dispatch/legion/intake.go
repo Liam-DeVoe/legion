@@ -449,24 +449,32 @@ func (in *Intake) SettingsChanged(ctx context.Context) {
 	}
 }
 
-// rememberForgotten reads, in one query, the store each project's cursor drops (cursor.forgets:
-// a previous_state_id, and no store or another store), and puts what it read in place of the
-// intake's memory of them (forgotten). One runs at a time (remembering), so a read made earlier
-// never replaces one made later. A read that fails keeps the memory as it was and logs at WARN.
+// rememberForgotten reads, in one query, each cursor that records a store a setting named before
+// (cursorColumns, scanCursor, with the project after them) and keeps the store of each one that
+// drops it (cursor.forgets), and puts what it kept in place of the intake's memory of them
+// (forgotten). One runs at a time (remembering), so a read made earlier never replaces one made
+// later. A read that fails keeps the memory as it was and logs at WARN.
 func (in *Intake) rememberForgotten(ctx context.Context) {
 	in.remembering.Lock()
 	defer in.remembering.Unlock()
-	rows, err := in.pool.Query(ctx, `
-		select project, previous_state_id from legion_event_cursors
-		where previous_state_id is not null and state_id is distinct from previous_state_id
-	`)
+	rows, err := in.pool.Query(ctx, `select `+cursorColumns+`, project from legion_event_cursors where previous_state_id is not null`)
 	forgotten := map[string]string{}
 	if err == nil {
-		var project, stateID string
-		_, err = pgx.ForEachRow(rows, []any{&project, &stateID}, func() error {
-			forgotten[project] = stateID
-			return nil
-		})
+		defer rows.Close()
+		for rows.Next() {
+			var project string
+			current, scanErr := scanCursor(rows, &project)
+			if scanErr != nil {
+				err = scanErr
+				break
+			}
+			if current.forgets(*current.previousStateID) {
+				forgotten[project] = *current.previousStateID
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -1253,11 +1261,12 @@ func (c cursor) forgets(stateID string) bool {
 // cursorColumns is the legion_event_cursors select list scanCursor reads, in scan order.
 const cursorColumns = `state_url, run, last_seq, read_reasons, read_tried_at, read_holder, read_holds, state_id, schema_version, previous_state_id`
 
-// scanCursor decodes one cursorColumns row, or no row as a cursor that does not exist.
-func scanCursor(row pgx.Row) (cursor, error) {
+// scanCursor decodes one cursorColumns row, or no row as a cursor that does not exist. extra
+// takes the columns a query selects after cursorColumns, in order.
+func scanCursor(row pgx.Row, extra ...any) (cursor, error) {
 	current := cursor{exists: true}
-	err := row.Scan(&current.stateURL, &current.run, &current.lastSeq, &current.readReasons, &current.readTriedAt,
-		&current.readHolder, &current.readHolds, &current.stateID, &current.schemaVersion, &current.previousStateID)
+	err := row.Scan(append([]any{&current.stateURL, &current.run, &current.lastSeq, &current.readReasons, &current.readTriedAt,
+		&current.readHolder, &current.readHolds, &current.stateID, &current.schemaVersion, &current.previousStateID}, extra...)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cursor{}, nil
 	}
