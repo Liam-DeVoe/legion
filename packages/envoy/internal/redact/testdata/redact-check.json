@@ -5110,6 +5110,13 @@
       "production": "projectrepos readAnswer and Repositories: a key, a value and a refusal code Dispatch answers are named as the rule reads them (dispatchread.Answer.Said, RefusalCode)"
     },
     {
+      "id": "listener-edge-repositories-answer-words",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadNamesTheBrokersWordsAsTheRuleReadsThem",
+      "production": "listener edgeRepositories.read: the broker's refusal, the project it answered about and a repository that is no owner/name are named as the rule reads them, with the bearer the read carried redacted (redact.Answer.Words and Said)"
+    },
+    {
       "id": "projectaccess-answer-words-member-kind-plain",
       "requirement": "r4-unchanged",
       "package": "./internal/cipher/projectaccess",
