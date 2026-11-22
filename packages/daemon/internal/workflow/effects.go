@@ -678,16 +678,6 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	return e.started(ctx, tx, issue, role, in.to, in.task, in.entry, startMarks{resumeTask: true, stored: true})
 }
 
-// PromotedWorkerClaim is the claim StartPromotedWorker's start of role on issue reaches: the
-// claim of the agent of the step issue stands in (stepToken), which that start's entry writes on
-// the role's phases row, and role's own token on an issue with no plan rows. The promotion weighs
-// the run of this claim before it starts it (admit's startMidPhaseMembers), and reads it here
-// rather than from the row (record.WorkerClaim) because the re-admission that brought the member
-// back cleared the row's step with the rest of the generation (record.Store.ClearTreeGeneration).
-func (e *Engine) PromotedWorkerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
-	return e.placeToken(ctx, tx, issue, record.StandsAt(issue), role)
-}
-
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
 // the claim's machine how to read that entry and that task, and how to start the claim
 // (record.SuperviseRequest), and the one mark the record reads instead, whether the start is news

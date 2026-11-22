@@ -2100,11 +2100,16 @@ type Store interface {
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// verdict and summary, and the step each of its phases rows ran, a step of the last
+	// generation's plan. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
+	// ClearTreeGeneration drops them for every issue of tree, the re-admission of its root, which
+	// raises the generation of the root alone: every other member keeps its generation, its plan
+	// and its task's place, so the phases rows of a member keep the steps they ran, each naming
+	// the claim of its step's agent (WorkerClaim).
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
@@ -2909,12 +2914,20 @@ func StandsTwice(role claim.Role, steps []PlanStep) bool {
 // (StepTask set), which the step's entry writes. A step's agent can be the agent of a key, whose
 // claim is the one it started on an earlier step of another role, so a role's own token does not
 // name it. Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
-// plan rows, a row a new generation cleared (ClearGeneration clears StepTask and keeps Claim), a
-// row no entry was raised on, and a row the release before wrote. project is the project's token,
-// as claim.NewToken takes it, and a role that is no role of Legion yields its refusal.
+// plan rows, a row the issue's own new generation cleared (ClearGeneration, and ClearTreeGeneration
+// for the root it re-admits, clear StepTask and keep Claim), a row no entry was raised on, and a row
+// the release before wrote. project is the project's token, as claim.NewToken takes it, and a role
+// that is no role of Legion yields its refusal.
 //
 // Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
-// names a role reaches the agent that works that role's step when the row runs.
+// names a role reaches the agent that works that role's step when the row runs. It is one rule with
+// the start of that step, which names the claim the step's entry writes on the row (workflow's
+// stepReach), because a row of no step stands only where the agent of the place its issue stands
+// at is the role's own: an issue a new generation put back at admitted, a run of the release
+// before, whose plans name no key, and an issue with no plan rows. The clear of a tree leaves the
+// steps of every member whose generation it keeps (Store.ClearTreeGeneration), so no row loses its
+// step while its issue stands at a step of a keyed agent, and the start of a step and every reader
+// of its worker name one agent.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
 	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
 		return row.Claim, nil

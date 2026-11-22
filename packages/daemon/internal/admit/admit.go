@@ -2591,7 +2591,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 //
 // The claims are each stored claim of the member (record.Store.IssueClaims), a keyed agent's and a
 // role of the deployment's among them, and the phase's owner is the agent of the step the member
-// stands in, read with the member (record.Issue.RoleAt, workflow's PromotedWorkerClaim).
+// stands in: its role read with the member (record.Issue.RoleAt), its claim read off the role's
+// phases row (record.WorkerClaim), which the re-admission leaves on the step the member stands at
+// (record.Store.ClearTreeGeneration).
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
@@ -2673,13 +2675,20 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner}
-		// The phase's owner is the claim the promotion's start reaches (PromotedWorkerClaim): the
-		// agent of the step the member stands in, which can be a keyed agent on a step of another
-		// role. Its token's refusal stays the fact's, as it was: the phase's own role is the
-		// member's work rather than a session brought back.
+		// The phase's owner is the claim the promotion's start reaches: the agent of the step the
+		// member stands in, which can be a keyed agent on a step of another role, read as every
+		// reader of a role's worker reads it (record.WorkerClaim), off the row the step's entry
+		// wrote it on. The member keeps its generation and its rows keep their steps through the
+		// re-admission, so it is the claim the start names (workflow.Engine.StartPromotedWorker).
+		// Its token's refusal stays the fact's, as it was: the phase's own role is the member's
+		// work rather than a session brought back.
 		var ownerToken claim.Token
 		if owner != "" {
-			token, err := a.engine.PromotedWorkerClaim(ctx, tx, member, owner)
+			rows, err := a.store.Phases(ctx, tx, member.Key)
+			if err != nil {
+				return err
+			}
+			token, err := record.WorkerClaim(project, member.Key, owner, rows)
 			if err != nil {
 				return err
 			}
