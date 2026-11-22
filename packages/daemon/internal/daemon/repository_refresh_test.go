@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -1271,20 +1273,31 @@ func leftForRecovery(t *testing.T, w *workflowRuntime, child dispatch.Issue, tre
 // event of its own): the event's silence is noted with the repository it was silent for, and that
 // repository's recovery takes the issue in whatever it resolves to. Scoped by its resolution at
 // the recovery alone, it waited for the next boot.
+//
+// The move and GitHub's answer are made together while the refresher is parked with no job to run
+// (heldRefresher), so the pass that admits the issue is the recovery the refresher's clock runs in
+// the turn after the release, after that turn's second job has read zeta/tools again and GitHub's
+// answer has moved it among the repositories to recover (readAnswered). A pass that ran between the
+// move and the answer would see the move with zeta/tools still unread and admit the issue without
+// GitHub's answer, and one that listed before the move and read GitHub after the answer would admit
+// it on zeta/tools.
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	refresher := &heldRefresher{gate: make(chan struct{})}
+	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
 	const key = "LEGION-1500"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
 	if recordedIssue(t, w, key) != nil {
 		t.Fatalf("%s recorded while zeta/tools' read fails", key)
 	}
+	refresher.park(t, w)
 	// The project's default moves to acme/widgets: Dispatch resolves the issue there now, and sends
-	// no event of it.
-	moved := issue(key, "acme/widgets", "todo", true, "", 1)
-	client.show(moved)
+	// no event of it. Then GitHub answers for zeta/tools.
+	client.show(issue(key, "acme/widgets", "todo", true, "", 1))
+	installs.setFailing(nil, "implement zeta/tools")
+	refresher.release(t, w)
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
@@ -1415,6 +1428,192 @@ func TestARecoveryRecordsAnIssueOnAPairsFromThatItsRecordedToAnswersFor(t *testi
 		t.Fatalf("%s recorded on %s, want it on %s, the pair's `to`, whose entry answers for %s", key, got.Repo, to, from)
 	}
 }
+
+// A labelled todo root on a repository GitHub has not answered for is recorded once an entry
+// another issue's read wrote answers for that repository, though no read of GitHub for it ever
+// answers: GitHub answered that other issue's name, stranger/old-tools, with a 301 to
+// stranger/tools, and the read is kept under both names (prepareRead, recordRepository), while
+// stranger/tools' own installation reads keep failing under both spellings (the rig's
+// installations match a failing name by its exact case), so neither the refresher's read of the
+// live record's repository nor the root's own preparation drops its marker. The root stays todo
+// in the listing, so every pass defers it and notes it silent, and no pass lets the repository
+// go. Only the recovery's deferral, which finds the entry, drops the marker (deferUnreadIssues,
+// readAnswered), and the pass it wakes records the root through the entry. The refresher starts
+// only once both roots were delivered, so no recovery pass runs before the test has seen the
+// marker held with the entry beside it. Before, every pass deferred the root again and left
+// stranger/tools unread, so the root was never recorded.
+func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing.T) {
+	quickInstallReads(t)
+	github := newNamedGitHub(t, map[string]string{
+		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", "orbit/gadgets": "orbit/gadgets@main",
+		"stranger/old-tools": "301 stranger/tools", strangerRepo: strangerNamed + "@trunk",
+	})
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo, "implement "+strangerNamed)
+	w, client, _, _, _ := bootingRepositoryRig(t, installs, func(w *workflowRuntime) {
+		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
+	})
+	const a, b = "LEGION-1550", "LEGION-1551"
+	deliver(t, w, client, issue(a, strangerRepo, "todo", true, "", 1))
+	if got := recordedIssue(t, w, a); got != nil {
+		t.Fatalf("%s recorded as %+v while %s's installation reads fail", a, got, strangerRepo)
+	}
+	deliver(t, w, client, issue(b, "stranger/old-tools", "todo", true, "", 1))
+	if got := recordedIssue(t, w, b); got == nil || got.Repo != strangerNamed {
+		t.Fatalf("%s = %+v, want it recorded on %s, the name GitHub redirects stranger/old-tools to", b, got, strangerNamed)
+	}
+	if !recordsOn(w, strangerRepo) {
+		t.Fatalf("no entry answers for %s once GitHub's redirect from stranger/old-tools was read", strangerRepo)
+	}
+	w.recoveringMu.Lock()
+	_, held := w.unread[strangerRepo]
+	w.recoveringMu.Unlock()
+	if !held {
+		t.Fatalf("%s's marker is not held before the refresher starts (unread %q, to recover %q): %s's preparation drops only stranger/old-tools'",
+			strangerRepo, w.unreadReasons(), w.recoveringReasons(), b)
+	}
+	startRefresher(t, w)
+	if !within(10*time.Second, func() bool {
+		got := recordedIssue(t, w, a)
+		return got != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	}) {
+		t.Fatalf("%s = %+v, unread %q, to recover %q; want it recorded on %s through the entry GitHub's redirect left, and nothing left unread or to recover",
+			a, recordedIssue(t, w, a), w.unreadReasons(), w.recoveringReasons(), strangerNamed)
+	}
+	if got := recordedIssue(t, w, a); got.Repo != strangerNamed {
+		t.Fatalf("%s recorded on %s, want it on %s, GitHub's spelling of the repository the entry answers with", a, got.Repo, strangerNamed)
+	}
+}
+
+// A recovery pass whose own bound (attempt, appMintAttempt) ended before its first deferred issue
+// was read prepares none of the issues it defers, and logs them in one Warn for the pass that names
+// each issue and each repository it resolves to, with the bound. Each issue still takes the steps
+// made in memory: it is noted silent for the repository its listing showed (noteUnread), so the
+// next pass takes it in its scope and no repository with that todo issue on it is let go
+// (deferUnreadIssues). The refresher's own ctx is live here, since a daemon that stops logs
+// nothing.
+//
+// The negative control is the Warn's call taken out of deferUnreadIssues: the pass then logs no
+// line, and this test fails on the missing Warn.
+func TestARecoveryPassItsBoundEndedLogsTheIssuesItDeferredInOneWarn(t *testing.T) {
+	var logged bytes.Buffer
+	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewJSONHandler(&logged, nil))}
+	attempt, end := context.WithCancel(context.Background())
+	end()
+	issues := []dispatch.IssueSummary{
+		{Key: "LEGION-1560", Status: "todo", ResolvedRepo: "Zeta/Tools"},
+		{Key: "LEGION-1561", Status: "todo", ResolvedRepo: "orbit/gadgets"},
+		{Key: "LEGION-1562", Status: "todo", ResolvedRepo: "zeta/tools"},
+	}
+	w.deferUnreadIssues(context.Background(), attempt, issues)
+
+	// Every line the JSON handler writes carries a level, and the text's last, empty line none.
+	lines := loggedLines(t, logged.String(), `"level":`)
+	if len(lines) != 1 {
+		t.Fatalf("the pass logged %d lines, want the one Warn for the issues its bound left: %s", len(lines), logged.String())
+	}
+	line := lines[0]
+	if line["level"] != "WARN" || line["msg"] != "workflow: the recovery's deadline ended before it read GitHub for the repositories these unrecorded issues name; the next pass reads them again" {
+		t.Errorf("the pass logged %+v, want the Warn that its bound ended before it read GitHub", line)
+	}
+	if got, want := fmt.Sprint(line["issues"]), "[LEGION-1560 LEGION-1561 LEGION-1562]"; got != want {
+		t.Errorf("the Warn names the issues %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprint(line["repositories"]), "[orbit/gadgets zeta/tools]"; got != want {
+		t.Errorf("the Warn names the repositories %s, want %s, each once", got, want)
+	}
+	if line["deadline"] != appMintAttempt.String() {
+		t.Errorf("the Warn names the bound %v, want %s", line["deadline"], appMintAttempt)
+	}
+
+	w.recoveringMu.Lock()
+	defer w.recoveringMu.Unlock()
+	for _, summary := range issues {
+		if repo := strings.ToLower(summary.ResolvedRepo); !w.silenced[repo][summary.Key] {
+			t.Errorf("%s is not noted silent for %s (silenced %v), want it in the next pass's scope", summary.Key, repo, w.silenced)
+		}
+	}
+}
+
+// heldRefresher holds a rig's refresher clock (recheckAfter): its timer never fires until release,
+// so the refresher runs a job only when one of its wakes asks for one. Once park asks, the first
+// turn the refresher begins with no wake waiting stops it inside the hook, where it runs nothing
+// and takes no wake, until release. The hook sees only the turns that arm a timer:
+// refreshRepositories calls recheckAfter only while a job of its own is due, which in this rig is
+// every turn while a repository is unread or its answer bad. After release the timer fires at
+// once and then waits as the daemon's does, and on that first turn every job whose wait has passed
+// is due, the second job (reading GitHub again for the bad answers) running before the recovery.
+type heldRefresher struct {
+	mu       sync.Mutex
+	gate     chan struct{} // closed by open
+	opened   sync.Once
+	armed    bool
+	parked   bool
+	released bool
+}
+
+// hold is the rig option that installs the held clock on w.
+func (h *heldRefresher) hold(w *workflowRuntime) {
+	w.recheckAfter = func(d time.Duration) <-chan time.Time {
+		h.mu.Lock()
+		if h.released {
+			h.mu.Unlock()
+			return time.After(d)
+		}
+		if !h.armed || wakesWaiting(w) != 0 {
+			h.mu.Unlock()
+			return nil
+		}
+		h.parked = true
+		h.mu.Unlock()
+		<-h.gate
+		return time.After(0)
+	}
+}
+
+// wakesWaiting is how many of w's refresher wakes are waiting to be taken.
+func wakesWaiting(w *workflowRuntime) int {
+	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake)
+}
+
+// park waits until the refresher is stopped in the hook with no wake waiting: every job it was
+// asked for has ended. The wake it sends runs no job (it only arms the second job's clock), so
+// the refresher begins a turn even when nothing else wakes it. It sends that wake under the lock
+// that arms the hold, so the hook, which reads the wakes under the same lock, never parks before
+// the wake is waiting, and the refresher takes it before it parks. A test that ends before
+// release still lets the refresher go, ahead of the rig's own cleanup, which waits for it to stop.
+func (h *heldRefresher) park(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	t.Cleanup(h.open)
+	h.mu.Lock()
+	h.armed = true
+	wake(w.rereadWake)
+	h.mu.Unlock()
+	testwait.Eventually(t, "the refresher stopped with no job to run", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.parked
+	})
+}
+
+// release lets the refresher go and its clock run from now on. It fails the test if a wake came
+// while the refresher was parked: its job would run before or beside the timer's turn, so the turn
+// the test means to read would not be the first the refresher runs. A parked refresher takes no
+// wake, so the count is exact.
+func (h *heldRefresher) release(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	h.mu.Lock()
+	waiting := wakesWaiting(w)
+	h.released = true
+	h.mu.Unlock()
+	h.open()
+	if waiting != 0 {
+		t.Fatalf("%d wakes of the refresher came while it was parked, want none: the turn after the release would not be the first job it runs", waiting)
+	}
+}
+
+// open lets a parked refresher go, once.
+func (h *heldRefresher) open() { h.opened.Do(func() { close(h.gate) }) }
 
 // A repository's recovery tells the architect that owns each child's parent, else the tree root's
 // architect, once, which children a release_children left for the repository the recovery still

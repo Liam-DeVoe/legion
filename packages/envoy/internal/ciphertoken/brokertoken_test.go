@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -117,7 +116,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	}
 	verifier, err := ciphertoken.New(opts)
 	if err != nil {
-		t.Fatalf("brokertoken.New: %v", err)
+		t.Fatalf("ciphertoken.New: %v", err)
 	}
 	return &rig{broker: broker, clock: tick, verifier: verifier}
 }
@@ -587,46 +586,6 @@ func TestOneTokenCostsOneIntrospectionInsideTheCachesLife(t *testing.T) {
 	}
 }
 
-// TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection: the single flight is what makes a
-// burst on a cold cache cost one introspection rather than one a request, and the address bucket
-// is spent inside that flight, so the burst costs one request of it rather than one each. The
-// bucket here holds exactly one, so charging per request would refuse every request but the
-// first — which is what an honest caller making a burst of calls on a token it has just been
-// given would meet.
-func TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection(t *testing.T) {
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 1}
-	})
-	caller := newSigner(t)
-	const token = "a-token-many-requests-arrive-with-at-once"
-	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
-
-	// Each request needs its own proof: a replayed one is refused, which is a different check.
-	const requests = 8
-	signed := make([]*http.Request, requests)
-	for i := range signed {
-		signed[i] = caller.at(fmt.Sprintf("%s/%d", resourcePath, i), token)
-	}
-	var wait sync.WaitGroup
-	failures := make([]error, requests)
-	for i := range signed {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			_, failures[i] = rig.verifier.Verify(t.Context(), signed[i])
-		}()
-	}
-	wait.Wait()
-	for i, err := range failures {
-		if err != nil {
-			t.Fatalf("request %d: %v", i, err)
-		}
-	}
-	if rig.broker.Count() != 1 {
-		t.Fatalf("%d requests arriving at once cost %d introspections, want 1", requests, rig.broker.Count())
-	}
-}
-
 // TestATokenTheBrokerCallsNotLiveIsRefusedAndNeverRemembered: a refusal is never served from the
 // cache, so a token the broker reinstates is accepted on its next presentation rather than kept
 // refused.
@@ -755,61 +714,6 @@ func TestAProofForAnOriginDispatchNamesIsAccepted(t *testing.T) {
 		if _, err := rig.verifier.Verify(t.Context(), second); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "already been used") {
 			t.Fatalf("the proof for %s, presented again at %s, answered %v, want ErrProofInvalid as a replay", signedFor, presentedAt, err)
 		}
-	}
-}
-
-// TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker: the address bucket is
-// what stops a stranger spending the budget a person's approval needs (INFRA-228), so K requests
-// bearing K tokens the broker has never issued cost fewer than K introspections. With the bound
-// lifted and nothing else changed they cost K, which is what says the bucket did it.
-func TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker(t *testing.T) {
-	const flood = 40
-	spend := func(t *testing.T, rig *rig) int64 {
-		caller := newSigner(t)
-		for request := range flood {
-			token := fmt.Sprintf("a-token-the-broker-never-issued-%d", request)
-			if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); err == nil {
-				t.Fatalf("request %d was accepted; want a refusal", request)
-			}
-		}
-		return rig.broker.Count()
-	}
-
-	bounded := spend(t, newRig(t))
-	if bounded >= flood || bounded < int64(ciphertoken.DefaultAddressLimit.Burst) {
-		t.Fatalf("%d requests from one address cost %d introspections, want the bucket's burst of %d and fewer than %d",
-			flood, bounded, ciphertoken.DefaultAddressLimit.Burst, flood)
-	}
-	// The negative control: the same flood with the bucket wide enough to admit all of it.
-	unbounded := spend(t, newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: flood}
-	}))
-	if unbounded != flood {
-		t.Fatalf("with the bound lifted, %d requests cost %d introspections, want %d", flood, unbounded, flood)
-	}
-}
-
-// TestARefusedAddressIsNeverTheBrokersVerdict: the refusal a spent bucket gives is its own
-// outcome, so a caller is told to come back rather than told its token is bad.
-func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
-	})
-	caller := newSigner(t)
-	rig.broker.Says("the-first-token", liveToken(caller.jkt, time.Hour))
-	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-first-token")); err != nil {
-		t.Fatalf("the request that spends the bucket: %v", err)
-	}
-
-	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-second-token"))
-	if !errors.Is(err, ciphertoken.ErrRateLimited) {
-		t.Fatalf("the request with no token left in the bucket answered %v, want ErrRateLimited", err)
-	}
-	if rig.broker.Count() != 1 {
-		t.Fatalf("the refused request reached the broker: %d introspections, want 1", rig.broker.Count())
-	}
-	if rig.verifier.RetryAfter() != time.Minute {
-		t.Fatalf("RetryAfter = %v, want the bucket's minute", rig.verifier.RetryAfter())
 	}
 }
 

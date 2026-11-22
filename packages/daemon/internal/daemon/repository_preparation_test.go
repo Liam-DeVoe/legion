@@ -278,7 +278,8 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 		t.Fatalf("%s recorded as %+v under backlog %s", child, got, parent)
 	}
 	notices := treeNotices(t, w, tree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") || !strings.Contains(notices[0], "GitHub answered for "+strangerRepo+" again") ||
+	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") ||
+		!strings.Contains(notices[0], "GitHub answered for "+strangerRepo+" again, or GitHub's answer for another name answers for it, and the daemon recovered its issues") ||
 		!strings.Contains(notices[0], child+" (its parent "+parent+" is not recorded: release "+parent+" first, then "+child+")") {
 		t.Fatalf("notices to %s's architect once GitHub answered for %s = %q, want one naming %s and %s: the wait was kept for the recovery that answered",
 			tree, strangerRepo, notices, child, parent)

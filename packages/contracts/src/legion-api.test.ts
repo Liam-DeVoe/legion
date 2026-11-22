@@ -166,7 +166,6 @@ const schemas: Record<string, z.ZodType> = {
   "phase-retry.json": LegionEmptyResponse,
   "signoff.json": LegionEmptyResponse,
   "root-close.json": LegionEmptyResponse,
-  "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
@@ -254,8 +253,8 @@ const schemas: Record<string, z.ZodType> = {
   // as `*`, so `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds
   // and whichever of them carries a pull request. `noBody` says the answer writes no body at
   // all, which reads differently from a body whose set of key paths is empty: the four routes
-  // that answer 204 are `"noBody": true` with no path, and the empty object the eight fact
-  // routes answer is `"noBody": false` with no path.
+  // that answer 204 are `"noBody": true` with no path, and the empty object the fact routes
+  // answer is `"noBody": false` with no path.
   //
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
@@ -297,6 +296,16 @@ const schemas: Record<string, z.ZodType> = {
   "stale-entry.json": z.strictObject({
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
+  }),
+  // Nor this one: the rules for ending a child (`record.EndChildRule` in
+  // `internal/record/project.go`) and the sentence on a status the daemon has not taken yet
+  // (`record.StatusNotTakenYet`), which the daemon's refusals and notices over children carry,
+  // written by `internal/api`'s TestTheEndChildRuleGolden so that
+  // `packages/pi-legion/src/tools.test.ts` can hold the `legion` tool's description to the
+  // daemon's own text, word for word.
+  "end-child-rule.json": z.strictObject({
+    rule: z.string().min(1),
+    notTakenYet: z.string().min(1),
   }),
   // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
   // request of the route a plugin at contract 168 must send, written by `internal/api`'s
@@ -391,7 +400,7 @@ test("every Go-written fixture parses to a value equal to the file", () => {
 // brought it and the fixture above. Every answer schema the module exports must therefore be the
 // schema of some golden, and the roster is derived (`exportedSchemas`), so the next answer
 // schema added with no fixture fails here by its own name. `LegionEmptyResponse` is the schema
-// of eight fact-route goldens, so it is a value of the map eight times over and passes as any
+// of the fact-route goldens, so it is a value of the map once per fact route and passes as any
 // other does.
 test("every answer schema the module exports is the schema of a golden", () => {
   const held = new Set(Object.values(schemas));
@@ -2570,7 +2579,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
   // nothing beside it; `dispatchCredential`, which the state golden carries under
-  // `dispatch_token_broker`, is set aside from the golden too, since every caller below 207 is
+  // `dispatch_token_broker`, is set aside from the golden too, since every caller below 212 is
   // served the state without it (`withoutDispatchCredential`).
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
@@ -2831,11 +2840,11 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The daemon's Dispatch credential under `dispatch_token_broker` (contract 207): the golden names
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 212): the golden names
 // the daemon's session and the two counts a deployment reads before it removes
 // `dispatch_token_transition_file`, and the time of the last transition launch is null before the
 // first. The key is not required: a daemon without the setting writes none, and a daemon at this
-// contract leaves it off the state it serves a caller older than 207, whether the caller states
+// contract leaves it off the state it serves a caller older than 212, whether the caller states
 // its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
 // reads a field of it, so each field is optional; what is refused is a count that is not a whole
 // number of launches, or an empty session.

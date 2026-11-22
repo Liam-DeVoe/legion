@@ -48,11 +48,12 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last two are
-// repositoriesLiveContract and dispatchCredentialContract rather than their numbers for the same
-// reason: the first is dispatch://INFRA-4401's contract and the second dispatch://INFRA-4425's, this
-// daemon's own, and a renumber of either change moves its constant and this list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, dispatchCredentialContract}
+// one of the two alone would describe a shape at a contract no entry declares. The last three are
+// repositoriesLiveContract, childRouteRemovedContract and dispatchCredentialContract rather than
+// their numbers for the same reason: dispatch://INFRA-4401's change, dispatch://INFRA-3178's and
+// dispatch://INFRA-4425's each name their constant, and a renumber of any of them moves its
+// constant and this list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, dispatchCredentialContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -166,7 +167,9 @@ var Answers = []Answer{
 	// Older than the floor: the handoff completion's answer, which version.go's 19 gave its
 	// `note` and which 46 is the floor for here.
 	{ID: AnswerHandoffComplete, Routes: []string{"POST /legion/v1/handoff/complete"}, Since: ServingFloor},
-	// Older than the floor: the empty object the eight fact routes answer.
+	// Older than the floor: the empty object the fact routes answer. The child route that
+	// childRouteRemovedContract removed answered it too: that route now answers every call with
+	// the refusal (removedChildRoute), and no plugin at that contract calls it.
 	{ID: AnswerEmptyObject, Routes: []string{
 		"POST /legion/v1/issues/status",
 		"POST /legion/v1/gates/register",
@@ -174,7 +177,6 @@ var Answers = []Answer{
 		"POST /legion/v1/phase/retry",
 		"POST /legion/v1/signoff",
 		"POST /legion/v1/roots/close",
-		"POST /legion/v1/children/park",
 		"POST /legion/v1/children/rerun",
 	}, Since: ServingFloor},
 	// version.go's 59: the controller's fresh-session recovery (`api.FreshSessionResponse`).
