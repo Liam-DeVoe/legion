@@ -311,7 +311,7 @@ type Config struct {
 	// (KUBERNETES_SERVICE_HOST empty or unset) it is optional.
 	AirlockClusterRanges []netip.Prefix
 	// BROKER_AIRLOCK_PRIVATE_UPSTREAM: one <host>=<url> entry, such as
-	// dispatch.example.ts.net=http://dispatch.dispatch.svc.cluster.local:8766: the one host an
+	// dispatch.example-tailnet.ts.net=http://dispatch.dispatch.svc.cluster.local:8766: the one host an
 	// airlock rules entry binds whose allowed requests the proxy sends to url, an address inside the
 	// broker's own cluster, in place of the host's own address. It is the one exception to the
 	// proxy's refusal of private addresses and of BROKER_AIRLOCK_CLUSTER_RANGES: the proxy dials
