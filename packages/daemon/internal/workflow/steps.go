@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -525,10 +526,12 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 	return end
 }
 
-// StartStepRecord writes the start of the step issue stands in on the walk of its run
-// (standingStep), under the agent that step names (startNamedStep): admission's promotion of a
-// member whose phase worker it does not start (admit's startMidPhaseMembers), whose step starts
-// again all the same. A step whose latest run is still open at the issue's own generation goes
+// StartStepRecord writes the start of the step each task of issue stands in, on that task's own
+// walk (standingStep over viewsOf), under the agent that step names (startNamedStep): admission's
+// promotion of a member whose phase worker it does not start (admit's startMidPhaseMembers), whose
+// step starts again all the same. An issue whose plan holds several tasks has no one walk, and
+// each of its running tasks stands at a step of its own; an issue of one task, or of no plan rows,
+// is its one view. A step whose latest run is still open at the issue's own generation goes
 // on, and nothing is written: a role the promotion found already started for this run
 // (workflow.StartFor), or a member held from merging whose tree is admitted again, whose merge
 // step the linger left open (beginLinger) and whose retry goes on with it. A second start there
@@ -540,22 +543,31 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 // step (standingStep): its stopped task runs again only when a later version of the plan starts
 // the task at its first step, and a parent held for its children has started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	w, err := e.walk(ctx, tx, issue)
+	views, walks, err := e.viewsOf(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	step, ok := standingStep(w, issue)
-	if !ok {
-		return nil
-	}
-	runs, err := e.store.StepRuns(ctx, tx, []string{issue.Key})
-	if err != nil {
-		return err
-	}
-	for _, run := range runs {
-		if run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation {
-			return nil
+	var runs []record.IssueStepRun
+	read := false
+	for at, view := range views {
+		step, ok := standingStep(walks[at], view)
+		if !ok {
+			continue
+		}
+		if !read {
+			if runs, err = e.store.StepRuns(ctx, tx, []string{issue.Key}); err != nil {
+				return err
+			}
+			read = true
+		}
+		if slices.ContainsFunc(runs, func(run record.IssueStepRun) bool {
+			return run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation
+		}) {
+			continue
+		}
+		if err := e.startNamedStep(ctx, tx, view, step); err != nil {
+			return err
 		}
 	}
-	return e.startNamedStep(ctx, tx, issue, step)
+	return nil
 }

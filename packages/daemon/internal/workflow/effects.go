@@ -780,7 +780,8 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumeTask), on the one walk of its run it reads for that task and the entry it raises.
+// in (ResumeTask), on the one walk of its run it reads for that task and the entry it raises. The
+// promotion hands it the copy of the member read for the task of the role's step (PromotedView).
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -789,7 +790,10 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // hands no second prompt to a claim that holds its phase's task
 // (record.SuperviseRequest.ResumeTask), and it sends the task enter stored (startMarks.stored).
 // The entry it raises is of no move back: the promotion hands the role the phase it already
-// stands in, and moves the issue nowhere.
+// stands in, and moves the issue nowhere. A start of a copy read for one task of a plan of several
+// names the claim of that step's agent (stepToken), as start's and restart's do, so the starts of
+// two tasks' workers stand side by side rather than the later taking out the earlier
+// (record.Store.EnqueueStart).
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -803,7 +807,13 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
+	marks := startMarks{resumeTask: true, stored: true}
+	if issue.ViewTask != "" {
+		if marks.agent, err = e.stepToken(issue, w, w.Place, role); err != nil {
+			return err
+		}
+	}
+	return e.started(ctx, tx, issue, role, sent, entry, marks)
 }
 
 // PromotedWorkerClaim is the claim StartPromotedWorker's start of role on issue reaches: the
@@ -812,8 +822,27 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 // the run of this claim before it starts it (admit's startMidPhaseMembers), and reads it here
 // rather than from the row (record.WorkerClaim) because the re-admission that brought the member
 // back cleared the row's step with the rest of the generation (record.Store.ClearTreeGeneration).
+// The promotion hands it the copy of the member read for the task of the role's step
+// (PromotedView).
 func (e *Engine) PromotedWorkerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
 	return e.placeToken(ctx, tx, issue, record.StandsAt(issue), role)
+}
+
+// PromotedView is the copy of issue a re-admitted tree's promotion starts role on (admit's
+// startMidPhaseMembers): the copy read for the task whose step role works among the steps that
+// take work (OpenStepsOf, the first in task id order, as the promotion takes each role once),
+// which stands in that task's own phase (view). The promotion reads its start's claim
+// (PromotedWorkerClaim), weighs that claim's run against the copy's phase (StartFor) and starts
+// the role (StartPromotedWorker) on it, since an issue whose plan holds several tasks has no one
+// walk. An issue whose plan holds one task, or none, is its own copy.
+func (e *Engine) PromotedView(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (record.Issue, error) {
+	task := ""
+	open := OpenStepsOf(issue)
+	if at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role }); at >= 0 {
+		task = open[at].Task
+	}
+	view, _, err := e.view(ctx, tx, issue, task)
+	return view, err
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and

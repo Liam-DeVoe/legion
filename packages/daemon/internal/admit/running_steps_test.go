@@ -21,8 +21,9 @@ import (
 // since a held step takes no work; and one at accepting has none, since that step is the
 // architect's own.
 //
-// The promotion is held at its selection: its start of each owner reads the walk of the member's
-// run, which a plan of several tasks has none of yet.
+// The promotion is held at its selection here; its start of each owner, on the copy of the member
+// read for that owner's task (workflow's PromotedView), is
+// TestACarriedOrphanOfSeveralTasksStartsEachTasksStep's.
 //
 // The fault it catches is a promotion that starts one running step of several (its control: the
 // owners read as the single role of the member's phase, which brings back the implementer alone).

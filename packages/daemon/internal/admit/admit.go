@@ -2614,11 +2614,13 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	}
 	// comeBack is one claim of a member the promotion brings back: the member's phase owner, which
 	// the promotion starts on its phase's work, or another stored claim, which comes back on a start
-	// that names it and carries no task.
+	// that names it and carries no task. An owner's view is the copy of the member read for the task
+	// of its step (workflow's PromotedView), the member itself where its plan holds one task or none.
 	type comeBack struct {
 		role  claim.Role
 		token claim.Token
 		owner bool
+		view  record.Issue
 	}
 	type midPhaseMember struct {
 		issue record.Issue
@@ -2677,9 +2679,15 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// the step the member stands in, which can be a keyed agent on a step of another role. Its
 		// token's refusal stays the fact's, as it was: the step's own role is the member's work
 		// rather than a session brought back. A claim that works two of the steps is started once.
+		// Each is read on the copy of the member for its step's task (PromotedView), since a member
+		// whose plan holds several tasks has no one walk, and each task stands in a phase of its own.
 		ownerTokens := map[claim.Token]bool{}
 		for _, owner := range owners {
-			token, err := a.engine.PromotedWorkerClaim(ctx, tx, member, owner)
+			view, err := a.engine.PromotedView(ctx, tx, member, owner)
+			if err != nil {
+				return err
+			}
+			token, err := a.engine.PromotedWorkerClaim(ctx, tx, view, owner)
 			if err != nil {
 				return err
 			}
@@ -2687,7 +2695,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				continue
 			}
 			ownerTokens[token] = true
-			standing.claims = append(standing.claims, comeBack{role: owner, token: token, owner: true})
+			standing.claims = append(standing.claims, comeBack{role: owner, token: token, owner: true, view: view})
 			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: owner, Generation: member.Generation})
 		}
 		// Every other stored claim of the member comes back with the tree, on a start that names it
@@ -2751,10 +2759,10 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				continue
 			}
 			run := runs[held.token]
-			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
+			if !workflow.StartFor(run, root, member.Generation, held.view.Phase) {
 				continue
 			}
-			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
+			if err := a.engine.StartPromotedWorker(ctx, tx, held.view, held.role); err != nil {
 				return err
 			}
 		}
