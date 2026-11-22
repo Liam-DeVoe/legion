@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -187,8 +188,9 @@ type rigConfig struct {
 	lease          time.Duration
 	maxConns       int
 	minters        map[string]requests.Minter
-	personPods     []personPod
 	accessLifetime time.Duration
+	projectAccess  projectaccess.Access
+	personPods     []personPod
 	profiles       string
 	edge           bool
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
@@ -247,11 +249,17 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
-// WithAccessLifetime sets how long an access token the broker issues lasts, an exchanged one's
-// and a machine login's alike (BROKER_ACCESS_TOKEN_SECONDS), fifteen minutes by default, for a
-// test whose client must renew a token within its own run.
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
 func WithAccessLifetime(d time.Duration) Option {
 	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProjectAccess holds every token exchange to what access answers about the projects its
+// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
+// checks no project, and so refuses every trade that names one.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projectAccess = access }
 }
 
 // WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
@@ -292,7 +300,7 @@ func WithPersonPod(account, service, person string) Option {
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour, accessLifetime: defaultAccessLifetime}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
 	}
@@ -375,7 +383,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := newOAuthProvider(t, st, issuer, config.accessLifetime)
+	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -437,11 +445,6 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
-// defaultAccessLifetime is how long an access token a Rig's broker issues lasts unless
-// WithAccessLifetime says otherwise, and how long every one NewOAuthProvider's provider issues
-// lasts.
-const defaultAccessLifetime = 15 * time.Minute
-
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
@@ -451,12 +454,12 @@ const defaultAccessLifetime = 15 * time.Minute
 // one, a daemon's fixed session, a second project's, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
-	return newOAuthProvider(t, st, issuer, defaultAccessLifetime)
+	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
 }
 
-// newOAuthProvider is NewOAuthProvider with access tokens that last accessLifetime, the one a Rig
-// builds (WithAccessLifetime).
-func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration) *oauth.Provider {
+// newOAuthProvider is NewOAuthProvider whose access tokens live accessLifetime and whose trades
+// are held to what access answers, nil for no project check.
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -492,6 +495,7 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 			Policy:     policy,
 			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+			Projects:   access,
 		},
 	}, oauthStore)
 	if err != nil {
