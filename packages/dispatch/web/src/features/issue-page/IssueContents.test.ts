@@ -10,6 +10,7 @@ import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
+import { SENTENCE_TABLE } from "./sentence-table";
 
 /**
  * The Contents list's entries (R14): each question and each thread the
@@ -456,5 +457,31 @@ test("an entry that cites a labelled statement is cut before the name goes in, n
     } finally {
       view.unmount();
     }
+  }
+});
+
+// R1 and R14: an entry for a thread the reader began draws its comment's first line by the page's
+// one sentence end, as the table of sentence ends (`SENTENCE_TABLE`) states it for a stored text:
+// a comment that opens with a list draws its first item, whose marker markdown reads as no word.
+test("an entry for a comment of each row of the sentence table draws the row's stored sentence", () => {
+  const opened = node(
+    "CORE-1",
+    "issue",
+    SENTENCE_TABLE.map((row) =>
+      node(`comment-${row.id}`, "comment", [], { author: alice, text: row.text })
+    )
+  );
+  // 1000 px leaves the longest first sentence of the table, 36 characters and 288 px, room
+  // beside its entry's other parts, so the box cuts no line.
+  const view = drawList(opened, 1000);
+  try {
+    for (const row of SENTENCE_TABLE) {
+      const line = view.container.querySelector<HTMLElement>(
+        `[data-contents-entry="comment-${row.id}"] [data-contents-line]`
+      );
+      expect(line?.textContent, row.id).toBe(row.stored);
+    }
+  } finally {
+    view.unmount();
   }
 });

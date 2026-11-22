@@ -4,7 +4,7 @@ import { shortDay } from "../web/src/features/issue-page/node-time";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { wordsOf } from "../web/src/features/refs/tree-fragment";
-import { getIssue, listIssueAsks } from "./api";
+import { getIssue } from "./api";
 import { seedReviewList, seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import {
   closeDetails,
@@ -24,6 +24,21 @@ import {
 } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import {
+  drawnRowReadings,
+  fixtureSeed,
+  type KeyedRow,
+  keyedRows,
+  type NamedSeed,
+  parentIndex,
+  type RowReading,
+  SEEDS,
+  type SeededIssue,
+  type SeedFixture,
+  seedKeys,
+  sortedFields,
+  steadily,
+} from "./issue-page-t";
+import {
   besideViewRead,
   blocksReads,
   convertedGate,
@@ -32,29 +47,17 @@ import {
   decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
+  decisionsViewServedGate,
   decisionTimes,
   drawnNodes,
-  drawnRowReadings,
-  fixtureSeed,
   footLineGate,
   headerStatus,
   heldAnswer,
-  type KeyedRow,
-  keyedRows,
-  type NamedSeed,
   owedUnless,
-  parentIndex,
   partUGate,
   R2_COUNTED_KINDS,
   R2_ROW_KINDS,
-  type RowReading,
-  SEEDS,
-  type SeededIssue,
-  type SeedFixture,
   seedEventsLanded,
-  seedKeys,
-  sortedFields,
-  steadily,
   type TreeAnswerWatch,
   type TreeView,
   treeAnswerOf,
@@ -63,8 +66,8 @@ import {
   viewAnswerOf,
   viewCount,
   viewNodeIds,
-} from "./issue-page-t";
-import { decisionsViewServedGate } from "./issue-page-u";
+} from "./issue-page-t-tree";
+import { idReadsOf } from "./issue-page-u";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -74,7 +77,8 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * (`?view=`), read on the real stack. Each row turns the new page on for alice with `phase`
  * (1440 by 900), seeds one of the issues of `e2e/issue-layout-seed.ts`, opens it with
  * `gotoIssue`, and reads it through `unfoldEveryBranch`, `pickPreset`, `watchApiRequests` and
- * `expectLoadSettled` (`e2e/traffic.ts`) and the helpers of `e2e/issue-page-t.ts`.
+ * `expectLoadSettled` (`e2e/traffic.ts`) and the helpers of `e2e/issue-page-t.ts` and
+ * `e2e/issue-page-t-tree.ts`.
  *
  * The rows are the four of the Verification document's browser checks, by their titles:
  *
@@ -134,12 +138,6 @@ const REPLY_WORDS = "The tree read draws this reply with no reload.";
 
 /** A decision row's state word once alice kept it. */
 const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
-
-/** The reads `treeIdOf` names a node by: the issue read and the asks read, as alice reads them. */
-async function idReadsOf(key: string): Promise<TreeIdReads> {
-  const [issue, asks] = await Promise.all([getIssue(key), listIssueAsks(key)]);
-  return { asks, issue };
-}
 
 /** The ids, each once and sorted, so two lists of drawn ids compare as sets. */
 function idSet(ids: readonly string[]): string[] {
@@ -833,7 +831,7 @@ test("each filter draws its view read's rows", async ({ browser }) => {
         expect(
           idSet(drawn.nodes.flatMap((node) => (node.context ? [node.id] : []))),
           `${where}, the rows drawn as context are the view read's context`
-        ).toEqual(idSet(expected.flatMap((node) => (node.mark === "context" ? [node.id] : []))));
+        ).toEqual(idSet(expected.flatMap((node) => (node.role === "context" ? [node.id] : []))));
         if (filter === "verification") {
           expect(
             checksOutOfPlace(drawn.rows, answer, reads),
@@ -945,7 +943,7 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       expect(
         idSet(drawn.nodes.flatMap((node) => (node.context ? [node.id] : []))),
         `${where}, the rows drawn as context are the view read's context`
-      ).toEqual(idSet(expected.flatMap((node) => (node.mark === "context" ? [node.id] : []))));
+      ).toEqual(idSet(expected.flatMap((node) => (node.role === "context" ? [node.id] : []))));
       expect(
         drawn.count?.trim(),
         `${where}, the control counts the view read's own ${R2_COUNTED_KINDS.decisions.join(", ")}`

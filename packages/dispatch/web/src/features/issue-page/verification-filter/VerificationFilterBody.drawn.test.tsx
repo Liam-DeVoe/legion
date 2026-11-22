@@ -1,4 +1,4 @@
-import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -1798,16 +1798,14 @@ test("the view's own reads of the coverage and the results send no request when 
 /**
  * What the reads stand at, and how often each of the view's reads was asked, once the read
  * `refused` was refused before it first answered and the Retry `useVerificationReads` gives its
- * line was called: over an issue with no check, which needs no blocks read, so nothing asks the
- * blocks read but a Retry that asked the wrong read.
+ * line was called: over the Verification document's blocks held (`HELD_TREE`), so nothing asks
+ * the tree read again, which the blocks are in, but a Retry that asked the wrong read.
  */
 async function retried(
   refused: "coverage" | "results"
 ): Promise<{ asked: Record<VerificationRead, number>; reads: VerificationReads }> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const blocksRead = spyOn(api, "getArtifactBlocks").mockRejectedValue(
-    new Error("The blocks read was asked.")
-  );
+  const tree = { ...HELD_TREE, refetch: mock(() => Promise.resolve()) };
   const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(NO_COVERAGE);
   const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(NO_RESULTS);
   if (refused === "coverage") coverageRead.mockRejectedValueOnce(new Error("Refused."));
@@ -1815,7 +1813,7 @@ async function retried(
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const hook = renderHook(() => useVerificationReads(ISSUE_KEY, HELD_TREE), { wrapper });
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY, tree), { wrapper });
   try {
     await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
     const before = hook.result.current.reads;
@@ -1825,7 +1823,7 @@ async function retried(
     await act(() => Bun.sleep(20));
     return {
       asked: {
-        blocks: blocksRead.mock.calls.length,
+        blocks: tree.refetch.mock.calls.length,
         coverage: coverageRead.mock.calls.length,
         results: resultsRead.mock.calls.length,
       },
@@ -1833,7 +1831,6 @@ async function retried(
     };
   } finally {
     hook.unmount();
-    blocksRead.mockRestore();
     coverageRead.mockRestore();
     resultsRead.mockRestore();
     client.clear();
@@ -2275,9 +2272,8 @@ test("each control of the view is a tab stop", async () => {
       [linked, plain],
       { named: [named.id] }
     );
-    // The page cuts only the words of rows near the viewport.
-    await measureNearWords(near);
     try {
+      // The page cuts only the words of rows near the viewport.
       await measureNearWords(near);
       // In document order the issue's row, the tree's one tab stop, comes before the chip All.
       expect(
@@ -2362,7 +2358,6 @@ test("each control of the view is a tab stop", async () => {
   } finally {
     near.restore();
     restore();
-    near.restore();
   }
 });
 

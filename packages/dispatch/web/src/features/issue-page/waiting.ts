@@ -85,16 +85,16 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  // The decision nodes a Change waits on, by the node's id: from the tree read alone, as the
-  // outline finds them, so the two agree while the comments read is out or older.
-  const changes = tree === undefined ? undefined : decisionNodeChanges(tree);
-  const decisions = tree === undefined ? [] : [...decisionsOfAnswer(tree, issue.key).values()];
-  const reviewing =
-    viewer === undefined
-      ? 0
-      : decisions.filter((decision) =>
-          inReviewList(decision, isCoverageStatement, changes?.has(decision.node.id) === true)
-        ).length;
+  // Nothing waits on a reader whose login has not resolved, so the decisions are read only for
+  // one who has. The decision nodes a Change waits on, by the node's id, are from the tree read
+  // alone, as the outline finds them, so the two agree while the comments read is out or older.
+  let reviewing = 0;
+  if (viewer !== undefined && tree !== undefined) {
+    const changes = decisionNodeChanges(tree);
+    reviewing = [...decisionsOfAnswer(tree, issue.key).values()].filter((decision) =>
+      inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
+    ).length;
+  }
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }
 

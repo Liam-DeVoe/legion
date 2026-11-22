@@ -3,7 +3,7 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { DecisionNode } from "../decision-nodes/decision-nodes";
-import { type ChangeComment, inReviewList } from "../decision-review";
+import { type ChangeComment, inReviewList, reviewState } from "../decision-review";
 import {
   drawnLine,
   firstLineOf,
@@ -159,7 +159,8 @@ export interface DecisionEntry extends EntryBase {
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
-  /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`). */
+  /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`), by the one
+   *  rule the outline reads too (`decision-review.ts`' `reviewState`). */
   readonly standing?: DecisionState;
 }
 
@@ -316,7 +317,7 @@ export function decisionsParts({
     }
     const shapes = shapesOf(row, nodeIdOf, placed);
     const asked = row.replaced ? undefined : changes?.get(row.ref);
-    const standing = standingOf(row, asked !== undefined);
+    const standing = reviewState(row, asked !== undefined);
     const keptBy: Actor | undefined =
       standing !== "kept" || row.kept === null ? undefined : { id: row.kept.kept_by, kind: "user" };
     const entry: DecisionEntry = {
@@ -442,19 +443,6 @@ function timeOf(at: string | null | undefined): { readonly at?: string } {
 function pathOf(node: TreeNode): { readonly path?: string } {
   const path = conversationPath(node);
   return path === undefined ? {} : { path };
-}
-
-/** How a decision stands (`NODE_STATE_WORDS.decision`), read as the tree reads it
- *  (`tree-nodes.ts`'s `reviewState`): replaced first, then a change a person asked for, then
- *  waiting for review, then kept as it reads now. A decision in none of them draws no state. */
-function standingOf(
-  row: Pick<Decision, "kept" | "replaced" | "waiting_review">,
-  changed: boolean
-): DecisionState | undefined {
-  if (row.replaced) return "replaced";
-  if (changed) return "change_requested";
-  if (row.waiting_review) return "waiting_review";
-  return row.kept === null ? undefined : "kept";
 }
 
 /** The statements of this issue `row`'s ties name, each once, in the ties' own order. */

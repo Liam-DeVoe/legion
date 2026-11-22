@@ -433,12 +433,12 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 		insertReference(t, tx, "comment", createReferenceComment(t, tx, key), BlockNodeKind, cited[key])
 	}
 	for key, want := range map[string]string{"WIND-2": verificationRef, "WIND-3": specRef} {
-		members, _, err := Closure(ctx, tx, model.Actor{}, key)
+		references, err := Closure(ctx, tx, model.Actor{}, key)
 		if err != nil {
 			t.Fatalf("read the closure of %s: %v", key, err)
 		}
 		var got []string
-		for _, member := range members {
+		for _, member := range references.Members {
 			got = append(got, member.RefKey)
 		}
 		if !slices.Equal(got, []string{want}) {

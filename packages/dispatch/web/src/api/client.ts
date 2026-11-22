@@ -44,6 +44,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  IssueReferencesAnswer,
   NewIssueSettings,
   TargetCandidate,
   UserIssueState,
@@ -397,9 +398,10 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
-// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
-// costs the database the whole bound each time, so an automatic retry only multiplies that cost
-// and shows nothing more. The page offers its own Retry instead.
+// An issue's references read, one hop each way, cut at the server's 2 s bound (`503
+// REFERENCES_TIMEOUT`): a read that reaches the bound costs the database the whole of it, so an
+// automatic retry only multiplies that cost and shows nothing more. The page offers its own Retry
+// instead.
 export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
 }
@@ -975,9 +977,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
-   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it, each saying beside it what that
+   *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
+   *  `getIssueReferences`, which a build older than the document answers with less. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1245,26 +1247,13 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree, or of one of its views
    *  (`view`), from the node `cursor` names on (`IssueTreeRead.cursor`). A caller passes the
-   *  `signal` of the read it is still interested in, so a read given up ends its page in flight.
-   *
-   *  The model's tree route serves only the views `spec`, `verification` and `plan` today
-   *  (`issue_tree_read.go`'s `issueTreeViews`), which are the views the document lists. The page
-   *  reads the Decisions view by the same route (`tree-read.ts`' `TREE_VIEWS`), and
-   *  `?view=decisions` is the model's task t16c (cybermonklabs/legion#4180), the decisions query
-   *  and its view, which this widening waits on: so `view` takes `decisions` beside the
-   *  document's three, and the read goes through `json` with `routeUrl`, its answer the
-   *  document's. */
+   *  `signal` of the read it is still interested in, so a read given up ends its page in flight. */
   getIssueTree(
     key: string,
-    query: Omit<Query<"/api/v1/issues/{key}/tree", "get">, "view"> & {
-      view?: Query<"/api/v1/issues/{key}/tree", "get">["view"] | "decisions";
-    } = {},
+    query: Query<"/api/v1/issues/{key}/tree", "get"> = {},
     init: { signal?: AbortSignal } = {}
   ) {
-    return this.json<Json200<Op<"/api/v1/issues/{key}/tree", "get">>>(
-      routeUrl("/api/v1/issues/{key}/tree", { key }, query),
-      init
-    );
+    return this.read("/api/v1/issues/{key}/tree", { key }, query, init);
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
@@ -1745,8 +1734,13 @@ export class DispatchApiClient {
     );
   }
 
-  getIssueReferences(key: string) {
-    return this.read("/api/v1/issues/{key}/references", { key });
+  /** The issue's references read, each member carrying its latest version alone
+   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions.
+   *  The document's body holds `links` and `linked_from`, which a Dispatch from before the
+   *  one-hop read does not send, so this read answers `IssueReferencesAnswer`, where both may be
+   *  absent. */
+  getIssueReferences(key: string): Promise<IssueReferencesAnswer> {
+    return this.read("/api/v1/issues/{key}/references", { key }, { versions: "latest" });
   }
 
   /** Everyone who worked the issue, running or not: people, and agent sessions merged with the

@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // storedAskAttributes are the seven server-owned attributes of an ask block a version can store:
@@ -855,15 +856,26 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	}
 	servedWithoutAttributes("once the copy settled")
 	t.Logf("%s: the copy's version %d opens its block %q", c.what, copyNumber, blockOpener(copyMarkdown, c.sourceBlock))
-	var sourceDocument, specKey string
+	// The source ask's part_of names the document holding its block as every reader of an ask
+	// names it (refs.AskBlockDocumentSQL, docs' copiedAskSourcesQuery): an ask of an issue room is
+	// part of the room's tree artifact, and its block is in the document whose fragment of the room
+	// holds it (refs.RoomBlockDocumentSQL); any other ask is part of the document itself.
+	var partOf, sourceDocument, specKey string
 	if err := database.QueryRow(ctx, `
-		select (select to_id from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and asserted order by seq desc limit 1),
+		with part as (
+			select (select to_id from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and asserted order by seq desc limit 1) as ref_key)
+		select coalesce(part.ref_key, ''),
+		       coalesce((select held.ref_key from artifacts placed
+		                 join artifacts held on held.id = case when placed.kind = 'tree'
+		                     then coalesce(`+refs.RoomBlockDocumentSQL("placed.id", "$5::text")+`, placed.id) else placed.id end
+		                 where placed.ref_key = part.ref_key), ''),
 		       (select ref_key from artifacts where id = $4::uuid)
-	`, graphstore.KindAsk, c.source, graphstore.TuplePartOf, c.spec).Scan(&sourceDocument, &specKey); err != nil {
+		from part
+	`, graphstore.KindAsk, c.source, graphstore.TuplePartOf, c.spec, c.sourceBlock).Scan(&partOf, &sourceDocument, &specKey); err != nil {
 		t.Fatalf("%s: read the source ask's parent: %v", c.what, err)
 	}
 	if sourceDocument != specKey {
-		t.Errorf("%s: the source ask's part_of reaches %q, want the spec %q", c.what, sourceDocument, specKey)
+		t.Errorf("%s: the source ask's part_of reaches %q, whose block %s is in the document %q, want the spec %q", c.what, partOf, c.sourceBlock, sourceDocument, specKey)
 	}
 
 	// The source is answered: the copy's document owes a settlement, and once it has settled again

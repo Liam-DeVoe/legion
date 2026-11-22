@@ -215,8 +215,7 @@ function ActAndMenu({
   };
 
   // One invocation on the node at a time: a pick sends nothing while the menu says one is out
-  // (`examining`). A menu drawn again after its row lost the focus says so until the write
-  // settles, not while the tree is read again after it, and takes a pick from then on.
+  // (`examining`).
   const pick = (kind: string) => {
     if (examining) return;
     setPicked(true);

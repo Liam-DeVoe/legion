@@ -46,6 +46,7 @@ import {
 import { NODE_TYPE_NAMES, NODE_TYPES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
+import { SENTENCE_TABLE } from "./sentence-table";
 import {
   addressesAsShortForms,
   blockNodeId,
@@ -278,6 +279,7 @@ function decision(
     kept: null,
     kind: "agent",
     links: shaped.map((one) => ({
+      changed_since_tie: false,
       created_at: "2026-11-05T00:00:00Z",
       created_version: 1,
       from_block: blockId,
@@ -340,6 +342,7 @@ const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
 function linkTo(ref: string, kind: DecisionLink["to"]["kind"]): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
     from_block: "d1",
@@ -1038,6 +1041,7 @@ test("a chip of a block draws the first line of its reading, and a document's ch
     ...decision("d1", "Keep the spec as one document.", []),
     links: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-05T00:00:00Z",
         created_version: 1,
         from_block: "d1",
@@ -1308,6 +1312,30 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
     line: "a".repeat(FIRST_LINE_LIMIT),
     sentence: false,
   });
+});
+
+// R1: a row's first line ends where the page's one sentence end falls (`firstSentenceLength`),
+// as the table of sentence ends (`SENTENCE_TABLE`) states it for each text. Every row's text is
+// under the line's limit, so the line is its first sentence and no cut of the limit's. A row
+// whose first sentence depends on the blocks its text is stored as gives the function no answer
+// to meet, and only its text's length is read here.
+test("a first line ends where every row of the sentence table ends its first sentence", () => {
+  for (const row of SENTENCE_TABLE) {
+    expect(row.text.length, `${row.id} is under the line's limit`).toBeLessThanOrEqual(
+      FIRST_LINE_LIMIT
+    );
+    if (row.first === undefined) continue;
+    expect(firstLineOf(row.text).line, row.id).toBe(row.first);
+  }
+});
+
+// R1: a node that opens with a list draws its one line from the list's first item, never from the
+// whole list run together (`firstBlockWordsRaw`). The sentence table's rows k3 and k4 pin the
+// same rule for an item that holds a nested list or a later paragraph; this case pins items with
+// no end mark.
+test("a node that opens with a list draws its first item's words, never the whole list's", () => {
+  expect(lineWordsRaw({ text: "- Keep the old page\n- Then drop it" })).toBe("Keep the old page");
+  expect(lineWordsRaw({ text: "1. Keep the old page\n2. Then drop it" })).toBe("Keep the old page");
 });
 
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
@@ -1946,34 +1974,6 @@ test("the spec is the document the issue names by its id, not the one flagged pr
   ]);
 });
 
-// The coverage read names a requirement by its words with every `://` word left out
-// (`api/results.go`'s `blockWords`), so the document a requirement cites is read from the
-// block's own source, which the reference read names it by. A document of no role is named by
-// the page's word for a document, never by its file name.
-test("a requirement whose source cites a document carries its chip, whatever words name it", () => {
-  const notes = artifact("artifact-notes", "notes-md", "notes.md");
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const cites = `dispatch://${KEY}/artifact/notes-md`;
-  const root = treeOf({
-    coverage: coverage([requirement("r-cites", "The measurements behind it are in")]),
-    documents: [{ artifactId: spec.id, blocks: [block("r-cites", "requirement")] }],
-    issue: issueDetails([notes, spec]),
-    targets: [
-      {
-        gone: false,
-        kind: "block",
-        name: `:::requirement{#r-cites}\nThe measurements behind it are in ${cites}.\n:::`,
-        ref: `dispatch://${KEY}/spec#b-r-cites`,
-      },
-    ],
-  });
-
-  const chips = nodeOf(root, blockNodeId(SPEC, "r-cites"))?.chips ?? [];
-  expect(chips.map(({ name, ref }) => ({ name, ref }))).toEqual([
-    { name: NODE_TYPE_NAMES.document, ref: cites },
-  ]);
-});
-
 // R3: a document is no node, so a block whose words cite one carries a chip that opens it, at
 // its own address and named by the page's word for it - the spec's included, which is named as
 // the Spec filter is and whose `spec` reference is that filter's address. A citation of one
@@ -2462,6 +2462,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
     kind: "agent",
     links: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-16T11:11:07.225118Z",
         created_version: 1,
         from_block: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",
@@ -2488,6 +2489,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
         },
       },
       {
+        changed_since_tie: false,
         created_at: "2026-11-16T11:11:07.225118Z",
         created_version: 1,
         from_block: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",

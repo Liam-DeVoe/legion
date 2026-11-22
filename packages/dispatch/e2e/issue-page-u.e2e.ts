@@ -3,7 +3,7 @@ import { decisionNodeChanges } from "../web/src/features/issue-page/decision-rev
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS, NODE_STATE_WORDS } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue, listComments } from "./api";
+import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { gotoIssue, issueRead, phase } from "./issue-page";
 import {
@@ -22,23 +22,20 @@ import {
   decisionsPartRows,
   decisionsPartsDrawn,
 } from "./issue-page-q";
+import { drawnRowReadings, fixtureSeed, keyedRows, seedKeys, steadily } from "./issue-page-t";
 import {
   blocksReads,
   convertedGate,
   decisionNodesGate,
   decisionsReadOf,
-  drawnRowReadings,
-  fixtureSeed,
+  decisionsViewServedGate,
   heldAnswer,
-  keyedRows,
   owedUnless,
-  seedKeys,
-  steadily,
   type TreeView,
   treeAnswerOf,
   treeReadGate,
   treeReads,
-} from "./issue-page-t";
+} from "./issue-page-t-tree";
 import {
   askOfNode,
   askRowId,
@@ -46,7 +43,6 @@ import {
   decisionRowId,
   decisionSum,
   decisionSumOf,
-  decisionsViewServedGate,
   type FilterReading,
   heldDecisionsRead,
   holdTreeReads,
@@ -89,13 +85,15 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * Each row checks its gates first, each with `owedUnless`, and skips where one is not on the
  * base, with an `owed` annotation naming the gate and the decisions that make it owed; it never
  * passes then. The gates are the server's tree read (`treeReadGate`), its Decisions view
- * (`decisionsViewServedGate`: the model's tree route answers `view=decisions` only once its task
- * t16c lands, and refuses it with 400 before then), an issue whose documents are nodes of its tree
- * (`convertedGate`), and the seeds written as decision nodes of the tree read
- * (`decisionNodesGate`, over the decisions read `decisionsReadOf` keeps). The first three are read
- * before anything else once the page is open, the fourth once the page has received its decisions
- * read, which the page sends only once Decisions is pressed. Until the server serves the Decisions
- * view, both rows are tagged `@owed` and skip on that gate.
+ * (`decisionsViewServedGate`: the model's tree route serves `view=decisions` since its
+ * `2afc1550`, which this branch holds through part T, as `issue_tree_read.go`'s `issueTreeViews`
+ * lists `QueryDecisions`, so the gate holds a row owed only on a server that lacks the view), an
+ * issue whose documents are nodes of its tree (`convertedGate`), and the seeds written as
+ * decision nodes of the tree read (`decisionNodesGate`, over the decisions read
+ * `decisionsReadOf` keeps). The first three are read before anything else once the page is open,
+ * the fourth once the page has received its decisions read, which the page sends only once
+ * Decisions is pressed. Both rows are tagged `@owed`, and each skips on the first of its gates
+ * the server on the base does not meet.
  */
 
 /** How long row 1 may take: two seeded issues, each read through all four filters. */
@@ -127,7 +125,7 @@ const KEEP = 'button[data-row-action="keep"]';
 const CHANGE = 'button[data-row-action="change"]';
 
 /** A decision row's state word once alice kept it. */
-const KEPT_BY_ALICE = /^Kept by\b.*\balice\b/i;
+const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
 
 /** The words row 2's Change sends. */
 const CHANGE_WORDS = "Tie it to the second statement instead.";
@@ -441,8 +439,7 @@ async function readRowOne(
 
   // (4) The header's count of what waits: alice's open questions and the decisions that wait
   // for her review, as the tree read answers them.
-  const issue = await getIssue(key);
-  const asks = asksWaitingOnAlice(issue);
+  const asks = asksWaitingOnAlice(reads.issue);
   await expect
     .poll(() => waitingOnYou(page), {
       message: "the header's count of what waits counts the decisions that wait for alice's review",
@@ -558,8 +555,9 @@ const ROW_ONE_SEEDS = [
 ];
 
 // c-decisions, owed: the row skips on the gate of the server's tree read (`treeReadGate`) and of
-// its Decisions view (`decisionsViewServedGate`), which the model's tree route serves only once its
-// task t16c lands. It waits too on an issue whose documents are nodes of its tree
+// its Decisions view (`decisionsViewServedGate`), which the model's tree route serves since its
+// `2afc1550` (`issue_tree_read.go`'s `issueTreeViews`), so that gate holds the row owed only on a
+// server that lacks the view. It waits too on an issue whose documents are nodes of its tree
 // (`convertedGate`), and on the seeds written as decision nodes of the tree read
 // (`decisionNodesGate`, read once Decisions is pressed). The check holds it owed until the server
 // on the base meets all four gates.
@@ -607,13 +605,15 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
 }
 
 // c-keep-change, owed: the row skips on the gate of the server's tree read (`treeReadGate`) and of
-// its Decisions view (`decisionsViewServedGate`), which the model's tree route serves only once its
-// task t16c lands. It waits too on an issue whose documents are nodes of its tree
+// its Decisions view (`decisionsViewServedGate`), which the model's tree route serves since its
+// `2afc1550` (`issue_tree_read.go`'s `issueTreeViews`), so that gate holds the row owed only on a
+// server that lacks the view. It waits too on an issue whose documents are nodes of its tree
 // (`convertedGate`), and on the seeds written as decision nodes of the tree read
 // (`decisionNodesGate`, read once Decisions is pressed): the check holds it owed until the server
 // on the base meets those four gates. Its Change clause asserts `anchor.block_id` on the
-// captured comment request, which the page sends (`DecisionActions.tsx`' `ChangeAnchor`); no
-// gate checks that the server reads it.
+// captured comment request, which the page sends (`DecisionActions.tsx`' `ChangeComposer`); the
+// server finds the quote inside that block alone, and refuses with 400 a block that does not hold
+// it (`api/anchors.go`' `resolveAnchor`).
 // SLOW(>=2s): a seeded issue with a third decision written, a Keep and a Change each waited on
 // until the server's reads redraw the list, a reload, and a refused Keep under held tree reads.
 test("Keep and Change act on the decision node @owed", async ({ browser }) => {

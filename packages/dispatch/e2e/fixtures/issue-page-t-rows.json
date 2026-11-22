@@ -1,24 +1,17 @@
 {
-  "parts": [
-    "0058727eff",
-    "0440d42975",
-    "3e348385f1",
-    "599e47e634",
-    "844b578d4a",
-    "aaa9f35e54",
-    "f6f7980400"
-  ],
-  "recordedOn": "3207d4276bb14006e6b4fd2f9d6791420bacfef0",
+  "parts": ["7ad14428301e489dbb3a1a7ada37bc0f9ce1fae5", "8e748be921", "cde8199342"],
+  "recordedOn": "a826b6a0ad8d30adb45950dd9896cdf4c3b7182f",
   "seeds": {
     "seedConversationState": {
       "filters": {
         "decisions": {
-          "count": 8,
+          "count": 9,
           "rows": [
             "openQuestion.blockId",
             "decisions[0]",
             "decisions[4]",
             "decisions[5]",
+            "decisions[1]",
             "answeredAskId"
           ]
         },
@@ -80,7 +73,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 20,
       "opened": [
         {
           "alsoUnder": [],
@@ -132,7 +125,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -166,7 +159,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -185,11 +178,11 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -212,7 +205,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -241,7 +234,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -270,7 +263,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -945,7 +938,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "answeredAskId",
@@ -962,6 +955,45 @@
           },
           "time": "made",
           "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "answeredAskId",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -1112,10 +1144,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw the tree from one readChosen so the page makes no request per node. Shapes Every property of the issue… and Requirement 2 of the redesign…."
@@ -1152,13 +1184,13 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
-            "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+            "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
           },
           "chips": [],
           "counts": [],
@@ -1177,14 +1209,14 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Name every state with a word and a shapeA word and a shape carry every state, so no reader depends on a colour."
@@ -1210,10 +1242,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Put every remaining property in one panelOne panel holds the properties and the conversation. Shapes Requirement 4 of the redesign…."
@@ -1245,10 +1277,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw a document under the block that cites itA document is a node under the block that cites it. Shapes Requirement 5 of the redesign…."
@@ -1280,10 +1312,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep the metadata rail behind a sideways scrollReplaced by the tree above: the rail hid 744 px at 1440 px. Shapes Requirement 6 of the redesign…."
@@ -1958,7 +1990,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -2110,7 +2142,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -2709,10 +2741,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
@@ -2744,7 +2776,11 @@
           },
           "level": 2,
           "parentKey": "answeredAskId",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
@@ -2978,11 +3014,12 @@
     "seedDecisionsFilter": {
       "filters": {
         "decisions": {
-          "count": 10,
+          "count": 11,
           "rows": [
             "openQuestion.blockId",
             "decisions[5]",
             "decisions[0]",
+            "decisions[1]",
             "decisions[4]",
             "declinedAskId",
             "optionedAskId",
@@ -3047,7 +3084,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 20,
       "opened": [
         {
           "alsoUnder": [],
@@ -3099,7 +3136,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -3133,7 +3170,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -3152,11 +3189,11 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -3179,7 +3216,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -3208,36 +3245,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": "Not updated since this decision changed:",
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[5]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Draw a document under the block that cites itA document is one node under the block that cites it. Shapes Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -3263,6 +3271,35 @@
           },
           "time": "changed",
           "words": "Keep the metadata rail behind a sideways scrollReplaced by the tree above: the rail hid 744 px at 1440 px. Shapes Requirement 6 of the redesign…."
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": "Not updated since this decision changed:",
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[5]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Draw a document under the block that cites itA document is one node under the block that cites it. Shapes Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -3912,7 +3949,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "answeredAskId",
@@ -3929,6 +3966,45 @@
           },
           "time": "made",
           "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "answeredAskId",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -4125,10 +4201,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw the tree from one readChosen so the page makes no request per node. Shapes Every property of the issue… and Requirement 2 of the redesign…."
@@ -4165,13 +4241,13 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
-            "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+            "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
           },
           "chips": [],
           "counts": [],
@@ -4190,14 +4266,14 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Name every state with a word and a shapeA word and a shape carry every state, so no reader depends on a colour."
@@ -4223,10 +4299,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Put every remaining property in one panelOne panel holds the properties and the conversation. Shapes Requirement 4 of the redesign…."
@@ -4258,45 +4334,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
-            "lines": [],
-            "options": [],
-            "words": "Draw a document under the block that cites itA document is one node under the block that cites it. Shapes Requirement 5 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/{requirements[4]}",
-              "label": "Not updated since this decision changed:",
-              "name": "Requirement 5 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "decisions[5]",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Draw a document under the block that cites itA document is one node under the block that cites it. Shapes Requirement 5 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
-          "author": null,
-          "body": {
-            "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep the metadata rail behind a sideways scrollReplaced by the tree above: the rail hid 744 px at 1440 px. Shapes Requirement 6 of the redesign…."
@@ -4325,6 +4366,41 @@
           },
           "time": "changed",
           "words": "Keep the metadata rail behind a sideways scrollReplaced by the tree above: the rail hid 744 px at 1440 px. Shapes Requirement 6 of the redesign…."
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Draw a document under the block that cites itA document is one node under the block that cites it. Shapes Requirement 5 of the redesign…."
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": "Not updated since this decision changed:",
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[5]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Draw a document under the block that cites itA document is one node under the block that cites it. Shapes Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -4971,7 +5047,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -5123,7 +5199,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -5722,10 +5798,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
@@ -5757,7 +5833,11 @@
           },
           "level": 2,
           "parentKey": "answeredAskId",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
@@ -6078,7 +6158,7 @@
           "rows": ["key", "requirements[0]", "requirements[1]", "requirements[2]"]
         }
       },
-      "loadRequests": 15,
+      "loadRequests": 17,
       "opened": [
         {
           "alsoUnder": [],
@@ -6271,7 +6351,7 @@
           "rows": ["key", "requirements[0]", "requirements[1]", "requirements[2]"]
         }
       },
-      "loadRequests": 15,
+      "loadRequests": 17,
       "opened": [
         {
           "alsoUnder": [],
@@ -6453,7 +6533,7 @@
         },
         "plan": {
           "count": 6,
-          "rows": ["/plan_task#0", "/plan_task#1", "/plan_task#2", "/plan_task#3", "/plan_task#4"]
+          "rows": ["plan-md#b-t3", "plan-md#b-t2", "plan-md#b-t1", "plan-md#b-t4", "plan-md#b-t6"]
         },
         "spec": {
           "count": 3,
@@ -6464,7 +6544,7 @@
           "rows": ["key", "/requirement#0", "/requirement#1", "/requirement#2"]
         }
       },
-      "loadRequests": 16,
+      "loadRequests": 18,
       "opened": [
         {
           "alsoUnder": [],
@@ -6582,7 +6662,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#0/plan_task#0",
+          "key": "plan-md#b-t1",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6612,7 +6692,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#0/plan_task#1",
+          "key": "plan-md#b-t3",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6643,7 +6723,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#0/plan_task#2",
+          "key": "plan-md#b-t4",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6705,7 +6785,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#1/plan_task#0",
+          "key": "plan-md#b-t2",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6736,7 +6816,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#1/plan_task#1",
+          "key": "plan-md#b-t5",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6797,7 +6877,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#2/plan_task#0",
+          "key": "plan-md#b-t3",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6828,7 +6908,7 @@
           "counts": [],
           "facts": [],
           "gaps": [],
-          "key": "/requirement#2/plan_task#1",
+          "key": "plan-md#b-t6",
           "kind": {
             "tag": "plan task",
             "type": "plan_task"
@@ -6860,7 +6940,7 @@
           "rows": []
         }
       },
-      "loadRequests": 16,
+      "loadRequests": 18,
       "opened": [
         {
           "alsoUnder": [],
@@ -7166,8 +7246,8 @@
     "seedRequestBaseline": {
       "filters": {
         "decisions": {
-          "count": 3,
-          "rows": ["/ask#0", "decisions[0]", "/ask#1"]
+          "count": 4,
+          "rows": ["/ask#0", "decisions[0]", "decisions[1]", "/ask#1"]
         },
         "plan": {
           "count": 9,
@@ -7225,7 +7305,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 20,
       "opened": [
         {
           "alsoUnder": [],
@@ -7277,7 +7357,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -7926,7 +8006,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "/ask#1",
@@ -7943,6 +8023,45 @@
           },
           "time": "made",
           "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -8131,10 +8250,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw the tree from one readChosen so the page makes no request per node. Shapes Every property of the issue… and Requirement 2 of the redesign…."
@@ -8777,7 +8896,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -8933,7 +9052,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -9532,10 +9651,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
@@ -9567,7 +9686,11 @@
           },
           "level": 2,
           "parentKey": "/ask#1",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
@@ -9942,7 +10065,7 @@
           "rows": ["key", "/requirement#0", "/requirement#1"]
         }
       },
-      "loadRequests": 16,
+      "loadRequests": 17,
       "opened": [
         {
           "alsoUnder": [],
@@ -9969,69 +10092,11 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
-              "address": "/issues/{key}/spec#b-r1",
-              "label": null,
-              "name": "Every property of the issue…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "tiedOlder",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Tie the first statementShapes Every property of the issue…."
-        },
-        {
-          "alsoUnder": [],
-          "author": null,
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/spec#b-r2",
-              "label": "Not updated since this decision changed:",
-              "name": "Requirement 2 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "tiedNewer",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Tie the second statementIt shapes Requirement 2 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
-          "author": null,
-          "body": null,
-          "chips": [
-            {
-              "address": "/issues/{key}/spec#b-summary",
+              "address": "/issues/{key}/{specSlug}#b-summary",
               "label": null,
               "name": "The issue page draws one…"
             }
@@ -10056,7 +10121,36 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{specSlug}#b-r1",
+              "label": null,
+              "name": "Every property of the issue…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "tiedOlder",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Tie the first statementShapes Every property of the issue…."
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -10076,6 +10170,35 @@
           },
           "time": "changed",
           "words": "Tie nothingA choice no statement rests on."
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{specSlug}#b-r2",
+              "label": "Not updated since this decision changed:",
+              "name": "Requirement 2 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "tiedNewer",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Tie the second statementIt shapes Requirement 2 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -10192,87 +10315,17 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
-            "lines": [],
-            "options": [],
-            "words": "Tie the first statementShapes Every property of the issue…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/spec#b-r1",
-              "label": null,
-              "name": "Every property of the issue…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "tiedOlder",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Tie the first statementShapes Every property of the issue…."
-        },
-        {
-          "alsoUnder": [],
-          "author": null,
-          "body": {
-            "answer": null,
-            "author": "Author unknown",
-            "lines": [],
-            "options": [],
-            "words": "Tie the second statementIt shapes Requirement 2 of the redesign…."
-          },
-          "chips": [
-            {
-              "address": "/issues/{key}/spec#b-r2",
-              "label": "Not updated since this decision changed:",
-              "name": "Requirement 2 of the redesign…"
-            }
-          ],
-          "counts": [],
-          "facts": [],
-          "gaps": [],
-          "key": "tiedNewer",
-          "kind": {
-            "tag": "decision",
-            "type": "decision"
-          },
-          "level": 1,
-          "parentKey": null,
-          "state": {
-            "token": "waiting_review",
-            "unsure": null,
-            "word": "Waiting for review"
-          },
-          "time": "changed",
-          "words": "Tie the second statementIt shapes Requirement 2 of the redesign…."
-        },
-        {
-          "alsoUnder": [],
-          "author": null,
-          "body": {
-            "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Tie the noteShapes The issue page draws one…."
           },
           "chips": [
             {
-              "address": "/issues/{key}/spec#b-summary",
+              "address": "/issues/{key}/{specSlug}#b-summary",
               "label": null,
               "name": "The issue page draws one…"
             }
@@ -10297,10 +10350,45 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Tie the first statementShapes Every property of the issue…."
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{specSlug}#b-r1",
+              "label": null,
+              "name": "Every property of the issue…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "tiedOlder",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Tie the first statementShapes Every property of the issue…."
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Tie nothingA choice no statement rests on."
@@ -10323,6 +10411,41 @@
           },
           "time": "changed",
           "words": "Tie nothingA choice no statement rests on."
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": {
+            "answer": null,
+            "author": "Planner (issue layout)",
+            "lines": [],
+            "options": [],
+            "words": "Tie the second statementIt shapes Requirement 2 of the redesign…."
+          },
+          "chips": [
+            {
+              "address": "/issues/{key}/{specSlug}#b-r2",
+              "label": "Not updated since this decision changed:",
+              "name": "Requirement 2 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "tiedNewer",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 1,
+          "parentKey": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Tie the second statementIt shapes Requirement 2 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -10420,8 +10543,8 @@
     "seedSpineCases": {
       "filters": {
         "decisions": {
-          "count": 1,
-          "rows": ["answeredAskId"]
+          "count": 2,
+          "rows": ["decisionBlockId", "answeredAskId"]
         },
         "plan": {
           "count": 0,
@@ -10449,7 +10572,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 19,
       "opened": [
         {
           "alsoUnder": [],
@@ -10600,7 +10723,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "answeredAskId",
@@ -10617,6 +10740,35 @@
           },
           "time": "made",
           "words": "Which node does a requirement with no parent sit under?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements.shapedElsewhere}",
+              "label": null,
+              "name": "A decision links this…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisionBlockId",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "answeredAskId",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Link a requirement the question does notShapes A decision links this…, while Which node does a requirement… is the question that was answered."
         }
       ],
       "rows": [
@@ -10869,10 +11021,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Link a requirement the question does notShapes A decision links this…, while Which node does a requirement… is the question that was answered."
@@ -10894,7 +11046,11 @@
           },
           "level": 2,
           "parentKey": "answeredAskId",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Link a requirement the question does notShapes A decision links this…, while Which node does a requirement… is the question that was answered."
         }
@@ -10903,8 +11059,8 @@
     "seedTwiceTheNodes": {
       "filters": {
         "decisions": {
-          "count": 5,
-          "rows": ["/ask#0", "decisions[0]", "/ask#1"]
+          "count": 6,
+          "rows": ["/ask#0", "decisions[0]", "decisions[1]", "/ask#1"]
         },
         "plan": {
           "count": 18,
@@ -11001,7 +11157,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 20,
       "opened": [
         {
           "alsoUnder": [],
@@ -11053,7 +11209,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -11087,7 +11243,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -11106,11 +11262,11 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -12330,7 +12486,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "/ask#1",
@@ -12347,6 +12503,45 @@
           },
           "time": "made",
           "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "/ask#1",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -12649,10 +12844,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw the tree from one readChosen so the page makes no request per node. Shapes Every property of the issue… and Requirement 2 of the redesign…."
@@ -12689,13 +12884,13 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
-            "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+            "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
           },
           "chips": [],
           "counts": [],
@@ -12714,14 +12909,14 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Name every state with a word and a shapeA word and a shape carry every state, so no reader depends on a colour."
@@ -13353,7 +13548,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -13509,7 +13704,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -14217,7 +14412,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -14367,7 +14562,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -15425,10 +15620,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
@@ -15460,7 +15655,11 @@
           },
           "level": 2,
           "parentKey": "/ask#1",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
@@ -16185,7 +16384,7 @@
           "rows": []
         }
       },
-      "loadRequests": 15,
+      "loadRequests": 17,
       "opened": [
         {
           "alsoUnder": [],
@@ -16264,7 +16463,7 @@
           "rows": ["key", "requirements[0]"]
         }
       },
-      "loadRequests": 15,
+      "loadRequests": 17,
       "opened": [
         {
           "alsoUnder": [],
@@ -16329,12 +16528,13 @@
     "seedWholeIssue": {
       "filters": {
         "decisions": {
-          "count": 8,
+          "count": 9,
           "rows": [
             "openQuestion.blockId",
             "decisions[0]",
             "decisions[4]",
             "decisions[5]",
+            "decisions[1]",
             "answeredAskId"
           ]
         },
@@ -16396,7 +16596,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 20,
       "opened": [
         {
           "alsoUnder": [],
@@ -16448,7 +16648,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -16482,7 +16682,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -16501,11 +16701,11 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -16528,7 +16728,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -16557,7 +16757,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -16586,7 +16786,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -17261,7 +17461,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "answeredAskId",
@@ -17278,6 +17478,45 @@
           },
           "time": "made",
           "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "answeredAskId",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -17428,10 +17667,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw the tree from one readChosen so the page makes no request per node. Shapes Every property of the issue… and Requirement 2 of the redesign…."
@@ -17468,13 +17707,13 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
-            "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+            "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
           },
           "chips": [],
           "counts": [],
@@ -17493,14 +17732,14 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Name every state with a word and a shapeA word and a shape carry every state, so no reader depends on a colour."
@@ -17526,10 +17765,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Put every remaining property in one panelOne panel holds the properties and the conversation. Shapes Requirement 4 of the redesign…."
@@ -17561,10 +17800,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw a document under the block that cites itA document is a node under the block that cites it. Shapes Requirement 5 of the redesign…."
@@ -17596,10 +17835,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep the metadata rail behind a sideways scrollReplaced by the tree above: the rail hid 744 px at 1440 px. Shapes Requirement 6 of the redesign…."
@@ -18274,7 +18513,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -18426,7 +18665,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -19025,10 +19264,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
@@ -19060,7 +19299,11 @@
           },
           "level": 2,
           "parentKey": "answeredAskId",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
@@ -19294,12 +19537,13 @@
     "seedWholeIssueAdvancing": {
       "filters": {
         "decisions": {
-          "count": 8,
+          "count": 9,
           "rows": [
             "openQuestion.blockId",
             "decisions[0]",
             "decisions[4]",
             "decisions[5]",
+            "decisions[1]",
             "answeredAskId"
           ]
         },
@@ -19361,7 +19605,7 @@
           ]
         }
       },
-      "loadRequests": 18,
+      "loadRequests": 21,
       "opened": [
         {
           "alsoUnder": [],
@@ -19413,7 +19657,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -19447,7 +19691,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -19466,11 +19710,11 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [],
           "counts": [],
@@ -19493,7 +19737,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -19522,7 +19766,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -19551,7 +19795,7 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": null,
           "chips": [
             {
@@ -20226,7 +20470,7 @@
           "author": "Planner",
           "body": null,
           "chips": [],
-          "counts": ["1 row hidden inside"],
+          "counts": [],
           "facts": [],
           "gaps": [],
           "key": "answeredAskId",
@@ -20243,6 +20487,45 @@
           },
           "time": "made",
           "words": "Which addresses must the new page still answer?"
+        },
+        {
+          "alsoUnder": [],
+          "author": "Planner",
+          "body": null,
+          "chips": [
+            {
+              "address": "/issues/{key}/{requirements[2]}",
+              "label": null,
+              "name": "Requirement 3 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[3]}",
+              "label": null,
+              "name": "Requirement 4 of the redesign…"
+            },
+            {
+              "address": "/issues/{key}/{requirements[4]}",
+              "label": null,
+              "name": "Requirement 5 of the redesign…"
+            }
+          ],
+          "counts": [],
+          "facts": [],
+          "gaps": [],
+          "key": "decisions[1]",
+          "kind": {
+            "tag": "decision",
+            "type": "decision"
+          },
+          "level": 2,
+          "parentKey": "answeredAskId",
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
+          "time": "changed",
+          "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },
         {
           "alsoUnder": [],
@@ -20393,10 +20676,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw the tree from one readChosen so the page makes no request per node. Shapes Every property of the issue… and Requirement 2 of the redesign…."
@@ -20433,13 +20716,13 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
-            "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+            "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
           },
           "chips": [],
           "counts": [],
@@ -20458,14 +20741,14 @@
             "word": "Waiting for review"
           },
           "time": "changed",
-          "words": "Fold to the frontier and not to a depthUnsure: a reader who never finds the newest question would change this."
+          "words": "Fold to the frontier and not to a depthA reader who never finds the newest question would change this."
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Name every state with a word and a shapeA word and a shape carry every state, so no reader depends on a colour."
@@ -20491,10 +20774,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Put every remaining property in one panelOne panel holds the properties and the conversation. Shapes Requirement 4 of the redesign…."
@@ -20526,10 +20809,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Draw a document under the block that cites itA document is a node under the block that cites it. Shapes Requirement 5 of the redesign…."
@@ -20561,10 +20844,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep the metadata rail behind a sideways scrollReplaced by the tree above: the rail hid 744 px at 1440 px. Shapes Requirement 6 of the redesign…."
@@ -21239,7 +21522,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -21391,7 +21674,7 @@
           "facts": [
             {
               "name": "when",
-              "value": "before the merge"
+              "value": "after the merge"
             },
             {
               "name": "surface",
@@ -21990,10 +22273,10 @@
         },
         {
           "alsoUnder": [],
-          "author": null,
+          "author": "Planner",
           "body": {
             "answer": null,
-            "author": "Author unknown",
+            "author": "Planner (issue layout)",
             "lines": [],
             "options": [],
             "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
@@ -22025,7 +22308,11 @@
           },
           "level": 2,
           "parentKey": "answeredAskId",
-          "state": null,
+          "state": {
+            "token": "waiting_review",
+            "unsure": null,
+            "word": "Waiting for review"
+          },
           "time": "changed",
           "words": "Keep every address the old page answeredDecided in Which addresses must the new…. Shapes Requirement 3 of the redesign…, Requirement 4 of the redesign… and Requirement 5 of the redesign…."
         },

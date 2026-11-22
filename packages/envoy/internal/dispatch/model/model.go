@@ -3676,15 +3676,15 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one member of an issue's reference closure (refs.Closure): Artifact is the
-// document a citation reaches, at Depth through Via, and Kind and Address are the member's own
-// kind and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
-// address where the citation names a document whose address moved to a lens, as the pre-mortem
-// conversion moves the address of the document it retires to the lens it writes in its place.
-// Artifact is then that retired document, whose versions stay readable. A server of the release
-// before answers neither Kind nor Address during a roll, so the OpenAPI document marks them
-// optional (`required:"false"`) and a reader takes a member that carries neither as the document
-// Artifact names.
+// ReferenceMember is one document of an issue's references read (refs.Closure): Artifact is the
+// document its own content links to, always at depth 1, through Via, and Kind and Address are the
+// member's own kind and dispatch:// address - `artifact` and that document's address, or `lens` and
+// the lens's address where the link names a document whose address moved to a lens, as the
+// pre-mortem conversion moves the address of the document it retires to the lens it writes in its
+// place. Artifact is then that retired document, whose versions stay readable. It stays for the
+// clients that read members, beside Links. A server of the release before answers neither Kind
+// nor Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and
+// a reader takes a member that carries neither as the document Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
@@ -3693,10 +3693,29 @@ type ReferenceMember struct {
 	Via      ReferenceVia `json:"via"`
 }
 
-// IssueReferences is an issue's artifact reference closure.
+// IssueReferences is an issue's references read, one hop in each direction: Links and LinkedFrom,
+// with Members, the documents of Links, and Truncated, always false, kept for the clients that
+// read them.
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`
+	// Links is every node the issue's own content links to, one hop out. This build writes []
+	// when there is none, never null.
+	Links []ReferenceLink `json:"links"`
+	// LinkedFrom is every node that links to the issue or to its own content, one hop in. This
+	// build writes [] when there is none, never null.
+	LinkedFrom []ReferenceLink `json:"linked_from"`
+}
+
+// ReferenceLink is one node at the other end of a link of an issue's references read: the node as
+// the graph read names it; its name, the words the graph read shows for it (a document's name, an
+// issue's title, the head of an item's text); the distinct kinds of its links, in order; and its
+// via, the lowest of the issue's nodes at the near end of those links.
+type ReferenceLink struct {
+	Node  GraphNode    `json:"node"`
+	Name  string       `json:"name"`
+	Kinds []string     `json:"kinds"`
+	Via   ReferenceVia `json:"via"`
 }
 
 // OutgoingReference is a target edge from an artifact.
@@ -3935,17 +3954,21 @@ type DecisionKeep struct {
 
 // DecisionLink is one link from a decision to a spec node it shaped: its `shaped` tuple
 // (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
-// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
+// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it, and
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
-// last changed in, and Stale true when that text changed after the tuple was written. The three
-// are absent where the store holds none. It is Decision's, and the Decisions read's `entries`
-// answer it as each entry's `shaped`, so it stays when the old `decisions` member goes.
+// last changed in; the three are absent where the store holds none. Stale is the release
+// before's rule, which every reader of a link's `stale` reads: the decision's own words changed
+// after the tuple was written, and the node's text has not changed since the decision's did.
+// ChangedSinceTie is the other fact (R5): the node's text changed after the tuple was written. It
+// is Decision's, and the Decisions read's `entries` answer it as each entry's `shaped`, so it
+// stays when the old `decisions` member goes.
 type DecisionLink struct {
 	FromBlock        string     `json:"from_block"`
 	To               GraphNode  `json:"to"`
 	CreatedVersion   int        `json:"created_version"`
 	CreatedAt        time.Time  `json:"created_at"`
 	Stale            bool       `json:"stale"`
+	ChangedSinceTie  bool       `json:"changed_since_tie"`
 	Event            *int64     `json:"event,omitempty"`
 	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
 	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`

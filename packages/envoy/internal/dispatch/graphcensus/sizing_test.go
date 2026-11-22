@@ -773,9 +773,10 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// of the callout, its old parent retracted and its new one asserted; the dropped paragraph
 		// the third version brings back, stated live, with its in_document and at most a parent the
 		// restore moved; and the added paragraph's reference to CORE-1. Beside them, the values
-		// the index states of the blocks it places (refs' planBlockValues): a block's rank and its
-		// placement at its first row, its rank again where it moved among new siblings, and the
-		// text value of each row with a text.
+		// the index states of the blocks it places (refs' planBlockValues): a block's rank, its
+		// placement, its text_parent and its text_rank at its first row, its rank again where it
+		// moved among new siblings and its text_parent and text_rank where it moved in the text,
+		// and the text value of each row with a text.
 		Name: archiveIndexDrive, Sites: []string{"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Database: database, Drive: func(t *testing.T) { indexTheArchive(t, database) },
 		Counts: map[StoredKind][]string{
@@ -787,6 +788,8 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
 			{refs.BlockNodeKind, refs.AttributeRank}:             {"block_values", movedRanks},
 			{refs.BlockNodeKind, refs.AttributePlacement}:        {"block_values"},
+			{refs.BlockNodeKind, refs.TupleTextParent}:           {"block_values", movedTextPlaces},
+			{refs.BlockNodeKind, refs.AttributeTextRank}:         {"block_values", movedTextPlaces},
 			{refs.BlockNodeKind, graphstore.AttributeText}:       {"block_text"},
 		},
 	}, {
@@ -1228,12 +1231,13 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// a text.
 		"block": {tuples: 5, writes: 6}, "block_restored": {tuples: 4, writes: 1}, "block_gone": {tuples: 1, writes: 1},
 		// Version 1 is the document's first indexed version, so it is compared with nothing,
-		// version 2 moved one paragraph out of the callout, which takes a rank in its new place, and
-		// version 3 moved none.
-		movedParents: {tuples: 2, writes: 1, read: 3}, movedRanks: {tuples: 1, writes: 1},
-		// Eight rows hold a text, each a text value; six are a block's first, each a rank and a
-		// placement; one deleted a block, whose text value stays as the block's node goes gone.
-		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8}, "block_values": {tuples: 2, writes: 6},
+		// version 2 moved one paragraph out of the callout, which takes a rank and a place in the
+		// text in its new place, and version 3 moved none.
+		movedParents: {tuples: 2, writes: 1, read: 3}, movedRanks: {tuples: 1, writes: 1}, movedTextPlaces: {tuples: 3, writes: 1},
+		// Eight rows hold a text, each a text value; six are a block's first, each a rank, a
+		// placement, a text_parent and a text_rank; one deleted a block, whose text value stays as
+		// the block's node goes gone.
+		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8}, "block_values": {tuples: 4, writes: 6},
 		// The document's reference to CORE-1 (seedSizedRelations). The document is CORE-1's spec,
 		// whose six first rows each take the one author their version lists.
 		"document_ref": {tuples: 2, writes: 1}, "block_author": {tuples: 1, writes: 6},
@@ -1435,8 +1439,8 @@ func TestTheSizingCountsWhatTheMarkingOwesEachUnstatedBlock(t *testing.T) {
 		t.Helper()
 		printed := sizingCensus(t, database)
 		for _, line := range []string{
-			fmt.Sprintf("census: sizing backfill kind=block_values moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=3 nodes=0 tuples=%d ",
-				movedWithBlocks, values, 3*values),
+			fmt.Sprintf("census: sizing backfill kind=block_values moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=5 nodes=0 tuples=%d ",
+				movedWithBlocks, values, 5*values),
 			fmt.Sprintf("census: sizing backfill kind=block_top moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=2 nodes=0 tuples=%d ",
 				movedWithBlocks, tops, 2*tops),
 		} {

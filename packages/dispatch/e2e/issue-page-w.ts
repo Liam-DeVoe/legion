@@ -22,7 +22,7 @@ import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import type { Gate, TreeAnswerWatch } from "./issue-page-t";
+import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
 
 /**
  * What the rows of `e2e/issue-page-w.e2e.ts` write and read, and what any other row that needs
@@ -44,14 +44,14 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t";
  *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
  *   `[data-lens-menu-line]`, a focused lens's chain (`[data-lens-show-chain]`, each entry
  *   `[data-lens-chain-entry]`), a row by the id the tree read gives its node
- *   (`data-node-read-id`), and the page's own words.
+ *   (`data-node-read-id`).
  * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
- *   read whose every page answered, `e2e/issue-page-t.ts`'s `treeAnswerOf`, held until it holds
+ *   read whose every page answered, `e2e/issue-page-t-tree.ts`'s `treeAnswerOf`, held until it holds
  *   what a row waits for (`heldTreeAnswer`), and the pages of each read (`treePagesOf`) - and
  *   the read ids of the nodes `seedLenses` wrote, read from that answer (`lensReadIds`), so a
  *   row names each node by the id the page itself received and never builds one.
  * - **The gate** `findingGate`, which a clause of a row waits on as the rows wait on the gates
- *   of `e2e/issue-page-t.ts`: a `Gate`, read by that file's `owedUnless`.
+ *   of `e2e/issue-page-t-tree.ts`: a `Gate`, read by that file's `owedUnless`.
  */
 
 /** What the writers answer, each the 201 body of its route as `@legion/contracts` names it:
@@ -480,7 +480,7 @@ function treeReadAnswer(response: Response): boolean {
 /** How long `heldTreeAnswer` waits for the read a write sends again. */
 const TREE_HELD_MS = 30_000;
 
-/** Waits until the newest read `watch` holds (`e2e/issue-page-t.ts`'s `treeAnswerOf`) is one
+/** Waits until the newest read `watch` holds (`e2e/issue-page-t-tree.ts`'s `treeAnswerOf`) is one
  *  `holds` is true of, and answers it: that file's `heldAnswer` answers any read whose every
  *  page answered, and this the read a write sent again, once it holds what that write changed.
  *  A reload is no such wait: the read from before it already holds what a row looks for, so a
@@ -515,7 +515,7 @@ export interface TreePage {
 /** Keeps each page of the tree read with no view the page receives from now on, so a row counts
  *  the pages a read has against the requests it sent; the answer reads them, in the order they
  *  arrived, once every page received so far has been read. A page whose body the browser let go
- *  of before it was read is none, as `e2e/issue-page-t.ts`'s `treeAnswerOf` reads it. */
+ *  of before it was read is none, as `e2e/issue-page-t-tree.ts`'s `treeAnswerOf` reads it. */
 export function treePagesOf(page: Page): () => Promise<TreePage[]> {
   const kept: Promise<TreePage | undefined>[] = [];
   page.on("response", (response) => {
@@ -608,7 +608,7 @@ export function lensIdsIn(answer: IssueTreeRead): string[] {
 // ---------------------------------------------------------------------------------------------
 
 /** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
- *  page's own request context, as `issue-page-t.ts`'s gates read it. */
+ *  page's own request context, as `issue-page-t-tree.ts`'s gates read it. */
 async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeRead> {
   const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
     const path = routeUrl(
@@ -638,7 +638,7 @@ async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeRead
  * invoked on a finding point at it as `lens_block`, the kind the graph addresses a finding by,
  * so the tree read stands that lens under the finding. The probe invokes a lens on the finding
  * `seedLenses` wrote on issue `key` (`invokeLens`) and reads every page of the issue's tree read
- * through the signed-in page's own request context, as `issue-page-t.ts`'s `treeReadGate` reads
+ * through the signed-in page's own request context, as `issue-page-t-tree.ts`'s `treeReadGate` reads
  * it: met only where that read holds a lens whose parent is the finding. The probe's lens stays,
  * a lens on the finding before the row's own.
  */

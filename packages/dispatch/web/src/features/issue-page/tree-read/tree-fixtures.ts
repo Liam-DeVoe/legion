@@ -1,4 +1,4 @@
-import type { Decision, IssueTreeEnd, IssueTreeParent } from "../../../api/types";
+import type { Comment, Decision, IssueTreeEnd, IssueTreeParent } from "../../../api/types";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
@@ -125,6 +125,19 @@ export function treeNode(
   };
 }
 
+/** A comment as the tree read answers it: its words, who wrote it and when, under the node
+ *  `parent` names - where none is given, the comment it replies to, else the issue. */
+export function commentNode(
+  comment: Pick<Comment, "author" | "body" | "created_at" | "id" | "reply_to">,
+  parent: string = comment.reply_to ?? TREE_KEY
+): TreeAnswerNode {
+  return treeNode(comment.id, "comment", parent, {
+    author: [comment.author],
+    made_at: comment.created_at,
+    text: comment.body,
+  });
+}
+
 /** The decisions read's object for a decision whose words are `text`: never kept, replaced or
  *  changed, and naming no ask, no block and nothing it shaped, unless `members` says otherwise. */
 function decisionOf(text: string, members: Partial<Decision>): Decision {
@@ -219,6 +232,16 @@ export function treeAnswer(
     view_of: null,
     ...extra,
   };
+}
+
+/** The tree read's stub for a case whose view is drawn off the whole tree, as before the page
+ *  holds its view read (`presets.ts`'s `presetView`): the whole tree answers `answer`, and each
+ *  view of it never answers. */
+export function wholeTreeOnly(
+  answer: TreeAnswer
+): (key: string, query?: { readonly view?: string }) => Promise<TreeAnswer> {
+  return (_key, query = {}) =>
+    query.view === undefined ? Promise.resolve(answer) : Promise.withResolvers<never>().promise;
 }
 
 /** The kind of a node a case names that the answer does not hold: an issue, by its key, else a

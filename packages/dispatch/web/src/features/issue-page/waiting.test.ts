@@ -12,7 +12,7 @@ import { decisionNodes, decisionQuote } from "./decision-nodes/decision-nodes";
 import { buildIssueTree, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
-import { treeNode as fixtureNode, type TreeNodeExtra, treeAnswer } from "./tree-read/tree-fixtures";
+import { commentNode, type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -153,6 +153,7 @@ function waitingDecision(blockId: string, shaped: readonly string[]): Decision {
     kept: null,
     kind: "agent",
     links: shaped.map((one) => ({
+      changed_since_tie: false,
       created_at: "2026-11-05T00:00:00Z",
       created_version: 1,
       from_block: blockId,
@@ -212,40 +213,30 @@ const change: Comment = {
 
 /** One node of the tree read's answer, as the route sends it (`treeNode`), under the issue unless
  *  the case gives it another parent, with nothing on it but what the case gives it. */
-function treeNode(
+function answerNode(
   id: string,
   supertag: string,
   extra: TreeNodeExtra = {},
   parent: string = KEY
 ): TreeAnswerNode {
-  return fixtureNode(id, supertag, parent, extra);
+  return treeNode(id, supertag, parent, extra);
 }
 
 /** The tree read's answer for the issue: its own node, then `nodes` in the read's order. */
 function answerOf(nodes: readonly TreeAnswerNode[]): TreeAnswer {
-  return treeAnswer([fixtureNode(KEY, "issue", null), ...nodes]);
+  return treeAnswer([treeNode(KEY, "issue", null), ...nodes]);
 }
 
 /** The spec's statement `r1` as the tree read answers it, a typed block of the spec. */
-const statement = treeNode("r1", "requirement", {
+const statement = answerNode("r1", "requirement", {
   document: { artifact_id: spec.id, position: 0, slug: "spec" },
   text: "The first.",
 });
 
 /** The issue's open asks as the tree read answers them, each under the issue. */
 const askNodes = (issue.open_asks ?? []).map((ask) =>
-  treeNode(ask.id, "ask", { author: [ask.author], made_at: ask.created_at, text: ask.question })
+  answerNode(ask.id, "ask", { author: [ask.author], made_at: ask.created_at, text: ask.question })
 );
-
-/** A person's comment as the tree read answers it, under the node `parent`. */
-function commentNode(comment: Comment, parent: string): TreeAnswerNode {
-  return treeNode(
-    comment.id,
-    "comment",
-    { author: [comment.author], made_at: comment.created_at, text: comment.body },
-    parent
-  );
-}
 
 /** An agent's decision as the tree read answers its node: a decision block of the spec, carrying
  *  the model's decision (`decision`, `waitingDecision`'s members) and the words
@@ -257,7 +248,7 @@ function decisionNode(
 ): TreeAnswerNode {
   const { decision, ...rest } = extra;
   const row = waitingDecision(id, shaped);
-  return treeNode(id, "decision", {
+  return answerNode(id, "decision", {
     document: { artifact_id: spec.id, position: 1, slug: "spec" },
     text: `The words of ${id}.`,
     ...rest,
@@ -516,7 +507,7 @@ test("a Change of a decision node is no Change of another document's decision of
   const changed = decisionNode("d1", ["r1"], {
     document: { artifact_id: "artifact-decisions", position: 0, slug: "decisions-md" },
   });
-  const other = treeNode("d1", "decision", {
+  const other = answerNode("d1", "decision", {
     decision: { changed_at: changed.decision?.changed_at ?? null, waiting_review: true },
     document: { artifact_id: spec.id, position: 1, slug: "spec" },
   });
@@ -542,7 +533,7 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
   const tiedToPlan = decisionNode("planned", ["p1"]);
   const tree = answerOf([
     statement,
-    treeNode("p1", "requirement", {
+    answerNode("p1", "requirement", {
       document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
     }),
     decisionNode("listed", ["r1"]),
@@ -585,10 +576,10 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   ];
   const requirements = [
     statement,
-    treeNode("r2", "requirement", {
+    answerNode("r2", "requirement", {
       document: { artifact_id: spec.id, position: 1, slug: "spec" },
     }),
-    treeNode("p1", "requirement", {
+    answerNode("p1", "requirement", {
       document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
     }),
   ];

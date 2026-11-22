@@ -499,6 +499,9 @@ export function useMarginItems(
     ...freshness,
   });
   const specAddress = issueSpecAddress(issueKey ?? "");
+  // The spec's ref_key, which every block node a server of the release before answers of it opens
+  // (linkReachesDocument).
+  const specRefKey = visibleArtifact?.ref_key;
   // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
   // spec block it stands beside.
   const specNode = `${issueKey ?? ""}/spec`;
@@ -513,7 +516,7 @@ export function useMarginItems(
       const blocks = new Set<string>();
       for (const link of decision.shaped ?? []) {
         const blockId = link.to.block_id;
-        if (blockId !== undefined && linkReachesDocument(link, specAddress)) {
+        if (blockId !== undefined && linkReachesDocument(link, specAddress, specRefKey)) {
           blocks.add(blockId);
         }
       }
@@ -540,6 +543,7 @@ export function useMarginItems(
     showsDecisions,
     specAddress,
     specNode,
+    specRefKey,
   ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({

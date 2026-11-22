@@ -4,14 +4,11 @@ import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
 import { filterRow } from "./issue-page";
-import { typefaceAddress as stylesheetTypefaceAddress, TYPEFACE } from "./issue-page-typeface";
 import { assertWhole } from "./unclipped";
 
 // The typeface's readers are `issue-page-typeface.ts`'s, the one copy every row reads; this
-// module passes `TYPEFACE` and `typefaceStatuses` on to its own rows unchanged, which import them
-// from here, and wraps `typefaceAddress` in one of its own (below), which throws where the shared
-// one answers null.
-export { TYPEFACE, typefaceStatuses } from "./issue-page-typeface";
+// module passes them on to its own rows, which import them from here.
+export { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 
 declare global {
   interface Window {
@@ -740,18 +737,6 @@ export function stickyReading(page: Page): Promise<StickyReading | null> {
       },
     };
   });
-}
-
-/** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule (`issue-page-typeface.ts`). Throws when no rule declares the family. */
-export async function typefaceAddress(page: Page): Promise<string> {
-  // Callers wait for the header drawn first, and the page's script runs only once its stylesheet
-  // has loaded, so the rule is there; a miss only throws.
-  const address = await stylesheetTypefaceAddress(page);
-  if (address === null) {
-    throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-  }
-  return address;
 }
 
 /** The stack the header's band is drawn in, as its computed `font-family`, each family

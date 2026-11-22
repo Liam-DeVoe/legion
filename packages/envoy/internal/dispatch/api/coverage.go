@@ -88,8 +88,9 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // and nodes keyed by the room's tree artifact (refs.DocumentRoomSQL), so they are read there.
 // Both statements start from the requirements the live spec marks, each through a primary key,
 // so the plan Postgres makes without their values costs little and a connection soon keeps it
-// rather than planning each read again (queueServingBlockCounts). An issue that is a view
-// (docs.ViewOf) answers the coverage viewCoverage reads.
+// rather than planning each read again (queueServingBlockCounts). The issue's documents and
+// whether it is a view are read in one batch too (readCoverageSpecAndView), and an issue that is a
+// view (docs.ViewOf) answers the coverage viewCoverage reads.
 //
 // trees is the reader of a request that answers the requirements' trees, nil for every other
 // caller: each requirement the answer lists registers with it (registerRequirementTrees), in the
@@ -98,7 +99,7 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // The rows are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	spec, err := readCoverageSpec(ctx, q, issueKey)
+	spec, view, err := readCoverageSpecAndView(ctx, q, issueKey)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -106,10 +107,6 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	if spec.artifactID == "" {
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
-	}
-	view, err := docs.ViewOf(ctx, q, issueKey)
-	if err != nil {
-		return model.IssueCoverage{}, err
 	}
 	if view != "" {
 		return s.viewCoverage(ctx, q, who, coverage, view, trees)
@@ -195,18 +192,44 @@ type coverageSpec struct {
 	hasPlan             bool
 }
 
+// coverageSpecStatement reads the coverageSpec of the issue $1: its spec's id, the ref_key its
+// blocks' nodes are keyed under and whether it has a plan document.
+var coverageSpecStatement = `
+		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
+		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = ` + refs.DocumentRoomSQL("a.id") + `
+		                 where a.issue_key = $1 and a.is_primary), ''),
+		       exists (select 1 from artifacts a where a.issue_key = $1 and ` + aliasedPlanRole + `)
+	`
+
 // readCoverageSpec is the coverageSpec of the issue issueKey, read through q.
 func readCoverageSpec(ctx context.Context, q queryer, issueKey string) (coverageSpec, error) {
 	var spec coverageSpec
-	if err := q.QueryRow(ctx, `
-		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
-		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = `+refs.DocumentRoomSQL("a.id")+`
-		                 where a.issue_key = $1 and a.is_primary), ''),
-		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
+	if err := q.QueryRow(ctx, coverageSpecStatement, issueKey).Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
 		return coverageSpec{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
 	}
 	return spec, nil
+}
+
+// readCoverageSpecAndView is readCoverageSpec of the issue issueKey and the issue it is a view of
+// (docs.ViewOf), "" where it is none, read through q in one batch, one round trip: the coverage
+// read of an issue reads both before anything else, and an approval request of a spec reads that
+// coverage, so the view costs the request no round trip of its own. The view is read for an issue
+// with no spec too, whose coverage reads nothing of it.
+func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (coverageSpec, string, error) {
+	var spec coverageSpec
+	var view string
+	batch := &pgx.Batch{}
+	batch.Queue(coverageSpecStatement, issueKey).QueryRow(func(row pgx.Row) error {
+		if err := row.Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
+			return fmt.Errorf("read the documents of %s: %w", issueKey, err)
+		}
+		return nil
+	})
+	docs.QueueViewOf(batch, issueKey, &view)
+	if err := q.SendBatch(ctx, batch).Close(); err != nil {
+		return coverageSpec{}, "", err
+	}
+	return spec, view, nil
 }
 
 // coverageIssues is the issue issueKey and every issue below it that who may see

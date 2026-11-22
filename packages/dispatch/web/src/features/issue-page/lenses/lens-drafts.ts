@@ -205,7 +205,11 @@ export function lensChips(
       ...facts,
       lenses: lensPlaces(answer, context),
       triggered: lensChipsTo(
-        (triggersOf(answer).get(node.id) ?? []).flatMap((readId) => context.nodeOf(readId) ?? []),
+        context
+          .tuplesTo(node.id)
+          .flatMap((tuple) =>
+            tuple.kind === "triggered_by" ? (context.nodeOf(tuple.from.id) ?? []) : []
+          ),
         context
       ),
       triggeredBy: lensChipsTo(targetsOf(node, "triggered_by", context), context),
@@ -384,24 +388,6 @@ function uniqueChips(chips: readonly LensChip[]): LensChip[] {
     if (!unique.has(chip.address)) unique.set(chip.address, chip);
   }
   return [...unique.values()];
-}
-
-/** For each lens, the lenses whose `triggered_by` tuples name it, in the answer's order: indexed
- *  once per answer, since it reads the answer alone. */
-const triggerIndexes = new WeakMap<TreeAnswer, ReadonlyMap<string, readonly string[]>>();
-
-function triggersOf(answer: TreeAnswer): ReadonlyMap<string, readonly string[]> {
-  const held = triggerIndexes.get(answer);
-  if (held !== undefined) return held;
-  const index = new Map<string, string[]>();
-  for (const tuple of answer.tuples ?? []) {
-    if (tuple.kind !== "triggered_by") continue;
-    const from = index.get(tuple.to.id);
-    if (from === undefined) index.set(tuple.to.id, [tuple.from.id]);
-    else from.push(tuple.from.id);
-  }
-  triggerIndexes.set(answer, index);
-  return index;
 }
 
 /** Every lens of the answer by its address, for a focused lens's chain (`LensChain.tsx`): its

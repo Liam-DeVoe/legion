@@ -17,11 +17,13 @@ import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { useIssueNames } from "./one-line";
-import { EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { CONTROL_LABELS, EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
 import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
+import { nodeRowSelectorOf } from "./tree-focus";
 import { treeNode as answerNode, treeAnswer } from "./tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswerNode } from "./tree-read/tree-read";
 
@@ -76,32 +78,22 @@ function summaryNode(text: string): TreeNode {
 }
 
 /** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
- *  the summary is a node of (`slots/contents.tsx`), for an issue that has a spec unless `hasSpec`
- *  says not. */
+ *  the summary is a node of (`slots/contents.tsx`), for an issue whose spec's blocks are held
+ *  unless `specHeld` says not. */
 function Head({
-  hasSpec = true,
   look,
-  reading,
   root,
+  specHeld = true,
   summary,
 }: {
-  hasSpec?: boolean;
   look: "contents" | "spec";
-  reading: boolean;
   root: TreeNode;
+  specHeld?: boolean;
   summary: TreeNode | undefined;
 }): ReactNode {
   const issue = useMemo(() => issueDetails(), []);
   const { nameOf } = useIssueNames(issue, root);
-  return (
-    <IssueThreeThings
-      hasSpec={hasSpec}
-      look={look}
-      nameOf={nameOf}
-      reading={reading}
-      summary={summary}
-    />
-  );
+  return <IssueThreeThings look={look} nameOf={nameOf} specHeld={specHeld} summary={summary} />;
 }
 
 /** The sentences the head draws, in order, and the label before each. `reading` is whether the
@@ -115,7 +107,7 @@ function bullets(
 ): { labels: string[]; lines: string[]; unmount: () => void } {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head look={look} reading={reading} root={root} summary={summary} />
+      <Head look={look} root={root} specHeld={!reading} summary={summary} />
     </MemoryRouter>
   );
   const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
@@ -277,13 +269,7 @@ test("a spec with no summary draws the page's own line and no bullet", () => {
 test("an issue with no spec says nothing of a summary", () => {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head
-        hasSpec={false}
-        look="contents"
-        reading={false}
-        root={treeNode(KEY, "issue")}
-        summary={undefined}
-      />
+      <Head look="contents" root={treeNode(KEY, "issue")} specHeld={false} summary={undefined} />
     </MemoryRouter>
   );
   try {
@@ -378,9 +364,9 @@ test("a bulleted summary draws its last item though it has no end mark", () => {
   }
 });
 
-// Review finding 4590606164: a leading label opens its sentence and ends none, and a mark before
-// a word in lower case ends an abbreviation, not a sentence, so each label names the sentence its
-// author wrote.
+// Review finding 4590606164: a leading label opens its sentence and ends none, and a full stop
+// before a word in lower case ends an abbreviation, not a sentence, so each label names the
+// sentence its author wrote.
 test("a sentence is ended neither at a leading label nor before a word in lower case", () => {
   const { lines, unmount } = bullets(
     summaryNode(
@@ -395,6 +381,21 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
     ]);
   } finally {
     unmount();
+  }
+});
+
+// R1: the first of the issue's three sentences, after the page's own label, ends where the table
+// of sentence ends (`SENTENCE_TABLE`) ends a stored text's first sentence. A row whose column for
+// the three sentences the confirmed table marks n/a (`summary` false) is passed over.
+test("a summary of each row of the sentence table draws the row's stored sentence first", () => {
+  for (const row of SENTENCE_TABLE.filter(({ summary }) => summary)) {
+    const { labels, lines, unmount } = bullets(summaryNode(row.text));
+    try {
+      expect(labels[0], `${row.id}: the label`).toBe(CONTROL_LABELS.in_short_what);
+      expect(lines[0], row.id).toBe(row.stored);
+    } finally {
+      unmount();
+    }
   }
 });
 
@@ -737,7 +738,7 @@ function IssueScope(): ReactNode {
 
 /** Every row the outline drew for `nodeId`, in the order it drew them. */
 function rowsFor(container: HTMLElement, nodeId: string): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(`[data-node-row][data-node-id="${nodeId}"]`)];
+  return [...container.querySelectorAll<HTMLElement>(nodeRowSelectorOf(nodeId))];
 }
 
 // R10, R22 and the person's ruling on helper text: a gap is drawn only where it tells a node
@@ -778,7 +779,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
   );
   const head = render(
     <MemoryRouter>
-      <Head look="contents" reading={false} root={root} summary={specSummary(root, "spec")} />
+      <Head look="contents" root={root} summary={specSummary(root, "spec")} />
     </MemoryRouter>
   );
   try {

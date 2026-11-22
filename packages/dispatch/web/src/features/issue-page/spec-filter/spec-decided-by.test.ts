@@ -6,9 +6,10 @@ import { wordsOf } from "../../refs/tree-fragment";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
-import { CHIP_LIMIT, chipWords } from "../node-row-chip";
+import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
+import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
@@ -324,8 +325,8 @@ test("a reference named in an agent's quote ends no sentence at its name's label
 });
 
 // R5: every decision after the first that shaped a statement is named after "informed by" on
-// its line by its own words, cut as a
-// chip names its target, each reference in them named and never an address.
+// its line by its own words, cut as a chip names its target, each reference in them named after
+// the cut and never an address.
 test("a statement informed by two decisions names the second by its words within 32 characters", () => {
   const cited = statementRef("r2");
   const words = `Name each tie by ${cited} and never by its address. Then say why.`;
@@ -360,9 +361,40 @@ test("a statement informed by two decisions names the second by its words within
   expect(informed[0]?.quote).toBe(
     "Name each tie by the second statement and never by its address."
   );
-  const named = chipWords(informed[0]?.quote ?? "");
-  expect(named).toBe("Name each tie by the second…");
+  // The name does not fit in a chip's 32 characters, so the cut falls at the word before it and
+  // never inside it: the line is cut with the reference unnamed, and named after the cut.
+  const named = informed[0]?.chip ?? "";
+  expect(named).toBe("Name each tie by…");
   expect(named.length).toBeLessThanOrEqual(CHIP_LIMIT);
+});
+
+// R5: the name a statement's line gives another decision is cut at a chip's length before the
+// references it cites are named, as every one-line place cuts one, so no cut falls inside a
+// name: a first line whose name runs past the limit is cut at the word before that name.
+test("the name of a decision that informed a statement is cut before its references are named", () => {
+  const cited = statementRef("r2");
+  const words = `See ${cited} as the reader reads it.`;
+  const groups = bodyOf(
+    issueTree([
+      statement("r1"),
+      statement("r2"),
+      decisionNode("d1"),
+      decisionNode("d2", { text: words }),
+    ]),
+    [
+      decision("d1", { decision: { kind: "agent", links: [shaped(statementRef("r1"))] } }),
+      decision("d2", {
+        decision: { kind: "agent", links: [shaped(statementRef("r1"))] },
+        text: words,
+      }),
+    ],
+    READER,
+    [],
+    (reference) => (reference === cited ? "R2. Every address is drawn by…" : undefined)
+  );
+  const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy[0];
+  expect(informed?.quote).toBe("See R2. Every address is drawn by… as the reader reads it.");
+  expect(informed?.chip).toBe("See…");
 });
 
 // R5: a replaced decision draws no line, so the statement it shaped stands with none.
@@ -724,6 +756,62 @@ test("a first sentence that opens with a numbered label holds the sentence after
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
 });
 
+// R5: a person's first sentence ends where the table of sentence ends (`SENTENCE_TABLE`) ends
+// each text's, read by the one function every reader splits words by, over the text as written.
+// A row whose first sentence depends on the blocks its text is stored as gives the function no
+// answer to meet, and is read by the quote alone.
+test("a first sentence ends where every row of the sentence table ends it", () => {
+  for (const row of SENTENCE_TABLE) {
+    if (row.first === undefined) continue;
+    expect(firstSentenceOf(row.text), row.id).toBe(row.first);
+  }
+});
+
+// R5: a person's quote is the first sentence of the answer they stored, as the table states it
+// for a stored text, in a decision tied to one statement: the quote reads the answer's first
+// block alone, and an answer that opens with a list is quoted from its first item's own words,
+// whose marker markdown reads as no word of it.
+test("a person's quote of each row of the sentence table is the row's stored first sentence", () => {
+  for (const row of SENTENCE_TABLE) {
+    const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: row.text }), statement("r1")]), [
+      decision("d1", {
+        decision: { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] },
+      }),
+    ]);
+    expect(groups[0]?.runs[0]?.decision?.quote, row.id).toBe(row.stored);
+  }
+});
+
+// R5: a person's quote is their first sentence, word for word, so an abbreviation followed by a
+// number ends none of it. Review 5939401884's finding D measured "Use the old page (see p. 4)
+// for now." quoted as "Use the old page (see p."; on a running build at e28c9092 an answer
+// "Keep the memo, e.g. in the pane, and draw it whole (see p. 4). Then more words follow." was
+// drawn in its cell and its because line as "Keep the memo, e.g. in the pane, and draw it whole
+// (see p.".
+test("a first sentence runs past an abbreviation that a number follows", () => {
+  expect(firstSentenceOf("Use the old page (see p. 4) for now. Then more.")).toBe(
+    "Use the old page (see p. 4) for now."
+  );
+  expect(
+    firstSentenceOf("Keep the memo, e.g. in the pane, and draw it whole (see p. 4). Then more.")
+  ).toBe("Keep the memo, e.g. in the pane, and draw it whole (see p. 4).");
+});
+
+// R5: a full stop before a number ends no sentence only after a listed abbreviation, and a number
+// after one opens no label, so "p. 1" and "fig. 1" stay inside their sentence. After any other
+// word the full stop ends the sentence, and a "1." after it is the next sentence's label, as a
+// "1." that opens the text is the first's. At ba0574f3 the rule cut "Draw it whole, as on p. 1.
+// Then more words follow." to "Draw it whole, as on p.", which a running build quoted so in a
+// person's because line, and "See fig. 1. It shows the cut." to "See fig.".
+test("a first sentence runs past an abbreviation that 1 follows, and a list of two items starts at its 1", () => {
+  expect(firstSentenceOf("Draw it whole, as on p. 1. Then more words follow.")).toBe(
+    "Draw it whole, as on p. 1."
+  );
+  expect(firstSentenceOf("See fig. 1. It shows the cut.")).toBe("See fig. 1.");
+  expect(firstSentenceOf("Two steps follow. 1. Open it. 2. Close it.")).toBe("Two steps follow.");
+  expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
+});
+
 /** The page's name for the statement r2, which opens with its label ("R2."). */
 const LABELLED = (reference: string) =>
   reference === statementRef("r2") ? "R2. Every address…" : undefined;
@@ -740,6 +828,36 @@ test("a person's quote that cites a labelled statement ends where their sentence
     LABELLED
   );
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("Keep it as R2. Every address… says.");
+});
+
+// R5: an answer the person wrote as a numbered list on one line, "1. Keep the old page. 2. Then
+// drop it.", ends its first sentence at "page.": markdown reads its "1." as a list's marker, which
+// is no word, and a full stop before a number ends the sentence wherever no listed abbreviation
+// stands before it. On a running build at b0a0892f that answer was quoted "Keep the old page.
+// 2.": the quote was cut from the answer's plain words, where the list's "1." is no longer a
+// word, so the "2." after the first item read as no label.
+test("a person's answer written as a numbered list on one line is quoted to its first item", () => {
+  const stored = "1. Keep the old page. 2. Then drop it.";
+  const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: stored }, [statement("r1")])]));
+  const quote = groups[0]?.runs[0]?.decision?.quote ?? "";
+  expect(quote, "the quote of a numbered answer ends at its first item's full stop").toMatch(
+    /Keep the old page\.$/
+  );
+});
+
+// R5: a person's answer written as a list is quoted from its first item alone, never from the
+// whole list run together, though the item ends at no full stop: "- keep it" over "- drop it" is
+// quoted "keep it".
+test("a person's answer written as a bulleted list is quoted by its first item alone", () => {
+  const groups = bodyOf(
+    issueTree([answeredAsk("ask-1", { text: "- keep it\n- drop it" }), statement("r1")]),
+    [
+      decision("d1", {
+        decision: { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] },
+      }),
+    ]
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe("keep it");
 });
 
 // R1 and R5: the question line is the question's one line, cut from its first block's words

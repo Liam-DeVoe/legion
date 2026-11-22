@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
@@ -8,12 +8,15 @@ import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
+import { blocksKey, useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
+import { useTreeReadRunning } from "../tree-read/tree-read";
+import { useTellsAddressDrawn } from "./refused-reads";
+import type { ViewSlotProps } from "./stage";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -24,32 +27,41 @@ import { useIssueTree } from "../useIssueTree";
  * the outline's: the address's node is the view's only where it is a task, and the view is
  * handed the whole plan beside what the words filter left of it, for the order.
  */
-export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewPlanSlot({
+  issue,
+  onAddressDrawn,
+  route,
+}: SlotProps & Partial<Pick<ViewSlotProps, "onAddressDrawn">>): ReactNode {
   const { hash, search } = useLocation();
   const spec = primarySpec(issue);
   const address = issueAddress(route, search, hash, spec?.slug);
-  const { blocksOf, root } = useIssueTree(issue);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own.
+  const { blocksOf, readsSettled, refused: refusedLines, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. Both are
-  // the tree read's (`useIssueTree`'s `blocksOf`), as the plan's blocks are again for the order
+  // the tree read's (`useOutlineReads`' `blocksOf`), as the plan's blocks are again for the order
   // they are written in (`PlanFilterBody`), so the view sends no request of its own, and a failed
   // line's Retry reads the tree again. A document the issue does not name needs no read.
   //
   // A read has answered where it holds data, whatever its status, and has failed where it stands
   // failed (`refs/reference-target.ts`'s `standsFailed`, the one rule, which says why neither
-  // is read from the status). Each failed read draws one line, which stays while the read runs
+  // is read from the status). The failed read draws one line, which stays while the read runs
   // again or waits for the network, its Retry busy while it runs (`retrying`), and says each
   // failure again (`failure`). The view draws its tasks, its switch and its empty line once both
-  // reads hold data, so it never says the issue has no plan tasks before they are in; until then
-  // its tree holds nothing, and each read that failed is one line over the tree, in the order
-  // plan, statements, with a Retry that asks that read alone again (`PlanFilterBody`). The view
-  // stays mounted through all of it, as the outline does (`slots/body.tsx`), so no read takes
-  // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
-  // the address's step having taken the focus, which it takes once.
+  // documents' blocks are held, so it never says the issue has no plan tasks before they are in;
+  // until then its tree holds nothing, and a refused read is one line over the tree, with a Retry
+  // that asks it again (`PlanFilterBody`). The view stays mounted through all of it, as the
+  // outline does (`slots/body.tsx`), so no read takes from the reader the press of "Steps", the
+  // focused row and its mark, a step being edited, or the address's step having taken the focus,
+  // which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
   const planBlocks = blocksOf("plan");
   const specId = spec?.id;
   const specBlocks = blocksOf("spec");
+  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`).
+  const running = useTreeReadRunning(issue.key);
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
@@ -66,7 +78,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
             failure: query.errorUpdateCount,
             read,
             retry: query.refetch,
-            retrying: query.isFetching,
+            retrying: running,
           },
         ]
       : []
@@ -76,7 +88,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   // the network (paused), is not out.
   const out = watched.some(
     ({ id, query }) =>
-      id !== undefined && query.data === undefined && (query.isFetching || !standsFailed(query))
+      id !== undefined && query.data === undefined && (running || !standsFailed(query))
   );
   const reads: PlanReads =
     failed.length > 0
@@ -106,6 +118,19 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
+  // Whether the view draws a row of the node the address names, which the stage is told by the
+  // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
+  // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the
+  // chart or of the steps, or the row of the cycle that holds it - and none for a statement, a
+  // comment or any other node, so where the view may tell, it says it draws the node where the
+  // address names a task it keeps (`reveal`). It says so before the browser paints, so where the
+  // reads were held as the view was drawn, as on Back to its address, no chart is painted in the
+  // outline's place. Drawn outside the stage, the slot is handed no call and tells no one.
+  const own = watched.flatMap(({ id }) => (id === undefined ? [] : [blocksKey(id)]));
+  const tells = useTellsAddressDrawn(refusedLines, readsSettled, own, onAddressDrawn);
+  useLayoutEffect(() => {
+    if (tells) onAddressDrawn?.(view.root.children.some(({ id }) => named.has(id)));
+  }, [named, onAddressDrawn, tells, view.root]);
   const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();

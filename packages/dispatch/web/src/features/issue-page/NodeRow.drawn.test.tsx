@@ -8,15 +8,24 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { DisplayTree, IssueChild } from "../../api/types";
+import type { Agent, DisplayTree, IssueChild } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { useAgentText } from "../refs/AgentName";
+import { agentsQuery } from "../refs/agent-registry";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
-import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
-import type { NodeChip, TreeNode } from "./issue-tree";
+import {
+  AGENT,
+  decision,
+  issueDetails,
+  KEY,
+  SPEC_DOCUMENT,
+  SPEC_SLUG,
+} from "./decisions-filter/decisions-fixtures";
+import { buildIssueTree, type NodeChip, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
@@ -30,13 +39,15 @@ import {
   type GapKind,
   GLYPH_NAMES,
   GLYPH_TOKENS,
+  isReader,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
-import { addressesAsShortForms } from "./tree-drafts";
+import { addressesAsShortForms, blockNodeId } from "./tree-drafts";
+import { treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -220,6 +231,131 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   });
 });
 
+/** One row of the tree as `ConversationRows` draws it, its body open: the node as the tree model
+ *  built it, its author named by the page's one rule for naming one (`AgentText.author`). */
+function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
+  const agentText = useAgentText();
+  return (
+    <NodeRow
+      author={{
+        kind: authorKind(drawn.author),
+        name: agentText.author(drawn.author),
+        reader: isReader(drawn.author, undefined),
+      }}
+      body
+      context={false}
+      focused={false}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      onFocus={() => {}}
+      onPin={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      pinned={false}
+      rowKey="row"
+      tabStop={false}
+    />
+  );
+}
+
+// R9: an agent's decision is drawn with who decided it: the session or the person its node's
+// `decided_by` tuple names, which the tree read answers with that session or person as context,
+// since the node's `decision` names no decider. The session that wrote it is named by the title
+// the page's sessions read gives it, as any agent's is: its role's word on the row and its whole
+// title in the opened body. A session no registry lists any longer is named by the title it
+// stamped on what it wrote, in the same two places. A decision whose node names nobody draws no
+// author on its row, and its opened body says "Author unknown". Each decision is a node of the
+// tree read, a `decision` block of the spec.
+// Red on purpose: the tree read answers no title a session stamped (a session's context node
+// carries none, and the names read and the agents registry name no session the registry has
+// let go), so the stamped title's clause fails until the model's tree route answers it.
+test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
+  const title = "Legion architect · CORE-1";
+  const storedTitle = "Legion planner · CORE-1";
+  const named = "d-named";
+  const unnamed = "d-unnamed";
+  const stored = "d-stored";
+  const gone = "session-gone";
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        ...[named, unnamed, stored].map((block, position) =>
+          decision(block, {
+            document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
+          })
+        ),
+        treeNode(AGENT.id, "session", null, { role: "context" }),
+        treeNode(gone, "session", null, { role: "context" }),
+      ],
+      [treeTuple("decided_by", named, AGENT.id), treeTuple("decided_by", stored, gone)]
+    ),
+  });
+  const registered: Agent = {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: AGENT.id,
+    state: "live",
+    title,
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(agentsQuery().queryKey, [registered]);
+  const drawn = (block: string) => {
+    const id = blockNodeId(SPEC_SLUG, block);
+    const shown = root.children.find((child) => child.id === id);
+    if (shown === undefined) throw new Error(`the tree draws no decision ${id}`);
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NoTooltips>
+            <TreeRow node={shown} />
+          </NoTooltips>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      const text = (selector: string) =>
+        view.container.querySelector(selector)?.textContent ?? null;
+      return {
+        body: text("[data-node-body] [data-node-author]"),
+        kind: view.container.querySelector("[data-author-kind]")?.getAttribute("data-author-kind"),
+        row: text("[data-node-margin] [data-node-author]"),
+        title: text("[data-node-author-title]"),
+        type: view.container.querySelector("[data-node-row]")?.getAttribute("data-node-type"),
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn(named)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "architect",
+    title,
+    type: "decision",
+  });
+  expect(drawn(unnamed)).toEqual({
+    body: CONTROL_LABELS.unknown_author,
+    kind: "unknown",
+    row: null,
+    title: null,
+    type: "decision",
+  });
+  expect(drawn(stored)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "planner",
+    title: storedTitle,
+    type: "decision",
+  });
+});
 // A view that edits rows in place passes `editable`, and the row element itself carries
 // `data-editable` for that view's style. Every other view passes nothing, and its rows carry none.
 test("a row carries data-editable where its view passes editable, and none by default", () => {

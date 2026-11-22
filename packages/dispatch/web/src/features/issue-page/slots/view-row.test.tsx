@@ -4,7 +4,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import { issueResultsQuery, referenceTargetsQuery } from "../../../api/queries";
+import { issueResultsQuery } from "../../../api/queries";
 import type { Comment, ReferenceTarget } from "../../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
@@ -18,7 +18,7 @@ import {
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
-import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot } from "./view-row";
@@ -67,13 +67,7 @@ function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[])
   return treeAnswer([
     treeNode(KEY, "issue", null),
     ...blocks,
-    ...comments.map((comment) =>
-      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
-        author: [comment.author],
-        made_at: comment.created_at,
-        text: comment.body,
-      })
-    ),
+    ...comments.map((comment) => commentNode(comment)),
   ]);
 }
 
@@ -349,54 +343,6 @@ test("under a words filter the view row keeps drawing its counts while the names
       drawnCounts(view.container),
       "the row did not draw its counts with the names read of the new set out"
     ).toEqual({ conversation: "1", decisions: "0", plan: "1", spec: "0", verification: "0" });
-  } finally {
-    view.unmount();
-    restoreMatchMedia();
-    for (const spy of Object.values(reads)) spy.mockRestore();
-  }
-});
-
-// The one more names read names only the whole documents of the issue a block's stored source
-// cites, which the names read answers, and gives no node its words, so a step's words are held
-// once the first names read has answered. A step whose words matched `?q=` and whose source cited
-// an address nothing else names left the row drawing no count until the one more read, of that
-// address, answered, and none for good while it stood failed.
-test("under a words filter the view row draws Plan's count while the one more names read stands failed", async () => {
-  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
-  const client = newClient();
-  const reads = answerReads();
-  reads.tree.mockResolvedValue(treeOf(TWO_THREADS, [...STATEMENTS, STEP_NODE]));
-  // The spec as a whole, which no word of the tree cites.
-  const cited = buildDispatchReference({ key: KEY, kind: "artifact", slug: SPEC_SLUG });
-  // The first names read names the step, whose stored source cites the spec as a whole; the one
-  // more read, of that document alone, fails.
-  reads.names.mockImplementation(async (refs: readonly string[]) => {
-    if (!refs.includes(STEP)) throw new Error("the one more names read failed");
-    return {
-      targets: [
-        {
-          gone: false,
-          kind: "block",
-          name: `Hang the lanterns first, as ${cited} asks.`,
-          ref: STEP,
-        },
-      ],
-    } as never;
-  });
-  const view = renderViewRow(client, `${presetPath(KEY, "conversation")}?q=lanterns`);
-  try {
-    await waitFor(() =>
-      expect(
-        client.getQueryState(referenceTargetsQuery([cited]).queryKey)?.status,
-        "the one more names read, of the document the step's source cites, did not fail"
-      ).toBe("error")
-    );
-    await waitFor(() =>
-      expect(
-        drawnCounts(view.container).plan,
-        "Plan did not count the step its words match with the one more names read failed"
-      ).toBe("1")
-    );
   } finally {
     view.unmount();
     restoreMatchMedia();

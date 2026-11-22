@@ -109,11 +109,28 @@ type settlement struct {
 	versioned        *pmdoc.Node
 	versionedCounts  []int
 	reconciliation   settlementReconciliation
-	// snapshotCursor is the head the version records (doc_update_version), through which every one
-	// of the room's updates it holds is stored.
+	// readHead is the head of the document's stored history this settlement read under the
+	// document's lock, before it stored anything (readLocked). snapshotCursor is the head the
+	// version records (doc_update_version), through which every one of the room's updates it holds
+	// is stored; it equals readHead when the settlement stored no update (savedNothing).
+	readHead       int64
 	snapshotCursor int64
 	// published are the events this settlement appended, published once its transaction commits.
 	published []model.Event
+}
+
+// savedNothing reports whether this settlement wrote nothing that a later move of an approval
+// request reads, given whether it writes a version (versioning): it writes no version, stores no
+// update in the document's history - none of the room's updates, no block-id stamp and no ask- or
+// check-block repair, so the head it leaves is the head it read (readHead) - and lists no author,
+// neither a pending author nor an in-flight credit. A reopen's move reads the latest version and
+// the editor kept for it (FollowClosedIssueVersions); what else such a settlement writes - block
+// events in SettlementActor's name, the settled version's number in their payloads, the recorded
+// author of an unindexed ask block - changes neither. A settlement armed while another one commits,
+// as the resumption's pick of the row that one is about to delete arms it, finds nothing owed and
+// is such a settlement.
+func (st *settlement) savedNothing(versioning bool) bool {
+	return !versioning && st.snapshotCursor == st.readHead && len(st.credit.authors) == 0
 }
 
 // skipUnreadableSettlement reports whether err stops a settlement at a document whose tree it cannot
@@ -895,17 +912,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// doc_closed_edit_sources), for the reopen's mark to write back into the row it inserts
 	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
 	// settlement on an open issue has named its editor itself, and one on a closed issue that
-	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
-	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
-	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
-	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
-	// of this settlement is, for its write phase.
+	// credits SettlementActor for the edits it saves names no editor, as the settlement after the
+	// reopen, crediting the same edits, named none then: each forgets the editor an earlier
+	// settlement kept. One on a closed issue whose credit is only the kept editor
+	// (settlementVersionCredit.kept), its version adding none of their text, keeps that same
+	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
+	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
+	// only because it found nothing to credit, and its commit deletes the pending row alone,
+	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
+	// are queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
 	}
-	if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
+	if st.issueClosed && kept == nil && st.savedNothing(versioning) {
+		if err := clearSettlementPendingRow(ctx, tx, room); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	} else if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The version a repair, an invalid block or a retraction names is the one its block's document
@@ -929,7 +953,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
 		}
-		if writeErr := st.commitRoomVersions(ctx, fragments, markdown, offsets, keptEditor); writeErr != nil {
+		if writeErr := st.commitRoomVersions(ctx, fragments, keptEditor); writeErr != nil {
 			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(room, writeErr) {
 				return settleDone, settleOutcome{}
 			}
@@ -1287,10 +1311,11 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // commitRoomVersions writes, in the settlement's transaction, one version of each document of the
 // issue room whose fragment changed (fragments), each through writeVersionTx with the version's
 // own approval move and carry, anchors and edit notice, then indexes the room once under its tree
-// artifact (indexRoom): the room's joined rendering, markdown with offsets, at the version of
-// each fragment's document - the one just written, or its latest - so each block records its own
-// document's version and the pass clears the mark the version trigger set on each version it
-// writes (refs.IndexBlocks' fence). Each version's node follows the pass's block nodes, and each
+// artifact (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end
+// in the room's order with its blocks' ranges (fragmentsText), at the version of each fragment's
+// document - the one just written, or its latest - so each block records its own document's
+// version and the pass clears the mark the version trigger set on each version it writes
+// (refs.IndexBlocks' fence). Each version's node follows the pass's block nodes, and each
 // version's artifact.version event names its own document and causes what the pass stated of
 // that document's blocks, with the version's node, stamping the links its blocks inserted at that
 // version (stampVersionEvent), each queued right after that event's append (graphstore.LatestEvent,
@@ -1307,7 +1332,7 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // credited with a document whose fragment no update of theirs changed. Its commit deletes the
 // pending authors it lists; those of a document it writes no version of stay for that document's
 // next version.
-func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, markdown string, offsets []pmdoc.BlockOffset, keptEditor *model.Actor) error {
+func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, keptEditor *model.Actor) error {
 	s, room, tx := st.service, st.room, st.tx
 	// versions is the version of each document the room's pass covers, and inserted those of them
 	// this settlement writes, whose nodes it writes after the pass.
@@ -1344,13 +1369,13 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		writes = append(writes, written{fragment: fragment, result: result, actor: actor})
 		listed[fragment.document] = st.credit.listed[fragment.document]
 	}
-	// A fragment that renders as no text holds no block (withoutSilentFragments).
-	parts := make([]*pmdoc.Node, len(fragments))
+	markdowns := make([]string, len(fragments))
+	offsets := make([][]pmdoc.BlockOffset, len(fragments))
 	for index, fragment := range fragments {
-		parts[index] = fragment.tree
+		markdowns[index], offsets[index] = fragment.markdown, fragment.offsets
 	}
-	indexed := withoutSilentFragments(offsets, parts, func(index int) bool { return fragments[index].markdown == "" })
-	index, err := s.indexRoom(ctx, tx, room, versions, inserted, false, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+	markdown, laid := fragmentsText(markdowns, offsets)
+	index, err := s.indexRoom(ctx, tx, room, versions, inserted, false, markdown, offsetBlocks(laid, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return err

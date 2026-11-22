@@ -286,6 +286,7 @@ func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 		{"the first version of a spec created converted is a query version holding its definition, and its review names it", digestStepBornConvertedSpec},
 		{"a relation alone moves the verification digest", digestStepRelations},
 		{"a value of a check alone - its visibility, its state, its placement - moves the verification digest", digestStepValues},
+		{"a move in the text alone - a text_rank, a text_parent - moves the spec digest and stales its approval", digestStepTextOrder},
 		{"ranks compare byte for byte, and one rank takes the lower node id first", digestStepRanks},
 		{"every field carries its length", digestStepLengths},
 		{"the head and a version are read through one builder, and a later comment stands in no earlier version", digestStepVersions},
@@ -515,6 +516,114 @@ func digestStepValues(t *testing.T, rig *digestRig) {
 	}
 }
 
+// editThroughTheArtifactRoute applies ops to the document artifactID through
+// POST /api/v1/artifacts/{id}/edits as alice, as a named version, and fails unless the route takes
+// them.
+func editThroughTheArtifactRoute(t *testing.T, handler http.Handler, artifactID string, ops []map[string]any) {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
+		"ops": ops, "summary": "edit",
+	}, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("edit %s: status=%d body=%s", artifactID, response.Code, response.Body.String())
+	}
+}
+
+// digestStepTextOrder pins the text order, which the tree does not hold (R1, R14). A spec holds a
+// criterion k1, the issue's first child, so the callout after it is no memo; the callout; a
+// paragraph; and a requirement whose parent attribute names k1. The spec query is approved. A move
+// of the requirement before the paragraph in the spec's text, through the edits route, leaves
+// every node's place in the walk, its parent and its rank as they stood, and moves the
+// requirement's text_rank alone: the spec digest moves and the approval reads stale. Approved
+// again, a move of the requirement into the callout's text, the tree again unchanged, makes the
+// callout its text_parent: the digest moves and the approval reads stale again.
+func digestStepTextOrder(t *testing.T, rig *digestRig) {
+	ctx := context.Background()
+	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A spec in its author's order",
+		":::criterion{#k1}\nI want the urgent list.\n:::\n\n:::callout{#box kind=\"note\" title=\"\"}\nThe box words.\n:::\n\nA paragraph between.\n", false)
+	spec := readDecisionDocument(t, rig.database, issue.Key, "spec")
+	requirement := ":::requirement{#r1 parent=\"dispatch://" + issue.Key + "/spec#b-k1\"}\nAn urgent ask comes first.\n:::\n"
+	editSpec(t, rig.handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": requirement}})
+	r1 := spec.address("r1")
+	// placed is each block of the spec the walk takes, by its address, with its parent and its rank
+	// (a version's node, which each edit adds, is none of them); textRanks the text_rank of each.
+	placed := func() map[string]string {
+		nodes := map[string]string{}
+		for _, node := range rig.walk(t, issue.Key).Nodes {
+			if node.Kind == refs.BlockNodeKind && strings.HasPrefix(node.ID, spec.nodeKey+"#") {
+				nodes[node.ID] = node.Parent.Kind + ":" + node.Parent.ID + " at " + node.Rank
+			}
+		}
+		return nodes
+	}
+	textRanks := func() map[string]string {
+		held := map[string]string{}
+		for _, node := range rig.walk(t, issue.Key).Nodes {
+			if node.Kind != refs.BlockNodeKind || !strings.HasPrefix(node.ID, spec.nodeKey+"#") {
+				continue
+			}
+			value, _, err := graphstore.CurrentValue(ctx, rig.database.Pool, refs.BlockNodeKind, node.ID, refs.AttributeTextRank)
+			if err != nil {
+				t.Fatalf("read the text_rank of %s: %v", node.ID, err)
+			}
+			held[node.ID] = value
+		}
+		return held
+	}
+	approve := func() {
+		t.Helper()
+		reviewDocument(t, rig.handler, spec.id, "alice", "approved", "")
+		if got := readApproval(t, rig.handler, spec.id); got.Approval == nil || got.Approval.State != "approved" {
+			t.Fatalf("the spec of %s reads %+v after its approval, want approved", issue.Key, got.Approval)
+		}
+	}
+	move := func(change string, ops []map[string]any) {
+		t.Helper()
+		walked, ranks, before := placed(), textRanks(), rig.record(t, issue.Key, graphstore.QuerySpec)
+		requireUnder(t, "before the move in the text", rig.walk(t, issue.Key), blockAddress(r1), blockAddress(spec.address("k1")))
+		editThroughTheArtifactRoute(t, rig.handler, spec.id, ops)
+		// Every block that stands before and after the move stands under its parent at its rank
+		// as it did; the criterion, the requirement and the callout stand after it.
+		after := placed()
+		for id, was := range walked {
+			if now, stands := after[id]; stands && now != was {
+				t.Errorf("the move of %s in the text moves %s from under %s to under %s, want every parent and rank as it stood", r1, id, was, now)
+			}
+		}
+		for _, id := range []string{spec.address("k1"), r1, spec.address("box")} {
+			if _, stands := after[id]; !stands {
+				t.Errorf("after the move of %s in the text the walk takes no %s", r1, id)
+			}
+		}
+		if change == refs.AttributeTextRank {
+			for id, held := range textRanks() {
+				if moved := held != ranks[id]; moved != (id == r1) {
+					t.Errorf("the move of %s in the text moves the text_rank of %s from %q to %q, want the requirement's alone moved", r1, id, ranks[id], held)
+				}
+			}
+		}
+		if after := rig.record(t, issue.Key, graphstore.QuerySpec); after.Digest == before.Digest {
+			t.Errorf("the spec digest held still across a change of %s of %s", change, blockAddress(r1))
+		}
+		if got := readApproval(t, rig.handler, spec.id); got.Approval == nil || got.Approval.State != "stale" {
+			t.Errorf("the approval of the spec of %s reads %+v after the change of %s of %s, want stale", issue.Key, got.Approval, change, blockAddress(r1))
+		}
+	}
+
+	approve()
+	move(refs.AttributeTextRank, []map[string]any{{"op": "move", "block": "r1", "after": "block:box"}})
+	approve()
+	// Into the callout's text, after the callout's own paragraph: the move op sets a block beside a
+	// top-level block, so the requirement goes in by a delete and an insert into the callout,
+	// whose markdown carries the requirement's id and parent attribute. The paragraph inside the
+	// requirement, whose id no markdown writes, takes a new id.
+	move(refs.TupleTextParent, []map[string]any{{"op": "delete", "block": "r1"}, {"op": "insert", "into": "block:box", "markdown": requirement}})
+	held, err := graphstore.CurrentOut(ctx, rig.database.Pool, refs.BlockNodeKind, r1, []string{refs.TupleTextParent})
+	if err != nil || len(held) != 1 || held[0].ToID != spec.address("box") {
+		t.Errorf("after the move into the callout %s's text parents are %+v (%v), want the callout %s", r1, held, err, spec.address("box"))
+	}
+}
+
 func digestStepRanks(t *testing.T, rig *digestRig) {
 	r1, r2 := rig.block("r1"), rig.block("r2")
 	order := func(want ...string) {
@@ -645,9 +754,13 @@ func digestStepRequirementUnderComment(t *testing.T, rig *digestRig) {
 }
 
 func digestStepChildCriterion(t *testing.T, rig *digestRig) {
-	// The child is born converted under the rig's issue, whose requirements stand, so it is a view
-	// and its spec holds its design and no requirement of its own.
-	child := createChildIssue(t, rig.handler, "CORE", rig.issue.Key, "The child's design.\n")
+	// The child is no view, so its spec query takes its criterion and requirement nodes: a view's
+	// takes its memo alone (docs' queryDefinitions). A child born converted under the rig's issue,
+	// whose requirements stand, is a view and may hold no requirement of its own, so this child is
+	// one the release before created, holding a requirement of its own, as the owning child of the
+	// tree read's view test is.
+	child := createDigestChild(t, rig.handler, rig.database, "CORE", "The owning child",
+		":::requirement{#cr1}\nThe child's own requirement.\n:::\n", rig.issue.Key, true)
 	_, block := personComment(t, rig.handler, rig.database, rig.issue.Key, "I want it quick.\n\nAnd right.")
 	parent := rig.record(t, rig.issue.Key, graphstore.QuerySpec)
 	childBefore := rig.record(t, child.Key, graphstore.QuerySpec)
@@ -731,23 +844,23 @@ func digestStepAnchoredComment(t *testing.T, rig *digestRig) {
 	}
 }
 
-// pinnedRecord is the spec record of PIN-1, whose tree holds one requirement, written by hand from
-// the record's layout and never by its encoder: the node's address, its type, its parent's
-// address, its rank, its values field - placement, probe, size, state and visibility, in the byte
-// order of their names, each a name and a value - its body text, and its relations field - its
-// part_of and its serves, each a kind and a far end - each field its byte length, one space, then
-// its bytes. The rank and the text are the values the record leaves out of its values field, since
-// fields of their own carry them.
+// pinnedRecord is the spec record of PIN-1, whose tree holds one requirement, in the record's
+// layout: the node's address, its type, its parent's address, its rank, its values field -
+// placement, probe, size, state, text_rank and visibility, in the byte order of their names, each a
+// name and a value - its body text, and its relations field - its part_of, its serves and its
+// text_parent, by kind and then far end, each a kind and a far end - each field its byte length,
+// one space, then its bytes. The rank and the text are the values the record leaves out of its
+// values field, since fields of their own carry them; the text_rank is a value like any other.
 const pinnedRecord = "19 block:PIN-1/spec#r1" +
 	"11 requirement" +
 	"11 issue:PIN-1" +
 	"2 1V" +
-	"79 9 placement8 authored5 probe3 a b4 size3 1.55 state4 live10 visibility7 project" +
+	"94 9 placement8 authored5 probe3 a b4 size3 1.55 state4 live9 text_rank2 1W10 visibility7 project" +
 	"35 :::requirement{#r1}\nThe words.\n:::\n" +
-	"53 7 part_of11 issue:PIN-16 serves19 block:PIN-1/spec#k1"
+	"89 7 part_of11 issue:PIN-16 serves19 block:PIN-1/spec#k111 text_parent19 artifact:PIN-1/spec"
 
 // pinnedDigest is the sha256 of pinnedRecord, in lower-case hex.
-const pinnedDigest = "48dc5d7bb91bcb43020b726eacd79ca31d7a23c4749ca850dde9938983384e57"
+const pinnedDigest = "3a9e0148761490e37d1e31ebd7166196392a8f1dec3f1ac79b972e400f92f56e"
 
 // The record's layout is pinned byte for byte: a tree of one requirement whose every field is
 // written straight into the store reads back as pinnedRecord, with pinnedDigest as its digest. A
@@ -765,7 +878,9 @@ func TestTheRecordOfOneNodeIsItsLayoutByteForByte(t *testing.T) {
 		blockValue(requirement, refs.AttributePlacement, refs.PlacementAuthored),
 		blockValue(requirement, graphstore.AttributeState, graphstore.StateLive),
 		blockValue(requirement, graphstore.AttributeVisibility, graphstore.VisibilityProject),
+		blockValue(requirement, refs.AttributeTextRank, "1W"),
 		blockTuple(requirement, "serves", refs.BlockNodeKind, "PIN-1/spec#k1", true),
+		blockTuple(requirement, refs.TupleTextParent, graphstore.KindArtifact, "PIN-1/spec", true),
 	)
 	record, err := docs.ReadQueryRecord(context.Background(), database.Pool, "PIN-1", graphstore.QuerySpec, refs.TreeCut{})
 	if err != nil {

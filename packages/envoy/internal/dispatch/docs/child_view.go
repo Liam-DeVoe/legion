@@ -26,11 +26,12 @@ import (
 // reached a view through its room is a gap the coverage read names and does not end the view.
 //
 // ViewOf is the one reader of whether an issue is a view: the tree read's view_of member, the
-// coverage reads, the spec query, the refusal of a requirement written on such a child
+// coverage reads (through QueueViewOf, which queues ViewOf's one statement on a batch of the
+// reader's), the spec query, the refusal of a requirement written on such a child
 // (RefuseRequirementOnView) and the block index's own-spec mark (markOwnSpecIndexed, which reads
 // the row's mark alone first) read it. An issue create reads ViewUnder for the issue it makes,
-// whose own row is not written yet (RefuseRequirementUnder). Both read the chain in one statement
-// (viewChainStatement) and judge it by one rule (viewOfChain), so none of them disagree.
+// whose own row is not written yet (RefuseRequirementUnder). Each reads the chain in one statement
+// (viewChainStatement) and judges it by one rule (viewOfChain), so none of them disagree.
 
 // requirementType is the typed block a requirement is.
 const requirementType = "requirement"
@@ -75,6 +76,11 @@ func readViewChain(ctx context.Context, q Queryer, key string, depth int) ([]cha
 	if err != nil {
 		return nil, fmt.Errorf("read the issues from %s up: %w", key, err)
 	}
+	return collectViewChain(rows, key)
+}
+
+// collectViewChain is the chain the rows of viewChainStatement hold, read from the issue key up.
+func collectViewChain(rows pgx.Rows, key string) ([]chainIssue, error) {
 	chain, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (chainIssue, error) {
 		var issue chainIssue
 		return issue, row.Scan(&issue.key, &issue.done, &issue.viewable, &issue.requirement)
@@ -100,10 +106,35 @@ func readViewChain(ctx context.Context, q Queryer, key string, depth int) ([]cha
 // more work. An issue the store holds no row of is no view.
 func ViewOf(ctx context.Context, q Queryer, issueKey string) (string, error) {
 	chain, err := readViewChain(ctx, q, issueKey, 1)
-	if err != nil || len(chain) == 0 || !chain[0].viewable {
+	if err != nil {
 		return "", err
 	}
-	return viewOfChain(chain[1:]), nil
+	return viewOfIssue(chain), nil
+}
+
+// QueueViewOf queues on batch the one statement ViewOf reads for the issue issueKey, so a reader
+// that sends statements of its own in one round trip reads whether the issue is a view beside
+// them (api's issueCoverage, which an approval request reads): once the batch is sent and closed
+// without an error, *view holds what ViewOf answers.
+func QueueViewOf(batch *pgx.Batch, issueKey string, view *string) {
+	batch.Queue(viewChainStatement, issueKey, refs.IssueDepthCap, 1).Query(func(rows pgx.Rows) error {
+		chain, err := collectViewChain(rows, issueKey)
+		if err != nil {
+			return err
+		}
+		*view = viewOfIssue(chain)
+		return nil
+	})
+}
+
+// viewOfIssue is ViewOf's answer from the chain viewChainStatement reads from the issue up with
+// none of the issue's own requirement nodes: "" where the store holds no row of the issue or its
+// row of issue_views lets it be no view, and otherwise the judgement of the chain above it.
+func viewOfIssue(chain []chainIssue) string {
+	if len(chain) == 0 || !chain[0].viewable {
+		return ""
+	}
+	return viewOfChain(chain[1:])
 }
 
 // ViewUnder is ViewOf from a parent: the issue whose requirements an issue born converted with no
