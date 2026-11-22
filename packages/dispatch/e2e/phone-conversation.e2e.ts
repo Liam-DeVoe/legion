@@ -748,8 +748,8 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
 // pill and painted over it. So while a write of the reader's is out and the live socket is let
 // go, the corner would take the taps a reader scrolled back through the turns means for the
 // pill. The corner is a float of the foot's status layer and the pill one of its top layer
-// (`useFootInset`): the hook holds the corner's band and places the pill clear of it, so neither
-// the indicator nor the connection pill covers any of it.
+// (`useFootInset`): the hook holds the corner's height and floor and places the pill clear of it,
+// so neither the indicator nor the connection pill covers any of it.
 test("on a phone, the shell's status corner covers none of Jump to latest @phone", async ({
   browser,
 }) => {

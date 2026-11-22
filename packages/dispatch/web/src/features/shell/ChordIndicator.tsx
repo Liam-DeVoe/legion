@@ -8,7 +8,7 @@ import { usePendingChord } from "./keymap";
  *  It is a float of the foot's top layer (`hooks/useFootInset.ts` lists the foot's layers and the
  *  elements in each): it stands 1rem above the status layer's property, which the hook chooses so
  *  the indicator lies over no foot element and stays on the screen, and never lower than its
- *  floor (`--foot-floor`), 8rem below `xl` and 4rem from `xl` up. */
+ *  floor (`--foot-floor`, which its classes set per breakpoint). */
 export function ChordIndicator(): ReactNode {
   const pending = usePendingChord();
   const indicatorRef = useRef<HTMLOutputElement>(null);

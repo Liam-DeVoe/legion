@@ -38,7 +38,7 @@ import { type RefObject, useLayoutEffect } from "react";
  *     composer frame), all through `MentionComposer`. From `sm` up the docked composer sticks to
  *     the top and counts nothing.
  *   - The issues table's selection bar from `sm` up (`IssueTableSelection`). Below `sm` it sits
- *     under the header and publishes nothing.
+ *     under the header and counts nothing.
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
@@ -95,9 +95,10 @@ import { type RefObject, useLayoutEffect } from "react";
  *   below `xl`.
  * - The agent live view's transcript (`AgentThread`), in the view in front.
  *
- * A custom property is inherited, so a box whose classes read it, while it holds none of its own,
- * reads the clearance of a scroller that holds it. Only the transcript of a live view the shell
- * keeps behind another page, inside `main`, does, and that view is invisible.
+ * `--foot-clearance` is registered as not inherited (`styles.css`), so a box whose classes read
+ * it, while it holds none of its own, reads 0, never the clearance of a scroller around it: the
+ * transcript of a live view the shell keeps behind another page, inside `main`, would otherwise
+ * take `main`'s.
  */
 const FOOT_LAYERS = [
   { name: "page", property: "--foot-page-inset" },
@@ -178,6 +179,7 @@ function freeInset(
   gap: number,
   screen: number
 ): number {
+  if (floats.length === 0) return 0;
   let onScreen = 0;
   for (const inset of [0, ...obstacles.map(({ hi }) => hi).sort((a, b) => a - b)]) {
     const bands = floats.map((float) => floatBand(float, inset, gap));
@@ -216,12 +218,11 @@ function footClearance(
 }
 
 /** Writes `pixels` to `property` in `style` as `${pixels}px`, or removes the property while
- *  `pixels` is 0, and leaves a property that already holds that alone. */
+ *  `pixels` is 0 (`setProperty` with an empty value removes it), and leaves a property that
+ *  already holds that alone. */
 function writePixels(style: CSSStyleDeclaration, property: string, pixels: number): void {
   const value = pixels === 0 ? "" : `${pixels}px`;
-  if (style.getPropertyValue(property) === value) return;
-  if (value === "") style.removeProperty(property);
-  else style.setProperty(property, value);
+  if (style.getPropertyValue(property) !== value) style.setProperty(property, value);
 }
 
 /**

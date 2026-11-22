@@ -226,8 +226,8 @@ export function MarginSheet({
   // What the margin's own tabs give way to: the rail it collapses to, or a phone margin thread.
   const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
   // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
-  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so it
-  // publishes its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
+  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook
+  // holds its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
   // modal sheet over the page, and adds nothing. The dialog's container is this same `<aside>`.
   useFootInset(dialog.containerRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
   // As the column from `xl` up and as Details' drawer, the same `<aside>` is a scroller of the

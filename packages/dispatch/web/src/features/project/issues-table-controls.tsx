@@ -482,10 +482,10 @@ export function IssueTableSelection({
   /** The epic the reader has picked to move the selection into; no write has been sent yet. */
   const [epic, setEpic] = useState("");
   // From `sm` up the bar sits at the foot of the screen, in the foot's page layer
-  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so it publishes
+  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook holds
   // its band, its box on the screen, and the floats keep clear of its controls. Below `sm` the
-  // bar sits under the header, at the top of the screen and not at its foot, so it publishes
-  // nothing there.
+  // bar sits under the header, at the top of the screen and not at its foot, so it counts nothing
+  // there.
   const barRef = useRef<HTMLDivElement>(null);
   const atFoot = useMediaQuery(SM_VIEWPORT_QUERY);
   useFootInset(barRef, selectedKeys.length > 0 && atFoot, "page");
