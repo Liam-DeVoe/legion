@@ -1685,6 +1685,9 @@ nats_provision() {
   copy_is_ours "the copy's NATS" ||
     die "refusing to create the KV buckets of the copy's NATS in $NS: the lock does not give this run that NATS (above)"
   [ -x "$FIXTUREBUCKETS" ] || die "no fixturebuckets at $FIXTUREBUCKETS; cluster.sh up builds it"
+  # The log is made here, before the port-forward starts: the background shell opens it only when
+  # it runs, and the read of the port below, under errexit, stops this script on a missing file.
+  : >"$log"
   timeout 300 kubectl -n "$NS" port-forward svc/nats :4222 >"$log" 2>&1 &
   pf=$!
   deadline=$((EPOCHSECONDS + 60))

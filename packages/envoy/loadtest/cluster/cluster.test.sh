@@ -179,7 +179,9 @@
 # giving no exit status, so a whole step command whose runner pod stops answering exec ends
 # non-zero within that bound and its heartbeat renews the lock no more, while a TERM that lands
 # between the disk watcher's failed act and its next nap leaves it without a second act, and one
-# that lands inside the watcher's read of the volume leaves it without acting at all.
+# that lands inside the watcher's read of the volume leaves it without acting at all; (ff)
+# nats_provision makes its log before its port-forward starts, so its first read of the forwarded
+# port never meets a missing file.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -4430,3 +4432,33 @@ rm -f -- "$unreach_fail"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 pass "a runner pod that stops answering exec bounds the wait past its deadline, after its TERM, after the SIGKILL it could not send and after the SIGKILL the pod took before it went, each end naming the runner pod and giving no exit status, so the step command ends and its heartbeat stops renewing the lock, while a TERM between the disk watcher's failed act and its next nap leaves it without a second act, and one inside its read of the volume leaves it without acting at all"
+
+# (ff) nats_provision starts its port-forward in the background, its output redirected to its log,
+# and reads the forwarded port from that log at once. The background shell opens the log only when
+# it runs, so on a loaded box the read could come first: sed found no file and exited 2, and up
+# stopped under errexit with no word of why. A DEBUG trap runs in nats_provision's own shell just
+# before the port-forward command is started (set -T carries it into the function), so it sees
+# whether the log is there at the moment the read can first race the open.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-provision-log
+provision_seen=$tmp/provision-log-seen
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run lt-20261122t120000-f00d
+  mkdir -p "$RUN_DIR/logs"
+  write_lock "$RUN" "$(utc_now)"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$FIXTUREBUCKETS"
+  chmod +x "$FIXTUREBUCKETS"
+  : >"$provision_seen"
+  set -T
+  # shellcheck disable=SC2016 # expanded when the trap runs, inside nats_provision
+  trap '[[ $BASH_COMMAND != *" port-forward svc/nats "* ]] || { [ -e "$RUN_DIR/logs/nats-provision.log" ] && echo present || echo missing; } >>"$provision_seen"' DEBUG
+  nats_provision
+  trap - DEBUG
+  [ "$(cat "$provision_seen")" = present ] ||
+    fail "nats_provision started its port-forward when its log was '$(cat "$provision_seen")', not present: its read of the port could meet no file"
+)
+rm -f -- "$fake/lock.json"
+pass "nats_provision makes its log before it starts the port-forward, so its first read of the forwarded port never meets a missing file"
