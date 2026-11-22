@@ -167,11 +167,11 @@ func signInAll(t *testing.T, people *PgPeopleStore, email string, subjects ...st
 // revoke of its sessions and personal tokens: the replaced account's issuer, as
 // oidc.CanonicalIssuer spells it, and `sub`, and the `sub` of the account that took the address,
 // whose credentials the broker leaves. The replaced account's member kind does not matter: a
-// restricted row can name an account that made broker credentials while it was full, under the
-// same `sub`, before the hourly confirmation restricted it, so a member who reclaims an outside
-// account's address owes its revocation too, and so does an outside account that replaces
-// another. A sign-in that replaces no account owes none: the account's own sign-in again, an
-// address's first sign-in, and the first Google sign-in of a row that recorded no Google account.
+// restricted member's account makes broker credentials too (the machine logins it approves), so a
+// member who reclaims an outside account's address owes its revocation too, and so does an outside
+// account that replaces another. A sign-in that replaces no account owes none: the account's own
+// sign-in again, an address's first sign-in, and the first Google sign-in of a row that recorded no
+// Google account.
 func TestSignInSubjectRecordsABrokerRevocationOfTheAccountItReplaces(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)

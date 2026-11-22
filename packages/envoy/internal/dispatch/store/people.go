@@ -155,8 +155,9 @@ func announceMemberKindChange(ctx context.Context, tx pgx.Tx, stored string, wri
 // kind, and none otherwise. A write that changes the member kind a people row holds reads it under
 // the row's lock and before its update, and then hands it to RecordReachedProjects with email,
 // after its update, so every session tied to email keeps each of those projects the kind written
-// no longer sees: a full member the sign-in rule restricts loses every public project and every
-// one a group admitted them to, unless it names them, and their sessions' transcripts keep what
+// no longer sees: a full member a write makes restricted (no sign-in rule writes one now) loses
+// every public project and every one a group admitted them to, unless it names them, and their
+// sessions' transcripts keep what
 // they read of each. A write that makes a restricted member full takes nothing from them, since a
 // full member sees every project a restricted one does (PersonSeesProjectSQL's arms), so it reads
 // nothing, and RecordReachedProjects, handed no project, takes no lock and writes nothing.
@@ -214,11 +215,10 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // refuses it any new one, leaves subject's, and deletes any record that subject was itself an
 // account the address was taken from, which only a call made after this commit can do
 // (BrokerRevocations, the server's revocation loop). A restricted member's account is revoked as a
-// full member's is: the hourly confirmation restricts an account under the same `sub`
-// (ConfirmSubject), so a restricted row can name an account that made broker credentials while it
-// was full, and the broker may still refuse subject for a revocation an earlier sign-in recorded
-// and a pass paid, which only a revoke naming subject as the holder lifts. Dispatch itself refuses
-// the replaced account's credentials from the commit, and holds those recording no account to when
+// full member's is: it makes broker credentials too (the machine logins it approves), and the
+// broker may still refuse subject for a revocation an earlier sign-in recorded and a pass paid,
+// which only a revoke naming subject as the holder lifts. Dispatch itself refuses the replaced
+// account's credentials from the commit, and holds those recording no account to when
 // they were made against the time this sign-in records (api.brokerPersonAdmitted,
 // api.tokenAccountReplaced); the new holder's own tokens, which record its account, act throughout.
 // Whenever it records a revocation, it first settles every revocation of email still owed for
@@ -686,12 +686,13 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 // still returns nil. That is safe: the one request whose refresh it was passed its generation check
 // before the refresh, and a sign-in by another account advanced the generation, so that browser's
 // next request fails the check; a sign-in by the same person leaves its newer sign-in to be
-// confirmed by its own refresh. When kind is not the member kind the row held under its lock (the
-// rule restricts a member whose account left the Workspace, or admits a restricted one as full), it
-// announces the change in the same transaction (announceMemberKindChange), so a person the
-// confirmation restricts keeps no open socket or live view of a project that does not name them,
-// and keeps on every session tied to email each project the kind the row held saw and kind does
-// not (projectsSeenAs, RecordReachedProjects), as SignInSubject does.
+// confirmed by its own refresh. When kind is not the member kind the row held under its lock, it
+// announces the change in the same transaction (announceMemberKindChange), so a person it
+// restricts keeps no open socket or live view of a project that does not name them, and keeps on
+// every session tied to email each project the kind the row held saw and kind does not
+// (projectsSeenAs, RecordReachedProjects), as SignInSubject does. No sign-in rule confirms a
+// changed kind now: Google's confirmation names every account it admits a full member
+// (identity.DomainRule.Person), and the sign-in pool's names a full member too.
 func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, readToken, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	if err := signInMemberKind(email, kind); err != nil {
 		return err
