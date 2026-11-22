@@ -948,9 +948,11 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
-// The number counts the entries this role has been handed on this issue, which is why it is raised
-// here: this is the one place a role is handed work it was not on. It needs to be unique among
-// those entries and no more, since it is only ever compared with a value the daemon itself wrote,
+// The number counts the entries handed on this role's row of the issue, numbered across the rows
+// that name the step's claim (the higher of the row's own entry plus one and one above the highest
+// entry of each row of the issue that names that claim), which is why it is raised here: this is
+// the one place a claim is handed work it was not on. It needs to be unique among the entries of
+// that claim and no more, since it is only ever compared with a value the daemon itself wrote,
 // never read from a request — a completion carries no identity at all
 // (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
 // run's whole life, and the round counts only returns to implementing.

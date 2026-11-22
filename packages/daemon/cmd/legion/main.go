@@ -1426,8 +1426,10 @@ func wakesWaitingSummary(wakes []api.WakeWaiting) string {
 // operator claim routes serve it, and this reads them with the bearer --operator-token-file
 // names, on the daemon op already names. Without that flag, and when the daemon refuses the
 // bearer or answers nothing, the lookup is empty and every stranded claim reads as the plain
-// suspension it is, which `legion claims list --json` tells apart. The state is the operator's
-// one unguarded read, so nothing here fails the command.
+// suspension it is, which `legion claims list --json` tells apart. The lookup is by claim token,
+// which each stranded claim of the state carries, so two claims of one role on one issue each
+// read their own suspender. The state is the operator's one unguarded read, so nothing here fails
+// the command.
 func strandedSuspenders(ctx context.Context, op operator, stranded []api.StrandedClaim) api.Suspenders {
 	if len(stranded) == 0 || op.bearer == "" {
 		return nil

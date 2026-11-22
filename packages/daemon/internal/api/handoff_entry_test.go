@@ -74,7 +74,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
 	if secondStart.Entry != firstTesting+1 {
-		t.Fatalf("the second testing start is of entry %d, want the %d after the first: each entry of the phase raises the row by one",
+		t.Fatalf("the second testing start is of entry %d, want the %d after the first: an entry is one above the highest entry of the step's claim, the tester's own here",
 			secondStart.Entry, firstTesting+1)
 	}
 	if run := issueGeneration(t, h, "LEGION-208"); run != 1 {

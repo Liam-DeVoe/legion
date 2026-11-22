@@ -129,8 +129,9 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // the pod's hold — always while its pause is still open, whatever the pod's other roles do, since
 // an update round past its bound or an idle rule would otherwise take a pod that holds the stopped
 // role's unpushed work; and, for a stop that ends after its pause ended, only where no role of the
-// pod is live then (store.IssueHasLiveRoleTx, decision 6) — and its role's open resume closed
-// (store.CloseRoleOpenResumeTx); and either the launch it is owed — a held wake of the pause
+// pod is live then (store.IssueHasLiveRoleTx, decision 6) — and the stopped claim's own open
+// resume closed, one that names that claim or names none (store.CloseRoleOpenResumeTx, given the
+// claim's token); and either the launch it is owed — a held wake of the pause
 // (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A start owed once the pause has ended, with no
@@ -247,8 +248,16 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
 			return made, err
 		}
-		if issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
-			rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+		if issue != nil && p.backstop > 0 && c.ServingGeneration == issue.Generation {
+			// The open phase's worker is a claim, not a role: at step a keyed agent's claim can work
+			// the step beside the role's own claim (workflow.OpenWorker).
+			worker, err := workflow.OpenWorker(ctx, p.records, tx, p.token, *issue)
+			if err != nil {
+				return made, err
+			}
+			if c.Token == worker {
+				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+			}
 		}
 	}
 	first, err := store.RecordPauseStopTx(ctx, tx, rec)

@@ -599,10 +599,10 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 
 // A pod that has had no turn in progress and no turn due for the idle period is released while
 // its issue is still in the workflow: the decision writes the save of the workspace's unpushed
-// work, one `release` row per live role behind it, and the teardown last. Each claim goes to
-// suspended with the source `released` keeping its phase and the task it holds, the bundle is
-// saved before any role process is stopped — only a shim can build it — and the Sandbox teardown
-// runs last.
+// work, one `release` row per live claim behind it, each naming its claim, and the teardown last.
+// Each claim goes to suspended with the source `released` keeping its phase and the task it holds,
+// the bundle is saved before any claim's process is stopped — only a shim can build it — and the
+// Sandbox teardown runs last.
 func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -910,8 +910,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour}, quietLogger())
-	// The cancel names the roles it queued a resume for, which is the one place that set is
-	// read after the fact: a resume the lane has already run leaves no row behind.
+	// The cancel names the claims it queued a resume for, by token, which is the one place that
+	// set is read after the fact: a resume the lane has already run leaves no row behind.
 	logs := &syncBuffer{}
 	rig.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	rig.runner.handlers = []intake.Handler{engine}

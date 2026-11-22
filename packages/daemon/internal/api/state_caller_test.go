@@ -478,6 +478,9 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 			}
 		}
 	}
+	if contract < strandedTokenContract {
+		strandedWithoutTokens(served)
+	}
 	servedShape(served, contract)
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -889,6 +892,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// Every row that reaches here is below repositoryAppsContract too, so no entry of the
 			// repositories it is served carries `apps`.
 			stripRepositoryApps(want)
+			// And below strandedTokenContract, so no claim nothing will wake carries its `token`
+			// (withoutStrandedTokens).
+			strandedWithoutTokens(want)
 			// Every row that reaches here is below supervise.PodUpdateContract, which is below
 			// both of the contracts servedShape reads: such a caller is served each check
 			// without `role` and both fix-attempt stand-ins.
@@ -927,6 +933,15 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 		kept = append(kept, row)
 	}
 	return kept
+}
+
+// strandedWithoutTokens takes `token` off each entry of a baseline body's `strandedClaims`, the
+// report a pod below strandedTokenContract is served (api's withoutStrandedTokens).
+func strandedWithoutTokens(body map[string]any) {
+	rows, _ := body["strandedClaims"].([]any)
+	for _, row := range rows {
+		delete(row.(map[string]any), "token")
+	}
 }
 
 // withoutLowestContract is a state body as a string with `lowestPluginContract` and the
@@ -1040,10 +1055,13 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(retiredStrandedContract-1))
 	every, carried := strandedServed(t, full)
 	// A pod below retiredStrandedContract is below deploymentRolesContract too, so its entries are
-	// those of Legion's six roles alone (withoutDeploymentRoleClaims) whose state it knows.
+	// those of Legion's six roles alone (withoutDeploymentRoleClaims) whose state it knows, and
+	// below strandedTokenContract, so none carries its `token` (withoutStrandedTokens).
 	var kept []map[string]string
 	for _, entry := range every {
 		if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
+			entry = maps.Clone(entry)
+			delete(entry, "token")
 			kept = append(kept, entry)
 		}
 	}

@@ -504,14 +504,15 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
 // the worker that holds the phase decides whether to re-run, wait or fix
-// (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
-// phase, the implementer, whose code the checks ran on, and the architect that owns the issue
-// (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. A role named twice, the implementer holding the phase, is told
+// (dispatch://INFRA-714/spec R1). One message goes to the claim of each of three roles' workers -
+// the worker holding the issue's phase, the implementer, whose code the checks ran on, and the
+// architect that owns the issue (owningArchitect) - each on the role topic of that claim
+// (record.RoleMessage), the way the daemon reaches a role holder with a message. A claim named
+// twice, the implementer holding the phase or one keyed agent working two of the roles, is told
 // once, and a phase no worker holds names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
-// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
+// holds a member of a closed tree where it stood (record.TreeLingers): every claim of the tree is
 // suspended there, so the settlement is recorded and nobody is told.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
@@ -1214,9 +1215,9 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // two causes a review decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
-// again. The issue stays in reviewing, and the notice names the reviewer's role topic, which the
-// architect asks the decision on. Linger holds a member of a closed tree where it stood
-// (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
+// again. The issue stays in reviewing, and the notice names the topic of the claim of the worker on
+// the reviewer's step, which the architect asks the decision on. Linger holds a member of a closed
+// tree where it stood (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
 // runs again.
 //
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot

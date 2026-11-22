@@ -58,7 +58,7 @@ func reopenStore(t *testing.T, store *Store) *Store {
 	return reopened
 }
 
-// A wake reads a released claim by its role token and by the session it kept, and reads neither
+// A wake reads a released claim by its claim token and by the session it kept, and reads neither
 // once another path has taken the claim over: a suspension of any other source is somebody
 // else's to resume.
 func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(t *testing.T) {
