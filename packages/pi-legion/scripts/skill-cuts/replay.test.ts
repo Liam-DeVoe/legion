@@ -3,9 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { Arm } from "./arms";
+import { type Arm, type SkillCopy, snapshotTag } from "./arms";
 import {
   bodyIdentity,
+  type ContentBlock,
   createGateway,
   freshIdentity,
   type Gateway,
@@ -16,9 +17,14 @@ import {
   type ResponsesBody,
   toolCalls,
 } from "./gateway";
+import { judgeReply, stepText } from "./judge";
+import { messageSse, sseResponse } from "./recorder";
 import {
   MAX_BREAKPOINTS,
   MAX_SKILL_ROUNDS,
+  READS_PAST_LAST_ROUND,
+  ReadsPastLastRound,
+  type Replayed,
   replayInterleaved,
   replayOnce,
   sendOrder,
@@ -244,8 +250,14 @@ test("answers skill reads and stops at the first other call", async () => {
   expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
 
   expect(replayed.rounds).toBe(1);
+  expect(replayed.reads).toEqual([
+    [{ skill: "alpha", file: "references/x.md", by: "skill", from: "arm", isError: false }],
+  ]);
+  // The judged step is the answered round's read call, without its answer, then the reply that
+  // holds no other call.
   expect(replayed.step.message.stop_reason).toBe("end_turn");
-  expect(replayed.step.message.content.map((block) => block.type)).toEqual(["text"]);
+  expect(replayed.step.message.content.map((block) => block.type)).toEqual(["tool_use", "text"]);
+  expect(replayed.step.message.content[0]).toEqual(SKILL_READ_CALL);
   expect(replayed.usage.map((spent) => [spent.model, spent.output])).toEqual([
     ["claude-sonnet-5-5", 84],
     ["claude-sonnet-5-5", 96],
@@ -293,10 +305,15 @@ test("a read of a directory of the skill is the judged step: the arm answers fil
   expect(replayed.step.message.content).toEqual(reply.content);
 });
 
-test("answers at most three rounds of skill reads; the reply after the last is the step", async () => {
+// Catches: a reply after the last answered round that still only reads skill files taken for the
+// judged step, which fails in every arm for a read alone.
+test("answers at most three rounds of skill reads; a reply after the last that still only reads skill files gets no verdict", async () => {
   const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
   const { gateway, bodies } = world(() => f5("skill-read"));
-  const replayed = await replayOnce(BODY, arm, gateway);
+  const failed = await replayOnce(BODY, arm, gateway).then(
+    () => "judged",
+    (error: unknown) => error
+  );
   expect(MAX_SKILL_ROUNDS).toBe(3);
   expect(bodies).toHaveLength(4);
   expect(bodies.map((body) => body.messages.length)).toEqual([3, 5, 7, 9]);
@@ -304,19 +321,55 @@ test("answers at most three rounds of skill reads; the reply after the last is t
   for (const sent of bodies) {
     expect(breakpointPaths(sent).sort()).toEqual(["messages.2.content.0", "system.0", "tools.10"]);
   }
-  expect(replayed.rounds).toBe(3);
-  expect(replayed.step.message.stop_reason).toBe("tool_use");
-  expect(replayed.usage).toHaveLength(4);
+  if (!(failed instanceof ReadsPastLastRound)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${READS_PAST_LAST_ROUND}: after 3 answered rounds of skill reads, the reply still only reads skill files (alpha references/x.md)`
+  );
+  const read = {
+    skill: "alpha",
+    file: "references/x.md",
+    by: "skill",
+    from: "arm",
+    isError: false,
+  } as const;
+  expect(failed.replayed.rounds).toBe(3);
+  expect(failed.replayed.reads).toEqual([[read], [read], [read]]);
+  expect(failed.replayed.usage).toHaveLength(4);
+  expect(failed.replayed.step.message.content).toEqual(Array(4).fill(SKILL_READ_CALL));
 
   const once = world(() => f5("skill-read"));
-  expect((await replayOnce(BODY, arm, once.gateway, { maxSkillRounds: 1 })).rounds).toBe(1);
+  await expect(replayOnce(BODY, arm, once.gateway, { maxSkillRounds: 1 })).rejects.toThrow(
+    `${READS_PAST_LAST_ROUND}: after 1 answered rounds`
+  );
   expect(once.bodies).toHaveLength(2);
+
+  // In an interleaved round such a run's outcome is that refusal; another arm's run keeps its
+  // step. The old arm's every reply reads x.md, the new arm's holds text.
+  const reads = await world(() => f5("skill-read")).gateway.send(BODY);
+  const text = await world(() => f5("text")).gateway.send(BODY);
+  const byArm: Gateway = {
+    send: async (body) => (body.x_arm === "old" ? reads : text),
+    spend: () => ({ models: {}, usd: 0 }),
+  };
+  const settled = await replayInterleaved(
+    (["old", "new"] as const).map((name) => ({
+      arm: armWith(name, { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
+      body: { ...BODY, x_arm: name },
+      runs: 1,
+    })),
+    byArm,
+    "past-seed"
+  );
+  const outcomes = new Map(settled.map((run) => [run.arm, run.outcome]));
+  const refused = outcomes.get("old");
+  expect(refused?.status === "rejected" && refused.reason instanceof ReadsPastLastRound).toBe(true);
+  expect(outcomes.get("new")).toMatchObject({ status: "fulfilled", value: { rounds: 0 } });
 });
 
 test("sends the captured anthropic-* headers with the body on every round", async () => {
   const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
   expect(CAPTURED_HEADERS["anthropic-beta"]).toContain("context-management-2025-06-27");
-  const { gateway, headers } = world(() => f5("skill-read"));
+  const { gateway, headers } = world((n) => f5(n <= 3 ? "skill-read" : "text"));
   const replayed = await replayOnce(BODY, arm, gateway, { headers: CAPTURED_HEADERS });
   expect(replayed.rounds).toBe(3);
   expect(headers).toHaveLength(4);
@@ -459,6 +512,290 @@ test("answers a reply's whole read by path of the cut's own copy by arm, and a r
   expect(bodies).toHaveLength(1);
   expect(replayed.rounds).toBe(0);
   expect(replayed.step.message.content).toEqual([ranged]);
+});
+
+/** Beta's SKILL.md: a made-up skill of the profile, which sends the agent to alpha. */
+const BETA_MD =
+  "---\nname: beta\ndescription: Use before any step of the made-up fixture project; it says which skill to load.\n---\n\n# Beta\n\nLoad alpha before the first alpha step.\n";
+
+/** Beta's installed directory as the model sees it: beside alpha's (INSTALLED). */
+const BETA_INSTALLED = "/home/agent/.omp/agent/skills/beta";
+
+/** Beta's installed copy, a cache entry as context.ts's installedCopies names it. */
+function betaCopy(): SkillCopy[] {
+  const dir = path.join(scratch, `beta-copy-${Math.random()}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), BETA_MD);
+  return [{ name: "beta", dir }];
+}
+
+/** The `none` arm of alpha: no directory of it, and a profile of beta alone. */
+function noneArm(): Arm {
+  return {
+    name: "none",
+    skill: "alpha",
+    skillDir: undefined,
+    installedDir: INSTALLED,
+    messages: [],
+    profileSkills: PROFILE_SKILLS.filter((skill) => skill.name !== "alpha"),
+  };
+}
+
+/** A `read` call of `target`, as a Messages reply holds it. */
+function readCall(id: string, target: string): ContentBlock {
+  return { type: "tool_use", id, name: "read", input: { path: target } };
+}
+
+/** The act a reply makes after its reads: text alone. */
+const ACT: ContentBlock = { type: "text", text: "Step 1: done." };
+
+/** A gateway whose n-th reply (from 1) holds `replies[n - 1]`, not streamed, and the bodies sent. */
+function scripted(replies: readonly ContentBlock[][]) {
+  return world((n) => {
+    const content = replies[n - 1] ?? [{ type: "text", text: "no reply is scripted" }];
+    const calls = content.some((block) => block.type === "tool_use");
+    return jsonReply(content, calls ? "tool_use" : "end_turn");
+  });
+}
+
+/** The tool result of the call `id` holding `text`, as a round's answers send it. */
+function toolResult(id: string, text: string, isError: boolean): Record<string, unknown> {
+  return {
+    type: "tool_result",
+    tool_use_id: id,
+    content: [{ type: "text", text }],
+    is_error: isError,
+  };
+}
+
+/** Beta's SKILL.md under its `[Skill file: …]` line, at the installed directory `dir`. */
+const betaAnswer = (dir: string) => `[Skill file: ${dir}/SKILL.md]\n${BETA_MD.replace(/\n$/, "")}`;
+
+// Catches: a reply that only reads another installed skill taken for the judged step, so every arm
+// fails on a read the case's line does not govern; or that read answered from one arm's text.
+test("a reply that reads another installed skill is answered from its installed copy, the same in every arm, and the act after it is judged", async () => {
+  const copies = betaCopy();
+  const beta = readCall("toolu_beta", "skill://beta");
+  const arms = [
+    armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
+    armWith("new", { "SKILL.md": SKILL_MD }),
+    noneArm(),
+  ];
+  for (const arm of arms) {
+    const { gateway, bodies } = scripted([[beta], [ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { copies });
+    expect({ arm: arm.name, rounds: replayed.rounds }).toEqual({ arm: arm.name, rounds: 1 });
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [toolResult("toolu_beta", betaAnswer(BETA_INSTALLED), false)],
+    });
+    expect(replayed.reads).toEqual([
+      [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+    ]);
+    expect(replayed.step.message.content).toEqual([beta, ACT]);
+    expect(JSON.stringify(bodies)).not.toContain(copies[0]?.dir ?? "no copy");
+  }
+
+  // Where the case's own reads show beta's installed directory, the answer names it; a file the
+  // copy lacks gets Oh My Pi's not-found result at that directory.
+  const shown: Arm = {
+    ...armWith("old", { "SKILL.md": SKILL_MD }),
+    skillDirs: { beta: "/opt/plugin/skills/beta" },
+  };
+  const gone = readCall("toolu_gone", "skill://beta/references/gone.md");
+  const both = scripted([[beta, gone], [ACT]]);
+  await replayOnce({ ...BODY, stream: false }, shown, both.gateway, { copies });
+  expect(both.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult("toolu_beta", betaAnswer("/opt/plugin/skills/beta"), false),
+      toolResult("toolu_gone", "File not found: /opt/plugin/skills/beta/references/gone.md", true),
+    ],
+  });
+
+  // With no copy of beta the run fails, rather than answer it as not found; a reply that also
+  // makes another call is judged as it is, and needs no copy.
+  await expect(
+    replayOnce({ ...BODY, stream: false }, shown, scripted([[beta], [ACT]]).gateway)
+  ).rejects.toThrow("the old arm's profile installs beta, and the replay holds no installed copy");
+  const bash = { type: "tool_use", id: "toolu_bash", name: "bash", input: { command: "ls" } };
+  const judged = await replayOnce(
+    { ...BODY, stream: false },
+    shown,
+    scripted([[beta, bash]]).gateway
+  );
+  expect({ rounds: judged.rounds, step: judged.step.message.content }).toEqual({
+    rounds: 0,
+    step: [beta, bash],
+  });
+});
+
+// Catches: a whole read by path of another installed skill's SKILL.md taken for the judged step.
+test("a whole read by path of another installed skill's SKILL.md is answered from its copy in Oh My Pi's form of a read by path; a file its copy lacks is not answered", async () => {
+  const copies = betaCopy();
+  const target = "/home/agent/src/acme-skills/skills/beta/SKILL.md";
+  const lines = BETA_MD.replace(/\n$/, "").split("\n");
+  const hashline = (shown: string) =>
+    `[${shown}#${snapshotTag(BETA_MD)}]\n${lines.map((line, index) => `${index + 1}:${line}`).join("\n")}`;
+  const answers: [Arm, string][] = [
+    [armWith("old", { "SKILL.md": SKILL_MD }), hashline(target)],
+    [noneArm(), hashline(target)],
+    // A session whose working directory holds the file shows its path relative to it.
+    [
+      {
+        ...armWith("new", { "SKILL.md": SKILL_MD }),
+        pathCopy: {
+          dir: COPY,
+          cwd: "/home/agent/src/acme-skills",
+          shownDir: "skills/alpha",
+          rows: "hashline",
+        },
+      },
+      hashline("skills/beta/SKILL.md"),
+    ],
+    // A session that shows the lines of a read by path alone gets them alone.
+    [{ ...armWith("minus", { "SKILL.md": SKILL_MD }), pathRows: "plain" }, lines.join("\n")],
+  ];
+  for (const [arm, text] of answers) {
+    const read = readCall("toolu_path", target);
+    const { gateway, bodies } = scripted([[read], [ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { copies });
+    expect({ arm: arm.name, rounds: replayed.rounds }).toEqual({ arm: arm.name, rounds: 1 });
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [toolResult("toolu_path", text, false)],
+    });
+    expect(replayed.reads).toEqual([
+      [{ skill: "beta", file: "SKILL.md", by: "path", from: "copy", isError: false }],
+    ]);
+    expect(replayed.step.message.content).toEqual([read, ACT]);
+  }
+  // A reference the copy lacks may be on the session's disk: the reply is judged as it is.
+  const gone = readCall("toolu_gone", "/home/agent/src/acme-skills/skills/beta/references/gone.md");
+  const judged = await replayOnce(
+    { ...BODY, stream: false },
+    armWith("old", { "SKILL.md": SKILL_MD }),
+    scripted([[gone]]).gateway,
+    { copies }
+  );
+  expect(judged.rounds).toBe(0);
+});
+
+// Catches: a read of a skill the arm does not install taken for the judged step, which fails that
+// arm by construction.
+test("a read of a skill the profile does not list gets Oh My Pi's unknown-skill result, and the agent runs on", async () => {
+  const gamma = readCall("toolu_gamma", "skill://gamma");
+  const answers: [Arm, string][] = [
+    [armWith("old", { "SKILL.md": SKILL_MD }), "alpha, beta"],
+    [noneArm(), "beta"],
+  ];
+  for (const [arm, available] of answers) {
+    const { gateway, bodies } = scripted([[gamma], [ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      copies: betaCopy(),
+    });
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [toolResult("toolu_gamma", `Unknown skill: gamma\nAvailable: ${available}`, true)],
+    });
+    expect(replayed.reads).toEqual([
+      [{ skill: "gamma", file: "SKILL.md", by: "skill", from: "absent", isError: true }],
+    ]);
+    expect(replayed.step.message.content).toEqual([gamma, ACT]);
+  }
+});
+
+// Catches: the case's skill's read after another skill's read answered other than before, or the
+// none arm's read of the case's skill judged, which fails that arm by construction.
+test("a read of another skill, then of the case's skill, then the act: two rounds, the case's skill answered as before, and in none with the unknown-skill result", async () => {
+  const copies = betaCopy();
+  const beta = readCall("toolu_beta", "skill://beta");
+  const alpha = readCall("toolu_alpha", "skill://alpha/references/x.md");
+  const answers: [Arm, string, boolean, "arm" | "absent"][] = [
+    [
+      armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
+      `[Skill file: ${INSTALLED}/references/x.md]\n${X_MD.replace(/\n$/, "")}`,
+      false,
+      "arm",
+    ],
+    [
+      armWith("new", { "SKILL.md": SKILL_MD }),
+      `File not found: ${INSTALLED}/references/x.md`,
+      true,
+      "arm",
+    ],
+    [noneArm(), "Unknown skill: alpha\nAvailable: beta", true, "absent"],
+  ];
+  for (const [arm, text, isError, from] of answers) {
+    const { gateway, bodies } = scripted([[beta], [alpha], [ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { copies });
+    expect({ arm: arm.name, rounds: replayed.rounds }).toEqual({ arm: arm.name, rounds: 2 });
+    expect(bodies[2]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [toolResult("toolu_alpha", text, isError)],
+    });
+    expect(replayed.reads).toEqual([
+      [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+      [{ skill: "alpha", file: "references/x.md", by: "skill", from, isError }],
+    ]);
+    expect(replayed.step.message.content).toEqual([beta, alpha, ACT]);
+  }
+});
+
+// Catches: a case whose line governs a read of a file of the skill judged on the act after that
+// read alone, so that it fails in every arm, the arm whose text keeps the line too.
+test("a navigation case passes on its read alone, and fails when the read is of another file: the judge reads each answered round's reads, then the act", async () => {
+  // A stand-in judge of the line "Read `references/x.md` before the first step": it passes a step
+  // that reads x.md before anything else, and fails any other.
+  const steps: string[] = [];
+  const keyFile = path.join(scratch, "judge-key");
+  writeFileSync(keyFile, fixtureSecret("gw"), { mode: 0o600 });
+  const judge = createGateway({
+    baseUrl: "http://gateway.test",
+    keyFile,
+    concurrency: 1,
+    timeoutMs: 5_000,
+    fetch: async (_url, init) => {
+      const step = JSON.parse(String(init.body)).messages[0].content[1].text as string;
+      steps.push(step);
+      const read = '<step>\n[tool call: read] {"path":"skill://alpha/references/x.md"}\n';
+      const verdict = step.startsWith(read) ? "pass" : "fail";
+      const judgement = JSON.stringify({ verdict, reason: "The stand-in judge read the step." });
+      // The judge's body streams (prompts/judge.md), so its reply is a Messages API stream.
+      return sseResponse(
+        messageSse({
+          id: "msg_made_up_judge",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: judgement }],
+          stopReason: "end_turn",
+        })
+      );
+    },
+    sleep: async () => {},
+  });
+  const verdictOf = async (target: string) => {
+    const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+    const { gateway } = scripted([[readCall("toolu_nav", target)], [ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway);
+    const judged = await judgeReply(
+      {
+        criterion: {
+          pass: "The step reads references/x.md before anything else.",
+          fail: "The step does anything else first.",
+        },
+        line: "1. Read `references/x.md` before the first step.",
+        before: "",
+        reply: stepText(replayed.step.message.content),
+      },
+      judge
+    );
+    return judged.verdict;
+  };
+  expect(await verdictOf("skill://alpha/references/x.md")).toBe("pass");
+  expect(await verdictOf("skill://alpha/SKILL.md")).toBe("fail");
+  expect(steps[0]).toBe(
+    `<step>\n[tool call: read] {"path":"skill://alpha/references/x.md"}\n${ACT.text}\n</step>`
+  );
 });
 
 // Catches: a round that sends one arm's runs as a batch before another's, an order that is not
@@ -689,13 +1026,19 @@ test("the batch probe: a fixed session id sets its batch's count, and the runner
   expect(new Set(ids).size).toBe(90);
   expect(ids).not.toContain(FIXED_A);
   expect(ids).not.toContain(FIXED_B);
+  // A run whose reply only reads the reference gets no verdict (ReadsPastLastRound, no round
+  // being answered here); its refusal holds that reply.
+  const stepOf = (outcome: PromiseSettledResult<Replayed>) =>
+    outcome.status === "fulfilled"
+      ? outcome.value.step
+      : outcome.reason instanceof ReadsPastLastRound
+        ? outcome.reason.replayed.step
+        : undefined;
   for (const name of ["old", "new", "minus"] as const) {
-    const passes = runs.filter(
-      (run) =>
-        run.arm === name &&
-        run.outcome.status === "fulfilled" &&
-        readsReference(run.outcome.value.step)
-    ).length;
+    const passes = runs.filter((run) => {
+      const step = stepOf(run.outcome);
+      return run.arm === name && step !== undefined && readsReference(step);
+    }).length;
     // No arm's count is its fixed id's 30 or 0: the id is no factor of the arm's batch.
     expect(passes).toBeGreaterThan(0);
     expect(passes).toBeLessThan(30);
@@ -848,10 +1191,13 @@ test("on a Responses body (F8, F9): answers a skill read with a function_call_ou
 
   expect(replayed.rounds).toBe(1);
   expect(replayed.step.message.stop_reason).toBe("completed");
+  // The judged step is the answered round's function call, then the reply after it.
   expect(replayed.step.message.content.map((block) => block.type)).toEqual([
+    "function_call",
     "reasoning",
     "message",
   ]);
+  expect<unknown>(replayed.step.message.content[0]).toEqual(read);
   // Each send's cached tokens are recorded as its cache reads.
   expect(replayed.usage.map((spent) => [spent.model, spent.cacheRead, spent.reasoning])).toEqual([
     ["gpt-6.1-sol", 0, 0],
@@ -870,7 +1216,7 @@ test("on a Responses body: a reply with a read of another skill and another tool
 
 test("on a Responses body: at most three rounds of skill reads, and a read of a file the arm lacks is answered with the not-found text", async () => {
   const arm = armWith("new", { "SKILL.md": SKILL_MD });
-  const { gateway, bodies } = world(() => f9("skill-read"));
+  const { gateway, bodies } = world((n) => f9(n <= 3 ? "skill-read" : "text"));
   const replayed = await replayOnce(RESPONSES_BODY, arm, gateway);
   const sent = bodies as readonly unknown[] as readonly ResponsesBody[];
   expect(sent.map((body) => body.input.length)).toEqual([3, 5, 7, 9]);

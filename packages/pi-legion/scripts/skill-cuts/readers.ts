@@ -389,7 +389,15 @@ const CaseProposal = z.strictObject({
   restatements: Restatements,
 });
 const NoCase = z.strictObject({ step: z.null(), reason: z.string().min(1) });
-export const CaseAnswer = z.union([CaseProposal, NoCase]);
+/** No case, since the agent's work at the skill's read is on the skill's own text (editing,
+ *  rewriting, reviewing, testing, grading, scoring or comparing it or a copy of it), not a task
+ *  the skill governs: `why` says what the agent does with the text. build.ts drops the session
+ *  as `skill-as-material`. */
+const SkillAsMaterial = z.strictObject({
+  step: z.null(),
+  material: z.strictObject({ why: z.string().min(1) }),
+});
+export const CaseAnswer = z.union([CaseProposal, NoCase, SkillAsMaterial]);
 export type CaseAnswer = z.infer<typeof CaseAnswer>;
 
 /** `text` as a restatement's quote is looked for in it: a JSON string's escapes of a quote mark,

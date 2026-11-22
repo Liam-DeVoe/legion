@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys, every one required but the last, no other allowed:
+ * Keys, every one required but the last two, no other allowed:
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -26,6 +26,16 @@
  *                   shows that file at `<dir>/CLAUDE.md` (capture.ts, "The harness strings"),
  *                   and a neutral path without it. It names a person's home on the dev box, a
  *                   private value that only this file holds.
+ *   clones          (optional) `{repo, dir, clone}`: a clone made by hand on a dev box, a fact
+ *                   about the host that no installer the copies output reads records, so the
+ *                   operator states it here: the directory `dir` (a path in the repository, such
+ *                   as `.secrets`) of the dev box's checkout of `repo` is a clone of the repository
+ *                   `clone`. copies.ts reads a skill pool of `repo`'s skills-sources.json in that
+ *                   directory as the clone's skills, beside the pools of the clones an installer
+ *                   makes (`ensure_vendor`), the clone read as an installer's clone of no ref is:
+ *                   its default branch at the time read, and each unit it gives names this key.
+ *                   Both repositories must be of an owner in `owners`, and copies.ts refuses a
+ *                   `dir` that holds no pool of `repo`'s skills-sources.json once it has read it.
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -38,6 +48,16 @@ import { z } from "zod";
 const Repository = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/, {
   error: "a repository as owner/name",
 });
+/** A directory of a repository's checkout, as a path in the repository: `.secrets`,
+ *  `vendor/pack`; not absolute, no `.` or `..` part, no `/` at its end. */
+const CheckoutDirectory = z
+  .string()
+  .refine(
+    (value) =>
+      !value.startsWith("~") &&
+      value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+    { error: "a directory of the checkout as a path in the repository, such as .secrets" }
+  );
 /** An instant in UTC, as the window's ends are written: `2026-10-23T00:00:00Z`. */
 const Instant = z.iso.datetime({ error: "an ISO instant ending in Z" });
 
@@ -52,6 +72,15 @@ export const Store = z.strictObject({
   }),
 });
 export type Store = z.infer<typeof Store>;
+
+/** A clone made by hand that the configuration states (the key `clones`): the directory `dir` of
+ *  the dev box's checkout of `repo` is a clone of `clone`. */
+export const Clone = z.strictObject({
+  repo: Repository,
+  dir: CheckoutDirectory,
+  clone: Repository,
+});
+export type Clone = z.infer<typeof Clone>;
 
 export const SkillCutsConfig = z
   .strictObject({
@@ -77,10 +106,27 @@ export const SkillCutsConfig = z
       .string()
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
       .optional(),
+    clones: z.array(Clone).optional(),
   })
   .refine((config) => Date.parse(config.windowStart) < Date.parse(config.windowEnd), {
     error: "windowEnd must be after windowStart",
     path: ["windowEnd"],
+  })
+  .superRefine((config, context) => {
+    // A clone's repositories are read from the owners' listings, so each is of an owner in
+    // `owners`; GitHub reads an owner's name in any case.
+    const owners = new Set(config.owners.map((owner) => owner.toLowerCase()));
+    for (const [index, clone] of (config.clones ?? []).entries()) {
+      for (const key of ["repo", "clone"] as const) {
+        const owner = clone[key].split("/")[0]?.toLowerCase() ?? "";
+        if (owners.has(owner)) continue;
+        context.addIssue({
+          code: "custom",
+          message: `${clone[key]} is not a repository of an owner in owners`,
+          path: ["clones", index, key],
+        });
+      }
+    }
   });
 export type SkillCutsConfig = z.infer<typeof SkillCutsConfig>;
 

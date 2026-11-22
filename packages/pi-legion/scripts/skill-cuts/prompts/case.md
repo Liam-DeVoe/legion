@@ -14,6 +14,13 @@ The user message holds two parts:
 
 The test replays the session up to one step under several texts of the skill (this text, a shorter rewrite of it, this text less the line you name, this text again, and no skill at all), and a judge decides whether the agent's step passes a criterion. Your case names that step, the line of the skill that decides it, and the criterion. Under a text of the skill only the read results of the skill's files change; with no skill, the reads of the skill and their results are taken out. Every other message before the step is the same under each.
 
+First decide what the agent does with the skill:
+
+- The test needs a session in which the agent reads the skill to do a task the skill governs, and then acts by its rules.
+- When the agent's work at the read is on the skill's text itself, the session is no case: the agent reads the skill as material. Such work is writing, editing or rewriting the skill or a copy of it, reviewing it, testing it, grading or scoring it, or comparing it with another text. The next step works on the text and does not follow it.
+- Decide this from the transcript: the user's request, the agent's plan, and the files and commands of its tool calls around the read. A task that a rule of the skill applies to is no such work, even when the agent quotes the skill while it does the task.
+- When the agent reads the skill as material, propose no case, and give `material` with what the agent does with the text, in the last form shown at the end.
+
 Find the step:
 
 - The step is the first assistant message after the read whose act a line shown in `<skill>` decides: the line says what to do, or what not to do, in the situation the agent is in at that message.
@@ -52,3 +59,7 @@ Answer with one JSON object and nothing else. With a case:
 where each `messageIndex` is an index as `<transcript>` gives it. With no case:
 
 {"step": null, "reason": "<why no step of the transcript is decided by a line of the skill>"}
+
+With no case because the agent reads the skill as material:
+
+{"step": null, "material": {"why": "<what the agent does with the skill's text, and the messages that show it>"}}

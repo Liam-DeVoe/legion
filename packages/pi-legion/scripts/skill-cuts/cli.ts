@@ -109,7 +109,12 @@
  *   `plugin-block-misplaced`, a dispatch-first block away from where the plugin puts it), and the
  *   rest of the file runs; so is, at the stage whose capture finds it, a case whose subagent's
  *   agent autoloads the skill and whose messages hold no block of it (capture.ts's
- *   InjectionRefused, `autoload-no-block`).
+ *   InjectionRefused, `autoload-no-block`). A case whose file read whole by path of its copy an
+ *   arm's text (`--old`, `--new`) holds in a form the arms do not rebuild (build.ts's
+ *   `pathFormIn`: arms.ts's `pathFormFault`, or a directory) is dropped at screen too, before
+ *   any model call, as `path-form: <arm>: <fault>`, and the rest of the file runs: build-cases
+ *   checks the old text and only a `--new` it was given, so a case built before the cut had a
+ *   text reaches the screen unchecked against it.
  * - `report` (no model call) prints each case's passes per arm and stage, and for a dropped case
  *   the stage that dropped it, why, and the passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
@@ -137,7 +142,14 @@
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
- * runs record that id and their place in the order. A capture made for a stage shows the case's
+ * runs record that id and their place in the order. A replay answers a reply's reads of skill
+ * files (the case's skill from the arm, another skill of the profile from the copy its capture
+ * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`), and each
+ * run records each answered round's reads (`skillReads`) and is judged on those rounds' read calls
+ * and the reply after them. A run whose reply after the last answered round still only reads skill
+ * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
+ * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
+ * drops its case under that reason, with the counts. A capture made for a stage shows the case's
  * session (capture.ts, "The harness strings"), whose head the capture reads once from its store
  * through the configuration's `psqlCommand` and saves under `<out>/sessions/`.
  *
@@ -206,6 +218,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
+import { readTargets } from "../skill-scenarios/transcript";
 import {
   type Arm,
   type ArmDirs,
@@ -215,7 +228,7 @@ import {
   injectionFaults,
 } from "./arms";
 import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
-import { main as buildMain } from "./build";
+import { main as buildMain, fromRecordedIn, pathFormIn } from "./build";
 import {
   type Capture,
   captureBody,
@@ -227,7 +240,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, loadCases, Thinking } from "./cases";
+import { type Case, loadCases, pathReadFile, skillReadFile, Thinking } from "./cases";
 import {
   configFrom,
   json,
@@ -241,6 +254,7 @@ import {
 import { type SkillCutsConfig, storeNamed } from "./config";
 import {
   ghSource,
+  installedCopies,
   localSource,
   type RepoSource,
   UNREADABLE_DIRECTORY,
@@ -284,7 +298,13 @@ import {
   runReader,
   SameJobInput,
 } from "./readers";
-import { type Replayed, replayInterleaved } from "./replay";
+import {
+  MAX_SKILL_ROUNDS,
+  READS_PAST_LAST_ROUND,
+  ReadsPastLastRound,
+  type Replayed,
+  replayInterleaved,
+} from "./replay";
 import {
   type CaseFacts,
   type CaseScore,
@@ -744,6 +764,18 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
 
 // `behaviour`: the results of a case.
 
+/** One read a round of a replay answered (replay.ts's `AnsweredRead`): the skill, the file inside
+ *  its directory, whether it was read by `skill://` or by path, where the answer came from (the
+ *  arm's directory, another skill's installed copy, or Oh My Pi's answer for a skill the arm does
+ *  not install), and whether the answer is an error. */
+const SkillReadRecord = z.strictObject({
+  skill: z.string(),
+  file: z.string(),
+  by: z.enum(["skill", "path"]),
+  from: z.enum(["arm", "copy", "absent"]),
+  isError: z.boolean(),
+});
+
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
 const Run = z.strictObject({
   ...RunRecord.shape,
@@ -757,11 +789,15 @@ const Run = z.strictObject({
   /** The session id every request of the run went with (its `metadata.user_id` or
    *  `prompt_cache_key`), its own, or null for a body that names none. */
   userId: z.string().nullable(),
-  /** Its reply's opaque id in that round's blind order, or null when the replay failed. */
+  /** Its reply's opaque id in that round's blind order, or null when it was not judged. */
   id: z.string().nullable(),
   /** The rounds of skill reads the replay answered before the step, or null when it failed. */
   skillRounds: z.int().nonnegative().nullable(),
-  /** The step's content, or null when the replay failed. */
+  /** Each answered round's reads, in order, or null when the replay failed; absent from a run
+   *  made before this field. */
+  skillReads: z.array(z.array(SkillReadRecord)).nullable().optional(),
+  /** The step's content (each answered round's read calls, then the reply after them, which for a
+   *  run that read past the last round is the reply it ended on), or null when the replay failed. */
   reply: z.array(z.looseObject({ type: z.string() })).nullable(),
   replaySpent: z.array(SpentRecord),
   judgeSpent: z.array(SpentRecord),
@@ -826,9 +862,16 @@ const InjectionKind = z.enum([
 ]);
 type InjectionKind = z.infer<typeof InjectionKind>;
 
+/** How the drop of a case begins whose file, read whole by path, an arm's text holds in a form
+ *  the arms do not rebuild (`pathFormDrop`); then the arm, then the fault. */
+const PATH_FORM = "path-form";
+/** The arms whose texts a path-form drop checks: the two the screen and the confirm run. */
+const PATH_FORM_ARMS = ["old", "new"] as const;
+
 /** Everything the runner keeps of one case: why it was dropped, if it was, and the stage that
- *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model, the listing or a
- *  block its arms cannot rebuild, else the stage whose capture needed a directory no read gives
+ *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model, the listing, a
+ *  block its arms cannot rebuild or a file read by path an arm's text holds in a form the arms do
+ *  not rebuild (`path-form`), else the stage whose capture needed a directory no read gives
  *  or found such a block; absent when it was not dropped, and in a result written before the
  *  stage was recorded, `dropStage`); for an `injection-unrebuildable` drop, the kind of each fault
  *  (`injectionKinds`); its judge controls; each stage it ran, `confirm` its latest confirm and
@@ -1010,12 +1053,15 @@ interface Behaviour {
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
  *  send through it, each logged. `source` reads the context's repositories, and counts its GitHub
- *  reads. `runner` is this runner's code (`runnerDigest`), which each stage it starts records;
- *  `again` the cases `--again` names (confirm only). */
+ *  reads; `cacheDir` holds the context's builds, among them each installed skill a replay answers
+ *  a read of another skill from (context.ts's `installedCopies`). `runner` is this runner's code
+ *  (`runnerDigest`), which each stage it starts records; `again` the cases `--again` names
+ *  (confirm only). */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
   readonly scratch: string;
+  readonly cacheDir: string;
   readonly gateway: Gateway;
   readonly replays: Gateway;
   readonly judge: Gateway;
@@ -1160,6 +1206,25 @@ function injectionDrop(c: Case): { reason: string; kinds: InjectionKind[] } | un
   const kinds = [...new Set(faults.map((fault) => fault.kind))];
   const texts = faults.map((fault) => fault.text).join("; ");
   return { reason: `${INJECTION_UNREBUILDABLE}: ${kinds.join(", ")}: ${texts}`, kinds };
+}
+
+/** The drop at screen of case `c` when an arm's text of `dirs` (old, new) holds a file the case
+ *  reads whole by path from its copy (`pathCopy`, cases.ts's `pathReadFile`) in a form the arms
+ *  do not rebuild (build.ts's `pathFormIn`: arms.ts's `pathFormFault`, or a directory), on which
+ *  buildArm would throw at the capture; undefined when it holds none. Its reason is
+ *  `path-form: <arm>: <fault>`. */
+function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
+  if (c.pathCopy === undefined) return undefined;
+  const targets = readTargets(c.messages);
+  const files = c.skillReads.flatMap((index) => {
+    const message = c.messages[index];
+    const target = targets.get(message?.toolCallId ?? "") ?? "";
+    if (message?.role !== "toolResult" || skillReadFile(c.skill, target) !== undefined) return [];
+    const file = pathReadFile(c, target);
+    return file === undefined ? [] : [file];
+  });
+  const found = pathFormIn(files, dirs);
+  return found === undefined ? undefined : `${PATH_FORM}: ${found.arm}: ${found.fault}`;
 }
 
 /** What score.ts reads of `b`'s cases beside their run records (CaseFacts): the drop of each case
@@ -1392,9 +1457,13 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
 
 /** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
- *  a session id of its own; then every reply judged blind under `seed`. A replay that fails is a
- *  run with no verdict; one the budget refused, or whose judgement the budget refused, is no run.
- *  The runs are numbered, within their arm, in the order they were sent. */
+ *  a session id of its own and its arm's installed copies of the profile's other skills, from its
+ *  capture's record and the cache (context.ts's `installedCopies`); then every reply judged blind
+ *  under `seed`. A replay that fails is a run with no verdict, and so is one whose reply after the
+ *  last answered round still only reads skill files (replay.ts's ReadsPastLastRound: its reason
+ *  begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the budget
+ *  refused, or whose judgement the budget refused, is no run. The runs are numbered, within their
+ *  arm, in the order they were sent. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -1412,6 +1481,7 @@ async function runRound(
       arm,
       body: capture.body,
       headers: capture.record.requestHeaders,
+      copies: installedCopies(capture.record.context, r.cacheDir),
       runs: toStart[name] ?? 0,
     })),
     r.replays,
@@ -1443,15 +1513,19 @@ async function runRound(
         budgetSpent = true;
         continue;
       }
+      // A run whose reply after the last answered round still only reads skill files keeps what
+      // it read and spent.
+      const past = outcome.reason instanceof ReadsPastLastRound ? outcome.reason : undefined;
       runs.push({
         ...base,
         run: next(),
         verdict: null,
-        reason: `the replay failed: ${messageFor(outcome.reason)}`,
+        reason: past?.message ?? `the replay failed: ${messageFor(outcome.reason)}`,
         id: null,
-        skillRounds: null,
-        reply: null,
-        replaySpent: [],
+        skillRounds: past?.replayed.rounds ?? null,
+        skillReads: past?.replayed.reads.map((each) => [...each]) ?? null,
+        reply: past?.replayed.step.message.content ?? null,
+        replaySpent: past?.replayed.usage ?? [],
         judgeSpent: [],
       });
       continue;
@@ -1469,6 +1543,7 @@ async function runRound(
       reason: judgement.reason,
       id: judgement.id,
       skillRounds: step.rounds,
+      skillReads: step.reads.map((each) => [...each]),
       reply: step.step.message.content,
       replaySpent: step.usage,
       judgeSpent: [...judgement.spent],
@@ -1485,8 +1560,10 @@ async function runRound(
  * is counted in `phases`. A case whose context holds a directory no read can give (context.ts's
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
  * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
- * started again skips it. A stage it starts records this runner (`r.runner`). Throws Stopped,
- * after saving, when the budget refused a call.
+ * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
+ * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`). A stage
+ * it starts records this runner (`r.runner`). Throws Stopped, after saving, when the budget
+ * refused a call.
  */
 async function runStage(
   r: Runner,
@@ -1581,7 +1658,8 @@ async function runStage(
     const outcome = stageOutcome(state.runs, c.id, stage);
     if (outcome.state !== "running") {
       update({ ...state, state: outcome.state });
-      return current;
+      const past = outcome.state === "unscreened" ? readsPastDrop(state.runs, stage) : undefined;
+      return past === undefined ? current : { ...current, dropped: past, droppedAt: stage };
     }
     const seed = newSeed();
     const round = await runRound(
@@ -1696,6 +1774,11 @@ async function screenCommand(r: Runner): Promise<void> {
     if (injection !== undefined) {
       const { reason: dropped, kinds: injectionKinds } = injection;
       await finished({ ...result, dropped, droppedAt: "screen", injectionKinds }, phases);
+      continue;
+    }
+    const pathForm = pathFormDrop(c, r.dirs);
+    if (pathForm !== undefined) {
+      await finished({ ...result, dropped: pathForm, droppedAt: "screen" }, phases);
       continue;
     }
     if (result.controls === null) {
@@ -1848,8 +1931,46 @@ function stageVerdict(stage: Stage, passes: Record<ArmName, number>): string {
   }
 }
 
+/** Each arm of `stage` with how many of `runs`, a stage's runs, got no verdict because the reply
+ *  after the last answered round still only read skill files (replay.ts's ReadsPastLastRound,
+ *  whose reason begins READS_PAST_LAST_ROUND). */
+function readsPast(runs: readonly Run[], stage: Stage): { arm: ArmName; count: number }[] {
+  return STAGE_ARMS[stage].map((arm) => ({
+    arm,
+    count: runs.filter(
+      (run) =>
+        run.arm === arm && run.verdict === null && run.reason.startsWith(READS_PAST_LAST_ROUND)
+    ).length,
+  }));
+}
+
+/** Counts of arms in words: `old 1, new 0, none 3`. */
+function armCounts(counts: readonly { arm: ArmName; count: number }[]): string {
+  return counts.map(({ arm, count }) => `${arm} ${count}`).join(", ");
+}
+
+/** Why a case whose `stage` is unscreened is dropped, from the stage's `runs`: each arm that lacks
+ *  its judged runs after its extra runs, with how many of its runs read skill files past the last
+ *  answered round, when it has one or more such runs; then every arm's count of them. Undefined
+ *  when no arm that lacks its runs has one: the stage is then unscreened, as before. */
+function readsPastDrop(runs: readonly Run[], stage: Stage): string | undefined {
+  const past = readsPast(runs, stage);
+  const short = past.flatMap(({ arm, count }) => {
+    const own = runs.filter((run) => run.arm === arm);
+    const judged = own.filter((run) => run.verdict !== null).length;
+    return judged < STAGE_RUNS[stage] && count > 0
+      ? [
+          `the ${arm} arm has ${judged} of its ${STAGE_RUNS[stage]} judged runs after ${own.length} runs, ${count} of which still only read skill files after the last answered round`,
+        ]
+      : [];
+  });
+  if (short.length === 0) return undefined;
+  return `${READS_PAST_LAST_ROUND}: ${short.join("; ")} (runs that read past the last round: ${armCounts(past)})`;
+}
+
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
- *  they say. */
+ *  they say, and how many runs got no verdict, those that read skill files past the last answered
+ *  round counted by arm. */
 function stageLine(
   caseId: string,
   stage: Stage,
@@ -1859,7 +1980,11 @@ function stageLine(
   if (state === undefined) return `${label}: not run`;
   const outcome = stageOutcome(state.runs, caseId, stage);
   const unjudged = state.runs.filter((run) => run.verdict === null).length;
-  const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again)`;
+  const past = readsPast(state.runs, stage);
+  const pastWords = past.some(({ count }) => count > 0)
+    ? `; ${READS_PAST_LAST_ROUND}: ${armCounts(past)}`
+    : "";
+  const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again${pastWords})`;
   switch (outcome.state) {
     case "counted": {
       const passes = Object.entries(outcome.passes)
@@ -2036,7 +2161,13 @@ function listingWords(
   }).length;
   const answers = dispatchAnswers(results);
   const assumed = screened.filter((each) => answers.get(each.caseId) === "assumed").length;
-  return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
+  // A case whose profile took names from its recorded listing (build.ts's POOL_AT_START_RULE):
+  // its listing measure cannot see a miss of them.
+  const taken = screened.filter(
+    (each) =>
+      fromRecordedIn(b.cases.find((candidate) => candidate.id === each.caseId)?.evidence).length > 0
+  ).length;
+  return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
@@ -2141,8 +2272,27 @@ function reportCommand(b: Behaviour): void {
   const byKind = InjectionKind.options
     .map((kind) => `${kind} ${injected.filter((kinds) => kinds.includes(kind)).length}`)
     .join(", ");
+  // Each case dropped for a file read by path an arm's text holds in a form the arms do not
+  // rebuild, by the arm its reason names (`pathFormDrop`).
+  const formed = drops.filter((reason) => reason.startsWith(`${PATH_FORM}: `));
+  const byArm = PATH_FORM_ARMS.map(
+    (arm) =>
+      `${arm} ${formed.filter((reason) => reason.startsWith(`${PATH_FORM}: ${arm}: `)).length}`
+  ).join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind})), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}), ${unscreened} unscreened, ${notRun} not run`
+  );
+  // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
+  // round still only read skill files: an arm that keeps the agent reading acts differently.
+  const pastByStage = Stage.options.map((stage) => {
+    const runs = [...results.values()].flatMap((result) => [
+      ...(result.stages[stage]?.runs ?? []),
+      ...(stage === "confirm" ? (result.earlierConfirms ?? []).flatMap((each) => each.runs) : []),
+    ]);
+    return `${stage} ${armCounts(readsPast(runs, stage))}`;
+  });
+  lines.push(
+    `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads still only read skill files, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
   );
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined
@@ -2373,6 +2523,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   });
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
+  const cacheDir = values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR);
   const plantedLine = values["planted-line"];
   const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
@@ -2386,6 +2537,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     },
     texts,
     scratch,
+    cacheDir,
     gateway,
     replays: loggedGateway(gateway, log, "replay"),
     judge: loggedGateway(gateway, log, "judge"),
@@ -2406,7 +2558,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         omp,
         outDir,
         scratchDir: path.join(scratch, "captures"),
-        cacheDir: values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR),
+        cacheDir,
         source,
         models,
         hints,

@@ -54,6 +54,19 @@
  * answers a reply's reads with them. cases.ts's `skillReadFile(arm.skill, target)` and
  * `pathReadFile(arm, target)` say which file a read reads.
  *
+ * `otherSkillRead(arm, copies, target)` answers one new read of a file of another skill, the
+ * same text in every arm. A skill the profile lists is read from its installed copy (`copies`,
+ * the cache entries the capture installed, context.ts's `installedCopies`), or from the arm's
+ * directory for a copy of the case's skill's source under another name: a `skill://<name>[/<file>]`
+ * read under a `[Skill file: <path>]` line whose directory is the one the case's own reads of
+ * that skill show (`arm.skillDirs`), else the directory beside the case's skill's installed
+ * directory; a whole read by path (a path that ends `/<name>/SKILL.md`, or holds
+ * `skills/<name>/<file>`, as count.sql and build.ts find a skill's read by path) in Oh My Pi's
+ * form of a read by path, its rows as the session shows them (`arm.pathRows`). A `skill://` read
+ * of a skill the profile does not list gets Oh My Pi's unknown-skill result, the text of
+ * `skill-protocol.ts`'s resolver in the pinned binary: `Unknown skill: <name>`, then `Available:`
+ * and the names the session installs joined by `, ` (`none` for no name).
+ *
  * A skill can reach a session other than by its listing line and its reads, and each arm puts its
  * own text there too (`Injection`, `arm.injections`):
  *
@@ -120,6 +133,7 @@ import {
   listedName,
   type ProfileSkill,
   pathReadFile,
+  resolvedReadPath,
   skillReadFile,
   testedCopy,
   textLines,
@@ -225,6 +239,13 @@ export interface Arm {
   /** The cut's own copy of the skill the case's session read by path, the same in every arm.
    *  Absent when the case names none. */
   readonly pathCopy?: PathCopy;
+  /** How a new read by path shows its rows in the case's session (`pathRowsOf`). Absent for an
+   *  arm built from no case (a load test's), whose reads by path show hashline rows. */
+  readonly pathRows?: PathRows;
+  /** The installed directory of each other skill of the profile that the case's own `skill://`
+   *  reads of it show (the first `[Skill file: …]` line of a read of it), by the name the profile
+   *  lists it under (`skillDirsOf`). Absent, or without a name, where the case shows none. */
+  readonly skillDirs?: Readonly<Record<string, string>>;
 }
 
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
@@ -236,19 +257,32 @@ export interface ArmDirs {
   readonly plantedLine?: string;
 }
 
-/** The answer to a read of `file` (a path inside the skill's directory) from the arm's files,
- * shown at `shown`: the header and the text, or the not-found text with `isError`. */
-function answer(arm: Arm, file: string, shown: string): { text: string; isError: boolean } {
-  if (arm.skillDir === undefined) {
-    const names = arm.profileSkills.map((skill) => listedName(skill));
-    const available = names.length > 0 ? names.join(", ") : "none";
-    return { text: `Unknown skill: ${arm.skill}\nAvailable: ${available}`, isError: true };
-  }
-  const { full, stats } = armFile(arm.skillDir, file);
+/** Oh My Pi's result for a `skill://` read of `skill` in a session whose skills are the arm's
+ *  profile's: the unknown-skill error of `skill-protocol.ts`'s resolver in the pinned binary,
+ *  `Unknown skill: <skill>`, then `Available: ` and the listed names joined by `, `, or `none`. */
+function unknownSkill(arm: Arm, skill: string): { text: string; isError: boolean } {
+  const names = arm.profileSkills.map((each) => listedName(each));
+  const available = names.length > 0 ? names.join(", ") : "none";
+  return { text: `Unknown skill: ${skill}\nAvailable: ${available}`, isError: true };
+}
+
+/** The answer to a `skill://` read of `file` (a path inside a skill's directory) from the skill
+ *  directory `dir`, shown at `shown`: the header and the text, or the not-found text with
+ *  `isError`. */
+function fileAnswer(dir: string, file: string, shown: string): { text: string; isError: boolean } {
+  const { full, stats } = armFile(dir, file);
   if (stats === undefined) return { text: `File not found: ${shown}`, isError: true };
   if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
   const text = readFileSync(full, "utf8").replace(/\n$/, "");
   return { text: `${skillFileHeader(shown)}\n${text}`, isError: false };
+}
+
+/** The answer to a read of `file` (a path inside the skill's directory) from the arm's files,
+ * shown at `shown`: the header and the text, or the not-found text with `isError`; for `none`,
+ * the unknown-skill result. */
+function answer(arm: Arm, file: string, shown: string): { text: string; isError: boolean } {
+  if (arm.skillDir === undefined) return unknownSkill(arm, arm.skill);
+  return fileAnswer(arm.skillDir, file, shown);
 }
 
 /** The file `file` (a path inside the skill's directory) of the arm's directory `dir`, absolute,
@@ -532,34 +566,248 @@ function shownRows(message: SessionMessage): { rows: PathRows; shown?: string } 
 /** A path or URL with a scheme (`skill://`, `https://`), which no read by path is. */
 const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-/** The cut's own copy of `c`'s skill as its session read it by path (PathCopy), or undefined when
- *  `c` names none: `shownDir` from the first hashline line of a read of a file of the copy that
- *  shows that file's path, else the copy's directory; `rows` as the last read by path of `c`'s
+/** How a new read by path shows its rows in `c`'s session: as the last read by path of its
  *  messages shows them (`shownRows`), else hashline, or plain when the case's recorded tools leave
  *  out the edit tool. */
-function pathCopyOf(c: Case, targets: ReadonlyMap<string, string>): PathCopy | undefined {
-  if (c.pathCopy === undefined) return undefined;
-  let shownDir: string | undefined;
+function pathRowsOf(c: Case, targets: ReadonlyMap<string, string>): PathRows {
   let rows: PathRows | undefined;
   for (const message of c.messages) {
     if (message.role !== "toolResult" || message.toolName !== "read") continue;
     const target = targets.get(message.toolCallId ?? "");
-    const shown = target === undefined || URL_TARGET.test(target) ? undefined : shownRows(message);
-    if (target === undefined || shown === undefined) continue;
-    rows = shown.rows;
-    const file = pathReadFile(c, target);
-    if (shownDir !== undefined || file === undefined || shown.shown === undefined) continue;
-    if (shown.shown === file) shownDir = "";
-    else if (shown.shown.endsWith(`/${file}`)) shownDir = shown.shown.slice(0, -(file.length + 1));
+    if (target === undefined || URL_TARGET.test(target)) continue;
+    rows = shownRows(message)?.rows ?? rows;
   }
   const edit = c.profile.tools === undefined || c.profile.tools.includes("edit");
+  return rows ?? (edit ? "hashline" : "plain");
+}
+
+/** The cut's own copy of `c`'s skill as its session read it by path (PathCopy), or undefined when
+ *  `c` names none: `shownDir` from the first hashline line of a read of a file of the copy that
+ *  shows that file's path, else the copy's directory; `rows` as the session shows them
+ *  (`pathRowsOf`). */
+function pathCopyOf(
+  c: Case,
+  targets: ReadonlyMap<string, string>,
+  rows: PathRows
+): PathCopy | undefined {
+  if (c.pathCopy === undefined) return undefined;
+  let shownDir: string | undefined;
+  for (const message of c.messages) {
+    if (message.role !== "toolResult" || message.toolName !== "read") continue;
+    const target = targets.get(message.toolCallId ?? "");
+    if (target === undefined || URL_TARGET.test(target)) continue;
+    const shown = shownRows(message)?.shown;
+    const file = pathReadFile(c, target);
+    if (file === undefined || shown === undefined) continue;
+    if (shown === file) shownDir = "";
+    else if (shown.endsWith(`/${file}`)) shownDir = shown.slice(0, -(file.length + 1));
+    if (shownDir !== undefined) break;
+  }
   return {
     dir: c.pathCopy.dir,
     ...(c.pathCopy.cwd === undefined ? {} : { cwd: c.pathCopy.cwd }),
     ...(c.pathCopy.home === undefined ? {} : { home: c.pathCopy.home }),
     shownDir: shownDir ?? c.pathCopy.dir,
-    rows: rows ?? (edit ? "hashline" : "plain"),
+    rows,
   };
+}
+
+/** The installed directory of each skill of `c`'s profile other than its own that a `skill://`
+ *  read of it in `c`'s messages shows: the first `[Skill file: …]` line of such a read, less the
+ *  file it read, by the name the profile lists the skill under. */
+function skillDirsOf(c: Case, targets: ReadonlyMap<string, string>): Record<string, string> {
+  const names = c.profile.skills
+    .map((skill) => listedName(skill))
+    .filter((name) => name !== c.skill)
+    .toSorted((a, b) => b.length - a.length);
+  const dirs: Record<string, string> = {};
+  for (const message of c.messages) {
+    if (message.role !== "toolResult" || message.toolName !== "read") continue;
+    const target = targets.get(message.toolCallId ?? "") ?? "";
+    for (const name of names) {
+      const file = skillReadFile(name, target);
+      if (file === undefined) continue;
+      const header = skillHeaderPath(message.content?.[0]?.text ?? "");
+      if (!Object.hasOwn(dirs, name) && header?.endsWith(`/${file}`)) {
+        dirs[name] = header.slice(0, -(file.length + 1));
+      }
+      break;
+    }
+  }
+  return dirs;
+}
+
+/** A skill of an arm's profile other than the case's, as the capture installed it (context.ts's
+ *  `installedCopies`): the name the profile lists it under, and the directory of its installed
+ *  copy, which a read of it is answered from, the same in every arm. */
+export interface SkillCopy {
+  readonly name: string;
+  readonly dir: string;
+}
+
+/** A new read of a file of a skill other than the case's, answered (`otherSkillRead`): the skill
+ *  (the name the profile lists it under, or, for a skill it does not list, the name the
+ *  `skill://` URL gives), the file inside its directory, how it was read (`skill` for a
+ *  `skill://` URL, `path` for a whole read by path), where the answer came from (`copy`, the
+ *  skill's installed copy; `arm`, the arm's directory, for a copy of the case's skill's source
+ *  under another name; `absent`, Oh My Pi's unknown-skill result for a skill the arm does not
+ *  install), and the answer. */
+export interface OtherSkillRead {
+  readonly skill: string;
+  readonly file: string;
+  readonly by: "skill" | "path";
+  readonly from: "copy" | "arm" | "absent";
+  readonly text: string;
+  readonly isError: boolean;
+}
+
+/** The directory a read of `skill`, a skill of the arm's profile other than the case's, is
+ *  answered from, and which one it is: the arm's directory for a copy of the case's skill's source
+ *  under another name (cases.ts's `testedCopy`), else its installed copy in `copies`. Throws naming
+ *  the skill when `copies` holds no copy of it, or its copy's directory is gone, so that no read
+ *  of it is answered as not found. */
+function sourceOf(
+  arm: Arm,
+  copies: readonly SkillCopy[],
+  skill: ProfileSkill
+): { dir: string; from: "arm" | "copy" } {
+  if (arm.skillDir !== undefined && testedCopy(arm.profileSkills, arm.skill)(skill)) {
+    return { dir: arm.skillDir, from: "arm" };
+  }
+  const name = listedName(skill);
+  const copy = copies.find((each) => each.name === name);
+  if (copy === undefined) {
+    throw new Error(
+      `the ${arm.name} arm's profile installs ${name}, and the replay holds no installed copy of it (context.ts's installedCopies of its capture's record)`
+    );
+  }
+  if (!statSync(copy.dir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`the installed copy of ${name}, ${copy.dir}, is not a directory`);
+  }
+  return { dir: copy.dir, from: "copy" };
+}
+
+/** The path Oh My Pi's hashline line shows for a read by path that opens `full`: relative to the
+ *  session's working directory for a file under it, `~/<rest>` for a file under its home, else
+ *  `full` (the cases' recorded reads by path show these three forms); the path as read, made
+ *  normal, when the case names no directory that resolves it (`full` undefined). */
+function shownPath(
+  target: string,
+  full: string | undefined,
+  where: { readonly cwd?: string; readonly home?: string }
+): string {
+  if (full === undefined) return path.posix.normalize(target);
+  if (where.cwd !== undefined && full.startsWith(`${where.cwd}/`)) {
+    return full.slice(where.cwd.length + 1);
+  }
+  if (where.home !== undefined && full.startsWith(`${where.home}/`)) {
+    return `~${full.slice(where.home.length)}`;
+  }
+  return full;
+}
+
+/** A `skill://` read of `target` answered when it reads a file of a skill of `others`, the
+ *  profile's skills other than the case's, or of a skill the profile does not list (see the
+ *  file's header). Oh My Pi's resolver tries `<name>/<first part of the path>` before `<name>`,
+ *  so the longest listed name is tried first. */
+function otherSkillUrlRead(
+  arm: Arm,
+  copies: readonly SkillCopy[],
+  others: readonly ProfileSkill[],
+  target: string
+): OtherSkillRead | undefined {
+  for (const skill of others.toSorted((a, b) => listedName(b).length - listedName(a).length)) {
+    const name = listedName(skill);
+    const file = skillReadFile(name, target);
+    if (file === undefined) continue;
+    const { dir, from } = sourceOf(arm, copies, skill);
+    if (armFile(dir, file).stats?.isDirectory()) return undefined;
+    const shownDir =
+      arm.skillDirs !== undefined && Object.hasOwn(arm.skillDirs, name)
+        ? arm.skillDirs[name]
+        : undefined;
+    const shown = path.join(shownDir ?? path.join(path.dirname(arm.installedDir), name), file);
+    return { skill: name, file, by: "skill", from, ...fileAnswer(dir, file, shown) };
+  }
+  const name = /^skill:\/\/([^/]+)/.exec(target)?.[1];
+  const file = name === undefined || name.includes(":") ? undefined : skillReadFile(name, target);
+  if (name === undefined || file === undefined) return undefined;
+  return { skill: name, file, by: "skill", from: "absent", ...unknownSkill(arm, name) };
+}
+
+/** A whole read by path of `target` answered when it reads a file of a skill of `others`, the
+ *  profile's skills other than the case's, by count.sql's rule: a path that ends
+ *  `/<name>/SKILL.md`, or holds `skills/<name>/references/` and more. A name that two of them
+ *  share, or that the case's skill has, names none. A file the skill's copy lacks is not
+ *  answered: the session's read opened a file on its own disk, which the copy may not hold. */
+function otherSkillPathRead(
+  arm: Arm,
+  copies: readonly SkillCopy[],
+  others: readonly ProfileSkill[],
+  target: string
+): OtherSkillRead | undefined {
+  if (target.endsWith("/") || target.slice(target.lastIndexOf("/") + 1).includes(":")) {
+    return undefined;
+  }
+  const tested = testedCopy(arm.profileSkills, arm.skill);
+  const taken = new Set([arm.skill, path.posix.basename(arm.skill)]);
+  for (const skill of arm.profileSkills) if (tested(skill)) taken.add(skill.name);
+  const byName = new Map<string, ProfileSkill | null>();
+  for (const skill of others) {
+    if (!taken.has(skill.name)) byName.set(skill.name, byName.has(skill.name) ? null : skill);
+  }
+  const parts = path.posix.normalize(target).split("/");
+  const at = parts.findLastIndex(
+    (part, index) =>
+      byName.has(part) &&
+      ((index === parts.length - 2 && parts[index + 1] === "SKILL.md") ||
+        (parts[index - 1] === "skills" &&
+          parts[index + 1] === "references" &&
+          index < parts.length - 2))
+  );
+  const skill = byName.get(parts[at] ?? "");
+  if (skill === undefined || skill === null) return undefined;
+  const file = parts.slice(at + 1).join("/");
+  const { dir, from } = sourceOf(arm, copies, skill);
+  if (!armFile(dir, file).stats?.isFile()) return undefined;
+  const where = arm.pathCopy ?? {};
+  const full = resolvedReadPath(target, where);
+  const answer = pathAnswer(dir, {
+    file,
+    target,
+    source: full ?? target,
+    shown: shownPath(target, full, where),
+    rows: arm.pathCopy?.rows ?? arm.pathRows ?? "hashline",
+  });
+  if (typeof answer === "string") return undefined;
+  return {
+    skill: listedName(skill),
+    file,
+    by: "path",
+    from,
+    text: answer.text,
+    isError: answer.isError,
+  };
+}
+
+/** The answer to a new read of `target` when it reads a file of a skill other than the case's
+ *  (see the file's header): a `skill://` read of a skill the profile lists from the copy
+ *  `sourceOf` gives, at its installed directory; a `skill://` read of a skill it does not list
+ *  with Oh My Pi's unknown-skill result; a whole read by path (`otherSkillPathRead`) in Oh My Pi's
+ *  form at the path the session shows. Undefined for any other read: one of the case's skill, one
+ *  with a selector, one of a directory, and one by path that names no skill of the profile or a
+ *  file its copy lacks or shows in a form the arms do not rebuild (`pathFormFault`). Throws when
+ *  the profile lists the skill and `copies` holds no copy of it (`sourceOf`). */
+export function otherSkillRead(
+  arm: Arm,
+  copies: readonly SkillCopy[],
+  target: string
+): OtherSkillRead | undefined {
+  if (skillReadFile(arm.skill, target) !== undefined) return undefined;
+  const others = arm.profileSkills.filter((skill) => listedName(skill) !== arm.skill);
+  if (target.startsWith("skill://")) return otherSkillUrlRead(arm, copies, others, target);
+  if (URL_TARGET.test(target)) return undefined;
+  return otherSkillPathRead(arm, copies, others, target);
 }
 
 /** A read result of the case's messages that read `file` of the copy `copy` by the path `target`,
@@ -1033,7 +1281,10 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
   const fault = injectionFault(c);
   if (fault !== undefined) throw new InjectionRefused(`case ${c.id}: ${fault}`);
   const targets = readTargets(c.messages);
-  const pathCopy = pathCopyOf(c, targets);
+  const pathRows = pathRowsOf(c, targets);
+  const pathCopy = pathCopyOf(c, targets, pathRows);
+  // What every arm of the case shares to answer a new read of another skill (otherSkillRead).
+  const shared = { pathRows, skillDirs: skillDirsOf(c, targets) };
   // The case's `skill://` reads, and its reads of the cut's own copy by path, by index.
   const reads = new Map<
     number,
@@ -1089,6 +1340,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
       dispatch: dispatchOf(c),
       ...(pathCopy === undefined ? {} : { pathCopy }),
+      ...shared,
     };
   }
 
@@ -1104,6 +1356,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     messages: [],
     profileSkills: structuredClone(c.profile.skills),
     ...(pathCopy === undefined ? {} : { pathCopy }),
+    ...shared,
   };
   const messages = c.messages.map((message, index) => {
     const byPath = pathReads.get(index);

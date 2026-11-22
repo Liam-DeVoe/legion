@@ -78,6 +78,10 @@
  *    `commits?sha=<ref>&until=<at>`, and repositories.tsv's `branch` names the ref, or the default
  *    branch when the installer names none. A listed repository that a pin names is read at the
  *    pin in its place; a second pin of one repository at another ref is listed as a failure.
+ *    A clone the configuration's `clones` states (made by hand on a dev box, which no installer
+ *    records) is pinned as an installer's clone of no ref is, once its repository's
+ *    skills-sources.json names a pool in its directory; a clone whose directory holds no pool of
+ *    its repository as read refuses the run (exit 2), naming the key, before step 2.
  *    REPOSITORY_JOBS (6) repositories are read at once, and every gh call reading one (commit,
  *    tree, subtrees, blobs), and every code search (step 5, which runs beside these reads), takes
  *    one of READ_CALLS (8) slots across the run, at most READ_CALLS_PER_REPOSITORY (4) of them its
@@ -146,10 +150,11 @@
  *    host's user skills at `**\/.omp/agent/skills/<name>/` or `**\/.claude/skills/<name>/`; a
  *    skill of a pool an Oh My Pi extension feeds to Oh My Pi at `**\/<pool's skills directory>/
  *    <name>/`, that directory a path in the extension's repository (`**\/vendor/<clone>/skills/
- *    <name>/` for a pool an `ensure_vendor` clone holds, whose copies are the cloned
- *    repository's). Each row maps the prefix to its repository copy. A row whose repository the
- *    configuration's `targets` do not name is left out of the table and reported in
- *    `skill-copies.md`, so the operator can add that repository to `targets`.
+ *    <name>/` for a pool an `ensure_vendor` clone holds, and `**\/<dir>/<pool>/skills/<name>/`
+ *    for one in a clone the configuration's `clones` states at `<dir>`, whose copies are the
+ *    cloned repository's). Each row maps the prefix to its repository copy. A row whose
+ *    repository the configuration's `targets` do not name is left out of the table and reported
+ *    in `skill-copies.md`, so the operator can add that repository to `targets`.
  * 7. Same-job pairs and the follow-the-code sentence are not found here, and no model is called:
  *    `skills.jsonl` holds each copy with its whole description (`readerSkills`), and no command
  *    reads it. The `read` command's `same-job` and `sentence` readers take an input file of their
@@ -213,7 +218,7 @@ import {
   timeLimit,
   triesError,
 } from "./common";
-import { loadConfig, type SkillCutsConfig } from "./config";
+import { type Clone, loadConfig, type SkillCutsConfig } from "./config";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 
 // ---------------------------------------------------------------------------------------------
@@ -2130,6 +2135,70 @@ export interface SkillSource {
   readonly omp?: boolean | undefined;
 }
 
+/** The skills directory of the pool `source` of the skills-sources.json in the directory `base`,
+ *  as a path in its repository (`<base>/<root>/skills`, or `ompSkillsDir`); undefined for one
+ *  outside the repository (a home directory, another checkout). */
+function poolSkillsDir(base: string, source: SkillSource): string | undefined {
+  const skills = source.ompSkillsDir ?? joinPath(source.root, "skills");
+  const dir = /^[~/]/.test(skills) ? undefined : joinPath(base, skills);
+  return dir === undefined || dir === ".." || dir.startsWith("../") ? undefined : dir;
+}
+
+/** Whether the clone in the directory `clone` of its repository's checkout holds the pool whose
+ *  skills directory is `skills` (`poolSkillsDir`): the pool is in the clone, or the clone is one
+ *  entry of the pool's skills directory (`ensure_vendor <url> <pool>/skills/<entry>`). */
+function holdsPool(clone: string, skills: string | undefined): boolean {
+  return (
+    skills !== undefined &&
+    (skills === clone || skills.startsWith(`${clone}/`) || dirOf(clone) === skills)
+  );
+}
+
+/** A clone in a repository's checkout that a skill pool may be in: the repository it is a clone
+ *  of, its directory in the checkout, and what says so (an installer's `ensure_vendor` line, or
+ *  the configuration's `clones` for a clone made by hand). */
+interface PoolClone {
+  readonly repo: string;
+  readonly dir: string;
+  readonly said: string;
+}
+
+/** Each clone of the configuration's `clones` (made by hand) that `repository`, read at `commit`
+ *  with `manifests`, refutes: the clone's directory holds no skill pool of the repository's
+ *  skills-sources.json files (`holdsPool`), as a fault naming the key and the pools there are. */
+function clonesRefused(
+  clones: readonly Clone[],
+  repository: string,
+  commit: string,
+  manifests: readonly Manifest[]
+): string[] {
+  const pools = manifests
+    .flatMap((manifest) => (manifest.repository === repository ? manifest.facts : []))
+    .flatMap((fact) =>
+      fact.type === "skill-sources"
+        ? fact.sources.map((source) => ({
+            root: source.root,
+            skills: poolSkillsDir(fact.base, source),
+          }))
+        : []
+    );
+  return [...clones.entries()].flatMap(([at, clone]) =>
+    clone.repo.toLowerCase() !== repository.toLowerCase() ||
+    pools.some((pool) => holdsPool(clone.dir, pool.skills))
+      ? []
+      : [
+          `clones[${at}].dir: ${repository} at ${commit} holds no skill pool in ${clone.dir} (the pools of its skills-sources.json files: ${pools.map((pool) => pool.root).join(", ") || "none"})`,
+        ]
+  );
+}
+
+/** The run refuses the configuration's `clones`: each fault (`clonesRefused`). */
+class ClonesRefused extends Error {
+  constructor(readonly faults: readonly string[]) {
+    super(faults.join("\n"));
+  }
+}
+
 /** What one manifest file says. */
 export interface ParsedManifest {
   readonly facts: readonly Fact[];
@@ -3179,18 +3248,25 @@ export function tarballSkills(files: ReadonlyMap<string, string>): string[] {
  *  `ensure_vendor` clone or a `gh skill install` of an installer script, the marketplace
  *  repository an installer installs a plugin from, and the source repository of each plugin an
  *  installer installs from a marketplace read; with the ref it names (`""` for none) and the
- *  manifest that names it. */
+ *  manifest that names it. A clone the configuration's `clones` states is pinned so too, of no
+ *  ref, its manifest the clone's directory in its repository (`<dir> (clones[<i>] of the
+ *  configuration)`). */
 export interface InstallerPin {
   readonly repository: string;
   readonly ref: string;
   readonly manifest: Pick<Manifest, "repository" | "path">;
 }
 
-/** The repositories the installers of `manifests` pin, in the manifests' order. copies.ts reads
- *  each at its ref, and build.ts at the ref the installer names at a session's start. A plugin's
- *  source repository is pinned only once its marketplace is among `manifests`, so a caller reads
- *  the pins again after reading them (`readPinned`). */
-export function installerPins(manifests: readonly Manifest[]): InstallerPin[] {
+/** The repositories the installers of `manifests` pin, in the manifests' order, then each clone
+ *  of `clones` (the configuration's, made by hand) whose repository's skills-sources.json among
+ *  `manifests` names a pool it holds (`holdsPool`), of no ref, as an installer's clone of no ref
+ *  is. copies.ts reads each at its ref, and build.ts at the ref the installer names at a
+ *  session's start. A plugin's source repository is pinned only once its marketplace is among
+ *  `manifests`, so a caller reads the pins again after reading them (`readPinned`). */
+export function installerPins(
+  manifests: readonly Manifest[],
+  clones: readonly Clone[] = []
+): InstallerPin[] {
   const installed = new Set(
     factsOf(manifests, "plugin-switch")
       .filter(({ fact }) => fact.action === "installs")
@@ -3201,7 +3277,7 @@ export function installerPins(manifests: readonly Manifest[]): InstallerPin[] {
       .filter(({ fact }) => fact.action === "installs")
       .map(({ fact }) => fact.marketplace)
   );
-  return manifests.flatMap((manifest) =>
+  const pins = manifests.flatMap((manifest) =>
     manifest.facts.flatMap((fact): InstallerPin[] => {
       if (
         (fact.type === "installs-package" || fact.type === "vendors" || fact.type === "gh-skill") &&
@@ -3222,10 +3298,34 @@ export function installerPins(manifests: readonly Manifest[]): InstallerPin[] {
       return [];
     })
   );
+  const sources = factsOf(manifests, "skill-sources");
+  for (const [at, clone] of clones.entries()) {
+    const host = sources.find(
+      ({ manifest, fact }) =>
+        manifest.repository.toLowerCase() === clone.repo.toLowerCase() &&
+        fact.sources.some((source) => holdsPool(clone.dir, poolSkillsDir(fact.base, source)))
+    );
+    if (host === undefined) continue;
+    pins.push({
+      repository: clone.clone,
+      ref: "",
+      manifest: {
+        repository: host.manifest.repository,
+        path: `${clone.dir} (clones[${at}] of the configuration)`,
+      },
+    });
+  }
+  return pins;
 }
 
-/** The installer rows, units, prefix rows and notes of the manifests read, against the copies. */
-export function resolveInstallers(manifests: readonly Manifest[], index: CopyIndex): Resolved {
+/** The installer rows, units, prefix rows and notes of the manifests read, against the copies;
+ *  `configured`, the configuration's `clones` (made by hand), beside the clones the installers
+ *  make. */
+export function resolveInstallers(
+  manifests: readonly Manifest[],
+  index: CopyIndex,
+  configured: readonly Clone[] = []
+): Resolved {
   const rows: InstallerRow[] = [];
   const units: Unit[] = [];
   const notes: ManifestNote[] = [];
@@ -3543,10 +3643,11 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
   // the extension linked into Oh My Pi by an installer of that repository (dotfiles-skills.ts
   // answers `resources_discover` with each pool's skills directory, `<root>/skills`, where it
   // exists). Each pool whose skills are in the tree installs them into Oh My Pi, and so does each
-  // pool in a clone an installer of the repository makes (`vendors`: `ensure_vendor`), whose
-  // skills are the cloned repository's at the clone's ref; a pool outside them (another checkout,
-  // a home directory, a clone of no GitHub repository) is a note, since this list cannot hold its
-  // skills.
+  // pool in a clone of the repository's checkout, whose skills are the cloned repository's at the
+  // clone's ref: a clone an installer of the repository makes (`vendors`: `ensure_vendor`), or one
+  // the configuration's `clones` states (made by hand, which no installer records), its unit's
+  // note naming that key. A pool outside them (another checkout, a home directory, a clone of no
+  // GitHub repository) is a note, since this list cannot hold its skills.
   for (const { manifest, fact } of factsOf(manifests, "skill-sources")) {
     const sameRepository = <T>(entries: { manifest: Manifest; fact: T }[]) =>
       entries.filter((entry) => entry.manifest.repository === manifest.repository);
@@ -3568,42 +3669,57 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
       });
       continue;
     }
-    const clones = sameRepository(factsOf(manifests, "vendors"));
+    const clones: PoolClone[] = [
+      ...sameRepository(factsOf(manifests, "vendors"))
+        .filter(({ fact: vendor }) => vendor.repo !== "")
+        .map(({ manifest: installer, fact: vendor }) => ({
+          repo: vendor.repo,
+          dir: vendor.dir,
+          said: `${installer.path} clones ${index.spelling(vendor.repo)} into ${vendor.dir} at ${vendor.ref || "the commit it was cloned at (this list reads its default branch)"}`,
+        })),
+      ...[...configured.entries()].flatMap(([at, stated]) =>
+        stated.repo.toLowerCase() === manifest.repository.toLowerCase()
+          ? [
+              {
+                repo: stated.clone,
+                dir: stated.dir,
+                said: `clones[${at}] of the configuration says ${stated.dir} is a clone of ${index.spelling(stated.clone)} made by hand, which no installer records (this list reads its default branch)`,
+              },
+            ]
+          : []
+      ),
+    ];
     for (const source of fact.sources) {
       if (source.omp === false) continue;
       const skills = source.ompSkillsDir ?? joinPath(source.root, "skills");
-      const dir = /^[~/]/.test(skills) ? undefined : joinPath(fact.base, skills);
-      const inside = dir !== undefined && dir !== ".." && !dir.startsWith("../");
-      const clone = inside
-        ? clones.find(
-            ({ fact: vendor }) =>
-              vendor.repo !== "" && (dir === vendor.dir || dir.startsWith(`${vendor.dir}/`))
-          )
-        : undefined;
+      const dir = poolSkillsDir(fact.base, source);
+      const clone =
+        dir === undefined
+          ? undefined
+          : clones.find((each) => dir === each.dir || dir.startsWith(`${each.dir}/`));
       // A clone's skills are the cloned repository's, at the pool's path inside the clone.
       const from =
         clone === undefined
           ? { repository: manifest.repository, dir: dir ?? "" }
           : {
-              repository: index.spelling(clone.fact.repo),
-              dir: (dir ?? "").slice(clone.fact.dir.length + 1),
+              repository: index.spelling(clone.repo),
+              dir: (dir ?? "").slice(clone.dir.length + 1),
             };
       // Scanned as Oh My Pi scans an extension's skill directory (`CopyIndex.scan`), less each
       // entry an installer of the repository removes from it (`prunes`).
-      const found = inside
-        ? index.scan(from.repository, from.dir, { self: false })
-        : { members: [], undescribed: [] };
-      // A clone an installer makes as one entry of the pool's skills directory (`ensure_vendor
-      // <url> <pool>/skills/<entry>`: a repository that is one skill, its SKILL.md at its root) is
+      const found =
+        dir === undefined
+          ? { members: [], undescribed: [] }
+          : index.scan(from.repository, from.dir, { self: false });
+      // A clone as one entry of the pool's skills directory (`ensure_vendor <url>
+      // <pool>/skills/<entry>`: a repository that is one skill, its SKILL.md at its root) is
       // read as Oh My Pi reads any entry there (`CopyIndex.scan`): the clone's root when it holds a
       // SKILL.md, else each entry of the root that holds one.
-      const entries = inside
-        ? clones.filter(({ fact: vendor }) => vendor.repo !== "" && dirOf(vendor.dir) === dir)
-        : [];
+      const entries = dir === undefined ? [] : clones.filter((each) => dirOf(each.dir) === dir);
       const scanned = { members: [...found.members], undescribed: [...found.undescribed] };
-      for (const { fact: vendor } of entries) {
-        const repository = index.spelling(vendor.repo);
-        const entry = path.posix.basename(vendor.dir);
+      for (const each of entries) {
+        const repository = index.spelling(each.repo);
+        const entry = path.posix.basename(each.dir);
         const root = index.at(repository, "");
         const held =
           root === undefined
@@ -3637,15 +3753,12 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
           note:
             clone === undefined
               ? `pool ${source.root}: its skills (${skills}) are not in the repository's tree, so this list cannot hold them`
-              : `pool ${source.root}: ${clone.manifest.path} clones ${from.repository} into ${clone.fact.dir}, and no SKILL.md of it was read under ${shown(from.dir)}/`,
+              : `pool ${source.root}: ${clone.said}, and no SKILL.md of it was read under ${shown(from.dir)}/`,
         });
         continue;
       }
       const cloned = [...(clone === undefined ? [] : [clone]), ...entries]
-        .map(
-          (each) =>
-            `; ${each.manifest.path} clones ${index.spelling(each.fact.repo)} into ${each.fact.dir} at ${each.fact.ref || "the commit it was cloned at (this list reads its default branch)"}`
-        )
+        .map((each) => `; ${each.said}`)
         .join("");
       units.push({
         id: `pool:${source.root}`,
@@ -3821,6 +3934,109 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
       (a, b) => a.prefix.localeCompare(b.prefix) || a.repository.localeCompare(b.repository)
     ),
   };
+}
+
+/** One version of a prepack script that held during the count's window (`prepackVersions`): the
+ *  commit of the repository's default branch that made it, that commit's date, and its text. */
+export interface PrepackVersion {
+  readonly commit: string;
+  readonly date: string;
+  readonly text: string;
+}
+
+/**
+ * The prefix rows of each path a prepack script staged a skill at during the count's window and
+ * stages no longer (where the worker image of an older commit, or an older release of the
+ * package, holds the skill: `/opt/legion/<package>/dist/skills/<name>/`, or under
+ * `node_modules`), and a note on the script for each such path naming the commits that staged it
+ * there. `scripts` are the prepack scripts read (`manifest`, at the commit read) with their
+ * versions (`versions`, oldest first, the last the one read). A path is staged no longer when the
+ * script read stages no skill of that name into that directory for that package. Its rows are
+ * those of the package's unit (its locations and its `via`), so a profile build resolves that
+ * unit at a session's commit as it resolves any, each mapped to the copy of the skill in the tree
+ * read; a path whose package is no unit there, or whose skill no copy there holds, is a note
+ * alone.
+ */
+export function formerStagePrefixes(
+  scripts: readonly { readonly manifest: Manifest; readonly versions: readonly PrepackVersion[] }[],
+  resolved: Resolved,
+  index: CopyIndex
+): { prefixes: PrefixRow[]; notes: ManifestNote[] } {
+  const prefixes: PrefixRow[] = [];
+  const notes: ManifestNote[] = [];
+  for (const { manifest, versions } of scripts) {
+    const note = (text: string) =>
+      notes.push({ repository: manifest.repository, path: manifest.path, note: text });
+    /** A skill a version stages: its package, and the paths it is copied from and to. */
+    type Staged = { package: string; skill: string; from: string; rel: string };
+    const stagedBy = (facts: readonly Fact[]): Staged[] =>
+      facts.flatMap((fact) =>
+        fact.type === "stages"
+          ? fact.skills.map((skill) => ({
+              package: fact.package,
+              skill,
+              from: joinPath(fact.sourceDir, skill),
+              rel: joinPath(fact.destDir, skill),
+            }))
+          : []
+      );
+    const key = (staged: Staged) => `${staged.package}\0${staged.rel}`;
+    const now = new Set(stagedBy(manifest.facts).map(key));
+    // Each path staged before and not now, with each run of versions that staged it.
+    const former = new Map<
+      string,
+      { staged: Staged; runs: { from: PrepackVersion; until: PrepackVersion }[] }
+    >();
+    for (const [at, version] of versions.entries()) {
+      const next = versions[at + 1];
+      if (next === undefined) break;
+      let facts: readonly Fact[];
+      try {
+        facts = parseManifest("prepack-script", manifest.path, version.text).facts;
+      } catch (error) {
+        note(`its version at ${version.commit} does not parse: ${(error as Error).message}`);
+        continue;
+      }
+      for (const staged of stagedBy(facts)) {
+        if (now.has(key(staged))) continue;
+        const known = former.get(key(staged)) ?? { staged, runs: [] };
+        const last = known.runs.at(-1);
+        if (last?.until === version) last.until = next;
+        else known.runs.push({ from: version, until: next });
+        former.set(key(staged), known);
+      }
+    }
+    for (const { staged, runs } of former.values()) {
+      const held = runs
+        .map(
+          (run) =>
+            `from ${run.from.commit} (${run.from.date}) until ${run.until.commit} (${run.until.date})`
+        )
+        .join(" and ");
+      const said = `staged ${staged.skill} for ${staged.package} at ${staged.rel}/ ${held}, and stages it there no longer`;
+      const unit = resolved.units.find((each) => each.id === `package:${staged.package}`);
+      const copy = index.at(manifest.repository, staged.from);
+      if (unit === undefined || copy === undefined) {
+        note(
+          `${said}; no prefix row maps that path: ${unit === undefined ? `${staged.package} is no package unit of the trees read` : `the tree read holds no SKILL.md at ${staged.from}`}`
+        );
+        continue;
+      }
+      const via = `${unit.id} (${unit.manifest.repository}:${unit.manifest.path})`;
+      const rows = unit.locations.map((location) => ({
+        prefix: `${location}${staged.rel}/`,
+        repository: copy.repository,
+        path: copy.path,
+        name: copy.name,
+        via,
+      }));
+      prefixes.push(...rows);
+      note(
+        `${said}; the prefix rows ${rows.map((row) => row.prefix).join(", ")} map it to ${copy.repository} ${copy.path}`
+      );
+    }
+  }
+  return { prefixes, notes };
 }
 
 function escapeRegExp(text: string): string {
@@ -5066,8 +5282,9 @@ const RepositoryInfo = z.looseObject({
 });
 
 /**
- * The end of step 1: each repository an installer of the repositories read pins
- * (`installerPins`), read at the ref the pin names as `readRepositoryStep` reads any (its commit
+ * The end of step 1: each repository an installer of the repositories read pins, and each clone
+ * the configuration's `clones` states (`installerPins`), read at the ref the pin names as
+ * `readRepositoryStep` reads any (its commit
  * `commits?sha=<ref>&until=<at>`), in place of the listed read of it, or beside the listed ones
  * when no listing gave it (its marks and default branch from `repos/<r>`, that branch read when
  * the pin names no ref). A listed repository that a pin names with no ref or at its own branch
@@ -5095,7 +5312,7 @@ async function readPinned(
   for (;;) {
     const manifests = repositories.flatMap((repo) => reads.get(repo)?.manifests ?? []);
     const fresh: InstallerPin[] = [];
-    for (const pin of installerPins(manifests)) {
+    for (const pin of installerPins(manifests, config.clones)) {
       const first = pins.get(pin.repository.toLowerCase());
       if (first === undefined) {
         pins.set(pin.repository.toLowerCase(), pin);
@@ -5177,6 +5394,105 @@ async function readPinned(
       }
     });
   }
+}
+
+/** One commit of GitHub's GraphQL history of a path (`prepackVersions`), with the file there. */
+const HistoryNode = z.looseObject({
+  oid: z.string(),
+  committedDate: z.string(),
+  file: z
+    .looseObject({
+      object: z
+        .looseObject({ text: z.string().nullish(), isTruncated: z.boolean().optional() })
+        .nullable(),
+    })
+    .nullable(),
+});
+const PrepackHistory = z.looseObject({
+  data: z.looseObject({
+    repository: z.looseObject({
+      object: z.looseObject({
+        inWindow: z.looseObject({
+          pageInfo: z.looseObject({ hasNextPage: z.boolean() }),
+          nodes: z.array(HistoryNode),
+        }),
+        before: z.looseObject({ nodes: z.array(HistoryNode) }),
+      }),
+    }),
+  }),
+});
+/** A prepack script's history as the cache keeps it: whether more commits changed it in the
+ *  window than were read, and each version oldest first, its text `""` where the commit holds no
+ *  such file and null where GitHub gives no whole text of it. */
+const CachedPrepackHistory = z.object({
+  more: z.boolean(),
+  versions: z.array(
+    z.object({ commit: z.string(), date: z.string(), text: z.string().nullable() })
+  ),
+});
+
+/**
+ * The versions of the prepack script `manifest` of `repo` that held during the count's window,
+ * oldest first, the last the one at the commit read (`repo.commit`): the one in effect at
+ * `windowStart` and each one a commit of the default branch made since, each with its commit,
+ * date and text. One GraphQL read gives them (`history(path:)` of the commit read, its first 100
+ * commits since `windowStart` and its last one before, each with the file), routed by the owner as
+ * `graphqlArgs` routes a batch, and the cache keeps it. A read that fails, more than 100 commits
+ * in the window, or a version whose text GitHub does not give whole, goes to `failures`, and the
+ * versions read whole are kept without it; a commit that holds no such file stages nothing.
+ */
+async function prepackVersions(
+  github: Github,
+  cache: ReadCache,
+  repo: Repository,
+  manifest: Manifest,
+  windowStart: string,
+  failures: string[]
+): Promise<PrepackVersion[]> {
+  const what = `the versions of ${repo.repository}:${manifest.path} since ${windowStart}`;
+  const key = `${repo.repository}\0${repo.commit}\0${manifest.path}\0${windowStart}`;
+  let history = cache.get("prepack-history", key, CachedPrepackHistory);
+  if (history === undefined) {
+    const file = JSON.stringify(manifest.path);
+    const fields = `oid committedDate file(path: ${file}) { object { ... on Blob { text isTruncated } } }`;
+    const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { object(oid: ${JSON.stringify(repo.commit)}) { ... on Commit { inWindow: history(path: ${file}, since: ${JSON.stringify(windowStart)}, first: 100) { pageInfo { hasNextPage } nodes { ${fields} } } before: history(path: ${file}, until: ${JSON.stringify(windowStart)}, first: 1) { nodes { ${fields} } } } } } }`;
+    let answer: z.infer<typeof PrepackHistory>;
+    try {
+      answer = await github.json(
+        graphqlArgs(repo.repository, query),
+        PrepackHistory,
+        repo.repository,
+        "graphql"
+      );
+    } catch (error) {
+      rethrowStop(error);
+      failures.push(`${what} could not be read: ${(error as Error).message}`);
+      return [];
+    }
+    const { inWindow, before } = answer.data.repository.object;
+    const seen = new Set<string>();
+    // GitHub lists each history newest first.
+    const versions = [...inWindow.nodes, ...before.nodes].reverse().flatMap((node) => {
+      if (seen.has(node.oid)) return [];
+      seen.add(node.oid);
+      const blob = node.file?.object;
+      const text =
+        node.file === null ? "" : blob?.isTruncated === true ? null : (blob?.text ?? null);
+      return [{ commit: node.oid, date: node.committedDate, text }];
+    });
+    history = { more: inWindow.pageInfo.hasNextPage, versions };
+    cache.put("prepack-history", key, history);
+  }
+  if (history.more) {
+    failures.push(`${what}: more than 100 commits changed it, and only the last 100 are read`);
+  }
+  return history.versions.flatMap(({ commit, date, text }) => {
+    if (text !== null) return [{ commit, date, text }];
+    failures.push(
+      `${what}: GitHub gives no whole text of it at ${commit}, so that version is not read`
+    );
+    return [];
+  });
 }
 
 /** Reads the repositories, skills, manifests and loaders of one run. */
@@ -5324,6 +5640,15 @@ async function readAll(
       );
     });
     await readPinned(github, cache, config, options, io, repositories, reads, searches, failures);
+    // A clone the configuration states whose directory holds no skill pool of its repository, as
+    // read, is refused before any later step.
+    const refused = repositories.flatMap((repo) => {
+      const kept = reads.get(repo);
+      return kept === undefined
+        ? []
+        : clonesRefused(config.clones ?? [], repo.repository, repo.commit, kept.manifests);
+    });
+    if (refused.length > 0) throw new ClonesRefused(refused);
   } catch (error) {
     searches.stop();
     throw error;
@@ -5585,7 +5910,7 @@ async function readAll(
     (a, b) => a.repository.localeCompare(b.repository) || a.path.localeCompare(b.path)
   );
   const index = new CopyIndex(copies);
-  const resolved = resolveInstallers([...read, ...extraManifests], index);
+  const resolved = resolveInstallers([...read, ...extraManifests], index, config.clones);
   for (const manifest of allManifests) {
     manifest.rows = resolved.rows.filter(
       (row) => row.manifestRepository === manifest.repository && row.manifestPath === manifest.path
@@ -5607,9 +5932,34 @@ async function readAll(
     }
   }
 
-  // 6. The prefix table, held to the configuration's targets.
+  // 6. The prefix table: the installers' rows, and the rows of each path a prepack script staged a
+  // skill at during the count's window and stages no longer (`formerStagePrefixes`), held to the
+  // configuration's targets.
+  const scripts: { manifest: Manifest; versions: PrepackVersion[] }[] = [];
+  for (const manifest of read) {
+    if (manifest.kind !== "prepack-script") continue;
+    const repo = repositories.find((each) => each.repository === manifest.repository);
+    if (repo === undefined || repo.commit === "") continue;
+    const versions = await prepackVersions(
+      github,
+      cache,
+      repo,
+      manifest,
+      config.windowStart,
+      failures
+    );
+    scripts.push({ manifest, versions });
+  }
+  const former = formerStagePrefixes(scripts, resolved, index);
+  const known = new Set(
+    resolved.prefixes.map((row) => `${row.prefix}\0${row.repository}\0${row.path}`)
+  );
+  const table = [
+    ...resolved.prefixes,
+    ...former.prefixes.filter((row) => !known.has(`${row.prefix}\0${row.repository}\0${row.path}`)),
+  ].sort((a, b) => a.prefix.localeCompare(b.prefix) || a.repository.localeCompare(b.repository));
   const targets = new Set(config.targets.map((target) => target.toLowerCase()));
-  const prefixes = resolved.prefixes.filter((row) => targets.has(row.repository.toLowerCase()));
+  const prefixes = table.filter((row) => targets.has(row.repository.toLowerCase()));
   const mapped = new Set(prefixes.map((row) => row.repository.toLowerCase()));
 
   return {
@@ -5626,9 +5976,9 @@ async function readAll(
     manifests: allManifests,
     notOfKind,
     rows: resolved.rows,
-    notes: resolved.notes,
+    notes: [...resolved.notes, ...former.notes],
     prefixes,
-    offTargets: resolved.prefixes.filter((row) => !targets.has(row.repository.toLowerCase())),
+    offTargets: table.filter((row) => !targets.has(row.repository.toLowerCase())),
     targetsUnused: config.targets.filter((target) => !mapped.has(target.toLowerCase())),
     loaders: [...loaders.values()].sort(
       (a, b) =>
@@ -5651,8 +6001,10 @@ async function readAll(
 const USAGE =
   "usage: copies.ts --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]";
 
-/** The command. Returns the exit status: 0 (the list is written), 1 (the run failed), 2 (refused),
- *  3 (stopped: the peak resident memory passed MEMORY_LIMIT_BYTES; nothing is written). */
+/** The command. Returns the exit status: 0 (the list is written), 1 (the run failed), 2 (refused:
+ *  its arguments, or its configuration, a clone of whose `clones` holds no skill pool of its
+ *  repository as read, which the run finds after step 1 and writes nothing for), 3 (stopped: the
+ *  peak resident memory passed MEMORY_LIMIT_BYTES; nothing is written). */
 export async function main(argv: readonly string[], io: CopiesIo): Promise<number> {
   const refuse = (why: string) => {
     io.err(`copies: ${why}`);
@@ -5731,6 +6083,11 @@ export async function main(argv: readonly string[], io: CopiesIo): Promise<numbe
     if (error instanceof MemoryStop) {
       io.err(`copies: the run stops: ${error.message}; nothing is written`);
       return 3;
+    }
+    if (error instanceof ClonesRefused) {
+      return refuse(
+        `the configuration ${values.config} is refused:\n  ${error.faults.join("\n  ")}`
+      );
     }
     io.err(`copies: ${(error as Error).stack ?? (error as Error).message}`);
     return 1;

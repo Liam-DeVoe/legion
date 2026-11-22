@@ -165,9 +165,10 @@
  *    build cannot resolve, or the cut's copy at another directory than `pathCopy`) is answered as
  *    recorded in every arm, and the case's `evidence` names each (EXCLUDED_READS), so the arms do
  *    not differ in part without saying so. Each file read whole by path is held to the form in
- *    which the arms answer a read by path (arms.ts's `pathFormFault`) in the old text and the new
- *    (`--new`); a case with one they do not answer is dropped (`path-form`), so no `behaviour`
- *    run fails on it.
+ *    which the arms answer a read by path (arms.ts's `pathFormFault`) in the old text, and in the
+ *    new text when `--new` gives one; a case with one they do not answer is dropped (`path-form`),
+ *    so no `behaviour` run fails on it. A build given no `--new` (no cut text yet) checks the old
+ *    text alone, and `behaviour screen` drops a case the new text fails (cli.ts).
  * 6. Secrets are taken out of the case (`removeSecrets`: private keys, bearer tokens, known token
  *    shapes, credentials in URLs, and key, token, secret and password assignments), each counted
  *    in `secretsRemoved`.
@@ -274,7 +275,10 @@
  *   GitHub's) at or before the session's start; a unit's repository that an installer of the
  *   units pins (copies.ts's `installerPins`: a `github:` dependency of an Oh My Pi plugins
  *   package.json, an `ensure_vendor` clone) at the last commit of the ref that installer names at
- *   the session's start, as the session's machine held it. A repository GitHub gives no commit of
+ *   the session's start, as the session's machine held it; for a Legion pod, the units of its
+ *   worker image's repository at the commit the image was built from, which the deployment's
+ *   Pulumi config and GitHub's build provenance of the image name (LEGION_IMAGE_RULE). A
+ *   repository GitHub gives no commit of
  *   at or before that time (`NoCommitThen`), such as one the dev box's installers install only by
  *   the copies output's later read, did not exist then, so nothing of it was installed then: it is
  *   left out, with the `gh api` read in the evidence. A session repository with no commit then has
@@ -716,7 +720,7 @@ export const DROP_REASONS = {
   "path-relative":
     "the session's only successful reads of the skill are whole reads by path of the cut's copy whose relative or `~` path needs a directory the session does not name (its header names no working directory, or its transcript's path no home, `<home>/.omp/…`), or that resolves to no absolute directory, so a case cannot name the copy (cases.ts's pathCopy)",
   "path-form":
-    "a file of the cut's copy that the case's messages read whole by path is one the arms do not answer in Oh My Pi's form (arms.ts's pathFormFault, or a directory), in the old text or the new",
+    "a file of the cut's copy that the case's messages read whole by path is one the arms do not answer in Oh My Pi's form (arms.ts's pathFormFault, or a directory), in the old text or, when --new is given, the new",
   "not-cut-copy":
     "attribute.ts's rules (the prefix table, a checkout, the store's context) do not place the skill's first read at the cut repository's copy, or the profile installs no copy of it",
   "no-role":
@@ -726,6 +730,8 @@ export const DROP_REASONS = {
   "reader-failed": "the case reader's every reply was refused",
   "reader-error": "the case reader's call failed",
   "no-step": "the case reader found no step the skill governs",
+  "skill-as-material":
+    "the case reader finds that the agent's work at the skill's read is on the skill's own text (editing, rewriting, reviewing, testing, grading, scoring or comparing the skill or a copy of it), so its next step works on that text and does not follow it",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -1651,25 +1657,27 @@ function readText(read: SkillRead, message: SessionMessage | undefined): string 
 }
 
 /** Why the arms do not answer a whole read by path of one of `files` (paths inside the cut's copy)
- *  in Oh My Pi's form from the old text or the new (arms.ts's `pathFormFault`), or undefined. A
- *  file a text lacks they answer as not found; one a text holds as a directory they do not
- *  answer. */
-function pathFormIn(
+ *  in Oh My Pi's form from the old text or the new (arms.ts's `pathFormFault`), or undefined: the
+ *  arm whose text it is, its directory and the fault. With no new text (a build-cases run given no
+ *  `--new`), the old text alone. A file a text lacks they answer as not found; one a text holds as
+ *  a directory they do not answer. cli.ts's behaviour screen drops a case on it too. */
+export function pathFormIn(
   files: readonly string[],
-  texts: { readonly old: string; readonly new: string }
-): string | undefined {
+  texts: { readonly old: string; readonly new?: string | undefined }
+): { readonly arm: "old" | "new"; readonly dir: string; readonly fault: string } | undefined {
+  const arms: (readonly ["old" | "new", string])[] = [
+    ["old", texts.old],
+    ...(texts.new === undefined ? [] : [["new", texts.new] as const]),
+  ];
   for (const file of new Set(files)) {
-    for (const [name, dir] of [
-      ["old", texts.old],
-      ["new", texts.new],
-    ] as const) {
+    for (const [arm, dir] of arms) {
       const full = path.join(dir, file);
       const stats = statSync(full, { throwIfNoEntry: false });
       if (stats === undefined) continue;
       const fault = stats.isFile()
         ? pathFormFault(file, readFileSync(full))
         : `${file} is no file, and the arms answer reads of files only`;
-      if (fault !== undefined) return `in the ${name} text ${dir}: ${fault}`;
+      if (fault !== undefined) return { arm, dir, fault };
     }
   }
   return undefined;
@@ -2236,6 +2244,31 @@ const GitTree = z.looseObject({
   ),
   truncated: z.boolean().optional(),
 });
+/** GitHub's attestations of an artifact's digest: each one's Sigstore bundle, whose DSSE
+ *  envelope's payload is an in-toto statement in base64. */
+const Attestations = z.looseObject({
+  attestations: z.array(
+    z.looseObject({
+      bundle: z
+        .looseObject({ dsseEnvelope: z.looseObject({ payload: z.string() }).optional() })
+        .nullable()
+        .optional(),
+    })
+  ),
+});
+/** An in-toto statement of SLSA build provenance v1, as far as its resolved dependencies. */
+const Provenance = z.looseObject({
+  predicate: z.looseObject({
+    buildDefinition: z.looseObject({
+      resolvedDependencies: z.array(
+        z.looseObject({
+          uri: z.string().optional(),
+          digest: z.looseObject({ gitCommit: z.string().optional() }).optional(),
+        })
+      ),
+    }),
+  }),
+});
 
 /** What a repository holds at a commit, as copies.ts reads one: its skill copies, its manifest
  *  files parsed, and each file of those that could not be read or parsed, with why; for the
@@ -2249,6 +2282,25 @@ interface RepositoryAt {
   readonly contextSizes: ReadonlyMap<string, number>;
   readonly ompLevels: ReadonlySet<string>;
   readonly hidden: ReadonlySet<string>;
+}
+
+/** A symbolic link a project skills directory holds (GithubReads' `project`): its path, its text,
+ *  and whether it was followed to a directory of the repository, leaves the repository, or names
+ *  no directory of it. */
+interface ProjectLink {
+  readonly link: string;
+  readonly target: string;
+  readonly outcome: "followed" | "outside" | "no directory";
+}
+
+/** What GithubReads' `project` gives: the repository as Oh My Pi reads a project in it, the tree
+ *  reads it made, each skill link it met, and each of its levels the repository holds no
+ *  directory at (`missing`). */
+interface ProjectRead {
+  readonly at: RepositoryAt;
+  readonly reads: number;
+  readonly links: readonly ProjectLink[];
+  readonly missing: readonly string[];
 }
 
 /** Where Oh My Pi 18.18.6 says a skill it loads is left out of the system prompt's listing. */
@@ -2409,7 +2461,7 @@ export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
 export class GithubReads {
   private readonly made = new Map<string, Promise<GhResult>>();
   private readonly held = new Map<string, Promise<RepositoryAt>>();
-  private readonly projects = new Map<string, Promise<{ at: RepositoryAt; reads: number }>>();
+  private readonly projects = new Map<string, Promise<ProjectRead>>();
   private readonly blobs = new Map<string, Promise<string>>();
 
   constructor(
@@ -2520,6 +2572,35 @@ export class GithubReads {
     return ghAnswer(args, result);
   }
 
+  /** The commit that GitHub's build provenance of the image digest `digest` (sha256, hex) names
+   *  in `repo`, one read of `repos/<repo>/attestations/sha256:<digest>`: of the first attestation
+   *  whose in-toto statement names a git commit as its first resolved dependency (SLSA provenance
+   *  v1's `buildDefinition.resolvedDependencies[0].digest.gitCommit`), that commit and the
+   *  dependency's uri. Undefined when GitHub holds no attestation of the digest there (a 404) or
+   *  none names a commit; throws when the read fails otherwise. */
+  async attestedCommit(
+    repo: string,
+    digest: string
+  ): Promise<{ readonly commit: string; readonly uri: string } | undefined> {
+    const args = ["api", `repos/${repo}/attestations/sha256:${digest}`];
+    const result = await this.call(args);
+    if (result.code !== 0 && /\b404\b|Not Found/.test(result.stderr)) return undefined;
+    const answer = Attestations.safeParse(parseJson(ghAnswer(args, result)));
+    for (const attestation of answer.data?.attestations ?? []) {
+      const payload = attestation.bundle?.dsseEnvelope?.payload;
+      if (payload === undefined) continue;
+      const statement = Provenance.safeParse(
+        parseJson(Buffer.from(payload, "base64").toString("utf8"))
+      );
+      const [first] = statement.data?.predicate.buildDefinition.resolvedDependencies ?? [];
+      const commit = first?.digest?.gitCommit;
+      if (commit !== undefined && /^[0-9a-f]{40}$/.test(commit)) {
+        return { commit, uri: first?.uri ?? "" };
+      }
+    }
+    return undefined;
+  }
+
   /** The entries of the tree `sha` of `repo` (a commit's id gives its root tree's): every entry
    *  below it when `recursive`, else those of its own level; and whether GitHub cut the answer
    *  short. The answer is not kept (a large repository's tree is megabytes); `at` and `project`
@@ -2628,17 +2709,22 @@ export class GithubReads {
    * working directory in a checkout of it: `at`'s reading of the entries of the directories it
    * reads, one level of each a call by its tree id. Those are each of `levels` (the working
    * directory's path in the checkout, then each parent up to the root, `""`), each directory of
-   * PROJECT_LEVEL_DIRS there, the skills directory of each PROJECT_SKILLS kind there, and each
-   * skill directory in it. So a repository whose whole tree GitHub cuts short is read too, and a
-   * large one in a few calls; for the paths the rebuild uses (CONTEXT_FILES, PROJECT_SKILLS) it
-   * gives what `at` gives. Read once for each commit and levels; gives its tree reads too.
+   * PROJECT_LEVEL_DIRS there, each skills directory of the PROJECT_SKILLS kinds there, and each
+   * skill directory in it. A skill directory a skills directory holds as a symbolic link (git's
+   * mode 120000) is read where the link's text, taken from the link's directory, names a
+   * directory of the repository, its entries kept under the link's path, as Oh My Pi's scan
+   * follows a link (PROJECT_SKILLS); a link out of the repository, or to no directory of it, is
+   * left out (`links` names each link, followed or not). So a repository whose whole tree GitHub
+   * cuts short is read too, and a large one in a few calls; for the paths the rebuild uses
+   * (CONTEXT_FILES, PROJECT_SKILLS) it gives what `at` gives. Read once for each commit and
+   * levels; gives its tree reads too.
    */
   project(
     repo: string,
     commit: string,
     levels: readonly string[],
     excludePaths: SkillCutsConfig["excludePaths"]
-  ): Promise<{ at: RepositoryAt; reads: number }> {
+  ): Promise<ProjectRead> {
     return readOnce(this.projects, [repo, commit, ...levels].join("\0"), () =>
       this.readProject(repo, commit, levels, excludePaths)
     );
@@ -2649,7 +2735,7 @@ export class GithubReads {
     commit: string,
     levels: readonly string[],
     excludePaths: SkillCutsConfig["excludePaths"]
-  ): Promise<{ at: RepositoryAt; reads: number }> {
+  ): Promise<ProjectRead> {
     const entries = await this.level(repo, commit, "");
     const read = new Set([""]);
     /** Adds one level of each directory of `dirs` that the entries read so far hold as a tree
@@ -2668,15 +2754,48 @@ export class GithubReads {
     // From the root down to the working directory: each level is a directory of the one above.
     const down = [...levels].reverse();
     for (const level of down) await readDirs([level]);
+    const missing = levels.filter((level) => !read.has(level));
     await readDirs(down.flatMap((level) => PROJECT_LEVEL_DIRS.map((dir) => under(level, dir))));
-    const skillDirs = down.flatMap((level) => PROJECT_SKILLS.map((kind) => under(level, kind.dir)));
+    const skillDirs = down.flatMap((level) =>
+      PROJECT_SKILLS.flatMap((kind) => kind.dirs.map((dir) => under(level, dir)))
+    );
     await readDirs(skillDirs);
     await readDirs(
       entries
         .filter((entry) => skillDirs.includes(path.posix.dirname(entry.path)))
         .map((entry) => entry.path)
     );
-    return { at: await this.fromEntries(repo, entries, excludePaths), reads: read.size };
+    const links: ProjectLink[] = [];
+    const linked = entries.filter(
+      (entry) => entry.mode === "120000" && skillDirs.includes(path.posix.dirname(entry.path))
+    );
+    for (const link of linked) {
+      const target = await this.blob(repo, link.sha);
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(link.path), target));
+      if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
+        links.push({ link: link.path, target, outcome: "outside" });
+        continue;
+      }
+      // The target's directories from the root down, each read as the entries above give it.
+      const parts = resolved.split("/");
+      for (let depth = 1; depth <= parts.length; depth++) {
+        await readDirs([parts.slice(0, depth).join("/")]);
+      }
+      if (!read.has(resolved)) {
+        links.push({ link: link.path, target, outcome: "no directory" });
+        continue;
+      }
+      links.push({ link: link.path, target, outcome: "followed" });
+      for (const child of entries.filter((each) => path.posix.dirname(each.path) === resolved)) {
+        entries.push({ ...child, path: `${link.path}/${path.posix.basename(child.path)}` });
+      }
+    }
+    return {
+      at: await this.fromEntries(repo, entries, excludePaths),
+      reads: read.size,
+      links,
+      missing,
+    };
   }
 
   /** What `repo` holds by the tree entries `entries`, as `at` reads it (see there). A SKILL.md or
@@ -2800,11 +2919,13 @@ interface PinnedVersion {
 
 /** The session repository: the repository the session's working directory is a checkout of
  *  (`sessionRepository`), or undefined; the working directory's path inside that checkout (`rel`,
- *  `""` at its root); and the evidence of it. */
+ *  `""` at its root); the evidence of it; and, where a parent's name gave it, that parent
+ *  (`byParent`), whose repository's tree must hold `rel` before it is taken (`caseProfile`). */
 interface Checkout {
   readonly repo: string | undefined;
   readonly rel: string;
   readonly line: Evidence;
+  readonly byParent?: string;
 }
 
 /** What the profile of one case is built from: its store, its context (the store's, for a
@@ -2827,6 +2948,9 @@ interface ProfileInput {
    *  start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
    *  (TOP_BUILD_RULE); every one at the session's start when absent. */
   readonly readTime?: ReadTime;
+  /** The names the session's recorded prompt lists (a subagent's), which alone admit a pool new
+   *  at the subagent's start (POOL_AT_START_RULE). */
+  readonly recordedListing?: readonly string[];
 }
 
 /** The items of the profile's evidence that name the session repository, and that say there is
@@ -2835,13 +2959,19 @@ const SESSION_REPOSITORY = "session repository ";
 const NO_SESSION_REPOSITORY = "no session repository";
 /** How a dev-box session's repository is found from its working directory. */
 const DEVBOX_CHECKOUT_RULE =
-  "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository";
+  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing";
 /** Which units a dev-box profile installs beside those its session's reads come from. */
 const DEVBOX_INSTALLERS_RULE =
   "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
   "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
+/** When a pool new at a subagent's start is installed (fault A of the misses diagnosis). */
+const POOL_AT_START_RULE =
+  "Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts and merges the skill directories its extensions give then into the snapshot its parent gave it (session/session-tools.ts, discoverStartupSkillPaths, lines 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420), so a pool the dev box's skills-sources.json names at the subagent's start is listed where its clone is there then; which clones the host had then no repository records, so the profile installs such a pool only where the subagent's recorded listing names one of its skills, an inference from that listing, and the listing measure marks each name taken so (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against";
+/** Which Claude Code plugins Oh My Pi lists for a session. */
+const CLAUDE_PLUGIN_RULE =
+  "Oh My Pi 18.18.6 lists the skills of a Claude Code plugin that Claude Code's registry installs for the project: a project- or local-scope install recorded for the active project, or one that enabledPlugins of the project's .claude/settings.json (or settings.local.json, or the config directory's settings.json) turns on (discovery/helpers.ts, readClaudeEnabledPlugins, lines 1310-1333, and loadClaudePluginRoots, lines 1494-1570), at priority 70, a second copy of a name under the plugin's name (discovery/claude-plugins.ts, lines 36 and 226-275); a user-scope install only where Oh My Pi's enabledProviders names claude-plugins or claude (extensibility/skills.ts, lines 361-362; capability/index.ts, lines 419-429), which no profile config read here sets. Claude Code installs the plugins a project's .claude/settings.json enables for that project, so a session in a checkout of the repository that holds those settings lists them; the registry itself is host state that no repository holds";
 
 /** The dev box's repository by DEVBOX_INSTALLERS_RULE, or undefined, with the evidence of why,
  *  when no repository or more than one holds both. */
@@ -2921,6 +3051,153 @@ function legionCatalog(
   };
 }
 
+/** Which commit of its repository a Legion pod's worker image carries. */
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that its project's entry in the deployment's Pulumi config names at the deployment's commit of the session's start (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>, its image: line), and that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the repository is read at its default branch's commit at the session's start, as any other`;
+
+/** The `image:` value of the entry `- key: <project>` of the Pulumi config text `text`, and the
+ *  comment lines right above that line, each less its `#`; undefined when the text holds no such
+ *  entry with an `image:` line. The entry's lines are those after its `- key:` line that are
+ *  indented past its dash, or are comments; its `image:` is one of its own fields (indented two
+ *  past the dash), so neither a nested map's `image:` nor another key such as `daemonImage:` is
+ *  it. */
+function projectImage(
+  text: string,
+  project: string
+): { readonly image: string; readonly comment: readonly string[] } | undefined {
+  const unquoted = (value: string) => value.replace(/^["']|["']$/g, "");
+  const lines = text.split("\n");
+  const head = lines.findIndex((line) => {
+    const key = /^\s*- key:\s*(\S+)\s*$/.exec(line)?.[1];
+    return key !== undefined && unquoted(key) === project;
+  });
+  if (head < 0) return undefined;
+  const dash = (lines[head] ?? "").indexOf("-");
+  for (let at = head + 1; at < lines.length; at++) {
+    const line = lines[at] ?? "";
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent <= dash) return undefined;
+    const value = /^\s*image:\s*(\S+)\s*(?:#.*)?$/.exec(line)?.[1];
+    if (value === undefined || indent !== dash + 2) continue;
+    const comment: string[] = [];
+    for (let above = at - 1; above > head && /^\s*#/.test(lines[above] ?? ""); above--) {
+      comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
+    }
+    return { image: unquoted(value), comment };
+  }
+  return undefined;
+}
+
+/** The commit of `imageRepo` that the worker image of the project `project` carries, read from
+ *  the Pulumi config of `deployment` at `sha` (LEGION_IMAGE_RULE), with the evidence item that
+ *  says which rule gave it; no `sha`, and the evidence of why, when none did. Throws when a
+ *  GitHub read fails other than with a 404 of the config file or of a provenance. */
+async function legionImageCommit(
+  github: GithubReads,
+  read: {
+    readonly deployment: string;
+    readonly sha: string;
+    readonly projectPath: string;
+    readonly project: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly line: Evidence }> {
+  const { deployment, sha, project, imageRepo, when } = read;
+  const file = path.posix.join(
+    path.posix.dirname(path.posix.dirname(read.projectPath)),
+    "Pulumi.prod.yaml"
+  );
+  const item = `the worker image's commit of ${imageRepo}`;
+  const decided = (commit: string, how: string) => ({
+    sha: commit,
+    line: {
+      item,
+      source: `${how}, so the image's units of ${imageRepo} are read at ${commit}: ${LEGION_IMAGE_RULE}`,
+    },
+  });
+  const undecided = (why: string) => ({
+    line: {
+      item,
+      source: `${why}, so ${imageRepo} is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
+    },
+  });
+  const config = `${deployment}:${file} at ${sha}`;
+  const text = await github.text(deployment, sha, file);
+  if (text === undefined) {
+    return undecided(
+      `${config} does not exist (gh api repos/${deployment}/contents/${file}?ref=${sha})`
+    );
+  }
+  const entry = projectImage(text, project);
+  if (entry === undefined) {
+    return undecided(`${config} holds no entry - key: ${project} with an image: line`);
+  }
+  const named = `${config} gives the project ${project} the image ${entry.image}`;
+  const digest = /@sha256:([0-9a-f]{64})\b/.exec(entry.image)?.[1];
+  let without = ", which names no digest";
+  if (digest !== undefined) {
+    const found = await github.attestedCommit(imageRepo, digest);
+    const asked = `gh api repos/${imageRepo}/attestations/sha256:${digest}`;
+    if (found !== undefined) {
+      return decided(found.commit, `${named}; ${asked} names ${found.uri} at ${found.commit}`);
+    }
+    without = `, whose digest has no build provenance that names a commit (${asked})`;
+  }
+  if (entry.comment.length === 0) {
+    return undecided(`${named}${without}, and no comment line is right above its image: line`);
+  }
+  const comment = entry.comment.join(" ");
+  const above = `${named}${without}; the comment right above its image: line`;
+  // The comment's words in their order: an image digest, a tag (`<name>-v<version>`, `v<version>`)
+  // or a commit (7 to 40 hex digits, letters and digits both: neither a run number nor a word).
+  const words = comment.matchAll(
+    /@sha256:([0-9a-f]{64})\b|((?:[\w.-]+-)?v\d+(?:\.\d+)+)|\b([0-9a-f]{7,40})\b/g
+  );
+  const tried = new Set<string>();
+  for (const [word, base, tag, hex] of words) {
+    if (tried.has(word) || (base !== undefined && base === digest)) continue;
+    tried.add(word);
+    if (base !== undefined) {
+      const found = await github.attestedCommit(imageRepo, base);
+      if (found !== undefined) {
+        return decided(
+          found.commit,
+          `${above} names the image digest sha256:${base}, whose build provenance (gh api repos/${imageRepo}/attestations/sha256:${base}) names ${found.uri} at ${found.commit}`
+        );
+      }
+      continue;
+    }
+    const ref = tag ?? hex ?? "";
+    if (tag === undefined && !(/[a-f]/.test(ref) && /[0-9]/.test(ref))) continue;
+    if (tag !== undefined && !(await github.hasTag(imageRepo, tag))) continue;
+    let commit: string;
+    try {
+      commit = await github.commitAt(imageRepo, ref, when.at);
+    } catch (error) {
+      // A word that is no commit of the repository, or a commit made after the read.
+      if (transientFailure(error)) throw error;
+      continue;
+    }
+    if (tag !== undefined) {
+      return decided(
+        commit,
+        `${above} names ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`
+      );
+    }
+    if (commit.startsWith(ref)) {
+      const read = `gh api repos/${imageRepo}/commits?sha=${ref}&until=${when.at}`;
+      return decided(
+        commit,
+        `${above} names ${ref}, the commit ${commit} of ${imageRepo} (${read})`
+      );
+    }
+  }
+  return undecided(
+    `${above} names no image digest whose build provenance names a commit, no commit and no tag of ${imageRepo}`
+  );
+}
+
 /** The item of the evidence of a case or a load task that says how far the listing its rebuilt
  *  profile gives is from the listing its session saw; its source is a ListingMeasure as JSON. */
 export const LISTING_MEASURE = "listing measure";
@@ -2949,6 +3226,10 @@ export const ListingMeasure = z.strictObject({
     })
     .nullable(),
   why: z.string(),
+  /** The listed names the profile installed only because the recorded listing names one of their
+   *  pool's skills (POOL_AT_START_RULE): the measure cannot see a miss of them. Absent where none
+   *  is, and in a measure written before the mark. */
+  fromRecorded: z.array(z.string()).optional(),
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
 
@@ -2967,6 +3248,8 @@ interface ListingInput {
   readonly recorded: readonly string[] | undefined;
   readonly sessionDigest: string | null;
   readonly build?: BuildWindow;
+  /** The names the profile took from the recorded listing (ProfileResult's `fromRecorded`). */
+  readonly fromRecorded?: readonly string[];
 }
 
 /** What subagents.sql found of a top-level session's subagents between two times: the earliest
@@ -3363,7 +3646,19 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
       why: `${from}; ${NAMES_ONLY}`,
     };
   }
-  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+  const taken = input.fromRecorded ?? [];
+  return {
+    item: LISTING_MEASURE,
+    source: JSON.stringify(taken.length === 0 ? measure : { ...measure, fromRecorded: taken }),
+  };
+}
+
+/** The names `evidence`'s listing measure says the profile took from the recorded listing
+ *  (POOL_AT_START_RULE); none where it holds no measure or no mark. */
+export function fromRecordedIn(
+  evidence: readonly { readonly item: string; readonly source: string }[] | undefined
+): readonly string[] {
+  return measureIn(evidence)?.fromRecorded ?? [];
 }
 
 /** The listing measure that `evidence` holds, or undefined. */
@@ -3383,12 +3678,15 @@ function listingCounts(measures: readonly (ListingMeasure | undefined)[]): Recor
     none: 0,
     missing: 0,
     added: 0,
+    fromRecorded: 0,
   };
   for (const measure of measures) {
     const kind = measure?.kind ?? "none";
     counts[kind] = (counts[kind] ?? 0) + 1;
     counts.missing = (counts.missing ?? 0) + (measure?.missing.length ?? 0);
     counts.added = (counts.added ?? 0) + (measure?.added.length ?? 0);
+    if ((measure?.fromRecorded?.length ?? 0) > 0)
+      counts.fromRecorded = (counts.fromRecorded ?? 0) + 1;
   }
   return counts;
 }
@@ -3442,15 +3740,18 @@ function unitNamespace(unit: string): string | undefined {
 /**
  * The session repository of a session of the context `context` whose working directory is `cwd`:
  * for a Legion context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/
- * <workspace>/…`, the checkout at `<workspace>`); for any other (a dev box), the repository of
- * `repositories` (the copies output's list) named as the last part of `cwd`, else of its nearest
- * parent named as any of them, when one alone is named so (the checkout at that directory).
+ * <workspace>/…`, the checkout at `<workspace>`); for any other (a dev box), DEVBOX_CHECKOUT_RULE:
+ * the dev box's own repository `home` where `cwd` is in its checkout (`home.dir`), else the
+ * repository of `repositories` (the copies output's list) named as the last part of `cwd`, else
+ * of its nearest parent named as any of them, when one alone is named so; a parent's is marked
+ * (`byParent`), and `caseProfile` takes it only where its tree holds the path below that parent.
  * Otherwise none, and the evidence says which repositories matched.
  */
 function sessionRepository(
   context: string,
   cwd: string | undefined,
-  repositories: Iterable<string>
+  repositories: Iterable<string>,
+  home?: { readonly repo: string; readonly dir: string }
 ): Checkout {
   const none = (source: string): Checkout => ({
     repo: undefined,
@@ -3485,6 +3786,17 @@ function sessionRepository(
   if (cwd === undefined) {
     return none(`${DEVBOX_CHECKOUT_RULE}. The session names no working directory`);
   }
+  if (home !== undefined && (cwd === home.dir || cwd.startsWith(`${home.dir}/`))) {
+    const rel = path.posix.relative(home.dir, cwd);
+    return {
+      repo: home.repo,
+      rel,
+      line: {
+        item: `${SESSION_REPOSITORY}${home.repo}`,
+        source: `${DEVBOX_CHECKOUT_RULE}. The working directory ${cwd} is ${rel === "" ? "" : "under "}${home.dir}, the checkout of the dev box's repository ${home.repo}, whose .claude/ the configuration's devboxClaudeConfigDir names${inside(rel)}`,
+      },
+    };
+  }
   const listed = [...repositories];
   for (let dir = cwd; ; ) {
     const name = path.posix.basename(dir);
@@ -3498,8 +3810,9 @@ function sessionRepository(
         rel,
         line: {
           item: `${SESSION_REPOSITORY}${repo}`,
-          source: `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${repo} alone of the list is named${inside(rel)}`,
+          source: `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${repo} alone of the list is named${dir === cwd ? "" : `, and its tree holds ${rel}`}${inside(rel)}`,
         },
+        ...(dir === cwd ? {} : { byParent: dir }),
       };
     }
     if (named.length > 1) {
@@ -3517,30 +3830,74 @@ function sessionRepository(
 }
 
 /** The skill directories of the session repository Oh My Pi 18.18.6 lists for a working directory
- *  in a checkout of it (its project skills), each under the working directory and under each of
- *  its parents up to the checkout's root, in the order it admits them, each with its rank among
- *  the skills of one name (`unitRank`), where Oh My Pi reads it, and the namespace it lists a
- *  second copy of a name under (NAMESPACE_RULE): its directory is dotted, so its provider's id
- *  (discovery/builtin.ts, line 43; discovery/claude.ts, line 43). */
+ *  in a checkout of it (its project skills), by provider in the order it admits them: each kind's
+ *  directories (`dirs`) under the working directory alone (`at: "cwd"`) or under it and each of
+ *  its parents up to the checkout's root, the nearest first (`at: "each"`; at each level the
+ *  kind's `dirs` in order), each with its rank among the skills of one name (`unitRank`), whether
+ *  Oh My Pi lists a skill of it without a description (`describedOnly`), where it reads it, and
+ *  the namespace it lists a second copy of a name under (NAMESPACE_RULE): each directory is
+ *  dotted, so its provider's id (extensibility/skills.ts, skillNamespace, lines 96-116). Every
+ *  project provider is on: extensibility/skills.ts, isSourceEnabled, lines 341-363, turns off a
+ *  user-level source alone. Providers of one priority are taken in the order discovery/index.ts
+ *  imports them (lines 23-43; capability/index.ts, lines 177-184, puts a provider after those of
+ *  its own priority). Each scan takes a directory entry or a symbolic link of each skill
+ *  (discovery/helpers.ts, scanSkillsFromDir, lines 579-580 and 594-596), so a link a skills
+ *  directory holds is followed. */
 const PROJECT_SKILLS = [
   {
-    dir: ".omp/skills",
+    dirs: [".omp/skills"],
+    at: "each",
     rank: 1,
+    describedOnly: true,
     how: "Oh My Pi lists each <name>/SKILL.md that has a description under .omp/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/builtin.ts, loadSkills, lines 314-327, over getProjectAncestorDirs, lines 81-109)",
     namespace: "native",
   },
   {
-    dir: ".claude/skills",
+    dirs: [".claude/skills"],
+    at: "each",
     rank: 5,
+    describedOnly: false,
     how: "Oh My Pi lists each <name>/SKILL.md under .claude/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, loadSkills, lines 205-224)",
     namespace: "claude",
+  },
+  {
+    dirs: [".agent/skills", ".agents/skills"],
+    at: "each",
+    rank: 7,
+    describedOnly: false,
+    how: "Oh My Pi lists each <name>/SKILL.md under .agent/skills/ and .agents/skills/ of the working directory and of each parent up to the repository's root, the nearest first, .agent/ before .agents/ at each (discovery/agents.ts, loadSkills, lines 158-172, over getProjectPathCandidates, lines 140-155; priority 70, line 29)",
+    namespace: "agents",
+  },
+  {
+    dirs: [".codex/skills"],
+    at: "cwd",
+    rank: 8,
+    describedOnly: false,
+    how: "Oh My Pi lists each <name>/SKILL.md under .codex/skills/ of the working directory (discovery/codex.ts, loadSkills, lines 266-292, over getProjectCodexDir, lines 50-52; priority 70, line 48)",
+    namespace: "codex",
+  },
+  {
+    dirs: [".opencode/skills"],
+    at: "cwd",
+    rank: 9,
+    describedOnly: false,
+    how: "Oh My Pi lists each <name>/SKILL.md under .opencode/skills/ of the working directory (discovery/opencode.ts, loadSkills, lines 353-380, over discovery/helpers.ts's getProjectPath, lines 130-135; priority 55, line 50)",
+    namespace: "opencode",
+  },
+  {
+    dirs: [".github/skills"],
+    at: "cwd",
+    rank: 10,
+    describedOnly: true,
+    how: "Oh My Pi lists each <name>/SKILL.md that has a description under .github/skills/ of the working directory (discovery/github.ts, loadSkills, lines 286-296, over discovery/helpers.ts's getProjectPath, lines 130-135; priority 30, line 42)",
+    namespace: "github",
   },
 ] as const;
 
 /** Which of a project skill and another skill of its name Oh My Pi 18.18.6 gives a session, and
  *  where its source says so. */
 const PROJECT_PRECEDENCE =
-  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under a namespace, as NAMESPACE_RULE says): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
+  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under a namespace, as NAMESPACE_RULE says): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts), then the .agent/skills and .agents/skills of the working directory and of each parent (70, discovery/agents.ts, lines 140-172), the working directory's .codex/skills (70, discovery/codex.ts, lines 266-292), its .opencode/skills (55, discovery/opencode.ts, lines 353-380) and its .github/skills (30, discovery/github.ts, lines 286-296), the providers of one priority in the order discovery/index.ts imports them (lines 23-43); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
 
 /** Where Oh My Pi 18.18.6 admits the skills of the unit `unit` among the skills of one name,
  *  earliest first (PROJECT_PRECEDENCE), counted as PROJECT_SKILLS counts a project's: a pool an
@@ -3634,13 +3991,14 @@ const CONTEXT_FILES: readonly {
 const CONTEXT_SLOT_RULE =
   "Oh My Pi 18.18.6 keeps one project context file at each level from the working directory up to the checkout's root (capability/context-file.ts, lines 36-46: one for each depth), the first in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333), and joins the files it keeps the farthest level first (system-prompt.ts, lines 392-398)";
 /** The directories of each level that the session repository's read reads (GithubReads'
- *  `project`): each one a file of CONTEXT_FILES or a kind of PROJECT_SKILLS is in (`.omp`,
- *  `.claude`, `.agent`, `.agents`, `.gemini`, `.github`). */
+ *  `project`): each one a file of CONTEXT_FILES or a skills directory of PROJECT_SKILLS is in
+ *  (`.omp`, `.claude`, `.agent`, `.agents`, `.gemini`, `.github`, `.codex`, `.opencode`). */
 const PROJECT_LEVEL_DIRS = [
   ...new Set(
-    [...CONTEXT_FILES.map((spec) => spec.file), ...PROJECT_SKILLS.map((kind) => kind.dir)].flatMap(
-      (file) => (file.includes("/") ? [file.slice(0, file.indexOf("/"))] : [])
-    )
+    [
+      ...CONTEXT_FILES.map((spec) => spec.file),
+      ...PROJECT_SKILLS.flatMap((kind) => kind.dirs),
+    ].flatMap((file) => (file.includes("/") ? [file.slice(0, file.indexOf("/"))] : []))
   ),
 ];
 
@@ -3667,6 +4025,9 @@ interface ProfileResult {
    *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
    *  commit, so it holds the copy once. */
   readonly again: readonly InstallPath[];
+  /** The listed names the profile installs only because the recorded listing names one of their
+   *  pool's skills (POOL_AT_START_RULE), sorted; empty for most profiles. */
+  readonly fromRecorded: readonly string[];
 }
 
 /** An install path of a copy: the copy, how its unit ships it, and its unit's namespace. */
@@ -3685,9 +4046,24 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
+  // A dev box's own repository is the checkout whose .claude/ the configuration names as its
+  // CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is pushed where it is below.
+  const devboxRepo = input.context.startsWith("legion:") ? undefined : devboxHome(copies, []);
+  const claudeDir = run.config.devboxClaudeConfigDir;
   const checkout =
-    input.checkout ?? sessionRepository(input.context, input.cwd, copies.branches.keys());
+    input.checkout ??
+    sessionRepository(
+      input.context,
+      input.cwd,
+      copies.branches.keys(),
+      devboxRepo === undefined || claudeDir === undefined
+        ? undefined
+        : { repo: devboxRepo, dir: path.posix.dirname(claudeDir) }
+    );
   evidence.push(checkout.line);
+  // A checkout a parent's name gave is taken only where its repository's tree holds the working
+  // directory's path below that parent (`byParent`, checked once the repository is read).
+  let notCheckout = false;
   if (input.readTime !== undefined) evidence.push(input.readTime.line);
   // The time each repository is read at: a subagent's at its root's last prompt build before it
   // (PARENT_LOAD_RULE), but each repository a skills-sources pool clones at the subagent's start,
@@ -3710,7 +4086,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       ? { at: readTime.at, words: readTime.words }
       : { at: input.sessionStart, words: "the session's start" };
   // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
-  // the working directory and then under each parent up to the checkout's root.
+  // the working directory and then, for a kind read at each level, under each parent up to the
+  // checkout's root; at each level the kind's directories in order.
   const levels = [checkout.rel];
   for (let level = checkout.rel; level !== ""; ) {
     const parent = path.posix.dirname(level);
@@ -3718,7 +4095,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     levels.push(level);
   }
   const projectDirs = PROJECT_SKILLS.flatMap((kind) =>
-    levels.map((level) => ({ ...kind, dir: level === "" ? kind.dir : `${level}/${kind.dir}` }))
+    (kind.at === "cwd" ? levels.slice(0, 1) : levels).flatMap((level) =>
+      kind.dirs.map((dir) => ({ ...kind, dir: level === "" ? dir : `${level}/${dir}` }))
+    )
   );
   /** The commit of `repo` at the session's start, and the evidence for it; or no commit, when
    *  GitHub gives none then (NoCommitThen), and the evidence item that leaves it out, whose
@@ -3829,15 +4208,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
     }
   }
+  // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
+  // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
+  // Their units are read at the image's commit (LEGION_IMAGE_RULE, below).
+  const imageRepositories = new Set<string>();
   if (input.context.startsWith("legion:")) {
     const ompUnits = new Set(
       copies.installers
         .filter((row) => row.host === "omp")
         .map((row) => `${row.unit} (${row.manifest_repository}:${row.manifest_path})`)
     );
-    // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
-    // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
-    const imageRepositories = new Set<string>();
     for (const row of copies.prefixes) {
       if (!(row.prefix ?? "").startsWith(IMAGE_ROOT)) continue;
       for (const via of vias(row.via ?? "")) {
@@ -3941,6 +4321,28 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   if (deployment !== undefined) repositories.add(deployment);
+  // A dev-box session repository whose Claude Code settings enable plugins (CLAUDE_PLUGIN_RULE)
+  // is read whole with the repositories of the marketplaces that ship them.
+  if (checkout.repo !== undefined && !input.context.startsWith("legion:")) {
+    const repo = checkout.repo.toLowerCase();
+    const enabled = new Set(
+      copies.installers
+        .filter(
+          (row) =>
+            (row.manifest_repository ?? "").toLowerCase() === repo &&
+            row.manifest_path === CLAUDE_SETTINGS &&
+            row.action === "enables"
+        )
+        .map((row) => row.unit ?? "")
+    );
+    if (enabled.size > 0) repositories.add(checkout.repo);
+    for (const row of copies.installers) {
+      if (!enabled.has(row.unit ?? "") || !Object.hasOwn(MEMBER_ACTIONS, row.action ?? ""))
+        continue;
+      repositories.add(row.manifest_repository ?? "");
+      if ((row.copy_repository ?? "") !== "") repositories.add(row.copy_repository ?? "");
+    }
+  }
   if (home !== undefined) {
     repositories.add(home);
     for (const row of copies.installers) {
@@ -3957,8 +4359,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const held = new Map<string, RepositoryAt>();
   // The session repository is read at its commit too, for its project skills and context files;
   // it joins the units' resolution only when it is a unit's repository. A unit's repository is
-  // read whole, for copies.ts's rules; one that is the session repository alone only where Oh My
-  // Pi reads a project (`project`), since a repository's whole tree can be more than GitHub gives.
+  // read whole, for copies.ts's rules; the session repository where Oh My Pi reads a project
+  // (`project`), whether or not it is a unit's too, since a repository's whole tree can be more
+  // than GitHub gives and the project read follows the links of its skills directories.
   const toRead = new Set(repositories);
   if (checkout.repo !== undefined) toRead.add(checkout.repo);
   let projectTree: RepositoryAt | undefined;
@@ -3969,13 +4372,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const { sha, line } = await readCommit(repo);
       if (sha === undefined) return { repo, none: line };
       const { excludePaths } = run.config;
-      return repositories.has(repo)
-        ? { repo, commit: { sha, line }, at: await github.at(repo, sha, excludePaths), reads: 0 }
-        : {
+      const project =
+        repo === checkout.repo ? await github.project(repo, sha, levels, excludePaths) : undefined;
+      return repositories.has(repo) || project === undefined
+        ? {
             repo,
             commit: { sha, line },
-            ...(await github.project(repo, sha, levels, excludePaths)),
-          };
+            at: await github.at(repo, sha, excludePaths),
+            reads: 0,
+            project,
+          }
+        : { repo, commit: { sha, line }, ...project, project };
     })
   );
   // A repository with no commit at the time it is read at did not exist then: nothing of it was
@@ -4011,7 +4418,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // the ref that installer names at the session's start, as the session's machine held it then;
   // repositories.tsv's branch names the ref the copies output read, later.
   const pins = installerPins(
-    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : []))
+    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : [])),
+    run.config.clones
   );
   for (const [index, value] of values.entries()) {
     const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
@@ -4054,7 +4462,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const manifests = values.flatMap((value) =>
         repositories.has(value.repo) || value.repo === home ? value.at.manifests : []
       );
-      for (const pin of [...installerPins(manifests), ...legionPins(manifests)]) {
+      for (const pin of [
+        ...installerPins(manifests, run.config.clones),
+        ...legionPins(manifests),
+      ]) {
         const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
         // A pin of no ref names the default branch, which a repository left out above had no
         // commit of then.
@@ -4087,6 +4498,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
             },
             at: await github.at(pin.repository, sha, run.config.excludePaths),
             reads: 0,
+            project: undefined,
           });
           fresh = true;
         } catch (error) {
@@ -4106,23 +4518,46 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
     }
   }
-  for (const { repo, commit, at, reads: treeReads } of values) {
+  for (const { repo, commit, at, reads: treeReads, project } of values) {
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
-    if (repo === checkout.repo) projectTree = at;
+    if (repo === checkout.repo && checkout.byParent !== undefined && checkout.rel !== "") {
+      const missing = project?.missing ?? [];
+      if (missing.includes(checkout.rel)) {
+        notCheckout = true;
+        evidence[evidence.indexOf(checkout.line)] = {
+          item: NO_SESSION_REPOSITORY,
+          source: `${DEVBOX_CHECKOUT_RULE}. The working directory ${input.cwd} is under ${checkout.byParent}, named as ${repo}, whose tree at ${commit.sha} holds no ${checkout.rel}, so that name alone does not make the directory a checkout of it`,
+        };
+      }
+    }
+    if (repo === checkout.repo && !notCheckout) projectTree = project?.at ?? at;
     const unitRepo = repositories.has(repo);
     if (unitRepo) held.set(repo, at);
+    const projectRead = `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${project?.reads ?? treeReads} ${(project?.reads ?? treeReads) === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.flatMap((kind) => kind.dirs.map((dir) => `${dir}/`)).join(", ")} and each skill directory in them, a skill directory held as a link read at the directory it names. Their ${(project?.at ?? at).copies.length} SKILL.md files, read at that commit, give the session repository's project skills`;
     evidence.push(
       unitRepo
         ? {
             item: `the skills and manifests of ${repo} at ${commit.sha}`,
-            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
+            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then${project === undefined ? "" : `; and ${projectRead}`}`,
           }
-        : {
-            item: `the skills of ${repo} at ${commit.sha}`,
-            source: `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${treeReads} ${treeReads === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.map((kind) => `${kind.dir}/`).join(" and ")} and each skill directory in them. Their ${at.copies.length} SKILL.md files, read at that commit, give the session repository's project skills`,
-          }
+        : { item: `the skills of ${repo} at ${commit.sha}`, source: projectRead }
     );
+    // Each link of a project skills directory: followed to the directory it names in the
+    // repository, as Oh My Pi's scan follows it, or left out where it names none there.
+    for (const { link, target, outcome } of project?.links ?? []) {
+      evidence.push(
+        outcome === "followed"
+          ? {
+              item: `linked: ${repo} ${link} -> ${target}`,
+              source: `${repo} at ${commit.sha} holds ${link} as a symbolic link to ${target}, which Oh My Pi follows (discovery/helpers.ts, lines 579-580 and 594-596): the skill directory it names is read under the link's path`,
+            }
+          : {
+              item: `left out: ${repo} ${link} -> ${target}`,
+              source: `${repo} at ${commit.sha} holds ${link} as a symbolic link to ${target}, ${outcome === "outside" ? "outside the repository" : "which names no directory of the repository"}, so no repository read gives what it names`,
+            }
+      );
+    }
     for (const fault of at.faults) {
       const dir = path.posix.dirname(path.posix.dirname(fault.file));
       if (!unitRepo && !projectDirs.some((each) => each.dir === dir)) continue;
@@ -4135,6 +4570,46 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // Each tree read at another commit than its repository's (a pinned package's release tag, a
   // pool host's at a subagent's start), by `<repo>@<commit>`.
   const trees = new Map<string, RepositoryAt>();
+  // A Legion pod's worker image carries the packages of its repository as that repository was at
+  // the commit the image was built from (LEGION_IMAGE_RULE), not at its default branch at the
+  // session's start: the units of that repository are resolved from its tree at that commit
+  // (`unitTree`), and their copies name it. The repository stays read at the session's start for
+  // anything else of it (a session repository's project skills and context files, a copy a read
+  // in its checkout is placed at).
+  const [imageRepo, ...moreImageRepos] = [...imageRepositories].sort();
+  let image: { readonly repo: string; readonly sha: string; readonly at: RepositoryAt } | undefined;
+  if (deployment !== undefined && imageRepo !== undefined) {
+    const depSha = commits.get(deployment);
+    const found =
+      moreImageRepos.length > 0 || depSha === undefined
+        ? {
+            line: {
+              item: `the worker image's commit of ${[...imageRepositories].sort().join(", ")}`,
+              source: `${moreImageRepos.length > 0 ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known` : `${deployment} has no commit at the session's start`}, so each is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
+            },
+          }
+        : await legionImageCommit(github, {
+            deployment,
+            sha: depSha,
+            projectPath: projectFile?.path ?? "",
+            project: input.project ?? "",
+            imageRepo,
+            when: whenOf(deployment),
+          });
+    evidence.push(found.line);
+    if (found.sha !== undefined && found.sha !== commits.get(imageRepo) && held.has(imageRepo)) {
+      const at = await github.at(imageRepo, found.sha, run.config.excludePaths);
+      image = { repo: imageRepo, sha: found.sha, at };
+      trees.set(`${imageRepo}@${found.sha}`, at);
+      evidence.push({
+        item: `the skills and manifests of ${imageRepo} at ${found.sha}`,
+        source: `gh api repos/${imageRepo}/git/trees/${found.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at the worker image's commit and resolved by copies.ts's rules (resolveInstallers), give what each unit of ${imageRepo} ships in the image`,
+      });
+    }
+  }
+  /** The tree a unit of `repo` ships from: the worker image's at its commit for the image's
+   *  repository, else `at`, the tree held at the session's start. */
+  const unitTree = (repo: string, at: RepositoryAt) => (repo === image?.repo ? image.at : at);
   // A subagent's pool hosts at its start: Oh My Pi rescans a pool's directories then, while the
   // host's plugin lists, installers and settings are what its root loaded (PARENT_LOAD_RULE).
   const poolAt = new Map<string, string>();
@@ -4155,7 +4630,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A package a plugin list pins by an exact npm version ships what that version ships
   // (NPM_PIN_RULE); the dev box's own plugin lists come first.
   const versions = new Map<string, PinnedVersion>();
-  const heldManifests = [...held.values()].flatMap((at) => at.manifests);
+  const heldManifests = [...held].flatMap(([repo, at]) => unitTree(repo, at).manifests);
   const lists = heldManifests.toSorted(
     (a, b) => Number(b.repository === home) - Number(a.repository === home)
   );
@@ -4179,7 +4654,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         const at = await github.at(repo, sha, run.config.excludePaths);
         if (at.manifests.some((each) => each.path === pkg.path && each.kind === "omp-package")) {
           trees.set(`${repo}@${sha}`, at);
-          const rows = resolveInstallers(at.manifests, new CopyIndex(at.copies)).rows.filter(
+          const rows = resolveInstallers(
+            at.manifests,
+            new CopyIndex(at.copies),
+            run.config.clones
+          ).rows.filter(
             (row) =>
               row.unit === id &&
               row.manifestRepository === repo &&
@@ -4215,8 +4694,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     });
   }
   const resolved = resolveInstallers(
-    [...held.values()].flatMap((at) => at.manifests),
-    new CopyIndex([...held.values()].flatMap((at) => at.copies))
+    [...held].flatMap(([repo, at]) => unitTree(repo, at).manifests),
+    new CopyIndex([...held].flatMap(([repo, at]) => unitTree(repo, at).copies)),
+    run.config.clones
   );
   /** The tree of `repo` a pool's directories are read at: its own at a subagent's start, else
    *  the one held. */
@@ -4226,8 +4706,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     poolAt.size === 0
       ? resolved
       : resolveInstallers(
-          [...held].flatMap(([repo, at]) => poolTree(repo, at).manifests),
-          new CopyIndex([...held].flatMap(([repo, at]) => poolTree(repo, at).copies))
+          [...held].flatMap(([repo, at]) => poolTree(repo, unitTree(repo, at)).manifests),
+          new CopyIndex(
+            [...held].flatMap(([repo, at]) => poolTree(repo, unitTree(repo, at)).copies)
+          ),
+          run.config.clones
         );
   /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules): a
    *  pool's from its host's tree at the subagent's start. */
@@ -4275,8 +4758,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 
   // The dev box's own installers at the session's start: each unit they install into Oh My Pi,
   // after the units the reads come from, so a read's unit keeps its place among those of a name.
+  // A pool's rows are its host's at the subagent's start (`poolResolved`); a pool that host names
+  // then and not at the root's build is admitted only where the recorded listing names one of
+  // its skills (POOL_AT_START_RULE), and its names are marked as taken from that listing.
+  const fromListing = new Set<string>();
   if (home !== undefined) {
-    for (const row of resolved.rows) {
+    const atBuild = new Set(resolved.rows.map((row) => `${row.unit}\0${row.manifestPath}`));
+    const rows = [
+      ...resolved.rows.filter((row) => !row.unit.startsWith("pool:")),
+      ...poolResolved.rows.filter((row) => row.unit.startsWith("pool:")),
+    ];
+    for (const row of rows) {
       if (
         row.manifestRepository !== home ||
         row.host !== "omp" ||
@@ -4287,9 +4779,62 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
       const via = { unit: row.unit, repository: home, manifest: row.manifestPath };
       if (units.has(viaKey(via))) continue;
+      if (!atBuild.has(`${row.unit}\0${row.manifestPath}`)) {
+        const ships = shipsAtStart(via).map((each) => each.skill);
+        const named = ships.filter((name) => input.recordedListing?.includes(name) === true);
+        const pool = `${home}:${row.manifestPath} names ${row.unit.slice("pool:".length)} at ${poolAt.get(home)} (the subagent's start ${input.sessionStart}) and not at ${commits.get(home)} (the root's last prompt build)`;
+        if (named.length === 0) {
+          evidence.push({
+            item: `left out: ${row.unit}, a pool at the subagent's start`,
+            source: `${pool}, and the subagent's recorded listing names none of its skills (${ships.join(", ")}), so its host had not cloned it then: ${POOL_AT_START_RULE}`,
+          });
+          continue;
+        }
+        fromListing.add(viaKey(via));
+        units.set(viaKey(via), {
+          via,
+          why: `pool at the subagent's start: ${pool}; the subagent's recorded listing names ${named.join(", ")} of its skills, so its host had cloned it then (installed from the recorded listing): ${POOL_AT_START_RULE}`,
+        });
+        continue;
+      }
       units.set(viaKey(via), {
         via,
         why: `${DEVBOX_INSTALLERS_RULE}: ${home}:${row.manifestPath} at ${commits.get(home)} ${row.action} it into Oh My Pi`,
+      });
+    }
+  }
+  // The Claude Code plugins the session repository's own Claude Code settings enable, which
+  // Claude Code installs for that project and Oh My Pi lists for a session in it
+  // (CLAUDE_PLUGIN_RULE): each from the marketplace rows that ship its skills.
+  if (checkout.repo !== undefined && !input.context.startsWith("legion:") && !notCheckout) {
+    const repo = checkout.repo.toLowerCase();
+    const enabled = new Set(
+      resolved.rows
+        .filter(
+          (row) =>
+            row.manifestRepository.toLowerCase() === repo &&
+            row.manifestPath === CLAUDE_SETTINGS &&
+            row.action === "enables"
+        )
+        .map((row) => row.unit)
+    );
+    for (const row of resolved.rows) {
+      if (
+        !enabled.has(row.unit) ||
+        row.copyPath === undefined ||
+        !Object.hasOwn(MEMBER_ACTIONS, row.action)
+      ) {
+        continue;
+      }
+      const via = {
+        unit: row.unit,
+        repository: row.manifestRepository,
+        manifest: row.manifestPath,
+      };
+      if (units.has(viaKey(via))) continue;
+      units.set(viaKey(via), {
+        via,
+        why: `${CLAUDE_PLUGIN_RULE}: ${checkout.repo}:${CLAUDE_SETTINGS} at ${commits.get(checkout.repo)} enables ${row.unit.slice("plugin:".length)} in enabledPlugins, and ${row.manifestRepository}:${row.manifestPath} ${row.action} its skills`,
       });
     }
   }
@@ -4347,10 +4892,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     rank: number | undefined;
     /** The namespace Oh My Pi lists a second copy of the name under (`unitNamespace`). */
     namespace?: string | undefined;
+    /** Whether its unit was admitted on the recorded listing (POOL_AT_START_RULE). */
+    fromRecorded?: boolean;
   }[] = [];
   for (const [key, { via, why }] of units) {
     const id = via.unit;
-    const start = atCommit(via.repository);
+    const start =
+      via.repository === image?.repo
+        ? `${image.repo} at ${image.sha} (the worker image's commit)`
+        : atCommit(via.repository);
     const version = id.startsWith("package:") ? versions.get(id) : undefined;
     let members = shipsAtStart(via);
     if (version !== undefined) {
@@ -4371,7 +4921,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     for (const row of members) {
       const commit =
-        version?.sha ?? (id.startsWith("pool:") ? poolAt.get(row.copyRepository) : undefined);
+        version?.sha ??
+        (id.startsWith("pool:") ? poolAt.get(row.copyRepository) : undefined) ??
+        (row.copyRepository === image?.repo ? image.sha : undefined);
       const copy = {
         repo: row.copyRepository,
         path: row.copyPath ?? "",
@@ -4388,6 +4940,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         source: `${copy.repo} at ${commit ?? commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
         rank: unitRank(id),
         namespace: unitNamespace(id),
+        fromRecorded: fromListing.has(key),
       });
     }
     for (const row of later) {
@@ -4450,18 +5003,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   if (checkout.repo !== undefined && projectTree !== undefined) {
     const how = `project skill of ${checkout.repo}`;
     const start = `${how} at ${commits.get(checkout.repo)}`;
-    for (const { dir, rank, how: listing, namespace } of projectDirs) {
+    for (const { dir, rank, how: listing, namespace, describedOnly } of projectDirs) {
       for (const copy of projectTree.copies) {
         if (path.posix.dirname(copy.path) !== dir) continue;
         // A SKILL.md that could not be read is named in the faults' evidence, and is offered.
         if (
-          dir.endsWith(".omp/skills") &&
+          describedOnly &&
           copy.description === "" &&
           !copy.fault.startsWith("SKILL.md read failed")
         ) {
           evidence.push({
             item: `left out: skill ${copy.name} from ${checkout.repo} ${copy.path}`,
-            source: `${start}: its SKILL.md has no description, and Oh My Pi lists no skill of .omp/skills/ without one (discovery/builtin.ts, line 324; discovery/helpers.ts, line 543)`,
+            source: `${start}: its SKILL.md has no description, and Oh My Pi lists no skill of ${path.posix.basename(path.posix.dirname(dir))}/skills/ without one (requireDescription: discovery/builtin.ts, line 324; discovery/github.ts, line 294; discovery/helpers.ts, line 543)`,
           });
           continue;
         }
@@ -4554,9 +5107,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   const skills = new Map<string, Omit<ProfileSkill, "commit"> & { readonly commit?: string }>();
   const again: InstallPath[] = [];
-  /** The tree a copy is read from: its own commit's when it names one, else its repository's. */
-  const treeOf = (copy: { repo: string; commit?: string | undefined }) =>
+  const fromRecorded = new Set<string>();
+  /** The tree a copy is read from: its own commit's when it names one, else the session
+   *  repository's project read when it holds the copy (a linked project skill is held there
+   *  alone), else its repository's. */
+  const treeOf = (copy: { repo: string; path?: string; commit?: string | undefined }) =>
     (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
+    (copy.repo === checkout.repo &&
+    projectTree?.copies.some((each) => each.path === (copy.path === "." ? "" : copy.path))
+      ? projectTree
+      : undefined) ??
     held.get(copy.repo) ??
     (copy.repo === checkout.repo ? projectTree : undefined);
   /** The blob of the SKILL.md of `copy` at the session's start, as read. */
@@ -4569,6 +5129,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const readAt = read !== undefined && same(pick.copy, read) ? read.index : undefined;
     if (pick === offer) {
       skills.set(offer.copy.name, offer.copy);
+      if (offer.fromRecorded === true) fromRecorded.add(offer.copy.name);
       evidence.push({
         item: `skill ${offer.copy.name} (${offer.copy.repo} ${offer.copy.path})`,
         source: `${offer.source}${readAt === undefined ? "" : `; message ${readAt} reads this copy`}`,
@@ -4592,6 +5153,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           : listedName({ name: offer.copy.name, namespace: offer.namespace });
       if (differs && namespaced !== undefined && !skills.has(namespaced)) {
         skills.set(namespaced, { ...offer.copy, namespace: offer.namespace });
+        if (offer.fromRecorded === true) fromRecorded.add(namespaced);
         evidence.push({
           item: `skill ${namespaced} (${offer.copy.repo} ${offer.copy.path})`,
           source: `${offer.source}; under the name ${offer.copy.name} ${why}, and this copy's text differs: ${NAMESPACE_RULE}`,
@@ -4697,7 +5259,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   const profilePlugins: Profile["plugins"] = [];
   for (const plugin of plugins.values()) {
-    const commit = await commitOf(plugin.repo);
+    // The plugin directory of a unit of the worker image is at the image's commit too.
+    const commit = plugin.repo === image?.repo ? image.sha : await commitOf(plugin.repo);
     profilePlugins.push({ repo: plugin.repo, commit, path: plugin.path, name: plugin.name });
     evidence.push({
       item: `plugin ${plugin.name} (${plugin.repo} ${plugin.path})`,
@@ -4789,7 +5352,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   // A session repository with no commit then is left out above, so the profile names none.
   const sessionRepo =
-    checkout.repo === undefined || absent.has(checkout.repo) ? undefined : checkout.repo;
+    checkout.repo === undefined || absent.has(checkout.repo) || notCheckout
+      ? undefined
+      : checkout.repo;
   return {
     profile: {
       skills: profileSkills,
@@ -4805,6 +5370,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     shipped,
     hidden,
     again,
+    fromRecorded: [...fromRecorded].sort(),
   };
 }
 
@@ -4929,8 +5495,9 @@ interface CaseRun {
   readonly skill: string;
   readonly old: string;
   /** The skill's directory at the cut's head (`--new`): the new arm's text, whose files a case's
-   *  reads by path are checked against too (`pathFormIn`). */
-  readonly new: string;
+   *  reads by path are checked against too (`pathFormIn`); undefined for a build given none (no
+   *  cut text yet), which checks the old text alone. */
+  readonly new: string | undefined;
   /** The skill's base files (`--old`). */
   readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly copies: Copies;
@@ -5167,6 +5734,7 @@ async function sessionProfile(
     sessionStart: header.sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
+    ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
     reads: shownReads(t.items.map((item) => item.slim)),
     readTime,
   });
@@ -5212,6 +5780,7 @@ async function sessionProfile(
     listed: listsSkill(recorded, profiled.profile.skills, skill),
     listing: {
       listed: listedNames(profiled),
+      fromRecorded: profiled.fromRecorded,
       recorded: init?.systemPrompt,
       sessionDigest:
         t.branch.flatMap((entry) =>
@@ -5416,6 +5985,7 @@ async function caseOf(
     sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
+    ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
   };
   const reachableReads = profileReads(
     readable.map((item) => item.slim),
@@ -5522,6 +6092,14 @@ async function caseOf(
       }
       return drop("reader-error", messageFor(error));
     }
+    // A session whose work at the read is on the skill's own text gives no case of the skill's
+    // behaviour in any window: its next step works on the text and does not follow it.
+    if ("material" in given) {
+      return drop(
+        "skill-as-material",
+        `the case reader, in window ${windows} (messages ${windowMessages[0]?.index} to ${windowMessages.at(-1)?.index}): ${given.material.why}`
+      );
+    }
     if (given.step === null) noStep = given.reason;
     else answer = given;
     start = (windowMessages.at(-1)?.index ?? start) + 1;
@@ -5589,12 +6167,15 @@ async function caseOf(
   const unheld = readByPath(messages, run.skill, installedDirs, kept);
   if (unheld !== undefined) return drop("read-by-path", unheld);
   // A case whose read by path the arms do not answer in Oh My Pi's form would fail every
-  // `behaviour` run of it.
+  // `behaviour` run of it: the old text's, and the new text's when `--new` is given (cli.ts's
+  // screen drops a case on the new text's otherwise).
   const formFault = pathFormIn(
     fileReads.flatMap((read) => (read.path === undefined ? [] : [read.file])),
     run
   );
-  if (formFault !== undefined) return drop("path-form", formFault);
+  if (formFault !== undefined) {
+    return drop("path-form", `in the ${formFault.arm} text ${formFault.dir}: ${formFault.fault}`);
+  }
 
   const file = run.files.find((each) => each.path === answer.line.file);
   const wanted = answer.line.text.trim();
@@ -5813,6 +6394,7 @@ async function caseOf(
     step: stepIndex,
     listing: {
       listed: listedNames(profiled),
+      fromRecorded: profiled.fromRecorded,
       recorded: init?.systemPrompt,
       sessionDigest: digest ?? null,
       ...(step === undefined ? {} : { build: step.window }),
@@ -6079,6 +6661,9 @@ async function reprofileCases(
             ? undefined
             : `/legion/workspaces/${agents.repo}/`,
         recordedPrompt: c.profile.systemPrompt !== undefined,
+        ...(c.profile.systemPrompt === undefined
+          ? {}
+          : { recordedListing: listingNames(c.profile.systemPrompt) }),
         readTime: reading?.read,
         checkout:
           held || decided === undefined
@@ -6124,6 +6709,7 @@ async function reprofileCases(
       listingMeasure(
         {
           listed: listedNames(profiled),
+          fromRecorded: profiled.fromRecorded,
           recorded: c.profile.systemPrompt,
           sessionDigest: c.sessionDigest,
           ...(reading?.window === undefined ? {} : { build: reading.window }),
@@ -6195,14 +6781,15 @@ async function reprofileCases(
 
 /** What a build-cases run is made from, as its summary records it: a resumed run must be made
  *  from the same. The texts are digests of what the run read (`digestOf`); the paths are only
- *  for a reader of the summary. `new`, every file of `--new`, is absent from a summary written
- *  before build-cases took `--new`, so a build does not go on from that one. */
+ *  for a reader of the summary. `new` is every file of `--new`, or null for a run given none; it
+ *  is absent from a summary written before build-cases took `--new`, so a build does not go on
+ *  from that one. */
 const CasesInputs = z.strictObject({
   cut: z.string(),
   skill: z.string(),
   seed: z.string(),
   old: Digested,
-  new: Digested.optional(),
+  new: Digested.nullable().optional(),
   sessions: Digested,
   copies: Digested,
   count: Digested,
@@ -6247,9 +6834,13 @@ function inputsDiffer(was: CasesInputs, now: CasesInputs): string[] {
       );
     }
   }
-  if (was.new?.sha256 !== now.new?.sha256) {
-    const shown = (given: Digested | undefined) =>
-      given === undefined ? "not given" : `${given.path} (sha256 ${given.sha256.slice(0, 12)})`;
+  if (was.new === undefined || was.new?.sha256 !== now.new?.sha256) {
+    const shown = (given: Digested | null | undefined) =>
+      given === undefined
+        ? "not recorded (a build-cases run from before --new)"
+        : given === null
+          ? "not given"
+          : `${given.path} (sha256 ${given.sha256.slice(0, 12)})`;
     differ.push(`--new was ${shown(was.new)}, now ${shown(now.new)}`);
   }
   return differ;
@@ -6396,19 +6987,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   if (values.reprofile !== undefined) return reprofileCases(values, io);
   const given = required(
     values,
-    [
-      "config",
-      "key-file",
-      "cut",
-      "skill",
-      "old",
-      "new",
-      "sessions",
-      "seed",
-      "copies",
-      "count",
-      "out",
-    ],
+    ["config", "key-file", "cut", "skill", "old", "sessions", "seed", "copies", "count", "out"],
     BUILD_CASES_USAGE
   );
   // The cases file and its spool hold real session text.
@@ -6456,8 +7035,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     );
   }
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
-  if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Refused(`--new ${given.new} is not a directory`);
+  // No --new: a build before the cut has a text checks the old text alone.
+  const newDir = values.new;
+  if (newDir !== undefined && !statSync(newDir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--new ${newDir} is not a directory`);
   }
   mustBeFile(given["key-file"], "--key-file");
   const files = skillFiles(given.old);
@@ -6476,13 +7057,16 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       given.old,
       files.map((file) => file.path)
     ),
-    new: digestOf(
-      given.new,
-      readdirSync(given.new, { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map((entry) => path.relative(given.new, path.join(entry.parentPath, entry.name)))
-        .sort()
-    ),
+    new:
+      newDir === undefined
+        ? null
+        : digestOf(
+            newDir,
+            readdirSync(newDir, { recursive: true, withFileTypes: true })
+              .filter((entry) => entry.isFile())
+              .map((entry) => path.relative(newDir, path.join(entry.parentPath, entry.name)))
+              .sort()
+          ),
     sessions: {
       ...digestOf(path.dirname(given.sessions), [path.basename(given.sessions)]),
       path: given.sessions,
@@ -6557,7 +7141,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     cut,
     skill: given.skill,
     old: given.old,
-    new: given.new,
+    new: newDir,
     files,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),

@@ -24,6 +24,7 @@ import {
   cacheKey,
   ghSource,
   gitBlobId,
+  installedCopies,
   LOCAL_SKILL_REPO,
   legionRole,
   localSource,
@@ -350,6 +351,29 @@ test("each skill is its repository's directory at its commit, through the cache,
   expect(again.record.contextFiles.map((file) => file.as)).toEqual(["user level"]);
   expect(again.appendSystemPrompt).toBeUndefined();
   expect(again.record.rolePrompt).toBeNull();
+});
+
+// Catches: a read of another skill answered from a copy other than the one the capture installed,
+// or from one that differs between arms.
+test("the installed copy of each repository skill a context installs is its cache entry, the one every arm's context copies, and the arm's own skill is none", async () => {
+  const root = path.join(dir, "copies");
+  const c = aCase("devbox", {});
+  const { options, arm } = setUp(root, c);
+  const old = await buildContext(c, arm, options);
+  const beta = {
+    name: "beta",
+    dir: path.join(options.cacheDir, "skills", cacheKey("acme/skills", COMMIT, "skills/beta")),
+  };
+  expect(installedCopies(old.record, options.cacheDir)).toEqual([beta]);
+  expect(filesUnder(beta.dir)).toEqual(filesUnder(path.join(old.skillsDir, "beta")));
+  const none = buildArm(
+    c,
+    "none",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    root
+  );
+  const absent = await buildContext(c, none, options);
+  expect(installedCopies(absent.record, options.cacheDir)).toEqual([beta]);
 });
 
 test("a second copy of a name whose text differs goes in a skills directory of its namespace, which the capture gives Oh My Pi after skills/, so it lists the copy as <namespace>/<name>", async () => {
@@ -804,12 +828,13 @@ test("a plugin whose repository read fails stops the context, naming why; a plug
   expect(reasons.broken).toStartWith("its package.json does not parse: ");
 }, 120_000);
 
-/** A file of the stand-in repository: its path, its bytes, and whether a GraphQL batch calls it
- *  binary. */
+/** A file of the stand-in repository: its path, its bytes, whether a GraphQL batch calls it
+ *  binary, and its mode (git's: 100644 when absent, 120000 a link whose target is its bytes). */
 interface StandinFile {
   readonly path: string;
   readonly bytes: Uint8Array;
   readonly binary?: boolean;
+  readonly mode?: "100644" | "120000";
 }
 
 /**
@@ -824,6 +849,7 @@ function standinRepoGh(name: string, files: readonly StandinFile[]): { gh: strin
   const gh = path.join(root, "gh");
   const listed = files.map((file) => ({
     path: file.path,
+    mode: file.mode ?? "100644",
     sha: gitBlobId(file.bytes),
     size: file.bytes.length,
     b64: Buffer.from(file.bytes).toString("base64"),
@@ -848,7 +874,7 @@ if (args[1] === "graphql") {
   process.stdout.write(JSON.stringify({ data: { repository } }));
 } else if (route.includes("/git/trees/")) {
   process.stdout.write(JSON.stringify({
-    tree: files.map((file) => ({ path: file.path, mode: "100644", type: "blob", sha: file.sha, size: file.size })),
+    tree: files.map((file) => ({ path: file.path, mode: file.mode, type: "blob", sha: file.sha, size: file.size })),
     truncated: false,
   }));
 } else if (/\\/git\\/blobs\\/[0-9a-f]{40}$/.test(route)) {
@@ -1514,6 +1540,110 @@ test("a skill at a root of more than 200 files is refused, naming the repository
   // The commit's tree, cut short, then the root and notes/, one level each: no blob read.
   expect(routeKinds(deep.log)).toEqual({ recursive: 1, level: 2, blob: 0, tarball: 0, other: 0 });
   expect(existsSync(path.join(dir, "root-deep-large", "x"))).toBe(false);
+}, 120_000);
+
+/** A made-up skill of acme/batch, at `skills/linked` and, as a project's skills directory holds
+ *  one, at `.claude/skills/linked`, a link to it. */
+const LINKED_FILES: readonly StandinFile[] = [
+  {
+    path: "skills/linked/SKILL.md",
+    bytes: text("---\nname: linked\ndescription: Made-up linked.\n---\n"),
+  },
+  { path: "skills/linked/references/r.md", bytes: text("Reference of linked.\n") },
+  { path: ".claude/skills/linked", bytes: text("../../skills/linked"), mode: "120000" },
+];
+
+// Catches: a project skill whose directory the repository holds as a symbolic link, which build.ts
+// names by the link's path (where Oh My Pi lists it), read as a directory that holds no file, so
+// every case of a profile that installs one is dropped.
+test("a skill directory the repository holds as a link is installed from the directory the link names, from the commit's tree, and from a walk where GitHub cuts the tree short", async () => {
+  const { gh, log } = standinRepoGh("gh-linked", LINKED_FILES);
+  const root = path.join(dir, "linked");
+  const { c, arm } = batchCase(root, [".claude/skills/linked"]);
+  const options = {
+    source: ghSource(gh, { sleep: async () => {}, err: () => {} }),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  };
+  const built = await buildContext(c, arm, options);
+  const installed = path.join(built.skillsDir, "linked");
+  expect(filesUnder(installed)).toEqual({
+    "SKILL.md": { mode: "100644", bytes: [...(LINKED_FILES[0]?.bytes ?? [])] },
+    "references/r.md": { mode: "100644", bytes: [...(LINKED_FILES[1]?.bytes ?? [])] },
+  });
+  expect(built.skills.find((skill) => skill.name === "linked")?.description).toBe(
+    "Made-up linked."
+  );
+  expect(built.record.skills.find((skill) => skill.name === "linked")?.from).toEqual({
+    repo: "acme/batch",
+    commit: COMMIT,
+    path: ".claude/skills/linked",
+    key: cacheKey("acme/batch", COMMIT, ".claude/skills/linked"),
+  });
+  // The commit's tree, the link's text, and one GraphQL batch of the target's two files.
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: 1, blob: 1, other: 0 });
+  // Built again from the cache, it reads nothing.
+  await buildContext(c, arm, options);
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: 1, blob: 1, other: 0 });
+
+  const deep = standinDeepGh("gh-linked-deep", [
+    ...DEEP_FILES,
+    { path: ".claude/skills/deep", mode: "120000", bytes: text("../../skills/deep") },
+  ]);
+  const deepRoot = path.join(dir, "linked-deep");
+  const walked = batchCase(deepRoot, [".claude/skills/deep"]);
+  const deepBuilt = await buildContext(walked.c, walked.arm, {
+    source: ghSource(deep.gh, { sleep: async () => {}, err: () => {} }),
+    cacheDir: path.join(deepRoot, "cache"),
+    root: path.join(deepRoot, "scratch"),
+  });
+  expect(filesUnder(path.join(deepBuilt.skillsDir, "deep"))).toEqual(
+    expectedUnder(DEEP_FILES, "skills/deep")
+  );
+  // The commit's tree, cut short; the root, .claude and .claude/skills to find the link, and
+  // skills to find that skills/deep is no link; the link's text; skills/deep's own tree, its
+  // levels on the way kept from the link's read; and its five blobs.
+  expect(routeKinds(deep.log)).toEqual({ recursive: 2, level: 4, blob: 6, tarball: 0, other: 0 });
+}, 120_000);
+
+// Catches: a linked skill directory that no read of the repository gives (its link leads out of
+// the repository, or to no directory of it) installed as an empty directory, or failing with an
+// error that names neither the case nor the link.
+test("a skill directory held as a link out of the repository, or to no directory of it, is an UnreadableDirectory naming the case, the link and its target", async () => {
+  const { gh } = standinRepoGh("gh-linked-away", [
+    ...LINKED_FILES,
+    { path: ".claude/skills/away", bytes: text("../../../outside/away"), mode: "120000" },
+    { path: ".claude/skills/gone", bytes: text("../../skills/gone"), mode: "120000" },
+  ]);
+  const failure = async (name: string) => {
+    const root = path.join(dir, `linked-${name}`);
+    const { c, arm } = batchCase(root, [`.claude/skills/${name}`]);
+    const failed = await buildContext(c, arm, {
+      source: ghSource(gh, { sleep: async () => {}, err: () => {} }),
+      cacheDir: path.join(root, "cache"),
+      root: path.join(root, "scratch"),
+    }).then(
+      () => "built",
+      (error: unknown) => error
+    );
+    return { c, failed };
+  };
+  const away = await failure("away");
+  expect(away.failed).toBeInstanceOf(UnreadableDirectory);
+  expect(away.failed).toMatchObject({
+    repo: "acme/batch",
+    commit: COMMIT,
+    dir: ".claude/skills/away",
+    message: `case ${away.c.id}: the profile's skill away is .claude/skills/away of acme/batch at ${COMMIT}, which holds .claude/skills/away as a symbolic link to ../../../outside/away, outside the repository, so no read of the repository gives the skill`,
+  });
+  const gone = await failure("gone");
+  expect(gone.failed).toBeInstanceOf(UnreadableDirectory);
+  expect(gone.failed).toMatchObject({
+    repo: "acme/batch",
+    commit: COMMIT,
+    dir: "skills/gone",
+    message: `case ${gone.c.id}: the profile's skill gone is .claude/skills/gone of acme/batch at ${COMMIT}, which holds it as a symbolic link (.claude/skills/gone -> ../../skills/gone) to no directory of the repository: acme/batch at ${COMMIT} holds no file under skills/gone`,
+  });
 }, 120_000);
 
 /** A made-up dispatch-first, which the Envoy plugin reads as it loads. */

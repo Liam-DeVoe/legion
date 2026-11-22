@@ -428,6 +428,10 @@ class World {
   /** `<repository>:<commit>:<path>` → the blob id of each file of a repository's whole tree, which
    *  a GraphQL `object(expression: "<commit>:<path>")` field answers by. */
   readonly filesAt = new Map<string, string>();
+  /** `<repository> <path>`: the commits that changed the file, newest first, each with its date
+   *  and its text there (`""` where the commit holds no such file), which a GraphQL
+   *  `history(path:)` read answers from; a file none names has no history. */
+  readonly histories = new Map<string, { oid: string; date: string; text: string }[]>();
 
   readonly now = () => this.clock;
   readonly sleep = async (ms: number) => {
@@ -499,6 +503,37 @@ class World {
         !query.includes("repository(owner: $owner, name: $name)")
       ) {
         return fail(`gh: Could not resolve to a Repository with the name '${query}'.`);
+      }
+      if (query.includes("history(path:")) {
+        // A file's history as GitHub answers it: the commits since one time, newest first, and
+        // the last one at or before another, each with the file there.
+        const literal = (field: string) =>
+          JSON.parse(new RegExp(`${field}: ("(?:[^"\\\\]|\\\\.)*")`).exec(query)?.[1] ?? '""');
+        const commits = this.histories.get(`${owner}/${name} ${literal("path")}`) ?? [];
+        const node = (commit: { oid: string; date: string; text: string }) => ({
+          oid: commit.oid,
+          committedDate: commit.date,
+          file: commit.text === "" ? null : { object: { text: commit.text, isTruncated: false } },
+        });
+        const since = commits.filter((commit) => commit.date >= literal("since"));
+        return ok({
+          data: {
+            repository: {
+              object: {
+                inWindow: {
+                  pageInfo: { hasNextPage: since.length > 100 },
+                  nodes: since.slice(0, 100).map(node),
+                },
+                before: {
+                  nodes: commits
+                    .filter((commit) => commit.date <= literal("until"))
+                    .slice(0, 1)
+                    .map(node),
+                },
+              },
+            },
+          },
+        });
       }
       if (query.includes("... on Tree")) {
         // A tree batch: each field one subtree by its id, one level of entries, the mode a number.
@@ -1654,6 +1689,176 @@ describe("repositories an installer pins", () => {
     );
     // The helper's own body names no clone, so the library is no installer of its kind.
     expect(manifests.some((row) => row.path === "installers/lib.sh")).toBe(false);
+  }, 60_000);
+});
+
+// A pool in a clone made by hand, which no installer records, that the configuration's `clones`
+// states: acme/dots, in the shape of a dotfiles repository whose skills-sources.json lists the
+// pool .private/dots (a clone of acme/private at .private holds it, as such a file's comment
+// says), and acme/private, the made-up repository cloned there, whose dots/skills holds the
+// pool's skill.
+describe("a pool clone made by hand that the configuration's clones states", () => {
+  const DOTS_FILES: MadeFile[] = [
+    {
+      path: "skills-sources.json",
+      text: `${JSON.stringify({ sources: [{ root: ".private/dots" }] }, null, 2)}\n`,
+    },
+    { path: "omp/extensions/skill-pools.ts", text: EXTENSION_TEXT },
+    { path: "installers/omp.sh", text: OMP_INSTALLER_TEXT },
+  ];
+  const PRIVATE_FILES: MadeFile[] = [
+    {
+      path: "dots/skills/private-one/SKILL.md",
+      text: skill("name: private-one\ndescription: Use when the made-up private step is due."),
+    },
+  ];
+  const clonedWorld = () => {
+    const w = world();
+    const listing = (name: string) => ({
+      nameWithOwner: name,
+      isFork: false,
+      isArchived: false,
+      defaultBranchRef: { name: "main" },
+      parent: null,
+    });
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      listing("acme/dots"),
+      listing("acme/private"),
+    ]);
+    w.addFiles(DOTS_FILES);
+    w.addRepository("acme/dots", treeOf("acme/dots", DOTS_FILES));
+    w.addFiles(PRIVATE_FILES);
+    w.addRepository("acme/private", treeOf("acme/private", PRIVATE_FILES));
+    w.repositoryInfo.set("acme/private", {
+      full_name: "acme/private",
+      default_branch: "main",
+      fork: false,
+      archived: false,
+      parent: null,
+    });
+    return w;
+  };
+  const clone = { repo: "acme/dots", dir: ".private", clone: "acme/private" };
+  const targets = [...CONFIG.targets, "acme/dots", "acme/private"];
+  const only = ["--only", "acme/dots", "--max-search-calls", "0"];
+
+  // Catches: a pool in a clone no installer makes left as a note, so the profile and the prefix
+  // table miss its skills.
+  test("its pool is a unit of the cloned repository's skills at its default branch, read as a pin of no ref where --only leaves it out, each row naming the key", async () => {
+    const r = await run(clonedWorld(), only, { targets, clones: [clone] });
+    expect(r.code).toBe(0);
+    expect(r.table("repositories.tsv").find((row) => row.repository === "acme/private")).toEqual(
+      expect.objectContaining({ branch: "main", commit: sha1("commit acme/private"), error: "" })
+    );
+    expect(installerRows(r, "acme/dots", "skills-sources.json")).toEqual([
+      "installs pool:.private/dots private-one acme/private dots/skills/private-one",
+    ]);
+    expect(r.table("installers.tsv").find((row) => row.unit === "pool:.private/dots")?.note).toBe(
+      "read by omp/extensions/skill-pools.ts; clones[0] of the configuration says .private is a clone of acme/private made by hand, which no installer records (this list reads its default branch)"
+    );
+    expect(r.text("prefix-table.tsv")).toContain(
+      "**/.private/dots/skills/private-one/\tacme/private\tdots/skills/private-one\tprivate-one\tpool:.private/dots (acme/dots:skills-sources.json)"
+    );
+  }, 60_000);
+
+  // Catches: a clone stated for a directory that holds no pool, or of a repository the copy
+  // lister does not read, taken in silence, so it maps nothing and no one learns why.
+  test("a clone whose directory holds no pool of its repository as read, or of a repository the owners do not hold, is refused by name", async () => {
+    const misplaced = await run(clonedWorld(), only, {
+      targets,
+      clones: [clone, { ...clone, dir: ".secret" }],
+    });
+    expect(misplaced.code).toBe(2);
+    expect(misplaced.errors.join("\n")).toContain(
+      `is refused:\n  clones[1].dir: acme/dots at ${sha1("commit acme/dots")} holds no skill pool in .secret (the pools of its skills-sources.json files: .private/dots)`
+    );
+    expect(existsSync(misplaced.out)).toBe(false);
+    const unheld = await run(clonedWorld(), only, {
+      targets,
+      clones: [{ ...clone, clone: "other/private" }],
+    });
+    expect(unheld.code).toBe(2);
+    expect(unheld.errors.join("\n")).toContain(
+      "clones[0].clone: other/private is not a repository of an owner in owners"
+    );
+  }, 60_000);
+});
+
+// The prepack script's earlier versions in the count's window: F6's cybermonklabs/legion, whose
+// script at the commit read (F6-contents-pi-plugin-prepack.json) stages the two thermonuclear
+// skills for @acme/pi-envoy, and a made-up older version, in effect at the window's start, that
+// staged thermonuclear-deep-review and ce-simplify-code (a skill the tree read no longer holds) for
+// @acme/pi-legion instead, as cybermonklabs/legion's did before 4c2dc60c.
+describe("the paths a prepack script staged a skill at during the window and stages no longer", () => {
+  const SCRIPT = "scripts/pi-plugin-prepack.sh";
+  const OLD = sha1("an older prepack script");
+  const MOVED = sha1("the commit that moved the thermonuclear skills");
+  const current = () => {
+    const contents = fixtureJson("F6-contents-pi-plugin-prepack.json") as { content: string };
+    return Buffer.from(contents.content.replace(/\n/g, ""), "base64").toString("utf8");
+  };
+  const older = (text: string) => {
+    const changed = text
+      .replace(
+        "plain-words thermonuclear-code-quality thermonuclear-deep-review\n",
+        "plain-words\n"
+      )
+      .replace(
+        "legion-worker\n      simplify-settled-diff\n",
+        "legion-worker\n      ce-simplify-code thermonuclear-deep-review\n"
+      );
+    if (changed === text) throw new Error("the made-up older script is the fixture's own");
+    return changed;
+  };
+  const only = ["--only", "cybermonklabs/legion", "--max-search-calls", "0"];
+
+  // Catches: the 849 sessions of older worker images that read
+  // /opt/legion/pi-legion/dist/skills/thermonuclear-deep-review/ placed at no copy, since the
+  // prefix table held only the paths of the script at the commit read.
+  test("each is a prefix row of the package's unit mapped to the copy of its name, and a note names the commits that staged it there", async () => {
+    const w = world();
+    w.histories.set(`cybermonklabs/legion ${SCRIPT}`, [
+      { oid: MOVED, date: "2026-11-07T01:36:22Z", text: current() },
+      { oid: OLD, date: "2026-10-09T11:26:34Z", text: older(current()) },
+    ]);
+    const r = await run(w, only);
+    expect(r.code).toBe(0);
+    const via = "package:@acme/pi-legion (cybermonklabs/legion:packages/pi-legion/package.json)";
+    const rows = r
+      .table("prefix-table.tsv")
+      .filter(
+        (row) => row.name === "thermonuclear-deep-review" && row.prefix?.includes("pi-legion")
+      );
+    expect(rows).toEqual([
+      {
+        prefix: "**/node_modules/@acme/pi-legion/dist/skills/thermonuclear-deep-review/",
+        repository: "cybermonklabs/legion",
+        path: "skills/thermonuclear-deep-review",
+        name: "thermonuclear-deep-review",
+        via,
+      },
+      {
+        prefix: "/opt/legion/pi-legion/dist/skills/thermonuclear-deep-review/",
+        repository: "cybermonklabs/legion",
+        path: "skills/thermonuclear-deep-review",
+        name: "thermonuclear-deep-review",
+        via,
+      },
+    ]);
+    const notes = r.text("skill-copies.md");
+    expect(notes).toContain(
+      `  - staged thermonuclear-deep-review for @acme/pi-legion at dist/skills/thermonuclear-deep-review/ from ${OLD} (2026-10-09T11:26:34Z) until ${MOVED} (2026-11-07T01:36:22Z), and stages it there no longer; the prefix rows **/node_modules/@acme/pi-legion/dist/skills/thermonuclear-deep-review/, /opt/legion/pi-legion/dist/skills/thermonuclear-deep-review/ map it to cybermonklabs/legion skills/thermonuclear-deep-review\n`
+    );
+    expect(notes).toContain(
+      `  - staged ce-simplify-code for @acme/pi-legion at dist/skills/ce-simplify-code/ from ${OLD} (2026-10-09T11:26:34Z) until ${MOVED} (2026-11-07T01:36:22Z), and stages it there no longer; no prefix row maps that path: the tree read holds no SKILL.md at skills/ce-simplify-code\n`
+    );
+    expect(r.text("prefix-table.tsv")).not.toContain("ce-simplify-code");
+    // A run with no earlier version holds none of those rows.
+    const plain = await run(world(), only);
+    expect(plain.text("prefix-table.tsv")).not.toContain(
+      "/opt/legion/pi-legion/dist/skills/thermonuclear-deep-review/"
+    );
   }, 60_000);
 });
 

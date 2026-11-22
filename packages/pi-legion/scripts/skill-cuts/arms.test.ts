@@ -18,8 +18,10 @@ import {
   InjectionRefused,
   injectionFault,
   injectionFaults,
+  otherSkillRead,
   pathFile,
   pathFormFault,
+  type SkillCopy,
   skillFile,
   snapshotTag,
 } from "./arms";
@@ -1245,4 +1247,239 @@ test("pathFormFault names each form of a file the arms do not rebuild, as buildA
   expect(() => pathArm(pathCase, "new", mergeDir)).toThrow(
     `case c-path: the new arm cannot answer the read of ${COPY}/SKILL.md: ${pathFormFault("SKILL.md", merging)}, a form the arms do not rebuild`
   );
+});
+
+/** Beta's SKILL.md and its reference, as the cache holds the copy the capture installed. */
+const BETA_MD =
+  "---\nname: beta\ndescription: Use before any step of the made-up fixture project.\n---\n\n# Beta\n\nLoad alpha first.\n";
+const BETA_R = "# Beta reference\n\nOne line.\n";
+
+/** Beta's installed copy, a cache entry as context.ts's installedCopies names it. */
+function betaCopies(): SkillCopy[] {
+  const dir = skillDir("cache-beta", { "SKILL.md": BETA_MD, "references/r.md": BETA_R });
+  return [{ name: "beta", dir }];
+}
+
+/** F1's case whose session also read beta's SKILL.md (7, 8), which Oh My Pi showed at
+ *  /opt/plugin/skills/beta. */
+const betaCase: Case = {
+  ...f1Case,
+  id: "c-beta",
+  messages: [
+    ...messages.slice(0, 7),
+    readCall("read_beta", "skill://beta"),
+    {
+      role: "toolResult",
+      toolCallId: "read_beta",
+      toolName: "read",
+      content: [
+        { type: "text", text: `[Skill file: /opt/plugin/skills/beta/SKILL.md]\n${BETA_MD.trim()}` },
+      ],
+      isError: false,
+    },
+  ],
+};
+
+// Catches: a read of another skill answered from an arm's own text, at a path that differs
+// between arms, or a read of a skill the arm does not install answered other than Oh My Pi does.
+test("a skill:// read of another skill of the profile is answered from its installed copy, the same in every arm, at the directory the case's reads of it show; one of a skill the profile does not list gets Oh My Pi's unknown-skill text", () => {
+  const copies = betaCopies();
+  const answer = (dir: string, file: string, text: string) => ({
+    skill: "beta",
+    file,
+    by: "skill" as const,
+    from: "copy" as const,
+    text: `[Skill file: ${dir}/${file}]\n${text.replace(/\n$/, "")}`,
+    isError: false,
+  });
+  const beside = path.join(path.dirname(INSTALLED), "beta");
+  for (const name of ["old", "new", "none", "minus", "twin"] as const) {
+    const dirs = { old: oldDir, new: newDir };
+    const shown = buildArm(betaCase, name, dirs, path.join(scratch, `beta-${name}`));
+    expect(shown.skillDirs).toEqual({ beta: "/opt/plugin/skills/beta" });
+    expect(otherSkillRead(shown, copies, "skill://beta")).toEqual(
+      answer("/opt/plugin/skills/beta", "SKILL.md", BETA_MD)
+    );
+    // A case whose reads show beta at no directory: beside the case's skill's installed one.
+    expect(arm(name).skillDirs).toEqual({});
+    expect(otherSkillRead(arm(name), copies, "skill://beta/SKILL.md")).toEqual(
+      answer(beside, "SKILL.md", BETA_MD)
+    );
+  }
+  expect(otherSkillRead(arm("old"), copies, "skill://beta/references/r.md")).toEqual(
+    answer(beside, "references/r.md", BETA_R)
+  );
+  expect(otherSkillRead(arm("old"), copies, "skill://beta/references/gone.md")).toEqual({
+    ...answer(beside, "references/gone.md", ""),
+    text: `File not found: ${beside}/references/gone.md`,
+    isError: true,
+  });
+  // A skill the profile does not list: F1's own answer to skill://gamma.
+  expect(otherSkillRead(arm("old"), copies, "skill://gamma")).toEqual({
+    skill: "gamma",
+    file: "SKILL.md",
+    by: "skill",
+    from: "absent",
+    text: textOf(messages[6]),
+    isError: true,
+  });
+  expect(otherSkillRead(arm("none"), copies, "skill://gamma/references/x.md")).toEqual({
+    skill: "gamma",
+    file: "references/x.md",
+    by: "skill",
+    from: "absent",
+    text: "Unknown skill: gamma\nAvailable: beta",
+    isError: true,
+  });
+  // No answer for a read of the case's skill, one with a selector, one of a directory, another
+  // URL, or a path no rule names a skill by.
+  for (const target of [
+    "skill://alpha",
+    "skill://beta/SKILL.md:1-5",
+    "skill://beta/references",
+    "https://example.test/skills/beta/SKILL.md",
+    "/home/agent/notes/beta.md",
+  ]) {
+    expect(otherSkillRead(arm("old"), copies, target)).toBeUndefined();
+  }
+  // With no installed copy of beta, a read of it fails rather than be answered as not found.
+  expect(() => otherSkillRead(arm("old"), [], "skill://beta")).toThrow(
+    "the old arm's profile installs beta, and the replay holds no installed copy of it"
+  );
+});
+
+// Catches: a copy of the case's skill's source under another name answered from no arm, or from
+// one copy for every arm.
+test("a skill:// read of a copy of the case's skill's source under a namespace is answered from the arm's directory, and none answers it as Oh My Pi answers a skill it lacks", () => {
+  const twice: Case = {
+    ...f1Case,
+    id: "c-twice",
+    profile: {
+      ...f1Case.profile,
+      skills: [
+        ...f1Case.profile.skills,
+        {
+          repo: "acme/skills",
+          commit: "fedcba9876543210",
+          path: "skills/alpha",
+          name: "alpha",
+          namespace: "ns",
+        },
+      ],
+    },
+  };
+  const dirs = { old: oldDir, new: newDir };
+  const fresh = buildArm(twice, "new", dirs, path.join(scratch, "twice-new"));
+  expect(otherSkillRead(fresh, [], "skill://ns/alpha")).toEqual({
+    skill: "ns/alpha",
+    file: "SKILL.md",
+    by: "skill",
+    from: "arm",
+    text: `[Skill file: ${path.join(path.dirname(INSTALLED), "ns/alpha")}/SKILL.md]\n${newSkill.replace(/\n$/, "")}`,
+    isError: false,
+  });
+  // Oh My Pi names the URL's host when neither `ns/alpha` nor `ns` is a skill it has.
+  const none = buildArm(twice, "none", dirs, path.join(scratch, "twice-none"));
+  expect(otherSkillRead(none, [], "skill://ns/alpha")).toMatchObject({
+    skill: "ns",
+    from: "absent",
+    text: "Unknown skill: ns\nAvailable: beta",
+  });
+});
+
+// Catches: a whole read by path of another skill's file taken for no skill read, answered at a
+// path the session does not show, or answered where the copy may not be the file the session
+// would open.
+test("a whole read by path of another skill of the profile, by count.sql's rule, is answered from its copy in Oh My Pi's form at the path the session shows; a name two skills share, the case's skill's, and a file the copy lacks are not answered", () => {
+  const copies = betaCopies();
+  const numbered = (text: string) =>
+    text
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line, index) => `${index + 1}:${line}`)
+      .join("\n");
+  const skillMd = (shown: string) => `[${shown}#${snapshotTag(BETA_MD)}]\n${numbered(BETA_MD)}`;
+  const target = "/home/agent/src/acme-skills/skills/beta/SKILL.md";
+  const read = {
+    skill: "beta",
+    file: "SKILL.md",
+    by: "path",
+    from: "copy",
+    isError: false,
+  } as const;
+  const old = arm("old");
+  expect(old.pathRows).toBe("hashline");
+  for (const each of [old, arm("none")]) {
+    expect(otherSkillRead(each, copies, target)).toEqual({ ...read, text: skillMd(target) });
+  }
+  // A session that names its working directory and home shows a file under the first relative to
+  // it, and one under the second after `~`.
+  const placed: Arm = {
+    ...old,
+    pathCopy: {
+      dir: COPY,
+      cwd: "/home/agent/src/acme-skills",
+      home: "/home/agent",
+      shownDir: SHOWN,
+      rows: "hashline",
+    },
+  };
+  expect(otherSkillRead(placed, copies, target)?.text).toBe(skillMd("skills/beta/SKILL.md"));
+  expect(otherSkillRead(placed, copies, "./skills/beta/SKILL.md")?.text).toBe(
+    skillMd("skills/beta/SKILL.md")
+  );
+  expect(otherSkillRead(placed, copies, "~/plugins/beta/SKILL.md")?.text).toBe(
+    skillMd("~/plugins/beta/SKILL.md")
+  );
+  const reference = "/home/agent/plugins/skills/beta/references/r.md";
+  expect(otherSkillRead(placed, copies, reference)).toEqual({
+    ...read,
+    file: "references/r.md",
+    text: `[~/plugins/skills/beta/references/r.md#${snapshotTag(BETA_R)}]\n${numbered(BETA_R)}`,
+  });
+  // A session whose recorded tools leave out the edit tool shows the lines alone.
+  const noEdit: Case = {
+    ...f1Case,
+    id: "c-no-edit",
+    profile: { ...f1Case.profile, tools: ["read"] },
+  };
+  const plain = buildArm(
+    noEdit,
+    "old",
+    { old: oldDir, new: newDir },
+    path.join(scratch, "no-edit")
+  );
+  expect(plain.pathRows).toBe("plain");
+  expect(otherSkillRead(plain, copies, target)?.text).toBe(BETA_MD.replace(/\n$/, ""));
+
+  // No answer for a file the copy lacks, a file outside the rule, the case's skill, a selector, a
+  // directory, or a name two skills of the profile share.
+  for (const each of [
+    "/home/agent/src/acme-skills/skills/beta/references/gone.md",
+    "/home/agent/src/acme-skills/skills/beta/notes/n.md",
+    "/home/agent/src/acme-skills/skills/alpha/SKILL.md",
+    `${target}:1-5`,
+    "/home/agent/src/acme-skills/skills/beta/",
+  ]) {
+    expect(otherSkillRead(old, copies, each)).toBeUndefined();
+  }
+  const shared: Case = {
+    ...f1Case,
+    id: "c-shared",
+    profile: {
+      ...f1Case.profile,
+      skills: [
+        ...f1Case.profile.skills,
+        {
+          repo: "acme/other",
+          commit: "0123456789abcdef",
+          path: "beta",
+          name: "beta",
+          namespace: "ns",
+        },
+      ],
+    },
+  };
+  const both = buildArm(shared, "old", { old: oldDir, new: newDir }, path.join(scratch, "shared"));
+  expect(otherSkillRead(both, copies, target)).toBeUndefined();
 });

@@ -232,6 +232,7 @@ import { type RecordedRequest, startRecorder } from "./recorder";
 import { sendOrder } from "./replay";
 import {
   descriptionFault,
+  LISTING_MEASURE_ITEM,
   type ListingStanding,
   LOAD_RUNS,
   listingStanding,
@@ -483,16 +484,39 @@ const TasksSummary = z.looseObject({
     .optional(),
 });
 
+/** The listing measure's mark of the names a profile took from its recorded listing (build.ts's
+ *  ListingMeasure `fromRecorded`), read loosely as score.ts reads the measure: build.ts imports
+ *  this file, so this file does not import it. */
+const TakenRead = z.looseObject({ fromRecorded: z.array(z.string()).optional() });
+
+/** Whether `evidence`'s listing measure marks names its profile took from the recorded listing:
+ *  the measure cannot see a miss of those names. */
+function tookFromRecorded(evidence: readonly z.infer<typeof EvidenceItem>[] | undefined): boolean {
+  const item = evidence?.find((each) => each.item === LISTING_MEASURE_ITEM);
+  if (item === undefined) return false;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(item.source);
+  } catch {
+    return false;
+  }
+  return (TakenRead.safeParse(raw).data?.fromRecorded?.length ?? 0) > 0;
+}
+
 /** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`), as
  *  the tasks file's summary gives it: a session task's own profile's, a written task's context
- *  session's. With no summary beside the tasks file, each task is not measurable. Throws a refusal
- *  when the summary is not JSON or no build-tasks summary. */
-function taskListings(tasksFile: string, tasks: readonly Task[]): Map<string, ListingStanding> {
+ *  session's; and the tasks whose measure marks names their profile took from the recorded
+ *  listing (`tookFromRecorded`). With no summary beside the tasks file, each task is not
+ *  measurable. Throws a refusal when the summary is not JSON or no build-tasks summary. */
+function taskListings(
+  tasksFile: string,
+  tasks: readonly Task[]
+): { readonly standings: Map<string, ListingStanding>; readonly taken: Set<string> } {
   const file = `${tasksFile}.summary.json`;
   if (!existsSync(file)) {
     const why = `the tasks file has no build-tasks summary (${file}) to give its listing measure`;
     const standing: ListingStanding = { state: "not measurable", why };
-    return new Map(tasks.map((task) => [task.id, standing]));
+    return { standings: new Map(tasks.map((task) => [task.id, standing])), taken: new Set() };
   }
   let raw: unknown;
   try {
@@ -506,14 +530,12 @@ function taskListings(tasksFile: string, tasks: readonly Task[]): Map<string, Li
   }
   const profiles = summary.data.profiles;
   const noted = new Map((profiles?.tasks ?? []).map((note) => [note.task, note.evidence]));
-  return new Map(
-    tasks.map((task) => [
-      task.id,
-      listingStanding(
-        task.source === "written" ? profiles?.contextSession?.evidence : noted.get(task.id)
-      ),
-    ])
-  );
+  const evidenceOf = (task: Task) =>
+    task.source === "written" ? profiles?.contextSession?.evidence : noted.get(task.id);
+  return {
+    standings: new Map(tasks.map((task) => [task.id, listingStanding(evidenceOf(task))])),
+    taken: new Set(tasks.flatMap((task) => (tookFromRecorded(evidenceOf(task)) ? [task.id] : []))),
+  };
 }
 
 /** A profile file as a load test read it: its absolute path, the SHA-256 of its bytes, its
@@ -1940,7 +1962,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const injected = await injectedRefusal(profiled, o, own, name);
   if (injected !== undefined) throw new Refused(injected);
   // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
-  const listings = taskListings(o.tasksFile, tasks);
+  const { standings: listings, taken } = taskListings(o.tasksFile, tasks);
   const listingDrops = new Map(
     [...listings].flatMap(([id, standing]) =>
       standing.state === "dropped" ? [[id, standing.reason] as const] : []
@@ -1952,6 +1974,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     measured: standings.filter((standing) => standing.state === "measured").length,
     notMeasurable: standings.filter((standing) => standing.state === "not measurable").length,
     dropped: listingDrops.size,
+    // The tasks whose profile took names from their recorded listing (build.ts's fromRecorded):
+    // their measure cannot see a miss of those names.
+    fromRecorded: taken.size,
   };
   // Each task whose capture carries the Envoy plugin's block of the skill, by where the answer
   // that its session had Dispatch comes from (arms.ts's `dispatchOf`), counted beside the listing.
@@ -2146,7 +2171,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
   );
   test.say(
-    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds; ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded); ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {

@@ -18,8 +18,10 @@
  *   call. A Responses body goes with no header of the caller's: one given is refused by name.
  * - A 429 or a 5xx, a failed connection, a try past `timeoutMs` (its body read included; the try is
  *   ended) and a reply that does not read as a reply of the body's API are tried again, after the
- *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ...), up to GATEWAY_TRIES
- *   tries in all. Any other status, a 400 among them, throws at once.
+ *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ... at most 30 s), up to
+ *   GATEWAY_TRIES tries in all, whose waits add up to 91 s at least: more than the 60 s a
+ *   gateway's rate guard looks back over, so a refusal that names a 1 s `retry-after` but holds a
+ *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once.
  * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent. A
  *   reply says when its call got its place and was sent and how many calls were in flight then
  *   (`sentAt`, `inFlight`; `onSent` is told the same as the call goes), and carries the
@@ -51,8 +53,9 @@ import { z } from "zod";
 import { postMessages, readKeyFile } from "../skill-scenarios/messages-api";
 import type { Fetch, Sleep } from "../skill-scenarios/production-dispatch";
 
-/** How many times one call is tried before `send` fails. */
-export const GATEWAY_TRIES = 6;
+/** How many times one call is tried before `send` fails: the back-off's waits before the last of
+ *  them (1 + 2 + 4 + 8 + 16 + 30 + 30 s) pass the 60 s window a rate guard's refusal counts over. */
+export const GATEWAY_TRIES = 8;
 
 /** What a model charges, in USD per million tokens: prompt tokens not read from the cache, reply
  *  tokens (thinking and reasoning included), a cache write of the shorter lifetime and of the
