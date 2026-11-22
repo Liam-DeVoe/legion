@@ -503,7 +503,7 @@ export function SpecFilterBody({
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
           inside a tree would break the tree's own structure of rows. The view's own reads'
-          lines come first, and the names reads' line last, as the outline draws it. The stage
+          lines come first, and the names read's line last, as the outline draws it. The stage
           gives a focus left on nothing to a line's Retry where the view draws no row, and moves
           it on to the next line, the tab-stop row or the tree as a line that held it leaves
           (`slots/stage.tsx`). */}
