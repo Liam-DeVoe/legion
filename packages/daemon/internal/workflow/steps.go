@@ -397,15 +397,17 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return agent, row.EntryRaisedAt.UTC(), err
 }
 
-// startAgent is the agent a start of the step issue stands in at names: for accepting, the
-// architect that runs the owner's step now (ownerAgent), nobody for a merge GitHub has already
-// made, where no merger starts, and the agent of the step's place otherwise (placeToken), which is
-// ownerAgent's answer too for a step of the key owner.
+// startAgent is the agent a start of the step issue stands in at names: for an acceptance the owner
+// does (an issue with no plan rows, or a step acceptance:owner: RoleAt is the architect, the rule
+// of the owner's place, record.Issue.OwnersPlace), the architect that runs the owner's step now
+// (ownerAgent), nobody for a merge GitHub has already made, where no merger starts, and the agent
+// of the step's place otherwise (placeToken), which is ownerAgent's answer too for a step of the
+// key owner, and the fresh agent of acceptance for a step acceptance with no key.
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
-	switch at {
-	case phase.Accepting:
+	switch {
+	case at == phase.Accepting && issue.RoleAt(at) == claim.RoleArchitect:
 		return e.ownerAgent(ctx, tx, issue, at)
-	case phase.Merging:
+	case at == phase.Merging:
 		standing := issue
 		standing.Phase = at
 		merged, err := PhaseFinished(ctx, e.store, tx, standing)

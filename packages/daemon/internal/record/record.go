@@ -2727,6 +2727,18 @@ func OwnerClaim(issue Issue) (claim.Token, error) {
 	return token, nil
 }
 
+// OwnersPlace says whether the place where issue's task stands now is the owner's own to work: a
+// step of the key owner or the owner's retro, where the claim that works the place is the
+// architect (PlaceRole, the walk's Walk.PlaceRole), and, on an issue with no plan rows, accepting,
+// which today's line gives the architect. It is RoleAt of the phase the issue stands in, the rule a
+// move back reads of its requester (workflow's backwardRefusal), read for the architect: a step
+// another agent does is not the owner's, the fresh agent of acceptance's among them, and neither
+// is admitted, a held issue, the merge or an issue out of the workflow. sign_off is taken only
+// where it holds, and the architect's catch-up names exactly the issues where it holds.
+func (i Issue) OwnersPlace() bool {
+	return i.Hold == nil && i.Phase != phase.Admitted && i.RoleAt(i.Phase) == claim.RoleArchitect
+}
+
 // OwnerActsAs is the role whose App the owner's slot holds while the owner does a step of issue's
 // task, and false where the owner does none: the role of the step where the issue's task stands at
 // a step of the key owner (PlaceRole is the architect and StepRole names that step) and the issue

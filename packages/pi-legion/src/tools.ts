@@ -563,9 +563,10 @@ export function createLegionTool(deps: {
         "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
-        "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
-        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
-        "work: run each one to done, and sign off again. " +
+        "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one of an acceptance whose agent is not you, " +
+        "such as a step acceptance with no key, whose fresh agent ends it with its own verdict (SIGNOFF_NOT_THE_OWNERS); it also " +
+        "refuses it while an issue beneath it is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's " +
+        "head proves its children's merged work: run each one to done, and sign off again. " +
         "complete_step (issue, step, summary, and the verdict, return_to, plan_rating and plan_reason that step's completion would carry) " +
         "is your report of a step of your own issue's task whose key is owner, or of the task's retro where the retro is yours, once " +
         "Legion's owner-step notice gave it to you: step is its place in the task, 1 for the first step, 0 for the retro. It carries what " +

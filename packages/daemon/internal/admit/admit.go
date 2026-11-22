@@ -668,13 +668,13 @@ type phaseWorker struct {
 //
 // A candidate with no work where it stands is passed over, because both repairs are about a
 // worker that is owed a turn, and that candidate has none to start. The gate is unreachable on
-// this release: the role skip above it passes over every phase Issue.RoleAt names no worker
-// role for — the architect's admitted and accepting, and the empty role of held,
-// awaiting_person and done — and merging, the one holder record.AtWork used to answer false
-// for, is a worker's phase now, since its merger makes the merge itself. It is kept so that a
-// phase added later with a worker role of its own, in a state record.AtWork answers false for,
-// is sent nothing by either repair, and so record.AtWork stays the one statement of what work
-// is rather than a second list of phases here.
+// this release: the role skip above it passes over every place Issue.RoleAt names no worker role
+// for — the architect's admitted, each step the owner does, its acceptance among them, and the
+// empty role of held, awaiting_person and done — and merging and an accepting the fresh agent of
+// acceptance works, holders record.AtWork once answered false for, are a worker's phase now. It is
+// kept so that a phase added later with a worker role of its own, in a state record.AtWork answers
+// false for, is sent nothing by either repair, and so record.AtWork stays the one statement of
+// what work is rather than a second list of phases here.
 //
 // An issue whose key yields no claim token has no run to read, so it is passed over rather
 // than failing the whole fact, as the wait reconcile passes over such a root (workflow's
@@ -2910,11 +2910,12 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The per-issue tests of the shared selection (phaseWorkerOf) bound the phase workers it names,
 // and they are what keeps it from starting a worker the cap has not admitted:
-// workflow.OpenRoleOf answers no worker role for accepting, which is the own phase of the
-// architect that owns the issue, so the selection passes over it, and record.AtWork is false for
-// accepting. So the widening reaches the worker of a retro and of a merging, where the merger's
-// own work ends the phase, and no other phase worker. An issue at work that holds no row because
-// it waits in the line is not reached, which is the cap bypass this repair must never be.
+// workflow.OpenRoleOf answers no worker role for an acceptance the owner does, the own step of
+// the architect that owns the issue, so the selection passes over it, and record.AtWork is false
+// there. So the widening reaches the worker of a retro, of a merging, where the merger's own work
+// ends the phase, and of an accepting a fresh agent of acceptance works, and no other phase
+// worker. An issue at work that holds no row because it waits in the line is not reached, which is
+// the cap bypass this repair must never be.
 //
 // The root's own architect is the second role, and record.AtWork is not its reading: that rule
 // answers false for a root at admitted once its design gate has opened, where the architect is

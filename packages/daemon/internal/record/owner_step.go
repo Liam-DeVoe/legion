@@ -36,6 +36,25 @@ func OwnerStepNotRunning(issue Issue, task string, stored bool, state TaskState,
 		reported, key, PlaceWords(place), role, agent)
 }
 
+// SignOffNotTheOwners is the sentence of SIGNOFF_NOT_THE_OWNERS, the refusal of a sign-off of
+// issue in accepting where the acceptance its task stands at, place of task on steps, is not the
+// owner's own step (Issue.OwnersPlace): a step `acceptance` with no key, or with another key, whose
+// agent ends it by its own verdict. The workflow's signOff writes it.
+func SignOffNotTheOwners(issue Issue, task string, place TaskPlace, steps []PlanStep) string {
+	role, agent := placeWorker(task, place, steps)
+	return fmt.Sprintf("%s (%s) of task %s of %s is not a step of yours: its agent is %s, which ends it with its own verdict, and a sign-off takes only an acceptance whose agent is the owner. This sign-off changed nothing.",
+		PlaceWords(place), role, task, issue.Key, agent)
+}
+
+// OwnersPlaceWords is the owner's place of task, place on steps, as the architect's catch-up names
+// it: `step <n> (<role>) of task <task>`, or `the retro of task <task>`.
+func OwnersPlaceWords(task string, place TaskPlace, steps []PlanStep) string {
+	if role, _ := placeWorker(task, place, steps); place.Kind == PlaceStep && role != "" {
+		return fmt.Sprintf("%s (%s) of task %s", PlaceWords(place), role, task)
+	}
+	return fmt.Sprintf("%s of task %s", PlaceWords(place), task)
+}
+
 // placeWorker is the role and the agent of place on task's steps as a sentence names them: the
 // step's own role at a step and the retro agent's role at the retro (RetroAgentOf), with the
 // agent's name (PlanStep.AgentName), or `the owner` where the owner does it; "" for both at the

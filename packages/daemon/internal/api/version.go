@@ -3135,13 +3135,15 @@ package api
 // calls it. A reviewer of an issue with no pull request record reports its step on `POST
 // /legion/v1/handoff/complete` with the verdict `pass` or `fail` and a commit (`400
 // STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the owner's review step does on the new route,
-// since no review on GitHub decides either;
-// `VERDICT_ROLE_FORBIDDEN` now reads `only a tester, a role of the deployment or of the plan, the
-// role acceptance, a reviewer of an issue with no pull request, and the owner in a review step
-// report a verdict`. No answer a plugin parses changes shape: the request records of 227 hold the
-// new route's request, and no recorded request field leaves. A claim of the role `acceptance`, the
-// fresh agent of a step `acceptance` with no key, is a role outside Legion's six, which 221's band
-// already leaves out of the state served a caller below 221. The notice kind this entry adds
+// since no review on GitHub decides either; `VERDICT_ROLE_FORBIDDEN` now reads `only a tester, a
+// role of the deployment or of the plan, the role acceptance, a reviewer of an issue with no pull
+// request, and the owner in a review step report a verdict`. `POST /legion/v1/signoff` refuses a
+// sign-off of an acceptance that is not its owner's own step, a step `acceptance` with no key,
+// whose fresh agent ends it with its own verdict, `409 SIGNOFF_NOT_THE_OWNERS`. No answer a plugin
+// parses changes shape: the request records of 227 hold the new route's request, and no recorded
+// request field leaves. A claim of the role `acceptance`, the fresh agent of a step `acceptance`
+// with no key, is a role outside Legion's six, which 221's band already leaves out of the state
+// served a caller below 221. The notice kind this entry adds
 // (`owner-step`) rides inside a notice row's payload, as 189's does, and is no key or value of an
 // answer a plugin parses. From this entry the last number of answers.go's SupportedContracts is
 // `api.completeStepContract`; `deploymentRolesContract` stays 221 and `strandedTokenContract` 222.

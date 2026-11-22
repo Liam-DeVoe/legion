@@ -2509,7 +2509,12 @@ const parkRule = "only when a person asked for that move, or when the work is do
 // on the phases row of the role of the step before accepting, with the pull request. An issue with
 // no plan rows walks today's line, where that step is the review, so its retro is told the
 // review's handoff, as the approval told it before acceptance existed. Outside accepting it
-// changes nothing and says so.
+// changes nothing and says so, and so it does where the acceptance the task stands at is not the
+// owner's own step (record.Issue.OwnersPlace, the rule a move back reads of its requester): a step
+// `acceptance` with no key is the fresh agent of acceptance's, which ends it by its own verdict
+// (handoff), so a sign-off there would end another agent's step before its reading arrives
+// (SIGNOFF_NOT_THE_OWNERS). An issue with no plan rows, and a step `acceptance:owner`, are the
+// owner's.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
@@ -2527,6 +2532,13 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
+	}
+	if !issue.OwnersPlace() {
+		w, err := e.walk(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		return refused("SIGNOFF_NOT_THE_OWNERS", record.SignOffNotTheOwners(*issue, w.Task, w.Place, w.Steps)), nil
 	}
 	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err

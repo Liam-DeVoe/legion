@@ -127,7 +127,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
 func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, issue)
+	catchUp, awaiting, ownStep, err := treeCatchUp(ctx, tx, store, steps, issue)
 	if err != nil {
 		return err
 	}
@@ -153,6 +153,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	}
 	if len(awaiting) > 0 {
 		reason += fmt.Sprintf("; in accepting: %s (where its task holds acceptance:owner, the acceptance is yours and no worker gives it: read the evidence, then sign_off or request_backward_move; a step acceptance with no key is its fresh agent's)", strings.Join(awaiting, ", "))
+	}
+	if ownStep != "" {
+		reason += fmt.Sprintf("; at a step of yours, which no worker does: %s at %s (do it as its owner-step notice says, then report it with complete_step)", issue.Key, ownStep)
 	}
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
@@ -294,27 +297,30 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // child's own generation: a child registers no gate and no hand-over creates one, so its catch-up
 // states no step and is neither handed over nor carried.
 //
-// With it come the keys, in key order, of the listed issues waiting for this architect's
-// acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
-// that moved an issue there went to the architect that owned the issue then: a root's ends
-// undelivered while the root's architect claim has failed (the outbox's notice), and a child's
-// went past its failed architect to the architect above it (the owner walk). So an architect that
-// comes back learns of the wait from its catch-up alone; the reason names these keys so that the
-// catch-up, which a revived architect reads as its issues already running, says what is the
-// architect's own to do.
-func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, error) {
+// With it comes what of the listed issues is the architect's own to do, by the one rule of the
+// owner's place (record.Issue.OwnersPlace): no worker does it, and the one notice that told it —
+// the phase-finished that moved an issue into accepting, the owner-step of a step of the key owner
+// — went to an architect that may have failed or lost its session since, so an architect that
+// comes back learns of it from its catch-up alone, which a revived architect reads as its issues
+// already running. The keys, in key order, of the listed issues waiting in accepting for this
+// architect's acceptance (awaitingAcceptance): an issue with no plan rows, or a step
+// `acceptance:owner`, whose sign_off an architect above takes as well. And, where issue's own task
+// stands at another step of its owner's or at the owner's retro, which only issue's own architect
+// reports (complete_step), that place in words ("" for none). An issue whose place another agent
+// works, the fresh agent of acceptance's among them, is neither: that agent ends it.
+func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, string, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		handed, err := ArchitectCarried(ctx, tx, store, issue)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return record.CatchUp{}, nil, "", err
 		}
 		if handed != nil {
 			catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 		}
 		gates, err := store.GatesOf(ctx, tx, issue.Key)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return record.CatchUp{}, nil, "", err
 		}
 		required := classify.RequiredSteps(steps)
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
@@ -333,7 +339,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	members, err := store.TreeIssues(ctx, tx, issue.Tree)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, nil, "", err
 	}
 	owned := map[string]bool{issue.Key: true}
 	for _, under := range record.Beneath(issue, members) {
@@ -341,6 +347,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	catchUp.Issues = make([]record.CatchUpIssue, 0, len(owned))
 	var accepting []record.Issue
+	var ownStep string
 	for _, member := range members {
 		if !owned[member.Key] {
 			continue
@@ -353,15 +360,39 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			listed.Parent = *member.Parent
 		}
 		catchUp.Issues = append(catchUp.Issues, listed)
-		if member.Phase == phase.Accepting && record.InWorkflow(member) {
+		if !record.InWorkflow(member) || !member.OwnersPlace() {
+			continue
+		}
+		switch {
+		case member.Phase == phase.Accepting:
 			accepting = append(accepting, member)
+		case member.Key == issue.Key:
+			words, err := ownersPlaceWords(ctx, tx, store, member)
+			if err != nil {
+				return record.CatchUp{}, nil, "", err
+			}
+			ownStep = words
 		}
 	}
 	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, accepting)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, nil, "", err
 	}
-	return catchUp, awaiting, nil
+	return catchUp, awaiting, ownStep, nil
+}
+
+// ownersPlaceWords is the place issue's task stands at, which its owner works (OwnersPlace), as
+// the catch-up names it (record.OwnersPlaceWords), read from the plan rows of its run.
+func ownersPlaceWords(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (string, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return "", err
+	}
+	task, err := stored.Task()
+	if err != nil {
+		return "", fmt.Errorf("the owner's place of %s: %w", issue.Key, err)
+	}
+	return record.OwnersPlaceWords(task.Task, task.Place, stored.Steps[task.Task]), nil
 }
 
 // awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that

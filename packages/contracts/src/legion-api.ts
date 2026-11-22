@@ -2141,7 +2141,10 @@ export const LegionEscalateRequest = z.strictObject({
  * (`SIGNOFF_STALE_ENTRY`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). From contract 227 it is
+ * refused too where the acceptance the issue's task stands at is not its owner's own step, a step
+ * `acceptance` with no key, whose fresh agent ends it with its own verdict
+ * (`SIGNOFF_NOT_THE_OWNERS`). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

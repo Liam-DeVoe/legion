@@ -775,11 +775,14 @@ func later(a, b time.Time) time.Time {
 // Planning, implementing, testing, reviewing, step and retro each have a worker with work: step's
 // is the role of the deployment the plan names for the step the issue's task stands at.
 // Merging has one too, and keeps it: its merger's own merge is what ends the phase, so there is
-// no armed READY waiting on a person here any more. Admitted is work only for
-// a root whose design gate has never opened at every step the deployment gates, where its
+// no armed READY waiting on a person here any more. Accepting has one where its acceptance is no
+// step of the owner's (Issue.OwnersPlace): the fresh agent of acceptance of a step `acceptance`
+// with no key, which ends it with its own verdict; where the owner accepts, an issue with no plan
+// rows and a step `acceptance:owner`, accepting is a wait for the architect. Admitted is work only
+// for a root whose design gate has never opened at every step the deployment gates, where its
 // architect is writing the design; after that opening the root's own turns start no phase
-// worker, and its children do the work. Every other phase is a wait: a child at admitted,
-// accepting, held, awaiting_person, done.
+// worker, and its children do the work. Every other phase is a wait: a child at admitted, held,
+// awaiting_person, done.
 func AtWork(issue Issue, gate TreeGate) bool {
 	switch issue.Phase {
 	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Retro:
@@ -788,6 +791,8 @@ func AtWork(issue Issue, gate TreeGate) bool {
 		// The merger works this phase, so an issue in it is at work. Its own merge is what ends
 		// it: there is no armed READY to wait for here any more.
 		return true
+	case phase.Accepting:
+		return !issue.OwnersPlace()
 	case phase.Admitted:
 		return claim.IsTreeRoot(issue.Key, issue.Tree) && !gate.EverOpened()
 	default:
