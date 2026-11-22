@@ -22,7 +22,8 @@
 #                 newest merged pull request of `legion/<KEY>`. A release carries a commit when
 #                 `gh api repos/cybermonklabs/legion/compare/<commit>...<release>` answers `ahead`
 #                 or `identical`. Dispatch carries it when the deployment's production check of
-#                 Dispatch, run with that commit as production.sh runs it, ends on
+#                 Dispatch, run with that commit, ISSUE's page and the routes lib.sh's
+#                 production_routes names, as production.sh runs it, ends on
 #                 `all N assertions passed`. The daemon image and the worker image of each project
 #                 carry it when the image's release (below) does.
 #   2. healthz    The decisions step finished: /healthz, read with no credential as any caller
@@ -813,6 +814,12 @@ else
   fetched=1
   pass dispatch "$fetch" "$(wc -c <"$check_script") bytes"
 fi
+# The routes production.sh passes the check script, read from the one list both drivers share.
+route_args=()
+mapfile -t production_route_list < <(production_routes "$issue")
+for route in "${production_route_list[@]}"; do
+  route_args+=(--route "$route")
+done
 for key in "${live[@]}"; do
   commit="${commit_of[$key]:-}"
   what="the running Dispatch carries the merge commit of $key"
@@ -824,10 +831,10 @@ for key in "${live[@]}"; do
     fail dispatch "$what ($commit)" "the production check of Dispatch was not fetched, so it did not run"
     continue
   fi
-  # As production.sh runs it: this issue's page, and the two routes that driver names for it.
+  # As production.sh runs it: this issue's page, and the routes production_routes names.
   answer=0
   DISPATCH_TOKEN_FILE="$token_file" bash "$check_script" --commit "$commit" --page "/issues/$issue" \
-    --route "/api/v1/issues/$issue/decisions" --route /api/v1/inbox >"$work/check.out" 2>&1 ||
+    "${route_args[@]}" >"$work/check.out" 2>&1 ||
     answer=$?
   printf 'the production check of Dispatch with %s, the commit of %s, exited %d:\n' "$commit" "$key" "$answer"
   sed 's/^/    /' "$work/check.out" | logins

@@ -17,17 +17,25 @@
 # Inputs: DISPATCH_URL, the address of the running Dispatch; ISSUE, the key of the issue this check
 # judges; PRODUCTION_CHECK_PATH, the check script's GitHub contents path in the deployment
 # repository (`repos/<owner>/<repo>/contents/<path>`, no `?ref=`), which the driver reads at
-# `?ref=main`; and MERGE_SHA, the commit this tree merged as. NEXT_LOOK_SECONDS is optional, and
-# only the waiting verdict below reads it. There is no bearer input: the bearer is this pod's own,
-# which lib.sh's `read_bearer` takes from DISPATCH_TOKEN or DISPATCH_TOKEN_FILE and never prints.
-# The driver writes it to a file of this run's own under TMPDIR, readable by its owner alone, names
-# that file to the check script as DISPATCH_TOKEN_FILE, which the script requires for a route
-# read, and removes it in the cleanup trap. There is no PROJECT: the check script reads no project.
-# The driver sets no GH_TOKEN and no GITHUB_TOKEN, because a Legion role's `gh` refuses every
-# command run under either of them; `gh` is authenticated from GH_CONFIG_DIR instead.
+# `?ref=main`; and MERGE_SHA, the commit this tree merged as. The issue and the path are inputs
+# rather than literals, so that no file of this public repository names the deployment's
+# repository or a key of its project. NEXT_LOOK_SECONDS is optional, and only the waiting verdict
+# below reads it. There is no bearer input: the bearer is this pod's own, which lib.sh's
+# `read_bearer` takes from DISPATCH_TOKEN or DISPATCH_TOKEN_FILE and never prints. The driver
+# writes it to a file of this run's own under TMPDIR, readable by its owner alone, names that file
+# to the check script as DISPATCH_TOKEN_FILE, which the script requires for a route read, and
+# removes it in the cleanup trap. There is no PROJECT: the check script reads no project. The
+# driver sets no GH_TOKEN and no GITHUB_TOKEN, because a Legion role's `gh` refuses every command
+# run under either of them; `gh` is authenticated from GH_CONFIG_DIR instead.
 #
 # Every call it makes is a read: of GitHub, with the role's own credential, and of Dispatch. It
 # writes nothing to either.
+#
+# The record goes on a public pull request. So it names the check script by its variable,
+# PRODUCTION_CHECK_PATH, and never by its path, and it takes the deployment repository's owner and
+# name out of any error `gh` prints for that fetch. No line carries an email address: every line
+# that carries what GitHub, Dispatch or the check script answered passes through `logins`, which
+# reduces each address to its login, the part before `@`.
 #
 # Its exit statuses are the three verdicts a production check takes:
 #
@@ -41,14 +49,16 @@
 #
 # A missing or malformed input of the driver's own exits 2, as the drivers in this directory do.
 #
-# The commit comparison has a status of its own because nothing deploys Dispatch on a merge today:
-# waiting is the state production is in at every merge, so it is the answer this check gives most
-# often. Were it one status with a failure, a route this change needs and the running build does
-# not serve would read exactly like a build that has not rolled yet, and the record would not tell
-# a reader which it was. The route assertions therefore gate and the commit comparison does not.
-# Rebuilding the deploy pipeline, so that a merge reaches production with nobody deploying by hand,
-# is the work of the issue that builds Dispatch's deploy pipeline; this check records that gap
-# rather than closing it.
+# The commit comparison has a status of its own because nothing deploys Dispatch on a merge:
+# Dispatch's image pin moves by a pull request in the deployment repository. Waiting is therefore
+# the state production is in at every merge, and the answer this check gives most often. Were it
+# one status with a failure, a route this change needs and the running build does not serve would
+# read exactly like a build that has not rolled yet, and the record would not tell a reader which
+# it was. The route assertions therefore gate and the commit comparison does not. Building the
+# deploy pipeline, so that a merge reaches production with nobody deploying by hand, is the work
+# of another issue on the deployment's Dispatch, which this file does not name, since no file of
+# this public repository names a key of the deployment's project. This check does not wait for
+# that issue: it records the gap rather than closing it.
 #
 # The waiting verdict states the time of the next look itself, because the daemon refuses a
 # `pending` on any look but the last unless it carries one, and that refusal leaves the look open.
@@ -94,7 +104,23 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL ISSUE PRODUCTION_CHECK_PATH MERGE_SHA
-require_commands bash curl date gh grep jq
+require_commands bash curl date gh grep jq sed
+
+# refuse_input PROBLEM: an input of the wrong shape, which exits 2 as an unset one does.
+refuse_input() {
+  printf '%s\n' "$1" >&2
+  usage
+  exit 2
+}
+
+# The owner and the name of the deployment repository, taken out of every error `gh` prints for
+# the fetch of the check script, since such an error can quote the path it read.
+readonly path_rule='^repos/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/contents/[^?#[:space:]]+$'
+[[ "$PRODUCTION_CHECK_PATH" =~ $path_rule ]] ||
+  refuse_input "PRODUCTION_CHECK_PATH must be repos/<owner>/<repo>/contents/<path>, with no ?ref="
+readonly check_owner="${BASH_REMATCH[1]}"
+readonly check_repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+
 read_bearer
 # The check script reads DISPATCH_URL from its environment. read_bearer has unset both bearer
 # variables, so the only bearer that reaches the script is the file this driver names below.
@@ -103,13 +129,15 @@ export DISPATCH_URL
 
 # shellcheck disable=SC2153 # MERGE_SHA is the caller's input, checked by name above
 readonly merge_sha="$MERGE_SHA"
-# The issue this check judges (ISSUE), its page, and the two reads the record is about: the
-# decisions read behind the decisions view (b-r-decisions-view) and the inbox read (b-r-inbox).
-# Both paths are the ones packages/envoy/internal/dispatch/api/testdata/routes.txt lists.
+# The issue this check judges (ISSUE), its page, and the two reads the record is about: the tree
+# read behind the Decisions view (b-r-decisions-view) and the inbox read (b-r-inbox). lib.sh's
+# production_routes names them and says why those two; conversions-ran.sh reads the same list, so
+# it runs the check script as this driver does.
 # shellcheck disable=SC2153 # ISSUE is the caller's input, checked by name above
 readonly issue="$ISSUE"
 readonly page="/issues/$issue"
-readonly routes=("/api/v1/issues/$issue/decisions" "/api/v1/inbox")
+mapfile -t routes < <(production_routes "$issue")
+readonly routes
 
 next_look_seconds="${NEXT_LOOK_SECONDS:-21600}"
 [[ "$next_look_seconds" =~ ^[0-9]+$ ]] || {
@@ -144,8 +172,25 @@ printf '%s\n' "$token" >"$token_file"
 chmod 600 "$token_file"
 token=""
 
-pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
-fail() { printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2; }
+# An email address's domain, from its `@` on. `logins` takes it out of every line the record prints
+# that carries what GitHub, Dispatch or the check script answered, so the line names a person by
+# login alone, the part before `@`, on a pull request anyone may read.
+readonly address_domain='@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z0-9-]*'
+# logins: standard input, with each email address in it reduced to its login.
+logins() { sed -E "s/$address_domain//g"; }
+# scrub TEXT: TEXT without the deployment repository's owner and name, for an error that the fetch
+# of the check script printed and that may quote its path.
+scrub() {
+  local text="$1"
+  text="${text//"$check_repo"/the deployment repository}"
+  text="${text//"$check_owner"/<owner>}"
+  printf '%s' "$text"
+}
+
+# pass SECTION WHAT and fail SECTION WHAT OBSERVED: one assertion each, through logins, since a
+# line can quote what the check script printed.
+pass() { printf 'PASS: %s %s\n' "$1" "$2" | logins; }
+fail() { printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" | logins >&2; }
 # refuse SECTION WHAT OBSERVED: an assertion whose failure leaves nothing after it to judge. It is
 # the failed verdict, so it exits 1.
 refuse() {
@@ -162,15 +207,15 @@ printf 'routes: %s\n\n' "${routes[*]}"
 
 # The check script, into a file. `gh api … | bash` would hide a failed fetch, which is what the
 # `-s` test below and the second negative control are about. PRODUCTION_CHECK_PATH names no ref,
-# so the script is read from the deployment repository's main.
-readonly check_source="${PRODUCTION_CHECK_PATH}?ref=main"
-gh api "$check_source" -H 'Accept: application/vnd.github.raw' >"$check_script" 2>"$work/gh.err" ||
-  refuse fetch "the check script came from gh api $check_source" \
-    "gh api exited $?: $(head -c 600 "$work/gh.err")"
+# so the script is read from the deployment repository's main. The record names the script by its
+# variable and never by its path, which names the deployment repository.
+readonly fetch="the check script came from PRODUCTION_CHECK_PATH at ?ref=main"
+gh api "${PRODUCTION_CHECK_PATH}?ref=main" -H 'Accept: application/vnd.github.raw' \
+  >"$check_script" 2>"$work/gh.err" ||
+  refuse fetch "$fetch" "gh api exited $?: $(scrub "$(head -c 600 "$work/gh.err")")"
 [[ -s "$check_script" ]] ||
-  refuse fetch "the check script came from gh api $check_source" \
-    "gh api exited 0 and wrote an empty file, so there is no check to run"
-pass fetch "the check script came from gh api $check_source ($(wc -c <"$check_script") bytes)"
+  refuse fetch "$fetch" "gh api exited 0 and wrote an empty file, so there is no check to run"
+pass fetch "$fetch ($(wc -c <"$check_script") bytes)"
 
 script_args=(--commit "$merge_sha" --page "$page")
 for route in "${routes[@]}"; do
@@ -181,7 +226,7 @@ script_status=0
 DISPATCH_TOKEN_FILE="$token_file" bash "$check_script" "${script_args[@]}" >"$work/out" 2>&1 ||
   script_status=$?
 # The script's whole output is the record, so all of it is printed before anything is judged.
-cat "$work/out"
+logins <"$work/out"
 printf '\n'
 
 last_line="$(tail -n 1 "$work/out")"
@@ -287,8 +332,9 @@ elif ((commit_failed > 0)); then
   # The commit comparison alone failed: every route this change needs is served, and the build
   # serving them was built from some other commit.
   printf "the running build does not carry this tree's change.\n"
-  printf 'Nothing deploys Dispatch on a merge today; the issue that builds its deploy pipeline\n'
-  printf 'closes that gap.\n'
+  printf "Nothing deploys Dispatch on a merge: Dispatch's image pin moves by a pull request in the\n"
+  printf "deployment repository. Building the deploy pipeline is another issue's work, which this\n"
+  printf 'check does not wait for.\n'
   next_look="$(date -u -d "+$next_look_seconds seconds" +%Y-%m-%dT%H:%M:%SZ)" ||
     refuse waiting "state the time of the next look" \
       "date could not add $next_look_seconds seconds to now"
@@ -300,6 +346,6 @@ elif ((commit_failed > 0)); then
   printf 'verdict: waiting (exit 3), the commit comparison is the only failed assertion\n'
   exit 3
 else
-  printf 'verdict: passed (exit 0), %s\n' "$last_line"
+  printf 'verdict: passed (exit 0), %s\n' "$last_line" | logins
   exit 0
 fi

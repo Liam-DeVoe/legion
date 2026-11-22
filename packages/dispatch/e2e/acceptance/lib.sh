@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # The preamble the acceptance drivers share: the bearer each run reads, the directory it works in,
-# the lines it prints for a check and the CLI it runs. Sourced, never run. Each function that
-# refuses prints why on stderr and exits the calling script with 2; one that names its usage calls
-# the caller's own `usage`.
+# the lines it prints for a check, the CLI it runs and the routes the production check of Dispatch
+# asks for. Sourced, never run. Each function that refuses prints why on stderr and exits the
+# calling script with 2; one that names its usage calls the caller's own `usage`.
 #
 # The functions below read what the run sets: `token` (read_bearer), `work` (work_dir), and
 # `bun_bin`, `saved_path`, `saved_tmpdir` and the `home` and `state` directories under $work
@@ -152,3 +152,16 @@ run() {
   shift 2
   cli "$@" >"$work/out" 2>&1 || fail "$section" "$what" "dispatch $1 exited $?: $(<"$work/out")"
 }
+
+# production_routes KEY: the routes the production check of Dispatch asks the running build for,
+# for the issue KEY, one a line. production.sh passes them to the check script, and
+# conversions-ran.sh runs that script as production.sh does, so both read them here and the two
+# runs cannot ask for different routes. The first is the tree read, whose `?view=decisions`
+# answers the Decisions view (b-r-decisions-view). The check script takes a route as a path
+# alone, with no query, and asks whether the running build serves it, so the tree read is named
+# without its view. The second is GET /api/v1/me/inbox, the inbox read (b-r-inbox). Both are among
+# the routes that packages/envoy/internal/dispatch/api/testdata/routes.txt lists at the head the
+# judged issue merges. The decisions read (/api/v1/issues/<key>/decisions) and /api/v1/inbox are
+# not named: that issue's pull request deletes both, so naming either would fail the check on a
+# correct build.
+production_routes() { printf '%s\n' "/api/v1/issues/$1/tree" /api/v1/me/inbox; }
