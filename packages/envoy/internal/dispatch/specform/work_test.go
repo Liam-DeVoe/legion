@@ -149,7 +149,8 @@ func workRows(race bool) []workRow {
 // finding, and the work grows with the square of the text. Each n was found in the same way, on
 // the machine of 288 cores at a load average of 750 to 1,340: with the charge taken out, each row
 // first passed the bound at the least n whose windows cputest reads (8: 65.9 and 68.4 times), so
-// its n is 16, where the smaller window with the charge in place lasts 123 ms and 150 ms.
+// its n is 16, where the smaller window with the charge in place lasts 123 ms and 150 ms. At 16,
+// with the charge taken out, each row failed in 5 of 5 runs, 102.9 and 98.6 times or more.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
