@@ -292,6 +292,20 @@ test(
   rowLimit("short")
 );
 
+// With no `--output`, Playwright writes its record under the config's own output directory,
+// `e2e/test-results` (e2e/playwright.config.ts's `outputDir` is read from the config's directory),
+// which is where the script must look: a record looked for anywhere else fails every run that
+// passed, as CI's normal-order visual step runs.
+test(
+  "a run that passed with Playwright's own output directory passes",
+  async () => {
+    const run = await visualRun(0, undefined, [], { record: "e2e/test-results/.last-run.json" });
+    expect(run.stderr).not.toContain("without writing");
+    expect(run.code).toBe(0);
+  },
+  rowLimit("short")
+);
+
 // Playwright writes its run record (`.last-run.json`, in the first project's output directory)
 // only once it has run, so a zero exit that left none compared nothing: a container whose
 // command ended before Playwright started passed the whole review that way.
