@@ -19,7 +19,9 @@ import (
 // as a JetStream member leaves a request unanswered while its leader changes. Everything else
 // both sides send is relayed untouched, so the connection is a real one on a real server and every
 // other request is answered as it always is. The sends a test's setup makes are counted apart from
-// the sends of the call it is about (Arm).
+// the sends of the call it is about (Arm). HoldNext holds one send instead of dropping it, and
+// relays it once the test releases it: a request answered only after what the test does while it
+// waits.
 //
 // Drop cuts every link the relay holds, as a pod's TCP connection dies under it: the client reads
 // EOF and reconnects through the relay, which accepts the new link as it accepted the first. A
@@ -44,6 +46,12 @@ type UnansweredRelay struct {
 	// behind on every later link: after a later drop, the PONG that takes pongs past pingsAtDrop
 	// answers a later PING. The answer comes late then, never early.
 	pings, pongs, pingsAtDrop int
+	// release, when not nil, holds the next send of the subject until it is closed (HoldNext),
+	// under mu.
+	release <-chan struct{}
+	// writes orders what the relay writes to the server: a held send is written from a goroutine
+	// of its own once released, beside the lines relayed after it.
+	writes sync.Mutex
 }
 
 // StartUnansweredRelayOn relays to the NATS server at target, a client URL such as URL returns, on
@@ -103,26 +111,51 @@ func (r *UnansweredRelay) Sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped. A send of another subject
-// is not recorded and never dropped. A send of subject is passed while passes are left, spending
-// one, and otherwise dropped while drops are left, spending one.
-func (r *UnansweredRelay) send(subject string) bool {
+// HoldNext has the relay hold the next send of its subject, relaying every line after it, and
+// write the held send to the server once release is closed, counting the sends from now: a request
+// that is answered, but only once the test has done what it does while the request waits.
+func (r *UnansweredRelay) HoldNext(release <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = 0
+	r.drops = 0
+	r.sends = 0
+	r.release = release
+}
+
+// send records one send of subject and reports whether it is dropped, and the release a held send
+// waits for (HoldNext), nil for a send relayed now. A send of another subject is not recorded,
+// never dropped and never held. A send of subject is passed while passes are left, spending one,
+// dropped while drops are left, spending one, and otherwise held when HoldNext asked for it.
+func (r *UnansweredRelay) send(subject string) (dropped bool, release <-chan struct{}) {
 	if subject != r.subject {
-		return false
+		return false, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
 	if r.pass > 0 {
 		r.pass--
-		return false
+		return false, nil
 	}
 	if r.drops > 0 {
 		r.drops--
 		r.pingsAtDrop = r.pings
-		return true
+		return true, nil
 	}
-	return false
+	release, r.release = r.release, nil
+	return false, release
+}
+
+// write relays line and payload, which may be empty, to server, under writes.
+func (r *UnansweredRelay) write(server net.Conn, line string, payload []byte) error {
+	r.writes.Lock()
+	defer r.writes.Unlock()
+	if _, err := io.WriteString(server, line); err != nil {
+		return err
+	}
+	_, err := server.Write(payload)
+	return err
 }
 
 // FlushedSinceDrop reports whether pongs has passed pingsAtDrop: whether the server has answered,
@@ -171,9 +204,9 @@ func (r *UnansweredRelay) serve(target string) {
 }
 
 // filter relays what the client sends to the server, a protocol message at a time, leaving out the
-// publishes the relay drops. A client sends only CONNECT, SUB, UNSUB, PING, PONG and publishes, so
-// every line that is not a publish is passed on as it is, and a publish is passed on with the
-// payload its header counts.
+// publishes the relay drops and writing a held one once it is released. A client sends only
+// CONNECT, SUB, UNSUB, PING, PONG and publishes, so every line that is not a publish is passed on
+// as it is, and a publish is passed on with the payload its header counts.
 func (r *UnansweredRelay) filter(server, client net.Conn) {
 	defer func() {
 		_ = client.Close()
@@ -190,7 +223,7 @@ func (r *UnansweredRelay) filter(server, client net.Conn) {
 		// each followed by that many bytes and a CRLF. A line with fewer than three fields is
 		// neither, whatever its first word says.
 		if len(fields) < 3 || (!strings.EqualFold(fields[0], "PUB") && !strings.EqualFold(fields[0], "HPUB")) {
-			if _, err := io.WriteString(server, line); err != nil {
+			if err := r.write(server, line, nil); err != nil {
 				return
 			}
 			if strings.EqualFold(strings.TrimSpace(line), "PING") {
@@ -208,13 +241,18 @@ func (r *UnansweredRelay) filter(server, client net.Conn) {
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return
 		}
-		if r.send(fields[1]) {
+		dropped, release := r.send(fields[1])
+		if dropped {
 			continue
 		}
-		if _, err := io.WriteString(server, line); err != nil {
-			return
+		if release != nil {
+			go func() {
+				<-release
+				_ = r.write(server, line, payload)
+			}()
+			continue
 		}
-		if _, err := server.Write(payload); err != nil {
+		if err := r.write(server, line, payload); err != nil {
 			return
 		}
 	}

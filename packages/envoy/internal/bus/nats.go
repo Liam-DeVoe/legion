@@ -734,7 +734,7 @@ func (c *Client) install(nc *nats.Conn, ensure, dialedUp bool) error {
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, c.readsOwnRefusals(js)
+	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
 	c.markConnected(nc, dialedUp)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
@@ -916,7 +916,7 @@ func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nat
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap, at)
+	return c.ensureStream(ctx, c.readsOwnRefusals(conn, js), defaultsAnUnsetCap, at)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given
@@ -2002,7 +2002,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = c.readsOwnRefusals(js)
+		c.js = c.readsOwnRefusals(nc, js)
 		// connectWithContext returns only a connection that connected.
 		c.markConnected(nc, true)
 		c.markHooksDueLocked()
