@@ -1,12 +1,15 @@
 package legion
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes: R3 bounds the time a
@@ -87,6 +90,84 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 			if held >= reads+time.Minute {
 				t.Errorf("on the intake's clock the message held the ack floor for %s across %d take-overs, want less than the %s of its %d reads and a minute: INFRA's daemon served %d reads that timed out, %d more than the message's own; each take-over's read of the owed project ran ahead of the held message's redelivery",
 					held.Round(time.Second), len(test.takeOvers), reads, failures, daemon.served()-1, daemon.served()-1-failures)
+			}
+		})
+	}
+}
+
+// TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes: R3 bounds the
+// time a held message holds the durable's ack floor at about 11 minutes, 11 reads and 10
+// hand-backs, and a write of the project's own setting in the middle of the count does not start
+// the count again. After INFRA's good starting read its daemon stops answering, as in
+// TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes, and a gap's message holds the read.
+// After four hand-backs a person writes INFRA's setting again: the same daemon, or another one
+// that does not answer either. R3 has the write read the daemon it names at once (startingPoint,
+// ReadReasonStart), so the write adds that one read to the hold and no more. The message is
+// acknowledged after stateMaxHolds hand-backs in all; on the intake's clock it held the floor for
+// less than its 11 reads, the write's own read and a minute.
+//
+// At f77fd4c7 each write of the setting deletes the project's cursor (settingWritten), and the
+// count of the hold's hand-backs with it (read_holds), so the message's next redelivery holds the
+// read again from 1: the tester measured hand-backs 1 to 4 and then 1 to 10, 14 in all, and the
+// floor held 16m17s. Each further write of the setting starts the count again.
+func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// another names another daemon, which stalls as INFRA's does, in the setting written.
+		another bool
+	}{
+		{"the same daemon", false},
+		{"another daemon that does not answer", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const failures = stateMaxHolds + 1
+			const before = 4
+			const window = 200 * time.Millisecond
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.ResponseHeaderTimeout = window
+			shared := http.DefaultTransport
+			http.DefaultTransport = transport
+			t.Cleanup(func() {
+				http.DefaultTransport = shared
+				transport.CloseIdleConnections()
+			})
+			rig := newIntakeRig(t)
+			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+			rig.start()
+			rig.awaitStartingRead("INFRA")
+
+			stall := func() { rig.clock.advance(RequestTimeout) }
+			daemon.stalls(stall)
+			from := rig.clock.now()
+			rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+			holder := rig.lastStreamSeq()
+			rig.waitFor(time.Minute, func() bool { return len(rig.logRecords(heldLine)) >= before }, func() string {
+				return fmt.Sprintf("the message went back %d times, want %d before the setting's write", len(rig.logRecords(heldLine)), before)
+			})
+			named := daemon
+			if test.another {
+				named = newFakeDaemon(t, "")
+				named.stalls(stall)
+			}
+			if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+				t.Fatalf("write INFRA's setting again: %v", err)
+			}
+			rig.wake <- struct{}{}
+
+			var info *natsgo.ConsumerInfo
+			rig.waitFor(2*time.Minute, func() bool {
+				info = rig.consumerInfo()
+				return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
+			}, func() string {
+				return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d hand-backs: %+v", len(rig.logRecords(heldLine)), info)
+			})
+			held := rig.clock.now().Sub(from)
+			handBacks := rig.heldValues(holder, "handBack")
+			reads := time.Duration(failures+1) * RequestTimeout
+			if len(handBacks) > stateMaxHolds || held >= reads+time.Minute {
+				t.Errorf("the message went back %d times, counted %v, and held the ack floor for %s on the intake's clock across one write of the setting, want at most %d hand-backs and less than %s, its %d reads, the write's own read and a minute: the write deleted the cursor and its count of the hold's hand-backs",
+					len(handBacks), handBacks, held.Round(time.Second), stateMaxHolds, reads+time.Minute, failures)
 			}
 		})
 	}
