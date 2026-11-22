@@ -100,7 +100,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { useFootClearance, useFootInset } from "./hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -665,10 +665,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
-  // Where the document scrolls the page, outside the new issue page's frame, `<main>` is a
-  // scroller of the foot (`hooks/useFootInset.ts` says what that is): its bottom padding lets its
-  // last content scroll clear of the foot's floats.
-  useFootClearance(mainRef, !issueFrame && !fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
   // the foot's layers and the elements in each). The hook holds its height and its floor, so the
@@ -1064,15 +1060,19 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). */}
+            hover (R6). `data-document-scroll` states that the document scrolls main's content:
+            on a page that does not fill the screen, outside the new issue page's frame. The
+            foot's hook reads it as it finds the scroller under a float (`scrollerUnder` in
+            `hooks/useFootInset.ts`). */}
         <main
           className={
             issueFrame
               ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
-              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-[max(8rem,var(--foot-clearance,0px))] xl:pb-[max(1.5rem,var(--foot-clearance,0px))]"} ${mainLayoutClass}`
+              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...(!issueFrame && !fillsViewport ? { [DOCUMENT_SCROLL_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
