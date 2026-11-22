@@ -70,9 +70,11 @@ func TestAPausesStopOfARoleWhoseTurnsCopyIsStillBeingTakenWaitsForThatCopy(t *te
 // is taken, and is not answered held.
 //
 // The control is the hold taken out, as above: the daemon's and the operator's stops then run at
-// once, and those cases fail at the stop's answer. The control of the row past the due is the hold
-// asked of any copy still being taken, whatever its due: that row is then answered held, and fails
-// at the stop's answer.
+// once, and those cases fail at the stop's answer. The row past the due holds no control of its
+// own: with the hold asked of any copy still being taken, whatever its due, no wait for the copy
+// begins and suspend runs the held stop in the same decision, so the row ends the same either
+// way. That control fails TestASuspensionPastTheCopysDueOverAPausesHeldStopIsDecidedByItsAsker
+// instead (turncopy_past_due_test.go).
 func TestAStopThatReachesAnIdleClaimWaitsForItsTurnsCopyNoLongerThanEitherBound(t *testing.T) {
 	for _, tc := range []struct {
 		name string

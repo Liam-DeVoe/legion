@@ -157,3 +157,40 @@ func TestAPausesStopAtThePromptsAnswerPastTheCopysDueRunsInThatDecision(t *testi
 		t.Fatalf("the stop past the copy's due logged %q, want no line that the copy ran out of its budget", lines)
 	}
 }
+
+// Past the due of the copy its turn's end started, a suspension of an idle claim is decided at
+// once by its own asker (suspend, suspendNow), as where no copy is taken, even over a project
+// pause's stop still held for the prompt's answer: nothing holds it for the copy, so it neither
+// joins that stop nor logs a hold for the copy. A daemon's suspension would otherwise join the
+// pause's hold, which it does not take over (holdRequest), and the claim would end suspended by the
+// pause. An operator's takes any hold over, so it ends suspended by the operator either way; what
+// tells the two apart for it is the lines a hold for the copy writes, which must not be written.
+//
+// The control is suspend's gate back to any copy in flight, whatever its due: the suspension then
+// goes through the hold for the copy first. The daemon's row then fails at the source the claim is
+// suspended by, and the operator's at the hold's lines.
+func TestASuspensionPastTheCopysDueOverAPausesHeldStopIsDecidedByItsAsker(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ask  RequestSuspend
+	}{
+		{name: "ADaemonsSuspension", ask: RequestSuspend{By: SuspendedByDaemon, Reason: "the tree of LEGION-208 lingers"}},
+		{name: "AnOperatorsSuspension", ask: RequestSuspend{By: SuspendedByOperator, Reason: "an operator's drain"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := pauseHeldPastTheCopysDue(t, nil)
+			tc.ask.Claim = h.token
+
+			stopsOnceAt(t, h, tc.ask.By, "the suspension came", func() {
+				if err := h.handle(tc.ask); err != nil {
+					t.Fatalf("the suspension past the copy's due = %v, want it decided now", err)
+				}
+			})
+			for _, line := range []string{heldForTurnCopy.held, heldForTurnCopy.deadline, "takes the held suspension over"} {
+				if lines := h.logs.lines(line); len(lines) != 0 {
+					t.Fatalf("the suspension past the copy's due logged %q, want no hold of it for the copy", lines)
+				}
+			}
+		})
+	}
+}
