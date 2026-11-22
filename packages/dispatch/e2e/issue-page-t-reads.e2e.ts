@@ -1,7 +1,5 @@
-import type { IssueTreeNode } from "../web/src/api/types";
-import { firstBlockWordsRaw, firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
-import { readingOf, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, openDetails, phase } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
@@ -220,27 +218,14 @@ test("each filter draws its view read's rows", async ({ browser }) => {
   }
 });
 
-/** The first line of decision node `node`, the words the quote that heads a statement's line opens
- *  with (`spec-decided-by.ts`'s `decisionOf`): the first line of the first block of its reading
- *  (`readingOf`, `firstBlockWordsRaw`), cut as the page cuts it (`firstLineOf`). A decision
- *  node's text is the decision's own words (`issue_tree_read.go`: `node.Text = decision.Text`),
- *  not its `:::decision{…}` line. Where the read sent no reading, or one whose first block holds
- *  no words, the heading the model reads off the decision (`Decision.heading`) stands in. */
-function decisionFirstLine(node: IssueTreeNode): string {
-  const reading = readingOf(node);
-  const words = reading === undefined ? "" : firstBlockWordsRaw(reading);
-  return firstLineOf(words.trim() === "" ? (node.decision?.heading ?? "") : words).line;
-}
-
 // c-views' decision lines, owed until the page draws the decisions from the tree read's nodes,
-// once decisions are nodes of the tree read on this branch's base (`partUGate`): each decision
-// whose `shaped` tie names a statement under Spec is named on that statement's line
-// (`[data-spec-because]` in its row), never a row of its own, as the page draws that line
-// (`spec-decided-by.ts`): the first decision by a quote of its first line, each other one after
-// "informed by" by its name cut short, and each a link to its block. So a decision is on the line
-// where the line quotes its first line or holds a link whose last path segment and fragment are
-// its `<slug>#b-<block id>`. A decision the model marks replaced (its node's `decision.replaced`)
-// draws no line at all (root R5), so the row counts none.
+// once decisions are nodes of the tree read on this branch's base (`partUGate`): each decision,
+// not replaced, whose `shaped` tie names a statement under Spec is named on that statement's line
+// (`[data-spec-because]` in its row), never a row of its own, and the page links each decision it
+// names there to its block (`spec-decided-by.ts`). So a decision is on the line where the line
+// holds a link that `linksTo` reads as the decision's row id (`idOf`, as the row has it). A
+// decision the model marks replaced (its node's `decision.replaced`) draws no line at all (root
+// R5), so the row counts none.
 // SLOW(>=2s): two seeded issues, each load waited out, and Spec pressed and read until it holds
 // still.
 test("each filter draws its view read's rows, and each decision that shaped a statement is a line on its row @owed", async ({
@@ -268,7 +253,7 @@ test("each filter draws its view read's rows, and each decision that shaped a st
         if (tuple.kind !== "shaped" || decision?.supertag !== "decision") return [];
         if (decision.decision?.replaced === true) return [];
         if (!statements.has(statement)) return [];
-        return [{ first: decisionFirstLine(decision), row: idOf(tuple.from.id), statement }];
+        return [{ row: idOf(tuple.from.id), statement }];
       });
       expect(
         lines.length,
@@ -276,27 +261,23 @@ test("each filter draws its view read's rows, and each decision that shaped a st
           "filter draws"
       ).toBeGreaterThan(0);
       const missing: string[] = [];
-      for (const { first, row, statement } of lines) {
+      for (const { row, statement } of lines) {
         // The Spec rows held still across two readings in `pressFilter` above, with the page
         // quiet, so one reading of a drawn row's line is the line that row settled on.
-        const [line] = await nodeRow(page, statement)
+        const [links] = await nodeRow(page, statement)
           .first()
           .locator("[data-spec-because]")
           .evaluateAll((found) =>
-            found.map((one) => ({
-              links: [...one.querySelectorAll("a[href]")].map(
-                (link) => link.getAttribute("href") ?? ""
-              ),
-              text: one.textContent ?? "",
-            }))
+            found.map((one) =>
+              [...one.querySelectorAll("a[href]")].map((link) => link.getAttribute("href") ?? "")
+            )
           );
-        const text = (line?.text ?? "").replace(/\s+/g, " ").trim();
-        const quoted = first !== "" && text.includes(first);
-        const linked = (line?.links ?? []).some((href) => linksTo(href, [row]));
-        if (!quoted && !linked) {
+        if (!(links ?? []).some((href) => linksTo(href, [row]))) {
           missing.push(
-            `${statement}'s line neither quotes "${first}" nor links to ${row}: ` +
-              (line === undefined ? "its row draws no line" : `it reads "${text}"`)
+            `${statement}'s line holds no link to ${row}: ` +
+              (links === undefined
+                ? "its row draws no line"
+                : `it links to ${links.length === 0 ? "nothing" : links.join(", ")}`)
           );
         }
       }
