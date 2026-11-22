@@ -202,8 +202,9 @@ func (s *jjStep) words(given []jjGiven, dry bool) []string {
 	return s.appendWords(make([]string, 0, len(s.push.args)), given, dry, 0, len(s.push.args))
 }
 
-// appendWords appends to words what words gives of the push's words from index from up to to,
-// and answers the slice: the dry run puts words of its own between such ranges (jjStep.dryRun).
+// appendWords appends to words what jjStep.words gives of the push's words at indexes from to
+// to-1, and answers the slice: the dry run puts words of its own between such ranges
+// (jjStep.dryRun).
 func (s *jjStep) appendWords(words []string, given []jjGiven, dry bool, from, to int) []string {
 	next := 0
 	for next < len(s.push.revisions) && s.push.revisions[next].index < from {

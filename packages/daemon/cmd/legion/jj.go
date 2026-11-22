@@ -151,8 +151,9 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	return execWrapped("legion jj", next, words, withVariable(env, wrappedJJStepped, jjStepped(words)), nil, stderr)
 }
 
-// jjDryRunFlags are the words at the end of the options of a dry run of the push, in front of a
-// first `--` (jjStep.dryRun): --dry-run, --ignore-working-copy and --color=never.
+// jjDryRunFlags are the dry run's own flags, after the push's options and in front of a first `--`
+// (jjStep.dryRun), followed there by jjDryRunQuiet where configEnd is that place: --dry-run,
+// --ignore-working-copy and --color=never.
 var jjDryRunFlags = []string{"--dry-run", "--ignore-working-copy", "--color=never"}
 
 // jjDryRunQuiet is the dry run's own configuration, `--config ui.quiet=false`, so that neither a

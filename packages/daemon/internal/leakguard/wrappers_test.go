@@ -379,8 +379,8 @@ func passingLegion(t *testing.T, path string) string {
 
 // The jj wrapper hands a line it reads as a `jj git push` to legion jj, which runs the step that
 // sets each commit's author and then the push: after its setup checks, it runs legion as `jj
-// --real <the real jj> -- <the line>`, the line being the one it runs the real jj with for any
-// other command. That line is the git wrapper's first layer
+// --real <the real jj> -- <the line>`, the line being the one it runs the real jj with for a
+// `jj gerrit upload`. That line is the git wrapper's first layer
 // (`--config=git.executable-path="<the git wrapper>"` and `--config-file=/dev/null`), then the
 // command line as jj expands it, global options in front of the command included, with the git
 // wrapper once more as its last layer, which goes right in front of the command where no
@@ -474,15 +474,16 @@ func TestTheJJWrapperHandsAPushToLegionJJ(t *testing.T) {
 	} {
 		args := slices.Concat(tc.options, tc.command)
 		t.Run("not to legion: "+strings.ReplaceAll(strings.Join(args, " "), repo, "<repo>"), func(t *testing.T) {
-			// The real jj is a stand-in that logs its arguments as logging does, but for the read of
-			// the git a push would use, as the wrapper makes it for a line with no repository or
-			// configuration option, which it hands to the real jj.
+			// The real jj is a stand-in that hands its arguments to logging, which logs them, but for
+			// the read of the git a push would use, as the wrapper makes it for a line with no
+			// repository or configuration option, which it hands to the real jj.
 			at := t.TempDir()
 			realLog := filepath.Join(at, "argv")
+			logged := logging(t, filepath.Join(at, "logged-jj"), realLog)
 			standIn := filepath.Join(at, "stand-in-jj")
 			body := "#!/bin/sh\n" +
 				"[ \"$*\" = '--ignore-working-copy config get git.executable-path' ] && exec '" + jj + "' \"$@\"\n" +
-				"printf '%s\\0' \"$@\" >> '" + realLog + "'\n"
+				"exec '" + logged + "' \"$@\"\n"
 			if err := os.WriteFile(standIn, []byte(body), 0o700); err != nil {
 				t.Fatal(err)
 			}
