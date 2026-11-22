@@ -54,6 +54,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// The control GET /v1/sessions below reports each session's roles, so it is refused the
 	// bus-unavailable 503 until the role claim view answers, whatever the bus is doing.
 	waitForRegistry(t, registry)
@@ -61,6 +62,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	// Before the Puts, not after them: a Put that lands after the watch fixed its initial
 	// snapshot and before the read that turns its marks on is unmarked, and the sweep that
 	// completes that read drops it, so the listing below would be short of a session the test
