@@ -1,16 +1,15 @@
 package main
 
 import (
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The tests in this file are more of the step's (jj_push_test.go): a push of a long history, with
-// the helpers that make a history above the seed (fastImport, history, mutableHistory) and push a
-// long one (pushLong, rolePushCountRewrites). The tests of jj_push_revision_test.go and
+// the helpers that make a history above the seed (fastImport, history, mutableHistory) and read a
+// long one's push (rolePushCountRewrites). A long push runs through push, whose limit is what is
+// left of the test binary's deadline (trailerRunLimit). The tests of jj_push_revision_test.go and
 // jj_push_bound_test.go use those helpers too, and no other file does. As jj_push_test.go does,
 // the file names nothing the step's change adds, so it compiles and runs at the base too.
 
@@ -90,24 +89,6 @@ func (f *rolePushFixture) checkHistory(author rolePushIdentity, stderr string) {
 	}
 }
 
-// rolePushLongLimit is how long a push of a long history may run (pushLong): jj's own metaedit of
-// more than 3,000 commits takes half a minute on an idle machine, which a busy one stretches past
-// trailerRunLimit's minute.
-const rolePushLongLimit = 10 * time.Minute
-
-// pushLong is push with rolePushLongLimit in place of trailerRunLimit (trailerRunWithin): the push
-// runs in a process group of its own, which the limit kills whole, and a push that cannot start,
-// or that runs past the limit, fails the test.
-func (f *rolePushFixture) pushLong(as rolePushIdentity, args ...string) (code int, stderr string) {
-	f.t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	code, _, stderr = trailerRunWithin(f.t, rolePushLongLimit, f.repo, f.env(f.path, as), strings.NewReader(""), sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
-	return code, stderr
-}
-
 // rolePushCountRewrites reads a push's standard error, stderr: how many of its lines are rewrites
 // (rolePushRewriteLine), and every other line, printed, which check reads.
 func rolePushCountRewrites(stderr string) (rewrites int, printed string) {
@@ -143,7 +124,7 @@ func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
 		f := newRolePushFixture(t, form, "")
 		f.mutableHistory(rolePushHistory)
 		divergent := f.divergence()
-		code, stderr := f.pushLong(rolePushImplementer, rolePushBookmark...)
+		code, _, stderr := f.push(rolePushImplementer, rolePushBookmark...)
 		rewrites, printed := rolePushCountRewrites(stderr)
 		f.check(rolePushWant{others: true}, rolePushBookmark, code, printed, divergent, 0)
 		f.checkHistory(rolePushImplementer, printed)

@@ -170,7 +170,7 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 			// jj alone runs no form of Legion's, so one twin stands for both forms.
 			twin := newRolePushFixture(t, rolePushPod, "")
 			args := setup(twin)
-			if code, _, stderr := trailerRunWithin(t, rolePushLongLimit, twin.repo, twin.env(twin.setupPath, rolePushImplementer), strings.NewReader(""), twin.real, args...); code != 0 {
+			if code, _, stderr := trailerRunInput(t, twin.repo, twin.env(twin.setupPath, rolePushImplementer), strings.NewReader(""), twin.real, args...); code != 0 {
 				t.Fatalf("jj alone exited %d:\n%s", code, stderr)
 			}
 			twin.checkIDsHistory(option, rolePushReviewer)
@@ -178,7 +178,7 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 				f := newRolePushFixture(t, form, rolePushRecords)
 				args := setup(f)
 				divergent := f.divergence()
-				code, stderr := f.pushLong(rolePushImplementer, args...)
+				code, _, stderr := f.push(rolePushImplementer, args...)
 				rewrites, printed := rolePushCountRewrites(stderr)
 				f.check(rolePushWant{others: true, ids: []rolePushIDs{{argument: args[3], commits: rolePushIDsHistory, words: 2, bound: rolePushRevisionBound}}}, args, code, printed, divergent, 0)
 				f.checkIDsHistory(option, rolePushImplementer)
@@ -569,7 +569,7 @@ func TestAMetaeditPastTheLimitOfACommandRunsInParts(t *testing.T) {
 		f.argMax = rolePushSize(f.env(f.path, impl)...) + rolePushPartsRoom
 		divergent := f.divergence()
 		args := []string{"git", "push", "-b", "legion/K-1"}
-		code, stderr := f.pushLong(impl, args...)
+		code, _, stderr := f.push(impl, args...)
 		rewrites, printed := rolePushCountRewrites(stderr)
 		f.check(rolePushWant{others: true}, args, code, printed, divergent, 0)
 		if rewrites != rolePushPartsHistory {
