@@ -94,7 +94,7 @@ func TestTheFormerHeadsInstallSeedsTheHeadsAResultWasRecordedAt(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate over the seeded database: %v", err)
 	}
-	rows, err := store.Pool.Query(ctx, `select repo || '#' || number || '@' || left(head_sha, 4) from pull_request_former_heads order by 1`)
+	rows, err := store.Pool.Query(ctx, `select `+formerHeadName+` || '@' || left(head_sha, 4) from pull_request_former_heads former order by 1`)
 	if err != nil {
 		t.Fatalf("read the former heads: %v", err)
 	}
@@ -194,14 +194,20 @@ func installResult(table string) string {
 		values ($1, $2, $3::uuid, 'k1', 1, 'sha', 'tester', $4, 'pass', '{"kind":"user","id":"alice"}')`
 }
 
+// formerHeadName is the name of a row of pull_request_former_heads, aliased former, in a test's
+// reading: the least name its pull request goes by, and its number.
+const formerHeadName = `(select min(alias.repo) || '#' || alias.number from pull_request_former_heads_aliases alias
+	where alias.pull = former.pull group by alias.number)`
+
 // formerHeadsAndOwed is each row of pull_request_former_heads as repo#number@first four of its
-// commit, with " unverified" where it is, and each issue holding a mark.
+// commit, its pull request named by the least name it goes by, with " unverified" where it is, and
+// each issue holding a mark.
 func formerHeadsAndOwed(t *testing.T, store *Store) (heads, owed []string) {
 	t.Helper()
 	ctx := context.Background()
 	rows, err := store.Pool.Query(ctx, `
-		select repo || '#' || number || '@' || left(head_sha, 4) || case when verified then '' else ' unverified' end
-		from pull_request_former_heads order by 1`)
+		select `+formerHeadName+` || '@' || left(head_sha, 4) || case when verified then '' else ' unverified' end
+		from pull_request_former_heads former order by 1`)
 	if err != nil {
 		t.Fatalf("read the former heads: %v", err)
 	}
@@ -723,7 +729,7 @@ func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T)
 			t.Errorf("found no former heads trigger on %s, so this test holds nothing there to the rule", table)
 		}
 	}
-	waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave)\s*\(`)
+	waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave|apply|resolve|join)\s*\(`)
 	inserts := regexp.MustCompile(`(?i)\binsert\s+into\s+([a-z_][a-z0-9_]*)`)
 	appended := map[string]bool{}
 	for _, f := range functions {

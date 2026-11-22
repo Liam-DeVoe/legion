@@ -17,12 +17,12 @@ import (
 )
 
 // seedInstallCandidates writes what the install leaves for #70 of the rig's repository: each of
-// shas as a candidate former head, unverified, and the issue marked owed.
+// shas as a candidate former head of its pull request, unverified, and the issue marked owed.
 func seedInstallCandidates(t *testing.T, rig *checkStatesRig, shas ...string) {
 	t.Helper()
 	if _, err := rig.database.Pool.Exec(context.Background(), `
-		insert into pull_request_former_heads (repo, number, head_sha, verified)
-		select $1, 70, sha, false from unnest($2::text[]) sha`, ciJobRepository, shas); err != nil {
+		insert into pull_request_former_heads (pull, head_sha, verified)
+		select pull_request_former_heads_resolve($1, 70), sha, false from unnest($2::text[]) sha`, ciJobRepository, shas); err != nil {
 		t.Fatalf("seed the install's candidates %v: %v", shas, err)
 	}
 	if _, err := rig.database.Pool.Exec(context.Background(), `select check_states_owe($1)`, rig.issue); err != nil {
@@ -41,8 +41,8 @@ func seedInstallCandidates(t *testing.T, rig *checkStatesRig, shas ...string) {
 func forgetCandidates(t *testing.T, rig *checkStatesRig) {
 	t.Helper()
 	if _, err := rig.database.Pool.Exec(context.Background(), `
-		with former as (delete from pull_request_former_heads where repo = $1 and number = 70),
-			moves as (delete from pull_request_former_heads_moves where pull_repo = pull_request_former_heads_key($1) and number = 70)
+		with former as (delete from pull_request_former_heads where pull = pull_request_former_heads_pull_of($1, 70)),
+			moves as (delete from pull_request_former_heads_moves where number = 70)
 		delete from pull_request_former_heads_pending where issue_key = $2`, ciJobRepository, rig.issue); err != nil {
 		t.Fatalf("delete #70's former heads and what was left for %s: %v", rig.issue, err)
 	}
@@ -58,7 +58,7 @@ func candidatesOf(t *testing.T, rig *checkStatesRig) map[string]bool {
 		t.Fatalf("drain %s: %v", rig.issue, err)
 	}
 	rows, err := rig.database.Pool.Query(context.Background(), `
-		select head_sha, verified from pull_request_former_heads where repo = $1 and number = 70`, ciJobRepository)
+		select head_sha, verified from pull_request_former_heads where pull = pull_request_former_heads_pull_of($1, 70)`, ciJobRepository)
 	if err != nil {
 		t.Fatalf("read the former heads of #70: %v", err)
 	}

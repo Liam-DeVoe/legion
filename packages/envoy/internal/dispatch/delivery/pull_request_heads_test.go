@@ -1327,10 +1327,11 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 }
 
 // The heads a pull request left while it was open under its repository's old name are heads of
-// the same pull request once its row is keyed by the canonical name: the re-key carries them, and
-// the old row's own head, to the canonical row, which is open, and the old name keeps none. The
-// check states settler keeps computing a pull request's former heads (pull_request_former_heads),
-// and a tester may have tested one of them.
+// the same pull request once its row is keyed by the canonical name: after the re-key the
+// canonical row reads them, and the old row's own head, and the old name reads the same one
+// history, since both names stand for one pull request. The check states settler keeps computing
+// a pull request's former heads (pull_request_former_heads), and a tester may have tested one of
+// them.
 func TestReKeyingAPullRequestCarriesTheHeadsItLeft(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -1367,8 +1368,8 @@ func TestReKeyingAPullRequestCarriesTheHeadsItLeft(t *testing.T) {
 	if got := formerHeads(gadgetsRepo); !slices.Equal(got, []string{left, oldHead}) {
 		t.Fatalf("#523 under %s left %v, want %v: the head it left and its head under the old name", gadgetsRepo, got, []string{left, oldHead})
 	}
-	if got := formerHeads(gadgetsOldRepo); len(got) != 0 {
-		t.Fatalf("the old name %s still keeps the former heads %v of #523", gadgetsOldRepo, got)
+	if got := formerHeads(gadgetsOldRepo); !slices.Equal(got, []string{left, oldHead}) {
+		t.Fatalf("the old name %s reads the former heads %v of #523, want the canonical name's: one pull request has one history", gadgetsOldRepo, got)
 	}
 }
 

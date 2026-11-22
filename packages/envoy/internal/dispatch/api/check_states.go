@@ -193,31 +193,34 @@ func (c *checkStatesSettler) owedIssues(ctx context.Context) ([]string, error) {
 // pull_request_heads appended (pull_request_former_heads_moves, migration 20261122071001), the
 // pull request of the oldest record first, each in a statement of its own that takes that pull
 // request's lock alone (pull_request_former_heads_fold), and answers whether it took a full batch.
-// A settle applies the records of the open pull requests of its own issue before it reads their
-// former heads (pull_request_former_heads_drain); this applies the rest, a pull request no issue
-// holds among them, whose records would otherwise grow with each of its writes.
+// A record names the row it was written under; the fold finds the pull request that name stands
+// for, under every name it goes by, so records written under two names of one pull request are
+// applied together. A settle applies the records of the open pull requests of its own issue
+// before it reads their former heads (pull_request_former_heads_drain); this applies the rest, a
+// pull request no issue holds among them, whose records would otherwise grow with each of its
+// writes.
 func (c *checkStatesSettler) foldLeftRecords(ctx context.Context) (bool, error) {
 	pool := c.server.deps.Store.Pool
 	rows, err := pool.Query(ctx, `
-		select pull_repo, number from pull_request_former_heads_moves
-		group by pull_repo, number order by min(seq) limit $1`, c.schedule.batch)
+		select repo, number from pull_request_former_heads_moves
+		group by repo, number order by min(seq) limit $1`, c.schedule.batch)
 	if err != nil {
 		return false, fmt.Errorf("read the pull requests whose records no settle applied: %w", err)
 	}
 	type pullRequest struct {
-		key    string
+		repo   string
 		number int
 	}
 	pulls, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pullRequest, error) {
 		var pull pullRequest
-		return pull, row.Scan(&pull.key, &pull.number)
+		return pull, row.Scan(&pull.repo, &pull.number)
 	})
 	if err != nil {
 		return false, fmt.Errorf("read the pull requests whose records no settle applied: %w", err)
 	}
 	for _, pull := range pulls {
-		if _, err := pool.Exec(ctx, `select pull_request_former_heads_fold($1, $2)`, pull.key, pull.number); err != nil {
-			return false, fmt.Errorf("apply the records of %s#%d: %w", pull.key, pull.number, err)
+		if _, err := pool.Exec(ctx, `select pull_request_former_heads_fold($1, $2)`, pull.repo, pull.number); err != nil {
+			return false, fmt.Errorf("apply the records of %s#%d: %w", pull.repo, pull.number, err)
 		}
 	}
 	return len(pulls) >= c.schedule.batch, nil
@@ -353,42 +356,65 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 	return marks, failures, nil
 }
 
+// formerHeadsHeld is the start of a statement over the open pull requests of an issue, given as
+// the arrays repos and numbers, the statement's placeholders of their rows' names and numbers:
+// held is each row with the identity of the pull request it stands for
+// (pull_request_former_heads_pull_of, migration 20261122071001), null where the settler has met
+// none of its names, and first is true on one row of each pull request, the row stored under its
+// canonical name where it has one. A pull request's history is the identity's, whichever of its
+// names its rows are stored under, so the settler reads it once, for that row.
+func formerHeadsHeld(repos, numbers string) string {
+	return `with held as (
+		select stored.repo, stored.number, stored.pull,
+			row_number() over (partition by stored.pull
+				order by lower(stored.repo) = lower(pull_request_canonical_repo(stored.repo)) desc, stored.repo, stored.number) = 1 as first
+		from (
+			select named.repo, named.number, pull_request_former_heads_pull_of(named.repo, named.number) as pull
+			from unnest(` + repos + `::text[], ` + numbers + `::integer[]) as named (repo, number)
+		) stored
+	)`
+}
+
+// openHeadsOf is the names and numbers of the rows of heads' open pull requests.
+func openHeadsOf(heads []delivery.AttributedHead) (repos []string, numbers []int) {
+	for _, head := range heads {
+		if head.Open {
+			repos, numbers = append(repos, head.Repo), append(numbers, head.Number)
+		}
+	}
+	return repos, numbers
+}
+
 // formerHeadsOf is each former head of an open pull request of issue, heads being the pull
 // requests delivery.HeadsAttributedTo answers: each head that pull request left while it was open
-// (pull_request_former_heads, which the drain writes from the records each write of
-// pull_request_heads appends in its own transaction), but its current head, and but a candidate
-// that no read of the pull request's commits has confirmed yet (verifyFormerHeads). Each former
-// head is the open pull request's row moved back to that commit: at a commit an open pull request
-// of its repository heads now, it names its pull request among that open head's
-// (checkStatesAtHeads), and else the computation reads it as it reads an open head
-// (formerHeadsApart, answerIssueChecks), and an event there names the open pull requests that
-// were at it. A closed or merged pull request keeps no former head, so publish deletes the rows of
-// a head no open pull request is or was at, as it deletes those of an open head whose pull request
-// closed.
+// (pull_request_former_heads, by the pull request's identity under every name it goes by, which
+// the drain writes from the records each write of pull_request_heads appends in its own
+// transaction), but its current head, and but a candidate that no read of the pull request's
+// commits has confirmed yet (verifyFormerHeads). Each former head is the open pull request's row
+// moved back to that commit, the row of its canonical name where both of its names are open at the
+// issue (formerHeadsHeld): at a commit an open pull request of its repository heads now, it names
+// its pull request among that open head's (checkStatesAtHeads), and else the computation reads it
+// as it reads an open head (formerHeadsApart, answerIssueChecks), and an event there names the
+// open pull requests that were at it. A closed or merged pull request keeps no former head, so
+// publish deletes the rows of a head no open pull request is or was at, as it deletes those of an
+// open head whose pull request closed.
 //
 // The head whose read of GitHub's check runs started longest ago comes first, a head no read
 // started at before any (check_states.ci_read_at, which publish moves for each former head whose
 // read started), and among those the head left last: the order deriveCIResults starts their reads
 // in, so each settle reads first the heads the settle before did not reach.
 func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []delivery.AttributedHead) ([]delivery.AttributedHead, error) {
-	var repos []string
-	var numbers []int
-	for _, head := range heads {
-		if head.Open {
-			repos, numbers = append(repos, head.Repo), append(numbers, head.Number)
-		}
-	}
+	repos, numbers := openHeadsOf(heads)
 	if len(repos) == 0 {
 		return nil, nil
 	}
-	rows, err := pool.Query(ctx, `
-		select former.repo, former.number, former.head_sha
-		from pull_request_former_heads former
-		join unnest($2::text[], $3::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
-		left join check_states published on published.issue_key = $1 and published.repo = former.repo
+	rows, err := pool.Query(ctx, formerHeadsHeld("$2", "$3")+`
+		select held.repo, held.number, former.head_sha
+		from held join pull_request_former_heads former on former.pull = held.pull
+		left join check_states published on published.issue_key = $1 and published.repo = held.repo
 			and published.head_sha = former.head_sha and published.check_block_id = ''
-		where former.verified
-		order by published.ci_read_at nulls first, former.left_at desc, former.repo, former.head_sha, former.number`,
+		where held.first and former.verified
+		order by published.ci_read_at nulls first, former.left_at desc, held.repo, former.head_sha, held.number`,
 		issue, repos, numbers)
 	if err != nil {
 		return nil, fmt.Errorf("read the former heads of %s: %w", issue, err)
@@ -443,44 +469,38 @@ const formerHeadsReadClaim = time.Minute
 //
 // The read is made once per pull request, whichever issue's settle makes it: an issue's lease
 // serializes the settles of one issue, and a pull request moves between issues. So a settle first
-// claims the pull request's read, keyed by its canonical name and number, which are the same
-// under every issue and every name (pull_request_former_heads_reads), and only then reads its
-// candidates again: a settle that held the claim before may have decided them since this settle
-// first read them. A claim another settle holds leaves the candidates to that settle: pending
-// answers true, and the settle keeps a mark due after the backoff with no failure counted, which
-// reads them again should that settle stop before it decides them. The statement that writes the
-// answer gives the claim back, and where the pull request now belongs to another issue than the
-// one settling and a candidate became a former head, marks that issue owed, so its settle
-// publishes there. A claim is taken over once formerHeadsReadClaim has passed, so a process that
-// stopped mid-read holds no pull request for long.
+// claims the pull request's read, keyed by its identity, which is the same under every issue and
+// every name (pull_request_former_heads_reads), and only then reads its candidates again: a
+// settle that held the claim before may have decided them since this settle first read them. A
+// claim another settle holds leaves the candidates to that settle: pending answers true, and the
+// settle keeps a mark due after the backoff with no failure counted, which reads them again should
+// that settle stop before it decides them. The statement that writes the answer gives the claim
+// back, and where the pull request now belongs to another issue than the one settling and a
+// candidate became a former head, marks that issue owed, so its settle publishes there. A claim is
+// taken over once formerHeadsReadClaim has passed, so a process that stopped mid-read holds no
+// pull request for long. The read goes by the name of the pull request's row formerHeadsHeld
+// picks, its canonical name where it has one, which is GitHub's route to it.
 func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (unverified, pending bool, err error) {
 	pool := c.server.deps.Store.Pool
-	var repos []string
-	var numbers []int
-	for _, head := range heads {
-		if head.Open {
-			repos, numbers = append(repos, head.Repo), append(numbers, head.Number)
-		}
-	}
+	repos, numbers := openHeadsOf(heads)
 	if len(repos) == 0 {
 		return false, false, nil
 	}
-	rows, err := pool.Query(ctx, `
-		select distinct former.repo, former.number
-		from pull_request_former_heads former
-		join unnest($1::text[], $2::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
-		where not former.verified
-		order by former.repo, former.number`, repos, numbers)
+	rows, err := pool.Query(ctx, formerHeadsHeld("$1", "$2")+`
+		select held.pull, held.repo, held.number from held
+		where held.first and exists (select 1 from pull_request_former_heads former where former.pull = held.pull and not former.verified)
+		order by held.pull`, repos, numbers)
 	if err != nil {
 		return false, false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
 	}
 	type pullRequest struct {
+		pull   int
 		repo   string
 		number int
 	}
 	pulls, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pullRequest, error) {
 		var held pullRequest
-		return held, row.Scan(&held.repo, &held.number)
+		return held, row.Scan(&held.pull, &held.repo, &held.number)
 	})
 	if err != nil {
 		return false, false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
@@ -488,11 +508,10 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 	for _, held := range pulls {
 		var claimed time.Time
 		switch err := pool.QueryRow(ctx, `
-			insert into pull_request_former_heads_reads (repo, number, until)
-			values (lower(pull_request_canonical_repo($1)), $2, now() + make_interval(secs => $3))
-			on conflict (repo, number) do update set until = excluded.until
+			insert into pull_request_former_heads_reads (pull, until) values ($1, now() + make_interval(secs => $2))
+			on conflict (pull) do update set until = excluded.until
 			where pull_request_former_heads_reads.until <= now()
-			returning until`, held.repo, held.number, formerHeadsReadClaim.Seconds()).Scan(&claimed); {
+			returning until`, held.pull, formerHeadsReadClaim.Seconds()).Scan(&claimed); {
 		case errors.Is(err, pgx.ErrNoRows):
 			pending = true
 			slog.Info("dispatch: check states left the candidate former heads of a pull request to the settle reading them",
@@ -504,7 +523,7 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		var candidates []string
 		if err := pool.QueryRow(ctx, `
 			select coalesce(array_agg(head_sha order by head_sha), '{}') from pull_request_former_heads
-			where repo = $1 and number = $2 and not verified`, held.repo, held.number).Scan(&candidates); err != nil {
+			where pull = $1 and not verified`, held.pull).Scan(&candidates); err != nil {
 			return false, false, fmt.Errorf("read the candidate former heads of %s#%d: %w", held.repo, held.number, err)
 		}
 		var membership delivery.CommitMembership
@@ -515,7 +534,7 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			cancel()
 		}
 		var kept, dropped, owedElsewhere int
-		if kept, dropped, owedElsewhere, err = c.writeMembership(ctx, held.repo, held.number, membership, claimed, issue); err != nil {
+		if kept, dropped, owedElsewhere, err = c.writeMembership(ctx, held.pull, membership, claimed, issue); err != nil {
 			return false, false, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
 		}
 		attrs := []any{"issue", issue, "repo", held.repo, "number", held.number, "kept", kept, "dropped", dropped,
@@ -534,45 +553,47 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 }
 
 // writeMembership is verifyFormerHeads's one write of GitHub's answer about the candidates of the
-// pull request repo#number: it marks each member verified, deletes each commit GitHub showed is
-// not one, gives the claim back by its own time, so a settle whose claim another took over after
-// it expired leaves that settle's claim alone, and marks owed each other issue the pull request is
-// open at where a candidate became a former head. It runs in a transaction that first takes the
-// pull request's lock (pull_request_former_heads_lock, migration 20261122071001), under which the
-// settler makes every write of a pull request's former heads, the drain's included
-// (pull_request_former_heads_drain), so two settles never write one pull request's rows in two
-// orders. No writer of pull_request_heads or of a result takes that lock. It answers how many
-// candidates it kept, dropped, and how many other issues it marked owed.
+// pull request of identity pull: it marks each member verified, deletes each commit GitHub showed
+// is not one, gives the claim back by its own time, so a settle whose claim another took over
+// after it expired leaves that settle's claim alone, and marks owed each other issue a row of the
+// pull request is open at, under any of its names, where a candidate became a former head. It
+// runs in a transaction that first takes the pull request's lock (pull_request_former_heads_lock,
+// migration 20261122071001), under which the settler makes every write of a pull request's former
+// heads, the drain's included (pull_request_former_heads_drain), so two settles never write one
+// pull request's rows in two orders. No writer of pull_request_heads or of a result takes that
+// lock. It answers how many candidates it kept, dropped, and how many other issues it marked owed.
 func (c *checkStatesSettler) writeMembership(
-	ctx context.Context, repo string, number int, membership delivery.CommitMembership, claimed time.Time, issue string,
+	ctx context.Context, pull int, membership delivery.CommitMembership, claimed time.Time, issue string,
 ) (kept, dropped, owedElsewhere int, err error) {
 	tx, err := c.server.begin(ctx)
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `select pull_request_former_heads_lock($1, $2)`, repo, number); err != nil {
+	if _, err := tx.Exec(ctx, `select pull_request_former_heads_lock($1)`, pull); err != nil {
 		return 0, 0, 0, err
 	}
 	if err := tx.QueryRow(ctx, `
 		with kept as (
 			update pull_request_former_heads set verified = true
-			where repo = $1 and number = $2 and head_sha = any($3) and not verified
+			where pull = $1 and head_sha = any($2) and not verified
 			returning 1
 		), dropped as (
 			delete from pull_request_former_heads
-			where repo = $1 and number = $2 and head_sha = any($4) and not verified
+			where pull = $1 and head_sha = any($3) and not verified
 			returning 1
 		), released as (
-			delete from pull_request_former_heads_reads
-			where repo = lower(pull_request_canonical_repo($1)) and number = $2 and until = $5
+			delete from pull_request_former_heads_reads where pull = $1 and until = $4
 		), owed as (
-			select check_states_owe(head.issue_key) from pull_request_heads head
-			where head.repo = $1 and head.number = $2 and head.state = 'open' and head.issue_key <> $6
-				and exists (select 1 from kept)
+			select check_states_owe(holder.issue_key) from (
+				select distinct head.issue_key from pull_request_heads head
+				join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+				where alias.pull = $1 and head.state = 'open' and head.issue_key <> $5
+			) holder
+			where exists (select 1 from kept)
 		)
 		select (select count(*) from kept), (select count(*) from dropped), (select count(*) from owed)`,
-		repo, number, nonNilStrings(membership.Members), nonNilStrings(membership.Outside), claimed, issue).Scan(&kept, &dropped, &owedElsewhere); err != nil {
+		pull, nonNilStrings(membership.Members), nonNilStrings(membership.Outside), claimed, issue).Scan(&kept, &dropped, &owedElsewhere); err != nil {
 		return 0, 0, 0, err
 	}
 	return kept, dropped, owedElsewhere, tx.Commit(ctx)

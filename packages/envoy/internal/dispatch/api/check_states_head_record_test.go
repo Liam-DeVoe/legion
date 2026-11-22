@@ -142,7 +142,7 @@ func TestThePassAppliesTheRecordsOfAPullRequestNoIssueHolds(t *testing.T) {
 	}
 	var former []string
 	rows, err := rig.database.Pool.Query(context.Background(),
-		`select head_sha || case when verified then '' else ' unverified' end from pull_request_former_heads where repo = $1 and number = 90`, ciJobRepository)
+		`select head_sha || case when verified then '' else ' unverified' end from pull_request_former_heads where pull = pull_request_former_heads_pull_of($1, 90)`, ciJobRepository)
 	if err != nil {
 		t.Fatalf("read #90's former heads: %v", err)
 	}

@@ -16,16 +16,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// foldedFormerHeadsOf is the former heads of repo#number, by commit, as the check states settler
-// reads them: once the records the writes of pull_request_heads appended are applied
-// (pull_request_former_heads_fold, migration 20261122071001), which each settle of an issue runs
-// first for the issue's open pull requests (pull_request_former_heads_drain).
+// foldedFormerHeadsOf is the former heads of the pull request repo#number stands for, by commit,
+// as the check states settler reads them: once the records the writes of pull_request_heads
+// appended under any of its names are applied (pull_request_former_heads_fold, migration
+// 20261122071001), which each settle of an issue runs first for the issue's open pull requests
+// (pull_request_former_heads_drain). Every name of one pull request reads its one history.
 func foldedFormerHeadsOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) []string {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `select pull_request_former_heads_fold(pull_request_former_heads_key($1), $2)`, repo, number); err != nil {
+	if _, err := pool.Exec(ctx, `select pull_request_former_heads_fold($1, $2)`, repo, number); err != nil {
 		t.Fatalf("apply the records of %s#%d: %v", repo, number, err)
 	}
-	rows, err := pool.Query(ctx, `select head_sha from pull_request_former_heads where repo = $1 and number = $2 order by head_sha`, repo, number)
+	rows, err := pool.Query(ctx, `
+		select head_sha from pull_request_former_heads where pull = pull_request_former_heads_pull_of($1, $2) order by head_sha`, repo, number)
 	if err != nil {
 		t.Fatalf("read the former heads of %s#%d: %v", repo, number, err)
 	}
@@ -106,11 +108,20 @@ func (r *reKeyRig) refreshBehind(t *testing.T, holder pgx.Tx) <-chan error {
 	return answered
 }
 
+// wantOneHistory fails the test unless the old name reads the history want, the canonical name's:
+// the two names stand for one pull request, whose history is one, under either.
+func (r *reKeyRig) wantOneHistory(t *testing.T, want []string) {
+	t.Helper()
+	if got := r.formerHeadsOf(gadgetsOldRepo); !slices.Equal(got, want) {
+		t.Fatalf("the old name %s reads the former heads %v of #%d, want %v, the canonical name's: one pull request has one history", gadgetsOldRepo, got, r.number, want)
+	}
+}
+
 // TestTheReKeyCarriesTheHeadsAWriterLeftWhileItWaited: a writer holds #524's row under the old name
 // and moves its head twice, from 7474… to 7575… and then to 7676…, while the reconcile re-keys the
 // row. The re-key waits for that writer, and once it commits, the canonical row holds every head
 // the pull request left: the one before, the two the writer left and the old row's last head, and
-// the old name keeps none.
+// the old name reads that one history too.
 func TestTheReKeyCarriesTheHeadsAWriterLeftWhileItWaited(t *testing.T) {
 	const left, oldHead, head = "7171717171717171717171717171717171717171", "7474747474747474747474747474747474747474", "7373737373737373737373737373737373737373"
 	const moved, last = "7575757575757575757575757575757575757575", "7676767676767676767676767676767676767676"
@@ -137,9 +148,7 @@ func TestTheReKeyCarriesTheHeadsAWriterLeftWhileItWaited(t *testing.T) {
 	if got := rig.formerHeadsOf(gadgetsRepo); !slices.Equal(got, want) {
 		t.Fatalf("#%d under %s left %v after the re-key, want %v: the heads the writer left while the re-key waited are lost", rig.number, gadgetsRepo, got, want)
 	}
-	if got := rig.formerHeadsOf(gadgetsOldRepo); len(got) != 0 {
-		t.Fatalf("the old name %s still keeps the former heads %v of #%d", gadgetsOldRepo, got, rig.number)
-	}
+	rig.wantOneHistory(t, want)
 }
 
 // TestTheReKeyCarriesNoHeadToAPullRequestClosedWhileItWaited: a writer holds #525's row under the
@@ -173,9 +182,7 @@ func TestTheReKeyCarriesNoHeadToAPullRequestClosedWhileItWaited(t *testing.T) {
 	if got := rig.formerHeadsOf(gadgetsRepo); len(got) != 0 {
 		t.Fatalf("#%d under %s, closed, keeps the former heads %v the re-key carried after the close", rig.number, gadgetsRepo, got)
 	}
-	if got := rig.formerHeadsOf(gadgetsOldRepo); len(got) != 0 {
-		t.Fatalf("the old name %s still keeps the former heads %v of #%d", gadgetsOldRepo, got, rig.number)
-	}
+	rig.wantOneHistory(t, nil)
 }
 
 // TestTheReKeyCarriesNothingAcrossACloseAndReopenOfThePullRequest: a writer holds the row of the
@@ -231,9 +238,7 @@ func TestTheReKeyCarriesNothingAcrossACloseAndReopenOfThePullRequest(t *testing.
 			if got := rig.formerHeadsOf(gadgetsRepo); !slices.Equal(got, row.want) {
 				t.Fatalf("#%d under %s, reopened, left %v after the re-key, want %v: a head of the lifecycle the close ended came back", rig.number, gadgetsRepo, got, row.want)
 			}
-			if got := rig.formerHeadsOf(gadgetsOldRepo); len(got) != 0 {
-				t.Fatalf("the old name %s still keeps the former heads %v of #%d", gadgetsOldRepo, got, rig.number)
-			}
+			rig.wantOneHistory(t, row.want)
 		})
 	}
 }
@@ -250,9 +255,7 @@ func TestAReKeyByTheReleaseBeforeCarriesTheHeadsItLeft(t *testing.T) {
 	if got, want := rig.formerHeadsOf(gadgetsRepo), []string{left, oldHead}; !slices.Equal(got, want) {
 		t.Fatalf("#%d under %s left %v after the release before deleted its old row, want %v", rig.number, gadgetsRepo, got, want)
 	}
-	if got := rig.formerHeadsOf(gadgetsOldRepo); len(got) != 0 {
-		t.Fatalf("the old name %s still keeps the former heads %v of #%d", gadgetsOldRepo, got, rig.number)
-	}
+	rig.wantOneHistory(t, []string{left, oldHead})
 }
 
 // TestTheReKeyOwesTheCanonicalIssueASettle: #527 and #528 are each stored under the old name,
