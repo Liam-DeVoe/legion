@@ -102,9 +102,14 @@ function Fact({
   testId: string;
 }): ReactNode {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2">
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
       <dt className={`text-xs font-medium ${textMutedOnSurface}`}>{label}</dt>
-      <dd className={`text-sm ${textSecondaryOnSurface}`} data-testid={testId}>
+      {/* A value wraps inside its own cell, breaking a long run command anywhere, so it never
+          widens the page. */}
+      <dd
+        className={`min-w-0 text-sm [overflow-wrap:anywhere] ${textSecondaryOnSurface}`}
+        data-testid={testId}
+      >
         {children === undefined || children === "" ? "—" : children}
       </dd>
     </div>

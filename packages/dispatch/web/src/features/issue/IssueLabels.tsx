@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
+import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
 import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
 import {
@@ -199,6 +200,26 @@ export function IssueLabels({
     }
     changeDraft([...draft, label]);
   };
+  const chips = displayLabels.map((label) => (
+    <span
+      // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a long label
+      // anywhere, so a 40-character label with no space wraps inside Details rather than running
+      // past it. Everywhere else it stays whole.
+      className={
+        page === null
+          ? chipClassName === undefined
+            ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+            : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
+          : chipClassName === undefined
+            ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
+            : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
+      }
+      key={label}
+      {...page?.authorText}
+    >
+      {label}
+    </span>
+  ));
 
   return (
     <>
@@ -214,26 +235,15 @@ export function IssueLabels({
         }
         data-testid="issue-labels"
       >
-        {displayLabels.map((label) => (
-          <span
-            // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a
-            // long label anywhere, so a 40-character label with no space wraps inside Details
-            // rather than running past it. Everywhere else it stays whole.
-            className={
-              page === null
-                ? chipClassName === undefined
-                  ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
-                  : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
-                : chipClassName === undefined
-                  ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
-                  : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
-            }
-            key={label}
-            {...page?.authorText}
-          >
-            {label}
-          </span>
-        ))}
+        {/* Outside `NoTooltips` (today's issue header) at most 10 labels show, then a "+N" that
+            shows the rest in place (`CappedGroup`); its chips flow in this line as the others. */}
+        {page === null ? (
+          <CappedGroup className="contents" label="labels" name="labels">
+            {chips}
+          </CappedGroup>
+        ) : (
+          chips
+        )}
         <MultiSelect
           // Not disabled while it saves what the close committed: a disabled button cannot hold
           // focus, so Escape's return to the trigger would be undone by the save's own render.

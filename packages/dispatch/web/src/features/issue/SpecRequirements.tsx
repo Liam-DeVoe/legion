@@ -28,7 +28,9 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
       data-testid="spec-requirement"
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className={textPrimaryOnSurface}>{requirement.text}</span>
+        <span className={`min-w-0 [overflow-wrap:anywhere] ${textPrimaryOnSurface}`}>
+          {requirement.text}
+        </span>
         {gaps.map((gap) => (
           <span
             className={`${pillShapeClassName} ${surfaceMutedBg} ${inlineWarningText}`}

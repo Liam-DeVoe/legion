@@ -105,11 +105,11 @@ export type RepoControlFailure = {
 };
 
 /**
- * The issue's repository in the details rail: `Repository:` and one combobox, labelled
- * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` that suggests
- * the project's default repository. The suggestion is not the set of values: any `owner/name`
- * may be typed, which is what the server takes, and that is why this is a text box with a list
- * and not a `<select>`, which cannot hold a value its options lack.
+ * The issue's repository in today's issue header's Details: `Repository:` and one combobox,
+ * labelled `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` that
+ * suggests the project's default repository. The suggestion is not the set of values: any
+ * `owner/name` may be typed, which is what the server takes, and that is why this is a text box
+ * with a list and not a `<select>`, which cannot hold a value its options lack.
  *
  * The box shows the issue's own repository and nothing else, so the repository it resolves to -
  * its nearest ancestor's in its own project, else the project's default - is its placeholder,
@@ -178,10 +178,12 @@ export type RepoControlFailure = {
  * out. Whichever of the text and the box takes the other's place takes the focus the other held,
  * the clear control's included, where that focus fell to the document with it. Outside a row of
  * Details the box is drawn whether or not a repository resolves, and its description says
- * `No repository` when none does.
+ * `No repository` when none does. `inHeaderDetails` draws it as the value of a row of today's
+ * issue header's Details, which names it, so the control draws no `Repository:` of its own.
  */
 export function RepoControl({
   disabled = false,
+  inHeaderDetails = false,
   inRow = false,
   issueKey,
   project,
@@ -191,6 +193,7 @@ export function RepoControl({
   sayFailure,
 }: {
   disabled?: boolean;
+  inHeaderDetails?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
@@ -388,7 +391,7 @@ export function RepoControl({
     : "absolute inset-y-0 right-0 inline-flex w-8";
   return (
     <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
-      {inDetails ? null : (
+      {inDetails || inHeaderDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
           {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
         </span>

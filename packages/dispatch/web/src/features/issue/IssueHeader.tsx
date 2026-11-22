@@ -24,10 +24,10 @@ import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -74,6 +74,7 @@ import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries, isProjectRoot } from "./gated-steps";
+import { HeaderDetails, type HeaderDetailsRow } from "./HeaderDetails";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
@@ -107,6 +108,27 @@ function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
   return input.status === undefined ? `${key}: ${field} saved` : `${key} set to ${input.status}`;
 }
 
+/** One group of the header's row: its elements stay on one line while the group fits the
+ *  header, and the group moves to the next line whole when it does not fit beside the one
+ *  before it. A group wider than the header itself wraps inside its own box. */
+const headerGroup = "flex min-w-0 max-w-full flex-wrap items-center gap-2";
+
+/**
+ * Today's issue header. It draws its elements in these groups, in this order, each element in one
+ * group; when the header is too narrow a group moves to the next line whole (`headerGroup`), and
+ * nothing in it scrolls sideways:
+ *
+ * 1. Identity: the issue's key and its copy control, the title, and the pin. A closed issue reads
+ *    "This issue is closed." above it, with Reopen.
+ * 2. State: the status, the priority, the assignee, the progress of its tasks and children, and the
+ *    approval chip of the primary document or the gate's steps.
+ * 3. Attention: whose turn it is (waiting on you, or on agents), a route that reaches nobody
+ *    (unreachable, unresponsive, or unknown and why), and the claim with Release beside it.
+ * 4. Actions: Close issue.
+ * 5. Labels: the labels, at most 10 and then "+N", and the control that edits them.
+ * 6. Details: one disclosure (`HeaderDetails`), whose panel holds every other property as a name
+ *    and a value, each with the control that edits it.
+ */
 export function IssueHeader({
   documentArtifact,
   isClosed,
@@ -141,8 +163,6 @@ export function IssueHeader({
       parentInputRef.current?.focus();
     }
   }, [parentEditing]);
-  // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
-  const railFade = useScrollFadeTrailing();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -370,8 +390,9 @@ export function IssueHeader({
   }`;
   const routeButton = (name: ReactNode) => (
     <button
+      aria-describedby="issue-route-hint"
       aria-label={routeLabel}
-      className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+      className={`inline-flex min-h-11 min-w-0 max-w-full items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
       disabled={isClosed}
       onClick={() => setRouteEditing(true)}
       title={drafts.route === "" ? undefined : drafts.route}
@@ -382,6 +403,240 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const pullRequests = (issue.external_links ?? []).filter((link) => link.kind === "github_pr");
+  const otherLinks = (issue.external_links ?? []).filter((link) => link.kind !== "github_pr");
+  // Details, in this order: what the issue advances, who opened it, where its messages go, who is
+  // subscribed, what references it, its parent, its repository, its components, its pull
+  // requests and its other links. Each row's own control edits it there, as it did in the rail
+  // these rows replace.
+  const detailsRows: HeaderDetailsRow[] = [
+    {
+      id: "advances",
+      label: "Advances",
+      value: <IssuePriorityLine disabled={isClosed} inHeaderDetails issue={issue} />,
+    },
+    ...(issue.created_by == null
+      ? []
+      : [
+          {
+            id: "opened-by",
+            label: "Opened by",
+            value: (
+              <span title={agentText.label(issue.created_by)}>
+                <AgentName actor={issue.created_by} inline />
+              </span>
+            ),
+          },
+        ]),
+    {
+      id: "route",
+      label: "Message route",
+      value: (
+        <>
+          {routeEditing ? (
+            <form className="flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
+              <input
+                aria-label="Message route"
+                aria-describedby="issue-route-hint issue-route-help"
+                className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+                disabled={isClosed}
+                id="issue-route"
+                onChange={(event) => drafts.writeRoute(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    drafts.discardRoute();
+                    setRouteEditing(false);
+                  }
+                }}
+                placeholder="role:legion-controller-core"
+                ref={routeInputRef}
+                value={drafts.route}
+              />
+              <button
+                className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+                disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
+                type="submit"
+              >
+                Save route
+              </button>
+              <button
+                className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+                onClick={() => {
+                  drafts.discardRoute();
+                  setRouteEditing(false);
+                }}
+                type="button"
+              >
+                Cancel
+              </button>
+              <span
+                className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
+                id="issue-route-help"
+              >
+                A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
+              </span>
+            </form>
+          ) : routeSession === undefined ? (
+            routeButton(drafts.route === "" ? "No route" : drafts.route)
+          ) : (
+            <AgentName
+              className="inline-flex min-w-0 max-w-full items-center"
+              control={routeButton}
+              kind="control"
+              sessionId={routeSession}
+              storedTitle={undefined}
+            />
+          )}
+          <p className={`mt-1 text-xs ${textMutedOnSurface}`} id="issue-route-hint">
+            {routeHint}
+          </p>
+        </>
+      ),
+    },
+    {
+      id: "subscribers",
+      label: "Subscribers",
+      // The count is the button's words, and its name says what it counts; a read that has not
+      // answered counts nothing, so the button then says what it opens.
+      value: (
+        <button
+          aria-expanded={subscribersOpen}
+          aria-label={subscribersCounted ? `Subscribers: ${subscriberList.length}` : "Subscribers"}
+          className={`inline-flex min-h-11 items-center rounded-full px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 md:min-h-8 md:py-1 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+          onClick={() => setSubscribersOpen((open) => !open)}
+          type="button"
+        >
+          {subscribersCounted ? subscriberList.length : "Subscribers"}
+        </button>
+      ),
+    },
+    {
+      id: "referenced-by",
+      label: "Referenced by",
+      value: (
+        <ReferencedByToggle
+          controls={referencesPanelId}
+          count={issue.referenced_by_count}
+          expanded={referencesOpen}
+          onToggle={() => setReferencesOpen((open) => !open)}
+        />
+      ),
+    },
+    {
+      id: "parent",
+      label: "Parent",
+      value: parentEditing ? (
+        <form className="flex flex-wrap items-center gap-2" onSubmit={saveParent}>
+          <label className="sr-only" htmlFor="issue-parent">
+            Parent
+          </label>
+          <input
+            aria-describedby="issue-parent-help"
+            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+            disabled={isClosed}
+            id="issue-parent"
+            onChange={(event) => drafts.writeParent(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                drafts.discardParent();
+                setParentEditing(false);
+              }
+            }}
+            placeholder={`${issue.project}-12`}
+            ref={parentInputRef}
+            value={drafts.parent}
+          />
+          <button
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed || updateIssue.isPending}
+            type="submit"
+          >
+            Save parent
+          </button>
+          <button
+            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+            onClick={() => {
+              drafts.discardParent();
+              setParentEditing(false);
+            }}
+            type="button"
+          >
+            Cancel
+          </button>
+          <span className="sr-only" id="issue-parent-help">
+            Parent issue key, in {issue.project} or another project; leave empty to clear the
+            parent.
+          </span>
+        </form>
+      ) : (
+        <span className="flex min-w-0 flex-wrap items-center gap-2">
+          {issue.parent === null ? null : (
+            <Link
+              className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+              to={buildIssuePath({ key: issue.parent, kind: "issue" })}
+            >
+              {issue.parent}
+            </Link>
+          )}
+          <button
+            // The name starts with the word on the button - "None" or "Edit" - because a name
+            // that does not contain the visible text leaves the control out of reach of a voice
+            // user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+            aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
+            className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+            disabled={isClosed}
+            onClick={() => setParentEditing(true)}
+            type="button"
+          >
+            {issue.parent === null ? "None" : "Edit"}
+          </button>
+        </span>
+      ),
+    },
+    {
+      // Every issue has a repository row: an issue resolves to its own repository, an
+      // ancestor's, or its project's default, and any issue can take one of its own.
+      id: "repository",
+      label: "Repository",
+      value: (
+        <RepoControl
+          disabled={isClosed || updateIssue.isPending}
+          inHeaderDetails
+          issueKey={issue.key}
+          project={issue.project}
+          repo={issue.repo}
+          resolvedRepo={issue.resolved_repo}
+        />
+      ),
+    },
+    {
+      id: "components",
+      label: "Components",
+      value: <IssueComponentsLine inHeaderDetails issue={issue} />,
+    },
+    ...[
+      { id: "pull-requests", label: "Pull requests", links: pullRequests },
+      { id: "links", label: "Links", links: otherLinks },
+    ]
+      .filter((row) => row.links.length > 0)
+      .map((row) => ({
+        id: row.id,
+        label: row.label,
+        value: (
+          <CappedGroup
+            className="flex min-w-0 flex-col items-start gap-1"
+            label={row.label.toLowerCase()}
+            name={row.id}
+          >
+            {row.links.map((link) => (
+              <span className="flex min-w-0 max-w-full items-center" key={link.url}>
+                <GitHubLink link={link} />
+              </span>
+            ))}
+          </CappedGroup>
+        ),
+      })),
+  ];
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
   // title always takes its own row (basis-full) and the state controls and details line share
   // the row beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's
@@ -488,347 +743,161 @@ export function IssueHeader({
           </div>
         </div>
         <div
-          className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
+          className="flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
-          >
-            <span
-              aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-            />
-            <select
-              aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
-              value={pendingStatus ?? issue.status}
+          <div className={headerGroup} data-testid="issue-state">
+            <label
+              className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
             >
-              {selectableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <PriorityEditor
-            disabled={isClosed || updateIssue.isPending}
-            issueKey={issue.key}
-            write={priorityWrite}
-          />
-          <AssigneeControl
-            assignee={issue.assignee}
-            disabled={isClosed || updateIssue.isPending}
-            issueKey={issue.key}
-          />
-          {/* Progress is state about how far the work has got, like the status and the claim,
-              so it sits in this wrapping row with them; the metadata rail below clips. */}
-          <ProgressChips bar progress={issue.progress} />
-          {/* A root issue of a gated project reads its gate step by step, after the chip's
-              place; the chip itself stays beside those steps whenever no step drawn reviews the
-              primary document, since otherwise an open request on that document could not be
-              answered on this page at all. Every other issue - and any issue whose project is
-              still unread - keeps that chip for the primary document alone, unchanged. */}
-          {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
-            <ApprovalChip
-              artifact={documentArtifact}
-              layout="contents"
-              showActions={showApprovalActions}
-              variant="header"
+              <span
+                aria-hidden="true"
+                className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+              />
+              <select
+                aria-label="Status"
+                className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
+                disabled={isClosed || updateIssue.isPending}
+                onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
+                value={pendingStatus ?? issue.status}
+              >
+                {selectableStatuses.map((status) => (
+                  <option key={status} value={status}>
+                    {statusLabel(status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <PriorityEditor
+              disabled={isClosed || updateIssue.isPending}
+              issueKey={issue.key}
+              write={priorityWrite}
             />
-          )}
-          {entries.length === 0 ? null : (
-            <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
-          )}
-          {/* Whether the route reaches anyone is state about who is working this, like the
-              claim, and it sits in this wrapping row for the same reason: the metadata rail
-              clips at every width, and a warning past its edge is no warning. It speaks for the
-              saved route only, so a route being saved hides it until the next read judges it. */}
-          {drafts.route === (issue.route ?? "") ? (
-            <>
-              <UnreachableRouteMarker issue={issue} showRoute />
-              <UnresponsiveRouteMarker issue={issue} showRoute />
-              {issue.route !== null && issue.route_status === "unknown" ? (
-                issue.route_status_reason === "refilling" ? (
-                  <span
-                    className={`shrink-0 text-xs ${textMutedOnSurface}`}
-                    data-testid="issue-route-refilling"
-                    title="The Envoy listener is refilling its agent list, so Dispatch cannot tell yet whether anyone receives this route."
-                  >
-                    Route reach unknown: {AGENT_LIST_REFILLING}
-                  </span>
-                ) : (
-                  <RouteReachUnknownMarker className="shrink-0" testId="issue-route-unknown" />
-                )
-              ) : null}
-            </>
-          ) : null}
-          {issue.claim === null ? null : (
-            <>
-              {/* A claim is state — who is working this, since when — so it sits with the
-                  status, priority and assignee, and Release is an action beside Close. This
-                  row wraps, so both stay visible and tappable at 390px; the metadata rail
-                  below never wraps (#1211) and would clip them. */}
-              <ClaimChip claim={issue.claim} liveness={issue} />
+            <AssigneeControl
+              assignee={issue.assignee}
+              disabled={isClosed || updateIssue.isPending}
+              issueKey={issue.key}
+            />
+            <ProgressChips bar progress={issue.progress} />
+            {/* A root issue of a gated project reads its gate step by step, after the chip's
+                place; the chip itself stays beside those steps whenever no step drawn reviews the
+                primary document, since otherwise an open request on that document could not be
+                answered on this page at all. Every other issue - and any issue whose project is
+                still unread - keeps that chip for the primary document alone, unchanged. */}
+            {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
+              <ApprovalChip
+                artifact={documentArtifact}
+                layout="contents"
+                showActions={showApprovalActions}
+                variant="header"
+              />
+            )}
+            {entries.length === 0 ? null : (
+              <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
+            )}
+          </div>
+          {/* A group with nothing in it draws nothing (`empty:hidden`), so it leaves no gap. */}
+          <div className={`${headerGroup} empty:hidden`} data-testid="issue-attention">
+            {whoseTurn === null ? null : (
+              <span
+                className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+                data-testid="issue-whose-turn"
+              >
+                {whoseTurn}
+              </span>
+            )}
+            {/* The route's warnings speak for the saved route only, so a route being saved hides
+                them until the next read judges it. */}
+            {drafts.route === (issue.route ?? "") ? (
+              <>
+                <UnreachableRouteMarker issue={issue} showRoute />
+                <UnresponsiveRouteMarker issue={issue} showRoute />
+                {issue.route !== null && issue.route_status === "unknown" ? (
+                  issue.route_status_reason === "refilling" ? (
+                    <span
+                      className={`shrink-0 text-xs ${textMutedOnSurface}`}
+                      data-testid="issue-route-refilling"
+                      title="The Envoy listener is refilling its agent list, so Dispatch cannot tell yet whether anyone receives this route."
+                    >
+                      Route reach unknown: {AGENT_LIST_REFILLING}
+                    </span>
+                  ) : (
+                    <RouteReachUnknownMarker className="shrink-0" testId="issue-route-unknown" />
+                  )
+                ) : null}
+              </>
+            ) : null}
+            {issue.claim === null ? null : (
+              // The claim and its Release stay on one line: the chip's holder ellipsizes first.
+              <span className="flex min-w-0 max-w-full items-center gap-2">
+                <ClaimChip claim={issue.claim} liveness={issue} />
+                <button
+                  aria-label={`Release the claim on ${issue.key}`}
+                  className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+                  disabled={releaseClaim.isPending}
+                  onClick={() => releaseClaim.mutate()}
+                  title="Release this claim so another agent can take the issue"
+                  type="button"
+                >
+                  {releaseClaim.isPending ? "Releasing…" : "Release"}
+                </button>
+              </span>
+            )}
+          </div>
+          {isClosed ? null : (
+            <div className={headerGroup} data-testid="issue-actions">
               <button
-                aria-label={`Release the claim on ${issue.key}`}
+                aria-label="Close issue"
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                disabled={releaseClaim.isPending}
-                onClick={() => releaseClaim.mutate()}
-                title="Release this claim so another agent can take the issue"
+                disabled={updateIssue.isPending}
+                onClick={() => drafts.requestStatusSubmit("done")}
                 type="button"
               >
-                {releaseClaim.isPending ? "Releasing…" : "Release"}
+                {pendingStatus === "done" ? (
+                  "Closing…"
+                ) : (
+                  <>
+                    <span className="sm:hidden">Close</span>
+                    <span className="hidden sm:inline">Close issue</span>
+                  </>
+                )}
               </button>
-            </>
-          )}
-          {isClosed ? null : (
-            <button
-              aria-label="Close issue"
-              className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
-              type="button"
-            >
-              {pendingStatus === "done" ? (
-                "Closing…"
-              ) : (
-                <>
-                  <span className="sm:hidden">Close</span>
-                  <span className="hidden sm:inline">Close issue</span>
-                </>
-              )}
-            </button>
-          )}
-        </div>
-        {/* The details line scrolls sideways rather than widening the page, and at a phone width
-            its cut lands inside an item - the Labels control alone is wider than the rail. The
-            fade says the cut is a scroll, and it is off at the end of the scroll, where a fade
-            would hide the last item instead. */}
-        <div
-          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railFade.fade}`}
-          data-testid="issue-metadata-rail"
-          ref={railFade.ref}
-        >
-          {whoseTurn === null ? null : (
-            <span
-              className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
-              data-testid="issue-whose-turn"
-            >
-              {whoseTurn}
-            </span>
-          )}
-          <IssuePriorityLine disabled={isClosed} issue={issue} />
-          {issue.created_by == null ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span className="font-medium">Opened by:</span>
-              <span
-                className="shrink-0 whitespace-nowrap"
-                title={agentText.label(issue.created_by)}
-              >
-                <AgentName actor={issue.created_by} inline />
-              </span>
             </div>
           )}
-          <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-            <span className="font-medium">Labels:</span>
+        </div>
+      </div>
+      <HeaderDetails
+        after={
+          <>
+            {subscribersOpen ? (
+              <SubscribedAgents
+                onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
+                ownerLabel={issue.key}
+                subscribers={subscriberList}
+              />
+            ) : null}
+            {referencesOpen ? (
+              <ReferencedBy
+                className="mt-3"
+                reference={issueReference}
+                toggle={{ id: referencesPanelId }}
+              />
+            ) : null}
+          </>
+        }
+        leading={
+          <div className="min-w-0 max-w-full" data-testid="issue-labels-group">
             <IssueLabels
               disabled={isClosed}
               labels={issue.labels ?? []}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}
               saving={labelsMutation.isPending}
-              variant="rail"
             />
           </div>
-          {routeEditing ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
-                Message route:
-              </span>
-              {routeSession === undefined ? (
-                routeButton(drafts.route === "" ? "No route" : drafts.route)
-              ) : (
-                <AgentName
-                  className="inline-flex shrink-0 items-center"
-                  control={routeButton}
-                  kind="control"
-                  sessionId={routeSession}
-                  storedTitle={undefined}
-                />
-              )}
-            </div>
-          )}
-          <button
-            aria-expanded={subscribersOpen}
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryHoverToPrimary}`}
-            onClick={() => setSubscribersOpen((open) => !open)}
-            type="button"
-          >
-            <span>{subscribersCounted ? "Subscribers:" : "Subscribers"}</span>
-            {subscribersCounted ? <span>{subscriberList.length}</span> : null}
-          </button>
-          <ReferencedByToggle
-            controls={referencesPanelId}
-            count={issue.referenced_by_count}
-            expanded={referencesOpen}
-            onToggle={() => setReferencesOpen((open) => !open)}
-          />
-          {parentEditing ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span className="font-medium">Parent:</span>
-              {issue.parent === null ? null : (
-                <Link
-                  className={`dispatch-inline-link shrink-0 underline ${linkText} ${linkHoverText}`}
-                  to={buildIssuePath({ key: issue.parent, kind: "issue" })}
-                >
-                  {issue.parent}
-                </Link>
-              )}
-              <button
-                // The name starts with the word on the button - "None" or "Edit" - because a
-                // name that does not contain the visible text leaves the control out of reach
-                // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
-                aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
-                className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
-                disabled={isClosed}
-                onClick={() => setParentEditing(true)}
-                type="button"
-              >
-                {issue.parent === null ? "None" : "Edit"}
-              </button>
-            </div>
-          )}
-          {/* The repository is where the work goes, like the parent, so it sits in this rail,
-              which scrolls rather than wrapping: a repository name can be long, and the state
-              row above must keep every control on one row at a phone width. Every issue has an
-              item here: an issue resolves to its own repository, an ancestor's, or its
-              project's default repository, and any issue can take a repository of its own. */}
-          <RepoControl
-            disabled={isClosed || updateIssue.isPending}
-            issueKey={issue.key}
-            project={issue.project}
-            repo={issue.repo}
-            resolvedRepo={issue.resolved_repo}
-          />
-          <IssueComponentsLine issue={issue} />
-          {(issue.external_links ?? []).map((link) => (
-            <div className="flex shrink-0 items-center" key={link.url}>
-              <GitHubLink link={link} />
-            </div>
-          ))}
-        </div>
-        {referencesOpen ? (
-          <ReferencedBy
-            className="mt-1 w-full"
-            reference={issueReference}
-            toggle={{ id: referencesPanelId }}
-          />
-        ) : null}
-      </div>
-      <span className="sr-only" id="issue-route-hint">
-        {routeHint}
-      </span>
-      {routeEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
-          <label
-            aria-describedby="issue-route-hint"
-            className={`text-sm font-medium ${textSecondaryOnSurface}`}
-            htmlFor="issue-route"
-            title={routeHint}
-          >
-            Message route:
-          </label>
-          <input
-            aria-label="Message route"
-            aria-describedby="issue-route-hint issue-route-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-            disabled={isClosed}
-            id="issue-route"
-            onChange={(event) => drafts.writeRoute(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                drafts.discardRoute();
-                setRouteEditing(false);
-              }
-            }}
-            placeholder="role:legion-controller-core"
-            ref={routeInputRef}
-            value={drafts.route}
-          />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
-            type="submit"
-          >
-            Save route
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardRoute();
-              setRouteEditing(false);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          <span
-            className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
-            id="issue-route-help"
-          >
-            A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
-          </span>
-        </form>
-      ) : null}
-      {parentEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveParent}>
-          <label className="sr-only" htmlFor="issue-parent">
-            Parent
-          </label>
-          <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
-            Parent:
-          </span>
-          <input
-            aria-describedby="issue-parent-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-            disabled={isClosed}
-            id="issue-parent"
-            onChange={(event) => drafts.writeParent(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                drafts.discardParent();
-                setParentEditing(false);
-              }
-            }}
-            placeholder={`${issue.project}-12`}
-            ref={parentInputRef}
-            value={drafts.parent}
-          />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || updateIssue.isPending}
-            type="submit"
-          >
-            Save parent
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardParent();
-              setParentEditing(false);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          <span className="sr-only" id="issue-parent-help">
-            Parent issue key, in {issue.project} or another project; leave empty to clear the
-            parent.
-          </span>
-        </form>
-      ) : null}
+        }
+        rows={detailsRows}
+      />
       {drafts.titleError === null ? null : (
         <p className={`mt-1 text-sm ${dangerText}`} id="issue-title-help">
           {drafts.titleError}
@@ -842,13 +911,6 @@ export function IssueHeader({
               ? "Reopening…"
               : "Saving…"}
         </span>
-      ) : null}
-      {subscribersOpen ? (
-        <SubscribedAgents
-          onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
-          ownerLabel={issue.key}
-          subscribers={subscriberList}
-        />
       ) : null}
       {subscribers.isError ? (
         <QueryError

@@ -79,7 +79,7 @@ function RemoveCross(): ReactNode {
 }
 
 /**
- * The `Advances` item of the issue header's metadata rail (INFRA-2947, R16 and R3): each
+ * The `Advances` item of the issue header's Details (INFRA-2947, R16 and R3): each
  * priority this issue advances, named by its order and title and linking to that priority's own
  * page, with the control that adds one beside them and a remove on each.
  *
@@ -101,14 +101,18 @@ function RemoveCross(): ReactNode {
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
  * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
- * priority" on its add control while the issue advances none.
+ * priority" on its add control while the issue advances none. `inHeaderDetails` draws it as the
+ * value of a row of today's issue header's Details, which names it: no `Advances` of its own, and
+ * a line that wraps inside its row.
  */
 export function IssuePriorityLine({
   disabled,
+  inHeaderDetails = false,
   inRow = false,
   issue,
 }: {
   disabled: boolean;
+  inHeaderDetails?: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
@@ -250,7 +254,7 @@ export function IssuePriorityLine({
   // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
   // after it, the reason with `max-w-full` - rather than push the line past its row. Outside,
   // each part stays whole, as on `main`.
-  const wraps = page !== null;
+  const wraps = page !== null || inHeaderDetails;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -264,7 +268,7 @@ export function IssuePriorityLine({
       className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid={inDetails ? undefined : "issue-advances"}
     >
-      {advances.length === 0 || inDetails ? null : (
+      {advances.length === 0 || inDetails || inHeaderDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
           {page?.PROPERTY_LABELS.advances ?? "Advances"}
         </span>
@@ -394,10 +398,8 @@ export function IssuePriorityLine({
           // out (`holdsFocus`, above).
           aria-disabled={refusedWhileOut}
           // One character and its name, as the remove control beside it is: an issue that
-          // advances nothing still carries this control, and a word here puts the issue
-          // header's metadata rail over its width on a desktop, which would leave every bare
-          // issue's rail scrolling and faded (e2e/issue.e2e.ts, "the details rail fades its
-          // trailing edge only while it has somewhere to scroll"). A control whose whole label
+          // advances nothing still carries this control, and one character keeps it the width of
+          // the remove beside each priority. A control whose whole label
           // is an icon carries no visible text for WCAG 2.5.3 to match. The character is a
           // plain "+" (U+002B): the fullwidth "＋" this line held draws as an empty box where
           // no CJK font is installed, which is this pod's Chromium and some readers' browsers.

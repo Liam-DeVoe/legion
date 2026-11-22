@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery } from "../../api/queries";
 import type { Issue, IssueComponents } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import {
   type PageWords,
   usePageWords,
@@ -73,7 +74,7 @@ export function componentsControlName(
 }
 
 /**
- * The `Components:` line of the issue header's metadata rail: the issue's effective
+ * The `Components:` line of today's issue header's Details: the issue's effective
  * attachment as chips. An explicit set lists its live component ids and marks each id a
  * re-import retired; `none` shows the reason; an issue no ancestor chain attached reads
  * `Not attached`. When the attachment is an ancestor's, that ancestor is named and linked.
@@ -90,11 +91,17 @@ export function componentsControlName(
  * of Details, which draws the label: no `Components:` of its own, a line that wraps, and each
  * component named by its title from the architecture read, which it then makes as soon as the
  * issue names a component.
+ *
+ * `inHeaderDetails` draws it as the value of a row of today's issue header's Details, which names
+ * it: no `Components:` of its own, a line that wraps inside its row, and at most 10 components
+ * before a "+N" that shows the rest (`CappedGroup`).
  */
 export function IssueComponentsLine({
+  inHeaderDetails = false,
   inRow = false,
   issue,
 }: {
+  inHeaderDetails?: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
@@ -103,6 +110,7 @@ export function IssueComponentsLine({
   const tooltips = useTooltips();
   const page = usePageWords();
   const inDetails = page !== null && inRow;
+  const wraps = page !== null || inHeaderDetails;
   const { components } = issue;
   const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -119,8 +127,9 @@ export function IssueComponentsLine({
   // Inside `NoTooltips` nothing of the line stops its wrap, in a row of Details and in the header
   // alike: the words break between themselves, and a long name breaks inside its chip only where
   // no break between words is left, since a component, the issue it is inherited from and a
-  // reason are values, which wrap there. Outside it each part stays whole, as on `main`.
-  const part = page === null ? "shrink-0" : "min-w-0 [overflow-wrap:anywhere]";
+  // reason are values, which wrap there; in today's header's Details they wrap the same way.
+  // Outside both each part stays whole, as on `main`.
+  const part = wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
   const value = "max-w-full [overflow-wrap:anywhere]";
   // Inside `NoTooltips` each colour is one of the new issue page's: the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
@@ -142,12 +151,43 @@ export function IssueComponentsLine({
         </Link>
       </span>
     );
+  // An explicit set's chips: each live component, then each id a re-import retired.
+  const chips = [
+    ...(components.ids ?? []).map((id) => (
+      <span
+        className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgePrimary.bg} ${badgePrimary.text}` : pageLabelChip}`}
+        key={id}
+        {...page?.authorText}
+      >
+        {componentName(id)}
+      </span>
+    )),
+    ...(components.unknown ?? []).map((id) => (
+      <span
+        className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgeHigh.bg} ${badgeHigh.text}` : pageWaitingChip}`}
+        key={`retired-${id}`}
+        title={tooltips ? `${id} is no longer in the project's architecture model` : undefined}
+        {...page?.pageChrome}
+      >
+        {page === null ? (
+          <>retired: {id}</>
+        ) : (
+          <>
+            {page.CONTROL_LABELS.components_retired}:{" "}
+            <span className={value} {...page.authorText}>
+              {id}
+            </span>
+          </>
+        )}
+      </span>
+    )),
+  ];
   return (
     <div
-      className={`flex ${page === null ? "shrink-0" : "min-w-0 flex-wrap"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
+      className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid="issue-components"
     >
-      {inDetails ? null : (
+      {inDetails || inHeaderDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
           {`${page?.PROPERTY_LABELS.components ?? "Components"}:`}
         </span>
@@ -169,39 +209,14 @@ export function IssueComponentsLine({
             </>
           )}
         </span>
+      ) : inHeaderDetails ? (
+        // At most 10 components, then a "+N" that shows the rest in place; the chips flow in the
+        // line as the others do.
+        <CappedGroup className="contents" label="components" name="components">
+          {chips}
+        </CappedGroup>
       ) : (
-        <>
-          {(components.ids ?? []).map((id) => (
-            <span
-              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgePrimary.bg} ${badgePrimary.text}` : pageLabelChip}`}
-              key={id}
-              {...page?.authorText}
-            >
-              {componentName(id)}
-            </span>
-          ))}
-          {(components.unknown ?? []).map((id) => (
-            <span
-              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgeHigh.bg} ${badgeHigh.text}` : pageWaitingChip}`}
-              key={id}
-              title={
-                tooltips ? `${id} is no longer in the project's architecture model` : undefined
-              }
-              {...page?.pageChrome}
-            >
-              {page === null ? (
-                <>retired: {id}</>
-              ) : (
-                <>
-                  {page.CONTROL_LABELS.components_retired}:{" "}
-                  <span className={value} {...page.authorText}>
-                    {id}
-                  </span>
-                </>
-              )}
-            </span>
-          ))}
-        </>
+        chips
       )}
       {inheritedFrom}
       {(sources.data?.length ?? 0) === 0 ? null : (

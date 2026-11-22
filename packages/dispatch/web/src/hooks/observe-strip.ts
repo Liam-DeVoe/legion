@@ -3,7 +3,7 @@
  * `watch` names happen in the strip, after observing again the children such a mutation added. A
  * strip that scrolls sideways is redrawn by all three: the viewport resizing it, a child growing (a
  * live count, a title arriving), and a child added or taken away. Answers the function that stops
- * both observers. `useScrollFadeTrailing` and the tablist of `components/Tabs.tsx` read it.
+ * both observers. `useScrollFadeTrailing` reads it.
  */
 export function observeStrip(
   strip: HTMLElement,
