@@ -2468,6 +2468,7 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 The tables `step_starts` and `step_starts_rollback` and the function `step_run_witness` (`20261117004117_step_starts`) stay in place: an earlier release names none of them in a statement, so that release boots with them and their rows there.
 `step_starts` holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
 An earlier release starts and ends steps and counts none of them, so the rollback keeps in `step_starts_rollback` what the roll forward needs to tell the runs this release counted from the ones it did not: for each issue with a row in `step_starts`, its tree, its witness (`step_run_witness`) and the moment of the rollback.
+Where the rollback also goes past the release that keys a phases row by its step, run that release's way back first ([Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step)): the witness reads one phases row of each role, and while that key stands, a role at two steps of a task has two, on which the `insert` below fails with `more than one row returned by a subquery used as an expression` (SQLSTATE 21000) and keeps nothing.
 Run this with every daemon of the database stopped, before the earlier image is pinned, and before the block of any older release below, which can drop the phase entries the witness reads:
 
 ```sql
@@ -2622,7 +2623,7 @@ In that window its transaction that writes a phases row fails and leaves the rec
 At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it deletes each phases row of a role but the one with the highest entry, writes the key `(issue, role)` again and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again.
 The key is owed to the earlier release, whose every write of a phases row needs it.
 What the delete costs is the report of each earlier step of a role that stands at two steps of a running task: after the rollback, the task of a later step names the report of that role's latest step alone.
-A rollback past `20261117034837_issue_plans` runs this way back first, since that release's way back drops `step_task` and `step_place`, and this key with them.
+A rollback past `20261117034837_issue_plans` runs this way back first, since that release's way back drops `step_task` and `step_place`, and this key with them; so does a rollback past the release that records each step, whose block reads one phases row of each role ([Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step)).
 
 #### Rolling back the release whose update round ends at its bound
 

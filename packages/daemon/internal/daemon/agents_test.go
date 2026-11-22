@@ -669,7 +669,7 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	r.worker(claim.RoleReviewer)
 	left := r.stepRowsNow()
 	r.restartWith(func() {
-		r.exec(r.headerTransaction(phaseStepKeyMigration))
+		r.rollBackStepKey()
 		if key := r.phasesKey(); key != releaseBeforesPhasesKey {
 			t.Fatalf("the key of phases after the way back is (%s), want (%s), the key the release before writes by", key, releaseBeforesPhasesKey)
 		}

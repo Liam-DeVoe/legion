@@ -30,7 +30,8 @@
 -- earlier step of a role that stands at two steps of a running task: after the rollback, the task
 -- of a later step of such a task names the report of that role's latest step alone. A rollback
 -- past 20261117034837_issue_plans, which drops step_task and step_place and this key with them,
--- runs this way back first.
+-- runs this way back first, and so does a rollback past the release that records each step, whose
+-- way back reads one row of each role (step_run_witness, 20261117004117_step_starts).
 --
 -- begin;
 -- delete from phases p using phases q where p.issue = q.issue and p.role = q.role and (p.entry, p.step_task, p.step_place) < (q.entry, q.step_task, q.step_place);
