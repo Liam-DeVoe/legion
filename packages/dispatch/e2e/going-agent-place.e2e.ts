@@ -115,7 +115,7 @@ test("the panel stays open on navigation", async ({ browser }) => {
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, asked);
-    await bar(page).getByTestId("going-move").click();
+    await bar(page).getByRole("button", { name: "Keep at the side" }).click();
     await expectAtTheSide(page, asked);
     // A navigation inside the page, by the rail's own link, and Back: neither closes the panel.
     await page

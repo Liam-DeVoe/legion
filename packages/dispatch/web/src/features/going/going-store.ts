@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 import { api, apiErrorMessage, REQUEST_DEADLINE_MS, type WriteBounds } from "../../api/client";
 import type {
@@ -16,16 +16,18 @@ import { type RunState, runEnded, runNext } from "./run-states";
  * The command bar's conversation, which outlives every open of the bar: where it is on the screen
  * (`panel-states.ts`), its runs and how each stands as its frames have said (`run-frames.ts`),
  * the level the next run takes, the item a click on the page made the next request's context,
- * the rows of the open plan the page draws, and the person's ticks and edits of that plan. It is
- * one store of the page, held outside React so the bar over the page, the panel at the side, the
- * chip and the five pages that draw a plan all read the one conversation. Each run it holds is
- * followed on its stream until it ends, whether or not the bar is open: a run goes on in the
- * server when the bar closes, and the chip says how it stands.
+ * the rows of the open plan the page draws, the person's ticks and edits of that plan, the words
+ * of a run whose start is out, and the words the person sent while a run worked. It is one store
+ * of the page, held outside React so the bar over the page, the panel at the side, the chip and
+ * the five pages that draw a plan all read the one conversation. Each run it holds is followed on
+ * its stream until it ends, whether or not the bar is open: a run goes on in the server when the
+ * bar closes, and the chip says how it stands.
  */
 
 /** One run as the page knows it: its record (its words, its conversation, and how it stood when
  *  it was started, listed in History or stopped), what its frames say, whether it was started on
- *  this page, whether the person has seen how it ended, and why its stream could not be read. */
+ *  this page, whether the person has seen how it ended, why its stream could not be read, and
+ *  when the person asked for it. */
 export interface RunEntry {
   readonly id: string;
   readonly record: GoingRun;
@@ -35,6 +37,9 @@ export interface RunEntry {
   readonly startedHere: boolean;
   readonly seen: boolean;
   readonly unreadable: string | undefined;
+  /** When the person asked for the run, in this page's clock: the moment of Enter for a run
+   *  started here, else its record's start. Its "Thinking…" timer counts from it. */
+  readonly since: number;
 }
 
 /** The person's answer to the open plan so far: the rows they unticked, and the values they
@@ -52,6 +57,23 @@ export interface ClickedItem {
   readonly path: string;
 }
 
+/** A run whose start is out: the person's words, which the bar shows as the question at once
+ *  (design v2, rule 4), when they pressed Enter, in this page's clock, and whether the run
+ *  follows up the open conversation, which then stays on the screen above it. */
+export interface StartingRun {
+  readonly words: string;
+  readonly at: number;
+  readonly follows: boolean;
+}
+
+/** The words the person sent while `run`, the open conversation's newest run, worked. They wait
+ *  until it no longer works, and then go as the answer to its plan or as the next turn
+ *  (`useSendQueued`). */
+export interface QueuedWords {
+  readonly run: string;
+  readonly words: string;
+}
+
 /** Everything the store holds. */
 export interface GoingState {
   readonly place: PanelPlace;
@@ -65,8 +87,10 @@ export interface GoingState {
   /** The plan rows each page surface draws, by the surface's id. */
   readonly onPage: ReadonlyMap<string, readonly number[]>;
   readonly draft: PlanDraft | undefined;
-  /** Whether a run's start is out. */
-  readonly starting: boolean;
+  /** The run whose start is out; undefined while none is. */
+  readonly starting: StartingRun | undefined;
+  /** The words sent while the open conversation's newest run worked; undefined while none wait. */
+  readonly queued: QueuedWords | undefined;
   /** Why the last start, stop or Continue was refused, in Dispatch's words. */
   readonly refusal: string | undefined;
 }
@@ -78,9 +102,10 @@ const INITIAL: GoingState = {
   level: "standard",
   onPage: new Map(),
   place: "closed",
+  queued: undefined,
   refusal: undefined,
   runs: new Map(),
-  starting: false,
+  starting: undefined,
 };
 
 let state: GoingState = INITIAL;
@@ -194,6 +219,31 @@ export function conversationWorking(of: GoingState = state): boolean {
   return run !== undefined && shownState(run) === "working";
 }
 
+/** The open conversation's title: its first question, or the words of the run whose start is out
+ *  where that run starts a conversation of its own; empty where there is neither. */
+export function conversationTitle(of: GoingState = state): string {
+  if (of.starting !== undefined && !of.starting.follows) {
+    return of.starting.words;
+  }
+  const first = of.conversation?.[0];
+  return (first === undefined ? undefined : of.runs.get(first))?.record.words ?? "";
+}
+
+/** An answer that ends in a question mark, past any closing quote, bracket or emphasis. */
+const ENDS_IN_A_QUESTION = /\?[\s"'”’)\]*_`]*$/u;
+
+/** Whether the open conversation's newest run ended done on an answer that asks the person a
+ *  question (R8: the agent asks which changes to make, and shows no plan). No frame says that a
+ *  run asked, so the bar reads it from the answer: its last reply ends in a question mark. */
+export function asksPerson(of: GoingState = state): boolean {
+  const run = newestRun(of);
+  return (
+    run !== undefined &&
+    shownState(run) === "done" &&
+    ENDS_IN_A_QUESTION.test(run.frames.replies.at(-1) ?? "")
+  );
+}
+
 /** Reads the run's stream until it ends, folding each frame into the run. The stream starts at
  *  the run's first frame, so its first frame starts the run's frames again: a run read before
  *  is not drawn twice. */
@@ -245,12 +295,54 @@ export function movePanel(event: PanelEvent, login: string | undefined, keys?: P
   }
 }
 
-/** Puts the conversation where `place` says: the shell's keys, the bar's Close and the panel's
- *  Close and move. */
+/** Whether the bar opens on `run`'s conversation: the run works, or its plan waits for the
+ *  person. */
+function holdsTheBar(run: RunEntry): boolean {
+  const shown = shownState(run);
+  return shown === "working" || shown === "waiting";
+}
+
+/** The runs the page holds of `run`'s conversation, oldest first. */
+function conversationOf(run: RunEntry): string[] {
+  return [...state.runs.values()]
+    .filter((entry) => entry.record.conversation === run.record.conversation)
+    .map((entry) => entry.id);
+}
+
+/**
+ * Puts the conversation where `place` says: the shell's keys, the bar's Close and the panel's
+ * Close and move. The bar opened over the page from closed (Ctrl-K, `/`, the Search control)
+ * opens on the open conversation while its newest run works or its plan waits, its next run's
+ * start is out or words wait for it; else on the conversation of this page's newest run that
+ * works or waits; else on the search, with no conversation open (design v2, Keys).
+ */
 export function setPlace(place: PanelPlace): void {
-  if (place !== state.place) {
-    set({ ...state, place });
+  if (place === state.place) {
+    return;
   }
+  if (state.place !== "closed" || place !== "over") {
+    set({ ...state, place });
+    return;
+  }
+  const open = newestRun();
+  if (
+    state.starting !== undefined ||
+    state.queued !== undefined ||
+    (open !== undefined && holdsTheBar(open))
+  ) {
+    set({ ...state, place });
+    return;
+  }
+  const other = [...state.runs.values()]
+    .filter((run) => run.startedHere && holdsTheBar(run))
+    .at(-1);
+  set({
+    ...state,
+    conversation: other === undefined ? undefined : conversationOf(other),
+    draft: undefined,
+    place,
+    refusal: undefined,
+  });
 }
 
 /** Sets the level the next run takes. */
@@ -276,18 +368,25 @@ export function setClicked(context: GoingContextInput, path: string): void {
 }
 
 /** Closes the open conversation, so the next request starts another. Its runs are still
- *  followed, and History lists it. */
+ *  followed, and History lists it; the words that waited for its run are let go. */
 export function newConversation(): void {
-  set({ ...state, conversation: undefined, draft: undefined, refusal: undefined });
+  set({
+    ...state,
+    conversation: undefined,
+    draft: undefined,
+    queued: undefined,
+    refusal: undefined,
+  });
 }
 
-function entryOf(record: GoingRun, startedHere: boolean): RunEntry {
+function entryOf(record: GoingRun, startedHere: boolean, since?: number): RunEntry {
   return {
     frames: STARTED_RUN,
     id: record.id,
     read: 0,
     record,
     seen: !startedHere,
+    since: since ?? Date.parse(record.created_at),
     startedHere,
     unreadable: undefined,
   };
@@ -296,9 +395,11 @@ function entryOf(record: GoingRun, startedHere: boolean): RunEntry {
 /**
  * Starts a run of `words` with the page's `context`, and answers whether it started. It follows
  * up the open conversation's newest run where that run has ended (`POST /api/v1/going/runs` with
- * `continues`), and starts a conversation of its own otherwise: a run that still works or waits
- * goes on beside it. A run of the `kind` `new_issue` is the line File as a new issue: a Fast run
- * that files the words as one new issue at once, so it takes no level of its own.
+ * `continues`), and starts a conversation of its own otherwise. While the newest run works, the
+ * words start no run beside it: they wait for it (`queued`, after any words that wait already),
+ * and `useSendQueued` sends them once it no longer works. A run of the `kind` `new_issue` is the
+ * line File as a new issue: a Fast run that files the words as one new issue at once, so it takes
+ * no level of its own. The words show as the question from the moment of the call (`starting`).
  */
 export async function startRun(
   words: string,
@@ -308,8 +409,18 @@ export async function startRun(
   kind?: GoingRunInput["kind"]
 ): Promise<boolean> {
   const newest = newestRun();
+  if (continues === undefined && newest !== undefined && shownState(newest) === "working") {
+    const waiting = state.queued?.run === newest.id ? `${state.queued.words}\n${words}` : words;
+    set({ ...state, queued: { run: newest.id, words: waiting } });
+    return false;
+  }
   const follows = continues ?? (newest !== undefined && ended(newest) ? newest.id : undefined);
-  set({ ...state, refusal: undefined, starting: true });
+  const at = Date.now();
+  set({
+    ...state,
+    refusal: undefined,
+    starting: { at, follows: follows !== undefined, words },
+  });
   try {
     const run = await api.createGoingRun(
       {
@@ -320,7 +431,7 @@ export async function startRun(
       },
       goingBounds(login)
     );
-    const entry = entryOf(run, true);
+    const entry = entryOf(run, true, at);
     const conversation =
       follows !== undefined && state.conversation !== undefined ? state.conversation : [];
     set({
@@ -328,7 +439,7 @@ export async function startRun(
       conversation: [...conversation, run.id],
       draft: undefined,
       runs: new Map(state.runs).set(run.id, entry),
-      starting: false,
+      starting: undefined,
     });
     follow(run.id);
     return true;
@@ -336,10 +447,46 @@ export async function startRun(
     set({
       ...state,
       refusal: apiErrorMessage(error, "The run did not start."),
-      starting: false,
+      starting: undefined,
     });
     return false;
   }
+}
+
+/** The words that wait for the open conversation's newest run, once that run no longer works;
+ *  undefined while it works or none wait. */
+export function queuedReady(of: GoingState = state): QueuedWords | undefined {
+  const held = of.queued;
+  const run = newestRun(of);
+  return held !== undefined && run?.id === held.run && shownState(run) !== "working"
+    ? held
+    : undefined;
+}
+
+/** Lets the words that wait go: the × beside them, or once they were sent. Words the store no
+ *  longer holds as `held` were let go already. */
+export function dropQueued(held: QueuedWords | undefined = state.queued): void {
+  if (held !== undefined && state.queued === held) {
+    set({ ...state, queued: undefined });
+  }
+}
+
+/**
+ * Sends the words that waited for a run through `enter`, the box's Enter (`useAsk`), once the run
+ * no longer works: they answer the plan it ended waiting on (a revision in words), or they are the
+ * next turn of its conversation. While its plan is still being read, `enter` takes nothing, and
+ * the words wait on. The bar over the page and the panel at the side each call it; only one of the
+ * two is on the screen at a time.
+ */
+export function useSendQueued(enter: (words: string) => boolean): void {
+  // Read so the surface draws again, and this runs again, when the words can go.
+  useGoingValue(queuedReady);
+  useEffect(() => {
+    const held = queuedReady();
+    if (held !== undefined && enter(held.words)) {
+      dropQueued(held);
+    }
+  });
 }
 
 /** Stops the run at once (`POST /api/v1/going/runs/{id}/stop`); its end frame says it stopped. */
@@ -387,6 +534,7 @@ export function openConversation(conversation: GoingConversation): void {
     conversation: records.map((record) => record.id),
     draft: undefined,
     place: state.place === "closed" ? "over" : state.place,
+    queued: undefined,
     refusal: undefined,
     runs,
   });
@@ -401,13 +549,15 @@ export function openRun(id: string): void {
   if (run === undefined) {
     return;
   }
-  const conversation = [...state.runs.values()]
-    .filter((entry) => entry.record.conversation === run.record.conversation)
-    .map((entry) => entry.id);
+  const conversation = conversationOf(run);
   set({
     ...state,
     conversation,
     place: state.place === "closed" ? "over" : state.place,
+    queued:
+      state.queued !== undefined && conversation.includes(state.queued.run)
+        ? state.queued
+        : undefined,
   });
 }
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -12,7 +12,8 @@ import { SidePanel } from "./SidePanel";
 
 // The conversation kept at the side of the page (spec R1, R11): a click on the page names the item
 // the next request is about, in place of the page's own issue and project, and History, read again
-// once a run starts there, lists that run.
+// once a run starts there, lists that run. Its box is the bar's (design v2, state 2): what Enter
+// does now, the chip, Stop while the run works, and words sent during the run held until it ends.
 
 const PAGE = "/issues/CORE-1";
 
@@ -130,5 +131,52 @@ test("History, opened again after a run starts at the side, lists that run", asy
   } finally {
     history.mockRestore();
     starts.restore();
+  }
+});
+
+test("the panel's box says what Enter does, and words sent while its run works go as the next turn once it ends", async () => {
+  const user = userEvent.setup();
+  const next: GoingRun = {
+    ...started,
+    continues: started.id,
+    id: "r-10",
+    words: "and the appendix",
+  };
+  const start = spyOn(api, "createGoingRun")
+    .mockResolvedValueOnce(started)
+    .mockResolvedValueOnce(next);
+  let send: ((name: string, data: unknown) => void) | undefined;
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    if (id === started.id) send = onFrame;
+    return Promise.withResolvers<void>().promise;
+  });
+  try {
+    renderPanel();
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    expect(box).toHaveAttribute("placeholder", "Ask…");
+    expect(screen.getByTestId("going-box-chip")).toHaveTextContent("CORE-1");
+    await user.type(box, `${started.words}{Enter}`);
+    await screen.findByTestId("going-run");
+    expect(box).toHaveAttribute("placeholder", "Ask a follow-up…");
+    expect(screen.getByTestId("going-stop")).toBeInTheDocument();
+
+    await user.type(box, "and the appendix{Enter}");
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("going-queued")).toHaveTextContent("and the appendix");
+
+    act(() => {
+      send?.("reply", { labels: [], text: "It says to page the on-call.", tools: [] });
+      send?.("end", { offers: [], reason: "", state: "done" });
+    });
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    expect(start.mock.calls[1]?.[0]).toMatchObject({
+      continues: started.id,
+      words: "and the appendix",
+    });
+    await waitFor(() => expect(screen.getAllByTestId("going-run")).toHaveLength(2));
+    expect(screen.queryByTestId("going-queued")).toBeNull();
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
   }
 });

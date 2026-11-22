@@ -18,8 +18,15 @@ export function bar(page: Page): Locator {
   return page.getByRole("dialog", { name: "Search" });
 }
 
+/** The bar's one box: the search box before Enter, and the same element under the conversation
+ *  after it (`features/search/SearchPalette.tsx`), whose name and role change with it. */
 export function searchBox(page: Page): Locator {
-  return page.getByRole("combobox", { name: "Search" });
+  return bar(page).getByTestId("bar-box");
+}
+
+/** The line under the bar's box that says what Enter does where the box's words do not. */
+export function boxHint(page: Page): Locator {
+  return bar(page).getByTestId("going-box-hint");
 }
 
 export function answerPanel(page: Page): Locator {
@@ -216,6 +223,33 @@ export async function askTheAgent(page: Page, words: string): Promise<void> {
 /** The newest run of the conversation on the screen. */
 export function newestRun(page: Page): Locator {
   return page.getByTestId("going-run").last();
+}
+
+/** One frame of a run's stream, as `GET /api/v1/going/runs/{id}/events` writes it. */
+export interface RunFrame {
+  readonly name: string;
+  readonly data: Record<string, unknown>;
+}
+
+/** The frames of the ended run `id`, read as the page's person
+ *  (`GET /api/v1/going/runs/{id}/events`), in the order the run stored them: the stream writes
+ *  every frame of an ended run and ends. */
+export async function runFrames(page: Page, id: string): Promise<RunFrame[]> {
+  const response = await page.request.get(`/api/v1/going/runs/${id}/events`, {
+    headers: { Accept: "text/event-stream" },
+  });
+  expect(response.status()).toBe(200);
+  const frames: RunFrame[] = [];
+  for (const event of (await response.text()).split(/\r?\n\r?\n/u)) {
+    let name = "message";
+    const data: string[] = [];
+    for (const line of event.split(/\r?\n/u)) {
+      if (line.startsWith("event:")) name = line.slice("event:".length).trim();
+      else if (line.startsWith("data:")) data.push(line.slice("data:".length).trimStart());
+    }
+    if (data.length > 0) frames.push({ data: JSON.parse(data.join("\n")), name });
+  }
+  return frames;
 }
 
 /** Approves the newest run's waiting plan from the bar's empty box once the bar has read the plan,

@@ -56,8 +56,8 @@ async function waitForAStep(page: Page): Promise<void> {
   );
 }
 
-// SLOW(>=2s): a run that never ends, stopped by the header's Stop.
-test("Stop in the header stops a run at once, and its steps stay", async ({ browser }) => {
+// SLOW(>=2s): a run that never ends, stopped by Stop at the right of the box.
+test("Stop beside the box stops a run at once, and its steps stay", async ({ browser }) => {
   modelsLane();
   test.setTimeout(90_000);
   const key = await seedCoreIssue("Track the comet");

@@ -133,7 +133,7 @@ test("slash and g p open the same bar as Control+K @phone", async ({ browser }) 
         page.getByRole("combobox", { name: "Search" }),
         `${opened} opens one box for everything, not a list of its own`
       )
-      .toHaveAttribute("placeholder", "Search Dispatch");
+      .toHaveAttribute("placeholder", "Search or ask…");
   }
 
   try {

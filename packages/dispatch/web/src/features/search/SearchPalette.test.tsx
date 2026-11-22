@@ -14,14 +14,23 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
+import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import type {
+  GoingPlanAnswer,
+  GoingRun,
+  IssueReferenceSummary,
+  SearchResponse,
+  SearchResult,
+} from "../../api/types";
+import { goingState, setPlace } from "../going/going-store";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
+import { CONFIGURED_CAPABILITY } from "./going-bar-fixture";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
@@ -1373,6 +1382,369 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   } finally {
     search.mockRestore();
     getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The bar after Enter (design v2, state 2; spec R1, R3, R10): the search parts leave it and it is
+// the conversation, the question at its top with "Thinking…" and its seconds from the moment of
+// Enter, and the box under it reading what Enter does now, with the chip, the level and Stop;
+// Esc in the empty box stops the run; New brings the search back. Words sent while the run works
+// wait under it (state 3's last bullet): × drops them, and the run's end sends them as the next
+// turn, or as the revision of the plan it ended waiting on.
+
+const WORDS = "who looks after the comet";
+
+function runRecord(id: string, words: string): GoingRun {
+  return {
+    context: null,
+    continues: null,
+    conversation: "c-1",
+    created_at: new Date().toISOString(),
+    finished_at: null,
+    id,
+    issues: [],
+    level: "standard",
+    mode: "ask",
+    state: "queued",
+    stop_reason: null,
+    used: { calls: 0, tokens: 0, working_ms: 0 },
+    words,
+  };
+}
+
+function waitingPlan(rows: GoingPlanAnswer["rows"] = []): GoingPlanAnswer {
+  return {
+    mode: "ask",
+    plan: 1,
+    rows,
+    run: "r-1",
+    state: "waiting",
+    summary: "Watch the comet.",
+    version: "v1",
+  };
+}
+
+/** The api of a Dispatch whose bar answers: every start answered with the next of `starts`
+ *  (`r-1`, `r-2`, … by default), each run's stream held open for the row to send frames down,
+ *  Stop answered, and the search and the pause's short answer quiet. */
+function answerTheBar(...starts: (GoingRun | Promise<GoingRun>)[]) {
+  let made = 0;
+  const start = spyOn(api, "createGoingRun").mockImplementation((input) => {
+    made += 1;
+    return Promise.resolve(starts[made - 1] ?? runRecord(`r-${made}`, input.words));
+  });
+  const frames = new Map<string, (name: string, data: unknown) => void>();
+  const stop = spyOn(api, "stopGoingRun").mockImplementation(async (id) => ({
+    ...runRecord(id, WORDS),
+    state: "stopped",
+  }));
+  const spies: readonly { readonly mockRestore: () => void }[] = [
+    start,
+    stop,
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([])),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+      frames.set(id, onFrame);
+      return Promise.withResolvers<void>().promise;
+    }),
+  ];
+  return {
+    restore: () => {
+      for (const spy of spies) spy.mockRestore();
+    },
+    /** Hands run `id`'s stream a frame. */
+    send: (id: string, name: string, data: unknown) => act(() => frames.get(id)?.(name, data)),
+    start,
+    stop,
+  };
+}
+
+/** Types `words` in the bar's box and presses Enter on the line on top, which starts a run; the
+ *  box is answered as it was before Enter. */
+async function enterInTheBar(user: UserEvent, words: string): Promise<HTMLInputElement> {
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  await user.click(box);
+  await user.paste(words);
+  await waitFor(() => expect(document.getElementById("search-option-line")).not.toBeNull());
+  await user.keyboard("{Enter}");
+  return box;
+}
+
+/** The bar's box under the conversation. */
+function talkBox(): HTMLInputElement {
+  return screen.getByRole<HTMLInputElement>("textbox", { name: "Ask the command bar" });
+}
+
+/** Opens the bar over the page, as Ctrl-K does, and renders it there. */
+function openTheBar(options: RenderPaletteOptions = {}) {
+  setPlace("over");
+  return renderPalette({ entries: ["/projects/LEGION/issues"], ...options });
+}
+
+test("Enter turns the bar into the conversation at once: the search parts leave, the question heads it with Thinking and its seconds, and the box under it reads Ask a follow-up…", async () => {
+  const user = userOnFakeClock();
+  const { promise: created, resolve: create } = Promise.withResolvers<GoingRun>();
+  const bar = answerTheBar(created);
+  const view = openTheBar();
+  try {
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveAttribute(
+      "placeholder",
+      "Search or ask…"
+    );
+    const box = await enterInTheBar(user, WORDS);
+
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    expect(dialog).toHaveAttribute("data-state", "conversation");
+    expect(dialog.className).toContain("h-[80vh]");
+    expect(dialog.className).toContain("xl:max-w-[720px]");
+    // The list, the filters, the operators, the chip's line above the box, the message under
+    // the list and the list's keys are gone.
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByTestId("search-operators")).toBeNull();
+    expect(screen.queryByTestId("search-scope")).toBeNull();
+    expect(screen.queryByText("Type at least 2 characters")).toBeNull();
+    expect(screen.queryByTestId("search-keyboard-hints")).toBeNull();
+    // Before Dispatch has answered the start, the question heads the conversation, with
+    // Thinking from the moment of Enter, and titles it.
+    expect(screen.getByTestId("going-run-words")).toHaveTextContent(WORDS);
+    expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 0 s");
+    expect(screen.getByTestId("going-title")).toHaveTextContent(WORDS);
+    // The box is the one it was, still focused, now under the conversation, with the chip on its
+    // left and the level beside it.
+    expect(talkBox()).toBe(box);
+    expect(box).toHaveFocus();
+    expect(box).toHaveAttribute("placeholder", "Ask a follow-up…");
+    expect(box).toHaveValue("");
+    const conversation = screen.getByTestId("going-conversation-view");
+    expect(conversation.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+      0
+    );
+    expect(screen.getByTestId("going-box-chip")).toHaveTextContent("the project LEGION");
+    expect(screen.getByTestId("going-level")).toBeInTheDocument();
+
+    await tick(1000);
+    expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 1 s");
+
+    // Dispatch answers the start: the run's own turn goes on counting from Enter, and Stop sits
+    // at the box's right while it works.
+    await act(async () => create(runRecord("r-1", WORDS)));
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    expect(screen.queryByTestId("going-run-starting")).toBeNull();
+    expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 1 s");
+    expect(screen.getByTestId("going-stop")).toBeInTheDocument();
+
+    // The run's first step ends the Thinking line.
+    bar.send("r-1", "call", { kind: "read", label: "Reading LEGION-3", step: 2, tool: "read" });
+    expect(screen.queryByTestId("going-thinking")).toBeNull();
+    expect(screen.getByTestId("going-step")).toHaveTextContent("Reading LEGION-3…");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("Esc in the empty box while the run works stops it, and the bar stays open", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  let closed = 0;
+  const view = openTheBar({ onClose: () => (closed += 1) });
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(bar.stop).toHaveBeenCalledTimes(1));
+    expect(bar.stop.mock.calls[0]?.[0]).toBe("r-1");
+    expect(closed).toBe(0);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("New brings the search back, in the same box", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    const box = await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    await user.click(screen.getByTestId("going-new"));
+
+    expect(screen.getByRole("dialog", { name: "Search" })).toHaveAttribute("data-state", "search");
+    expect(screen.queryByTestId("going-run")).toBeNull();
+    const search = screen.getByRole("combobox", { name: "Search" });
+    expect(search).toBe(box);
+    expect(search).toHaveAttribute("placeholder", "Search or ask…");
+    expect(screen.getByTestId("search-filters")).toBeInTheDocument();
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** Starts a run from the bar and sends words while it works: they wait under it. */
+async function queueWords(user: UserEvent, words: string): Promise<void> {
+  await enterInTheBar(user, WORDS);
+  await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+  await user.type(talkBox(), `${words}{Enter}`);
+}
+
+test("words sent while the run works wait under it, sending when it ends, and × drops them", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await queueWords(user, "and its moons");
+    // No second conversation starts beside the run: the words wait at the foot.
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("going-run")).toHaveLength(1);
+    expect(talkBox()).toHaveValue("");
+    const queued = screen.getByTestId("going-queued");
+    expect(within(queued).getByTestId("going-queued-words")).toHaveTextContent("and its moons");
+    expect(queued).toHaveTextContent("Sends when this run ends");
+
+    await user.click(within(queued).getByRole("button", { name: "Drop these words" }));
+    expect(screen.queryByTestId("going-queued")).toBeNull();
+    bar.send("r-1", "reply", { labels: [], text: "Nobody yet.", tools: [] });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    await tick(0);
+    expect(bar.start).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("words that wait go as the next turn of the conversation when the run ends with an answer", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await queueWords(user, "and its moons");
+    bar.send("r-1", "reply", { labels: [], text: "Nobody yet.", tools: [] });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+
+    await waitFor(() => expect(bar.start).toHaveBeenCalledTimes(2));
+    expect(bar.start.mock.calls[1]?.[0]).toMatchObject({
+      continues: "r-1",
+      words: "and its moons",
+    });
+    expect(goingState().queued).toBeUndefined();
+    await waitFor(() => expect(screen.getAllByTestId("going-run")).toHaveLength(2));
+    expect(screen.getAllByTestId("going-run-words").map((words) => words.textContent)).toEqual([
+      WORDS,
+      "and its moons",
+    ]);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("words that wait revise the plan the run ends waiting on", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const read = spyOn(api, "goingPlan").mockResolvedValue(waitingPlan());
+  const revise = answerRoute<(run: string, body: unknown) => Promise<GoingPlanAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/plan/revise"
+  );
+  revise.mockImplementation(async () => ({ ...waitingPlan(), plan: 2 }));
+  const view = openTheBar();
+  try {
+    await queueWords(user, "keep the dome whole");
+    bar.send("r-1", "plan", { plan: 1, state: "waiting" });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "waiting" });
+
+    await waitFor(() => expect(revise).toHaveBeenCalledTimes(1));
+    expect(revise.mock.calls[0]?.[0]).toBe("r-1");
+    expect(revise.mock.calls[0]?.[1]).toEqual({ plan: 1, words: "keep the dome whole" });
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(goingState().queued).toBeUndefined();
+  } finally {
+    read.mockRestore();
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("while a plan waits the box reads Say what to change…, words in it say Enter sends them, and ↑ in the empty box moves into the card", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const read = spyOn(api, "goingPlan").mockResolvedValue(
+    waitingPlan([
+      {
+        arguments: { issue: "LEGION-3", priority: 2 },
+        changed: false,
+        claim: null,
+        class: "field",
+        fields: ["priority"],
+        issue: "LEGION-3",
+        item: "LEGION-3",
+        needs: [],
+        now: { priority: null },
+        result: null,
+        row: 0,
+        state: "waiting",
+        tool: "dispatch_issue_update",
+        waits: [],
+      },
+    ])
+  );
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "plan", { plan: 1, state: "waiting" });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "waiting" });
+    await waitFor(() => expect(screen.getByTestId("going-plan")).toBeInTheDocument());
+
+    const box = talkBox();
+    expect(box).toHaveAttribute("placeholder", "Say what to change…");
+    expect(screen.queryByTestId("going-box-hint")).toBeNull();
+    await user.type(box, "keep it");
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ sends your words instead of approving"
+    );
+    await user.clear(box);
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("going-plan-row");
+  } finally {
+    read.mockRestore();
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("an answer that asks the person a question makes the box read Answer…", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, "hand LEGION-3 to Legion");
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "reply", {
+      labels: [],
+      text: "Which changes hand it over: a label, a status?",
+      tools: [],
+    });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    expect(talkBox()).toHaveAttribute("placeholder", "Answer…");
+  } finally {
+    bar.restore();
     view.unmount();
     view.queryClient.clear();
   }

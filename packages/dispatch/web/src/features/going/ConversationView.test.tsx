@@ -1,13 +1,15 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
 import { dangerText } from "../../theme/classes";
-import { ConversationView } from "./ConversationView";
-import { openConversation, resetGoingStore } from "./going-store";
+import { ConversationView, elapsedWords } from "./ConversationView";
+import { goingState, openConversation, resetGoingStore, startRun } from "./going-store";
 import { useOpenPlan } from "./usePlan";
 
 // The steps of a run as the bar draws them (design v3, state 3): one line for each call, in the
@@ -16,6 +18,9 @@ import { useOpenPlan } from "./usePlan";
 // running once the run ended; no line for a call with no words, or for a change of an approved
 // plan, which its row's tick shows; the model's prose beside its calls while they run, never as
 // the answer; and under the answer, the line that says results were withheld from the model.
+// Around them (design v2, states 2 and 3): the question as a bubble, "Thinking…" with its seconds
+// until the first step or answer, from the moment of Enter, and the words sent while the run works,
+// waiting at the foot with × to drop them.
 
 function record(state: GoingRun["state"]): GoingRun {
   const at = new Date().toISOString();
@@ -257,6 +262,96 @@ test("no running line stays once the run ended: a call its end cut draws no line
     expect(stepLines()).toEqual([["Read DEMO-15", "false"]]);
     expect(screen.queryByTestId("going-step-words")).toBeNull();
   } finally {
+    restore();
+  }
+});
+
+test("the Thinking line counts whole seconds from the moment the person asked", () => {
+  expect(elapsedWords(10_000, 10_000)).toBe("0 s");
+  expect(elapsedWords(10_000, 10_999)).toBe("0 s");
+  expect(elapsedWords(10_000, 12_000)).toBe("2 s");
+  expect(elapsedWords(10_000, 9_000)).toBe("0 s");
+});
+
+test("a run that has sent nothing yet shows its question and Thinking with its seconds, until its first step", async () => {
+  await onFakeClock(async () => {
+    let send: ((name: string, data: unknown) => void) | undefined;
+    const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+      send = onFrame;
+      return new Promise<void>(() => {});
+    });
+    try {
+      openConversation({
+        id: "c-1",
+        newest_at: new Date().toISOString(),
+        runs: [record("working")],
+      });
+      renderWithQueries(<Conversation />);
+      expect(screen.getByTestId("going-run-words")).toHaveTextContent("where is DEMO-15");
+      expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 0 s");
+      // "Working…" would say the same thing twice.
+      expect(screen.queryByTestId("going-run-state")).toBeNull();
+      await tick(1000);
+      expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 1 s");
+      await tick(1000);
+      expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 2 s");
+
+      act(() => send?.("call", { kind: "read", label: "Reading DEMO-15", step: 2, tool: "read" }));
+      expect(screen.queryByTestId("going-thinking")).toBeNull();
+      expect(stepLines()).toEqual([["Reading DEMO-15…", "true"]]);
+      expect(screen.getByTestId("going-run-state")).toHaveTextContent("Working…");
+    } finally {
+      stream.mockRestore();
+    }
+  });
+});
+
+test("the question shows with Thinking from the moment of Enter, before Dispatch answers the start", async () => {
+  const { promise: created, resolve: create } = Promise.withResolvers<GoingRun>();
+  const start = spyOn(api, "createGoingRun").mockReturnValue(created);
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(
+    () => new Promise<void>(() => {})
+  );
+  try {
+    renderWithQueries(<Conversation />);
+    let started: Promise<boolean> | undefined;
+    act(() => {
+      started = startRun("where is DEMO-15", { path: "/" }, "alice");
+    });
+    const asked = screen.getByTestId("going-run-starting");
+    expect(within(asked).getByTestId("going-run-words")).toHaveTextContent("where is DEMO-15");
+    expect(within(asked).getByTestId("going-thinking")).toHaveTextContent("Thinking… 0 s");
+
+    await act(async () => {
+      create(record("working"));
+      await started;
+    });
+    expect(screen.queryByTestId("going-run-starting")).toBeNull();
+    const run = screen.getByTestId("going-run");
+    expect(within(run).getByTestId("going-run-words")).toHaveTextContent("where is DEMO-15");
+    expect(within(run).getByTestId("going-thinking")).toBeInTheDocument();
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+test("words sent while the run works wait at the foot, sending when it ends, and × drops them", async () => {
+  const user = userEvent.setup();
+  const start = spyOn(api, "createGoingRun");
+  const restore = await showRun("working", []);
+  try {
+    await act(() => startRun("and its comments", { path: "/" }, "alice"));
+    expect(start).not.toHaveBeenCalled();
+    const queued = screen.getByTestId("going-queued");
+    expect(within(queued).getByTestId("going-queued-words")).toHaveTextContent("and its comments");
+    expect(queued).toHaveTextContent("Sends when this run ends");
+
+    await user.click(within(queued).getByRole("button", { name: "Drop these words" }));
+    expect(screen.queryByTestId("going-queued")).toBeNull();
+    expect(goingState().queued).toBeUndefined();
+  } finally {
+    start.mockRestore();
     restore();
   }
 });

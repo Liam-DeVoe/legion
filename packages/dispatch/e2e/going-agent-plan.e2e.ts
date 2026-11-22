@@ -4,8 +4,8 @@ import { modelsLane, proposePlan, say, scriptChat } from "./fake-models-helpers"
 import {
   askTheAgent,
   bar,
+  boxHint,
   closeBar,
-  lineOnTop,
   newestRun,
   openBar,
   openBarOver,
@@ -210,7 +210,7 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
 });
 
 // SLOW(>=2s): a waiting run whose plan the bar reads late, and the approval once it has.
-test("before the bar has read the waiting plan, the line says so, Enter opens no row and starts no run, and it approves once it has", async ({
+test("before the bar has read the waiting plan, the hint says so, Enter opens no row and starts no run, and it approves once it has", async ({
   browser,
 }) => {
   modelsLane();
@@ -231,9 +231,10 @@ test("before the bar has read the waiting plan, the line says so, Enter opens no
     await askTheAgent(page, words);
     await planWaits(page);
     await expect(planCard(page)).toHaveCount(0);
-    // Words in the box: the line names the read, and Enter keeps the words and starts no run.
+    // Words in the box: the hint under it names the read, and Enter keeps the words and starts
+    // no run.
     await searchBox(page).fill("keep the dome whole");
-    await expect(lineOnTop(page)).toContainText("Reading the plan");
+    await expect(boxHint(page)).toContainText("Reading the plan");
     await searchBox(page).press("Enter");
     await expect(searchBox(page)).toHaveValue("keep the dome whole");
     await searchBox(page).fill("");
@@ -243,8 +244,8 @@ test("before the bar has read the waiting plan, the line says so, Enter opens no
     await expect(planCard(page)).toHaveAttribute("data-state", "waiting", {
       timeout: RUN_STEPS_MS,
     });
-    // The early Enter opened no row of the list: the bar is open on the page it opened over,
-    // and the run still waits.
+    // The early Enter opened nothing: the bar is open on the page it opened over, and the run
+    // still waits.
     await expect(bar(page)).toBeVisible();
     expect(page.url()).toBe(opened);
     await expect(newestRun(page)).toHaveAttribute("data-state", "waiting");
@@ -296,7 +297,7 @@ test("a revision in words replaces the plan", async ({ browser }) => {
     await planWaits(page);
     await expect(planCard(page)).toHaveAttribute("data-plan", "1");
     await searchBox(page).fill("keep the dome whole");
-    await expect(lineOnTop(page)).toContainText("Revise the plan");
+    await expect(boxHint(page)).toContainText("sends your words");
     await searchBox(page).press("Enter");
     await expect(planCard(page)).toHaveAttribute("data-plan", "2", { timeout: RUN_STEPS_MS });
     await expect(planCard(page)).toContainText("keeping the dome whole");

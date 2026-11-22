@@ -7,15 +7,17 @@ import {
   openBarOver,
   prose,
   RUN_STEPS_MS,
+  runFrames,
 } from "./going-panel";
 import { expect, type Locator, test } from "./test";
 import { withAlice } from "./users";
 
 // Check c3 of dispatch://INFRA-1588/artifact/verification-md (spec R3): a pause streams a short
-// answer and the store records no write; Enter starts a run, each tool call shows as a step while
-// it runs, and the answer links each item the fake read; and each number of a chart is the
-// server's, from the chain the fake asks for over its read, never the number the fake writes in its
-// text. Negative control: a bar that draws the numbers the model wrote shows the wrong number.
+// answer and the store records no write; Enter starts a run, each tool call is a step the run
+// sends as it starts (its `call` frame, in the present tense) before it ends (its `tool` frame),
+// and the answer links each item the fake read; and each number of a chart is the server's, from
+// the chain the fake asks for over its read, never the number the fake writes in its text.
+// Negative control: a bar that draws the numbers the model wrote shows the wrong number.
 
 /** The value the chart draws for the point of `status`, whether the chart writes it as stored
  *  (`in_progress`) or in words (`In progress`). */
@@ -42,7 +44,7 @@ test("a pause streams a short answer, and the store records no write", async ({ 
 });
 
 // SLOW(>=2s): a run of two model calls and a read.
-test("Enter starts a run: each tool call shows as a step while it runs, and the answer links each item it read", async ({
+test("Enter starts a run: each tool call is a step sent as it starts and again as it ends, and the answer links each item it read", async ({
   browser,
 }) => {
   modelsLane();
@@ -55,8 +57,7 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
     runs: [
       {
         turns: [
-          // The read streams slowly, so its step shows working before its frame ends it.
-          { ...callTool("dispatch_read", { issue: issue.key }), delayMs: 200 },
+          callTool("dispatch_read", { issue: issue.key }),
           say(`The mapping is in [${issue.key}](/issues/${issue.key}).`),
         ],
         words,
@@ -65,18 +66,6 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
   });
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
-    // Every step the page draws as running is recorded from here on, however short its while.
-    await page.evaluate(() => {
-      const running: string[] = [];
-      Reflect.set(window, "__goingRunningSteps", running);
-      new MutationObserver(() => {
-        for (const step of document.querySelectorAll(
-          '[data-testid="going-step"][data-running="true"]'
-        )) {
-          running.push(step.getAttribute("data-tool") ?? "");
-        }
-      }).observe(document.body, { attributes: true, childList: true, subtree: true });
-    });
     await askTheAgent(page, words);
     const run = newestRun(page);
     await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-tool", "call_tool", {
@@ -87,11 +76,6 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
     });
     // The ended step reads as words: the read's past form, never the tool's name or its JSON.
     await expect(run.getByTestId("going-step").first()).toHaveText(`Read ${issue.key}`);
-    const running = await page.evaluate(() => {
-      const seen: unknown = Reflect.get(window, "__goingRunningSteps");
-      return Array.isArray(seen) ? seen.map(String) : [];
-    });
-    expect(running).toContain("call_tool");
     const answer = run.getByTestId("going-run-answer");
     await expect(answer.getByRole("link", { name: issue.key })).toHaveAttribute(
       "href",
@@ -99,6 +83,21 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
       { timeout: RUN_STEPS_MS }
     );
     await expect(run).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
+    // The run's stream, as the person reads it: the read's call frame, with its present words,
+    // comes before the tool frame that ends the same step. Both can reach the page in one render,
+    // so the running line itself is proven in `run-frames.test.ts` and `ConversationView.test.tsx`.
+    const frames = await runFrames(page, (await run.getAttribute("data-run")) ?? "");
+    const call = frames.findIndex((frame) => frame.name === "call");
+    expect(frames[call]?.data).toMatchObject({
+      kind: "read",
+      label: `Reading ${issue.key}`,
+      tool: "call_tool",
+    });
+    const step = frames[call]?.data.step;
+    expect(typeof step).toBe("number");
+    const ended = frames.findIndex((frame) => frame.name === "tool" && frame.data.step === step);
+    expect(ended).toBeGreaterThan(call);
+    expect(frames[ended]?.data).toMatchObject({ label: `Read ${issue.key}`, tool: "call_tool" });
   });
 });
 

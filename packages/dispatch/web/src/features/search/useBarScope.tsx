@@ -21,6 +21,11 @@ import {
 /** The chip the bar acts through: the line it draws above the box, the two keys that move it,
  *  and what each offer acts on at the level those keys have left it at. */
 export interface BarScope {
+  /** What the bar acts on, in the chip's words: the issue's key, the document's name, the
+   *  selected issues, the project, or the block the writing cursor was in, at the level the two
+   *  keys have left it at; undefined on a page that puts nothing under the bar. The box carries
+   *  it on its left once the bar is a conversation. */
+  readonly chip: string | undefined;
   /** `Tab` and `Backspace`, the two keys that move the chip, for the box to offer them before
    *  its own. It answers whether the key moved the chip, which the box reads as the key being
    *  spent: the browser's own move is then the one thing left to cancel. */
@@ -89,6 +94,7 @@ export function useBarScope(
     project: pageProject,
   });
   return {
+    chip: scope,
     context: {
       block: targets.block === undefined ? "" : (cursor?.id ?? ""),
       issue: targets.issue ?? "",
