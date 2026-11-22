@@ -33,8 +33,11 @@ import (
 // phase no role works. The stop's row names the claim of the agent that ran the step, read here in
 // the fact's transaction (workerClaim), and the outbox stops that claim: a restart of the task before
 // the row runs enters the first step and writes its agent on the role's row, and a row resolved when
-// it runs would stop that agent and leave the stopped step's running. The task's state is the
-// caller's to have read: a task done or left is no task to stop (StopTask refuses it).
+// it runs would stop that agent and leave the stopped step's running. A step that waits for its
+// join or its agent (Walk.Wait, read before the stop, which ends the wait) was never delivered: its
+// agent runs no step of this task, or runs another task's, so its stop queues no step_stop, which
+// would end that other step. The task's state is the caller's to have read: a task done or left is
+// no task to stop (StopTask refuses it).
 //
 // issue may be the copy read for the stopped task of a plan of several (view): the issue is then
 // written where its tasks put it (putIssue), held for the stop only while no other task runs, so
@@ -75,7 +78,11 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return nil, err
 	}
-	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
+	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why,
+		"wait", w.Wait)
+	if w.Wait != record.StepWaitNone {
+		return nil, nil
+	}
 	role, err := StoppedStepRole(ctx, e.store, tx, issue)
 	if err != nil || role == "" {
 		return nil, err

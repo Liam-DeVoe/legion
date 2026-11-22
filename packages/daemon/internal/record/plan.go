@@ -833,14 +833,17 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 
 // StopTask writes task of the plan of issue at generation stopped for reason, at the place it
 // stands, which a later start of the task reads. A stop of a held task ends its hold, and with it
-// the hold's reason. A stop without its reason, of a task that is done or left the workflow, or of
-// a task the plan does not hold, is refused.
+// the hold's reason. A stop ends the wait of the step at the task's place (StepWait) in the same
+// write: a stopped task's step waits for nothing, and only a later start of the task, which writes
+// its own wait (MoveTask), starts it again. A stop without its reason, of a task that is done or
+// left the workflow, or of a task the plan does not hold, is refused.
 func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error {
 	describe := fmt.Sprintf("stop task %s of %s at generation %d", task, issue, generation)
 	if reason == "" {
 		return fmt.Errorf("%s: a stop records why", describe)
 	}
-	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'stopped', stopped_reason = $4, hold_reason = ''
+	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'stopped', stopped_reason = $4, hold_reason = '',
+		step_wait = '', step_wait_since = null
 		where issue = $1 and generation = $2 and task = $3 and state not in ('done', 'left')`, issue, int64(generation), task, reason)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
