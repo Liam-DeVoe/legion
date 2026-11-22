@@ -8,6 +8,7 @@ package supervise
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -220,4 +221,126 @@ func TestTakeWhoseFinishIsOwedIsNotPutBackByTheLateReportOfItsGivenRun(t *testin
 	h.advance(testRPC)
 	h.wantRunOnce(number)
 	h.wantCharges()
+}
+
+// finishesOf is the finish lines of task number: a harness that ran an earlier task logs its
+// finish too.
+func (h *harness) finishesOf(number uint64) []loggedRecord {
+	var lines []loggedRecord
+	for _, r := range h.records.of(finishedLine) {
+		if task, _ := r.attr("task"); task.String() == strconv.FormatUint(number, 10) {
+			lines = append(lines, r)
+		}
+	}
+	return lines
+}
+
+// Row 20: after a daemon start, a take the store held accepted, its given run running at the
+// restart, is anchored (anchorRestored). Before the first hello the report of that run arrives
+// saying the take's text was held through it, which is kept for the hello, and then the report of
+// the take's own turn naming its number, whose finish the store refuses (Machine.finishOwed, set
+// after the anchor exists). The hello puts nothing back: the report that came decides. The take's
+// own turn's start, replayed behind the hello, is no turn of the task, and the end-frame bound
+// makes the finish once the store answers, once.
+//
+// It passes on the commit under this change too, which already left the take where it was: the
+// take's own report, of the turn the anchor gave it, spends the restored anchor (learnTurns), so
+// the hello binds none and puts nothing back. It pins the order; the guard that would hold if the
+// anchor stood is putBack's own (waitFinish).
+func TestTakeRestoredWhoseOwnReportsFinishIsRefusedBeforeTheHelloIsNotPutBackAtIt(t *testing.T) {
+	h, number := takeAcrossARestart(t, givenRunRunning, withWaits)
+	h.reportHeldOf(2, 0, number)
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: 3, Task: number}); err == nil {
+		t.Fatal("the take's own report whose finish the store refused answered no failure")
+	}
+	h.m.Wait()
+
+	h.conn.SetStreaming(false)
+	h.connect()
+
+	if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
+		t.Errorf("the hello logged %q over the take whose finish is owed, want nothing put back", lines)
+	}
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.must(StreamTurnStart{Claim: h.token})
+	starts := h.records.of(turnStartedLine)
+	if task, named := starts[len(starts)-1].attr("task"); named {
+		t.Errorf("the take's own turn's replayed start names task %s, want it no turn of the task, whose report came", task)
+	}
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.advance(2 * turnStartBound)
+	h.wantCharges()
+	h.store.fail("RetireDelivery", nil)
+	h.advance(testRPC)
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the claim holds %+v once the store answered, want task %d finished", p, number)
+	}
+	finished := h.finishesOf(number)
+	if len(finished) != 1 {
+		t.Fatalf("task %d was finished %d times, want once", number, len(finished))
+	}
+	wantAttr(t, finished[0], "by", finishedByReport)
+	if value, held := h.values.value(h.token); held && value.Number == number {
+		t.Fatalf("the bucket still holds %+v, want task %d's value deleted", value, number)
+	}
+}
+
+// Row 21: a take of a number whose finish is owed (takePhase, waitFinish) is answered refused with
+// hold not-owed, handed no text, charges nobody and applies nothing (answeredFromRecord): the
+// report came, and no run of the task is owed. The end-frame bound's finish then deletes the value,
+// once the store answers. Two takes can meet it:
+//
+//   - the same process sending its take again after the answer it had lost, the report of the
+//     take's turn having come meanwhile, its finish refused: red on the commit under this change,
+//     which answered it the kept text, and the worker ran the task again;
+//   - a process relaunched after a let-go, here a suspension, whose finish the store refused:
+//     every decision while the store refuses finishes the task first or fails before its row
+//     (settle), so no relaunch takes the number while its finish is owed, and the relaunched
+//     process is handed nothing of it. It passes on the commit under this change too; it pins that
+//     the let-go's refusal never hands the number to the next process.
+func TestTakeOfANumberWhoseFinishIsOwedIsRefusedNotOwed(t *testing.T) {
+	t.Run("a take sent again after its lost answer", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
+		h.manualTakes()
+		h.reach(StateReady)
+		number := h.takeOf("the task whose answer was lost")
+		asked, _ := h.values.value(h.token)
+		h.store.fail("RetireDelivery", errBoom)
+		if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: 1, Task: number}); err == nil {
+			t.Fatal("the report whose finish the store refused answered no failure")
+		}
+		h.m.Wait()
+
+		answer, err := h.takeValue(asked)
+
+		if err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldNotOwed || answer.Text != "" {
+			t.Fatalf("the take sent again was answered %+v, %v; want it refused not-owed with no text", answer, err)
+		}
+		h.wantPrompts(1)
+		h.wantCharges()
+		h.store.fail("RetireDelivery", nil)
+		h.advance(testRPC)
+		h.wantOwedFinishMade(number)
+		h.wantCharges()
+	})
+	t.Run("a process relaunched after a let-go the store would not let finish", func(t *testing.T) {
+		h, number := owedFinishAwaitingItsTurn(t, true)
+		if err := h.handle(operatorSuspension(h)); err == nil {
+			t.Fatal("the suspension whose finish the store refused answered no failure")
+		}
+		h.wantState(StateSuspended)
+		if err := h.handle(RequestResume{Claim: h.token}); err == nil {
+			t.Fatal("the resume while the store refuses the finish answered no failure")
+		}
+		h.wantState(StateSuspended)
+		h.store.fail("RetireDelivery", nil)
+
+		h.must(RequestResume{Claim: h.token})
+		h.relaunched()
+
+		h.wantOwedFinishMade(number)
+		h.wantPrompts(1)
+		h.wantCharges()
+	})
 }

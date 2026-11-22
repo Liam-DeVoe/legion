@@ -500,11 +500,8 @@ const takesTurnMovedLine = "supervise: a turn's report names no task of the take
 // as before (finishAtTurnsEnd): that is what finishes the task a migrated old worker took
 // (decision 8 of dispatch://INFRA-2811). A report of an earlier generation than the claim's is
 // of a turn no take of this process held, and says nothing of it either; and a take whose text no
-// record kept (Delivery) has no text to await its turn with. Nor does a report move a take whose
-// report naming its number came and whose finish the store refused (takePhase, waitFinish): that
-// report decides, the take stays where it put it, and the end-frame bound makes its finish
-// again. Put back, the take would await a turn that has run, and the start of that turn, late,
-// would be given it as a second run of the task.
+// record kept (Delivery) has no text to await its turn with. A take whose report naming its number
+// came and whose finish the store refused is not put back either (putBack, waitFinish).
 //
 // The undoing stands in memory whether or not its write lands: a write that fails leaves the
 // delivery unsaved, and settle writes it again.
@@ -514,7 +511,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 		return nil
 	}
 	// waitNone over a take is a plugin below TaskTakeContract (endFrameFinishes).
-	if phase := m.takePhase(); phase == waitNone || phase == waitFinish {
+	if m.takePhase() == waitNone {
 		return nil
 	}
 	count := m.counted()
@@ -543,7 +540,16 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 // report — a held suspension, a stale-plugin relaunch — goes on waiting, for that turn's start
 // or for R5's second bound, which this decision arms from here (secondWaitNow), and the wait's
 // own bound goes (armReportWait).
+//
+// It puts back no take whose report naming its number came and whose finish the store refused
+// (takePhase, waitFinish), whichever of its three callers asks: that report decides, the take
+// stays where it put it, and the end-frame bound makes its finish again. Put back, the take would
+// await a turn that has run, and the start of that turn, late, would be given it as a second run
+// of the task.
 func (m *Machine) putBack(ctx context.Context, by string) error {
+	if m.takePhase() == waitFinish {
+		return nil
+	}
 	p := m.claim.Pending
 	m.log.Info(notTheTakesTurnLine, "task", p.Number, "by", by)
 	p.TurnStarted, m.turns.take = false, 0

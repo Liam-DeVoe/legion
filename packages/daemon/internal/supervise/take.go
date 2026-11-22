@@ -447,9 +447,13 @@ func (c *Claim) recordTake(take RequestTake, state TakeState) bool {
 // adoption of the working copy, which goes back to Machine.Take to make; a take that adopts
 // nothing is accepted here.
 //
-// Three takes are answered before any of that, from the record alone. A number the claim's record
+// Four takes are answered before any of that, from the record alone. A number the claim's record
 // does not owe it — no task pending, another one pending — is refused not-owed and records
-// nothing. A number the claim holds as its accepted, unfinished take, before the take's turn
+// nothing. So is a number whose take's report came and whose finish the store refused (takePhase,
+// waitFinish): no run of the task is owed, and handed its text again — by the same process
+// sending its take again after a lost answer, or by a process relaunched after a let-go — the
+// worker would run the task again; it charges nobody, and the end-frame bound's finish deletes
+// the value. A number the claim holds as its accepted, unfinished take, before the take's turn
 // starts or after, is a take sent again after its answer was lost: it is answered the same text,
 // which the record kept (Delivery.TakenText), and applies nothing a second time — no adoption,
 // no write, no telling. A run that started meanwhile and was given to the take (turnStarted) may
@@ -466,12 +470,13 @@ func take(m *Machine, ctx context.Context, ev Event) error {
 	return m.undecided(ctx, request, m.takePending(ctx, request))
 }
 
-// answeredFromRecord answers the three takes the record alone decides (take), and reports whether
-// it answered this one.
+// answeredFromRecord answers the four takes the record alone decides (take), and reports whether
+// it answered this one. The phase is read once, from the one function that decides it
+// (takePhase).
 func (m *Machine) answeredFromRecord(request RequestTake) bool {
 	p := m.claim.Pending
 	switch {
-	case request.Number == 0 || p == nil || p.Number != request.Number:
+	case request.Number == 0 || p == nil || p.Number != request.Number || m.takePhase() == waitFinish:
 		m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldNotOwed})
 	case p.taken() && p.TakenText != "":
 		m.answerAgain(request, TakeAnswer{Outcome: TakeOutcomeAccepted, Text: p.TakenText})
