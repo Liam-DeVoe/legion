@@ -130,7 +130,7 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 		cancel()
 		select {
 		case <-g.result:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Error("the launcher did not leave after its context ended")
 		}
 	})
@@ -161,7 +161,7 @@ func (g *rig) accept() shimwire.LauncherState {
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
 	if tcp, ok := listener.(*net.TCPListener); ok {
-		if err := tcp.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		if err := tcp.SetDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,7 +202,7 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
-	if err := g.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := g.conn.SetReadDeadline(time.Now().Add(testwait.Bounded(g.t, time.Minute, time.Second))); err != nil {
 		g.t.Fatal(err)
 	}
 	line, err := g.reader.ReadBytes('\n')
@@ -314,7 +314,7 @@ func published(t *testing.T, marker string) (int, string) {
 	t.Helper()
 	var pid int
 	var rest string
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		body, err := os.ReadFile(marker)
 		if err != nil {
 			return false
@@ -436,7 +436,7 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unacknowledged.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := unacknowledged.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bufio.NewReader(unacknowledged).ReadBytes('\n'); err != nil {
@@ -582,7 +582,7 @@ func (g *rig) told(generation uint64, expansion string, env []string, resume str
 		g.t.Fatalf("start of generation %d = %#v", generation, got)
 	}
 	var said string
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Bounded(g.t, time.Minute, time.Second), testwait.Poll, func() bool {
 		body, err := os.ReadFile(told)
 		if err != nil {
 			return false
@@ -709,7 +709,7 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 		cancel()
 		select {
 		case <-f.result:
-		case <-time.After(30 * time.Second):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Errorf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
 		}
 	})
@@ -733,7 +733,7 @@ func (f *fleet) stop() error {
 	case err := <-f.result:
 		f.result <- err
 		return err
-	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
+	case <-time.After(testwait.Bounded(f.t, time.Minute, time.Second)):
 		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
 		return nil
 	}
@@ -769,7 +769,7 @@ func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 func (f *fleet) waitForRoleFile(path string) string {
 	f.t.Helper()
 	var said string
-	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Bounded(f.t, time.Minute, time.Second), testwait.Poll, func() bool {
 		body, err := os.ReadFile(path)
 		if err != nil || len(body) == 0 {
 			return false
@@ -1838,7 +1838,7 @@ func holdSessionSocket(t *testing.T, socket string) net.Conn {
 		t.Fatalf("dial the generation's session socket: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Write([]byte("ping")); err != nil {

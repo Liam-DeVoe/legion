@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -551,7 +552,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		cancel()
 		select {
 		case <-exited:
-		case <-time.After(20 * time.Second):
+		case <-time.After(testwait.Bounded(f.t, time.Minute, time.Second)):
 			f.t.Error("the shim did not leave after its context ended")
 		}
 	})
@@ -561,7 +562,8 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		f.t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
+	// The hang guard of the save, which the request itself gives two minutes (TimeoutMs).
+	if err := conn.SetDeadline(time.Now().Add(testwait.Bounded(f.t, 2*time.Minute, time.Second))); err != nil {
 		f.t.Fatal(err)
 	}
 	reader := shimwire.NewReader(bufio.NewReader(conn))

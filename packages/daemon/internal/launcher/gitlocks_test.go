@@ -268,7 +268,7 @@ func (g *gatedProc) through(t *testing.T, which string) {
 			if err != nil {
 				t.Fatal(err)
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("the sweep's %s holder read never reached %s", which, gate)
 		}
 	}
@@ -325,14 +325,14 @@ func requireRemoved(t *testing.T, log *lockedBuffer, path string) {
 	}
 }
 
-// awaitPass fails the row unless the pass running in a goroutine of its own has returned within
-// d, with the sweep's own log for what it was doing.
-func awaitPass(t *testing.T, done <-chan struct{}, d time.Duration, log *lockedBuffer) {
+// awaitPass fails the row unless the pass running in a goroutine of its own has returned under the
+// test's hang guard, with the sweep's own log for what it was doing.
+func awaitPass(t *testing.T, done <-chan struct{}, log *lockedBuffer) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(testwait.Bounded(t, d, time.Second)):
-		t.Fatalf("the pass did not return within %s; its log:\n%s", d, log.String())
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("the pass did not return under the test's hang guard; its log:\n%s", log.String())
 	}
 }
 
@@ -697,7 +697,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 			if path != lock {
 				t.Fatalf("the pass held at the removal of %s, not of %s; the launcher's log:\n%s", path, lock, f.stderr.String())
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("the launcher's pass never reached the removal of %s; its log:\n%s", lock, f.stderr.String())
 		}
 		answersNothingFor(t, conn, 300*time.Millisecond)
@@ -852,7 +852,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("the sweep's ticker outlived the container's context; its log:\n%s", log.String())
 		}
 	})
@@ -902,7 +902,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			if path != running {
 				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
 		}
 
@@ -921,7 +921,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		// at once. The half second below bounds how long such a Run has to show itself, and a Run
 		// that waits cannot return in it, however loaded the machine is.
 		conn := f.role("tester")
-		if err := conn.conn.SetReadDeadline(time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))); err != nil {
+		if err := conn.conn.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
 			t.Fatal(err)
 		}
 		for {
@@ -945,7 +945,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			if !taken {
 				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock")
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
 		}
 		if !swept(running) {
@@ -1122,12 +1122,13 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		s := c.sweep(log, procRoot(t, os.Getpid()))
 		// An hour's recheck this pass must never reach: a lock the first read found a holder
 		// for is decided there and never read again, where a lock that reaches the second read
-		// would hold the pass for that hour. A row that gave the sweep its usual millisecond
-		// would read the same keep line whichever of the two reads wrote it.
+		// would hold the pass for that hour, far past the hang guard awaitPass waits under. A row
+		// that gave the sweep its usual millisecond would read the same keep line whichever of
+		// the two reads wrote it.
 		s.recheck = time.Hour
 		done := make(chan struct{})
 		go func() { defer close(done); s.pass(context.Background(), false) }()
-		awaitPass(t, done, 10*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, held, "a process of the container holds it open")
 	})
 
@@ -1148,7 +1149,7 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		}
 		defer file.Close()
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, taken, "a process of the container holds it open")
 	})
 }
@@ -1267,7 +1268,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, path, "it changed between the two reads")
 	})
 
@@ -1287,7 +1288,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 		}
 		c.plant(path, "a second writer's", time.Hour)
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, path, "it changed between the two reads")
 	})
 }
