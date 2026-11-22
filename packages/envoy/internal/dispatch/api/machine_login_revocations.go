@@ -143,6 +143,12 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 // broker revoked already is not listed again, so a pass that meets a failure revokes the rest next
 // time.
 //
+// It lists the person's own machine logins alone (ownMachineLogins), where the restricted
+// member's list and revoke routes hold them to memberMachineLogins, which adds the logins of the
+// pods the broker maps to them. A removal owes the revocation of the device logins the person
+// approved; a pod login it revoked would log in again with its pod's token under a new login, so
+// the broker's whole set would promise an ending the revocation cannot deliver.
+//
 // It asks mayCall before every broker call, the list and each revoke, and stops with
 // errRevocationWindowSpent when it answers false.
 func revokeMachineLoginsOf(ctx context.Context, client *cipher.Client, revocation store.OwedMachineLoginRevocation, mayCall func() (bool, error)) (int, error) {
