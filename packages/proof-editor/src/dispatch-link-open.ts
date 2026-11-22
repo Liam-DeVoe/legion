@@ -22,17 +22,17 @@
  * - A primary click with no modifier opens the link, in every access mode and inside commented
  *   text, whatever the page held selected before it; Ctrl or Cmd opens it in a new tab. A click is
  *   told from a drag by the pointer alone (`clickedLink`): a press on the link whose pointer moves
- *   more than `CLICK_SLOP` before the release ends a drag, which opens nothing. That press is
- *   noted for the link's target, not for the anchor drawn for it, and lasts as long as
- *   ProseMirror's own press, to the click after it (`LinkPress`): a reconfigure of the editor's
- *   plugins during it forgets nothing, and a release and a click on the anchor ProseMirror draws
- *   anew for a mark change around the link are on the link pressed. ProseMirror has no built-in
- *   `click` handler, so this one runs for every click inside the editor, a widget's and a node
- *   view's included, whatever their `stopEvent` says. The press of a Ctrl or Cmd click on a
- *   link mark or a header's pointer is prevented and taken, so ProseMirror, which reads it as
- *   selecting the node it lands in, selects nothing, and the reader's caret or selection stays as
- *   it was. A title prevents every press itself, and the picture fallback keeps every press from
- *   the editor and puts the caret after itself on a primary one (Dispatch's `picture-view.ts`).
+ *   more than `CLICK_SLOP` before the release ends a drag, which opens nothing. That press lasts
+ *   as long as ProseMirror's own press, to the click after it (`LinkPress`): a reconfigure of the
+ *   editor's plugins during it forgets nothing. A redraw of the pressed link opens nothing, since
+ *   the browser sends no click once the element the press landed on is removed. ProseMirror has
+ *   no built-in `click` handler, so this one runs for every click inside the editor, a widget's
+ *   and a node view's included, whatever their `stopEvent` says. The press of a Ctrl or Cmd click
+ *   on a link mark or a header's pointer is prevented and taken, so ProseMirror, which reads it
+ *   as selecting the node it lands in, selects nothing, and the reader's caret or selection stays
+ *   as it was. A title prevents every press itself, and the picture fallback keeps every press
+ *   from the editor and puts the caret after itself on a primary one (Dispatch's
+ *   `picture-view.ts`).
  * - A middle click (`auxclick`, button 1) opens it in a new tab, which also cancels the browser's
  *   own new tab for an anchor with a real `href`. Its press and its release are prevented, so the
  *   browser pastes nothing into the document (Linux pastes its primary selection on a middle
@@ -91,11 +91,10 @@ function inIsland(view: EditorView, anchor: Element): boolean {
   return false;
 }
 
-/** A link the editor drew, known by the target it opens rather than by its anchor, which
- *  ProseMirror can draw anew: the `dispatch://` reference it carries as `data-dispatch-href` (a
- *  link mark to a reference, a title, the picture fallback and a header's pointer carry one), else
- *  its `href`. Empty for a link whose target the sanitizer emptied (a scheme it refuses), which
- *  opens nothing. */
+/** A link the editor drew, and the target it opens: the `dispatch://` reference it carries as
+ *  `data-dispatch-href` (a link mark to a reference, a title, the picture fallback and a header's
+ *  pointer carry one), else its `href`. Empty for a link whose target the sanitizer emptied (a
+ *  scheme it refuses), which opens nothing. */
 interface EditorLink {
   readonly target: string;
 }
@@ -124,15 +123,22 @@ const linkPresses = new WeakMap<EditorView, LinkPress>();
 
 /** A plain primary press on a link (`notePress`), until its click, the next press, or its end with
  *  no click on the link: the target of the link it landed on, where the pointer was, and whether
- *  the pointer has since gone more than `CLICK_SLOP` from there. It is the link's press, not its
- *  anchor's: a mark change around the link while the button is held, such as a collaborator's
- *  bold over its words, can make ProseMirror draw the link as a new anchor, and the release and
- *  the click on that anchor are on the link pressed. From the press to the release it hears the
- *  pointer where ProseMirror hears its own press's, on the view's root, adding and dropping those
- *  listeners as prosemirror-view's `LeftMouseDown` does, so a drag that leaves the editor and
- *  comes back to the press is still a drag, as ProseMirror reads it. A reconfigure of the
- *  editor's plugins, which destroys and remakes the plugin's view, ends neither this press nor
- *  ProseMirror's; the view's own destroy ends both. */
+ *  the pointer has since gone more than `CLICK_SLOP` from there. The press is matched to its
+ *  release and its click by the link's target, not by the anchor element, because a target holds
+ *  less state. From the press to the release it hears the pointer where ProseMirror hears its own
+ *  press's, on the view's root, adding and dropping those listeners as prosemirror-view's
+ *  `LeftMouseDown` does, so a drag that leaves the editor and comes back to the press is still a
+ *  drag, as ProseMirror reads it. A reconfigure of the editor's plugins, which destroys and
+ *  remakes the plugin's view, ends neither this press nor ProseMirror's; the view's own destroy
+ *  ends both. A redraw of the link while the button is held, such as the new anchor ProseMirror
+ *  draws for a collaborator's bold over its words, opens nothing, however the press is matched:
+ *  the browser sends no click once the element the press landed on is removed. Blink's
+ *  `MouseEventManager::HandleRemoveSubtree` sets `mousedown_element_` to null when that element
+ *  is removed (`third_party/blink/renderer/core/input/mouse_event_manager.cc`: "We don't
+ *  dispatch click events if the mousedown node is removed before a mouseup event. It is
+ *  compatible with IE and Firefox."), and Blink sends a click only while that element is still
+ *  connected. A run of dispatch://INFRA-2160 in Firefox and WebKit, in which a collaborator's
+ *  bold drew the pressed link again, opened nothing either. */
 class LinkPress {
   readonly target: string;
   readonly x: number;
@@ -208,16 +214,15 @@ function notePress(view: EditorView, event: MouseEvent): void {
 /** The link a primary click opens, or undefined for a click that opens none: the end of a drag on
  *  the link, a press noted on a link to that same target whose pointer went more than
  *  `CLICK_SLOP` from it before this click, opens nothing, so the words the drag selected stay
- *  selected. The press and the click are matched by the link's target, not by its anchor, which
- *  ProseMirror can draw anew between them (`LinkPress`). What the page held selected before the
- *  press counts for nothing: a sentence selected across the link, as for the selection bar's
- *  Comment, leaves the first click on the link a click, which opens it (dispatch://INFRA-2160,
- *  R1). Every other primary click on a link opens it, one no press was noted for included: a Ctrl
- *  or Cmd click, whose press `takeLinkPress` takes, a title's, which prevents its own press, and
- *  one a script or assistive technology makes. A drag that starts off the link and ends on it
- *  sends its click to the nearest element that holds both its press and its release, which is no
- *  link, so it opens nothing either; a click of it sent to the anchor would find no press noted
- *  for the link, and open it. */
+ *  selected. The press and the click are matched by the link's target (`LinkPress` says why).
+ *  What the page held selected before the press counts for nothing: a sentence selected across
+ *  the link, as for the selection bar's Comment, leaves the first click on the link a click,
+ *  which opens it (dispatch://INFRA-2160, R1). Every other primary click on a link opens it, one
+ *  no press was noted for included: a Ctrl or Cmd click, whose press `takeLinkPress` takes, a
+ *  title's, which prevents its own press, and one a script or assistive technology makes. A drag
+ *  that starts off the link and ends on it sends its click to the nearest element that holds
+ *  both its press and its release, which is no link, so it opens nothing either; a click of it
+ *  sent to the anchor would find no press noted for the link, and open it. */
 function clickedLink(view: EditorView, event: MouseEvent): EditorLink | undefined {
   if (event.button !== 0 || event.shiftKey || event.altKey) {
     return undefined;
