@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -725,17 +726,17 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
 	}
-	var bundle ghconfig.Bundle
+	// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
+	// claim's stored role: the spec's role, which the machine builds from it. The controller's
+	// is its own.
+	role := spec.Role
 	var err error
-	if spec.Role == claim.RoleController {
-		bundle, err = r.controllerCredential(ctx, "")
-	} else {
-		// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
-		// claim's stored role: the spec's role, which the machine builds from it.
-		var role claim.Role
-		if role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role); err == nil {
-			bundle, err = r.gitHubCredential(ctx, role, spec.Repository)
-		}
+	if role != claim.RoleController {
+		role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
+	}
+	var bundle ghconfig.Bundle
+	if err == nil {
+		bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential), spec.Issue, role, spec.Repository, "")
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {

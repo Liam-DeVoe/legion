@@ -299,6 +299,18 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	}
 }
 
+// roleBundle is the gh bundle of one slot of a pod of issue, the slot's claim's issue ("" for the
+// controller's pod), and the one place each path of this runtime that writes a slot's gh files
+// asks for one: the refresh and a launch into a pod it keeps (writeSlotCredential), and a pod's
+// build (gitHubBundles). The controller's is asked for by owner (controllerDefault, "" for none);
+// every other role's is built for repo through bundles, the caller's memo of its walk.
+func (r *Runtime) roleBundle(ctx context.Context, bundles *appauth.Bundles, issue string, role claim.Role, repo ghrepo.Repository, controllerDefault string) (ghconfig.Bundle, error) {
+	if role == claim.RoleController {
+		return r.controllerCredential(ctx, controllerDefault)
+	}
+	return bundles.Bundle(ctx, role, repo)
+}
+
 // errSecretNotOwned is a slot Secret another Sandbox owns: the pod's Sandbox was replaced since the
 // pod was read, so the write is the new Sandbox's to make.
 var errSecretNotOwned = errors.New("the slot's Secret is another Sandbox's")
@@ -385,12 +397,7 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 			return slotCredential{}, nil
 		}
 		minting, cancel := call(ctx)
-		var bundle ghconfig.Bundle
-		if slot == claim.RoleController {
-			bundle, err = r.controllerCredential(minting, owner)
-		} else {
-			bundle, err = bundles.Bundle(minting, role, repo)
-		}
+		bundle, err := r.roleBundle(minting, bundles, secret.Annotations[annotationIssue], role, repo, owner)
 		cancel()
 		if err != nil {
 			return slotCredential{}, err

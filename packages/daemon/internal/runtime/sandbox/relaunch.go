@@ -1332,16 +1332,17 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
 		var err error
-		if slot == claim.RoleController {
-			bundle, err = r.controllerCredential(minting, "")
-		} else {
-			role, first := l.agentRoles[slot]
+		// holds is the role whose App the slot holds; the controller's slot holds its own.
+		holds := slot
+		if slot != claim.RoleController {
+			var first bool
+			holds, first = l.agentRoles[slot]
 			if _, runs := holders[slotKey{sandbox: l.name, slot: slot}]; runs || !first {
-				role, err = r.slotAppRole(minting, holders, l.name, slot, "")
+				holds, err = r.slotAppRole(minting, holders, l.name, slot, "")
 			}
-			if err == nil {
-				bundle, err = memo.Bundle(minting, role, l.spec.Repository)
-			}
+		}
+		if err == nil {
+			bundle, err = r.roleBundle(minting, memo, l.spec.Issue, holds, l.spec.Repository, "")
 		}
 		role := slot
 		cancel()
