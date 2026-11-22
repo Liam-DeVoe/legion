@@ -58,11 +58,13 @@ async function sessionEntry(
   return SessionEntrySchema.parse(entry.json());
 }
 
-/** Whether a connection natsd accepted at or after `since` (`Date.now()` time) subscribes `subject`. */
+/**
+ * Whether a connection natsd accepted at or after `since` (`Date.now()` time) subscribes `subject`.
+ * The read has no timeout of its own: how long natsd's monitor takes to answer is the host's
+ * speed, and a monitor that never answers is the row's limit to end, which names the row.
+ */
 async function subscribedSince(monitorUrl: string, subject: string, since: number) {
-  const response = await fetch(`${monitorUrl}/connz?subs=1`, {
-    signal: AbortSignal.timeout(2_000),
-  });
+  const response = await fetch(`${monitorUrl}/connz?subs=1`);
   if (!response.ok) return false;
   const connz = ConnzSchema.parse(await response.json());
   return (connz.connections ?? []).some(
@@ -145,9 +147,22 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     expect(shownAt - frozenAt).toBeLessThan(RECOVERY_BOUND_MS);
     // The connection that replaced the frozen one carries the session's relay subject.
     expect(await subscribedSince(stack.monitorUrl, sessionSubject, frozenAt)).toBe(true);
-    // The relay restarted only on a registration that named a new epoch, still on consumer
-    // delivery.
-    const renewed = await sessionEntry(sessions, sessionID);
+    // The session registers a new epoch on the new connection, still on consumer delivery. That
+    // registration is the session's own request to the listener, and the missed message's
+    // delivery is the listener's work: nothing orders the two. Under 120 busy loops (the 96 rung)
+    // claude-envoy's row once saw the message shown 1.8 s after the resubscribe while the entry
+    // still named the first epoch (Job infra-1580-krows-kc-g4zvc, run 10, at 39bc1254), so the
+    // scenario waits for the entry to name a new epoch rather than read it once. The wait has no
+    // deadline: a session that never registers one ends at the row's limit, which names the row.
+    let renewed: z.infer<typeof SessionEntrySchema> | undefined;
+    await waitFor(
+      async () => {
+        renewed = await sessionEntry(sessions, sessionID);
+        return renewed?.delivery === "consumer" && renewed.epoch !== firstEpoch;
+      },
+      undefined,
+      "the session's registration of a new epoch"
+    );
     expect(renewed?.delivery).toBe("consumer");
     expect(renewed?.epoch).toBeDefined();
     expect(renewed?.epoch).not.toBe(firstEpoch);
