@@ -248,6 +248,118 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 				"and here both sides rewrite the same lines of it, so the merge is a conflict", version, state, held)
 		}
 	})
+	// VB1: in R5 of dispatch://INFRA-4149/spec the virtual merge base that sjawhar/jj#4's merge
+	// builds, which holds the merge bases' sides between conflict marker lines as git writes them,
+	// is a term of a conflict and never a resolved file, whatever jj operation later merges that
+	// conflict, a rebase, an abandon and a squash among them. Each case builds a merge whose merge
+	// bases' own merge at f does not resolve, changes it, or its parents, with ordinary commands, and
+	// reads the commit those commands leave: f there is a conflict, or a text with no conflict
+	// marker line. jj 0.45.1-sami leaves each of them a conflict, or "y", a parent's text.
+	//
+	// The block history: o holds 1 to 6 in f, A sets line 1 to "a", B sets lines 1 to 3 to "b1 b2
+	// b3", P1 and P2 are merges of A and B that keep A's text and B's, and d merges P1 and P2 and
+	// edits "b2", a line inside the hunk where A and B disagree, to "B2". The K4 histories: o, A
+	// setting line 1 to "x", B setting it to "y", P1 and P2 merges of A and B that keep "x" and "y",
+	// and d a merge of P1 and P2 that keeps "y", with five more lines (one of which d sets to
+	// "FIVE") or with none.
+	type vbHistory struct{ root, a, b, p1, p2, d string }
+	vbBuild := func(s jjScratch, o, a, b, p1, p2, d string) vbHistory {
+		var h vbHistory
+		s.write("f", o)
+		s.run.Run(s.repo, jj, "commit", "-m", "o")
+		h.root = s.commitID("@-")
+		h.a = s.commit("A", "f", a, h.root)
+		h.b = s.commit("B", "f", b, h.root)
+		h.p1 = s.commit("P1", "f", p1, h.a, h.b)
+		h.p2 = s.commit("P2", "f", p2, h.a, h.b)
+		h.d = s.commit("d", "f", d, h.p1, h.p2)
+		// The commands below rewrite commits and change their commit ids, so each is named by its
+		// change id from here on.
+		for _, id := range []*string{&h.a, &h.b, &h.p1, &h.p2, &h.d} {
+			*id = s.run.Out(s.repo, jj, "log", "-r", *id, "--no-graph", "-T", "change_id")
+		}
+		s.run.Run(s.repo, jj, "new", h.root, "-m", "elsewhere")
+		return h
+	}
+	block := func(s jjScratch) vbHistory {
+		return vbBuild(s, "1\n2\n3\n4\n5\n6\n", "a\n2\n3\n4\n5\n6\n", "b1\nb2\nb3\n4\n5\n6\n",
+			"a\n2\n3\n4\n5\n6\n", "b1\nb2\nb3\n4\n5\n6\n", "b1\nB2\nb3\n4\n5\n6\n")
+	}
+	k4Five := func(s jjScratch) vbHistory {
+		return vbBuild(s, "1\n2\n3\n4\n5\n6\n", "x\n2\n3\n4\n5\n6\n", "y\n2\n3\n4\n5\n6\n",
+			"x\n2\n3\n4\n5\n6\n", "y\n2\n3\n4\n5\n6\n", "y\n2\n3\n4\nFIVE\n6\n")
+	}
+	k4 := func(s jjScratch) vbHistory { return vbBuild(s, "o\n", "x\n", "y\n", "x\n", "y\n", "y\n") }
+	// resolve runs jj resolve with a built-in tool at revision, where a conflict at f is left to
+	// resolve: at a revision that holds none, jj resolve fails for want of one, and there is
+	// nothing to do.
+	resolve := func(t *testing.T, s jjScratch, revision, tool string) {
+		t.Helper()
+		if out, err := s.run.Try(s.repo, jj, "resolve", "-r", revision, "--tool", tool); err != nil && s.state(revision) == "conflict" {
+			t.Fatalf("jj resolve -r %s --tool %s in %s: %v\n%s", revision, tool, s.repo, err, out)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		// run builds a history, runs the commands and answers the revision whose f the case reads.
+		run func(t *testing.T, s jjScratch) string
+	}{
+		{"a resolution that edits a line of the hunk the merge bases disagree on, rebased onto P1", func(t *testing.T, s jjScratch) string {
+			h := block(s)
+			s.run.Run(s.repo, jj, "rebase", "-r", h.d, "-d", h.p1)
+			return h.d
+		}},
+		{"a resolution that edits a line of the hunk the merge bases disagree on, after an abandon of P2", func(t *testing.T, s jjScratch) string {
+			h := block(s)
+			s.run.Run(s.repo, jj, "abandon", h.p2)
+			return h.d
+		}},
+		{"a resolution that edits a line of the hunk the merge bases disagree on, squashed into P1", func(t *testing.T, s jjScratch) string {
+			h := block(s)
+			s.run.Run(s.repo, jj, "squash", "--from", h.d, "--into", h.p1, "--use-destination-message")
+			return h.p1
+		}},
+		{"a kept conflict checked out with jj new and edited", func(t *testing.T, s jjScratch) string {
+			h := k4Five(s)
+			s.run.Run(s.repo, jj, "rebase", "-r", h.d, "-d", h.p1)
+			s.run.Run(s.repo, jj, "new", h.d, "-m", "w")
+			checkedOut, err := os.ReadFile(filepath.Join(s.repo, "f"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.write("f", string(checkedOut)+"SEVEN\n")
+			return s.commitID("@")
+		}},
+		{"one parent restored from the merge, then jj resolve --tool :ours", func(t *testing.T, s jjScratch) string {
+			h := k4(s)
+			s.run.Run(s.repo, jj, "restore", "--from", h.d, "--into", h.p1, "f")
+			resolve(t, s, h.d, ":ours")
+			return h.d
+		}},
+		{"one parent rebased onto A, then jj resolve --tool :theirs", func(t *testing.T, s jjScratch) string {
+			h := k4(s)
+			s.run.Run(s.repo, jj, "rebase", "-s", h.p2, "-d", h.a)
+			resolve(t, s, h.d, ":theirs")
+			return h.d
+		}},
+	} {
+		t.Run("VB1 "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := scratch(t)
+			revision := tc.run(t, s)
+			if slices.Contains(s.conflicts(revision), "f") {
+				return
+			}
+			held := s.run.Out(s.repo, jj, "file", "show", "-r", revision, "f")
+			for line := range strings.Lines(held) {
+				if strings.HasPrefix(line, "<<<<<<<") {
+					t.Errorf("%s leaves a clean f holding conflict marker lines, the virtual merge base's text as a resolved file:\n%s"+
+						"want a conflict at f, or a text with no marker line: R5 of dispatch://INFRA-4149/spec keeps the virtual merge base a term of a conflict, never a resolved file, whatever jj operation later merges that conflict", version, held)
+					break
+				}
+			}
+		})
+	}
 }
 
 // Boot resolves the binaries Legion itself runs or hands a pane — git, jj and the real gh a pane's
