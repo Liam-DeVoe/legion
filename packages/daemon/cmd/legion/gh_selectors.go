@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // selectors is every repository a command's selectors name, and every owner one names with no
@@ -571,12 +572,31 @@ func ghMarkerLine(line string) ghRemote {
 	return ghRemote{name: name, marker: true, key: key, resolved: value, valued: valued}
 }
 
-// what is the remote line as a refusal names it.
+// what is the remote line as a refusal names it, its URL as remoteShown prints it.
 func (r ghRemote) what() string {
 	if r.marker {
 		return fmt.Sprintf("remote.%s.gh-resolved %s", r.name, r.resolved)
 	}
-	return fmt.Sprintf("remote %q (%s)", r.name, r.url)
+	return fmt.Sprintf("remote %q (%s)", r.name, remoteShown(r.url))
+}
+
+// remoteShown is a remote's URL as legion gh prints it: read as gh reads it (ghParseGitURL, which
+// makes an scp-like `git@host:owner/repo` an ssh URL) and printed through redact.URL, so its user
+// info prints as the mark and its query and fragment not at all, while its host and path, the
+// repository it names, print as written. A token written into a remote URL
+// (`https://x-access-token:<token>@github.com/owner/repo`, which a CI checkout writes) printed
+// whole. A local path, with no scheme and no "@", "?" or "#", prints as written: it holds no user
+// info, query or fragment. Anything else gh's parser reads as no URL with a host prints as
+// redact.URLNotPrinted.
+func remoteShown(raw string) string {
+	if !strings.Contains(raw, "://") && !strings.ContainsAny(raw, "@?#") && !strings.Contains(raw, ":") {
+		return raw
+	}
+	u, err := ghParseGitURL(raw)
+	if err != nil {
+		return redact.URLNotPrinted
+	}
+	return redact.URL(u.String())
 }
 
 // ghRemoteSchemes are the URL schemes gh's git.ParseURL reads as they are; a remote with no such
@@ -770,7 +790,7 @@ func readGitRemotes() ([]ghRemote, error) {
 		gh := ghRemoteLine.FindStringSubmatch(line)
 		if git == nil || (git[3] == "push" && git[4] != "") || gh == nil ||
 			strings.TrimSpace(gh[1]) != git[1] || strings.TrimSpace(gh[2]) != git[2] || gh[3] != git[3] {
-			return nil, fmt.Errorf("git remote -v printed %q", line)
+			return nil, fmt.Errorf("git remote -v printed %q", redact.URLCredentials(line))
 		}
 		remotes = append(remotes, ghRemote{name: git[1], url: git[2], push: git[3] == "push"})
 	}

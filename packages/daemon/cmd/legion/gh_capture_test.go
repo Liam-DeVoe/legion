@@ -553,7 +553,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
 		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
-		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
+		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (ssh://[a URL with credentials]/sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
 		{gitPlusHTTPS, nil, []string{"pr", "view", "1", "--json", "title"}, "sjawhar", ""},

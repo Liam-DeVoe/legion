@@ -390,7 +390,14 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"repo", "view"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"api", "repos/{owner}/{repo}"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/octocat/hello"}), owner: "octocat"},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git)) and sjawhar (the working directory's remote "upstream" (git@github.com:sjawhar/legion.git))`},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git)) and sjawhar (the working directory's remote "upstream" (ssh://[a URL with credentials]/sjawhar/legion.git))`},
+		// A remote URL a CI checkout writes with its token as the user info prints the mark in its
+		// place, whether the remote names no OWNER/REPO (refused) or one beside another owner's;
+		// its host is masked with it and its path, the repository, still prints.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/ownera/repo/tree/main"}),
+			err: `the working directory's remote "origin" (https://[a URL with credentials]/ownera/repo/tree/main) names no OWNER/REPO`},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/sjawhar/legion.git"}),
+			err: `sjawhar (the working directory's remote "upstream" (https://[a URL with credentials]/sjawhar/legion.git))`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
@@ -696,6 +703,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		case tc.err != "":
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.argv, tc.env, target, err, tc.err)
+			} else if strings.Contains(err.Error(), "madeUpRemoteT") {
+				t.Errorf("ghTargetOf(%q, %v): the refusal %q holds part of the remote's token", tc.argv, tc.env, err)
 			}
 		case err != nil || target.owner != tc.owner:
 			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the owner %q", tc.argv, tc.env, target, err, tc.owner)
