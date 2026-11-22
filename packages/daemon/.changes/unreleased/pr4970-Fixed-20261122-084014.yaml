@@ -6,7 +6,9 @@ body: |-
   auth service refused it, and a daemon with `consumer_names: fresh` stopped at its boot with the
   ERROR line's `op` `connect`. The service token's connection also keeps no reconnect buffer now,
   as the seed's does: a publish made while it is cut fails at once and is not sent after the
-  reconnect. Each generation's connection is named by the auth service's own rule
+  reconnect. Its move to a later token, about once an hour, is such a cut, so an acknowledgement
+  made in that reconnect logs `ack intake message` at error, and its message is delivered again
+  and applied once. Each generation's connection is named by the auth service's own rule
   (`legion-go-<project>-<kind>/<generation>`).
 time: 2026-11-22T08:40:14Z
 custom:
