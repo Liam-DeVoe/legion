@@ -112,12 +112,6 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names the key owner." + yet}}},
 		{name: "a key on acceptance but owner", plan: oneTask("a", "implementer acceptance:r"),
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the key r." + yet}}},
-		{name: "a role block", plan: func() Plan {
-			p := oneTask("a", "implementer")
-			p.Roles = []PlanRole{{Name: "prober", Type: TypeTesting}}
-			return p
-		}(),
-			want: []Refusal{{Task: "", Reason: "the plan defines the role prober." + yet}}},
 		{name: "merges", plan: withTask(Task{ID: "a", Merges: true, Steps: implementer}),
 			want: []Refusal{{Task: "a", Reason: "task a names merges." + yet}}},
 		{name: "owner", plan: withTask(Task{ID: "f", Owner: "architect"}),
@@ -419,6 +413,41 @@ func TestARetroOfAnotherRoleIsNotCarriedOutYet(t *testing.T) {
 		p := oneTask("a", taken.steps)
 		if r := append(Supported(p, taken.d), Validate(p, taken.d)...); len(r) != 0 {
 			t.Fatalf("Supported(%s) under coder of type %s = %+v, want none", taken.steps, taken.d.Roles["coder"].Type, r)
+		}
+	}
+}
+
+// An owner can define a role in its plan: a role block is no cause of Supported, and a task whose
+// step names that role, on a model the deployment lists, is taken by both checks.
+func TestSupportedTakesARoleBlock(t *testing.T) {
+	p := oneTask("a", "implementer prober")
+	p.Roles = []PlanRole{{Name: "prober", Type: TypeTesting, Model: "m-one", Prompt: "# Prober\n\nProbe the change."}}
+	d := Deployment{Roles: BuiltinRoles(), Models: []string{"m-one"}}
+	if r := Supported(p, d); len(r) != 0 {
+		t.Errorf("Supported(implementer prober) with the role block prober = %+v, want none", r)
+	}
+	if r := Validate(p, d); len(r) != 0 {
+		t.Errorf("Validate(implementer prober) with prober on the listed model m-one = %+v, want none", r)
+	}
+}
+
+// The retro is judged by the type a step's role has as the plan's steps name it (RolesOf), so a
+// role the plan defines of the type implementation after the implementer is refused as one of
+// the deployment is: its retro would go to that role's agent. Before the implementer it is taken,
+// and so is the same role of the type testing after it.
+func TestARetroOfARoleOfAPlanIsNotCarriedOutYet(t *testing.T) {
+	withCoder := func(steps string, typ Type) Plan {
+		p := oneTask("a", steps)
+		p.Roles = []PlanRole{{Name: "coder", Type: typ}}
+		return p
+	}
+	want := []Refusal{{Task: "a", Reason: "task a names coder at step 2, a step of the type implementation after the step implementer at step 1, and Legion's retro is done by the implementer in this release." + yet}}
+	if r := Supported(withCoder("implementer coder", TypeImplementation), builtin); !reflect.DeepEqual(r, want) {
+		t.Fatalf("Supported(implementer coder) with the plan's coder of the type implementation =\n%+v\nwant\n%+v", r, want)
+	}
+	for _, p := range []Plan{withCoder("coder implementer", TypeImplementation), withCoder("implementer coder", TypeTesting)} {
+		if r := append(Supported(p, builtin), Validate(p, builtin)...); len(r) != 0 {
+			t.Fatalf("Supported(%s) with the plan's coder of the type %s = %+v, want none", p.Tasks[0].Steps, p.Roles[0].Type, r)
 		}
 	}
 }

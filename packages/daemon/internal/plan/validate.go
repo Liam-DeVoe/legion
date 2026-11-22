@@ -171,17 +171,18 @@ func modelName(model string) string {
 	return model
 }
 
-// Supported is what this release does not carry out yet: more than one task, a role block, and,
-// for each task, `needs`, `owner`, `part_of` and `merges`, the key owner on a role but acceptance,
-// acceptance with a key but owner or with none, a second agent that starts with the role of
-// another, no implementer, each step of a role that reads the implementer's pull request with no
-// implementer step before it, and each step after the implementer's whose role d gives the type
-// implementation, since Legion's retro is done by the implementer. Any other key is taken: it names
-// the agent of its steps (AgentOf), and a role can stand at two steps. Its steps stand in any other
-// order: the planner at any place, the tester, the reviewer and the acceptance in any order after
-// the implementer, and a role of the deployment at any place. A task that names no steps runs the
-// project's default steps, which the configuration loader holds to these same checks, so none of
-// its step causes apply.
+// Supported is what this release does not carry out yet: more than one task, and, for each task,
+// `needs`, `owner`, `part_of` and `merges`, the key owner on a role but acceptance, acceptance with
+// a key but owner or with none, a second agent that starts with the role of another, no
+// implementer, each step of a role that reads the implementer's pull request with no implementer
+// step before it, and each step after the implementer's whose role is of the type implementation
+// as the steps of p name it (RolesOf: the deployment's or p's own), since Legion's retro is done
+// by the implementer. A role block is taken: a step can name a role p defines. Any other key is
+// taken: it names the agent of its steps (AgentOf), and a role can stand at two steps. Its steps
+// stand in any other order: the planner at any place, the tester, the reviewer and the acceptance
+// in any order after the implementer, and a role of the deployment or of p at any place. A task
+// that names no steps runs the project's default steps, which the configuration loader holds to
+// these same checks, so none of its step causes apply.
 func Supported(p Plan, d Deployment) []Refusal {
 	var refusals []Refusal
 	if len(p.Tasks) > 1 {
@@ -192,19 +193,18 @@ func Supported(p Plan, d Deployment) []Refusal {
 		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 			"the plan has %d tasks (%s), and this release runs one task for each issue.", len(p.Tasks), strings.Join(ids, ", ")) + notYet})
 	}
-	for _, role := range p.Roles {
-		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role.Name + "." + notYet})
-	}
+	roles := RolesOf(p, d)
 	for _, task := range p.Tasks {
-		for _, reason := range taskReasons(task, d) {
+		for _, reason := range taskReasons(task, roles) {
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: reason + notYet})
 		}
 	}
 	return refusals
 }
 
-// taskReasons is Supported's causes in one task: its attributes first, then its steps (stepReasons).
-func taskReasons(t Task, d Deployment) []string {
+// taskReasons is Supported's causes in one task: its attributes first, then its steps
+// (stepReasons), each step's role as roles (RolesOf) answers it.
+func taskReasons(t Task, roles map[string]RoleDef) []string {
 	var reasons []string
 	if len(t.Needs) > 0 {
 		reasons = append(reasons, fmt.Sprintf("task %s needs %s.", t.ID, strings.Join(t.Needs, ", ")))
@@ -219,7 +219,7 @@ func taskReasons(t Task, d Deployment) []string {
 		reasons = append(reasons, fmt.Sprintf("task %s names merges.", t.ID))
 	}
 	if t.NamesSteps() {
-		reasons = append(reasons, stepReasons(t, d)...)
+		reasons = append(reasons, stepReasons(t, roles)...)
 	}
 	return reasons
 }
@@ -238,12 +238,13 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 // order; the first step of each agent that starts with the role another agent of t started with
 // before it (FirstRoles), in step order; no implementer; each step of a role that reads a pull
 // request with no implementer step before it, in step order, named by its word as the plan writes
-// it; and each step after the implementer's whose role d gives the type implementation, in step
-// order. The owner does the accepting step in this release, so a key on it but owner would name an
+// it; and each step after the implementer's whose role roles (RolesOf) gives the type
+// implementation, a role of the deployment's or of the plan's alike, in step order. The owner does
+// the accepting step in this release, so a key on it but owner would name an
 // agent Legion does not run it in. An agent other than the owner is named by the role it starts
 // with, and this release runs one agent of each role for an issue, so a second agent of one first
 // role has no name; the owner's claim is the tree's architect, and it takes no name.
-func stepReasons(t Task, d Deployment) []string {
+func stepReasons(t Task, roles map[string]RoleDef) []string {
 	var keys, unnamed []string
 	firstRoles := FirstRoles(t)
 	agentSeen := map[Agent]bool{}
@@ -273,7 +274,7 @@ func stepReasons(t Task, d Deployment) []string {
 			unopened = append(unopened, fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads; a role of this deployment that reports pass or fail needs none.",
 				at, t.ID, step, step))
 		}
-		if implementerAt > 0 && step.Role != "implementer" && d.Roles[step.Role].Type == TypeImplementation {
+		if implementerAt > 0 && step.Role != "implementer" && roles[step.Role].Type == TypeImplementation {
 			retro = append(retro, fmt.Sprintf("task %s names %s at step %d, a step of the type implementation after the step implementer at step %d, and Legion's retro is done by the implementer in this release.",
 				t.ID, step.Role, at, implementerAt))
 		}
