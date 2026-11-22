@@ -2633,6 +2633,8 @@ This block is the one source of the statement.
 The statement deletes no row and changes no other member of a payload, so each row keeps its retry state and then writes its record, with its rating where it carries one, under the earlier release.
 Each project rolls back on its own, as for the release that rates each plan ([Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan)): the statement names the project, and a daemon left on this release still sends its own variants.
 What it costs is the variant of each of those records that had not reached Dispatch: the read of that issue's steps and the read of the project's finished issues name no variant for that run, and nothing else of the issue changes.
+The records the earlier release writes while it runs name no variant either, and nothing writes them again after the roll forward.
+Where the earlier release wrote every record of an issue's newest run, those two reads name no variant for that run after the roll forward.
 A variant that reached Dispatch before the rollback stays there; its row can still be queued when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`).
 
 #### Rolling back the release that lets the owning architect's status stand
