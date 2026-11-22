@@ -23,23 +23,28 @@ import (
 // internal/sweepreader, which holds only this package's code and the standard library, and no
 // _test.go file. Test code runs in the test process, in this package, so it can name and change
 // what an in-process reader reads (the package's variables, the storage that a regexp or a
-// replacer hands out, the exported values of the libraries that it calls); the memory of the
-// reader's process is out of its reach at any time, before the first test, in a writer, a cleanup
-// or a goroutine. So each state that a sweep judges, and the states of a base that it judges by,
-// come from that process alone (readerProcess). Its code is not out of reach: the test process
-// builds the binary (newSweepReader) and starts it (start), so test code that runs before the
-// build, a test file's init among it, chooses the code that the binary is built from, by
-// ENVOY_TEST_GO_OVERLAY, GOFLAGS, the go on PATH or a file on disk, and the runtime settings that
-// the process gets, and so can hide a fault of the reader from the sweeps. Only a reader built
-// outside the test process would close that.
+// replacer hands out, the exported values of the libraries that it calls); the reader's process
+// shares no memory with the test process, so no test code, before the first test, in a writer, a
+// cleanup or a goroutine, names or changes a value that the reader reads there. Only the operating
+// system's access of a parent to its child reaches that memory (ptrace, /proc/<pid>/mem), and no
+// test uses it. So each state that a sweep judges, and the states of a base that it judges by, come
+// from that process alone (readerProcess). Its code and its settings are not out of reach: the test
+// process builds the binary (newSweepReader) and starts a process of it for each base (start), so
+// test code that runs before a process starts, before the build or after it, chooses the code that
+// the process runs and the runtime settings that it gets: before the build, a test file's init among
+// it, by ENVOY_TEST_GO_OVERLAY, GOFLAGS, the go on PATH or a file on disk; after the build, by a
+// write over the binary or by a change of the runtime settings in the environment between two
+// starts (readerEnv). So test code can hide a fault of the reader from the sweeps. Only a reader
+// built and started outside the test process would close that.
 type sweepReader struct{ binary string }
 
 // newSweepReader builds the reader's binary once for the top-level test t (cmdtest.BuildCommand),
 // which passes ENVOY_TEST_GO_OVERLAY to go build -overlay, so a probe that lays a fault in the
 // reader's code by that overlay builds the binary with it: the binary is the code under test. The
 // build reads that variable, the rest of the test process's environment and the files on disk when
-// t calls it, after each init of the test binary has run, so test code chooses that code too
-// (sweepReader).
+// t calls it, after each init of the test binary has run, so test code chooses that code too; and
+// the binary is a file in t's temporary folder, which each process that start starts runs, so test
+// code that writes over it after the build chooses the code of those processes (sweepReader).
 func newSweepReader(t *testing.T) sweepReader {
 	t.Helper()
 	return sweepReader{cmdtest.BuildCommand(t, cmdtest.Command{Name: "sweepreader", Target: "./internal/sweepreader"})}

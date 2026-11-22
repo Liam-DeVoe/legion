@@ -1,9 +1,13 @@
 // Command sweepreader is the reader that the scenario sweeps of package specgraph judge, run in a
-// process of its own: it holds only specgraph and the standard library, so no code of the sweeps'
-// test binary, a test file's init, a writer, a cleanup or a goroutine among it, can reach its
-// memory, the package's variables and those of the libraries that it calls among it. The test
-// process builds it and starts it, though, so test code that runs before the build chooses the code
-// that it is built from and the runtime settings that it runs with (specgraph's sweepReader).
+// process of its own: it holds only specgraph and the standard library, and it shares no memory with
+// the sweeps' test binary, so no code of that binary, a test file's init, a writer, a cleanup or a
+// goroutine among it, names or changes a value that it reads, the package's variables and those of
+// the libraries that it calls among them; only the operating system's access of a parent to its child
+// (ptrace, /proc/<pid>/mem), which no test uses, reaches its memory. The test process builds it and
+// starts a process of it for each base, though, so test code that runs before a process starts,
+// before the build or after it (a write over the binary, a change of the runtime settings in the
+// environment), chooses the code that the process runs and the runtime settings that it runs with
+// (specgraph's sweepReader).
 //
 // It reads one line per scenario from its standard input, a JSON list of the scenario's files in
 // the order of their names, each {"name": <its path in the scenario>, "data": <its bytes, in
