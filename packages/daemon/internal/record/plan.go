@@ -319,6 +319,30 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 	return p.Tasks[0], nil
 }
 
+// TaskOfBranch is the task of p whose branch (BranchOf) branch is, for the issue keyed issueKey,
+// and whether one is: the task whose row holds branch, else, for the issue's own branch, the one
+// task whose row holds no branch, a task a release before tasks had branches of their own started.
+// Each task that holds no branch reads the issue's branch until its first start gives it one, so
+// where several hold none, none of them holds that branch yet.
+func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
+	if branch == "" {
+		return "", false
+	}
+	var unbranched []string
+	for _, task := range p.Tasks {
+		if task.Branch == branch {
+			return task.Task, true
+		}
+		if task.Branch == "" {
+			unbranched = append(unbranched, task.Task)
+		}
+	}
+	if branch == claim.IssueBranch(issueKey) && len(unbranched) == 1 {
+		return unbranched[0], true
+	}
+	return "", false
+}
+
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
 // steps of those tasks. The same version given twice is refused, and so is a task or a step of
 // another issue or generation, or a step of a task v does not give, whose step the write would

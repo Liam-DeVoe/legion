@@ -37,17 +37,18 @@ import (
 // read apiece would buy nothing. A new write site that only records a read belongs with
 // those two; every write that changes what the record knows of the pull request belongs here.
 //
-// The row the record holds is read first, by its own key in the caller's transaction, so the
-// test has both sides. That read is the cost of never mistaking a repeat for news: GitHub
-// redelivers a webhook, and the daemon's own passes rebuild a push or a settlement whose webhook
-// was lost, so the same fact reaches this code twice as a matter of course.
+// The row the write replaces is read first, by its own key in the caller's transaction
+// (replacedPullRequest), so the test has both sides. That read is the cost of never mistaking a
+// repeat for news: GitHub redelivers a webhook, and the daemon's own passes rebuild a push or a
+// settlement whose webhook was lost, so the same fact reaches this code twice as a matter of
+// course.
 //
-// The issue is the row's own (record.PullRequest.Issue), so the helper needs no second argument
-// and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
-// is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
-// when the daemon saw the issue move.
+// The issue and its task are the row's own (record.PullRequest.Issue and Task), so the helper
+// needs no second argument and cannot be handed the wrong key. The moment is the engine's clock,
+// as every other site's is: the fact is being applied now, whatever clock GitHub stamped it with,
+// and the mark says when the daemon saw the issue move.
 func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
-	recorded, err := e.store.PullRequest(ctx, tx, pr.Issue)
+	recorded, err := e.replacedPullRequest(ctx, tx, pr.Issue, pr.Task, pr.Branch)
 	if err != nil {
 		return err
 	}
@@ -58,6 +59,35 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 		return nil
 	}
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
+}
+
+// replacedPullRequest is the row a write of the pull request of task of issue on branch replaces
+// (record.Store.PutPullRequest): the task's own row, else the issue's row on branch recorded
+// under another task; nil for neither.
+func (e *Engine) replacedPullRequest(ctx context.Context, tx pgx.Tx, issue, task, branch string) (*record.PullRequest, error) {
+	rows, err := e.store.TaskPullRequests(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	if at := slices.IndexFunc(rows, func(pr record.PullRequest) bool { return pr.Task == task }); at >= 0 {
+		return &rows[at], nil
+	}
+	if at := slices.IndexFunc(rows, func(pr record.PullRequest) bool { return pr.Branch == branch }); at >= 0 {
+		return &rows[at], nil
+	}
+	return nil, nil
+}
+
+// taskOfBranch is the task of issue's plan at its generation whose branch branch is
+// (record.StoredPlan.TaskOfBranch), the task a pull request on branch is recorded for: "" where
+// the issue has no plan rows at its generation, and where no task holds the branch.
+func (e *Engine) taskOfBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, branch string) (string, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return "", err
+	}
+	task, _ := stored.TaskOfBranch(issue.Key, branch)
+	return task, nil
 }
 
 // pullRequestNews says whether the write of after over before is news of the pull request: the
@@ -139,15 +169,22 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
-// branch's new pull request replaces the merged one.
+// branch's new pull request replaces the merged one. The pull request is recorded for the task
+// whose branch it is on (taskOfBranch), and the row it replaces is that task's
+// (replacedPullRequest), so the pull request of one task of an issue never takes the place of
+// another's.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	pr := record.PullRequest{Issue: issue.Key, Repo: fact.Repo, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
+	task, err := e.taskOfBranch(ctx, tx, *issue, fact.Branch)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	pr := record.PullRequest{Issue: issue.Key, Task: task, Repo: fact.Repo, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
 		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: record.PullRequestOpen}
-	recorded, err := e.store.PullRequest(ctx, tx, issue.Key)
+	recorded, err := e.replacedPullRequest(ctx, tx, issue.Key, task, fact.Branch)
 	if err != nil {
 		return intake.Result{}, err
 	}

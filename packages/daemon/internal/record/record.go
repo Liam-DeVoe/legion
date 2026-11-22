@@ -956,9 +956,13 @@ func (o ReviewOrder) After(other ReviewOrder) bool {
 	return o.ID > other.ID
 }
 
-// PullRequest is the daemon's latest GitHub observation for one issue's pull request.
+// PullRequest is the daemon's latest GitHub observation for one task's pull request.
 type PullRequest struct {
-	Issue  string
+	Issue string
+	// Task is the task of Issue's plan whose branch the pull request is on, "" for an issue with
+	// no plan rows at the generation that recorded it: the table holds one row for each task of an
+	// issue (store migration 20261122122826_pull_requests_by_task), keyed by Issue and Task.
+	Task   string
 	Repo   string
 	Number int
 	Branch string
@@ -2033,7 +2037,20 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// PullRequest is the pull request of issue when the record holds one row for it, which every
+	// issue whose tasks have no pull requests of their own does; of an issue that holds several it
+	// is the first by task. A reader of one task's reads PullRequestOfTask, of the issue's merge
+	// MergePullRequest, and of each TaskPullRequests.
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
+	// PullRequestOfTask is the pull request of task of issue, nil for none ("" is the task of an
+	// issue with no plan rows).
+	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
+	// MergePullRequest is the pull request of the task of issue that merges: the one task of the
+	// plan at the issue's generation that no task needs (plan.Sinks), or task "" where the issue
+	// has no plan rows at its generation; nil where that task has none.
+	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
+	// TaskPullRequests is each pull request of issue, by task.
+	TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
 	// OpenPullRequests is every open pull request of the Dispatch project key project's issues.
@@ -2041,13 +2058,16 @@ type Store interface {
 	// OpenPullRequestsOnBase is every open pull request of repo recorded on the base branch base,
 	// by issue: the pull requests one push onto that branch may have taken behind or dirty.
 	OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, base string) ([]PullRequest, error)
-	// PullRequestsOf is the pull request of each of issues, by issue key; an issue the record
-	// holds no pull request for has no entry, and no issues reads nothing. It is one query
-	// whatever the number of issues, for a caller that must name the pull request of every
-	// issue of a tree and may make no read per issue (admit's tellStalledTrees). It answers a
-	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
-	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
+	// PullRequestsOf is the pull request of each of issues' merge (MergePullRequest), by issue key;
+	// an issue the record holds no such pull request for has no entry, and no issues reads nothing.
+	// It is two reads whatever the number of issues, for a caller that must name the pull request
+	// of every issue of a tree and may make no read per issue (admit's tellStalledTrees). It
+	// answers a merged and a closed pull request as well as an open one, which OpenPullRequests
+	// cannot: a tree that has stopped with its work merged is exactly the tree such a caller
+	// reports.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
+	// PutPullRequest writes pr as the pull request of its issue's task pr.Task, in place of the row
+	// the record holds for that task or, recorded under another task, for its branch.
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.

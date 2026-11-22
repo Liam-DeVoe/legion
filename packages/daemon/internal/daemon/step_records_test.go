@@ -26,6 +26,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -280,6 +281,13 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	if err := r.st.Pool().QueryRow(context.Background(), `select to_regclass('plan_tasks')::text`).Scan(&left); err != nil || left != nil {
 		t.Fatalf("after the way back of the owner's plan the store holds the table %v (%v), want none", left, err)
 	}
+	// The earlier release keys pull_requests by the issue alone, so the walk took the way back of
+	// the pull requests by task, which reads plan_tasks, before the plan's.
+	var taskColumns int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from information_schema.columns
+		where table_schema = current_schema() and table_name = 'pull_requests' and column_name = 'task'`).Scan(&taskColumns); err != nil || taskColumns != 0 {
+		t.Fatalf("after the rollback pull_requests holds %d task columns (%v), want none: the way back of the pull requests by task did not run", taskColumns, err)
+	}
 	r.dispatch.start()
 	r.reboot()
 	// No delivery of the earlier release stands in the store, so the tester's claim still serves
@@ -384,13 +392,16 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. Before it, newest
-// first, it takes the way back of each later migration that alters the plan's tables
-// (altersPlanTables), as a rollback past those releases does: the plan's way back drops the
-// tables they altered and leaves their version rows standing, so a roll forward would apply none
-// of them again and the plan's tables would come back without their columns. The name of each
-// step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps, and left
-// recorded, its version would keep the roll forward from adding the column to the plan_steps it
-// creates again, and every later write of a plan would fail.
+// first, it takes the way back of each later migration that builds on the plan's tables
+// (buildsOnPlanTables), as a rollback past those releases does: the plan's way back drops the
+// tables they altered or read and leaves their version rows standing, so a roll forward would
+// apply none of them again and the plan's tables would come back without their columns. The name
+// of each step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps,
+// and left recorded, its version would keep the roll forward from adding the column to the
+// plan_steps it creates again, and every later write of a plan would fail. The pull requests by
+// task (20261122122826) is another: it names each pull request's task from plan_tasks, and its
+// way back reads plan_tasks to keep each issue's merge row, so it runs while that table stands,
+// and the roll forward names each row's task again from the plan rows it finds, none.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
@@ -404,7 +415,7 @@ func (r *stepRecordsRig) rollBackOwnersPlans() {
 		r.t.Fatalf("no embedded migration ends %s", inFlightPlanMigration)
 	}
 	for later := len(all) - 1; later > plan; later-- {
-		if altersPlanTables(all[later].SQL) {
+		if buildsOnPlanTables(all[later].SQL) {
 			r.exec(r.headerWayBack(all[later]))
 		}
 	}
@@ -456,13 +467,16 @@ func (r *stepRecordsRig) headerBlock(migration migrations.Migration) string {
 	return ""
 }
 
-// altersPlanTables says whether sql, a migration, alters one of the plan's three tables in a
-// statement of its own, not in a comment.
-func altersPlanTables(sql string) bool {
+// buildsOnPlanTables says whether sql, a migration, names one of the plan's three tables in a
+// statement of its own, not in a comment: it alters one, or reads one.
+func buildsOnPlanTables(sql string) bool {
 	for _, line := range strings.Split(sql, "\n") {
 		statement := strings.ToLower(strings.TrimSpace(line))
-		for _, table := range []string{"issue_plans", "plan_tasks", "plan_steps"} {
-			if strings.HasPrefix(statement, "alter table "+table+" ") {
+		if strings.HasPrefix(statement, "--") {
+			continue
+		}
+		for _, word := range strings.FieldsFunc(statement, func(r rune) bool { return !unicode.IsLetter(r) && r != '_' }) {
+			if slices.Contains([]string{"issue_plans", "plan_tasks", "plan_steps"}, word) {
 				return true
 			}
 		}
