@@ -303,20 +303,25 @@ func keyedStoreArm(blockKind string) string {
 					where live.kind = newest.from_kind and live.id = newest.from_id and live.state <> '` + graphstore.StateGone + `')`
 }
 
-// storeArmPointers are the relations keyedStoreArm reads into a block out of a node of any kind:
-// each pointer graphstore.PointerKinds lists, read once, and changed_by_run. A write made for a run
-// appends a changed_by_run out of each node it created or changed (graphstore's changedByRunMarks
-// and queueChangedByRun, in the append QueueWrite and QueueCaused queue), and no pointer route
-// moves one, so graphstore's pointerRules holds no rule for it and PointerKinds does not list it.
-// Every kind pointerRules holds is here or in storeArmPlacements, which
-// TestTheStoreArmReadsEveryKindThePointerRulesHold holds the arm to.
+// storeArmPointers are the relations keyedStoreArm reads out of a node of any kind: each pointer
+// graphstore.PointerKinds lists, read once, and changed_by_run. changed_by_run is listed because
+// the view's store class answers it from the tuples alone, out of any node, as it answers each
+// pointer (migration 20261121104002), and TupleKinds (backlink_counts.go) reads the store's own
+// kinds from this list and storeArmPlacements. It is no pointer: a write made for a run appends a
+// changed_by_run out of each node it created or changed to the run's interaction (graphstore's
+// changedByRunMarks and queueChangedByRun, in the append QueueWrite and QueueCaused queue), and no
+// pointer route moves one, so graphstore's pointerRules holds no rule for it and PointerKinds does
+// not list it. Each pointer of pointerRules is here by construction;
+// TestTheStoreArmReadsEveryKindThePointerRulesHold holds each of its placements to
+// storeArmPlacements, and none of those to PointerKinds.
 var storeArmPointers = append([]string{graphstore.TupleChangedByRun}, graphstore.PointerKinds()...)
 
 // storeArmPlacements are the kinds of graphstore's pointerRules that keyedStoreArm leaves out of
 // storeArmPointers: part_of, which the table holds as a placement (graphstore.PlacementKinds), a
 // risk's place under a pre-mortem lens, not as a pointer, so PointerKinds leaves it out. The arm
 // reads it, beside authored_by, only out of a node of the store's own kinds or out of a finding,
-// because a part_of out of any other node is another arm's of the view.
+// because the view renders no part_of tuple out of any other node: a session's, a page's and a
+// block's placement are part_of tuples no arm of it renders (TupleKinds, backlink_counts.go).
 var storeArmPlacements = []string{graphstore.TuplePartOf}
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed

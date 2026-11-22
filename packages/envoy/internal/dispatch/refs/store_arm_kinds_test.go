@@ -7,18 +7,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
-// Every kind graphstore's pointerRules holds - each pointer graphstore.PointerKinds lists and each
-// placement graphstore.PlacementKinds lists - is one the store arm of the graph read reads into a
-// block (keyedStoreArm): among its pointers (storeArmPointers), or named as left out of them
-// (storeArmPlacements), so a kind added to the table is read by the arm or left out by name, and
-// never dropped from the read unsaid.
+// The store arm of the graph read (keyedStoreArm) names every placement graphstore's pointerRules
+// holds as a placement, and none of them as a pointer. Each pointer of the table is among the
+// arm's pointers by construction (storeArmPointers is built from graphstore.PointerKinds), so what
+// can drift is the placements: each kind graphstore.PlacementKinds lists is in storeArmPlacements,
+// which the arm reads only out of a node of the store's own kinds or a finding, so a placement
+// added to the table is never dropped from the read unsaid; and no kind of storeArmPlacements is
+// in graphstore.PointerKinds, since a placement that became a pointer would be read out of any
+// node.
 //
 // The negative control is a placement rule of a new kind added to pointerRules alone, which this
 // test names.
 func TestTheStoreArmReadsEveryKindThePointerRulesHold(t *testing.T) {
-	for _, kind := range slices.Concat(graphstore.PointerKinds(), graphstore.PlacementKinds()) {
-		if !slices.Contains(storeArmPointers, kind) && !slices.Contains(storeArmPlacements, kind) {
-			t.Errorf("pointerRules holds %s, which keyedStoreArm neither reads among its pointers (storeArmPointers) nor names as left out of them (storeArmPlacements)", kind)
+	for _, kind := range graphstore.PlacementKinds() {
+		if !slices.Contains(storeArmPlacements, kind) {
+			t.Errorf("pointerRules holds %s as a placement, which keyedStoreArm does not name among its placements (storeArmPlacements)", kind)
+		}
+	}
+	pointers := graphstore.PointerKinds()
+	for _, kind := range storeArmPlacements {
+		if slices.Contains(pointers, kind) {
+			t.Errorf("storeArmPlacements names %s, which pointerRules holds as a pointer (graphstore.PointerKinds), so keyedStoreArm reads it out of any node", kind)
 		}
 	}
 }
