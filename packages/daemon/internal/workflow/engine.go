@@ -1035,6 +1035,77 @@ func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, boo
 	return phase.LeftBy(role, issue.Phase), false
 }
 
+// judgedReport is the phase fact, a completion on issue whose walk is w, is of and whether it is
+// current, or the refusal of an owner's report of a step that does not run. The owner's report is
+// a fact whose claim is the owner's (record.OwnerClaim), which the route complete_step applies with
+// the step it names (intake.HandoffComplete.Step): it is current exactly where that step runs and
+// its agent is the owner (ownerStepRefusal), read here, in the fact's own transaction, whatever
+// the route read before it. Every other completion is judged by completionOf, and at a place the
+// owner works no other claim's completion is the step's: it is of the phase its role left, which
+// pastCompletion records as leftItsPhase records one, or refuses, and it moves nothing. An issue
+// whose key makes no claim token has no owner, so no claim reports as one there.
+func judgedReport(issue record.Issue, w Walk, fact intake.HandoffComplete) (phase.Phase, bool, *intake.Refusal) {
+	if owner, err := record.OwnerClaim(issue); err == nil && fact.Claim != "" && fact.Claim == owner {
+		if refusal := ownerStepRefusal(issue, w, fact.Step); refusal != nil {
+			return "", false, refusal
+		}
+		return issue.Phase, true, nil
+	}
+	reported, current := completionOf(issue, w, fact.Role)
+	if current && w.PlaceRole(w.Place) == claim.RoleArchitect {
+		return phase.LeftBy(fact.Role, issue.Phase), false, nil
+	}
+	return reported, current, nil
+}
+
+// ownerStepRefusal is the refusal of the owner's report of step (from 1, and 0 for the retro) of
+// issue's task on w, nil where that step runs now and its agent is the owner: the task runs at
+// that place, the issue stands in the phase the place derives, and the claim that works the place
+// is the owner's (Walk.PlaceRole is the architect). Its sentence names where the task stands and
+// who does that place, so the owner reads which report, if any, is its own now.
+func ownerStepRefusal(issue record.Issue, w Walk, step int) *intake.Refusal {
+	named := record.TaskPlace{Kind: record.PlaceStep, Position: step}
+	if step == 0 {
+		named = record.TaskPlace{Kind: record.PlaceRetro}
+	}
+	if w.Stored && w.Place == named && w.State == record.TaskRunning && issue.Phase == issuePhaseOf(w, w.Place, w.State) &&
+		w.PlaceRole(w.Place) == claim.RoleArchitect {
+		return nil
+	}
+	reported := fmt.Sprintf("%s of task %s of %s", placeWords(named), w.Task, issue.Key)
+	if !w.Stored {
+		return refused("OWNER_STEP_NOT_RUNNING", fmt.Sprintf("%s is not a step of yours that runs now: %s runs with no plan rows, so no step of it is the owner's. This report changed nothing.",
+			reported, issue.Key)).Refusal
+	}
+	role, agent := w.RoleAt(w.Place), "the owner"
+	if at, ok := w.planStepAt(w.Place); ok {
+		role = claim.Role(at.Role)
+	}
+	if !w.OwnerAt(w.Place) {
+		agent = string(w.AgentAt(w.Place))
+	}
+	if role == "" || agent == "" {
+		return refused("OWNER_STEP_NOT_RUNNING", fmt.Sprintf("%s is not a step of yours that runs now: %s stands at %s, which no agent works. This report changed nothing.",
+			reported, issue.Key, placeWords(w.Place))).Refusal
+	}
+	return refused("OWNER_STEP_NOT_RUNNING", fmt.Sprintf("%s is not a step of yours that runs now: %s stands at %s (%s), whose agent is %s. This report changed nothing.",
+		reported, issue.Key, placeWords(w.Place), role, agent)).Refusal
+}
+
+// placeWords is place as a sentence names it: step <n>, the retro, the merge, or no step for a
+// task at no act.
+func placeWords(place record.TaskPlace) string {
+	switch place.Kind {
+	case record.PlaceStep:
+		return fmt.Sprintf("step %d", place.Position)
+	case record.PlaceRetro:
+		return "the retro"
+	case record.PlaceMerge:
+		return "the merge"
+	}
+	return "no step"
+}
+
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1060,15 +1131,19 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// (reportEndedStep).
 	//
 	// reported is the phase this completion is of, and current whether it is the work of the place
-	// the issue's task stands at (completionOf): for a run with plan rows, the role that works that
-	// place (Walk.RoleAt: the step's role, a role the deployment defines at step among them, and at
-	// the retro the role of the agent that does it), and for a role the issue has moved on without,
-	// the phase that role has left, which pastCompletion answers.
+	// the issue's task stands at (judgedReport): the owner's report where the step it names runs and the
+	// owner does it; else, for a run with plan rows, the role that works that place (Walk.RoleAt: the
+	// step's role, a role the deployment defines at step among them, and at the retro the role of
+	// the agent that does it), and for a role the issue has moved on without, the phase that role
+	// has left, which pastCompletion answers.
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	reported, current := completionOf(*issue, w, fact.Role)
+	reported, current, notRunning := judgedReport(*issue, w, fact)
+	if notRunning != nil {
+		return intake.Result{Refusal: notRunning}, nil
+	}
 	var late *intake.Refusal
 	if !current {
 		var now *intake.Refusal

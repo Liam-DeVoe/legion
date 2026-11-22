@@ -1025,6 +1025,12 @@ type HandoffComplete struct {
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.
 	Entry int64
+	// Step is the place of the step the owner reports, 1 for its first and 0 for the retro, on the
+	// owner's report of a step of its own (api's complete_step): the workflow takes such a report
+	// only while the issue's task stands at that place and its agent there is the owner, read in
+	// the fact's own transaction (OWNER_STEP_NOT_RUNNING). It is 0 on a worker's completion, which
+	// names no step and reads none.
+	Step int
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }

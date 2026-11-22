@@ -199,3 +199,68 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		assertNoClaimStarts(t, pool, root.Key)
 	})
 }
+
+// ownersReport is the owner's report of step of key's task a, as the route complete_step applies
+// it (intake.HandoffComplete): role, the role of the step's place, under claimed at the entry the
+// start raised, with a handoff record of the implementer's phase.
+func ownersReport(key string, claimed claim.Token, role claim.Role, step int, handoff string) intake.HandoffComplete {
+	return intake.HandoffComplete{Issue: key, Role: role, Claim: claimed, Generation: 1, Entry: 1, Step: step,
+		Summary: "implemented", Commit: stepHead, HandoffRecord: handoff, HandoffVersion: 1}
+}
+
+// The engine takes the owner's report of a step only for the step that runs, read in the fact's
+// own transaction: on `implementer:owner tester:owner`, the owner's report of step 1 moves the
+// task to step 2, the tester's step, which the owner does too; the same report of step 1 sent
+// again while the task stands at step 2 is refused OWNER_STEP_NOT_RUNNING, naming the place the
+// task stands at and its agent, and step 1's row keeps the handoff the first report named. At
+// step 1, the report of a fresh implementer's claim is not the owner's, so it moves nothing and
+// the row keeps the owner's claim.
+//
+// The controls: the engine without its check records the second report of step 1 as a
+// completion of a phase left, or refuses it as one already reported; the rule of the role that
+// works the place alone (completionOf) moves the fresh implementer's report to step 2.
+func TestTheEngineTakesTheOwnersReportOnlyForTheStepThatRuns(t *testing.T) {
+	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
+
+	t.Run("the owner's report of the step that runs, then of a step that ran", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:owner", "tester:owner")
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		apply := applyFacts(t, pool, engine)
+
+		if result := apply("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
+			t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
+
+		result := apply("step-1-again", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208-again"))
+		if result.Refusal == nil || result.Refusal.Code != "OWNER_STEP_NOT_RUNNING" {
+			t.Fatalf("the owner's report of step 1 at step 2 = %+v, want OWNER_STEP_NOT_RUNNING", result.Refusal)
+		}
+		const says = "step 1 of task a of LEGION-208 is not a step of yours that runs now: LEGION-208 stands at step 2 (tester), whose agent is the owner. This report changed nothing."
+		if result.Refusal.Message != says {
+			t.Fatalf("the refusal = %q, want %q", result.Refusal.Message, says)
+		}
+		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer); row.LastHandoff != "implement-LEGION-208" {
+			t.Fatalf("the implementer's row after the refused report = %+v, want the first report's handoff kept", row)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
+	})
+
+	t.Run("a fresh implementer's report of the owner's step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:owner", "tester:owner")
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		fresh := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleImplementer))
+
+		applyFacts(t, pool, engine)("fresh", ownersReport(root.Key, fresh, claim.RoleImplementer, 0, "implement-LEGION-208"))
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer); row.Claim != owner || row.LastHandoff != "" {
+			t.Fatalf("the implementer's row after the fresh claim's report = %+v, want the owner's claim on it and no handoff", row)
+		}
+	})
+}
