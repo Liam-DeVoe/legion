@@ -1840,3 +1840,132 @@ test("each pick of a Legion filter writes its own value to the address, lists th
     await daemon.close();
   }
 });
+
+// R14, found by INFRA-3221's tester: a second tab does not end the first tab's bulk action
+// without a word. While tab one's Start next is still writing, tab two either offers nothing to
+// end that live move, or tab one says its move stopped; tab one never stops part-way in silence.
+// SLOW(>=2s): four issues seeded and moved by Start next in one tab while a second tab is open.
+test("a second tab leaves a Start next that is still writing to finish, or the first tab says it stopped", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const keys: string[] = [];
+    for (const name of ["first", "second", "third", "fourth"]) {
+      const made = await createIssue({ project: ACME, title: `Labelled for Legion ${name}` });
+      await patchIssue(made.key, { labels: ["legion"], status: "todo" });
+      keys.push(made.key);
+    }
+    const [stays, ...moved] = keys;
+    if (stays === undefined) throw new Error("the seed has no issue");
+    // Tab one's writes are held until tab two has done what it offers, so its move is live then.
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const { promise: writing, resolve: wrote } = Promise.withResolvers<void>();
+    const one = await context.newPage();
+    await one.route(/\/api\/v1\/issues\/[^/?]+$/, async (route) => {
+      if (route.request().method() === "PATCH") {
+        wrote();
+        await gate;
+      }
+      await route.continue();
+    });
+    await one.goto(`/projects/${ACME}/issues`);
+    await expect(one.locator("[data-issue-row]").first()).toBeVisible();
+    for (const key of moved)
+      await one.getByRole("checkbox", { exact: true, name: `Select ${key}` }).check();
+    await one.getByRole("toolbar").getByRole("button", { exact: true, name: "Start next" }).click();
+    const confirm = one.getByRole("dialog", { name: "Start these next?" });
+    if (await confirm.isVisible())
+      await confirm.getByRole("button", { exact: true, name: "Start next" }).click();
+    await writing;
+
+    const two = await context.newPage();
+    await two.goto(`/projects/${ACME}/issues`);
+    await expect(two.locator("[data-issue-row]").first()).toBeVisible();
+    const dismiss = two.getByRole("button", { exact: true, name: "Dismiss" });
+    if ((await dismiss.count()) > 0) await dismiss.first().click();
+    release();
+
+    const rankOf = async (key: string) => (await getIssue(key)).rank;
+    const said = one
+      .getByRole("region", { exact: true, name: "Project issues" })
+      .getByRole("alert")
+      .filter({ hasText: "Start next" });
+    await expect
+      .poll(
+        async () => {
+          const bottom = await rankOf(stays);
+          const ranks = await Promise.all(moved.map((key) => rankOf(key)));
+          return ranks.every((rank) => rank < bottom) || (await said.count()) > 0;
+        },
+        { message: "every selected issue moved ahead, or tab one says its move stopped" }
+      )
+      .toBe(true);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// The Design's columns, found by INFRA-3221's tester: every column sorts and a shift-click adds a
+// second sort, and each view's sort ends with the listing's own order, so the rows that tie on
+// the first sort - the rows with no card, by Legion phase first or last - follow the second.
+// SLOW(>=2s): ACME seeded with four issues that have no card, and Open sorted four ways.
+test("rows with no value in a Legion column's sort follow the second sort", async ({ browser }) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const made: { key: string; priority: number }[] = [];
+    for (const priority of [2, 0, 3, 1]) {
+      const issue = await createIssue({ project: ACME, title: `No card at P${priority}` });
+      await patchIssue(issue.key, { status: "todo", priority });
+      made.push({ key: issue.key, priority });
+    }
+    const byPriority = [...made].sort((a, b) => a.priority - b.priority).map(({ key }) => key);
+    const page = await context.newPage();
+    const table = issuesTable(page);
+    for (const [sort, order] of [
+      ["legion_phase,priority", byPriority],
+      ["-legion_phase,priority", byPriority],
+      ["legion_phase,-priority", [...byPriority].reverse()],
+      ["waited,priority", byPriority],
+    ] as const) {
+      await page.goto(`/projects/${ACME}/issues?sort=${sort}&cols=key,priority,legion_phase,title`);
+      await expect
+        .poll(async () => (await rowKeys(table)).filter((key) => order.includes(key)), {
+          message: `sort=${sort}`,
+        })
+        .toEqual(order);
+    }
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R1 and the Design's columns, found by INFRA-3221's tester: the group heading's next in Legion
+// queue names the Place, the Queue column's number, and not Start next's own count of the Todo
+// issues labelled legion, of which ACME has none.
+// SLOW(>=2s): ACME seeded, and Open grouped by Status.
+test("the Todo group's heading names the first Place in the Legion queue", async ({ browser }) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const cards = cardsOf(await getLegionBoard(ACME));
+    const todo = await listIssuesWhere({ project: ACME, status: ["todo"] });
+    const places = todo.flatMap((issue) => {
+      const place = cards.get(issue.key)?.card.waiting_place ?? null;
+      return place === null ? [] : [place];
+    });
+    expect(places.length, "ACME's Todo issues hold a Place").toBeGreaterThan(0);
+    const page = await context.newPage();
+    await page.goto(`/projects/${ACME}/issues?group=status`);
+    const heading = page.getByRole("button", { name: /^Collapse Todo,/ });
+    await expect(heading).toContainText(`next in Legion queue #${Math.min(...places)}`);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
