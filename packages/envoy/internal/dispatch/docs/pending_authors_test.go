@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -172,6 +173,25 @@ func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the room's updates to become durable: %v", err)
 	}
+}
+
+// unstoredRoomUpdates counts the room's updates not yet stored: committed and not yet classified
+// (its replica's log), classified and not handed to the store (pendingUpdates), and handed and not
+// yet committed (durableAppends).
+func (s *Service) unstoredRoomUpdates(room string) int {
+	state := s.room(room)
+	state.mu.Lock()
+	unstored := state.pendingUpdates
+	state.mu.Unlock()
+	unstored += int(state.durableAppends.Load())
+	if live := s.srv.GetDoc(room); live != nil {
+		if listed, ok := s.replicas.Load(weak.Make(live)); ok {
+			if replica := listed.(weak.Pointer[renderedReplica]).Value(); replica != nil {
+				unstored += replica.log.Pending()
+			}
+		}
+	}
+	return unstored
 }
 
 // awaitAppendLandedOrQueued returns once the room's latest update has either landed or is waiting

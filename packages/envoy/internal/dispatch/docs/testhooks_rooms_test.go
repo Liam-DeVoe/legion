@@ -88,7 +88,10 @@ func requireRoomCounters(t *testing.T, service *Service, artifactID string) Room
 // task B counts one state of her there and none on task A, where it is a change of the room's
 // own, bob's the other way round, and alice leaving task A counts her one removal on task B. Each
 // count is read once the reader on the other task has seen the change, which that task's room
-// hands its readers only after it has applied it.
+// hands its readers only after it has applied it. A room's own removal of a client counts only as
+// the expiry of one it took from another process: task A expiring bob counts his expiry there,
+// and alice's departure from task A, a removal of task A's own client, took no entry on task A.
+// ygo fires a room's observers before RemoveExpired returns, so the count is read after it.
 func TestRoomCountersCountTheAwarenessAnotherProcessesNotificationsMakeTheRoomTake(t *testing.T) {
 	pair := newProcessPair(t)
 	pair.taskA.hooks = newTestHooks()
@@ -110,6 +113,14 @@ func TestRoomCountersCountTheAwarenessAnotherProcessesNotificationsMakeTheRoomTa
 	alice.Close()
 	requireAwareness(t, bob, lacksAwareness(aliceClient), "alice leaving task A removing her from bob's reader on task B")
 	requireRelayedAwareness(t, pair.taskB, pair.artifactID, aliceClient, RelayedAwarenessChanges{States: 1, Removals: 1}, "task B, which took alice's removal from task A")
+
+	awarenessA, resident := pair.taskA.srv.GetAwareness(pair.artifactID)
+	if !resident {
+		t.Fatal("task A holds no room of the document to expire bob from")
+	}
+	awarenessA.RemoveExpired(0)
+	requireRelayedAwareness(t, pair.taskA, pair.artifactID, bobClient, RelayedAwarenessChanges{States: 1, Expired: 1}, "task A, which expired bob after taking his state from task B")
+	requireRelayedAwareness(t, pair.taskA, pair.artifactID, aliceClient, RelayedAwarenessChanges{}, "task A, from whose room alice, its own client, departed")
 }
 
 // requireRelayedAwareness fails unless service's rooms of artifactID have taken exactly want of
@@ -122,11 +133,13 @@ func requireRelayedAwareness(t *testing.T, service *Service, artifactID string, 
 }
 
 // The room-counters hook counts each notification that a document's issue closed or reopened
-// which the issue-open lane applies to the document (issueOpenChanged), and no close of its room
-// that came another way. Here the issue closes with nothing notified, as a listener's redial
-// leaves it, and the recheck after the next LISTEN (recheckResidentIssues) closes alice's room:
-// a close of the service's, and no notification applied. The reopen is then notified, and the
-// lane's close of alice's read-only room counts one.
+// which the issue-open lane applies to the document (issueOpenChanged), and apart from it each
+// close the recheck after a LISTEN (recheckResidentIssues) makes. Here the issue closes with
+// nothing notified, as a listener's redial leaves it, and the recheck closes alice's room: a
+// close of the service's, one recheck's close and no notification applied. The reopen is then
+// notified, and the lane's close of alice's read-only room counts one notification and no
+// recheck. A recheck that finds the room's record matching the issue, as the one after alice
+// reconnects does, closes nothing and counts nothing.
 func TestRoomCountersCountTheIssueNotificationsTheIssueOpenLaneApplies(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -143,12 +156,24 @@ func TestRoomCountersCountTheIssueNotificationsTheIssueOpenLaneApplies(t *testin
 		t.Fatalf("after the recheck closed alice's room the counters hold %d room closes and %d notified issue closes, want a close and no notification applied",
 			counters.RoomCloses, counters.NotifiedIssueCloses)
 	}
+	if rechecked := requireRoomCounters(t, service, artifactID).RecheckedIssueCloses; rechecked != 1 {
+		t.Fatalf("after the recheck closed alice's room the counters hold %d rechecked issue closes, want 1", rechecked)
+	}
 
 	alice = connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 	setIssueClosedHere(t, service, "DOC-1", false)
 	requireEnds(t, alice, "the notified reopen of issue DOC-1 left alice's read-only browser connected")
 	if closes := requireRoomCounters(t, service, artifactID).NotifiedIssueCloses; closes != 1 {
 		t.Fatalf("after one notified reopen the counters hold %d notified issue closes, want 1", closes)
+	}
+	if rechecked := requireRoomCounters(t, service, artifactID).RecheckedIssueCloses; rechecked != 1 {
+		t.Fatalf("after a notified reopen the counters hold %d rechecked issue closes, want the recheck's 1 alone", rechecked)
+	}
+
+	connectWithScope(t, server.URL, artifactID, "alice", "read-write", "before\n")
+	service.recheckResidentIssues(store.WithTransactionTracking(context.Background()))
+	if rechecked := requireRoomCounters(t, service, artifactID).RecheckedIssueCloses; rechecked != 1 {
+		t.Fatalf("after a recheck of a room whose record matches its issue the counters hold %d rechecked issue closes, want the first recheck's 1 alone", rechecked)
 	}
 }
 

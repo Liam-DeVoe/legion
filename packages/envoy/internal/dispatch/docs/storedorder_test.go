@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"weak"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -794,25 +793,6 @@ func (s *soakStore) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, 
 		s.unstored.Store(true)
 	}
 	return s.VersionedStore.AppendUpdateTx(ctx, tx, room, update, contentChanged)
-}
-
-// unstoredRoomUpdates counts the room's updates not yet stored: committed and not yet classified
-// (its replica's log), classified and not handed to the store (pendingUpdates), and handed and not
-// yet committed (durableAppends).
-func (s *Service) unstoredRoomUpdates(room string) int {
-	state := s.room(room)
-	state.mu.Lock()
-	unstored := state.pendingUpdates
-	state.mu.Unlock()
-	unstored += int(state.durableAppends.Load())
-	if live := s.srv.GetDoc(room); live != nil {
-		if listed, ok := s.replicas.Load(weak.Make(live)); ok {
-			if replica := listed.(weak.Pointer[renderedReplica]).Value(); replica != nil {
-				unstored += replica.log.Pending()
-			}
-		}
-	}
-	return unstored
 }
 
 // soakWrite runs write as joinedWrite does, its context marked for soakStore.

@@ -6011,59 +6011,148 @@ func (p *dispatchProcess) awaitNotifiedCatchUp(t *testing.T, artifactID string, 
 	}
 }
 
-// relayedAwareness is what the process's rooms of the document have taken of client from another
-// process's notification (docs.RoomCounters.RelayedAwareness).
-func (p *dispatchProcess) relayedAwareness(t *testing.T, artifactID string, client uint64) docs.RelayedAwarenessChanges {
+// awarenessBase is what a wait for a change of one awareness client to reach a process's room
+// (awaitRelayedAwareness) is measured from, read before the change is made: what the room had
+// taken of that client (docs.RoomCounters.RelayedAwareness), and how many LISTENs the process's
+// listener had stood up (docs.RoomCounters.ListenStands).
+type awarenessBase struct {
+	taken        docs.RelayedAwarenessChanges
+	listenStands int64
+}
+
+// relayedAwareness reads, before a change of client, what a wait for that change to reach the
+// process's room of the document is measured from (awaitRelayedAwareness).
+func (p *dispatchProcess) relayedAwareness(t *testing.T, artifactID string, client uint64) awarenessBase {
 	t.Helper()
-	return p.roomCounters(t, artifactID).RelayedAwareness[client]
+	counters := p.roomCounters(t, artifactID)
+	return awarenessBase{taken: counters.RelayedAwareness[client], listenStands: counters.ListenStands}
 }
 
 // awaitRelayedAwareness waits for the process's room of the document to take a change of client
-// from another process's notification past before, what it had taken when the caller read it
+// from another process's notification past before, read before the change was made
 // (relayedAwareness): a removal of the client when removed, a state of it otherwise. It is the half
 // of withinLive every run holds for a cursor or a presence crossing processes. Awareness crosses
 // by NOTIFY alone (docs/awareness_relay.go), but a room also removes a client it stops hearing
 // from by itself once awarenessExpiry (30 s) has passed, so a relay that drops removals still
 // clears a departed reader from the other process's readers; the count holds the removal to the
 // one the reader's own process relayed. A room counts no entry it dropped as stale, so an earlier
-// state still in flight when before was read never counts as this one. It fails, naming what, at
-// the shared wait's give-up.
-func (p *dispatchProcess) awaitRelayedAwareness(t *testing.T, artifactID string, client uint64, removed bool, before docs.RelayedAwarenessChanges, what string) {
+// state still in flight when before was read never counts as this one.
+//
+// A removal has that expiry as its one other carrier: a removal notified while the process's
+// listener had no connection reached nobody there, and nothing after the next LISTEN sends it
+// again, so the room keeps the client until it expires it. A listener redials when its ping times
+// out, which a loaded machine can cause, so where the process stood up a LISTEN again after before
+// was read (ListenStands), a removal wait also ends at the room's own expiry of the client
+// (docs.RelayedAwarenessChanges.Expired), and logs that a redial carried the removal. A process
+// that loses removals with no redial still fails it. A state has no such carrier: a state lost to
+// a redial never reaches the reader's view either, so the wait for the view, before this one,
+// fails first. It fails, naming what, at the shared wait's give-up.
+func (p *dispatchProcess) awaitRelayedAwareness(t *testing.T, artifactID string, client uint64, removed bool, before awarenessBase, what string) {
 	t.Helper()
-	change, past := "state", before.States
-	if removed {
-		change, past = "removal", before.Removals
+	if !removed {
+		testwait.Until(t, fmt.Sprintf("%s to be carried by the other process's awareness relay (a relayed state of client %d past %d)", what, client, before.taken.States),
+			func() (awarenessBase, bool) {
+				now := p.relayedAwareness(t, artifactID, client)
+				return now, now.taken.States > before.taken.States
+			})
+		return
 	}
-	testwait.Until(t, fmt.Sprintf("%s to be carried by the other process's awareness relay (a relayed %s of client %d past %d)", what, change, client, past),
-		func() (docs.RelayedAwarenessChanges, bool) {
-			taken := p.relayedAwareness(t, artifactID, client)
-			if removed {
-				return taken, taken.Removals > past
+	reached := testwait.Until(t, fmt.Sprintf("%s to be carried by the other process's awareness relay (a relayed removal of client %d past %d), or by the room's own expiry of it after a redial (expiries past %d with LISTENs stood past %d)",
+		what, client, before.taken.Removals, before.taken.Expired, before.listenStands),
+		func() (awarenessBase, bool) {
+			now := p.relayedAwareness(t, artifactID, client)
+			if now.taken.Removals > before.taken.Removals {
+				return now, true
 			}
-			return taken, taken.States > past
+			return now, now.listenStands > before.listenStands && now.taken.Expired > before.taken.Expired
 		})
+	if reached.taken.Removals <= before.taken.Removals {
+		t.Logf("%s was carried by the room's own expiry of client %d after the process's listener redialed (LISTENs stood %d, then %d; expiries %d, then %d): the removal's notification reached no listener of the process",
+			what, client, before.listenStands, reached.listenStands, before.taken.Expired, reached.taken.Expired)
+	}
 }
 
-// notifiedIssueCloses is how many notifications that the document's issue closed or reopened the
-// process's issue-open lane has applied to the document (docs.RoomCounters.NotifiedIssueCloses).
-func (p *dispatchProcess) notifiedIssueCloses(t *testing.T, artifactID string) int64 {
+// issueCloseBase is what a wait for a close or a reopen of a document's issue to close a process's
+// room of it (awaitNotifiedIssueClose) is measured from, read before the close or reopen: how
+// many of the issue's notifications the process's issue-open lane had applied to the document
+// (docs.RoomCounters.NotifiedIssueCloses), how many closes of the room the recheck after a LISTEN
+// had made (RecheckedIssueCloses), and how many LISTENs the process's listener had stood up
+// (ListenStands).
+type issueCloseBase struct {
+	notified, rechecked, listenStands int64
+}
+
+// issueCloseBase reads, before a close or a reopen of the document's issue, what a wait for it to
+// close the process's room is measured from (awaitNotifiedIssueClose).
+func (p *dispatchProcess) issueCloseBase(t *testing.T, artifactID string) issueCloseBase {
 	t.Helper()
-	return p.roomCounters(t, artifactID).NotifiedIssueCloses
+	counters := p.roomCounters(t, artifactID)
+	return issueCloseBase{
+		notified: counters.NotifiedIssueCloses, rechecked: counters.RecheckedIssueCloses, listenStands: counters.ListenStands,
+	}
 }
 
 // awaitNotifiedIssueClose waits for the process's issue-open lane to apply a notification that the
-// document's issue closed or reopened past the before it had applied when the caller read it
-// (notifiedIssueCloses): what closes the process's room of the document so its browsers reconnect
+// document's issue closed or reopened past before, read before the close or reopen
+// (issueCloseBase): what closes the process's room of the document so its browsers reconnect
 // with the scope the issue now allows. It is the half of withinLive every run holds for an issue's
-// close or reopen. The recheck after a LISTEN and the append gate's refusal close such a room too,
-// and neither counts. It fails, naming what, at the shared wait's give-up.
-func (p *dispatchProcess) awaitNotifiedIssueClose(t *testing.T, artifactID string, before int64, what string) {
+// close or reopen. The append gate's refusal closes such a room too, and does not count.
+//
+// The close has one other carrier: a close or reopen notified while the process's listener had no
+// connection reached nobody there, and the recheck after its next LISTEN (recheckResidentIssues)
+// closes the room instead. A listener redials when its ping times out, which a loaded machine can
+// cause, so where the process stood up a LISTEN again after before was read (ListenStands), the
+// wait also ends at a close the recheck made (RecheckedIssueCloses), and logs that a redial
+// carried it. A process that loses the issue's notifications with no redial still fails it,
+// naming what, at the shared wait's give-up.
+func (p *dispatchProcess) awaitNotifiedIssueClose(t *testing.T, artifactID string, before issueCloseBase, what string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%s to be carried by the issue's notification (notified issue closes past %d)", what, before),
-		func() (int64, bool) {
-			closes := p.notifiedIssueCloses(t, artifactID)
-			return closes, closes > before
+	reached := testwait.Until(t, fmt.Sprintf("%s to be carried by the issue's notification (notified issue closes past %d), or by the recheck after a redial (rechecked closes past %d with LISTENs stood past %d)",
+		what, before.notified, before.rechecked, before.listenStands),
+		func() (issueCloseBase, bool) {
+			now := p.issueCloseBase(t, artifactID)
+			if now.notified > before.notified {
+				return now, true
+			}
+			return now, now.listenStands > before.listenStands && now.rechecked > before.rechecked
 		})
+	if reached.notified <= before.notified {
+		t.Logf("%s was carried by the recheck after the process's listener redialed (LISTENs stood %d, then %d; rechecked closes %d, then %d): the issue's notification reached no listener of the process",
+			what, before.listenStands, reached.listenStands, before.rechecked, reached.rechecked)
+	}
+}
+
+// awaitRemovalReachesReader waits for client, removed on another process, to leave reader's view:
+// the tab reader is, connected to the process's room of the document. Where the process's listener
+// stood up a LISTEN again after before was read (relayedAwareness), it also ends at the room's own
+// expiry of the client (docs.RelayedAwarenessChanges.Expired), and logs that a redial carried the
+// removal: a removal notified while the listener had no connection reached nobody there, and ygo
+// tells a room's peers of no expiry. A browser drops a client it stops hearing from by its own
+// timeout (y-protocols' outdatedTimeout, 30 s), which docstest.Peer does not do, so the room's
+// expiry is the last of that removal the test can see. With no redial the client must leave the
+// view. It fails, naming what, when the reader's connection ends first or at the shared wait's
+// give-up; awaitRelayedAwareness then says what carried the removal.
+func (p *dispatchProcess) awaitRemovalReachesReader(t *testing.T, artifactID string, client uint64, reader *docstest.Peer, before awarenessBase, what string) {
+	t.Helper()
+	expired := false
+	testwait.Until(t, fmt.Sprintf("%s: client %d to leave the reader's view, or the reader's process to expire it after a redial (expiries past %d with LISTENs stood past %d)",
+		what, client, before.taken.Expired, before.listenStands),
+		func() (string, bool) {
+			select {
+			case <-reader.Ended:
+				t.Fatalf("%s: the reader's connection closed while client %d was still in its view", what, client)
+			default:
+			}
+			if _, present := reader.AwarenessStates()[client]; !present {
+				return "gone from the reader's view", true
+			}
+			now := p.relayedAwareness(t, artifactID, client)
+			expired = now.listenStands > before.listenStands && now.taken.Expired > before.taken.Expired
+			return fmt.Sprintf("still in the reader's view; the reader's process holds %+v", now), expired
+		})
+	if expired {
+		t.Logf("%s: the reader's process expired client %d after its listener redialed, and the reader's browser drops it by its own timeout", what, client)
+	}
 }
 
 // cursorState is the awareness state a dashboard tab announces: who it is and where its cursor is.
@@ -6217,13 +6306,8 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		aliceOnB = pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 		alice.Close()
 		closed := time.Now()
-		if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
-			_, present := states[aliceAwarenessClient]
-			return !present
-		}); err != nil {
-			t.Fatalf("alice's tab closing on A did not remove her presence from bob's tab on B: %v", err)
-		}
 		what = "alice's tab closing on A removing her presence from bob's tab on B"
+		pair.b.awaitRemovalReachesReader(t, artifactID, aliceAwarenessClient, bob, aliceOnB, what)
 		withinLive(t, lane, closed, what)
 		pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, true, aliceOnB, what)
 		pair.requireConnected(t, artifactID, "bob on B", bob, "after alice left")
@@ -6350,28 +6434,28 @@ func (p *dispatchProcess) patchIssueStatus(t *testing.T, issueKey, status string
 	p.call(t, http.MethodPatch, "/api/v1/issues/"+issueKey, fmt.Sprintf(`{"status":%q}`, status), http.StatusOK)
 }
 
-// issueCloses is what each process of the pair had applied of the notifications of a document's
-// issue (notifiedIssueCloses), read before a close or a reopen of that issue: what
-// requireEndsWithin waits past.
+// issueCloses is, for each process of the pair, what a wait for a close or a reopen of a
+// document's issue to close its room is measured from (issueCloseBase), read before the close or
+// reopen: what requireEndsWithin waits past.
 type issueCloses struct {
 	artifactID string
-	before     map[*dispatchProcess]int64
+	before     map[*dispatchProcess]issueCloseBase
 }
 
 // issueCloses reads, before a close or a reopen of the document's issue, what each process of the
-// pair had applied of that issue's notifications.
+// pair's wait for it is measured from.
 func (p *dispatchPair) issueCloses(t *testing.T, artifactID string) issueCloses {
 	t.Helper()
-	return issueCloses{artifactID: artifactID, before: map[*dispatchProcess]int64{
-		p.a: p.a.notifiedIssueCloses(t, artifactID), p.b: p.b.notifiedIssueCloses(t, artifactID),
+	return issueCloses{artifactID: artifactID, before: map[*dispatchProcess]issueCloseBase{
+		p.a: p.a.issueCloseBase(t, artifactID), p.b: p.b.issueCloseBase(t, artifactID),
 	}}
 }
 
 // requireEndsWithin waits for the editor's socket, on process, to close, and fails the test with
 // what the process logged when it stays open; then it waits for process to have applied the
-// issue's notification past what closes read before the close or reopen
-// (awaitNotifiedIssueClose), which is what closed the socket's room. On the clock it holds the
-// close to liveWithin of the call (withinLive).
+// issue's notification, or after a redial the recheck's close, past what closes read before the
+// close or reopen (awaitNotifiedIssueClose), which is what closed the socket's room. On the clock
+// it holds the close to liveWithin of the call (withinLive).
 func requireEndsWithin(t *testing.T, lane clockLane, editor *docstest.Peer, what string, process *dispatchProcess, closes issueCloses) {
 	t.Helper()
 	since := time.Now()

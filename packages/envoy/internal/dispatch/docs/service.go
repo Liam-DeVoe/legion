@@ -3017,8 +3017,9 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 // a closed issue's: it goes by the issue row its transaction locks, not by this flag
 // (settleRoomWithin, issueClosed). A recheck reads only rooms that hold a record and closes only
 // those whose record holds the other state, so a LISTEN that stands again closes no room the
-// issue's state already matches. Its ctx is the room-sync lane's or a close's own, holding no
-// transaction, so the rooms are recorded and closed one at a time.
+// issue's state already matches; the test hooks count each close a recheck makes
+// (RoomCounters.RecheckedIssueCloses). Its ctx is the room-sync lane's or a close's own, holding
+// no transaction, so the rooms are recorded and closed one at a time.
 func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notified bool) {
 	// The row is read before the record's lock is taken, and not under it: no user of that lock
 	// may wait on a database round trip, and a reading taken after the record's would leave a
@@ -3078,6 +3079,9 @@ func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notif
 		s.persistClosedLastActor(ctx, room, snapshot)
 	}
 	s.closeRoomForIssue(ctx, room)
+	if !notified {
+		s.hooks.countRecheckedIssueClose(room)
+	}
 }
 
 // closeSnapshot is what a close for a closed issue reads before it writes the record's latest

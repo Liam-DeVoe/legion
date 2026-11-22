@@ -268,7 +268,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, read the head its room held after the catch-ups another process's notification asked for and after the sweeps a LISTEN ran, count the LISTENs its listener stood up, the issue-open notifications it applied to the document and the awareness changes other processes' notifications made to its room, per client, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
+    /** @description Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, read the head its room held after the catch-ups another process's notification asked for and after the sweeps a LISTEN ran, count the LISTENs its listener stood up, the issue-open notifications it applied to the document and the closes the recheck after a LISTEN made, and the awareness changes other processes' notifications made to its room and its own expiries of the clients they relayed, per client, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
     get: operations["getApiV1ArtifactsByIdTestRoomCounters"];
     put?: never;
     post?: never;
@@ -6266,6 +6266,8 @@ export interface components {
     };
     RelayedAwarenessChanges: {
       /** Format: int64 */
+      expired: number;
+      /** Format: int64 */
       removals: number;
       /** Format: int64 */
       states: number;
@@ -6342,6 +6344,8 @@ export interface components {
       notified_head: number;
       /** Format: int64 */
       notified_issue_closes: number;
+      /** Format: int64 */
+      rechecked_issue_closes: number;
       relayed_awareness: {
         [key: string]: components["schemas"]["RelayedAwarenessChanges"];
       } | null;

@@ -69,22 +69,21 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 			"no bound a socket is held to cut the frame, so one tab took every entry, and B has none for a reader who joins while its clients are there",
 			held, floodClients, docs.MaxAwarenessClientsPerRoomForTest)
 	}
-	// The frame's clients that crossed are the ones B's room took a state of from A's relay; their
-	// departure must reach B the same way, and not by B's own expiry of them 30 s on
-	// (awarenessExpiry), which would clear bob's view all the same.
-	crossed := pair.b.roomCounters(t, artifactID).RelayedAwareness
+	// The frame's clients that crossed are the ones B's room took a state of from A's relay, and
+	// the only ones bob's view can hold; their departure must reach B the same way, and B's own
+	// expiry of them 30 s on (awarenessExpiry), which ygo tells bob's tab nothing of, stands in for
+	// it only where B's listener redialed meanwhile (awaitRemovalReachesReader,
+	// awaitRelayedAwareness).
+	crossed := pair.b.roomCounters(t, artifactID)
 	flood.Close()
 	// The flooding tab has left before alice joins: bob, on B, holds none of its clients once B's
 	// room has taken their removal, which is the tombstones the bound must not count.
-	if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
-		return !holdsAnyClientFrom(states, 500_000, floodClients)
-	}); err != nil {
-		t.Fatalf("the flooding tab's clients never left bob's view on B: %v", err)
-	}
-	for client, before := range crossed {
+	for client, taken := range crossed.RelayedAwareness {
 		if client >= 500_000 && client < 500_000+floodClients {
-			pair.b.awaitRelayedAwareness(t, artifactID, client, true, before,
-				fmt.Sprintf("the flooding tab's client %d leaving bob's view on B", client))
+			before := awarenessBase{taken: taken, listenStands: crossed.ListenStands}
+			what := fmt.Sprintf("the flooding tab's client %d leaving bob's view on B", client)
+			pair.b.awaitRemovalReachesReader(t, artifactID, client, bob, before, what)
+			pair.b.awaitRelayedAwareness(t, artifactID, client, true, before, what)
 		}
 	}
 	// What lets B show a reader it has not seen is a free entry in its room: the bound counts the

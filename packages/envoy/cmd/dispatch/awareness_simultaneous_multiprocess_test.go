@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 )
 
@@ -46,7 +45,7 @@ func fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T, la
 		editors[i] = pair.openSyncedEditor(t, pair.a, fmt.Sprintf("reader%d", i), artifactID, "x\n")
 	}
 	carol := pair.openSyncedEditor(t, pair.a, "carol", artifactID, "x\n")
-	onB := make([]docs.RelayedAwarenessChanges, readers)
+	onB := make([]awarenessBase, readers)
 	for i := range editors {
 		onB[i] = pair.b.relayedAwareness(t, artifactID, uint64(8000+i))
 	}

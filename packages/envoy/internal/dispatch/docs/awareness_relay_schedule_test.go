@@ -207,8 +207,8 @@ func (p *relayProcess) coalesceAwareness(flush func()) { p.flushes = append(p.fl
 
 func (p *relayProcess) awarenessWindows() awarenessWindows { return p.windows }
 
-// countRelayedAwareness counts nothing: a schedule runs no test hooks.
-func (p *relayProcess) countRelayedAwareness(string, uint64, bool) {}
+// countAwarenessChange counts nothing: a schedule runs no test hooks.
+func (p *relayProcess) countAwarenessChange(string, uint64, awarenessChange) {}
 
 // holds is what p's room holds of client now, and whether it holds a state of it at all.
 func (p *relayProcess) holds(client uint64) (awareness.ClientState, bool) {

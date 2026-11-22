@@ -88,12 +88,20 @@ type RoomCounters struct {
 	// recheck after a LISTEN (recheckResidentIssues) and the append gate's close of a room whose
 	// append it refused (refuseClosedIssueAppend) are not counted.
 	NotifiedIssueCloses int64 `json:"notified_issue_closes"`
+	// RecheckedIssueCloses counts the closes of this process's room of the document that the
+	// recheck after a LISTEN made (recheckResidentIssues, setRoomIssueOpen), each for an issue
+	// that closed or reopened while the room's record still held its earlier state: what carries
+	// a close or a reopen whose notification was sent while this process's listener had no
+	// connection, and so reached nobody here. A recheck that finds the record matching the issue
+	// closes nothing and is not counted.
+	RecheckedIssueCloses int64 `json:"rechecked_issue_closes"`
 	// RelayedAwareness is, per awareness client, what this process's rooms of the document took
 	// of that client from another process's notification (awarenessRelay.received, touched): a
 	// state each time a room added or updated the client, a removal each time it took the client
 	// away. An entry a room dropped as stale changed nothing and is not counted, and nor is a
-	// change a room made itself - a local peer's frame or departure, or an expiry
-	// (awarenessExpiry), which removes a relayed client that no notification removed. It is empty,
+	// change a room made itself - a local peer's frame or departure - except one: Expired counts
+	// a room's own removal of a client it had taken a state of from another process, which is the
+	// room's expiry of a relayed client no notification removed (awarenessExpiry). It is empty,
 	// never nil, in what RoomCounters answers.
 	RelayedAwareness map[uint64]RelayedAwarenessChanges `json:"relayed_awareness"`
 	// SettlementResumptions holds the time of each settlement-resumption pass of this process that
@@ -114,7 +122,27 @@ type RelayedAwarenessChanges struct {
 	States int64 `json:"states"`
 	// Removals counts the times a room took the client away.
 	Removals int64 `json:"removals"`
+	// Expired counts the times a room took the client away by itself, with no notification,
+	// after taking a state of it from another process's: the room's expiry of a client it stopped
+	// hearing from (awarenessExpiry), since a room's peers and its closes remove only this
+	// process's own clients. It is what carries a removal whose notification was sent while this
+	// process's listener had no connection, and so reached nobody here.
+	Expired int64 `json:"expired"`
 }
+
+// awarenessChange is one change a room's awareness made to one client, as the test hooks count
+// it (RoomCounters.RelayedAwareness, countAwarenessChange).
+type awarenessChange int
+
+const (
+	// relayedState: another process's notification added the client or took a later state of it.
+	relayedState awarenessChange = iota
+	// relayedRemoval: another process's notification took the client away.
+	relayedRemoval
+	// ownRemoval: the room took the client away by itself - a peer of this process leaving, a
+	// close's removal of this process's clients, or an expiry.
+	ownRemoval
+)
 
 // testHooks is the test hooks' state, on a service built with Deps.TestHooks.
 type testHooks struct {
@@ -341,23 +369,42 @@ func (h *testHooks) countNotifiedIssueClose(artifactID string) {
 	h.countersLocked(artifactID).NotifiedIssueCloses++
 }
 
-// countRelayedAwareness counts a change of client that another process's notification made to a
-// room of artifactID: its removal, or else a state (RoomCounters.RelayedAwareness).
-func (h *testHooks) countRelayedAwareness(artifactID string, client uint64, removed bool) {
+// countRecheckedIssueClose counts a close of artifactID's room that the recheck after a LISTEN
+// made (RoomCounters.RecheckedIssueCloses).
+func (h *testHooks) countRecheckedIssueClose(artifactID string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.countersLocked(artifactID).RecheckedIssueCloses++
+}
+
+// countAwarenessChange counts change, which a room of artifactID's awareness made to client
+// (RoomCounters.RelayedAwareness). A removal the room made itself counts only for a client the
+// hooks have counted a relayed state of, as that client's expiry; this process's own clients
+// take no entry.
+func (h *testHooks) countAwarenessChange(artifactID string, client uint64, change awarenessChange) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	counters := h.countersLocked(artifactID)
+	changes := counters.RelayedAwareness[client]
+	switch change {
+	case relayedState:
+		changes.States++
+	case relayedRemoval:
+		changes.Removals++
+	case ownRemoval:
+		if changes.States == 0 {
+			return
+		}
+		changes.Expired++
+	}
 	if counters.RelayedAwareness == nil {
 		counters.RelayedAwareness = make(map[uint64]RelayedAwarenessChanges)
-	}
-	changes := counters.RelayedAwareness[client]
-	if removed {
-		changes.Removals++
-	} else {
-		changes.States++
 	}
 	counters.RelayedAwareness[client] = changes
 }
