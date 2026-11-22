@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blockedInWaitComplete reports whether a goroutine is parked in WaitComplete, which is the select
@@ -39,20 +40,14 @@ func waitCompleteBlocked(t *testing.T, ctx context.Context, w *kvwatch.Watcher) 
 	return answers
 }
 
-// answerWithin reads the answer of a WaitComplete waiting on cause, failing the test, naming cause,
-// when none has come by waitSpare before the test binary's deadline (untilDeadline): that is the
-// wake-up cause does not make. Each WaitComplete these tests make waits under its test's own
-// context (t.Context), which has no deadline, so a missing wake-up holds the call until this wait
-// gives up, and no bound of the call's decides the row.
+// answerWithin reads the answer of a WaitComplete waiting on cause (testwait.Receive), failing the
+// test, naming cause, when none has come by testwait's margin before the test binary's deadline:
+// that is the wake-up cause does not make. Each WaitComplete these tests make waits under its
+// test's own context (t.Context), which has no deadline, so a missing wake-up holds the call until
+// this wait gives up, and no bound of the call's decides the row.
 func answerWithin(t *testing.T, cause string, answers <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-answers:
-		return err
-	case <-untilDeadline(t):
-		t.Fatalf("WaitComplete did not return after %s; a caller gating its start on a servable copy waits its whole bound out", cause)
-		return nil
-	}
+	return testwait.Receive(t, "WaitComplete to return after "+cause+" (a caller gating its start on a servable copy would wait its whole bound out)", answers)
 }
 
 // refillingWatcher is a watcher of the test bucket whose first read stalls and ends at its scan's

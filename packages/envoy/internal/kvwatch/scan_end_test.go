@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // natsContextWaits counts the goroutines nats.go parks on a subscription's context for its life
@@ -67,13 +68,8 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			go func() { done <- kvwatch.WatchOn(w, other) }()
 			eventually(t, "the replacing watch waiting for the held apply", waitingForTheApplyLock)
 			release()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("the replacing watch: %v", err)
-				}
-			case <-untilDeadline(t):
-				t.Fatal("the replacing watch never returned")
+			if err := testwait.Receive(t, "the replacing watch to return", done); err != nil {
+				t.Fatalf("the replacing watch: %v", err)
 			}
 		}},
 		{name: "its connection closes", stopped: "test cache watcher stopped", end: func(t *testing.T, _ *kvwatch.Watcher, conn *natsgo.Conn, _ string, release func()) {

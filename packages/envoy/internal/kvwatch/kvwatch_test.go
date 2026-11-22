@@ -288,15 +288,11 @@ func (h *heldEnd) step() watchStep {
 	}
 }
 
-// wait waits for ch, which names what, until waitSpare before the test binary's deadline
-// (untilDeadline), failing the test by name if it has not been closed by then.
+// wait waits for ch, which names what, to receive or close (testwait.Receive): only the test
+// binary's deadline, less testwait's margin, ends it, and it fails the test by name then.
 func wait(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-untilDeadline(t):
-		t.Fatalf("timed out waiting for %s", what)
-	}
+	testwait.Receive(t, what, ch)
 }
 
 // forwardedWatcher is a watcher whose updates a step's goroutine forwards from the real one.
@@ -374,25 +370,9 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	})
 }
 
-// waitSpare is how long before the test binary's deadline untilDeadline fires and testContext
-// ends, testwait's own margin: the time a test that waited that long has left to fail by name and
-// run its cleanups.
+// waitSpare is how long before the test binary's deadline testContext ends, testwait's own
+// margin: the time a test that waited that long has left to fail by name and run its cleanups.
 const waitSpare = 30 * time.Second
-
-// untilDeadline is a channel that receives waitSpare before the test binary's deadline
-// (testwait.Left): the end of a wait in a select whose failure branch has work of its own to do,
-// such as releasing a hold, before it fails the test. It fails nothing itself. With waitSpare or
-// less of the deadline left, as under a -timeout of 30 s or less, it never receives, so the select
-// still takes a value already there, and one that never comes leaves the test to the binary's own
-// -timeout, which names it; under -timeout 0 it never receives either.
-func untilDeadline(t *testing.T) <-chan time.Time {
-	t.Helper()
-	left, err := testwait.Left(t, waitSpare)
-	if err != nil {
-		return nil
-	}
-	return time.After(left)
-}
 
 // testContext is a context that ends waitSpare before the test binary's deadline
 // (testwait.Remaining): the context of each request a test makes itself, and of each call of the
@@ -475,12 +455,7 @@ func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
 		t.Cleanup(w.Stop)
 
 		w.Start()
-		select {
-		case <-held.watched:
-		case <-untilDeadline(t):
-			close(held.release)
-			t.Fatal("the watch never armed its watcher")
-		}
+		armedWatch(t, held, "the watch to arm its watcher")
 		// Read while the watch is held inside its KV Watch, before it takes the watcher's locks:
 		// the state a self-health probe would find in the window this test is about.
 		needsRead := w.NeedsRead()
@@ -644,11 +619,7 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-untilDeadline(t):
-		t.Fatal("the Rewatch's scan never reached the held key")
-	}
+	testwait.Receive(t, "the Rewatch's scan to reach the held key", entered)
 
 	w.Start()
 	time.Sleep(300 * time.Millisecond)
@@ -1223,7 +1194,13 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: testBucketName})
+	// The test's own requests (the bucket's create and its put) go through a context of the test's
+	// (testnats.MaxWait), not the client's, whose requests end on the product's own bound.
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
@@ -1320,11 +1297,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	if _, err := kv.Put("late1", []byte("1")); err != nil {
 		t.Fatalf("put late1: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-untilDeadline(t):
-		t.Fatal("the first watcher never applied late1")
-	}
+	testwait.Receive(t, "the first watcher to apply late1", entered)
 	const queued = 40
 	keys := make([]string, 0, queued)
 	for i := range queued {
@@ -1343,13 +1316,8 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	}()
 	eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
 	releaseApply()
-	select {
-	case err := <-rewatched:
-		if err != nil {
-			t.Fatalf("Rewatch: %v", err)
-		}
-	case <-untilDeadline(t):
-		t.Fatal("Rewatch never returned")
+	if err := testwait.Receive(t, "the Rewatch to return", rewatched); err != nil {
+		t.Fatalf("Rewatch: %v", err)
 	}
 	// The premise the lock wait sets up: the switch came while the first watcher still held most of
 	// its queue. If the wait released late1 before the Rewatch was parked on applyMu, the first
@@ -1438,11 +1406,7 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 
 	doneA := make(chan error, 1)
 	go func() { err := w.Rewatch(context.Background(), conn); doneA <- err }()
-	select {
-	case <-slow.entered:
-	case <-untilDeadline(t):
-		t.Fatal("Rewatch A never stopped the replaced watcher")
-	}
+	testwait.Receive(t, "Rewatch A to stop the replaced watcher", slow.entered)
 	if !into.has("ghost") {
 		t.Fatal("the old bucket's key was dropped when A's read began, before any read of the new bucket completed")
 	}
@@ -1488,6 +1452,21 @@ func holdWatch(kv bus.KeyValue) *heldWatchKV {
 		watched: make(chan struct{}), release: make(chan struct{}), ended: make(chan struct{})}
 }
 
+// armedWatch waits for held's watch to arm its watcher (testwait.Receive), naming what it waits
+// for. When the wait gives up, it releases the hold on its way out of the failing test, so the
+// watch it holds ends with the test.
+func armedWatch(t *testing.T, held *heldWatchKV, what string) {
+	t.Helper()
+	armed := false
+	defer func() {
+		if !armed {
+			close(held.release)
+		}
+	}()
+	testwait.Receive(t, what, held.watched)
+	armed = true
+}
+
 func (k *heldWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	watcher, err := k.KeyValue.Watch(ctx, keys, opts...)
 	k.watcher = watcher
@@ -1530,11 +1509,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", held.handle(), into)
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-untilDeadline(t):
-		t.Fatal("the first watch never armed its watcher")
-	}
+	testwait.Receive(t, "the first watch to arm its watcher", held.watched)
 
 	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -1591,11 +1566,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", held.handle(), into)
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-untilDeadline(t):
-		t.Fatal("the first watch never armed its watcher")
-	}
+	testwait.Receive(t, "the first watch to arm its watcher", held.watched)
 	updates := held.watcher.Updates()
 	eventually(t, "the held watcher's buffer to fill", func() bool { return len(updates) == cap(updates) })
 
@@ -1614,11 +1585,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	close(held.release)
 	released = true
 
-	select {
-	case <-held.ended:
-	case <-untilDeadline(t):
-		t.Fatal("the discarded watcher never ended: it was left unread (its delivery goroutine parks on a full buffer) or never stopped")
-	}
+	testwait.Receive(t, "the discarded watcher to end: left unread (its delivery goroutine parks on a full buffer) or never stopped, it never does", held.ended)
 }
 
 // Readiness is the current watcher's to release. A watcher a Rewatch replaced mid-scan still reads
@@ -1658,11 +1625,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	w := kvwatch.New("probe", first, withApply{seen: into, before: apply})
 	t.Cleanup(w.Stop)
 	w.Start()
-	select {
-	case <-entered:
-	case <-untilDeadline(t):
-		t.Fatal("the first watcher never applied k000")
-	}
+	testwait.Receive(t, "the first watcher to apply k000", entered)
 	// The first watcher is held on its first key; its buffer holds the rest of its scan and its
 	// sentinel. The Rewatch's scan sees 200 keys. The first watcher is released only once the
 	// Rewatch is parked on applyMu, so the switch comes before the first watcher's sentinel.

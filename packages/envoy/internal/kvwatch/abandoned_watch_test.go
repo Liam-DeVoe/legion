@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // abandonKV makes each watch for real, so the server has answered the consumer's create, and
@@ -80,10 +81,10 @@ func subscriptionGoroutines() int {
 
 // A watch discards a watcher it made and never installed: one whose run ended while its consumer's
 // create was in flight, and one a newer generation overtook, whose run ends while its stop's
-// delete is unanswered. Nothing of it outlives the discard's bound: the watch returns at once,
-// without waiting out the watcher's stop, whose delete may never be answered; and once the stop
-// returns, the goroutine that reads and drops the watcher's entries ends within the bound, even
-// when nothing ever closes them, and the watcher's consumer is gone from the server. The cache's
+// delete is unanswered. Nothing of it outlives the discard: the watch returns without waiting out
+// the watcher's stop, which the test holds and whose delete may never be answered; and once the
+// stop returns, the goroutine that reads and drops the watcher's entries ends, even when nothing
+// ever closes them, and the watcher's consumer is gone from the server. The cache's
 // own watcher is untouched. A watch under a live run that overtakes still returns with its watcher
 // stopped (TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds).
 func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
@@ -150,24 +151,16 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			t.Cleanup(release)
 			watched := make(chan error, 1)
 			go func() { watched <- tc.install(w, run, bus.NewKeyValue(kv.Legacy(), abandon, kv.Streams())) }()
-			select {
-			case err := <-watched:
-				if tc.ends && err == nil {
-					t.Fatal("a watch whose run ended while its create was in flight answered nil, want the run's end")
-				}
-				if !tc.ends && err != nil {
-					t.Fatalf("an overtaken watch answered %v, want nil", err)
-				}
-			case <-untilDeadline(t):
-				t.Fatal("the watch did not return: it waited out the discarded watcher's stop, which is held until the test releases it")
+			err = testwait.Receive(t, "the watch to return while the discarded watcher's stop is held", watched)
+			if tc.ends && err == nil {
+				t.Fatal("a watch whose run ended while its create was in flight answered nil, want the run's end")
+			}
+			if !tc.ends && err != nil {
+				t.Fatalf("an overtaken watch answered %v, want nil", err)
 			}
 
 			release()
-			select {
-			case <-abandon.stopped:
-			case <-untilDeadline(t):
-				t.Fatal("the discarded watcher was never stopped")
-			}
+			testwait.Receive(t, "the discarded watcher to be stopped", abandon.stopped)
 			eventually(t, "the discard's goroutine to end", func() bool { return subscriptionGoroutines() <= goroutines })
 			eventually(t, "the discarded watcher's consumer to be gone", func() bool { return consumers() <= held })
 

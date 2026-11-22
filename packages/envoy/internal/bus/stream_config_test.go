@@ -78,20 +78,36 @@ func (js *streamInfoJetStream) ConsumerNames(_ string, _ ...nats.JSOpt) <-chan s
 	return names
 }
 
+// silentServers is how many listeners TestConnectWithContextBoundsMultipleUnresponsiveServers
+// walks: each accepts and never answers, so nats.go waits its whole per-server timeout at each,
+// the 5 s the outer deadline cuts connectTimeout to, and a walk of them all takes about 30 s.
+const silentServers = 6
+
+// A connect whose outer deadline passes while nats.go walks silent servers returns that deadline,
+// and returns it while the walk is still under way. The row tells the two apart by the order of two
+// facts, not by a time: the connect's return against the walk reaching the last of silentServers
+// listeners. A connect that waited out its attempt, as one that no longer selects on its context
+// during the attempt does, returns only after the walk has dialed every server, the last of them
+// about 25 s after the first, and then still returns context.DeadlineExceeded from its later
+// checks; so the deadline's error alone cannot tell it from a bounded one.
 func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
-	accepted := make(chan net.Conn, 32)
-	urls := make([]string, 0, 2)
-	for range 2 {
+	accepted := make(chan net.Conn, 4*silentServers)
+	var reached atomic.Int32
+	urls := make([]string, 0, silentServers)
+	for range silentServers {
 		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
 		t.Cleanup(func() { _ = listener.Close() })
 		go func() {
-			for {
+			for first := true; ; first = false {
 				conn, err := listener.Accept()
 				if err != nil {
 					return
+				}
+				if first {
+					reached.Add(1)
 				}
 				accepted <- conn
 			}
@@ -114,20 +130,28 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 	// rather than with its ten attempts run out.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result := make(chan error, 1)
+	type ended struct {
+		err     error
+		reached int32
+	}
+	result := make(chan ended, 1)
 	go func() {
 		conn, err := connectWithContext(ctx, "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
+		reachedAtReturn := reached.Load()
 		if conn != nil {
 			conn.Close()
 		}
-		result <- err
+		result <- ended{err, reachedAtReturn}
 	}()
-	err := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
-	if err == nil {
+	got := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
+	if got.err == nil {
 		t.Fatal("connect unexpectedly succeeded against unresponsive servers")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", err)
+	if !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", got.err)
+	}
+	if got.reached >= silentServers {
+		t.Fatalf("connect returned its deadline only once the walk had reached all %d silent servers: it waited out the attempt, not its outer deadline", silentServers)
 	}
 }
 
