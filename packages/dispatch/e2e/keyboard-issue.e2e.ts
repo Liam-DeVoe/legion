@@ -491,10 +491,10 @@ async function lateOpenWindow(page: Page): Promise<void> {
   });
 }
 
-// The surfaces a key opens over this page - the Create issue dialog, the shortcut sheet and the
-// Inbox peek - are chunks of their own, and the keys a reader types straight after the opening key
-// are the surface's. On this page the page's own shortcuts would take them: a digit writes the
-// issue's priority and `e` puts what follows into the issue's title
+// The surfaces a key opens over this page - the Create issue dialog, the shortcut sheet, the search
+// bar and the Inbox peek - are chunks of their own, and the keys a reader types straight after the
+// opening key are the surface's. On this page the page's own shortcuts would take them: a digit
+// writes the issue's priority and `e` puts what follows into the issue's title
 // (`web/src/features/issue/IssuePage.tsx`). So a surface whose chunk is in opens in the commit of
 // its key, and while one is not in, a box from the entry holds the focus and the keyboard and
 // hands what was typed to the surface when it lands (`web/src/features/shell/asked-surface.tsx`).
@@ -554,6 +554,36 @@ test.describe("keys typed straight after a key that opens a surface", () => {
         .getByRole("dialog", { name: "Keyboard shortcuts" })
         .getByRole("searchbox", { name: "Filter shortcuts" });
       await expect(filter).toHaveValue("1");
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+    } finally {
+      await context.close();
+    }
+  });
+
+  // The bar's chunk is fetched after the page's first paint (`web/src/features/search/
+  // SearchPaletteHost.tsx`), and the row brings it in itself, as the first row does the dialog's.
+  test("$mod+k then 1 at once opens the search bar with 1 in its box and writes no priority", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Keys after mod k" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Keys after mod k");
+      await chunkIn(page, "SearchPalette");
+
+      await page.keyboard.press("ControlOrMeta+k");
+      await page.keyboard.press("1");
+      const box = page
+        .getByRole("dialog", { name: "Search" })
+        .getByRole("combobox", { name: "Search" });
+      await expect(box).toHaveValue("1");
+      await expect(box).toBeFocused();
       await afterAnyWrite(page);
       expect(patched()).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });

@@ -15,6 +15,7 @@ import {
   replayed,
   runClockUntil,
   watchAnswers,
+  watchSendTimes,
   watchWrites,
 } from "./keyed-writes";
 import { expect, type Page, test } from "./test";
@@ -401,6 +402,12 @@ test("two live-view sends pressed during an outage go out in press order, each o
 // real time - so the repeat still finds the first run in flight, and the 5 s hold (`slowWrites`
 // below) outlasts it. The hold need not cover the 15 s cut-off too: that runs on the page's
 // clock, which the row jumps past it (`page.clock`), not on real time.
+// A runner slow enough to spend the hold before the repeat goes out would still pass every other
+// assertion: the first run commits as the hold ends, and a repeat that comes after that is
+// answered from its key with `Idempotency-Replayed: ?1` too, as a repeat after any commit is.
+// So the row reads when each attempt went out, and holds the repeat to inside the hold, which
+// the claim starts a moment after the first attempt reaches Dispatch: a repeat sent sooner than
+// `WRITE_HOLD_MS` after the first is one the first run is still in flight for.
 // SLOW(>=2s): the hook's 5 s hold is the server's own time, which no page clock can move, and the
 // row waits out the first run before its repeat is answered. The page's own 15 s cut-off is the
 // one `page.clock` drives, which lands it early in that hold.
@@ -410,11 +417,13 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
   test.setTimeout(120_000);
   const issueKey = await seedAgents();
   const path = `/api/v1/issues/${issueKey}/comments`;
-  await slowWrites("POST", path, 5_000);
+  const WRITE_HOLD_MS = 5_000;
+  await slowWrites("POST", path, WRITE_HOLD_MS);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     const posts = watchWrites(page, "POST", path);
+    const sentAt = watchSendTimes(page, "POST", path);
     const landed = replayed(page, "POST", path);
     await page.clock.install();
     await page.goto(`/issues/${issueKey}/conversation`);
@@ -442,6 +451,11 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
     // The page gave up on its first attempt and asked again under the same key.
     expect(posts.length).toBeGreaterThanOrEqual(2);
     expect(new Set(posts.map((post) => post.key)).size).toBe(1);
+    // ...and asked while the first run was still held, which is the repeat this row is about.
+    expect(
+      (sentAt[1] ?? Number.POSITIVE_INFINITY) - (sentAt[0] ?? 0),
+      "the repeat went out after the first run's hold, so it was answered from a committed write"
+    ).toBeLessThan(WRITE_HOLD_MS);
     // The mention's one attempt was delivered by the first run's sender, not by a later sweep, and
     // it is the landed comment's.
     await expect

@@ -47,7 +47,7 @@ import {
   resolveComment,
 } from "./api";
 import { countDocumentSockets, cursorLabel } from "./editor";
-import { nextFrames } from "./frames";
+import { nextFrames, openAt } from "./frames";
 import {
   seedNoChildren,
   seedReplyNesting,
@@ -179,24 +179,6 @@ async function expectTreeDrawn(page: Page): Promise<void> {
     "the page draws no [data-issue-page] root, so this is not the redesigned issue page"
   ).toHaveCount(1);
   await expect(tree(page), 'the page draws no role="tree" named "Issue tree"').toHaveCount(1);
-}
-
-/** Loads `path` cold at `size` (`gotoIssue`). A page of another size is sent to `about:blank`
- *  before it is resized, so the page it leaves is not laid out and drawn again at the new size
- *  just before the load throws it away: on an issue of some ninety rows that cost 0.2 to 0.5 s
- *  a resize, and the load reads nothing of the page it replaces. A page already at `size` loads
- *  at once. */
-async function gotoIssueAt(
-  page: Page,
-  size: { readonly height: number; readonly width: number },
-  path: string
-): Promise<void> {
-  const drawn = page.viewportSize();
-  if (drawn?.height !== size.height || drawn.width !== size.width) {
-    await page.goto("about:blank");
-    await page.setViewportSize(size);
-  }
-  await gotoIssue(page, path);
 }
 
 /** The ids of the rows a reader can see, in the order the keys move through them. */
@@ -978,7 +960,7 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
       // Every read of the load settles before the rows are measured: the comments and messages
       // come by reads of their own, and the phone's bullet reading below reads every row drawn.
       const settling = watchApiRequests(page);
-      await gotoIssueAt(page, { height: PHONE.height, width }, `/issues/${seeded.key}`);
+      await openAt(page, { height: PHONE.height, width }, `/issues/${seeded.key}`, true);
       await expectLoadSettled(settling);
       await expectIssuePageDrawn(page);
       await expect(
@@ -1387,7 +1369,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     // phone's size loads first, so the desktop's load is the page the next-question key reads.
     for (const size of [PHONE, DESKTOP]) {
       const at = `${size.width}x${size.height}`;
-      await gotoIssueAt(page, size, `/issues/${seeded.key}`);
+      await openAt(page, size, `/issues/${seeded.key}`, true);
       await expectIssuePageDrawn(page);
       await expectOpeningLanded(page);
       await expect
@@ -1435,7 +1417,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     });
     for (const size of [DESKTOP, PHONE]) {
       const at = `${size.width}x${size.height}`;
-      await gotoIssueAt(page, size, `/issues/${seeded.key}`);
+      await openAt(page, size, `/issues/${seeded.key}`, true);
       await expectIssuePageDrawn(page);
       await expectOpeningLanded(page);
       await expect
@@ -1460,7 +1442,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     await answerAsk(later.id, { expected_edited_at: null, selected: ["Left"] });
     for (const size of [DESKTOP, PHONE, { height: 664, width: 390 }]) {
       const at = `${size.width}x${size.height}`;
-      await gotoIssueAt(page, size, `/issues/${seeded.key}`);
+      await openAt(page, size, `/issues/${seeded.key}`, true);
       await expectIssuePageDrawn(page);
       await expectOpeningLanded(page);
       const rows = await drawnRows(page);
@@ -1489,7 +1471,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     });
     for (const size of [DESKTOP, { height: 664, width: 390 }]) {
       const at = `${size.width}x${size.height} on a first row taller than the window`;
-      await gotoIssueAt(page, size, `/issues/${tall.key}`);
+      await openAt(page, size, `/issues/${tall.key}`, true);
       await expectIssuePageDrawn(page);
       await expectOpeningLanded(page);
       await expect
@@ -2359,7 +2341,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
         // A view's body draws rows of its own shape, or nothing until its part fills its slot,
         // so the page is waited for until it has stopped reading rather than for a row.
         const traffic = watchApiRequests(page);
-        await gotoIssueAt(page, size, presetPath(seeded.key, preset));
+        await openAt(page, size, presetPath(seeded.key, preset), true);
         await expectLoadSettled(traffic);
         expect(
           await childrenSection(page).count(),
@@ -2455,7 +2437,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     // ended at.
     for (const size of [PHONE, DESKTOP]) {
       const at = `${size.width} px`;
-      await gotoIssueAt(page, size, `/issues/${seeded.key}/children`);
+      await openAt(page, size, `/issues/${seeded.key}/children`, true);
       await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {

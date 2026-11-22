@@ -209,9 +209,9 @@ export function useEventFeed({
     // one failed promise would read every later event against it, refreshing nothing for as long
     // as the tab stays open. The events waiting on the failed download refresh everything
     // instead, below, as an event this page cannot map does; a later event asks for the chunk
-    // again, which Chromium can answer with the same failure from its module map
-    // (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that event too then
-    // refreshes everything, under that refresh's own throttle, rather than nothing.
+    // again, which a browser that keeps a failed module fetch (WebKit) answers with the same
+    // failure from its module map (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that
+    // event too then refreshes everything, under that refresh's own throttle, rather than nothing.
     const awaitRefreshMap = keptUntilRejected(() => whenContentDrawn().then(loadEventRefresh));
     void awaitRefreshMap();
 

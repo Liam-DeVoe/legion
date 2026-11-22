@@ -1451,3 +1451,95 @@ test("the details rail fades its trailing edge only while it has somewhere to sc
     await context.close();
   }
 });
+
+/** One animation frame of the page's own clock, the step the row below spends it in. */
+const FRAME_MS = 16;
+
+/** The most of the page's clock the row below lets a tab's panel take to draw once its chunk has
+ *  run: ten frames. A panel drawn in an ordinary update needs none of it, since React schedules
+ *  that render on a message task and not a timer; and it is well inside the 300 ms React holds
+ *  back a `Suspense` boundary's content after its fallback (`FALLBACK_THROTTLE_MS` in react-dom),
+ *  whose timer a paused clock fires only as the row spends it. */
+const PANEL_DRAWN_WITHIN_MS = 160;
+
+// A landing on an issue tab draws the shell, the issue and the tab strip while the tab's own
+// chunk is still on its way, with the tab's skeleton in its panel, and then the panel as soon as
+// the chunk has run. Every panel but the Spec's is a chunk of its own
+// (`web/src/features/issue/tab-chunks.ts`), which the entry starts beside the landing read
+// (`preloadRouteChunk`'s tab arm, `web/src/app.tsx`) and the panel joins, drawn through
+// `chunkComponent` (`web/src/features/shell/chunk-component.tsx`): its skeleton until the chunk is
+// in, then the panel in an ordinary update. Behind `lazy` and a `Suspense`, as the panels were
+// before 82e36c8d, the panel's first render suspends and React holds the boundary's content until
+// 300 ms after its skeleton, on a page timer, so a chunk that landed early still drew its panel
+// late. The page's clock is paused here, so that timer fires only as the row spends the clock,
+// and the row spends at most `PANEL_DRAWN_WITHIN_MS` of it once the chunk has run.
+test("a landing on an issue tab draws the shell and the tab strip while the tab's chunk is out, and the panel as soon as it lands", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Held plan tab" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const chunkUrl = Promise.withResolvers<string>();
+    const release = Promise.withResolvers<void>();
+    await page.route(/\/assets\/PlanTab-[\w-]{8}\.js$/u, async (route) => {
+      chunkUrl.resolve(route.request().url());
+      await release.promise;
+      await route.continue();
+    });
+    // `install()` leaves the clock running at real speed, and `pauseAt` stops it, a second
+    // ahead of the run's clock, since the page's clock refuses to move backwards and the two can
+    // differ a little. It is paused before the load, so no page timer is armed for it to fire.
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 1_000);
+    await page.goto(`/issues/${issue.key}/plan`);
+
+    // A paused page draws no answer of its own accord (TanStack delivers each query's on a
+    // zero-delay page timer), so the wait spends the clock a frame at a time until the page has
+    // drawn the shell, the tab strip and the plan tab's skeleton.
+    const panel = page.locator("#issue-plan-panel");
+    const skeleton = panel.getByRole("status", { name: "Loading the plan tab" });
+    const tabs = page.getByRole("tablist", { name: "Issue detail" });
+    await expect
+      .poll(
+        async () => {
+          await page.clock.runFor(FRAME_MS);
+          return [
+            await page.getByTestId("app-shell").count(),
+            await tabs.count(),
+            await skeleton.count(),
+          ];
+        },
+        { intervals: [FRAME_MS] }
+      )
+      .toEqual([1, 1, 1]);
+
+    release.resolve();
+    // An import of the chunk's own address settles once its module has run, and with it the
+    // panel's download, which is the same module.
+    await page.evaluate((url) => import(url).then(() => undefined), await chunkUrl.promise);
+    let spent = 0;
+    await expect
+      .poll(
+        async () => {
+          // A throw ends the poll at once, so the row fails on the bound and not on the expect
+          // timeout after it.
+          if (spent >= PANEL_DRAWN_WITHIN_MS) {
+            throw new Error(
+              `the plan tab's panel did not draw in ${spent} ms of the page's clock after its chunk had run`
+            );
+          }
+          await page.clock.runFor(FRAME_MS);
+          spent += FRAME_MS;
+          return panel.getByTestId("plan-empty").count();
+        },
+        { intervals: [FRAME_MS] }
+      )
+      .toBe(1);
+    await expect(skeleton).toHaveCount(0);
+    await expect(tabs).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});

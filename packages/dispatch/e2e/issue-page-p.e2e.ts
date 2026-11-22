@@ -16,6 +16,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { openAt, resizeTo } from "./frames";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -49,9 +50,7 @@ import {
   labelsLeft,
   lineOrder,
   MEASURED_TITLE,
-  openAt,
   propertiesLine,
-  resizeTo,
   seedHeader,
   shortControls,
   stickyReading,
@@ -202,7 +201,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // 1440 px with no request waiting on a load of its own. The next pass loads at 1440 px.
     const firstPass = desktopProject ? [IPHONE_13.width, DESKTOP.width] : [IPHONE_13.width];
     for (const [index, width] of firstPass.entries()) {
-      await openAt(page, seeded.key, width, index === 0);
+      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, index === 0);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
@@ -252,7 +251,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // menus closed, scrolls the page to its top below, and takes the line's narrowing off before
     // the labels are read again.
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
-      await openAt(page, seeded.key, width, width !== 1280);
+      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, width !== 1280);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -865,7 +864,9 @@ test("the header holds its limits when the typeface does not load @phone", async
         // request waiting, which reads the load above: the same address and size, with no write
         // since.
         for (const [index, width] of [DESKTOP.width, IPHONE_13.width].entries()) {
-          if (index > 0 || requestWaiting) await openAt(page, seeded.key, width, true);
+          if (index > 0 || requestWaiting) {
+            await openAt(page, viewportAt(width), `/issues/${seeded.key}`, true);
+          }
           await expectHeaderDrawn(page);
           await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
           await expect
@@ -881,7 +882,7 @@ test("the header holds its limits when the typeface does not load @phone", async
         // failed stays failed for the document and a resize asks for no file; each load asks for
         // it again, and the route refuses it again.
         for (const width of [IPHONE_13.width, 320, 1024, DESKTOP.width]) {
-          await openAt(without, seeded.key, width, width !== 320);
+          await openAt(without, viewportAt(width), `/issues/${seeded.key}`, width !== 320);
           await expectHeaderDrawn(without);
           await expect(issueHeader(without)).toContainText(MEASURED_TITLE);
           await expect
@@ -1262,7 +1263,7 @@ test("the press that ends a title edit reaches the control under it @phone", asy
       // out the render that takes the rail away. The heading is a stretched grid item
       // (`IssueTitleRow.tsx`), as wide as its row whatever title it draws, so the title the page
       // draws when it is measured does not change the measure.
-      await openAt(page, seeded.key, width, index === 0);
+      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, index === 0);
       await expectHeaderDrawn(page);
       const [twoLines, threeLines] = await titlesOfLines(page, [2, 3]);
       const titles = { 2: twoLines, 3: threeLines };
@@ -2011,7 +2012,7 @@ test("the labels' count names every label the line leaves out, at every width of
     // the line again whenever its width changes, and the walk starts from the line as drawn.
     await gotoIssue(page, `/issues/${seeded.key}`);
     for (const width of [DESKTOP.width, 1024]) {
-      if (width !== DESKTOP.width) await resizeTo(page, width);
+      if (width !== DESKTOP.width) await resizeTo(page, viewportAt(width));
       await expectHeaderDrawn(page);
       await expect(labelsLeft(page)).toBeVisible();
       // The whole walk is one page function, so a step costs its frames and no round trip of the

@@ -9,7 +9,7 @@ import {
   createProject,
   createProjectDocument,
 } from "./api";
-import { resizeSettled } from "./frames";
+import { acrossABreakpoint, openAt } from "./frames";
 import {
   closeDetails,
   contentsPane,
@@ -96,20 +96,6 @@ const WIDTHS = [320, 390, 768, 1024, 1280, 1440] as const;
 
 /** R10's widths with 390 px first, the width the view row's negative control names. */
 const PHONE_FIRST = [390, ...WIDTHS.filter((width) => width !== 390)] as const;
-
-/** Sets the viewport to `width` and waits out what the resize starts (`resizeSettled`,
- *  `frames.ts`), so a row that reaches a width by a resize reads what a width query draws there:
- *  the rail, the Contents pane and the view row's controls. A row resizes only between widths on
- *  the same side of every breakpoint the frame switches on, and loads the page at each width
- *  across one from the width before it: a chunk the page loads decides part of the layout, and
- *  what a load at a width draws is not always what a resize to that width draws. While the
- *  margin's chunk was on its way after a load, the shell held a column for it that narrowed the
- *  page (381b29ad), which a resize, with the chunk long in, never showed. `openAt` of
- *  `issue-page-p.ts` lists the breakpoints. */
-async function resizeTo(page: Page, width: number): Promise<void> {
-  await page.setViewportSize(viewportAt(width));
-  await resizeSettled(page, width);
-}
 
 /** The column that holds the stage and the foot, inside its insets. */
 async function stageWidth(page: Page): Promise<number> {
@@ -434,17 +420,16 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
 
     // At each of R10's widths, Details closed and open, nothing is wider than the window, the
     // rail and the view row are whole, and no scrolling box of the frame scrolls sideways. The
-    // page stands at 390 px from the load above, with its sheet closed. It is loaded at 768,
-    // 1024 and 1280 px, each across a breakpoint of the frame from the width before it, and
-    // resized (`resizeTo`) to 320 px, on the same side of every breakpoint as 390 px, and to
-    // 1440 px, on the same side of every breakpoint as 1280 px.
-    for (const width of PHONE_FIRST) {
-      if (width === 768 || width === 1024 || width === 1280) {
-        await page.setViewportSize(viewportAt(width));
-        await gotoIssue(page, `/issues/${key}`);
-        await expectOpeningLanded(page);
-      } else if (width !== 390) {
-        await resizeTo(page, width);
+    // page stands at 390 px from the load above, with its sheet closed. It is loaded at each width
+    // across a breakpoint of the frame from the width before it (`acrossABreakpoint`) - 768, 1024
+    // and 1280 px - and resized (`resizeTo`) to 320 px, on the same side of every breakpoint as
+    // 390 px, and to 1440 px, on the same side of every breakpoint as 1280 px.
+    for (const [index, width] of PHONE_FIRST.entries()) {
+      const previous = PHONE_FIRST[index - 1];
+      if (previous !== undefined) {
+        const load = acrossABreakpoint(previous, width);
+        await openAt(page, viewportAt(width), `/issues/${key}`, load);
+        if (load) await expectOpeningLanded(page);
       }
       // Each load here and above has landed its opening before the focus leaves its row for the
       // page, and a resize starts no opening, so the page places no focus of its own at any width
@@ -722,16 +707,14 @@ test("the five controls are toggles with an address each, one line at every widt
 
     // At each of R10's widths, 390 px first, the row is one line, at most 35 px tall from
     // 1280 px and 51 px below, no control in it under 24 px, and each control's words inside
-    // its name. The page stands at 390 px from the load above. It is loaded at 768, 1024 and
-    // 1280 px, each across a breakpoint of the frame from the width before it, and resized
-    // (`resizeTo`) to 320 px, on the same side of every breakpoint as 390 px, and to 1440 px, on
-    // the same side of every breakpoint as 1280 px.
-    for (const width of PHONE_FIRST) {
-      if (width === 768 || width === 1024 || width === 1280) {
-        await page.setViewportSize(viewportAt(width));
-        await gotoIssue(page, `/issues/${key}`);
-      } else if (width !== 390) {
-        await resizeTo(page, width);
+    // its name. The page stands at 390 px from the load above. It is loaded at each width across
+    // a breakpoint of the frame from the width before it (`acrossABreakpoint`) - 768, 1024 and
+    // 1280 px - and resized (`resizeTo`) to 320 px, on the same side of every breakpoint as
+    // 390 px, and to 1440 px, on the same side of every breakpoint as 1280 px.
+    for (const [index, width] of PHONE_FIRST.entries()) {
+      const previous = PHONE_FIRST[index - 1];
+      if (previous !== undefined) {
+        await openAt(page, viewportAt(width), `/issues/${key}`, acrossABreakpoint(previous, width));
       }
       await assertPageFits(page);
       const limit = width >= 1280 ? 35 : 51;

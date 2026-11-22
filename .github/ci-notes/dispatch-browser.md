@@ -1602,17 +1602,19 @@ wait never outlives either budget, and the budgets need no room for it: a step t
 wait past them fails by name instead, and a re-run after the reset reads the jobs again.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
-one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
-one's 4 s is 36 s, and 1 s each for the three steps that sample does not hold - "Report a
-refused blob download as a refused read", which runs one `echo`, "Reading four, the row
-durations", which runs one jq over the merged report, and "Reading five, the lane's
-machine time", which runs one jq over the jobs file reading one already wrote and makes
-no request at all. 1 s is what this job's other one-command steps measure. The lane's
-budget takes this job's whole measured maximum off its bound, 44 s with these steps in it
-(.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`).
-180 + 39 = 219 s, which is 3 min 39 s, so 4 min. The job's budget is above the step's,
-so the step's own budget fires first and names the step, which is the reason this file's
-head gives for putting budgets on steps.
+one step's 180 s, plus the measured maximum of every step without one: the 49 s of pull
+request #3513's runs of 2026-11-15 above, in which the 1 s of "Report a refused blob
+download as a refused read", which runs one `echo` and which no run of that day ran, is what
+this job's other one-command steps measure. 180 + 49 = 229 s, which is 3 min 49 s, so 4 min,
+the figure `dispatch-browser.yaml` gives beside the job's `timeout-minutes`. The older sample
+gives the same 4 min: its 40 s less reading one's 4 s is 36 s, and 1 s each for the three steps
+it does not hold - that one, "Reading four, the row durations", which runs one jq over the
+merged report, and "Reading five, the lane's machine time", which runs one jq over the jobs
+file reading one already wrote and makes no request at all - makes 39 s, and 180 + 39 = 219 s.
+The lane's budget takes this job's whole measured maximum off its bound, 44 s with these steps
+in it (.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`). The job's budget is
+above the step's, so the step's own budget fires first and names the step, which is the reason
+this file's head gives for putting budgets on steps.
 
 What that sample does not hold: no browser step failed in any of those runs, so no blob
 report in them carries a failed row's trace, and the download, the merge and reading
