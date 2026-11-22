@@ -109,7 +109,7 @@ function header(): { patches: Patches; unmount: () => void; user: UserEvent } {
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   client.setQueryData(issueQuery(base.key).queryKey, details);
-  // The header reads the project's repository mappings, its architecture sources and the issue's
+  // The header reads the project list, the project's architecture sources and the issue's
   // subscribers at once; none of them is what these rows are about.
   const restoreReads = mockHeaderReads();
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
@@ -325,11 +325,12 @@ function PageHeader(): ReactNode {
 }
 
 /** `ui` on `client`, signed in as alice, with every read of the viewer's state (`getMyState`) and
- *  the pin's PUT (`pinSave`) held until the test answers it. The header's other reads find a
- *  project with no repository mapping, architecture source or subscriber. */
+ *  the pin's PUT (`pinSave`) held until the test answers it. The header's other reads find no
+ *  project default repository, architecture source or subscriber. */
 function renderHeader(client: QueryClient, ui: ReactNode) {
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const restoreReads = mockHeaderReads();
+  const projects = spyOn(api, "listProjects").mockResolvedValue([]);
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const reads: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
   const getMyState = spyOn(api, "getMyState").mockImplementation(() => {
@@ -358,6 +359,7 @@ function renderHeader(client: QueryClient, ui: ReactNode) {
       view.unmount();
       restoreReads();
       getMyState.mockRestore();
+      projects.mockRestore();
       putIssueState.mockRestore();
       subscribers.mockRestore();
     },

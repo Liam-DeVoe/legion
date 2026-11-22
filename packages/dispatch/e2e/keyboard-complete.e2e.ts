@@ -39,7 +39,7 @@ import {
   markThreadRead,
   patchIssue,
   putArchitectureSource,
-  putRepoProject,
+  putProjectDefaultRepository,
   requestApproval,
   reviewArtifact,
   sessionCookie,
@@ -777,15 +777,18 @@ interface ChoiceSeeds {
   readonly title: string;
 }
 
-/** The seeds of k-choice-writes-on-enter: alice and bob, who have signed in (the reset seeds
- *  both); CORE, with two repositories mapped to it, acme/widgets its default; an open issue of
- *  CORE, which alice holds as its creator; and a question on it that waits on her. */
+/** The seeds of k-choice-writes-on-enter (Verification v15): two people who have signed in, a
+ *  project whose default repository is one repository, an open issue whose own repository is
+ *  another, and a question on that issue that waits on the reader, so the issue header's
+ *  repository list holds three choices: Inherit, the project's default and the issue's own. The
+ *  people are alice and bob, whom the reset signs in; the project is CORE, whose default is
+ *  acme/widgets; the issue is CORE's, on acme/gadgets, and alice holds it as its creator; and the
+ *  question waits on her. */
 async function seedChoices(): Promise<ChoiceSeeds> {
   await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   const title = "Ledger rollout";
-  const issue = await createIssue({ project: "CORE", title });
+  const issue = await createIssue({ project: "CORE", repo: "acme/gadgets", title });
   const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
   return { askId: ask.id, issueKey: issue.key, title };
 }
@@ -1285,10 +1288,12 @@ test("k-menu-contrast: every choice of the assignee, repository and hand-on list
       `${theme}, the assignee`,
       "bob"
     );
+    // The issue's own acme/gadgets is a choice from the list's first draw; the project's default,
+    // acme/widgets, is the one the project list's read brings.
     await readChoiceContrast(
       page.getByLabel(`Repository of ${issueKey}`, { exact: true }),
       `${theme}, the repository`,
-      "acme/gadgets"
+      "acme/widgets"
     );
   }
   const inbox = await openInboxAt(page, "card mode", 1);

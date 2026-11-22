@@ -1,4 +1,3 @@
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
@@ -7,12 +6,11 @@ import {
   createIssue,
   createMessage,
   createProject,
-  deleteRepoProject,
   getIssue,
   getIssueEvents,
   mintAgentToken,
   patchIssue,
-  putRepoProject,
+  putProjectDefaultRepository,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
@@ -1093,14 +1091,13 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
   }
 });
 
-test("issue header picks the issue's repository from its project's mappings, and a child resolves to it", async ({
+test("issue header suggests its project's default repository, and a child resolves to the repository the issue takes", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  await putRepoProject("acme/elsewhere", { default: true, project: "OPS" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
+  await putProjectDefaultRepository("OPS", "acme/elsewhere");
   const parent = await createIssue({ project: "CORE", title: "Change the pinned toolchain" });
   expect(parent).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
   const child = await createIssue({
@@ -1125,22 +1122,21 @@ test("issue header picks the issue's repository from its project's mappings, and
     await expect(control).toHaveAccessibleName(
       `Repository of ${parent.key} acme/widgets, inherited or the project's default`
     );
-    // The project's mappings are read once the reader reaches for the control, and its list
-    // suggests them; another project's are not offered, and Inherit is the one picked.
+    // The list suggests the project's default repository after Inherit, the one picked; another
+    // project's default is not offered.
     await control.focus();
     await control.click();
-    await expect(repositories.getByRole("option")).toHaveText([
-      "✓Inherit",
-      "acme/gadgets",
-      "acme/widgets",
-    ]);
+    await expect(repositories.getByRole("option")).toHaveText(["✓Inherit", "acme/widgets"]);
 
+    // A repository the list does not suggest is typed into its text box and given by the row
+    // that takes it.
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${parent.key}`
     );
-    await repositories.getByRole("option", { exact: true, name: "acme/gadgets" }).click();
+    await page.getByRole("combobox", { name: "Search repositories" }).fill("acme/gadgets");
+    await repositories.getByRole("option", { exact: true, name: 'Use "acme/gadgets"' }).click();
     expect((await patch).postDataJSON()).toEqual({ repo: "acme/gadgets" });
     await expect(badge(/^acme\/gadgets$/)).toBeVisible();
     await expect(control).toHaveAccessibleName(`Repository of ${parent.key} acme/gadgets`);
@@ -1160,8 +1156,14 @@ test("issue header picks the issue's repository from its project's mappings, and
       path: shot,
     });
 
-    // Inherit clears the issue's own repository: it resolves to the project's default again.
+    // The issue's own repository is in its list now, after the project's default, and picked;
+    // Inherit clears it: the issue resolves to the project's default again.
     await control.click();
+    await expect(repositories.getByRole("option")).toHaveText([
+      "Inherit",
+      "acme/widgets",
+      "✓acme/gadgets",
+    ]);
     await repositories.getByRole("option", { exact: true, name: "Inherit" }).click();
     await expect
       .poll(() => getIssue(parent.key))
@@ -1172,16 +1174,21 @@ test("issue header picks the issue's repository from its project's mappings, and
     );
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
-    // A project that maps no repository has nothing to suggest, and its issues take a repository
-    // all the same: the rail carries the item, and its list offers Inherit alone.
+    // A project with no default repository has nothing to suggest, and its issues take a
+    // repository all the same: the rail carries the item, and its list offers Inherit alone. The
+    // list takes its suggestion from the project list, so the row waits until the bare issue's
+    // page reads that list, and then reads the list. A read that the page before it made for the
+    // project.created event does not count.
     await createProject({ key: "BARE", name: "Bare" });
-    const bare = await createIssue({ project: "BARE", title: "No repository mapped" });
+    const bare = await createIssue({ project: "BARE", title: "No default repository" });
     expect(bare.resolved_repo).toBeNull();
-    const mappingsRead = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/v1/settings/repo-projects"
+    const projectsRead = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/v1/projects" &&
+        new URL(page.url()).pathname === `/issues/${bare.key}`
     );
     await page.goto(`/issues/${bare.key}`);
-    await mappingsRead;
+    await projectsRead;
     const rail = page.getByTestId("issue-metadata-rail");
     await expect(rail.getByText("Parent:")).toBeVisible();
     await expect(rail.getByText("Repository:")).toBeVisible();
@@ -1196,112 +1203,76 @@ test("issue header picks the issue's repository from its project's mappings, and
   }
 });
 
-test("an open issue's header follows its project's default repository as the mappings change", async ({
+test("an open issue's header follows its project's default repository as it is set and cleared", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   const issue = await createIssue({ project: "CORE", title: "Follows the default" });
   expect(issue).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    // Each write below is followed by a refresh the scheduler holds for at most
-    // `MIN_REFETCH_INTERVAL_MS`; that is a page timer, so the page's own clock fires it.
+    // Each write below appends `project.updated`, and the refresh it starts is held by the
+    // scheduler for at most `MIN_REFETCH_INTERVAL_MS`; that is a page timer, so the page's own
+    // clock fires it.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     const header = page.getByTestId("issue-header");
     const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
+    const control = page.getByLabel(`Repository of ${issue.key}`);
+    const repositories = page.getByRole("listbox", { name: `Repository of ${issue.key} options` });
+    /** The rows of the issue's Repository list, read with the list opened and closed again by
+     *  Escape, which picks nothing. */
+    const listed = async (rows: string[]): Promise<void> => {
+      await control.click();
+      await expect(repositories.getByRole("option")).toHaveText(rows);
+      await page.keyboard.press("Escape");
+      await expect(repositories).toHaveCount(0);
+    };
+    // The badge names what the issue resolves to, which it has no repository of its own for, and
+    // the project's default is the list's suggestion.
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
+    await listed(["✓Inherit", "acme/widgets"]);
 
-    // A new default: the page shows it without a reload.
-    await putRepoProject("acme/gadgets", { default: true, project: "CORE" });
+    // A new default: the page shows it and suggests it without a reload.
+    await putProjectDefaultRepository("CORE", "acme/gadgets");
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(badge(/^acme\/gadgets$/)).toBeVisible();
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${issue.key} acme/gadgets, inherited or the project's default`
+    );
+    await listed(["✓Inherit", "acme/gadgets"]);
 
-    // The default removed: nothing resolves, and the project still maps acme/widgets to suggest.
-    await deleteRepoProject("acme/gadgets");
+    // The default cleared: nothing resolves, and there is nothing to suggest.
+    await putProjectDefaultRepository("CORE", null);
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(badge(/^No repository$/)).toBeVisible();
-    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveAccessibleName(
-      `Repository of ${issue.key} No repository`
-    );
+    await expect(control).toHaveAccessibleName(`Repository of ${issue.key} No repository`);
+    await listed(["✓Inherit"]);
 
-    // The default again, then moved to another project: CORE maps nothing left to suggest, and
-    // the item stays, since the issue takes a repository whatever its project maps.
-    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+    // The default set again: the page shows it again.
+    await putProjectDefaultRepository("CORE", "acme/widgets");
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
-    await putRepoProject("acme/widgets", { project: "OPS" });
-    await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(badge(/^No repository$/)).toBeVisible();
-    await page.getByLabel(`Repository of ${issue.key}`).click();
-    await expect(
-      page.getByRole("listbox", { name: `Repository of ${issue.key} options` }).getByRole("option")
-    ).toHaveText(["✓Inherit"]);
-  } finally {
-    await context.close();
-  }
-});
-
-test("an issue page whose mappings read fails says so and retries it, rather than hiding the repository", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  const issue = await createIssue({ project: "CORE", title: "No default to inherit" });
-  expect(issue.resolved_repo).toBeNull();
-
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
-  try {
-    let failing = true;
-    let refused = 0;
-    await page.route("**/api/v1/settings/repo-projects", (route) => {
-      if (!failing) {
-        return route.continue();
-      }
-      refused += 1;
-      return route.abort();
-    });
-    // The read is retried twice, `QUERY_RETRY_DELAY_MS` apart (`web/src/api/query-client.ts`),
-    // before the rail may say so; those waits are page timers its own clock fires.
-    await page.clock.install();
-    await page.goto(`/issues/${issue.key}`);
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      await expect.poll(() => refused).toBeGreaterThanOrEqual(attempt);
-      await page.clock.fastForward(QUERY_RETRY_DELAY_MS);
-    }
-    const rail = page.getByTestId("issue-metadata-rail");
-    await expect(rail.getByText("Could not load the repositories mapped to CORE.")).toBeVisible();
-    await expect(rail.getByText("Repository:")).toBeVisible();
-
-    failing = false;
-    await rail.getByRole("button", { name: "Retry" }).click();
-    const control = page.getByLabel(`Repository of ${issue.key}`);
-    await control.click();
-    await expect(
-      page.getByRole("listbox", { name: `Repository of ${issue.key} options` }).getByRole("option")
-    ).toHaveText(["✓Inherit", "acme/gadgets", "acme/widgets"]);
-    await expect(rail.getByText("Could not load the repositories mapped to CORE.")).toHaveCount(0);
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${issue.key} acme/widgets, inherited or the project's default`
+    );
   } finally {
     await context.close();
   }
 });
 
 // @pr: INFRA-2543's whole point, which only the real stack can show: the server takes a
-// repository no project maps, and this is the one row that drives such a repository through the
-// page - typed into the Repository list, given by the row that takes it, written, and read back
-// from the server on a reload.
-test("an issue takes a repository its project does not map, and keeps it across a reload @pr", async ({
+// repository other than the project's default, and this is the one row that drives such a
+// repository through the page - typed into the Repository list, given by the row that takes it,
+// written, and read back from the server on a reload.
+test("an issue takes a repository other than its project's default, and keeps it across a reload @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   const issue = await createIssue({ project: "CORE", title: "Work in another repository" });
   expect(issue).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
 
@@ -1314,7 +1285,7 @@ test("an issue takes a repository its project does not map, and keeps it across 
     await expect(control).toHaveAccessibleName(
       `Repository of ${issue.key} acme/widgets, inherited or the project's default`
     );
-    // The project maps acme/widgets alone; the list suggests it and takes anything else typed.
+    // The project's default is acme/widgets; the list suggests it and takes anything else typed.
     await control.click();
     await expect(repositories.getByRole("option")).toHaveText(["✓Inherit", "acme/widgets"]);
 
@@ -1330,15 +1301,15 @@ test("an issue takes a repository its project does not map, and keeps it across 
       .poll(() => getIssue(issue.key))
       .toMatchObject({ repo: "other/elsewhere", resolved_repo: "other/elsewhere" });
 
-    // The server kept it: the page reads it back as the issue's own, and its list holds it, picked,
-    // though no project maps it.
+    // The server kept it: the page reads it back as the issue's own, and its list holds it,
+    // picked, after the project's default.
     await page.reload();
     await expect(control).toHaveAccessibleName(`Repository of ${issue.key} other/elsewhere`);
     await control.click();
     await expect(repositories.getByRole("option")).toHaveText([
       "Inherit",
-      "✓other/elsewhere",
       "acme/widgets",
+      "✓other/elsewhere",
     ]);
   } finally {
     await context.close();

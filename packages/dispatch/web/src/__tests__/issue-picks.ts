@@ -113,14 +113,26 @@ export async function pickIn(
   await user.click(await within(panelOf(trigger())).findByRole("option", { name }));
 }
 
-/** Picks `repo` from the Repository list `trigger` opens, which writes it; `""` is an Inherit
- *  pick, the list's Inherit row. */
+/** Picks `repo` from the Repository list `trigger` opens, which writes it, opening the list
+ *  unless it stands open: its row where the list offers one - `""` is an Inherit pick, the list's
+ *  Inherit row - and else the row that takes it as typed text, `Use "<repo>"`, as a reader gives
+ *  a repository the list does not suggest (it suggests the project's default and the issue's
+ *  own). A row that reaches the list with a read is waited for before this is called. */
 export async function pickRepo(
   user: UserEvent,
   trigger: () => HTMLElement,
   repo: string
 ): Promise<void> {
-  await pickIn(user, trigger, repo === "" ? "Inherit" : repo);
+  if (trigger().getAttribute("aria-expanded") !== "true") await user.click(trigger());
+  const panel = within(panelOf(trigger()));
+  const row = panel.queryByRole("option", { name: repo === "" ? "Inherit" : repo });
+  if (row !== null) {
+    await user.click(row);
+    return;
+  }
+  await user.click(panel.getByRole("combobox"));
+  await user.paste(repo);
+  await user.click(panel.getByRole("option", { name: `Use "${repo}"` }));
 }
 
 /** Every trigger of the menu named `label` (`Priority of CORE-1`) on the screen, in its order. */

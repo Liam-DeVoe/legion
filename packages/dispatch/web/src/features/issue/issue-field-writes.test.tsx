@@ -43,7 +43,7 @@ import type {
   IssueDetails,
   IssuePriority,
   IssueSummary,
-  RepoProject,
+  Project,
   UpdateIssueInput,
 } from "../../api/types";
 import { useBoardMoves } from "../project/board-moves";
@@ -2488,21 +2488,25 @@ test("a refused assignee pick puts back the person an Inbox row waited on in Dis
   }
 });
 
-const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => ({
-  created_at: "2026-10-01T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  default: repo === "acme/widgets",
-  project: "CORE",
-  renamed_to: null,
-  repo,
-}));
+/** CORE, whose default repository, acme/widgets, is the one repository the list suggests. */
+const projects: Project[] = [
+  {
+    created_at: "2026-10-01T00:00:00Z",
+    default_repo: "acme/widgets",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+  },
+];
 
 /** A repository picker on CORE-1, whose own repository is `repo` and which resolves to
- *  `resolved`, with the project's mappings read once the reader reaches for it. The picker is the
- *  shared list's single pick: its list suggests the mappings after Inherit, a pick of a row writes
- *  it, and the Inherit row is an Inherit pick: the issue inherits a repository again. */
+ *  `resolved`, with the project list read once the reader reaches for it. The picker is the
+ *  shared list's single pick: its list suggests the project's default repository and the issue's
+ *  own after Inherit, a pick of a row writes it, a repository it does not suggest is given as
+ *  typed text, and the Inherit row is an Inherit pick: the issue inherits a repository again. */
 function renderRepo(repo: string | null, resolved: string | null) {
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   // The issue's read, which the test seeds: the one asked of it is the issue read again.
   const detailRead = mock(() =>
     Promise.reject<IssueDetails>(new Error("the test seeds this query"))
@@ -2541,7 +2545,7 @@ function renderRepo(repo: string | null, resolved: string | null) {
     trigger,
     unmount: () => {
       view.unmount();
-      listRepoProjects.mockRestore();
+      listProjects.mockRestore();
     },
   };
 }
@@ -2561,7 +2565,7 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
   try {
     await user.hover(trigger());
     await user.click(trigger());
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await waitFor(() => expect(suggestions()).toEqual(["acme/widgets"]));
     await pickRepo(user, trigger, "acme/gadgets");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("acme/gadgets cannot be the repository of CORE-1");
@@ -2592,7 +2596,7 @@ test("an Inherit pick of the repository shows the repository the issue showed be
     expect(described()).toBe("acme/gadgets");
     await user.hover(trigger());
     await user.click(trigger());
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await waitFor(() => expect(suggestions()).toEqual(["acme/widgets", "acme/gadgets"]));
     await pickRepo(user, trigger, "");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ repo: null }]));
     expect(described()).toBe("acme/gadgets, inherited or the project's default");
