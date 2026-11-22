@@ -205,6 +205,36 @@ func TestATakeAfterADiscardedWatchsStreamReadIsEvidenceForTheReadThatInstalls(t 
 	}
 }
 
+// The first read of a bucket deleted and created again marks nothing of the old bucket, even a
+// take in its own gap: a key written through the old bucket's handle at 500, after the read's
+// stream read, names a revision of the old bucket, which says nothing of what the new one, whose
+// stream had stored 3 records, holds. The read clears the fence before it marks, so the key is
+// swept when the read does not find it, and its record, if the new bucket holds one, is taken when
+// the watcher delivers it. Marking first would keep the old bucket's value.
+func TestARecreatedBucketsFirstReadMarksNothingOfTheOldBucket(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
+	w := kvwatch.New("test cache", kv, newSeen())
+	copied := kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
+		return string(entry.Value), true, nil
+	}})
+	kvwatch.SetStreamReads(w, 2)
+	if outcome := copied.Put(w, w.Epoch(), "K", "old", 500); outcome != kvwatch.Applied {
+		t.Fatalf("the write at 500 came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
+	}
+	copied.BeginRead(kvwatch.Read{Recreated: true, LastSeq: 3, StreamRead: 2})
+	copied.CompleteRead()
+	if value, kept := copied.Get("K"); kept {
+		t.Fatalf("after the recreated bucket's first read: K kept as %q, want it removed with its fence", value)
+	}
+	if err := copied.Delivered(kvwatch.Entry{Key: "K", Op: kvwatch.OpPut, Value: []byte("new"), Revision: 4}); err != nil {
+		t.Fatalf("deliver K at 4: %v", err)
+	}
+	if value, _ := copied.Get("K"); value != "new" {
+		t.Fatalf("after the new bucket's record at 4: K = %q, want %q", value, "new")
+	}
+}
+
 // A write the fence drops is no evidence for a read, through each write site: a write-through
 // (Put), a record read back (Apply) and a delete whose record the cache could not read back
 // (Evict). After a restore that keeps the stream's creation time and moves its sequence back to
