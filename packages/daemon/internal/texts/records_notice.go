@@ -557,13 +557,15 @@ type DecisionMark struct {
 	Rest     int       `json:"rest,omitempty"`
 }
 
-// ChecksRedRecord is the notice that the daemon asked the implementer to merge the base forward
-// onto a head that conflicts with its base (workflow's mergeForward): the phase the issue stays
-// in, what holds the issue where it is held (a Hold word: HoldFailure or HoldEscalation), the
-// base, the head, the pull request and why the daemon acted (record.ConflictWhy's word). A held
-// issue stays in the phase its hold came from, and no worker holds that phase (checksRedUrgency).
-// The base is absent where the daemon has not recorded it, as for a pull request recorded before
-// the daemon kept the base (record.PullRequest.Base).
+// ChecksRedRecord is the notice that the daemon asked a role to merge the base forward onto a
+// head that conflicts with its base (workflow's mergeForward): the phase the issue stays in, what
+// holds the issue where it is held (a Hold word: HoldFailure or HoldEscalation), the base, the
+// head, the pull request, why the daemon acted (record.ConflictWhy's word) and the role asked
+// (Asked, record.MergeForwardAsker): the implementer before merging, and in merging the merger,
+// which main's notice named in its reason ("the %s is asked to merge %s forward",
+// cybermonklabs/legion#4979). A held issue stays in the phase its hold came from, and no worker
+// holds that phase (checksRedUrgency). The base is absent where the daemon has not recorded it, as
+// for a pull request recorded before the daemon kept the base (record.PullRequest.Base).
 type ChecksRedRecord struct {
 	NoticeHead
 	Phase         phase.Phase `json:"phase,omitempty"`
@@ -572,6 +574,7 @@ type ChecksRedRecord struct {
 	Head          string      `json:"head"`
 	PullRequest   string      `json:"pull_request"`
 	Why           string      `json:"why"`
+	Asked         claim.Role  `json:"asked"`
 }
 
 // The summary words of a review-stuck notice: the fact that wrote it. dispatch://INFRA-3498's R4

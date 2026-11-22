@@ -314,10 +314,11 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	b.catchUps(r)
 
 	// checks-red, review-stuck in each cause, status-reasserted, session-lost, session-store-fault.
-	// checks-red, as mergeForward writes it: in a phase a worker holds (low), in accepting, which
-	// the architect holds itself (med), of a pull request recorded before the daemon kept the
-	// base, which names the head and no base, and of an issue held from testing, by its tester's
-	// failed claim and by its architect's escalation, which no worker holds (med).
+	// checks-red, as mergeForward writes it: in a phase a worker holds (low), the implementer asked
+	// in reviewing and the merger in merging, which merges the base forward itself there
+	// (cybermonklabs/legion#4979); of a pull request recorded before the daemon kept the base,
+	// which names the head and no base; and of an issue held from testing, by its tester's failed
+	// claim and by its architect's escalation, which no worker holds (med).
 	standing := func(at phase.Phase) record.Issue {
 		stands := issue
 		stands.Phase = at
@@ -325,18 +326,20 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	}
 	why := []record.ConflictWhy{record.ConflictCheckNotGreen, record.ConflictRulesUnread}[r.n-1]
 	b.notice(r, "conflict", arch, workflow.ChecksRedNotice(standing(phase.Reviewing), pr, why),
-		goldenWant("issue", issue.Key, "phase", phase.Reviewing, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why))
-	b.notice(r, "accepting", arch, workflow.ChecksRedNotice(standing(phase.Accepting), pr, record.ConflictMergeNext),
-		goldenWant("issue", issue.Key, "phase", phase.Accepting, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", record.ConflictMergeNext))
+		goldenWant("issue", issue.Key, "phase", phase.Reviewing, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why,
+			"asked", claim.RoleImplementer))
+	b.notice(r, "merging", arch, workflow.ChecksRedNotice(standing(phase.Merging), pr, record.ConflictMergeNext),
+		goldenWant("issue", issue.Key, "phase", phase.Merging, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", record.ConflictMergeNext,
+			"asked", claim.RoleMerger))
 	unbased := record.PullRequest{Issue: issue.Key, Repo: r.repo, Number: 750 + r.n, HeadSHA: r.sha("notice/no-base/head")}
 	b.notice(r, "no-base", arch, workflow.ChecksRedNotice(standing(phase.Merging), unbased, record.ConflictMergeNext),
 		goldenWant("issue", issue.Key, "phase", phase.Merging, "head", unbased.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, unbased.Number),
-			"why", record.ConflictMergeNext))
+			"why", record.ConflictMergeNext, "asked", claim.RoleMerger))
 	heldFrom := standing(phase.Held)
 	heldFrom.Hold = &record.Hold{From: phase.Testing, Reason: []record.HoldReason{"", record.HoldEscalated}[r.n-1]}
 	b.notice(r, "held", arch, workflow.ChecksRedNotice(heldFrom, pr, why),
 		goldenWant("issue", issue.Key, "phase", phase.Testing, "hold", []string{texts.HoldFailure, texts.HoldEscalation}[r.n-1],
-			"conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why))
+			"conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why, "asked", claim.RoleImplementer))
 	stuck := goldenStuckRequest(r)
 	stuckRef := texts.PullRequestRef(r.repo, stuck.Number)
 	topic := "notifications.role." + string(r.token(t, issue.Key, claim.RoleReviewer))
@@ -769,10 +772,12 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			texts.UrgencyOf(texts.MergeQueueRemoval, claim.RoleMerger, texts.Variant{}), want)
 	}
 
-	// The messages of a merge forward, as workflow's mergeForward and mergeForwardLanded queue
-	// them, each published as its step's record: the ask to the implementer (and one of a pull
-	// request recorded before the daemon kept the base, which names the head and no base), the
-	// hold to the worker of the phase, the landed to that worker, and the review past the review.
+	// The messages of a merge forward, as workflow's mergeForward, holdMerger and
+	// mergeForwardLanded queue them, each published as its step's record: the ask to the
+	// implementer (and one of a pull request recorded before the daemon kept the base, which names
+	// the head and no base), the ask to the merger in merging (cybermonklabs/legion#4979), the hold
+	// to the worker of the phase, the hold to a merger that entered merging while the implementer's
+	// merge had not landed, the landed to that worker, and the review past the review.
 	{
 		base, head, landed := "main-"+r.words("forward/base", 5), r.sha("forward/head"), r.sha("forward/landed")
 		number := 1400 + r.n
@@ -791,12 +796,22 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleImplementer, texts.Variant{Phase: at}),
 			goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, number+50), "head", unbasedHead, "phase", at,
 				"why", record.ConflictRulesUnread))
+		mergerAsk := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: head, Base: base,
+			Phase: phase.Merging, PullRequest: number, Why: record.ConflictMergeNext})
+		b.published(r, texts.MergeForwardAsk, "ask-merger", claim.RoleMerger, issue, mergerAsk.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", record.ConflictMergeNext))
 		worker := phase.RoleFor(at)
 		hold := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardHold, Head: head, Base: base,
 			Phase: at, PullRequest: number, Why: why})
 		b.published(r, texts.MergeForwardHold, "hold", worker, issue, hold.Record(issue, r.repo),
 			texts.UrgencyOf(texts.MergeForwardHold, worker, texts.Variant{Phase: at}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", at, "why", why))
+		mergerHold := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardHold, Head: head, Base: base,
+			Phase: phase.Merging, PullRequest: number, Why: why})
+		b.published(r, texts.MergeForwardHold, "hold-merger", claim.RoleMerger, issue, mergerHold.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardHold, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", why))
 		told := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardLanded, Head: head, Landed: landed, Base: base,
 			Phase: at, PullRequest: number, Why: why})
 		b.published(r, texts.MergeForwardLanded, "landed", worker, issue, told.Record(issue, r.repo),

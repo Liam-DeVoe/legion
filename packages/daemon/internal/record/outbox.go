@@ -95,9 +95,10 @@ const (
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
-// the messages of a merge forward, which go to the implementer and to the worker of the phase the
-// issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
-// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
+// the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
+// the worker of the phase the issue stays in (merge_forward), and an update round's ask, which
+// goes to any role whose process runs in the issue's pod, its architect included (update_ask).
+// It also runs the two reads of
 // GitHub that come before a message: the read before a merge-queue removal's message
 // (merge_queue_read), and the second read of a head a first read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
@@ -621,13 +622,14 @@ type Notice struct {
 	Refusal       string                  `json:"refusal,omitempty"`
 	// Relaunch is what the last let-go of the architect's process ended (catch-up).
 	Relaunch *texts.RelaunchFacts `json:"relaunch,omitempty"`
-	// The head that conflicts with its base and why the daemon asked for its merge forward
-	// (checks-red), and a stuck review round (review-stuck) with the checks and the commit
-	// statuses of its head, the checks GitHub skipped among them, beside the field that says once
-	// that a skipped check ran nothing on the head.
+	// The head that conflicts with its base, why the daemon asked for its merge forward and the
+	// role it asked (checks-red, MergeForwardAsker), and a stuck review round (review-stuck) with the
+	// checks and the commit statuses of its head, the checks GitHub skipped among them, beside the
+	// field that says once that a skipped check ran nothing on the head.
 	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
 	Head              string                  `json:"head,omitempty"`
 	Why               string                  `json:"why,omitempty"`
+	Asked             claim.Role              `json:"asked,omitempty"`
 	Cause             string                  `json:"cause,omitempty"`
 	ApprovedHead      string                  `json:"approved_head,omitempty"`
 	EndsRound         string                  `json:"ends_round,omitempty"`
@@ -1974,7 +1976,8 @@ func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfir
 type MergeForwardStep string
 
 const (
-	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
+	// MergeForwardAsk asks the role the daemon asks (MergeForwardAsker), the implementer before
+	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
 	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
@@ -1987,11 +1990,15 @@ const (
 )
 
 // mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
-// implementer, whose merge it is; the hold and the landed to a worker of the phase the issue
-// stays in that is neither the implementer, whom the ask tells, nor the architect, whom the
-// checks-red notice tells; and the review to the reviewer.
+// implementer or the merger, whose merge it is (MergeForwardAsker, which only in merging names
+// the merger); the hold to a worker of the phase the issue stays in that is neither the role
+// asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
+// worker of that phase, the merger included, which in merging made the merge and learns from it
+// to merge only once the reviewer approved the new head; and the review to the reviewer. The hold
+// still lists the merger, which a daemon before cybermonklabs/legion#4979 held in merging while it
+// asked the implementer, so a row that daemon queued is still read after the upgrade.
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
-	MergeForwardAsk:    {claim.RoleImplementer},
+	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardReview: {claim.RoleReviewer},
@@ -2006,9 +2013,10 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
-// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
-// to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
-// worker of the phase the issue stays in to stop writing that workspace while the merge runs
+// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer,
+// or in merging the merger (MergeForwardAsker, cybermonklabs/legion#4979), to merge Base forward onto
+// Head in the issue workspace and push (MergeForwardAsk), and tells the worker of the phase the
+// issue stays in, where that is another role, to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
 // the reviewer of an issue past its review to read the merge (MergeForwardReview).
 //
@@ -2063,16 +2071,22 @@ func (p MergeForwardMessage) Kind() texts.Kind {
 // holds the pull request under (PullRequest.Repo): the record of the step's kind, with the pull
 // request as owner/name#n, the head that conflicted, the base where the record holds one, and the
 // phase the issue stays in. The ask and the hold name why the daemon acted; the landed and the
-// review name the head the merge left. The ask also says that the head conflicts with its base,
-// whether or not the record holds the base, and names the issue branch the implementer pushes the
-// merge to (claim.IssueBranch), which dispatch://INFRA-4374's R0 and R1 have it say; an ask whose
-// why is a required check that has not passed says that GitHub runs no check on the head
-// (texts.ChecksOnHeadNone), which R0 has it say. The review names the review it asks for
-// (texts.MergeForwardReviewAsked), which R1 has it ask. What each reader does with its message -
-// the merge in the issue workspace and the push with no handoff and no completion, the stop of
-// every write and of a completion at the old head, the read of what the merge changed, and the
-// roles the reviewer tells - is its prompt's (internal/prompts/go/worker-common.md and the prompt
-// of each role).
+// review name the head the merge left. The ask goes to the role asked (MergeForwardAsker): the
+// implementer, or in merging the merger (cybermonklabs/legion#4979), each with the same fields. It
+// also says that the head conflicts with its base, whether or not the record holds the base, and
+// names the issue branch the role asked pushes the merge to (claim.IssueBranch), which
+// dispatch://INFRA-4374's R0 and R1 have it say; an ask whose why is a required check that has not
+// passed says that GitHub runs no check on the head (texts.ChecksOnHeadNone), which R0 has it say.
+// The review names the review it asks for (texts.MergeForwardReviewAsked), which R1 has it ask.
+// What each reader does with its message - the merge in the issue workspace and the push with no
+// handoff and no completion, the stop of every write and of a completion at the old head, the read
+// of what the merge changed (for a merge of the base its remerge diff and the files the base
+// brought in, for any other new head the diff from the old head), and the roles the reviewer tells
+// - is its prompt's (internal/prompts/go/worker-common.md and the prompt of each role). So is what
+// the merger's ask told the merger beside the implementer's (cybermonklabs/legion#4979): that the
+// merge and its conflict are its own to resolve, and that when its merge lands the reviewer is
+// asked to read it and approve the new head (internal/prompts/go/merger.md); the landed, which
+// comes when that matters, is what holds its merge to that approval.
 func (p MergeForwardMessage) Record(issue, repo string) any {
 	head := texts.RoleHead{Kind: p.Kind(), Issue: issue}
 	pull := texts.PullRequestRef(repo, p.PullRequest)
@@ -2660,12 +2674,18 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		// The base is named where the record holds one: a pull request recorded before the daemon
 		// kept the base holds none, and its message names the head and no base, as checks-red does.
 		if value.Head == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the phase the issue stays in and the pull request; it names %q, %q and #%d", value.Head, value.Phase, value.PullRequest)
+		}
+		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
+		// is valid in every phase, so a row a daemon before cybermonklabs/legion#4979 queued past the
+		// review still reads.
+		if value.Step == MergeForwardAsk && value.Role == claim.RoleMerger && MergeForwardAsker(value.Phase) != claim.RoleMerger {
+			return fmt.Errorf("a merge-forward ask goes to the merger only while the issue stands in merging; this one names %q", value.Phase)
 		}
 		landing := value.Step == MergeForwardLanded || value.Step == MergeForwardReview
 		if landing != (value.Landed != "") {

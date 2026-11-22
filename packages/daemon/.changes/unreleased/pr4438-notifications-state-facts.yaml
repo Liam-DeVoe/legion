@@ -93,7 +93,10 @@ body: |-
   (`read_before_heavy_work`); the task of a review's request for changes names GitHub's id of the
   review (`review_id`), where a cut body is read whole; a merge-forward ask whose required check
   has not passed says that GitHub runs no check on the head (`checks_on_head: none`), and a
-  merge-forward review names the review it asks for (`review_asked`); a worker-died of a role
+  merge-forward review names the review it asks for (`review_asked`); a checks-red notice names
+  the role asked to merge the base forward (`asked: implementer`, or in `merging`
+  `asked: merger`), and the merger's merge-forward ask in `merging` carries the fields of the
+  implementer's, the steps it gave the merger being in the merger's prompt; a worker-died of a role
   that does not work the issue's phase says that nothing is held (`nothing_held: true`); a
   worker-died and a held notice write each line break and backslash of a failure record's texts,
   and of the worker-died's own `detail`, `death` and `pod_end`, as Go writes them in a string

@@ -157,7 +157,7 @@ var list = []Entry{
 	{Kind: HookPrompt, Form: RoleMessage, Record: HookPromptRecord{}, Readers: toPhaseWorkers},
 	{Kind: UpdateAsk, Form: RoleMessage, Record: UpdateAskRecord{}, Readers: toPodRoles},
 	{Kind: MergeQueueRemoval, Form: RoleMessage, Record: MergeQueueRemovalRecord{}, Readers: toMerger},
-	{Kind: MergeForwardAsk, Form: RoleMessage, Record: MergeForwardAskRecord{}, Readers: toImplementer},
+	{Kind: MergeForwardAsk, Form: RoleMessage, Record: MergeForwardAskRecord{}, Readers: toMergeForwardAskers},
 	{Kind: MergeForwardHold, Form: RoleMessage, Record: MergeForwardHoldRecord{}, Readers: toHoldingWorkers},
 	{Kind: MergeForwardLanded, Form: RoleMessage, Record: MergeForwardLandedRecord{}, Readers: toHoldingWorkers},
 	{Kind: MergeForwardReview, Form: RoleMessage, Record: MergeForwardReviewRecord{}, Readers: toReviewer},
