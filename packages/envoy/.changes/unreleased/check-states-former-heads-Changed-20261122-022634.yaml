@@ -48,7 +48,9 @@ body: |-
     change (`check_states_owed.reads_from`, migration `20261122063706`), and a `test` handoff
     waits for it as for a due mark, so the handoff records no serial over a state at a former head
     that may be from before the change, a pass of a run that has since failed among them; the
-    failure backoff of a `read_failed` state follows once every head has been read.
+    failure backoff of a `read_failed` state follows once every head has been read, and a mark
+    after the backoff stays while any state of the issue reads `read_failed`, whichever settle
+    published it, until that head is read or leaves the issue's heads.
     The result a former head's run derives counts at that former head alone, never among the
     check's results, so the state published at an open head is computed from the results
     `GET /api/v1/issues/{key}/results` computes it from, and a former head's run never changes it.

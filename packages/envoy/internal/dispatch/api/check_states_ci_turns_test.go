@@ -292,6 +292,136 @@ func TestAFailedReadWaitsItsBackoffOnceEveryFormerHeadIsRead(t *testing.T) {
 	}
 }
 
+// TestAFailedReadKeepsItsRetryWhenALaterTurnLeavesItUnread: #70 is pushed through sixteen heads,
+// settled at each, and is open at a seventeenth. Then GitHub stops answering for all sixteen, and
+// the issue is marked owed: the first turn starts eight reads, each failing at the bound of its
+// batch (read_failed), and leaves the other eight unstarted, so the issue keeps its mark. GitHub
+// answers again for those eight, and the second turn starts them first; each of their reads
+// succeeds, and the bound of their batch ends before a slot frees, so the eight reads that failed
+// are not started and their states still read read_failed. Every head has now been read since the
+// change, so the mark goes; the failed reads still owe a retry, so a mark must stay, due after the
+// backoff and counting the failure. Once it falls due and GitHub answers for every head, every
+// head reads yes and the issue owes nothing.
+func TestAFailedReadKeepsItsRetryWhenALaterTurnLeavesItUnread(t *testing.T) {
+	savedTimeout := githubapp.RequestTimeout
+	githubapp.RequestTimeout = 24 * time.Hour
+	t.Cleanup(func() { githubapp.RequestTimeout = savedTimeout })
+	rig := newCheckStatesRig(t, checkStatesWithCI)
+	visited := make([]string, 16)
+	for index := range visited {
+		visited[index] = fmt.Sprintf("%040x", len(visited)-index)
+		rig.github.listings.set(visited[index], completedRun(int64(900+index), ciJobName, "success"))
+	}
+	rig.github.listings.set(eachHeadH4, completedRun(950, ciJobName, "success"))
+	for _, sha := range append(visited, eachHeadH4) {
+		upsertHead(t, rig, 70, sha, rig.issue, "A change")
+		settleOwed(t, rig)
+	}
+	settler := rig.newSettler(t, "check states kept retry")
+	settler.schedule.minGap = time.Hour
+	exec := func(statement string) {
+		if _, err := rig.database.Pool.Exec(context.Background(), statement, rig.issue); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	settle := func(what string) {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			settler.settle(store.WithTransactionTracking(context.Background()), rig.issue)
+		}()
+		ciAwait(t, what, done)
+	}
+	k3At := func(sha string) publishedState {
+		row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, sha, "k3")
+		if !held {
+			t.Fatalf("k3 holds no state at %s", sha[34:])
+		}
+		return row
+	}
+
+	// The first turn: eight reads start and fail at their batch's bound; eight never start.
+	entered := rig.github.listings.blockReadsOf(t, visited...)
+	bounds := holdCIReadBounds(t)
+	exec(`select check_states_owe($1)`)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		settler.settle(store.WithTransactionTracking(context.Background()), rig.issue)
+	}()
+	failed := map[string]bool{}
+	for range ciHeadReadConcurrency {
+		failed[ciAwait(t, "the first turn's eight reads", entered)] = true
+	}
+	bounds.expire(t)
+	ciAwait(t, "the first turn to end", done)
+	var unread, failedHeads []string
+	for _, sha := range visited {
+		if failed[sha] {
+			failedHeads = append(failedHeads, sha)
+			if row := k3At(sha); row.reason != model.PassSubjectReasonReadFailed {
+				t.Fatalf("after the first turn k3 at %s, whose read failed, reads %s, want read_failed", sha[34:], publishedLine(row))
+			}
+			continue
+		}
+		unread = append(unread, sha)
+	}
+	if marks := marksOf(t, rig.database, rig.issue); len(unread) != ciHeadReadConcurrency || marks != 1 {
+		t.Fatalf("after the first turn %d heads are unread and the issue holds %d marks, want 8 and one", len(unread), marks)
+	}
+
+	// The second turn: the eight unread heads are read and answer; the eight failed are not started.
+	rig.github.listings.blockReadsOf(t, failedHeads...)
+	gated := gateCIReadBounds(t, 2)
+	exec(`update check_states_owed set due_at = now() where issue_key = $1`)
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		settler.settle(store.WithTransactionTracking(context.Background()), rig.issue)
+	}()
+	for range ciHeadReadConcurrency {
+		ciAwait(t, "the second turn's eight reads to answer", gated.returned)
+	}
+	gated.expire(t)
+	gated.release()
+	ciAwait(t, "the second turn to end", done)
+	for _, sha := range unread {
+		if row := k3At(sha); row.state == nil || *row.state != model.PassStandsYes {
+			t.Fatalf("after the second turn k3 at %s, whose read answered, reads %s, want yes", sha[34:], publishedLine(row))
+		}
+	}
+	for _, sha := range failedHeads {
+		if row := k3At(sha); row.reason != model.PassSubjectReasonReadFailed {
+			t.Fatalf("after the second turn k3 at %s, whose read did not start, reads %s, want read_failed as the first turn left it", sha[34:], publishedLine(row))
+		}
+	}
+	var soon, later, failures int
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select count(*) filter (where due_at < now() + interval '10 seconds'),
+			count(*) filter (where due_at >= now() + make_interval(secs => $2)), coalesce(max(failures), 0)
+		from check_states_owed where issue_key = $1`,
+		rig.issue, (checkStatesTestSchedule.retry - time.Second).Seconds()).Scan(&soon, &later, &failures); err != nil {
+		t.Fatalf("read the marks of %s: %v", rig.issue, err)
+	}
+	if soon != 0 || later != 1 || failures == 0 {
+		t.Fatalf("after the second turn, which left eight failed reads unread, the issue holds %d marks due soon and %d due from the backoff on, counting %d failures; want none soon and one after the backoff, counting the failure: the failed reads are never read again", soon, later, failures)
+	}
+
+	// GitHub answers for every head: the retry reads them all, and nothing is left owed.
+	rig.github.listings.blockReadsOf(t)
+	holdCIReadBounds(t)
+	exec(`update check_states_owed set due_at = now() where issue_key = $1`)
+	settle("the retry to end")
+	for _, sha := range visited {
+		if row := k3At(sha); row.state == nil || *row.state != model.PassStandsYes {
+			t.Fatalf("after the retry k3 at %s reads %s, want yes", sha[34:], publishedLine(row))
+		}
+	}
+	if marks := marksOf(t, rig.database, rig.issue); marks != 0 {
+		t.Fatalf("after the retry read every head, the issue holds %d marks, want none", marks)
+	}
+}
+
 // publishedLine is a published row's state and reason as one line a failure prints.
 func publishedLine(row publishedState) string {
 	if row.state == nil {

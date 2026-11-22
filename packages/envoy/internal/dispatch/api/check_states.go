@@ -695,14 +695,18 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // before that change: the mark stays, due a minimum gap on, and the fence of a test handoff
 // (awaitCheckStatesSettled) waits for it. The next settle reads those heads before the heads read
 // in this one, so each of N former heads is read within ceil(N/ciHeadReadConcurrency) settles, and
-// the mark goes then. A mark kept so carries the failure of a state that reads read_failed; with
-// no mark kept, such a state leaves one new mark, due later as retryAfter answers and with no
-// notification, which the fence does not wait for, since read_failed is what that state
-// publishes. pending, a candidate former head another settle's read holds (verifyFormerHeads),
-// leaves such a mark too, counting no failure, since this settle made no read that failed. Only
-// the settler writes check_states, under the issue's lease, so the rows it reads here are the
-// newest published. It answers the events, which the caller publishes once the transaction has
-// committed.
+// the mark goes then. A mark kept so carries the failure of a state that reads read_failed. With
+// no mark kept, a state of the issue that reads read_failed once this settle's writes are done
+// leaves one new mark, due later as retryAfter answers and with no notification, which the fence
+// does not wait for, since read_failed is what that state publishes: a state this settle computed
+// from a read that failed, and as much one a settle before kept at a head this settle did not
+// read (headStates.kept), so the retry a failed read owes stays until that head is read again or
+// leaves the issue's heads, whatever the last settle read. A failure is counted only for a read
+// that failed in this settle (readFailed). pending, a candidate former head another settle's read
+// holds (verifyFormerHeads), leaves such a mark too, counting no failure, since this settle made
+// no read that failed. Only the settler writes check_states, under the issue's lease, so the rows
+// it reads here are the newest published. It answers the events, which the caller publishes once
+// the transaction has committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed, pending bool,
 ) ([]model.Event, error) {
@@ -834,6 +838,14 @@ func (c *checkStatesSettler) publish(
 	if _, err := tx.Exec(ctx, `delete from check_states_owed where id = any($1) and not id = any($2)`, marks, unsettled); err != nil {
 		return nil, fmt.Errorf("delete the settled marks of %s: %w", issue, err)
 	}
+	// Each row of a head neither open nor former is deleted above, so a row read here that reads
+	// read_failed is at a head the issue still holds, whose read has not succeeded since it failed.
+	var unresolved bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from check_states where issue_key = $1 and reason = $2)`,
+		issue, model.PassSubjectReasonReadFailed).Scan(&unresolved); err != nil {
+		return nil, fmt.Errorf("read whether a state of %s still reads %s: %w", issue, model.PassSubjectReasonReadFailed, err)
+	}
 	counted := failures
 	if readFailed {
 		counted++
@@ -846,7 +858,7 @@ func (c *checkStatesSettler) publish(
 			where id = any($1)`, unsettled, c.schedule.minGap.Seconds(), counted); err != nil {
 			return nil, fmt.Errorf("keep the marks of %s a head this settle did not read holds: %w", issue, err)
 		}
-	case readFailed || pending:
+	case readFailed || unresolved || pending:
 		if _, err := tx.Exec(ctx, `
 			insert into check_states_owed (issue_key, due_at, failures) values ($1, now() + make_interval(secs => $2), $3)`,
 			issue, c.retryAfter(failures).Seconds(), counted); err != nil {
