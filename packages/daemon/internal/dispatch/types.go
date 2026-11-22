@@ -357,7 +357,7 @@ func (a Approval) LatestReviewer() Actor {
 // ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
 // GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it
 // stands, as DesignGateDocument names its route's shape. Both versions are compared with their
-// decision blocks cut out, so an answer a person gave, or an ask added or moved, changes no
+// ask blocks cut out, so an answer a person gave, or an ask added or moved, changes no
 // section and no block. Dispatch makes exactly one of three things true of an answer:
 // DecisionOnly, the cut is the whole change (the stored texts differ and cut to the same text);
 // Unchanged, the two versions differ in nothing any section, run or block holds (their stored
@@ -365,7 +365,8 @@ func (a Approval) LatestReviewer() Actor {
 // one item. So an answer that names nothing says which of the first two it is. A Dispatch from
 // before Unchanged sends no such field, so an identical version from it decodes as an answer that
 // names nothing and is neither. Two versions of a document never change, so the answer for one
-// pair never goes stale.
+// pair never goes stale. DecisionOnly is the route's field decision_only, which names ask blocks:
+// the cut keeps every `decision` block, so a change to one is a change of the work.
 type ArtifactChanges struct {
 	ArtifactID   string `json:"artifact_id"`
 	From         int    `json:"from"`

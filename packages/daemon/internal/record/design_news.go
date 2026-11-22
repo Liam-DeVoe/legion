@@ -26,7 +26,7 @@ const (
 // A holder row rises only by a credit: a confirmed delivery's, the copy of news its prompt carried,
 // counted while the delivery holds that confirmation and folded in once its turn's result says the
 // turn ran, or a raise where what it would be told changes nothing of the work
-// (DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), which tells nobody
+// (DesignChanges.WorkUnchanged: ask blocks alone, or nothing at all), which tells nobody
 // anything. A credit reaches only a row that took the version it counts from, and its give-back
 // ends it alone (Postgres.TreeTold reads the row as its credits make it). So it says what the
 // session holding the issue's phase was given, never what the daemon meant to give it. Its first
@@ -139,8 +139,9 @@ const (
 type DesignChanges struct {
 	VersionPair
 	State DesignChangesState
-	// DecisionOnly says the two versions differ only in their decision blocks, so the change
-	// tells nobody anything about the work: Sections and Blocks are empty.
+	// DecisionOnly says the two versions differ only in their ask blocks, so the change
+	// tells nobody anything about the work: Sections and Blocks are empty. The name is that of
+	// the changes route's field decision_only, which names ask blocks, not `decision` blocks.
 	DecisionOnly bool
 	// Unchanged says Dispatch found no change at all between the two versions: their stored texts
 	// are the same, or what differs is in no section, run or block. It tells nobody anything about
@@ -156,7 +157,7 @@ type DesignChanges struct {
 }
 
 // WorkUnchanged says whether Dispatch read the pair and found that nothing of the work changed:
-// its two versions differ in decision blocks alone (DecisionOnly), or in nothing (Unchanged). It is
+// its two versions differ in ask blocks alone (DecisionOnly), or in nothing (Unchanged). It is
 // the one test of that rule, read by the reconcile, which raises what a holder took past such a
 // pair and sends nothing (the daemon's settlementOf), and by the news, which says such a pair
 // changed nothing the issue holds in place of a change list (workflow.RenderNews). An unavailable
