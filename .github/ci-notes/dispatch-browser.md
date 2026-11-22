@@ -773,8 +773,8 @@ connections read, which takes the two-minute floor until runs of it are measured
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. The Google sign-in step adds its own two minutes
-(.github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs gives its measurement): 16 min
-15 s + 2 min = 18 min 15 s -> 19 min. With budgets on the steps, the
+(.github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs gives its measurement):
+32 min 15 s + 2 min = 34 min 15 s -> 35 min. With budgets on the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
