@@ -794,7 +794,7 @@ func (s *server) issueReferenceRowsV2(ctx context.Context, key, relation string)
 // referenceRowsV2 is the page's rows of the list relation names, each a document of links
 // carrying its row (loadReferenceRowsV2): every row of members, and a row of links whose node is
 // a document. A document of links the read named and whose row is gone since is the server's
-// fault, as /api/v1 answers it.
+// fault: /api/v2 answers it 500, as /api/v1 does.
 func referenceRowsV2(ctx context.Context, q queryer, relation string, links []model.ReferenceLink) ([]referenceRowV2, error) {
 	rows := make([]referenceRowV2, len(links))
 	var ids []string
