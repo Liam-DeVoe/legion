@@ -2794,6 +2794,12 @@ A change to its shape is a new table that the fill writes again.
 The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
 A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
 
+Migration `20261122075823_comment_block_texts_transaction_start` adds `comment_block_texts.transaction_started_at`, a nullable `timestamptz` whose default is `now()`, the start of the transaction that inserts the row; no writer names it, and every row written before it reads null.
+The keyword fill takes a comment's whole first body from revision 1 of its blocks only where the comment's own transaction wrote revision 1, the transaction whose start its `comment.created` event's `created_at` holds (`textversions`' `firstRevisionBody`).
+It read that from the block row's `created_at` while that column took its default; this release writes a block row's `created_at` as the moment of the write it indexes, the moment the store dates the block's `part_of` by, which for a comment is its clock-read `created_at` and tells no transaction, so the fill reads this column, and the block row's `created_at` for a row that holds null.
+Adding the column and then its default are each a catalog change that reads and rewrites no row, each holding `comment_block_texts` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
+The release before it names its columns in every statement on the table, so a row it inserts during a roll takes the default too.
+
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.

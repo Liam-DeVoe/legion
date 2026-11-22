@@ -1392,6 +1392,10 @@ func (i ItemIndexing) queueBlocks(b *store.WriteBatch) error {
 	for _, id := range i.removed {
 		textIDs, texts = append(textIDs, id), append(texts, nil)
 	}
+	// A comment's text rows leave transaction_started_at to its default, the start of this
+	// transaction, which the keyword fill compares with a comment.created event's created_at to
+	// tell revision 1 the comment's own transaction wrote (textversions' firstRevisionBody); the
+	// update of a text on a conflict keeps it.
 	b.Queue(fmt.Sprintf("record the block texts of revision %d of %s %s", revision, kind, itemID), `
 		insert into `+tables.texts+` (`+tables.item+`, block_id, revision, text)
 		select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
