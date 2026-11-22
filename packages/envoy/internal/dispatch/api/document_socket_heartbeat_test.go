@@ -45,6 +45,9 @@ type documentSocketTokenRig struct {
 	// starts it (heartbeatCalls): the API's lookups of the cookie, and the verifier's clock
 	// reads and introspections (timeBrokerCalls).
 	heartbeats *heartbeatCalls
+	// spans records, for each connection the server accepts, when the server itself ended it
+	// (servedSpans): the record of the socket's close a test reads.
+	spans      *servedSpans
 	cookie     *http.Cookie
 	server     *httptest.Server
 	sockets    *servedSockets
@@ -82,7 +85,10 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration) *documentS
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
-	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
+	rig.spans = &servedSpans{}
+	rig.server = httptest.NewUnstartedServer(rig.sockets.serve(mux.ServeHTTP))
+	rig.server.Listener = rig.spans.listen(rig.server.Listener)
+	rig.server.Start()
 	t.Cleanup(rig.server.Close)
 
 	// A session cookie is issued at sign-in, and a sign-in records the person.
@@ -118,6 +124,23 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration) *documentS
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}](t, created).PrimaryArtifactID
 	return rig
+}
+
+// closedAt is when the server ended the last connection it accepted - the socket, since every
+// request of the rig's own setup goes to the mux directly - by its own record (servedSpans): when
+// it began to write its close frame, or, where it wrote none, when it closed the connection. It is
+// false until the server has done either.
+func (rig *documentSocketTokenRig) closedAt() (time.Time, bool) {
+	rig.spans.mu.Lock()
+	defer rig.spans.mu.Unlock()
+	if len(rig.spans.conns) == 0 {
+		return time.Time{}, false
+	}
+	conn := rig.spans.conns[len(rig.spans.conns)-1]
+	if !conn.closeFrame.IsZero() {
+		return conn.closeFrame, true
+	}
+	return conn.closed, !conn.closed.IsZero()
 }
 
 // countedLogins is an Identity that records the lookups made through it as heartbeat calls
@@ -233,6 +256,34 @@ func (h *heartbeatCalls) longestGap(open bool) (time.Duration, int) {
 		longest = max(longest, time.Since(latest))
 	}
 	return longest, len(h.calls)
+}
+
+// refusedAt is when the heartbeat's first refusing call returned: the refusal that orders the
+// socket closed. It is false while no call has refused.
+func (h *heartbeatCalls) refusedAt() (time.Time, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, call := range h.calls {
+		if call.refused {
+			return call.end, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// requireClosedAfterRefusal fails the test unless the server ended the socket (closedAt) within a
+// heartbeat of the heartbeat's refusing call returning (refusedAt), both the product's own
+// records, allowing the time meter saw this process stalled between them (requireClosedWithin):
+// a refused caller's socket closes as soon as its refusal is read, and a product that waits on
+// its own before closing it fails here.
+func (rig *documentSocketTokenRig) requireClosedAfterRefusal(t *testing.T, meter *stallMeter, what string, heartbeat time.Duration) {
+	t.Helper()
+	refused, ok := rig.heartbeats.refusedAt()
+	if !ok {
+		t.Fatalf("%s ended with no call of its heartbeat refusing its caller", what)
+	}
+	closed := testwait.Until(t, "the server's own end of "+what, rig.closedAt)
+	requireClosedWithin(t, meter, what, refused, closed, heartbeat)
 }
 
 // count is how many calls the recording holds.
@@ -370,8 +421,10 @@ func presentedHeaders(presented *http.Request) http.Header {
 // as one served from a cache of the session's state would, and every lookup starts at most a
 // heartbeat and heartbeatSlack after the one before it returned (heartbeatCalls), so a heartbeat
 // that asks every second tick, keeps an answer it stored or runs on a ticker of its own fails too.
-// The heartbeat is two seconds, more than heartbeatSlack, so asking every second tick is told
-// apart from a late tick.
+// The server ends the socket within a heartbeat of the lookup that refused returning, by the
+// server's own record of its close (requireClosedAfterRefusal), so a product that waits before it
+// closes a refused socket fails too. The heartbeat is two seconds, more than heartbeatSlack, so
+// asking every second tick is told apart from a late tick.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
 	const heartbeat = 2 * time.Second
 	for _, beside := range []struct {
@@ -382,6 +435,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 		{"a token that writes", liveNamedToken},
 	} {
 		t.Run(beside.name, func(t *testing.T) {
+			meter := startStallMeter(t)
 			rig := newDocumentSocketTokenRig(t, heartbeat)
 			caller := newBrokerCaller(t)
 			const token = "a-token-sent-beside-the-cookie"
@@ -416,6 +470,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 				t.Fatalf("the document socket closed after %d heartbeat lookups of its cookie that started once its session had ended, want the first to close it: a heartbeat found the ended session still resolving", lookups)
 			}
 			rig.heartbeats.requireEveryHeartbeat(t, heartbeat)
+			rig.requireClosedAfterRefusal(t, meter, "the document socket", heartbeat)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
 			// the socket without a close frame.
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
@@ -478,10 +533,13 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // and heartbeatSlack of the answer of the one before it; and every call the heartbeat makes into
 // the verifier starts at most a heartbeat and heartbeatSlack after the one before it returned
 // (heartbeatCalls, timeBrokerCalls), so a heartbeat that asks every second tick, keeps an answer
-// it stored or runs on a ticker of its own fails too. The heartbeat is two seconds, more than
-// heartbeatSlack, so asking every second tick is told apart from a late tick, and the client's
-// pong meets the pong deadline on a loaded runner.
+// it stored or runs on a ticker of its own fails too. The server writes its close frame within a
+// heartbeat of the introspection that answered the token not live, by the server's own record
+// (requireClosedAfterRefusal), so a product that waits before it closes a refused socket fails
+// too. The heartbeat is two seconds, more than heartbeatSlack, so asking every second tick is told
+// apart from a late tick, and the client's pong meets the pong deadline on a loaded runner.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	meter := startStallMeter(t)
 	const heartbeat = 2 * time.Second
 	rig := newDocumentSocketTokenRig(t, heartbeat)
 	caller := newBrokerCaller(t)
@@ -514,4 +572,5 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 			gap.Round(time.Millisecond), ok, ciphertoken.AffirmativeCacheTTL+heartbeat+heartbeatSlack)
 	}
 	rig.heartbeats.requireEveryHeartbeat(t, heartbeat)
+	rig.requireClosedAfterRefusal(t, meter, "the live socket", heartbeat)
 }

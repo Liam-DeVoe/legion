@@ -361,7 +361,11 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 // as the test above does: each wait is the one the sender scheduled, the test waits for the tries
 // however long the schedule makes them take, and after each park, with every goroutine of the
 // bubble blocked, no goroutine serves a lane. A park that held its goroutine (slept its wait out
-// on it) would keep one on every lane it serves.
+// on it) would keep one on every lane it serves. The wait for the tries is bounded on the bubble's
+// clock by progress, as awaitPark's is: it fails by name once the fewest tries of any lane has
+// not grown for parkLiveness, which costs no real time. One lane that keeps parking keeps
+// awaitPark answering, so a lane that is never tried, or stops being tried, would otherwise hold
+// the row until go test's alarm.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const lanes = 200
@@ -378,10 +382,11 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 		for index := range lanes {
 			rig.enqueue(fmt.Sprintf("held-%d", index), fmt.Sprintf("session:held-%d", index))
 		}
+		progressed, lastFewest := time.Now(), -1
 		for {
 			triesMu.Lock()
-			fewest := parkedTries
-			if len(tries) < lanes {
+			fewest, tried := parkedTries, len(tries)
+			if tried < lanes {
 				fewest = 0
 			}
 			for _, times := range tries {
@@ -390,6 +395,13 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 			triesMu.Unlock()
 			if fewest >= parkedTries {
 				break
+			}
+			if fewest > lastFewest {
+				progressed, lastFewest = time.Now(), fewest
+			} else if stalled := time.Since(progressed); stalled > parkLiveness() {
+				serving, _, _, queued := rig.state()
+				t.Fatalf("the fewest tries of any lane stayed %d for %v of the bubble's clock: %d of the %d lanes tried at all, %d goroutines serving, %d sends queued; a lane never tried, or no longer tried, never reaches %d tries",
+					fewest, stalled, tried, lanes, serving, queued, parkedTries)
 			}
 			rig.awaitPark(t)
 			if serving, _, _, queued := rig.state(); serving != 0 || queued != lanes {

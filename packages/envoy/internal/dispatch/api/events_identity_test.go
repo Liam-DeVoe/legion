@@ -59,9 +59,17 @@ const lookupHeartbeat = 2 * time.Second
 // fires once a heartbeat, and keeps a tick waiting while a lookup runs long, so the next lookup
 // starts as soon as the one before it returns. The gap is read off the product's own calls, from
 // the return of the last Login before the end to the start of the first after it, never off the
-// test's clock around them, and is allowed a second beyond the heartbeat for scheduling. A refused
-// Login the lookup or the heartbeat let pass is a second Login after the end; a heartbeat that
-// skips ticks, answers from a stored answer, or asks on a ticker of its own leaves the gap.
+// test's clock around them, and is allowed a second beyond the heartbeat for scheduling and the
+// longest single stall the process saw meanwhile (stallMeter), the delay of the one goroutine wake
+// inside it: the heartbeat's own, on its tick. A refused Login the lookup or the heartbeat let pass
+// is a second Login after the end; a heartbeat that skips ticks, answers from a stored answer, or
+// asks on a ticker of its own leaves the gap.
+//
+// The refusal then closes the socket within a heartbeat: from the return of the Login that refused
+// to the server's own end of the connection (servedSpans: the start of its close frame, or its close
+// of the connection), allowing each of the close's goroutine wakes the longest single stall between
+// (requireClosedWithin), so a server that waits on its own after the refusal fails, and a machine
+// that stops the process meanwhile does not.
 type heartbeatLookups struct {
 	identity.Identity
 	heartbeat time.Duration
@@ -70,9 +78,10 @@ type heartbeatLookups struct {
 	logins int
 	ended  bool
 	after  int
-	// returned is when the last Login before the end returned, and closing when the first Login
-	// after it began: each is the product's call, timed at the Identity it asks.
-	returned, closing time.Time
+	// returned is when the last Login before the end returned, closing when the first Login after
+	// it began, and refused when that Login returned: each is the product's call, timed at the
+	// Identity it asks.
+	returned, closing, refused time.Time
 }
 
 // newHeartbeatLookups records the Logins of inner that a socket whose heartbeat is heartbeat asks.
@@ -85,15 +94,16 @@ func (l *heartbeatLookups) Login(r *http.Request) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.logins++
-	if l.ended {
-		if l.after == 0 {
-			l.closing = began
-		}
-		l.after++
-		return l.Identity.Login(r)
-	}
 	login, err := l.Identity.Login(r)
-	l.returned = time.Now()
+	switch {
+	case !l.ended:
+		l.returned = time.Now()
+	case l.after == 0:
+		l.closing, l.refused = began, time.Now()
+		l.after++
+	default:
+		l.after++
+	}
 	return login, err
 }
 
@@ -112,13 +122,15 @@ func (l *heartbeatLookups) end(ending func()) {
 	l.ended = true
 }
 
-// requireClosedAtTheFirstLookup fails the test unless socket, which has closed, did so on its
-// first heartbeat lookup after the end: exactly one Login came after it, and it began within the
-// heartbeat and a second of the return of the Login before it.
-func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, socket string) {
+// requireClosedAtTheFirstLookup fails the test unless socket, which closed at closedAt by its
+// server's own record, did so on its first heartbeat lookup after the end: exactly one Login came
+// after it, it began within the heartbeat and a second of the return of the Login before it, and the
+// server ended the connection within a heartbeat of that Login's return, each allowing the longest
+// single stall m saw in its span for each goroutine wake inside it.
+func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, m *stallMeter, socket string, closedAt time.Time) {
 	t.Helper()
 	l.mu.Lock()
-	after, returned, closing := l.after, l.returned, l.closing
+	after, returned, closing, refused := l.after, l.returned, l.closing, l.refused
 	l.mu.Unlock()
 	if after != 1 {
 		t.Fatalf("%s closed after %d lookups of its caller once the caller had ended, want it closed on the first", socket, after)
@@ -126,9 +138,51 @@ func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, socket st
 	if returned.IsZero() {
 		t.Fatalf("%s's heartbeat made no lookup of its caller before the end, so the lookup that closed it has nothing to be timed from", socket)
 	}
-	if gap := closing.Sub(returned); gap > l.heartbeat+time.Second {
-		t.Fatalf("%s's closing lookup began %s after the lookup before it returned, want within its %s heartbeat and a second: the heartbeat did not ask on every beat", socket, gap, l.heartbeat)
+	waitUntil(t, "the stall meter to wake after the closing lookup", func() bool { return m.wokeAfter(closing) })
+	longest := m.longestStallBetween(returned, closing)
+	if gap := closing.Sub(returned); gap > l.heartbeat+time.Second+longest {
+		t.Fatalf("%s's closing lookup began %s after the lookup before it returned, want within its %s heartbeat and a second plus the longest stall this process saw meanwhile (%s): the heartbeat did not ask on every beat", socket, gap, l.heartbeat, longest)
 	}
+	requireClosedWithin(t, m, socket+"'s end by its server after the lookup that refused its caller", refused, closedAt, l.heartbeat)
+}
+
+// acceptedConns is how many connections the server behind spans has accepted so far: the index the
+// next one it accepts records its span under.
+func acceptedConns(spans *servedSpans) int {
+	spans.mu.Lock()
+	defer spans.mu.Unlock()
+	return len(spans.conns)
+}
+
+// serverEndOf is when the server ended the nth connection it accepted, by its own calls on that
+// connection (servedSpans): the start of its close frame, else its close of the connection. It
+// fails the test when the server has done neither.
+func serverEndOf(t *testing.T, spans *servedSpans, n int) time.Time {
+	t.Helper()
+	spans.mu.Lock()
+	defer spans.mu.Unlock()
+	if n < len(spans.conns) {
+		switch conn := spans.conns[n]; {
+		case !conn.closeFrame.IsZero():
+			return conn.closeFrame
+		case !conn.closed.IsZero():
+			return conn.closed
+		}
+	}
+	t.Fatalf("the server has not ended connection %d it accepted (of %d): no close frame, no close", n, len(spans.conns))
+	return time.Time{}
+}
+
+// spannedServer serves handler on a test server whose every accepted connection records the
+// server's own calls on it (servedSpans), so a row reads when the server ended a socket.
+func spannedServer(t *testing.T, handler http.Handler) (*httptest.Server, *servedSpans) {
+	t.Helper()
+	spans := &servedSpans{}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = spans.listen(server.Listener)
+	server.Start()
+	t.Cleanup(server.Close)
+	return server, spans
 }
 
 // A person whose session ends (logout, a refresh the sign-in pool refuses, a lost group) stops
@@ -137,6 +191,7 @@ func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, socket st
 // they no longer resolve, read off the lookups themselves (heartbeatLookups). The heartbeat is
 // lookupHeartbeat, so the socket lasts until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	m := startStallMeter(t)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -154,9 +209,9 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	server, spans := spannedServer(t, mux)
 
+	socketConn := acceptedConns(spans)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 	// The end follows a lookup of the heartbeat's own, so the lookup that closes the socket is
@@ -168,13 +223,14 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the event feed's socket closed with %d %q once its person stopped resolving, want 1008", closed.Code, closed.Text)
 	}
-	lookups.requireClosedAtTheFirstLookup(t, "the event feed's socket")
+	lookups.requireClosedAtTheFirstLookup(t, m, "the event feed's socket", serverEndOf(t, spans, socketConn))
 }
 
 // The same holds for a human watching an agent's live conversation: the socket that carries the
 // agent view resolves its person on each heartbeat and closes with 1008 on the first of those
 // lookups after their session has ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
+	m := startStallMeter(t)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -192,9 +248,9 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	server, spans := spannedServer(t, mux)
 
+	socketConn := acceptedConns(spans)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).read()
 	client.subscribeAgent(t, "agent", plannerSessionID)
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
@@ -207,7 +263,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the agent view's socket closed with %d %q once its viewer stopped resolving, want 1008", closed.Code, closed.Text)
 	}
-	lookups.requireClosedAtTheFirstLookup(t, "the agent view's socket")
+	lookups.requireClosedAtTheFirstLookup(t, m, "the agent view's socket", serverEndOf(t, spans, socketConn))
 	waitUntil(t, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
@@ -237,12 +293,14 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			m := startStallMeter(t)
 			rig := newDocumentSocketRig(t, heartbeat)
 			peer := &syncedPeer{
 				wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
 				headers: http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}, artifactID: rig.artifactID, doc: crdt.New(),
 			}
 			before := rig.lookups.count()
+			socketConn := acceptedConns(rig.spans)
 			peer.connect(t)
 			t.Cleanup(peer.close)
 
@@ -259,7 +317,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 			ended := time.Now()
 			rig.lookups.end(func() { end(t, rig) })
 			testwait.Receive(t, "the document socket's close once its person's session ended", peer.connection().Ended)
-			rig.lookups.requireClosedAtTheFirstLookup(t, "the document socket")
+			rig.lookups.requireClosedAtTheFirstLookup(t, m, "the document socket", serverEndOf(t, rig.spans, socketConn))
 			t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
@@ -289,7 +347,8 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 // identity confirming membership with the pool, and the API and document socket Register mounts.
 // lookups is the API's Identity, which the document socket's heartbeat asks (signInStillResolves);
 // the document service keeps the bare one, so only the heartbeat's lookups and the API's own
-// requests are counted.
+// requests are counted. spans records the server's own calls on each connection it accepts, its
+// end of a socket among them.
 type documentSocketRig struct {
 	database   *store.Store
 	pool       *oidctest.Issuer
@@ -298,6 +357,7 @@ type documentSocketRig struct {
 	documents  *docs.Service
 	lookups    *heartbeatLookups
 	server     *httptest.Server
+	spans      *servedSpans
 	sockets    *servedSockets
 	email      string
 	generation int64
@@ -362,8 +422,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
-	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
-	t.Cleanup(rig.server.Close)
+	rig.server, rig.spans = spannedServer(t, rig.sockets.serve(mux.ServeHTTP))
 
 	signedIn := func(method, target string, body any) *httptest.ResponseRecorder {
 		t.Helper()

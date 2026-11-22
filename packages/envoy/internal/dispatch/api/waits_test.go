@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,4 +99,105 @@ func releaseOnceQueued(t *testing.T, holder pgx.Tx, want int, release func()) <-
 		}
 	}()
 	return queued
+}
+
+// stallTick is how often a stallMeter's goroutine wakes.
+const stallTick = 5 * time.Millisecond
+
+// closeHops is how many goroutine wakes a refusal's close takes, each of which a busy machine can
+// delay by one scheduling delay: the heartbeat's goroutine back from its refusing call, the
+// socket's goroutine that writes the close, and the reader that sees it.
+const closeHops = 3
+
+// stallMeter measures how late this test process runs a goroutine that is ready: a goroutine of
+// its own wakes every stallTick, and a wake that comes more than two ticks after the one before
+// records how late it came. A row that bounds a product's span by the product's own stated time (a
+// close within a heartbeat of the refusal that orders it) reads its span from the product's records
+// and allows, for each goroutine wake inside that span (closeHops), the longest single delay the
+// meter saw there: one scheduling delay, or one stop of the whole process (a long GC pause). It
+// never allows the sum of the meter's own late wakes, which on a loaded machine grows with the span
+// and would let a product that waits on one timer pass: a product that waits on its own fails the
+// bound by its wait, however loaded the machine.
+type stallMeter struct {
+	mu       sync.Mutex
+	stalls   [][2]time.Time
+	lastWake time.Time
+}
+
+// startStallMeter starts a stallMeter that runs until the test ends.
+func startStallMeter(t *testing.T) *stallMeter {
+	t.Helper()
+	m := &stallMeter{}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(stallTick)
+		defer ticker.Stop()
+		last := time.Now()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				now := time.Now()
+				m.mu.Lock()
+				if gap := now.Sub(last); gap > 2*stallTick {
+					m.stalls = append(m.stalls, [2]time.Time{last.Add(stallTick), now})
+				}
+				m.lastWake = now
+				m.mu.Unlock()
+				last = now
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+	return m
+}
+
+// longestStallBetween is the longest single stall the meter saw that overlaps [from, to], the part
+// inside it.
+func (m *stallMeter) longestStallBetween(from, to time.Time) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var longest time.Duration
+	for _, s := range m.stalls {
+		start, end := s[0], s[1]
+		if start.Before(from) {
+			start = from
+		}
+		if end.After(to) {
+			end = to
+		}
+		if d := end.Sub(start); d > longest {
+			longest = d
+		}
+	}
+	return longest
+}
+
+// wokeAfter says whether the meter has woken after at, and so recorded every stall that ended
+// before it: a stall is recorded only at the wake that ends it.
+func (m *stallMeter) wokeAfter(at time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastWake.After(at)
+}
+
+// requireClosedWithin fails the test unless closedAt comes within bound of orderedAt, both read
+// from the product's records, allowing for each of the close's closeHops goroutine wakes the
+// longest single stall the meter saw between them: what names the close and its order, for the
+// failure. It reads the meter only once the meter has woken after closedAt, so a stop of the
+// process that ended just before the close is counted.
+func requireClosedWithin(t *testing.T, m *stallMeter, what string, orderedAt, closedAt time.Time, bound time.Duration) {
+	t.Helper()
+	waitUntil(t, "the stall meter to wake after the close", func() bool { return m.wokeAfter(closedAt) })
+	took := closedAt.Sub(orderedAt)
+	longest := m.longestStallBetween(orderedAt, closedAt)
+	if allowed := bound + closeHops*longest; took > allowed {
+		t.Fatalf("%s: closed %s after the refusal that orders it, want within %s plus %d times the longest stall this process saw meanwhile (%s): the product waited on its own", what, took, bound, closeHops, longest)
+	}
 }

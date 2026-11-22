@@ -450,7 +450,11 @@ func TestAnAnswerThatIsTheWholeChangeSinceHisApprovalCarriesIt(t *testing.T) {
 // human's answer still waiting for its settlement lands in that version too. The edit is inside a
 // second, still-open block's body, which the comparison leaves out: the version carries.
 func TestAnAnswerCarriesWhenAnAgentEditInsideAnotherBlockLandsInItsVersion(t *testing.T) {
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// Settling past the run (pastTheRun), so no settlement timer versions alice's answer before the
+	// agent's edit does: the edit's own transaction is what versions it, however long a loaded
+	// machine takes between the two requests, and every settlement the test needs it makes at once
+	// (settledDecisionBlocks).
+	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Answer beside an edit", "Context\n")
 	insertDecisionMarkdown(t, handler, issue.PrimaryArtifactID, waveAsk+"\n"+regionAsk, 2)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
@@ -487,7 +491,10 @@ func versionMarkdown(t *testing.T, handler http.Handler, artifactID string, numb
 // carried. Settlement then writes the decided wording back, and that version - the one he approved
 // plus his answer to the second block - carries.
 func TestARewordOfAnAnsweredBlockInTheAnswersVersionDoesNotCarry(t *testing.T) {
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// Settling past the run (pastTheRun), so no settlement timer versions alice's second answer
+	// before the agent's reword does, however long a loaded machine takes between the two requests;
+	// every settlement the test needs it makes at once (settledVersion, settledDecisionBlocks).
+	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Reword under the answer", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -542,7 +549,11 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, time.Second)
+			// Settling past the run (pastTheRun), so no settlement timer versions alice's second
+			// answer or writes the row back over the forgery before the named version holds both,
+			// however long a loaded machine takes between the requests; every settlement the test
+			// needs it makes at once (settledVersion, settledDecisionBlocks, settledWithoutVersion).
+			handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 			issue := createInteractionIssue(t, handler, "TEST", "Forged "+tc.attribute+" under the answer", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -947,7 +958,10 @@ func TestAnotherHumansAnswerHeApprovedStaysOutOfTheCarrysTest(t *testing.T) {
 // Stale: two humans answered two blocks in one version, so the version is not one person's
 // answer and carries nobody's approval.
 func TestTwoHumansAnswersInOneVersionDoNotCarry(t *testing.T) {
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// Settling past the run (pastTheRun), so no settlement timer versions alice's answer before bob
+	// answers, however long a loaded machine takes between the two answers: the one settlement that
+	// versions both is the test's own (settledVersion).
+	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Two answerers", "Context\n\n"+waveAsk+"\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
 		map[string]string{"wave": "How many regions take the first wave?", "region": "Which region goes first?"})
