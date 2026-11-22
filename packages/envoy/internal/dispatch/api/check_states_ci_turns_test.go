@@ -400,7 +400,7 @@ func TestAFailedReadKeepsItsRetryWhenALaterTurnLeavesItUnread(t *testing.T) {
 		select count(*) filter (where due_at < now() + interval '10 seconds'),
 			count(*) filter (where due_at >= now() + make_interval(secs => $2)), coalesce(max(failures), 0)
 		from check_states_owed where issue_key = $1`,
-		rig.issue, (checkStatesTestSchedule.retry - time.Second).Seconds()).Scan(&soon, &later, &failures); err != nil {
+		rig.issue, (checkStatesTestSchedule.retry-time.Second).Seconds()).Scan(&soon, &later, &failures); err != nil {
 		t.Fatalf("read the marks of %s: %v", rig.issue, err)
 	}
 	if soon != 0 || later != 1 || failures == 0 {
