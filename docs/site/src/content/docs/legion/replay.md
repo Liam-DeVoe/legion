@@ -297,6 +297,10 @@ legion replay run \
 
 `run` replays the window through the daemon's own handler chain: the Dispatch mirror, the workflow engine and the admission pass.
 It enters each Dispatch event, each recorded phase move, each tick and each boot at its recorded time or offset.
+Most Dispatch events that the daemon's own session wrote are its outbox's status writes, which the replay's own outbox makes again, so the replay leaves those events out.
+The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
+The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
+The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
@@ -336,6 +340,8 @@ The gap between the two timelines is the error of reading a record from its line
 The daemon writes the line of an issue's wait for its open children once for each generation of its tree.
 So a line timeline reads that wait again, with no line, where the issue's last open child closed and another opened before its own first phase started.
 An issue that waits for a slot at the window's start began that wait where the record shows, in both timelines, since the start state is the record's.
+The merge queue is GitHub's, so no code that the replay runs writes the line of a pull request that leaves it.
+Just before the replay enters a recorded move back out of merging that such a line came before in the record, it writes that line to `log.jsonl` itself, so both timelines name the loop `queue_drop`.
 
 ### `legion replay scorecard`
 

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -859,10 +860,23 @@ func (d *driver) dispatchEvent(i int) ([]byte, error) {
 }
 
 // keepsDaemonEvent says whether event, one the daemon's own session wrote, is a write the replay's
-// outbox does not make again and so is applied as recorded: an architect's release of a child
-// into its tree (release_children), which the daemon's API writes from the architect's call, a
-// backlog, icebox or triage child set to todo with no label added. Every other write of the
-// daemon's own is its outbox's status write, which the replay's own rows make.
+// outbox does not make again and so is applied as recorded. The outbox writes the workflow's own
+// statuses and the done of its own close, never backlog, icebox or triage (shelved), and todo only
+// where it hands an issue to Legion or sets its own todo back over a session's status. A hand-over
+// adds the legion label with it; a person's hand-over and a set-back write todo at the fact that
+// queued them, which the replay applies before their recorded echo, so that echo applied as well
+// changes no status. The daemon's API writes those statuses under the same session for the agent
+// whose call it serves: the controller's set_status (todo, backlog or icebox, and a root's restart,
+// backlog then todo), an architect's park of a child (park_child, backlog, in the releases that
+// have it), its release of a child into its tree (release_children, todo) and its run again of a
+// child out of the workflow (rerun_child, todo). So a write that moves an issue, root or child
+// alike, to backlog, icebox or triage, or from any status out of the workflow, done among them, to
+// todo without adding the legion label, is applied as recorded. So is the controller's todo on a
+// held root, which moves it from the status of its held phase (releasesHold): the record's release
+// of that hold names a todo as its cause, for which the replay enters no retry of its own
+// (queueHoldEnd), so the hold ends only where the todo's own event is applied, as a person's todo
+// on a held root ends it. Every other write of the daemon's own is its outbox's status write,
+// which the replay's own rows make.
 func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 	after := event.parsed.Issue
 	if after == nil {
@@ -876,11 +890,20 @@ func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 		Status string   `json:"status"`
 		Labels []string `json:"labels"`
 	}
-	if !decodeField(iss.recorded, &before) {
+	if !decodeField(iss.recorded, &before) || before.Status == after.Status {
 		return false
 	}
-	released := before.Status == "backlog" || before.Status == "icebox" || before.Status == "triage"
-	return released && after.Status == "todo" && after.Parent != "" && slices.Equal(after.Labels, before.Labels)
+	if shelved(after.Status) {
+		return true
+	}
+	labelled := dispatch.CarriesLegionLabel(after.Labels) && !dispatch.CarriesLegionLabel(before.Labels)
+	return after.Status == "todo" && !labelled && (record.OutOfWorkflow(before.Status) || event.releasesHold)
+}
+
+// shelved says whether status is backlog, icebox or triage: out of the workflow, as done is, and,
+// unlike done, never written by the daemon's outbox (keepsDaemonEvent).
+func shelved(status string) bool {
+	return status == "backlog" || status == "icebox" || status == "triage"
 }
 
 // namesLinkOrChild says whether event shows an issue with a link or a parent (assumption 10).

@@ -346,17 +346,21 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 }
 
 // The two timelines of a replay agree (design 10.1; the design review's Q5): on every fixture
-// window, and on a window shaped as a deployment's (deploymentShapedWindow: issues placed at its
-// start, holds read from failed claims, children filed in it, a stop and a boot), each measure of
-// the line timeline, which BuildTrace reads from the replay's own log through the window's line
-// kinds as it reads a record, stands within a third of R5's gap for that measure of the snapshot
-// timeline, which the admission passes' own views give: 10% of the issues done and of the slots
-// given each day, 0.05 of the share of priority taken, 30% of every other measure (the median wait
-// for a slot and the hours of reading (a) among them), and, for each issue's first slot and its
-// done, 60 minutes at the median. A gap of the line timeline wider than that would make a record's
-// scorecard, which only the lines can give, err by more than a replay may. The deployment-shaped
-// window holds a root that waits for its children again after its last child closed, with no line
-// of the second wait, since the daemon tells a generation's wait once.
+// window, on a window shaped as a deployment's (deploymentShapedWindow: issues placed at its
+// start, holds read from failed claims, children filed in it, a stop and a boot), and on a window
+// with a drop from the merge queue (queueDropWindow), each measure of the line timeline, which
+// BuildTrace reads from the replay's own log through the window's line kinds as it reads a record,
+// stands within a third of R5's gap for that measure of the snapshot timeline, which the admission
+// passes' own views give: 10% of the issues done and of the slots given each day, 0.05 of the
+// share of priority taken, 30% of every other measure (the median wait for a slot and the hours of
+// reading (a) among them), and, for each issue's first slot and its done, 60 minutes at the
+// median. A gap of the line timeline wider than that would make a record's scorecard, which only
+// the lines can give, err by more than a replay may. The deployment-shaped window holds a root that
+// waits for its children again after its last child closed, with no line of the second wait, since
+// the daemon tells a generation's wait once. In the queue-drop window both timelines name the
+// merger's send-back one round of queue_drop and none of send_back: the replay writes the line of
+// the pull request leaving the merge queue that the record shows before the move, as the trace of
+// its own log needs to name the move's cause.
 func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
@@ -394,13 +398,54 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	t.Run("deployment-shaped", func(t *testing.T) {
 		timelinesAgree(t, dsn, deploymentShapedWindow(t), MainBranch, 1, 1)
 	})
+	t.Run("queue-drop", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, queueDropWindow(t), MainBranch, 1, 1)
+		for _, timeline := range []struct {
+			name string
+			card Scorecard
+		}{{"snapshot", result.Scorecard}, {"line", result.LineScorecard}} {
+			drop, sent := timeline.card.Loops[string(CauseQueueDrop)], timeline.card.Loops[string(CauseSendBack)]
+			if drop.Rounds != 1 || drop.Hours == 0 || sent.Rounds != 0 {
+				t.Errorf("the %s timeline counts %+v of queue_drop and %+v of send_back, want one round of queue_drop and none of send_back",
+					timeline.name, drop, sent)
+			}
+		}
+	})
+}
+
+// queueDropWindow is a window from 09:00 to 15:00 with a drop from the merge queue. ACME-1, a root,
+// is promoted at 09:05 and works 15 to 30 minutes in each phase to merging at 11:40. At 12:00 its
+// pull request leaves the merge queue, and at 12:10 its merger sends it back to implementing. It
+// works through each phase again to merging at 14:00, and merges at 14:20.
+func queueDropWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
+	b.boot(clock(9, 0))
+	b.file(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.rootPromoted(clock(9, 5), "ACME-1")
+	b.rootDesigned(clock(9, 20), "ACME-1")
+	b.segmentEnds(clock(9, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	toMerging := func(implemented time.Time) {
+		b.segmentEnds(implemented, "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+		b.segmentEnds(implemented.Add(20*time.Minute), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+		b.segmentEnds(implemented.Add(40*time.Minute), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+		b.segmentEnds(implemented.Add(60*time.Minute), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+		b.segmentEnds(implemented.Add(80*time.Minute), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	}
+	toMerging(clock(10, 20))
+	b.info(clock(12, 0), "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once", "issue", "ACME-1",
+		"pullRequest", 41, "head", "3c9e1f0a7b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f")
+	b.segmentEnds(clock(12, 10), "ACME-1", phase.Merging, phase.Implementing, workflow.TriggerBackward)
+	toMerging(clock(12, 40))
+	b.segmentEnds(clock(14, 20), "ACME-1", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(clock(14, 20), "ACME-1", record.DoneStatus)
+	return b.build()
 }
 
 // timelinesAgree replays window under main on branch, with seed and slowdown, and fails for each
 // measure in which the line timeline stands further from the snapshot timeline than a third of
 // R5's gap for it, and where the median gap of each issue's first slot and done is above a third
-// of R5's 60 minutes (TestSnapshotAndLineTimelinesAgree).
-func timelinesAgree(t *testing.T, dsn string, window Window, branch Branch, seed int64, slowdown float64) {
+// of R5's 60 minutes (TestSnapshotAndLineTimelinesAgree). It answers the replay's result.
+func timelinesAgree(t *testing.T, dsn string, window Window, branch Branch, seed int64, slowdown float64) RunResult {
 	t.Helper()
 	result, err := Run(context.Background(), RunConfig{Window: window, Rule: record.MainRule, Branch: branch, Seed: seed,
 		Slowdown: slowdown, PGDSN: dsn, Out: t.TempDir()})
@@ -422,6 +467,7 @@ func timelinesAgree(t *testing.T, dsn string, window Window, branch Branch, seed
 		t.Errorf("the median gap of each issue's first slot and done between the two timelines is %v minutes, above a third of R5's 60",
 			errorMinutes)
 	}
+	return result
 }
 
 // validationGap is the gap R5 allows the replay of a measure whose recorded value is recorded: 10%

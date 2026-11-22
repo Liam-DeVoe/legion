@@ -531,12 +531,13 @@ type Linger struct {
 	At, Until, Closed time.Time
 }
 
-// QueueDrop is a line of an issue's pull request leaving the merge queue: its msg and the pull
-// request's number.
+// QueueDrop is a line of an issue's pull request leaving the merge queue: its msg, the pull
+// request's number and, for a line on which the daemon read nothing, the reason it read nothing.
 type QueueDrop struct {
 	At          time.Time
 	Line        string
 	PullRequest int
+	Why         string
 }
 
 // Boot is one daemon process: when it started, whether the log holds that start (Seen; the
@@ -1047,9 +1048,9 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case CheckClosed:
 		b.checkClosed(b.issue(l.Issue), at)
 	case QueueLeftNothingRead:
-		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
+		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest, l.Why)
 	case QueueLeftReadOnce:
-		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
+		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest, "")
 	case MergeForwardAsked:
 		iss := b.issue(l.Issue)
 		if n := len(iss.MergeForwards); n == 0 || !iss.MergeForwards[n-1].End.IsZero() {
@@ -1251,9 +1252,9 @@ func (b *traceBuilder) pullRequestSeen(iss *IssueTrace, at time.Time, number int
 }
 
 // queueLeft reads a line of an issue's pull request leaving the merge queue.
-func (b *traceBuilder) queueLeft(key string, at time.Time, msg string, number int) {
+func (b *traceBuilder) queueLeft(key string, at time.Time, msg string, number int, why string) {
 	iss := b.issue(key)
-	iss.QueueDrops = append(iss.QueueDrops, QueueDrop{At: at, Line: msg, PullRequest: number})
+	iss.QueueDrops = append(iss.QueueDrops, QueueDrop{At: at, Line: msg, PullRequest: number, Why: why})
 	b.pullRequestSeen(iss, at, number)
 }
 

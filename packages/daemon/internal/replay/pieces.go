@@ -18,11 +18,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// heldRootReleaseReason is the reason of the release of a held root a person set to todo
-// (workflow's releaseReason): the person's own event releases it in a replay, so no retry is
-// entered for it. operatorRetryReason is the reason of the operator's retry of a phase
-// (workflow's restartPhase), which a replay enters as intake.RestartPhase, and by which the trace
-// tells that retry of a worker whose issue stands in no hold from a release of a hold it missed.
+// heldRootReleaseReason is the reason of the release of a held root set to todo (workflow's
+// releaseReason), by a person or by the controller through the daemon's API: the todo's own event
+// releases it in a replay, a person's as any person's event is applied and the daemon's as
+// keepsDaemonEvent applies it (releasesHold), so no retry is entered for it. operatorRetryReason is
+// the reason of the operator's retry of a phase (workflow's restartPhase), which a replay enters as
+// intake.RestartPhase, and by which the trace tells that retry of a worker whose issue stands in no
+// hold from a release of a hold it missed.
 const (
 	heldRootReleaseReason = "the issue was set to todo while its phase was held"
 	operatorRetryReason   = "the operator retried this phase's worker"
@@ -381,6 +383,9 @@ func (d *driver) enterRecorded(p *piece) error {
 		case workflow.TriggerBackward:
 			if move.Drop != "" {
 				d.drops[p.issue] = move.Drop
+				if err := d.queueLeft(p.issue, move); err != nil {
+					return err
+				}
 			}
 			result, err := d.apply("api", d.factID("backward", p.issue, to), intake.BackwardMove{Issue: p.issue,
 				Requester: phaseRole(move.From), To: to, Reason: fmt.Sprintf("the record's move back from %s to %s", move.From, to)})
@@ -393,6 +398,34 @@ func (d *driver) enterRecorded(p *piece) error {
 			return nil
 		}
 	}
+	return nil
+}
+
+// queueLeft writes, just before the replay enters key's recorded move back out of merging, the line
+// of key's pull request leaving the merge queue that the record shows before that move (Move.Drop):
+// the msg and attributes of the daemon's own line (workflow's dequeued), on the replay's own pull
+// request record of key, which stands in for the issue's (assumption 29), with the recorded line's
+// reason where it gives one. The merge queue is GitHub's, so no code the replay runs writes the
+// line, and without it the line timeline, whose trace reads the replay's own log as a record's is
+// read (CauseOf), would name the loop send_back where the snapshot timeline names it queue_drop.
+func (d *driver) queueLeft(key string, move *Move) error {
+	pr, err := d.pullRequestOf(key)
+	if err != nil || pr == nil {
+		return err
+	}
+	args := []any{"issue", key, "pullRequest", pr.Number, "head", pr.HeadSHA}
+	if iss, ok := d.trace.Issues[key]; ok {
+		for _, drop := range slices.Backward(iss.QueueDrops) {
+			if drop.At.After(move.At) {
+				continue
+			}
+			if drop.Why != "" {
+				args = append(args, "why", drop.Why)
+			}
+			break
+		}
+	}
+	d.log.Info(move.Drop, args...)
 	return nil
 }
 
@@ -524,9 +557,9 @@ func (d *driver) releaseSeededHolds() {
 // replay, each at its recorded offset from the hold's start: each escalation of the hold from the
 // window's start on, and the hold's end where the record shows the issue working the held phase
 // again (Wait.released) — the architect's retry (intake.RetryOrEscalate), the operator's
-// (intake.RestartPhase), or nothing for a person's todo on the held root, whose own event releases
-// it. A hold the record shows going on with no release line (WaitWentOn) is released as the
-// architect's retry releases one, under the daemon's own reason.
+// (intake.RestartPhase), or nothing for a todo on the held root, a person's or the controller's,
+// whose own event releases it. A hold the record shows going on with no release line (WaitWentOn)
+// is released as the architect's retry releases one, under the daemon's own reason.
 func (d *driver) queueHoldEnd(key string, role claim.Role, hold *Wait, began time.Time) {
 	for _, escalation := range d.lines.escalated {
 		if escalation.Issue == key && escalation.Time.After(hold.Start) && !escalation.Time.Before(d.window.From) &&

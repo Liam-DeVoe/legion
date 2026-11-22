@@ -251,6 +251,9 @@ type scriptEvent struct {
 	dependents []int
 	// placed is whether the replay has placed the event.
 	placed bool
+	// releasesHold says the event is the daemon session's todo on a held root that the record's
+	// release of the hold names as its cause (markHeldRootTodos).
+	releasesHold bool
 }
 
 // waitAnchor is the wait an event ended in the record: its waiting issue, the kind, and the
@@ -321,6 +324,7 @@ func buildScript(t Trace, w Window, lines recordLines) (script, error) {
 	if err := s.placeEvents(t, w); err != nil {
 		return script{}, err
 	}
+	s.markHeldRootTodos(lines)
 	for _, pieces := range s.pieces {
 		for _, p := range pieces {
 			slices.SortStableFunc(p.acts, func(x, y act) int {
@@ -588,6 +592,33 @@ func (s *script) placeEvents(t Trace, w Window) error {
 		}
 	}
 	return nil
+}
+
+// markHeldRootTodos marks each event in which the daemon's own session set a held root todo
+// (releasesHold): the issue's last issue event at or before a `workflow: a held phase is released`
+// of heldRootReleaseReason, where that event is the daemon session's todo. Only a todo on a held
+// root writes that release (workflow's releaseHeldRoot), from the todo's event or, for the
+// controller's set_status, from the daemon API's own write, which Dispatch records as that event.
+func (s *script) markHeldRootTodos(lines recordLines) {
+	issueEvents := map[string][]int{}
+	for i := range s.events {
+		if s.events[i].parsed.Issue != nil {
+			issueEvents[s.events[i].env.key] = append(issueEvents[s.events[i].env.key], i)
+		}
+	}
+	for _, line := range lines.released {
+		if line.Reason != heldRootReleaseReason {
+			continue
+		}
+		for _, i := range slices.Backward(issueEvents[line.Issue]) {
+			event := &s.events[i]
+			if event.at.After(line.Time) {
+				continue
+			}
+			event.releasesHold = event.releasesHold || daemonWrote(event.env.actor, event.env.key) && event.parsed.Issue.Status == "todo"
+			break
+		}
+	}
 }
 
 // claimTokenOf is the claim token a session actor names, "" for an actor of another kind.
