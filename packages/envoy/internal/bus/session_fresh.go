@@ -79,9 +79,9 @@ func (v sessionNamesServer) Delete(ctx context.Context, name string) error {
 func newFreshSessions(s *SessionConsumers) *freshSessions {
 	fresh := &freshSessions{store: s.client.SelectionStore()}
 	host, _ := os.Hostname()
-	// The naming and the metadata are the session family's own (consumernames.SessionNaming), the
-	// ones an operator's reader judges a record and a consumer by (consumernames.CheckFamily,
-	// consumernames.OwnsFamily).
+	// The naming, the metadata and the key rule are the session family's own
+	// (consumernames.SessionNaming), the ones an operator's reader judges a key, a record and a
+	// consumer by (consumernames.CheckFamily, consumernames.OwnsFamily).
 	naming := consumernames.SessionNaming()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:  fresh.store,
@@ -101,6 +101,7 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 			}
 		},
 		Metadata: naming.Metadata,
+		CheckKey: naming.CheckKey,
 		// The candidate as the server answers it, against the whole configuration a session
 		// consumer's create gives (freshConfig, ConsumerAdoptable): one that differs in a setting no
 		// update changes is refused. Its start Names checks, and every setting an update changes is
