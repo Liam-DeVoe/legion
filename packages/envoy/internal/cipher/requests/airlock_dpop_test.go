@@ -63,22 +63,33 @@ func withResultGrants(m *Machine, tokens *mintedTokens) *Machine {
 
 // TestAStoredSecretUnderADPoPEntryIsNeverReleased: a stored secret whose rules entry is of kind
 // dpop - the kind of a CI run's results capability, which the broker mints and holds - is never
-// released, to the session or to the proxy: the release is refused ErrAirlockMintedOnly, no
-// placeholder row is written for it, and the answer holds nothing of its value.
+// released, to the session or to the proxy, whether its entry binds a host or none (an entry with
+// no host holds nothing back, so its value would otherwise go to the session in clear): the
+// release is refused ErrAirlockMintedOnly, no placeholder row is written for it, and the answer
+// holds nothing of its value.
 func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", proxyrules.KindDPoP)}})
-	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
-	if !errors.Is(err, ErrAirlockMintedOnly) || !IsRefusal(err) {
-		t.Fatalf("the session's release of a stored secret under a dpop entry = %v; want ErrAirlockMintedOnly, a refusal", err)
-	}
-	holdsNothingOf(t, release, "auto-v1")
-	if rows := placeholderRows(t, m, grantID); len(rows) != 0 {
-		t.Fatalf("the refused release wrote placeholder rows %v; want none", rows)
-	}
-	values, _, err := m.AirlockValues(t.Context(), grantID)
-	if !errors.Is(err, ErrAirlockMintedOnly) || values != nil {
-		t.Fatalf("the proxy's release of it = %v, %v; want ErrAirlockMintedOnly and no values", values, err)
+	noHost := rule("AUTO_TOKEN", proxyrules.KindDPoP)
+	noHost.Hosts = nil
+	for name, entry := range map[string]proxyrules.SecretRule{
+		"an entry that binds a host": rule("AUTO_TOKEN", proxyrules.KindDPoP),
+		"an entry that binds none":   noHost,
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}})
+			_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			if !errors.Is(err, ErrAirlockMintedOnly) || !IsRefusal(err) {
+				t.Fatalf("the session's release of a stored secret under a dpop entry = %v; want ErrAirlockMintedOnly, a refusal", err)
+			}
+			holdsNothingOf(t, release, "auto-v1")
+			if rows := placeholderRows(t, m, grantID); len(rows) != 0 {
+				t.Fatalf("the refused release wrote placeholder rows %v; want none", rows)
+			}
+			values, _, err := m.AirlockValues(t.Context(), grantID)
+			if !errors.Is(err, ErrAirlockMintedOnly) || values != nil {
+				t.Fatalf("the proxy's release of it = %v, %v; want ErrAirlockMintedOnly and no values", values, err)
+			}
+		})
 	}
 }
 

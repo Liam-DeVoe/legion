@@ -15,6 +15,8 @@ import (
 	"bufio"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -37,6 +39,9 @@ const (
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"
+	// serveConnect and servePlain: a CI run's result grant asked for a tunnel or a plain forward
+	// to anything but the one host its grant binds (resultHostOnly).
+	codeResultHostOnly = "RESULT_GRANT_HOST_ONLY"
 	// servePlain: plain HTTP to a host a name of the grant is bound to.
 	codePlainHTTP = "PLAIN_HTTP_TO_BOUND_HOST"
 	// serveConnect's 500: a connection the outer server cannot hand over.
@@ -106,6 +111,10 @@ type answerWriter struct {
 	// counted served whatever its status (answer.CountCarried): the service chose it, and the
 	// broker refused nothing.
 	carried bool
+	// left is whether the command's request may have left the proxy for its service: set once the
+	// transport that carries it holds a connection to the service (leaving), from the transport's
+	// own goroutine, and read by ownAnswer.
+	left atomic.Bool
 }
 
 // record serves next as the answers of one of the port's two servers: each request's answer is
@@ -179,6 +188,28 @@ func (w *answerWriter) carry() {
 	w.carried = true
 }
 
+// leaving is the request the proxy hands a transport to carry to its service, with a trace that
+// marks this answer the moment that transport holds a connection for it (httptrace's GotConn):
+// from there on bytes of the request may have reached the service, so an answer the proxy writes
+// itself after it - a transport error, the grant watcher's cut - says so (ownAnswer). Before it,
+// a refused or failed dial, a refused address, a TLS handshake that failed and a refusal of the
+// transport's own (resultTransport) sent nothing of the request.
+func leaving(w http.ResponseWriter, r *http.Request) *http.Request {
+	rec := answerOf(w)
+	if rec == nil {
+		return r
+	}
+	return r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { rec.left.Store(true) },
+	}))
+}
+
+// mayHaveLeft is whether the command's request may have reached its service (leaving); false on
+// a nil answerWriter.
+func (w *answerWriter) mayHaveLeft() bool {
+	return w != nil && w.left.Load()
+}
+
 // WriteHeader records the answer's status and sets its id header. A 1xx informational answer
 // goes on as it is, and the final status still follows it.
 func (w *answerWriter) WriteHeader(status int) {
@@ -222,20 +253,25 @@ func established(w http.ResponseWriter) []byte {
 
 // fail answers a call the proxy could not carry for a cause of its own rather than a refusal of
 // the caller: status is a 5xx, counted failed under code, and the answer writes no refusal line,
-// since the writer that knows the cause logs it where it is wanted.
+// since the writer that knows the cause logs it where it is wanted. A transport error after the
+// request may have reached its service (badGateway) says so in Airlock-Forwarded (ownAnswer).
 func fail(w http.ResponseWriter, status int, code, message string) {
 	answerOf(w).note(code)
 	ownAnswer(w, code)
 	http.Error(w, "airlock: "+message, status)
 }
 
-// The two headers that tell the command whether an answer is the proxy's own or a service's. The
-// proxy's own answer (fail, refuse) says Airlock-Forwarded: false and names its code in
-// Airlock-Code: it was written before anything was sent on, so the request reached no service. A
-// service's answer the proxy carried says Airlock-Forwarded: true and carries no Airlock-Code,
-// whatever the service sent, so a service cannot pass for the proxy (serveBound's
-// ModifyResponse). dispatch's client reads them to tell a write the airlock refused, which stored
-// nothing, from one Dispatch answered.
+// The two headers that tell the command whether an answer is the proxy's own or a service's, and
+// what its own answer says of the request. The proxy's own answer (fail, refuse) names its code
+// in Airlock-Code and says Airlock-Forwarded: false when it was written before any byte of the
+// request left the proxy, so the request reached no service, and Airlock-Forwarded: unknown when
+// the request may have reached its service first (leaving): a connection that broke after the
+// write was sent, a grant that ended while the service held the call, a service's answer cut on
+// its way to the command. A service's answer the proxy carried says Airlock-Forwarded: true and
+// carries no Airlock-Code, whatever the service sent, so a service cannot pass for the proxy
+// (serveBound's ModifyResponse). dispatch's client reads them to tell a write the airlock
+// refused, which stored nothing, from one that may have been stored, which it asks again under
+// its key, and from one Dispatch answered.
 const (
 	forwardedHeader = "Airlock-Forwarded"
 	codeHeader      = "Airlock-Code"
@@ -243,7 +279,11 @@ const (
 
 // ownAnswer marks an answer the proxy writes itself, before its status is written.
 func ownAnswer(w http.ResponseWriter, code string) {
-	w.Header().Set(forwardedHeader, "false")
+	forwarded := "false"
+	if answerOf(w).mayHaveLeft() {
+		forwarded = "unknown"
+	}
+	w.Header().Set(forwardedHeader, forwarded)
 	w.Header().Set(codeHeader, code)
 }
 

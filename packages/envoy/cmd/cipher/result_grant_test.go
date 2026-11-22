@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"authelia.com/provider/oauth2"
+	"authelia.com/provider/oauth2/handler/rfc9449"
+	"authelia.com/provider/oauth2/token/jose"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
@@ -61,10 +67,32 @@ func startResultBroker(t *testing.T, status int, answer map[string]any) *resultB
 	return b
 }
 
+// tradeProofRefusal is why proof is not a DPoP proof that a broker's token endpoint at tokenURL
+// takes for the trade, or "" when it is one: RFC 9449's own parser reads it (its typ, its one
+// signature by the public key it carries, and its claims), and its htm, htu and iat are those of a
+// POST to tokenURL signed within the last minute. The key is made in the command's memory and
+// never leaves it, so the test cannot name it.
+func tradeProofRefusal(proof, tokenURL string) string {
+	parsed, err := rfc9449.ParseProof(proof, []jose.SignatureAlgorithm{jose.ES256})
+	switch {
+	case err != nil:
+		return oauth2.ErrorToRFC6749Error(err).HintField
+	case parsed.Method != http.MethodPost || parsed.URL != tokenURL:
+		return fmt.Sprintf("its htm %q and htu %q are not POST and %q", parsed.Method, parsed.URL, tokenURL)
+	case time.Since(parsed.IssuedAt) > time.Minute || time.Until(parsed.IssuedAt) > time.Second:
+		return fmt.Sprintf("its iat %s is not within the last minute", parsed.IssuedAt)
+	}
+	return ""
+}
+
 // placeholderGrant is the token endpoint's answer to a result entry's run (C8), with an airlock
-// authority whose certificate the command's trust bundle can hold.
-func placeholderGrant(t *testing.T) map[string]any {
+// authority whose certificate the command's trust bundle can hold, its entry binding hosts, or
+// resultHost alone when none is given.
+func placeholderGrant(t *testing.T, hosts ...string) map[string]any {
 	t.Helper()
+	if len(hosts) == 0 {
+		hosts = []string{resultHost}
+	}
 	authority, err := proxyrulestest.NewAuthority("result-grant test")
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +102,7 @@ func placeholderGrant(t *testing.T) map[string]any {
 		oauthwire.ExtraGrantID: resultGrantID,
 		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
 			ProxyURL: "http://127.0.0.1:13381", CACertificate: string(authority.CertificatePEM()), ProxyPassword: resultPlaceholder,
-			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: resultPlaceholder, Slots: map[string]string{"value": resultPlaceholder}, Hosts: []string{resultHost}}},
+			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: resultPlaceholder, Slots: map[string]string{"value": resultPlaceholder}, Hosts: hosts}},
 		},
 	}
 }
@@ -133,9 +161,10 @@ func childVar(stdout, name string) (string, bool) {
 }
 
 // TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy: the run's token is traded at the
-// broker's token endpoint for the airlock placeholder, with a DPoP proof; the command runs with
-// the placeholder in DISPATCH_RESULTS_TOKEN, the proxy in HTTPS_PROXY with the placeholder as its
-// password, and the trust bundle, and with no machine identity of its own to trade.
+// broker's token endpoint for the airlock placeholder, with a DPoP proof the endpoint takes; the
+// command runs with the placeholder in DISPATCH_RESULTS_TOKEN, the proxy in HTTPS_PROXY with the
+// placeholder as its password, and the trust bundle, and with no machine identity of its own to
+// trade.
 func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t))
 	stdout, stderr, exit := runResultGrant(t, broker)
@@ -146,8 +175,11 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	forms, proofs := broker.forms, broker.proofs
 	broker.mu.Unlock()
 	if len(forms) != 1 || forms[0].Get("requested_token_type") != oauthwire.TokenTypeAirlockPlaceholder ||
-		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub || proofs[0] == "" {
-		t.Fatalf("the broker's token endpoint got %v (proofs %q); want one trade of the run's token for the placeholder type, with a proof", forms, proofs)
+		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub {
+		t.Fatalf("the broker's token endpoint got %v; want one trade of the run's token for the placeholder type", forms)
+	}
+	if why := tradeProofRefusal(proofs[0], broker.URL+cipherclient.TokenPath); why != "" {
+		t.Fatalf("the trade's DPoP proof %q is not one the token endpoint takes: %s", proofs[0], why)
 	}
 	if got, _ := childVar(stdout, oauthwire.AirlockResultsName); got != resultPlaceholder {
 		t.Errorf("the child's %s = %q, want the placeholder", oauthwire.AirlockResultsName, got)
@@ -169,13 +201,31 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 }
 
 // TestResultGrantRefusesADispatchURLOutsideTheGrant: a DISPATCH_URL whose host the grant does not
-// bind would send the command's writes around the proxy with the placeholder in them, so nothing
-// runs.
+// bind, or that is not https on port 443, would send the command's writes around the proxy with the
+// placeholder in them (the child's HTTPS_PROXY covers https alone, and the proxy reads a bound host
+// on 443 alone), so nothing runs. A host is bound as the proxy binds one: exactly, or one label or
+// more under a `*.` entry, so `evilexample.test` is not under `*.example.test`, and
+// `dispatch.example.test` is, which runs.
 func TestResultGrantRefusesADispatchURLOutsideTheGrant(t *testing.T) {
-	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t))
-	stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL=https://dispatch.elsewhere.test")
-	if exit == 0 || strings.Contains(stdout, resultPlaceholder) || !strings.Contains(stderr, "dispatch.elsewhere.test") || !strings.Contains(stderr, "around") {
-		t.Fatalf("result-grant with DISPATCH_URL outside the grant = exit %d, stdout %q, stderr %q; want a refusal naming the host, and nothing run", exit, stdout, stderr)
+	for _, c := range []struct {
+		name, dispatchURL, host string
+		bound                   []string
+	}{
+		{"another host", "https://dispatch.elsewhere.test", "dispatch.elsewhere.test", nil},
+		{"a name that ends in a wildcard entry's domain without its dot", "https://evilexample.test", "evilexample.test", []string{"*.example.test"}},
+		{"the bound host over plain http", "http://" + resultHost, resultHost, nil},
+		{"the bound host over plain http on 443", "http://" + resultHost + ":443", resultHost, nil},
+		{"the bound host on another port", "https://" + resultHost + ":8443", resultHost, nil},
+	} {
+		broker := startResultBroker(t, http.StatusOK, placeholderGrant(t, c.bound...))
+		stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL="+c.dispatchURL)
+		if exit == 0 || strings.Contains(stdout, resultPlaceholder) || !strings.Contains(stderr, c.host) || !strings.Contains(stderr, "around") {
+			t.Errorf("%s: result-grant with DISPATCH_URL=%s = exit %d, stdout %q, stderr %q; want a refusal naming the host, and nothing run", c.name, c.dispatchURL, exit, stdout, stderr)
+		}
+	}
+	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t, "*.example.test"))
+	if stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL=https://"+resultHost); exit != 0 || !strings.Contains(stdout, oauthwire.AirlockResultsName+"=") {
+		t.Errorf("result-grant with DISPATCH_URL=https://%s under a grant bound to *.example.test = exit %d (%s); want the command run", resultHost, exit, stderr)
 	}
 }
 
@@ -190,14 +240,15 @@ func TestResultGrantMasksThePlaceholderInAGitHubJob(t *testing.T) {
 }
 
 // TestABrokerRefusalRunsNothing: the broker's refusal of the trade is printed, the command never
-// runs, and result-grant exits 1.
+// runs, and result-grant exits 1. The refusal quotes the run's token it was sent, as a broker's
+// error may, and the line printed holds [redacted] in its place and never the token.
 func TestABrokerRefusalRunsNothing(t *testing.T) {
-	broker := startResultBroker(t, http.StatusBadRequest, map[string]any{"error": "invalid_request", "error_description": "no result entry lists this run"})
+	broker := startResultBroker(t, http.StatusBadRequest, map[string]any{"error": "invalid_request", "error_description": "no result entry lists the run of subject token the-runs-oidc-token"})
 	stdout, stderr, exit := runResultGrant(t, broker)
 	if exit != 1 || strings.Contains(stdout, "PATH=") || !strings.Contains(stderr, "invalid_request") {
 		t.Fatalf("result-grant refused by the broker = exit %d, stdout %q, stderr %q; want exit 1, nothing run and the refusal printed", exit, stdout, stderr)
 	}
-	if strings.Contains(stderr, "the-runs-oidc-token") {
-		t.Fatalf("the refusal printed the run's token: %s", stderr)
+	if strings.Contains(stderr, "the-runs-oidc-token") || !strings.Contains(stderr, "subject token [redacted]") {
+		t.Fatalf("the refusal printed = %q; want the run's token as [redacted], and never the token", stderr)
 	}
 }

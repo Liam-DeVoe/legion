@@ -492,13 +492,15 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// service, and ServeHTTP's return cancels it too, which stops the watcher.
 	carried, cut := context.WithCancelCause(r.Context())
 	defer cut(nil)
-	// What ReverseProxy is handed: this request with the swap's headers and that context.
+	// What ReverseProxy is handed: this request with the swap's headers and that context, and the
+	// trace that marks the moment it may leave for the service (leaving), which is what the
+	// ErrorHandler's answers below say of it.
 	// ReverseProxy drops the hop-by-hop headers of what it is handed - the Connection header
 	// and every header it names, Keep-Alive, Te, Upgrade and the rest - before it builds what
 	// leaves, and sets back the ones an upgrade or trailers need, so the swap's headers go to it
 	// as the request's own rather than over what it built: a Connection header the command sent
 	// would otherwise reach the service, and fail every call to one that speaks HTTP/2.
-	out := r.WithContext(carried)
+	out := leaving(w, r.WithContext(carried))
 	out.Header = header
 	served := &statusWriter{ResponseWriter: w}
 	// The command's side of the call, which the watcher ends too: the cancel above ends the
@@ -519,11 +521,21 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// refusedByCut is whether the watcher ended the call before its service answered, which
 	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
 	refusedByCut := false
+	// Where the request goes: the CONNECT target over TLS on the proxy's own transport, which
+	// checks and dials the target's addresses (dialChecked); or, for the private destination's
+	// bound host, the destination URL's scheme and host on the destination's own transport, which
+	// checks and dials the destination's addresses (dialUpstream). Every other host keeps the
+	// proxy's own transport, so the destination takes the requests of its one host and no other.
 	var transport http.RoundTripper = s.upstream
+	scheme, upstreamHost := "https", info.target
+	if s.toDestination(info.host) {
+		transport, scheme, upstreamHost = s.private, s.privateUpstream.URL.Scheme, s.privateUpstream.URL.Host
+	}
 	if kind == proxyrules.KindDPoP {
 		// The swap put the run's token in; resultTransport signs its proof with the pod's key,
-		// for the bound host's origin.
-		transport = &resultTransport{key: s.dpopKey, origin: "https://" + info.host, base: s.upstream}
+		// for the bound host's origin whatever address the request is sent to, and hands it to
+		// the transport above.
+		transport = &resultTransport{key: s.dpopKey, origin: "https://" + info.host, base: transport}
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
@@ -537,12 +549,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = &url.URL{
-				Scheme:   "https",
-				Host:     info.target,
+				Scheme:   scheme,
+				Host:     upstreamHost,
 				Path:     r.URL.Path,
 				RawPath:  r.URL.RawPath,
 				RawQuery: rawQuery,
 			}
+			// The bound host, wherever the request is sent: the service reads the request as one
+			// to its public name, which a dpop entry's proof names too.
 			pr.Out.Host = hostHeaderOf(info.target)
 			if kind == proxyrules.KindDPoP {
 				// A results write goes on without any forwarding header the command sent, so
@@ -594,7 +608,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// The watcher ended this call before its service's answer reached the command, so
 			// the answer is the refusal every call of this grant now gets, rather than a 502
 			// that would read as a service out of reach. Its record is the call's one line, as
-			// every refusal's is.
+			// every refusal's is. The call may have reached the service before the cut - it can
+			// hold a whole write and not have answered, or have answered on the way back - so the
+			// answer says Airlock-Forwarded: unknown once the transport held a connection for it
+			// (leaving, ownAnswer).
 			refusedByCut = true
 			s.refuse(w, r, info.callFor(chosen), why.status, why.code, why.why)
 		},
@@ -865,9 +882,12 @@ func (info connInfo) callFor(chosen pair) call {
 }
 
 // refuse answers a call the airlock will not carry, and it is the one writer of this port's
-// refusals, refuseCredential's 407 among them. Nothing reaches the service: the answer is written
-// here, on the connection the proxy opened. c is what is known of the call, code names the
-// refusal, and reason is the broker's own words for it.
+// refusals, refuseCredential's 407 among them. The answer is written here, on the connection the
+// proxy opened, and nothing more of the request reaches the service: every caller but one refuses
+// before it hands the request to a transport, and the one that refuses after, serveBound's
+// ErrorHandler for a call its grant watcher cut, answers with Airlock-Forwarded: unknown when the
+// request may already have reached the service (ownAnswer). c is what is known of the call, code
+// names the refusal, and reason is the broker's own words for it.
 //
 // A refusal (answer.Refused: a status from 400 to 499 but a 429) is one line under
 // answer.RefusalMessage at WARN (refusalFields), and then the answer, whose text body ends with

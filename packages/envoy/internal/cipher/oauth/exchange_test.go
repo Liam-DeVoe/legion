@@ -462,7 +462,7 @@ func TestAResultGrantHoldsItsRun(t *testing.T) {
 		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
-	raw, err := json.Marshal(grant.Extra[oauth.ClaimCI])
+	raw, err := json.Marshal(grant.Extra[oauthwire.ClaimCI])
 	if err != nil {
 		t.Fatal(err)
 	}

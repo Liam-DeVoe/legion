@@ -77,10 +77,6 @@ const (
 	// projects at all; one grammar serves the form parameter, this claim and
 	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
-	// ClaimCI is the run a result entry's token was minted for (exchange.Claims.CI), the JSON
-	// object oauthwire.CIRun declares. It is written beside the results scope alone and is absent
-	// from every other token, which no run minted.
-	ClaimCI = "ci"
 )
 
 // subjectTokenAlgorithms are the signature algorithms a JWT subject token may be signed with: the
@@ -739,7 +735,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 // and grants the OAuth scope that decision carries: the project scope's wire word under
 // ClaimProjectScope; the list of projects under ClaimProjects, which is empty for every token of
 // the none scope and the one project whose results a results token writes; a named token's one
-// project under claimLegacyProject too, and none for any other; the run under ClaimCI for a
+// project under claimLegacyProject too, and none for any other; the run under oauthwire.ClaimCI for a
 // results token, and no run for any other; and oauthwire.ScopeRead for
 // exchange.ProjectScopeNone, the read entry's decision, oauthwire.ScopeResults for
 // exchange.ProjectScopeResults, the result entry's, and no scope for any other.
@@ -766,7 +762,7 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 	if (claims.CI != nil) != (claims.Scope == exchange.ProjectScopeResults) {
 		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) with a run (%t), and a run goes beside the results scope alone", int(claims.Scope), claims.Scope, claims.CI != nil)
 	}
-	delete(session.Extra, ClaimCI)
+	delete(session.Extra, oauthwire.ClaimCI)
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
@@ -779,7 +775,7 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeResults
 		// The run itself, which the store keeps as the JSON object its tags spell and an
 		// introspection reads back through the same declaration (Introspect).
-		session.Extra[ClaimCI] = *claims.CI
+		session.Extra[oauthwire.ClaimCI] = *claims.CI
 		request.GrantScope(oauthwire.ScopeResults)
 	default:
 		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) for %s, which this broker writes no word for", int(claims.Scope), claims.Scope, claims.Principal)

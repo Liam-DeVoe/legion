@@ -2038,8 +2038,8 @@ describe("DispatchClient's writes", () => {
 
   // Main's row here read a JSON 2xx that names no key back as the write's answer while no answer of
   // the call had carried the key. Dispatch's keyed layer names the key back on every answer it gives
-  // a keyed write (request_keys.go:319-322), so such a 2xx is no answer of Dispatch's even as the
-  // call's only answer: the write is unsettled, carrying its key, never a success.
+  // a keyed write (`keyedWrites` in request_keys.go), so such a 2xx is no answer of Dispatch's
+  // even as the call's only answer: the write is unsettled, carrying its key, never a success.
   test("a 2xx without the key leaves the write unsettled even while no answer of the call carried the key", async () => {
     const { fetchImpl, sent } = scripted([json(posted, 201)], { namesNoKey: true });
 

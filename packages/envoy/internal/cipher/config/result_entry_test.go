@@ -28,10 +28,11 @@ func resultsEntry() proxyrules.SecretRule {
 
 // TestAResultEntryNeedsTheDPoPEntryAtStart: BROKER_EXCHANGE_RESULT_WORKFLOWS with no rules file
 // refuses the start naming BROKER_AIRLOCK_RULES_FILE, and ResultEntryRules refuses rules with no
-// DISPATCH_RESULTS_TOKEN entry, one that binds no host, one not of kind dpop, one with no allow
-// list or an empty one, and one carried in any header but Authorization alone, each refusal
-// naming what is missing. The entry whole, and the one with the default header (Authorization),
-// are taken.
+// DISPATCH_RESULTS_TOKEN entry, one that binds no host, one that binds a `*.` name or more than
+// one host (the run's token and a proof of the pod's key go to every host the entry binds, so it
+// binds Dispatch's one host and nothing else), one not of kind dpop, one with no allow list or an
+// empty one, and one carried in any header but Authorization alone, each refusal naming what is
+// missing. The entry whole, and the one with the default header (Authorization), are taken.
 func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	e := withResultsAirlock(validEnv())
 	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
@@ -58,6 +59,11 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	}{
 		{"no such entry", "holds no entry", func(s *proxyrules.SecretRule) { s.Name = "OTHER_TOKEN" }},
 		{"no host", "binds no host", func(s *proxyrules.SecretRule) { s.Hosts = nil }},
+		{"a wildcard host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"*.example.com"} }},
+		{"a second host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"dispatch.example", "api.github.com"} }},
+		{"a second, wildcard host", "one exact host", func(s *proxyrules.SecretRule) {
+			s.Hosts = []string{"dispatch.example", "*.attacker.example"}
+		}},
 		{"no kind", "kind dpop", func(s *proxyrules.SecretRule) { s.Kind = "" }},
 		{"another kind", "kind dpop", func(s *proxyrules.SecretRule) { s.Kind = proxyrules.KindAWS }},
 		{"no allow list", "allow list", func(s *proxyrules.SecretRule) { s.Allow = nil }},

@@ -15,9 +15,14 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-jose/go-jose/v4"
 
@@ -273,6 +278,139 @@ func TestAProxysOwnAnswerSaysWhetherItForwarded(t *testing.T) {
 	answer, body = r.postResult("Authorization", "DPoP "+resultsPlaceholder)
 	if answer.StatusCode != http.StatusCreated || answer.Header.Get("Airlock-Forwarded") != "true" || answer.Header.Values("Airlock-Code") != nil {
 		t.Fatalf("the forwarded answer = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 201, true and none", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Values("Airlock-Code"), body)
+	}
+}
+
+// TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown: an answer the proxy writes after
+// the command's request may have left it says Airlock-Forwarded: unknown, with its code, so the
+// command reads it as a write that may have landed and asks again under its key; one written
+// before anything left says false. The rows: the service reads the whole write and aborts its
+// answer, as a reset after the write was sent does (502); the service holds the whole write and
+// the grant ends before it answers (407); and a dial that fails, which sends nothing (502, false).
+func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
+	t.Run("the service read the write and aborted its answer", func(t *testing.T) {
+		r, _ := newDPoPRig(t)
+		r.answerWith(func(http.ResponseWriter, *http.Request, proxyrulestest.Request) bool {
+			panic(http.ErrAbortHandler)
+		})
+		answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder)
+		if received := len(r.requests()); received != 1 {
+			t.Fatalf("the service received %d writes, want the one", received)
+		}
+		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Forwarded") != "unknown" || answer.Header.Get("Airlock-Code") != codeUpstream {
+			t.Errorf("a write the service received and whose answer it aborted = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 502, unknown, %s", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, codeUpstream)
+		}
+	})
+	t.Run("the grant ended while the service held the write", func(t *testing.T) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, Watch: watchFast})
+		r.grants.setConnection(resultsPlaceholder, resultsConnection())
+		r.grants.setValues(resultsGrantID, storedValues(resultsName, runsToken))
+		r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ proxyrulestest.Request) bool {
+			<-request.Context().Done()
+			return true
+		})
+		type result struct {
+			answer *http.Response
+			body   string
+		}
+		done := make(chan result, 1)
+		go func() {
+			answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder)
+			done <- result{answer, body}
+		}()
+		for deadline := time.Now().Add(cutWait); len(r.requests()) == 0; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the write never reached the service")
+			}
+		}
+		r.grants.refuseConnection(resultsPlaceholder, requests.ErrGrantNotLive)
+		var got result
+		select {
+		case got = <-done:
+		case <-time.After(2 * cutWait):
+			t.Fatal("the write was not answered after its grant ended")
+		}
+		if got.answer.StatusCode != http.StatusProxyAuthRequired || got.answer.Header.Get("Airlock-Forwarded") != "unknown" || got.answer.Header.Get("Airlock-Code") != codeGrantNotLive {
+			t.Errorf("a write the service held when its grant ended = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 407, unknown, %s", got.answer.StatusCode, got.answer.Header.Get("Airlock-Forwarded"), got.answer.Header.Get("Airlock-Code"), got.body, codeGrantNotLive)
+		}
+	})
+	t.Run("a dial that failed sent nothing", func(t *testing.T) {
+		r, _ := newDPoPRig(t)
+		delete(r.dialTo, net.JoinHostPort(boundHost, "443"))
+		answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder)
+		if received := len(r.requests()); received != 0 {
+			t.Fatalf("the service received %d writes, want none", received)
+		}
+		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Forwarded") != "false" || answer.Header.Get("Airlock-Code") != codeUpstream {
+			t.Errorf("a write whose dial failed = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 502, false, %s", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, codeUpstream)
+		}
+	})
+	t.Run("a plain-HTTP forward whose service aborted its answer", func(t *testing.T) {
+		const plainHost = "plain.example.net"
+		r := newRig(t, Options{})
+		var received atomic.Int32
+		service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			received.Add(1)
+			panic(http.ErrAbortHandler)
+		}))
+		t.Cleanup(service.Close)
+		r.addresses[plainHost] = []netip.Addr{netip.MustParseAddr("93.184.216.37")}
+		r.dialTo[net.JoinHostPort(plainHost, "80")] = service.Listener.Addr().String()
+		answer, body := r.do(r.client(workerPlaceholder), http.MethodPost, "http://"+plainHost+"/write", `{"n":1}`)
+		if received.Load() != 1 {
+			t.Fatalf("the plain service received %d requests, want the one", received.Load())
+		}
+		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Forwarded") != "unknown" || answer.Header.Get("Airlock-Code") != codeUpstream {
+			t.Errorf("a plain request the service received and whose answer it aborted = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 502, unknown, %s", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, codeUpstream)
+		}
+	})
+}
+
+// TestAResultGrantReachesNoHostItsGrantDoesNotBind: a CI run's result grant carries one write to
+// the one host its grant binds, so its placeholder as the proxy password opens no tunnel and no
+// plain-HTTP forward anywhere else: a CONNECT to a host no entry binds, a CONNECT to the bound host
+// on another port, and a plain-HTTP request to an unbound host are each refused 403
+// RESULT_GRANT_HOST_ONLY, naming the rule, before any dial. A secret grant's CONNECT to the same
+// unbound host still opens its tunnel, the airlock's rule for every other grant.
+func TestAResultGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
+	r, _ := newDPoPRig(t)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "the plain service answered")
+	}))
+	t.Cleanup(plain.Close)
+	r.addresses["plain.example.net"] = []netip.Addr{netip.MustParseAddr("93.184.216.50")}
+	r.dialTo["plain.example.net:80"] = plain.Listener.Addr().String()
+	const rule = "a CI run's result grant carries its write to the host its grant binds and nowhere else"
+	refused := func(what string, answer *http.Response, body string, dialsBefore int64) {
+		t.Helper()
+		if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != codeResultHostOnly || !strings.Contains(body, rule) || r.dials.Load() != dialsBefore {
+			t.Errorf("%s with a result grant = %d, Airlock-Code %q (%q) after %d new dial(s); want 403 %s naming the rule, and no dial", what, answer.StatusCode, answer.Header.Get("Airlock-Code"), body, r.dials.Load()-dialsBefore, codeResultHostOnly)
+		}
+	}
+	for _, target := range []string{net.JoinHostPort(echoHost, "443"), net.JoinHostPort(boundHost, "8443")} {
+		before := r.dials.Load()
+		// connectRaw reads the answer's head alone, and a refusal's body is read whole; the body
+		// of a tunnel that opened never ends, so its 200 is judged by its head.
+		answer, _, _ := r.connectRaw(target, basic(resultsPlaceholder))
+		body := ""
+		if answer.StatusCode != http.StatusOK {
+			body = bodyOf(t, answer)
+		}
+		refused("a CONNECT to "+target, answer, body, before)
+	}
+	before := r.dials.Load()
+	answer, body := r.plainRaw("plain.example.net", "/anything", basic(resultsPlaceholder))
+	refused("a plain-HTTP request to plain.example.net", answer, body, before)
+
+	// The control: the same tunnel under a secret grant opens, as the airlock blocks nothing it
+	// does not bind for one.
+	answer, _, _ = r.connectRaw(net.JoinHostPort(echoHost, "443"), basic(workerPlaceholder))
+	if answer.StatusCode != http.StatusOK {
+		t.Errorf("a secret grant's CONNECT to %s:443 = %d, want its tunnel (200)", echoHost, answer.StatusCode)
 	}
 }
 

@@ -306,8 +306,9 @@ placeholder of a result grant (`requested_token_type=urn:envoy:params:oauth:toke
 proving the trade with a key it makes in memory and never writes. It needs
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` (or a run's token in
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`), and runs nothing when the broker refuses the trade, and
-nothing when `DISPATCH_URL` names a host the grant does not bind, since the command's writes
-would then go around the proxy with the placeholder in them. In a GitHub job
+nothing when `DISPATCH_URL` names a host the grant does not bind, or is not `https` on port 443,
+since the command's writes would then go around the proxy with the placeholder in them: the
+child's `HTTPS_PROXY` covers https alone, and the proxy reads a bound host on 443 alone. In a GitHub job
 (`GITHUB_ACTIONS=true`) it first prints `::add-mask::<placeholder>`, so the job's log shows `***`
 for the proxy's password. The child receives only the `DISPATCH_RESULTS_TOKEN` placeholder, its
 proxy and certificate settings, and no `AGENT_SECRETS_MACHINE_IDENTITY`; the broker's airlock

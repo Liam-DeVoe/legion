@@ -53,7 +53,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			session := oauthstore.NewExchangeSession()
 			session.Extra[ClaimProjects] = stale
 			session.Extra[claimLegacyProject] = stale
-			session.Extra[ClaimCI] = run
+			session.Extra[oauthwire.ClaimCI] = run
 			request := &oauth2.Request{Session: session}
 			claims := exchange.Claims{Scope: c.scope, CI: c.run}
 			if c.project != "" {
@@ -80,12 +80,12 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			if legacy != "" && got != legacy {
 				t.Errorf("%s = %v, want %q", claimLegacyProject, got, legacy)
 			}
-			written, carried := session.Extra[ClaimCI]
+			written, carried := session.Extra[oauthwire.ClaimCI]
 			if c.run == nil && carried {
-				t.Errorf("%s = %v, want it absent: the %s scope carries no run", ClaimCI, written, c.word)
+				t.Errorf("%s = %v, want it absent: the %s scope carries no run", oauthwire.ClaimCI, written, c.word)
 			}
 			if c.run != nil && written != *c.run {
-				t.Errorf("%s = %v, want the run %+v", ClaimCI, written, *c.run)
+				t.Errorf("%s = %v, want the run %+v", oauthwire.ClaimCI, written, *c.run)
 			}
 			if granted := []string(request.GetGrantedScopes()); !slices.Equal(granted, c.granted) {
 				t.Errorf("granted scopes = %q, want %q: the read and the result entries' decisions grant their one scope and nothing else does", granted, c.granted)
@@ -115,7 +115,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			if !errors.As(err, &refusal) || !strings.Contains(refusal.Debug(), c.debug) {
 				t.Errorf("writeProjectScope(%s) refused with %v, whose debug text does not say %q", c.name, err, c.debug)
 			}
-			for _, claim := range []string{ClaimProjectScope, ClaimProjects, claimLegacyProject, ClaimCI} {
+			for _, claim := range []string{ClaimProjectScope, ClaimProjects, claimLegacyProject, oauthwire.ClaimCI} {
 				if got, written := session.Extra[claim]; written {
 					t.Errorf("%s = %v after the refusal, want nothing written", claim, got)
 				}

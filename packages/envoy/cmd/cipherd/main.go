@@ -238,6 +238,10 @@ func main() {
 	if len(cfg.ExchangeResultWorkflows) > 0 {
 		fatal(config.ResultEntryRules(rules))
 	}
+	// And a broker with a private destination starts only when exactly one entry binds its host,
+	// of kind dpop with an allow list, carried in Authorization alone (config.PrivateUpstreamRules):
+	// that one entry's allowed requests are all that reach the destination.
+	fatal(config.PrivateUpstreamRules(rules, cfg.AirlockPrivateUpstream))
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name the rules hold back hands
@@ -780,6 +784,10 @@ func main() {
 			// refuses to dial beside every private address. config.Load has already refused a
 			// start in a cluster whose ranges miss its Service range.
 			ClusterRanges: cfg.AirlockClusterRanges,
+			// The one bound host whose allowed requests go to an address inside the cluster
+			// (BROKER_AIRLOCK_PRIVATE_UPSTREAM), dialled only where ClusterRanges or another rule
+			// refuses every other request; the start above has checked the entry that binds it.
+			PrivateUpstream: proxy.PrivateUpstream{Host: cfg.AirlockPrivateUpstream.Host, URL: cfg.AirlockPrivateUpstream.URL},
 			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
 			// addresses it may dial anyway, the roots it trusts upstream, the two negative

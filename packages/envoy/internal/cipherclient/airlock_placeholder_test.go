@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,10 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"authelia.com/provider/oauth2"
+	"authelia.com/provider/oauth2/handler/rfc9449"
+	"authelia.com/provider/oauth2/token/jose"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -57,6 +62,27 @@ func placeholderClient(t *testing.T, broker string) *Client {
 	return client
 }
 
+// tradeProofRefusal is why proof is not a DPoP proof that a broker's token endpoint at tokenURL
+// takes for a trade signed with key, or "" when it is one: RFC 9449's own parser reads it (its typ,
+// its one signature by the public key it carries, and its claims), that key is key, and its htm,
+// htu and iat are those of a POST to tokenURL signed within the last minute.
+func tradeProofRefusal(proof, tokenURL string, key *ecdsa.PublicKey) string {
+	parsed, err := rfc9449.ParseProof(proof, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return oauth2.ErrorToRFC6749Error(err).HintField
+	}
+	signer, _ := parsed.JWK.Key.(*ecdsa.PublicKey)
+	switch {
+	case signer == nil || !signer.Equal(key):
+		return "it is signed by a key other than the client's"
+	case parsed.Method != http.MethodPost || parsed.URL != tokenURL:
+		return fmt.Sprintf("its htm %q and htu %q are not POST and %q", parsed.Method, parsed.URL, tokenURL)
+	case time.Since(parsed.IssuedAt) > time.Minute || time.Until(parsed.IssuedAt) > time.Second:
+		return fmt.Sprintf("its iat %s is not within the last minute", parsed.IssuedAt)
+	}
+	return ""
+}
+
 // c8Answer is the token endpoint's answer to a result entry's run asking for the placeholder.
 func c8Answer(held string) map[string]any {
 	return map[string]any{
@@ -69,13 +95,15 @@ func c8Answer(held string) map[string]any {
 
 // TestAirlockPlaceholderAsksTheTokenEndpointForTheRunsPlaceholder: the run's trade asks for the
 // airlock placeholder, declines the launcher credential and carries a DPoP proof of the client's
-// key; the grant it reads back is the placeholder, its grant, its end and the release. A refusal
-// is a RefusedError, and an answer that is no placeholder - an access token - is refused.
+// key that the token endpoint takes (signed by that key, for a POST to the endpoint, just now);
+// the grant it reads back is the placeholder, its grant, its end and the release. A refusal is a
+// RefusedError, and an answer that is no placeholder - an access token - is refused.
 func TestAirlockPlaceholderAsksTheTokenEndpointForTheRunsPlaceholder(t *testing.T) {
 	const held = "agent-secrets-placeholder-result-QqRrSsTtUuVvWwXxYyZz0123456789ab"
 	broker, forms, proofs := placeholderBroker(t, http.StatusOK, c8Answer(held))
 	asked := time.Now()
-	grant, err := placeholderClient(t, broker.URL).AirlockPlaceholder(t.Context())
+	client := placeholderClient(t, broker.URL)
+	grant, err := client.AirlockPlaceholder(t.Context())
 	if err != nil {
 		t.Fatalf("AirlockPlaceholder: %v", err)
 	}
@@ -83,8 +111,11 @@ func TestAirlockPlaceholderAsksTheTokenEndpointForTheRunsPlaceholder(t *testing.
 	if len(*forms) != 1 || form.Get("grant_type") != GrantTypeTokenExchange || form.Get("client_id") != oauthwire.ExchangeClientID ||
 		form.Get("subject_token") != "the-runs-oidc-token" || form.Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub ||
 		form.Get("requested_token_type") != oauthwire.TokenTypeAirlockPlaceholder ||
-		form.Get(oauthwire.FormLauncherCredential) != oauthwire.FormLauncherCredentialDeclined || (*proofs)[0] == "" {
-		t.Fatalf("the trade sent %v (proof %q); want the run's token exchanged for the placeholder type, the credential declined and a proof", *forms, *proofs)
+		form.Get(oauthwire.FormLauncherCredential) != oauthwire.FormLauncherCredentialDeclined {
+		t.Fatalf("the trade sent %v; want the run's token exchanged for the placeholder type and the credential declined", *forms)
+	}
+	if why := tradeProofRefusal((*proofs)[0], broker.URL+TokenPath, &client.Key().PublicKey); why != "" {
+		t.Fatalf("the trade's DPoP proof %q is not one the token endpoint takes: %s", (*proofs)[0], why)
 	}
 	if grant.Placeholder != held || grant.GrantID != "result:00000000-0000-4000-8000-000000000001" ||
 		grant.ExpiresAt.Before(asked.Add(899*time.Second)) || grant.Release.ProxyPassword != held ||

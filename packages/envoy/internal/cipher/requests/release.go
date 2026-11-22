@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -152,6 +153,13 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 	}()
 	for _, g := range checked.granted {
+		// A name under an entry of kind dpop is a CI run's results capability, which the broker
+		// mints and holds, and never a stored secret's release: it is refused before anything of
+		// it is read, whether its entry binds a host or none. Bound answers nil for an entry that
+		// binds none, which would release the stored value to the session in clear.
+		if ruled := m.Airlock.Lookup(g.name); ruled != nil && ruled.Kind == proxyrules.KindDPoP {
+			return nil, fmt.Errorf("release %s: %w", g.name, ErrAirlockMintedOnly)
+		}
 		entry := m.Airlock.Bound(g.name)
 		if entry == nil && want.airlockOnly {
 			continue

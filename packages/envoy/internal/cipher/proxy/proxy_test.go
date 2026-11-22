@@ -602,6 +602,55 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 		}
 	})
 
+	t.Run("a bound host other than the private destination is refused when its name resolves to a ClusterIP at the dial", func(t *testing.T) {
+		// The row above with a destination set for another host, whose name resolves to the same
+		// ClusterIP: the destination takes its own host's requests and no other host's, so this
+		// request goes out on the proxy's own transport and is refused at its dial as before.
+		withDestination := options
+		withDestination.PrivateUpstream = privateDestination()
+		r := newRig(t, withDestination)
+		r.addresses[privateName] = []netip.Addr{clusterIP}
+		r.answers[boundHost] = [][]netip.Addr{{netip.MustParseAddr("93.184.216.34")}, {clusterIP}}
+		r.dialTo[net.JoinHostPort(clusterIP.String(), "443")] = r.service.Addr()
+		r.dialTo[net.JoinHostPort(clusterIP.String(), privatePort)] = r.service.Addr()
+		answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+		for _, addr := range r.dialedAddresses() {
+			if strings.HasPrefix(addr, clusterIP.String()+":") {
+				t.Errorf("the proxy dialled the ClusterIP at %s", addr)
+			}
+		}
+		if answer.StatusCode == http.StatusOK || !strings.Contains(body, clusterRangeRule) {
+			t.Errorf("the request answered %d %q; want it refused naming %q", answer.StatusCode, body, clusterRangeRule)
+		}
+		if seen := r.requests(); len(seen) != 0 {
+			t.Errorf("the service at the ClusterIP was sent %d requests; want none", len(seen))
+		}
+	})
+
+	t.Run("the private destination's bound host is sent its allowed request at a ClusterIP", func(t *testing.T) {
+		// BROKER_AIRLOCK_PRIVATE_UPSTREAM's one exception to the ranges: the destination resolves
+		// to a ClusterIP inside them, and the allowed write to its bound host reaches the service
+		// there, while a CONNECT to that ClusterIP, or to the destination's name, is refused: by a
+		// secret grant, which may tunnel to a host its names do not bind, naming the ranges, and by
+		// the result grant, which reaches its bound host alone, by that rule.
+		r, standIn := newPrivateRig(t, clusterIP, options.ClusterRanges)
+		answer, body, err := r.writeResult()
+		if err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
+			t.Fatalf("the allowed write answered %v %v and the service received %+v; want 201 and one write", answer, err, standIn.writes())
+		}
+		if dialed := r.dialedAddresses(); len(dialed) != 1 || dialed[0] != net.JoinHostPort(clusterIP.String(), privatePort) {
+			t.Fatalf("the proxy dialled %v; want the ClusterIP %s:%s alone (%s)", dialed, clusterIP, privatePort, body)
+		}
+		for _, target := range []string{net.JoinHostPort(clusterIP.String(), privatePort), net.JoinHostPort(privateName, privatePort)} {
+			if _, refusal := connectRefused(t, r, target, workerPlaceholder); !strings.Contains(refusal, clusterRangeRule) {
+				t.Errorf("the refusal of a secret grant's CONNECT %s reads %q; want it to name %q", target, refusal, clusterRangeRule)
+			}
+			if code, refusal := connectRefused(t, r, target, resultsPlaceholder); code != codeResultHostOnly {
+				t.Errorf("the result grant's CONNECT %s was refused %s (%q); want %s", target, code, refusal, codeResultHostOnly)
+			}
+		}
+	})
+
 	t.Run("control: a bound host at a public address is carried", func(t *testing.T) {
 		r := newRig(t, options)
 		answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)

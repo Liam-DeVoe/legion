@@ -77,10 +77,13 @@ import (
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
 //     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
 //     client reads no /healthz, and every Dispatch that carries b1c42d1d7d runs this layer, so it
-//     sends a failed write again under its key whatever the echo says. It reads the echo only to
-//     settle a refusal: a fresh 4xx, or a 422 KEY_REUSED, that echoes exactly its key is final
-//     (answerEvent, packages/envoy-client), so a change that drops or moves the echo turns such
-//     a refusal back into an unsettled write.
+//     sends a failed write again under its key whatever the echo says. It reads the echo to settle
+//     an answer (answerEvent, packages/envoy-client): a 2xx that names no key back, or another
+//     request's, is no answer of Dispatch's and leaves the write unsettled; an echoed 401 may
+//     follow a commit; and a non-2xx is final only where it echoes exactly its key - a replay, a
+//     409 KEY_COMMITTED, a 422 KEY_REUSED, or a fresh 4xx the handler stored. So a change that
+//     drops or moves the echo turns every stored write, and every such refusal, back into an
+//     unsettled one.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
 // test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write

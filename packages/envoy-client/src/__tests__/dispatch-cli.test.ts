@@ -3175,6 +3175,108 @@ describe("dispatch result --project, as a CI job writes it", () => {
     namesNoToken(record, stdout, stderr);
   });
 
+  /** The airlock proxy's own answer written after the write may have left it for Dispatch
+   *  (`Airlock-Forwarded: unknown`): a connection that broke after the write was sent, a grant
+   *  that ended while Dispatch held the call. */
+  const airlockAfterSend = (status: number, code: string, words: string) => () =>
+    new Response(words, {
+      status,
+      headers: {
+        [AIRLOCK_FORWARDED]: "unknown",
+        [AIRLOCK_CODE]: code,
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+    });
+
+  // The proxy's own answer after the write may have reached Dispatch says so
+  // (`Airlock-Forwarded: unknown`): Dispatch may have stored it, so the write is asked again under
+  // its key, which settles it, and ends write_outcome_unknown when nothing settles it within the
+  // bound, never "nothing was stored". The same answer said `false`, written before anything left
+  // the proxy, is the control: final at once, nothing stored.
+  test("the airlock's own answer after the write may have left is asked again under the key, and ends write_outcome_unknown", async () => {
+    const broke = airlockAfterSend(
+      502,
+      "UPSTREAM_UNREACHABLE",
+      "airlock: dispatch.example: stream error: stream ID 1; INTERNAL_ERROR; received from peer"
+    );
+    const cut = airlockAfterSend(
+      407,
+      "GRANT_NOT_LIVE",
+      "airlock: grant is expired, revoked, or its session ended (answer 7f3a)"
+    );
+    const rows: readonly (readonly [
+      name: string,
+      answer: () => Response | Promise<Response>,
+      code: number,
+      stdout: (out: string) => boolean,
+      askedAgain: boolean,
+    ])[] = [
+      [
+        "a 502 after the write was sent, then stored",
+        () => (posts() <= 1 ? broke() : storedAnswer()),
+        0,
+        (out) => JSON.stringify(JSON.parse(out)) === JSON.stringify(stored),
+        true,
+      ],
+      [
+        "a 502 after the write was sent, for the whole bound",
+        broke,
+        1,
+        (out) => out === `${JSON.stringify({ write_outcome_unknown: "UPSTREAM_UNREACHABLE" })}\n`,
+        true,
+      ],
+      [
+        "a 407 of a grant that ended while Dispatch held the write, then stored",
+        () => (posts() <= 1 ? cut() : storedAnswer()),
+        0,
+        (out) => JSON.stringify(JSON.parse(out)) === JSON.stringify(stored),
+        true,
+      ],
+      [
+        "a 407 of a grant that ended while Dispatch held the write, for the whole bound",
+        cut,
+        1,
+        (out) => out === `${JSON.stringify({ write_outcome_unknown: "GRANT_NOT_LIVE" })}\n`,
+        true,
+      ],
+      [
+        "the same 502 written before anything left the proxy, the control",
+        airlockRefusal(
+          502,
+          "UPSTREAM_UNREACHABLE",
+          "airlock: dispatch.example: dial tcp: connection refused"
+        ),
+        1,
+        (out) =>
+          out ===
+          "UPSTREAM_UNREACHABLE: airlock: dispatch.example: dial tcp: connection refused; nothing was stored\n",
+        false,
+      ],
+    ];
+    const seen: unknown[] = [];
+    for (const [name, answer, wanted, printed, again] of rows) {
+      written.length = 0;
+      dispatchAnswer = answer;
+      const ran = await onFakeClock(record, jobEnvironment(), shortBound(5_000, 1_000), eachWait);
+      let matched = false;
+      try {
+        matched = printed(ran.stdout);
+      } catch {
+        // A row that wants the stored result parses what was printed, which a refusal is not.
+      }
+      seen.push({
+        name,
+        code: ran.code === wanted ? true : ran.code,
+        printed: matched ? true : ran.stdout,
+        askedAgain: posts() > 1 === again ? true : posts(),
+      });
+      namesNoToken(record, ran.stdout, ran.stderr);
+    }
+    expect(seen).toEqual(
+      rows.map(([name]) => ({ name, code: true, printed: true, askedAgain: true }))
+    );
+  }, 30_000);
+
   // A grant the proxy could not read this moment (its 503 GRANT_UNREADABLE) may be readable at the
   // next attempt, so the write asks again under its key, and the result is stored. Turned away so
   // for the whole bound, it ends with the proxy's refusal and no write_outcome_unknown, since no

@@ -1040,9 +1040,12 @@ export class DispatchEmptyPathError extends Error {
 }
 
 /**
- * The header the secrets broker's airlock proxy writes on every answer of its own, `false` on one
- * that reached no service: a refusal it made before it dialled anything. A CI job's result write
- * goes out through that proxy (`airlockCredential`), and such an answer is not Dispatch's.
+ * The header the secrets broker's airlock proxy writes on every answer of its own: `false` on one
+ * it wrote before any byte of the request left it, a refusal or a dial that failed, so the request
+ * reached no service; `unknown` on one it wrote after the request may have reached Dispatch, a
+ * connection that broke after the write was sent or a grant that ended while Dispatch held the
+ * call. A CI job's result write goes out through that proxy (`airlockCredential`), and such an
+ * answer is not Dispatch's. An answer the proxy carried from Dispatch says `true`.
  */
 const AIRLOCK_FORWARDED_HEADER = "Airlock-Forwarded";
 
@@ -1053,9 +1056,12 @@ const AIRLOCK_CODE_HEADER = "Airlock-Code";
  *  attempt may find readable: the one answer of its own a write asks again after. */
 const AIRLOCK_GRANT_UNREADABLE = "GRANT_UNREADABLE";
 
-/** Whether `response` is the airlock proxy's own answer, which reached no service. */
-function airlockAnswer(response: Response): boolean {
-  return response.headers.get(AIRLOCK_FORWARDED_HEADER)?.trim().toLowerCase() === "false";
+/** What the airlock proxy's `Airlock-Forwarded` says of `response`: `false`, its own answer, which
+ *  reached no service; `unknown`, its own answer after the write may have landed; undefined for an
+ *  answer it carried, or one no airlock wrote. */
+function airlockAnswer(response: Response): "false" | "unknown" | undefined {
+  const said = response.headers.get(AIRLOCK_FORWARDED_HEADER)?.trim().toLowerCase();
+  return said === "false" || said === "unknown" ? said : undefined;
 }
 
 /** How Bun words a proxy's refusal of a CONNECT: `Proxy refused to open a tunnel: <status>
@@ -1100,11 +1106,13 @@ function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
 
 /**
  * An answer the airlock proxy gave itself inside a connection that was open (`Airlock-Forwarded:
- * false`): a refusal of the request, or a grant it could not read, before it dialled anything, so
- * the request reached no service and stored nothing. `code` is its `Airlock-Code`, or
- * `HTTP_<status>` where it names none, and `body` its text, each copy of the credential redacted
- * whole. It is no `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and
- * no rule reads it as a write whose outcome is unknown (`writeOutcomeUnknown`).
+ * false`): a refusal of the request, a grant it could not read, or a dial to Dispatch that failed,
+ * each before any byte of the request left it, so the request reached no service and stored
+ * nothing. `code` is its `Airlock-Code`, or `HTTP_<status>` where it names none, and `body` its
+ * text, each copy of the credential redacted whole. It is no `DispatchServiceError`, which a caller
+ * reads as a refusal Dispatch decided, and no rule reads it as a write whose outcome is unknown
+ * (`writeOutcomeUnknown`). The proxy's answer after the write may have left it is
+ * `AirlockOutcomeUnknownError`.
  */
 export class AirlockRefusedError extends Error {
   override readonly name = "AirlockRefusedError";
@@ -1115,6 +1123,28 @@ export class AirlockRefusedError extends Error {
     readonly body: string
   ) {
     super(`the airlock proxy answered ${status} ${code} itself, and sent nothing on: ${body}`);
+  }
+}
+
+/**
+ * An answer the airlock proxy gave itself after the write may have reached Dispatch
+ * (`Airlock-Forwarded: unknown`): its connection to Dispatch broke after the write was sent, or
+ * the write's grant ended while Dispatch held the call. Dispatch may have stored it, so the write
+ * asks again under its key, as after a reset, and ends unsettled (`DispatchWriteUnsettledError`)
+ * when nothing settles it. `code` is its `Airlock-Code`, or `HTTP_<status>` where it names none,
+ * and `body` its text, each copy of the credential redacted whole.
+ */
+class AirlockOutcomeUnknownError extends Error {
+  override readonly name = "AirlockOutcomeUnknownError";
+
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    readonly body: string
+  ) {
+    super(
+      `the airlock proxy answered ${status} ${code} itself after the write may have reached Dispatch: ${body}`
+    );
   }
 }
 
@@ -2847,17 +2877,24 @@ export class DispatchClient {
           sent,
         };
       }
-      if (airlockAnswer(response)) {
-        const failure = new AirlockRefusedError(
-          response.status,
-          response.headers.get(AIRLOCK_CODE_HEADER) ?? `HTTP_${response.status}`,
-          this.#sent
-            .with(this.token)
-            .reduce(
-              (text, token) => (token === "" ? text : text.replaceAll(token, "[redacted]")),
-              await response.text()
-            )
-        );
+      const airlock = airlockAnswer(response);
+      if (airlock !== undefined) {
+        const code = response.headers.get(AIRLOCK_CODE_HEADER) ?? `HTTP_${response.status}`;
+        const body = this.#sent
+          .with(this.token)
+          .reduce(
+            (text, token) => (token === "" ? text : text.replaceAll(token, "[redacted]")),
+            await response.text()
+          );
+        if (airlock === "unknown") {
+          return {
+            event: "reset",
+            failure: new AirlockOutcomeUnknownError(response.status, code, body),
+            presented,
+            sent,
+          };
+        }
+        const failure = new AirlockRefusedError(response.status, code, body);
         return {
           event:
             failure.status === 503 && failure.code === AIRLOCK_GRANT_UNREADABLE

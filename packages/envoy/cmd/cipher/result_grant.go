@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -27,9 +29,9 @@ import (
 // holds the run's results token and the key it is bound to. This process holds neither: the DPoP
 // key it proves the trade with is made here, in memory, never written, and dies with the exec.
 //
-// Nothing runs when the trade is refused, when DISPATCH_URL names a host the grant does not bind -
-// the command's writes would go around the proxy with the placeholder in them - or when the
-// airlock release cannot be prepared. In a GitHub job the placeholder, which is the proxy's
+// Nothing runs when the trade is refused, when DISPATCH_URL names a host the grant does not bind or
+// is not https on port 443 - the command's writes would go around the proxy with the placeholder in
+// them - or when the airlock release cannot be prepared. In a GitHub job the placeholder, which is the proxy's
 // password and which a proxy's error can quote, is masked in the job's log first.
 func cmdResultGrant(args []string, stdout, stderr io.Writer) int {
 	sep := -1
@@ -97,9 +99,19 @@ func cmdResultGrant(args []string, stdout, stderr io.Writer) int {
 	}
 	release := airlockReleaseOf(grant.Release)
 	hosts := release.Names[oauthwire.AirlockResultsName].Hosts
-	if host := dispatchHost(os.Getenv("DISPATCH_URL")); !bindsHost(hosts, host) {
+	dispatchURL := os.Getenv("DISPATCH_URL")
+	host := dispatchHost(dispatchURL)
+	if !proxyrules.HostBound(hosts, host) {
 		fmt.Fprintf(stderr, "agent-secrets result-grant: DISPATCH_URL names %s, which the airlock does not bind (it binds %s), so the command's writes would go around it; nothing was run\n",
 			redact.OneLine(cmp.Or(host, "no host")), strings.Join(hosts, ", "))
+		return 1
+	}
+	if !throughTheProxy(dispatchURL) {
+		// The child's HTTPS_PROXY covers https alone, and the proxy reads a bound host on 443
+		// alone: an http URL would send the placeholder in the clear straight to the host, and
+		// another port would tunnel the write past the proxy's checks.
+		fmt.Fprintf(stderr, "agent-secrets result-grant: DISPATCH_URL names %s, which the airlock binds, but not as https on port 443, the one way the command's writes go through the airlock's proxy; otherwise they would go around it; nothing was run\n",
+			redact.OneLine(host))
 		return 1
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -167,27 +179,21 @@ func airlockReleaseOf(release oauthwire.AirlockRelease) *AirlockRelease {
 	return &AirlockRelease{ProxyURL: release.ProxyURL, CACertificate: release.CACertificate, ProxyPassword: release.ProxyPassword, Names: names}
 }
 
-// dispatchHost is the host DISPATCH_URL names, lower-cased and without its port, and "" for a
-// value that is no URL with a host.
+// dispatchHost is the host DISPATCH_URL names, without its port and ASCII lower-cased as the proxy
+// folds a host (fold.ASCII), and "" for a value that is no URL with a host. Whether the grant binds
+// it is the proxy's own rule, proxyrules.HostBound.
 func dispatchHost(value string) string {
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(parsed.Hostname())
+	return fold.ASCII(parsed.Hostname())
 }
 
-// bindsHost reports whether host is one of the grant's hosts, as the proxy compares a host: a
-// name exactly, or under a "*." entry one label or more below its domain.
-func bindsHost(hosts []string, host string) bool {
-	if host == "" {
-		return false
-	}
-	for _, bound := range hosts {
-		bound = strings.ToLower(bound)
-		if bound == host || (strings.HasPrefix(bound, "*.") && strings.HasSuffix(host, bound[1:])) {
-			return true
-		}
-	}
-	return false
+// throughTheProxy reports whether DISPATCH_URL is an https URL on port 443, written or left to the
+// scheme: the one form of a write to a bound host that the child's HTTPS_PROXY sends to the airlock's
+// proxy and the proxy reads (it decrypts a bound host on 443 alone).
+func throughTheProxy(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && parsed.Scheme == "https" && (parsed.Port() == "" || parsed.Port() == "443")
 }

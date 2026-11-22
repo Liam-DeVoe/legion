@@ -9,6 +9,7 @@
 package oauthwire
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -242,6 +243,32 @@ type CIRun struct {
 	RunnerEnvironment string `json:"runner_environment"`
 	// CheckRunID is the check run of the job the token was minted in.
 	CheckRunID string `json:"check_run_id"`
+}
+
+// ClaimCI is the claim a result entry's token, and the result grant its trade wrote, carry the run
+// under: the JSON object CIRun declares. It is written beside the results scope alone and is absent
+// from every other token, which no run minted.
+const ClaimCI = "ci"
+
+// CIRunOf is the run a stored row carries under ClaimCI, read back through the one declaration it
+// was written with (CIRun), and nil for a row that carries none. The store hands a row's claims
+// back as the JSON object it wrote, so the claim is decoded the way it was encoded rather than
+// read field by field under names spelled a second time. A claim that is no such object is an
+// error: each caller says what that means for it (introspection answers the broker's failure, a
+// proxy line names no check run).
+func CIRunOf(claim any) (*CIRun, error) {
+	if claim == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(claim)
+	if err != nil {
+		return nil, fmt.Errorf("encode the %s claim: %w", ClaimCI, err)
+	}
+	var run CIRun
+	if err := json.Unmarshal(raw, &run); err != nil {
+		return nil, fmt.Errorf("the %s claim is not a run: %w", ClaimCI, err)
+	}
+	return &run, nil
 }
 
 // IsCommit reports whether text is a commit as a run names it: 40 lowercase hex digits.
