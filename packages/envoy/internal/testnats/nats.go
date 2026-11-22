@@ -676,7 +676,10 @@ func left(t testing.TB) time.Duration {
 
 // launch runs a nats-server on the server's configuration and store, and returns once it accepts
 // connections and has logged no fatal error (awaitReady). It runs again at each Start, Restart and
-// member restart, on the same log, so a fatal error an earlier run logged is forgotten first.
+// member restart, on the same log, so a fatal error an earlier run logged is forgotten first. A
+// launch that ends before the server is set on s shuts that server down, however it ends: by its
+// own t.Fatalf, or by awaitReady's give-up, which fails t inside the shared wait. Otherwise the
+// server would go on running while start's cleanup removes its store.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
 	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
@@ -690,23 +693,26 @@ func (s *Server) launch(t testing.TB) {
 	s.log.clearFatal()
 	srv.SetLoggerV2(s.log, opts.Debug, opts.Trace, false)
 	go srv.Start()
+	launched := false
+	defer func() {
+		if !launched {
+			srv.Shutdown()
+			srv.WaitForShutdown()
+		}
+	}()
 	if err := awaitReady(t, srv, s.log); err != nil {
-		// The log as the wait left it, before a shutdown that has no bound of its own.
-		log := s.log.String()
-		srv.Shutdown()
-		srv.WaitForShutdown()
-		t.Fatalf("NATS did not accept connections: %v: %s", err, log)
+		// The log as the wait left it, before the shutdown, which has no bound of its own.
+		t.Fatalf("NATS did not accept connections: %v: %s", err, s.log.String())
 	}
 	// Before s.srv is set the relay refuses every connection, so no client request reaches the
 	// server before its system account's response timers are set past any test (responseThreshold).
 	if err := outliveResponseTimers(srv); err != nil {
-		srv.Shutdown()
-		srv.WaitForShutdown()
 		t.Fatalf("keep the NATS server's response timers from firing during the test: %v", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.srv = srv
+	launched = true
 	s.jetStream = opts.JetStream
 	if addr := srv.MonitorAddr(); addr != nil {
 		s.monitor = "http://" + addr.String()
@@ -728,8 +734,8 @@ type readiness interface {
 // (ReadyForConnections), asked through the shared wait, whose one bound is the test binary's
 // deadline and whose last reading is the server's log. A server that logged a fatal error, a
 // listener it could not open among them, fails its start at once, whether or not its client
-// listener came up: awaitReady answers that as its error, so the caller shuts the server down
-// before it fails the test.
+// listener came up: awaitReady answers that as its error, and the caller fails the test with it.
+// The wait's give-up and that failure each end launch, which shuts the server down as it ends.
 func awaitReady(t testing.TB, srv readiness, log *logCapture) error {
 	t.Helper()
 	fatal := false

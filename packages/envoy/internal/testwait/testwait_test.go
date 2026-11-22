@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -311,7 +312,10 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 }
 
 // Under -timeout 0 there is no deadline: a wait has no moment to give up at and no timer, in a
-// test or in TestMain, and Context has no deadline.
+// test or in TestMain, and Context has no deadline. So a wait that is not answered at once keeps
+// asking rather than giving up at a false reading or an empty channel: Until returns the third
+// reading after three asks, Eventually and InMain hold at their third question, and Receive takes
+// a value sent once it waits.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -376,8 +380,15 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 	})
 }
 
-// TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0. It
-// runs only when the parent re-executes this binary.
+// TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0. Beside
+// the moments and the timer a wait would give up on, which it reads, each wait runs as a subtest of
+// its own, so one that gives up hides none of the others: Until reads false twice and true the
+// third time, Eventually and InMain are answered true at their third question, and Receive's value
+// is sent only once Receive waits on an empty channel. A wait that gave up on a false reading or on
+// the empty channel fails its subtest. Receive runs in a synctest bubble, where the sender's
+// synctest.Wait returns only once the test goroutine is durably blocked in Receive, so no span of
+// time decides that the value comes after the wait began; Receive reads the deadline of the test
+// that started the bubble (bubbled). It runs only when the parent re-executes this binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
@@ -399,10 +410,53 @@ func TestNoDeadlineChild(t *testing.T) {
 	if deadline, ok := Context(t).Deadline(); ok {
 		t.Errorf("under -timeout 0 Context has the deadline %v, want none", deadline)
 	}
+	t.Run("until", func(t *testing.T) {
+		asks := 0
+		if got := Until(t, "the third reading", func() (int, bool) { asks++; return asks, asks == 3 }); got != 3 || asks != 3 {
+			t.Errorf("under -timeout 0 Until returned %d after %d readings, want the third reading after 3", got, asks)
+		}
+	})
+	t.Run("eventually", func(t *testing.T) {
+		asks := 0
+		Eventually(t, "a condition that holds at its third question", func() bool { asks++; return asks == 3 })
+		if asks != 3 {
+			t.Errorf("under -timeout 0 Eventually returned after %d questions, want 3", asks)
+		}
+	})
+	t.Run("in main", func(t *testing.T) {
+		asks := 0
+		if err := InMain("a condition that holds at its third question", func() bool { asks++; return asks == 3 }); err != nil || asks != 3 {
+			t.Errorf("under -timeout 0 InMain returned %v after %d questions, want nil after 3", err, asks)
+		}
+	})
+	t.Run("receive", func(t *testing.T) {
+		outer := t
+		synctest.Test(t, func(t *testing.T) {
+			sent := make(chan string, 1)
+			go func() {
+				synctest.Wait()
+				sent <- "the value sent once the wait began"
+			}()
+			if got := Receive(bubbled{T: t, outer: outer}, "a value sent once the wait began", sent); got != "the value sent once the wait began" {
+				t.Errorf("under -timeout 0 Receive returned %q, want the value sent once it waited", got)
+			}
+		})
+	})
 }
 
 // noDeadline is a testing.TB with no Deadline method, as a benchmark's is.
 type noDeadline struct{ testing.TB }
+
+// bubbled is the *testing.T synctest.Test hands its function, whose Deadline panics there (a
+// deadline on the real clock means nothing on the bubble's fake one), with the Deadline of outer,
+// the test that started the bubble. TestNoDeadlineChild runs under -timeout 0, where that names
+// no deadline, so the bubble's clock decides nothing.
+type bubbled struct {
+	*testing.T
+	outer *testing.T
+}
+
+func (b bubbled) Deadline() (time.Time, bool) { return b.outer.Deadline() }
 
 // failing is a testing.TB whose Fatalf keeps its text and ends the goroutine, as testing's does,
 // so a test reads a failure the function under test raised without failing itself.
