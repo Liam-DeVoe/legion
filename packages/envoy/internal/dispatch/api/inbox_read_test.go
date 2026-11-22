@@ -104,11 +104,34 @@ type inboxReadSeed struct {
 // message reaches it and its reply comes back.
 func seedInboxRead(t *testing.T) inboxReadSeed {
 	t.Helper()
+	return seedInboxReadOn(t, testServerOptions{})
+}
+
+// heldInboxStatementBound is the dismissal's statement_timeout on a seedHeldInboxRead server: an
+// hour, past any run of the package, so the test binary's deadline is the one bound a dismissal a
+// row holds behind its lock has.
+const heldInboxStatementBound = time.Hour
+
+// seedHeldInboxRead is seedInboxRead on a server whose mark-all and dismissal statements are
+// bounded by heldInboxStatementBound rather than inboxReadStatementTimeout's ten seconds. A row
+// that holds a dismissal behind a lock of its own takes its steps - a write, a reply reaching its
+// queue - while Postgres counts that bound from the moment the dismissal queued, so on the real
+// bound a loaded machine that took ten seconds over them answered a correct run 500.
+func seedHeldInboxRead(t *testing.T) inboxReadSeed {
+	t.Helper()
+	return seedInboxReadOn(t, testServerOptions{inboxStatementBound: heldInboxStatementBound})
+}
+
+// seedInboxReadOn is seedInboxRead on a server built from options, with the live session's
+// listener set on them.
+func seedInboxReadOn(t *testing.T, options testServerOptions) inboxReadSeed {
+	t.Helper()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	t.Cleanup(listener.Close)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	options.envoyURL = listener.URL
+	handler, database, _ := newTestServer(t, options)
 	seed := inboxReadSeed{handler: handler, database: database}
 
 	first := createInteractionIssue(t, handler, "TEST", "Mark all", "A spec")

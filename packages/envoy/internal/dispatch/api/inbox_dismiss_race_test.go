@@ -287,6 +287,11 @@ func dismissChangedNothingAndLeftTheThread(
 // reply each row then writes lands somewhere the gate does not reach - another issue's thread, or
 // an Agent thread, which has no owner row at all - so it commits while the dismiss waits.
 //
+// Postgres bounds the queued dismiss by its statement_timeout from the moment it queues, while the
+// row takes its steps, so every row that holds a dismiss builds its server with a bound past any
+// run (seedHeldInboxRead): on the real ten seconds a loaded machine slow over those steps answered
+// a correct run 500.
+//
 // The Agent row dismisses a Reply thread beside its root for that gate alone: an agent-only
 // request locks no owner, and the one row it would queue on, its own dismissal, is the row it is
 // about to write.
@@ -362,7 +367,7 @@ func TestDismissLeavesAThreadRepliedToWhileItRan(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			seed := seedInboxRead(t)
+			seed := seedHeldInboxRead(t)
 			database := seed.database
 			// The body is built here rather than in the goroutine below: it reads what the page
 			// drew out of the database, and a helper that fails does it on the test's own
@@ -418,7 +423,7 @@ func holdSessionReply(t *testing.T, database *store.Store, parent string) gateHo
 // two deep, under the reply already in the thread, where a follow-up lands: its own foreign key
 // then holds its parent and not the root, so the only lock on the root is the trigger's.
 func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
 		inboxDismissReplyPrefix + seed.document, inboxDismissAgentPrefix + seed.agent,
@@ -450,7 +455,7 @@ func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
 // compares them with nothing): the thread comes back, unread, and the count the dismiss answered
 // says the mark it deleted was really written.
 func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
 		inboxDismissReplyPrefix + seed.document, inboxDismissAgentPrefix + seed.agent,
@@ -461,9 +466,8 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	replied := make(chan *httptest.ResponseRecorder, 1)
 	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	// The reply's queue is waited for until the binary's deadline. A reply that never queues still
-	// fails the row, by this wait's name or by the dismiss's own statement_timeout (ten seconds at
-	// the gate), which answers 500.
+	// The reply's queue is waited for until the binary's deadline, the one bound the held dismiss
+	// has too (seedHeldInboxRead), so a reply that never queues fails the row by this wait's name.
 	storetest.WaitForLockWaiters(t, held.tx, 2)
 	held.release()
 
@@ -497,7 +501,7 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 // and the trigger that ran inside the reply's transaction found no mark to delete: a thread
 // dismissed with a reply nobody has read.
 func TestDismissLeavesAnAgentThreadWhoseOlderReplyCommitsAtItsRoot(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{inboxDismissAgentPrefix + seed.agent})
 	// The writer begins and writes before the dismiss is sent, which is what stamps its reply
@@ -527,7 +531,7 @@ func TestDismissLeavesAnAgentThreadWhoseOlderReplyCommitsAtItsRoot(t *testing.T)
 // With the trigger's old comparison back - delete only a mark older than the reply - the mark
 // outlives a reply nobody has read, and nothing afterwards would remove it.
 func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
 		inboxDismissReplyPrefix + seed.document, inboxDismissAgentPrefix + seed.agent,
@@ -541,9 +545,8 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	written := writeAgentReplyBehind(replying.tx, seed.agentReply, "session", "s1", stamp)
-	// The reply's queue is waited for until the binary's deadline. A reply that never queues still
-	// fails the row, by this wait's name or by the dismiss's own statement_timeout (ten seconds at
-	// the gate), which answers 500.
+	// The reply's queue is waited for until the binary's deadline, the one bound the held dismiss
+	// has too (seedHeldInboxRead), so a reply that never queues fails the row by this wait's name.
 	storetest.WaitForLockWaiters(t, held.tx, 2)
 	held.release()
 
@@ -572,7 +575,7 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 // With the version check gone nothing is left between the update and the row: it writes the mark
 // over a comment nobody has read.
 func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
 		inboxDismissReplyPrefix + seed.document, inboxDismissReplyPrefix + seed.first,
@@ -604,7 +607,7 @@ func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *test
 // before the dismiss was sent, so its write is one the page cannot have drawn however the two
 // times fall, and the version the trigger moved under this row lock is what refuses the press.
 func TestDismissSkipsAReplyThreadWhoseTriggerHoldsTheRowItWrites(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
 		inboxDismissReplyPrefix + seed.document, inboxDismissReplyPrefix + seed.first,
@@ -636,7 +639,7 @@ func TestDismissSkipsAReplyThreadWhoseTriggerHoldsTheRowItWrites(t *testing.T) {
 // With the drawn-unread test gone the equality passes alone and the mark is written over A; with
 // the check gone altogether nothing refuses the press at all.
 func TestDismissLeavesAnAgentThreadWhoseInterleavedRepliesInvertTheirStamps(t *testing.T) {
-	seed := seedInboxRead(t)
+	seed := seedHeldInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// A: begun first, written at its own transaction's stamp, left open.
 	replying := beginGateHold(t, database, "the reply this test holds")
