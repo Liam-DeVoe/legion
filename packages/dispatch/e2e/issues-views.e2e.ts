@@ -1912,3 +1912,233 @@ test("on a phone Select and Key are pinned, Title follows them to the table's ri
     await daemon.close();
   }
 });
+
+// R2 and R5, found by INFRA-3221's tester: a saved view whose filter reads the board counts its
+// rows from the board, so while the board's first snapshot has not answered its tab gives no
+// count, or the count the board gives - never a count of rows the board has not placed yet.
+// SLOW(>=2s): ACME seeded, three views saved, and the Issues tab opened again with the board's
+// first snapshot held.
+test("a saved view's tab gives no count that the board read it needs has not answered", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const saved = [
+      ["Queue", "f.queue=Queued"],
+      ["Impl", "f.legion_phase=implementing"],
+      ["NoPhase", "f.legion_phase=none"],
+    ] as const;
+    for (const [name, address] of saved) {
+      await page.goto(`/projects/${ACME}/issues?${address}`);
+      await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
+      await saveView(page, name);
+    }
+    // Each view's rows, from the routes: the open listing and the board's cards.
+    const cards = cardsOf(await getLegionBoard(ACME));
+    const open = await listIssuesWhere({ project: ACME, open: true });
+    const listed = (keep: (key: string) => boolean) =>
+      open.filter((issue) => keep(issue.key)).length;
+    const counts: Record<(typeof saved)[number][0], number> = {
+      Queue: listed((key) => {
+        const placed = cards.get(key);
+        return placed?.column === "queue" || (placed?.card.waiting_place ?? null) !== null;
+      }),
+      Impl: listed((key) => cards.get(key)?.column === "implementing"),
+      NoPhase: listed((key) => !cards.has(key)),
+    };
+    const tab = (on: Page, name: string) =>
+      on
+        .getByRole("tablist", { name: "Views" })
+        .getByRole("tab", { name: new RegExp(`^${name}\\b`) });
+    await page.getByRole("tab", { name: /^Open/ }).click();
+    for (const [name] of saved)
+      await expect(tab(page, name)).toHaveAttribute("aria-label", tabName(name, counts[name]));
+
+    const held = await context.newPage();
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    await routeLive(held, { first: () => gate });
+    await held.goto(`/projects/${ACME}/issues`);
+    await expect(held.locator("[data-issue-row]").first()).toBeVisible();
+    for (const [name] of saved)
+      expect(
+        [name, tabName(name, counts[name])],
+        `the ${name} tab while the board's first snapshot is held`
+      ).toContain(await tab(held, name).getAttribute("aria-label"));
+    release();
+    for (const [name] of saved)
+      await expect(tab(held, name)).toHaveAttribute("aria-label", tabName(name, counts[name]));
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R2, found by INFRA-3221's tester: an address with no `view` is Open, however the reader reached
+// it. The project's own link in the page's header leaves the Issues tab drawn, so the saved view
+// open before it must not stay the open tab over Open's rows.
+// SLOW(>=2s): ACME seeded, a view saved, and the header's link followed from it.
+test("the project's link in the header opens Open, unchanged, from an open saved view", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto(`/projects/${ACME}/issues?status=todo`);
+    await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+    await saveView(page, "Todo");
+    await page.goto(`/projects/${ACME}/issues`);
+    await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+    await page.getByRole("tab", { name: /^Todo/ }).click();
+    await expect(page.getByRole("tab", { name: /^Todo/ })).toHaveAttribute("aria-selected", "true");
+
+    await page.getByRole("link", { exact: true, name: ACME }).click();
+    await expect.poll(() => new URL(page.url()).search).toBe("");
+    const open = await listIssuesWhere({ project: ACME, open: true });
+    const openTab = page.getByRole("tab", { name: /^Open/ });
+    await expect(openTab).toHaveAttribute("aria-selected", "true");
+    await expect(openTab).toHaveAttribute("aria-label", tabName("Open", open.length));
+    await expect(page.getByRole("button", { exact: true, name: "Clear filters" })).toBeHidden();
+    await expect(page.getByRole("button", { exact: true, name: "Save view" })).toBeHidden();
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R2, found by INFRA-3221's tester: every tab but the open one counts its own view, so a saved
+// view that leaves a tree out (`exclude_tree`, which an Evals link writes) gives the same count
+// from Open's tab as it does open.
+// SLOW(>=2s): ACME seeded, a child added, and a view that leaves its tree out saved and counted.
+test("a saved view that leaves a tree out counts from another tab the rows it lists open", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const child = await createIssue({
+      project: ACME,
+      title: "A child of ACME-1",
+      parent: "ACME-1",
+    });
+    await patchIssue(child.key, { status: "todo" });
+    const page = await context.newPage();
+    const table = issuesTable(page);
+    await page.goto(`/projects/${ACME}/issues?exclude_tree=ACME-1`);
+    await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+    await expect.poll(async () => (await rowKeys(table)).includes("ACME-1")).toBe(false);
+    await saveView(page, "NoTree");
+    const shown = (await rowKeys(table)).length;
+    await expect(page.getByRole("tab", { name: /^NoTree/ })).toHaveAttribute(
+      "aria-label",
+      tabName("NoTree", shown)
+    );
+    await page.getByRole("tab", { name: /^Open/ }).click();
+    await expect(page.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: /^NoTree/ })).toHaveAttribute(
+      "aria-label",
+      tabName("NoTree", shown)
+    );
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R2, found by INFRA-3221's tester: a saved view that lists closed issues shows a count only while
+// it is the open tab, and a pick in another case is the same pick (R14), so `status=Done` lists
+// closed issues as `status=done` does and gives no count from Open's tab.
+// SLOW(>=2s): ACME seeded, and a view of `status=Done` saved and read from Open's tab.
+test("a saved view of status=Done gives no count from Open's tab, as one of status=done does", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const done = await listIssuesWhere({ project: ACME, status: ["done"] });
+    const page = await context.newPage();
+    await page.goto(`/projects/${ACME}/issues?status=Done`);
+    await expect.poll(async () => (await rowKeys(issuesTable(page))).length).toBe(done.length);
+    await saveView(page, "Shipped");
+    await page.getByRole("tab", { name: /^Open/ }).click();
+    await expect(page.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: /^Shipped/ })).toHaveAttribute(
+      "aria-label",
+      tabName("Shipped")
+    );
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R2, found by INFRA-3221's tester: the Done tab shows its count once that view has been opened
+// in the page, in either layout, so a Done kept on its Board keeps its count on Open's tab too.
+// SLOW(>=2s): ACME seeded, Done switched to its Board, and the page loaded again on Open.
+test("Done opened on its Board keeps its count on the tab when the reader goes back to Open", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const done = await listIssuesWhere({ project: ACME, status: ["done"] });
+    const page = await context.newPage();
+    await page.goto(`/projects/${ACME}/issues?view=done`);
+    await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+    await page.getByRole("button", { exact: true, name: "Board" }).click();
+    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+    await page.goto(`/projects/${ACME}/issues`);
+    await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+    await page.getByRole("tab", { name: /^Done/ }).click();
+    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /^Done/ })).toHaveAttribute(
+      "aria-label",
+      tabName("Done", done.length)
+    );
+    await page.getByRole("tab", { name: /^Open/ }).click();
+    await expect(page.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: /^Done/ })).toHaveAttribute(
+      "aria-label",
+      tabName("Done", done.length)
+    );
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// R4 and the Design's columns, found by INFRA-3221's tester: a measure header's tooltip closes on
+// Escape, so one Escape closes it while a filter's panel is open too, as it closes the panel.
+// SLOW(>=2s): ACME seeded, a filter panel opened and a measure header's tooltip shown over it.
+test("one Escape closes a measure header's tooltip shown while a filter's panel is open", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/projects/${ACME}/issues?cols=key,title,status,work_hours,priority`);
+    await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+    await page
+      .getByRole("button", { name: /^Filter Status/ })
+      .first()
+      .click();
+    await expect(page.getByRole("listbox", { name: "Status options" })).toBeVisible();
+    await issuesTable(page)
+      .locator("thead")
+      .getByRole("button", { name: /^Work time/ })
+      .first()
+      .hover();
+    await expect(page.getByRole("tooltip")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("listbox", { name: "Status options" })).toBeHidden();
+    await expect(page.getByRole("tooltip")).toBeHidden();
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
