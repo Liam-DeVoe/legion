@@ -1142,6 +1142,52 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	}
 }
 
+// A tree's new generation raises its root's generation alone (the re-admission), so a member keeps
+// its generation, its plan and its task's place, and the clear leaves its rows on the steps they
+// ran. Here the member is held at step 2 of `implementer:a tester:a reviewer`: its tester row names
+// key a's agent, `…-implementer`, on step 2, and after the clear it still does, so the claim of the
+// tester's worker is key a's (WorkerClaim) and a retry of the step sends key a its work. Only the
+// reports go, with the rest of the generation. The root beside it clears its step as before.
+// Before, the clear cleared the member's step too, so the tester's worker read as the tester's own
+// token, a fresh agent, while the step was key a's.
+func TestATreesNewGenerationKeepsTheStepOfAMemberWhoseGenerationStands(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-296")
+	member := issueFixture("LEGION-297")
+	member.Tree = root.Key
+	const keyA claim.Token = "legion-legion-legion-297-implementer"
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, records.PutIssue(ctx, tx, member))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: root.Key, Role: claim.RoleTester, Claim: "legion-legion-legion-296-implementer",
+			StepTask: "a", StepPlace: 2, HandoffRecord: "test-1", Entry: 2}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: keyA,
+			StepTask: "a", StepPlace: 2, HandoffRecord: "test-1", Entry: 2}))
+		must(t, records.ClearTreeGeneration(ctx, tx, root.Tree, time.Now().UTC()))
+	})
+	rowsOf := func(issue string) []PhaseRow {
+		var rows []PhaseRow
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			rows, err = records.Phases(ctx, tx, issue)
+			must(t, err)
+		})
+		return rows
+	}
+	rows := rowsOf(member.Key)
+	if row := PhaseRowOf(rows, claim.RoleTester); row.StepTask != "a" || row.StepPlace != 2 || row.Claim != keyA || row.Entry != 2 || row.HandoffRecord != "" {
+		t.Fatalf("the member's tester row after its tree's new generation = %+v, want it on step 2 of task a naming %s at entry 2, its report gone", row, keyA)
+	}
+	if worker, err := WorkerClaim("legion", member.Key, claim.RoleTester, rows); err != nil || worker != keyA {
+		t.Fatalf("the member's tester after its tree's new generation is %q, %v; want step 2's agent, key a %q", worker, err, keyA)
+	}
+	if row := PhaseRowOf(rowsOf(root.Key), claim.RoleTester); row.StepTask != "" || row.StepPlace != 0 || row.Entry != 2 {
+		t.Fatalf("the root's tester row after its new generation = %+v, want it on no step at entry 2", row)
+	}
+}
+
 func TestMarkProcessedIsIdempotent(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
