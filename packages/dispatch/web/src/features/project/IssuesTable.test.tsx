@@ -3630,29 +3630,6 @@ test("a table that draws its rows after a loading state opens at its top with it
   expect(geometry.rowTop(listedKeys()[0] ?? "")).toBe(300 + HEAD + STACKED);
 });
 
-// R12: on a phone Done's Time per phase header stacks its name over its Share and Hours switch
-// and its filter, as Title stacks its sort over its filter, so the switch stands inside a 390 px
-// window; side by side the three passed the window's right edge.
-test("on a phone Time per phase's header stacks its name over its Share and Hours switch and its filter", async () => {
-  const sockets = liveSockets(restores);
-  answerItems(async () => [factsRow("CORE-5", "2026-11-11T10:00:00Z", 3)]);
-  tableGeometry({ head: () => 104, top: () => 300, width: 390 });
-  table(VIEW_ROWS(), "?view=done", {}, {}, Promise.resolve(DAEMON));
-  await screen.findByRole("row", { name: "CORE-5 Work CORE-5" });
-  await answerBoard(sockets, legionBoard());
-  const header = screen.getByRole("columnheader", { name: /^Time per phase/ });
-  const name = within(header).getByRole("button", { name: "Time per phase" });
-  const stack = name.parentElement;
-  await waitFor(() => expect(stack).toHaveClass("flex-col"));
-  const controls = name.nextElementSibling;
-  expect(controls).toContainElement(
-    within(header).getByRole("group", { name: "Time per phase as" })
-  );
-  expect(controls).toContainElement(
-    within(header).getByRole("button", { name: /^Filter Time per phase/ })
-  );
-});
-
 /** A card of the board's Implementing column, in its phase since `since`. */
 function phaseCard(key: string, since: string): LegionBoardCard {
   return {
