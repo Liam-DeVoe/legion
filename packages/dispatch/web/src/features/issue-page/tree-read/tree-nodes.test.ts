@@ -394,17 +394,21 @@ test("a typed block's row and its chip draw the block's own content, not its kin
   expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
 });
 
-// Every re-read of the tree builds the drafts again, from an answer whose unchanged objects the
-// cache keeps. A row handed a new reading or a new source draws its words again, and a link
-// focused in them loses the focus, so drawing the same answer twice hands a typed block's row the
-// same cut reading and the same source, and a comment's row the same source.
-test("drawing the same answer twice hands a row the same reading and the same source", () => {
-  const tree = answer([
+/** A typed block of the spec and a person's comment under it, each a new object at each call. */
+const records = () =>
+  answer([
     block("r1", "requirement", KEY, SPEC, 0, {
       text_tree: typedReading("requirement", { blockId: "r1" }, "The first statement."),
     }),
     personsComment("c1", "r1", "2026-11-05T09:00:00Z"),
   ]);
+
+// Every re-read of the tree builds the drafts again, from an answer whose unchanged objects the
+// cache keeps. A row handed a new reading or a new source draws its words again, and a link
+// focused in them loses the focus, so drawing the same answer twice hands a typed block's row the
+// same cut reading and the same source, and a comment's row the same source.
+test("drawing the same answer twice hands a row the same reading and the same source", () => {
+  const tree = records();
   const builds = [drawn(tree).drafts, drawn(tree).drafts];
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
@@ -415,6 +419,48 @@ test("drawing the same answer twice hands a row the same reading and the same so
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
   expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
   expect(turnAgain?.source).toBe(turn?.source);
+});
+
+// A row's source is kept by the object the row draws - the reading of its words - so a re-read
+// whose node changed beside its words, as one whose parent was reworded changes its
+// `parent.first_line`, and whose reading the cache keeps, hands the row the source it handed it
+// before, and its words are not drawn again.
+test("a node whose reading stays the same object keeps its source when another of its fields changes", () => {
+  const before = records();
+  const after: TreeAnswer = {
+    ...before,
+    nodes: (before.nodes ?? []).map((one) =>
+      one.parent === null ? one : { ...one, parent: { ...one.parent, first_line: "Reworded." } }
+    ),
+  };
+  const builds = [drawn(before).drafts, drawn(after).drafts];
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source, "a node changed beside its words is handed a new source").toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source, "a comment changed beside its words is handed a new source").toBe(
+    turn?.source
+  );
+});
+
+// A row's source lives as long as the object it was kept by, so nothing holds a source for every
+// record the session ever drew: an answer holding a new record of an id, with a new reading, as a
+// re-read whose record changed does, hands its row a source of its own, never the one made for
+// the record before.
+test("a new record of an id is handed a new source, not the one made for the record before", () => {
+  // Each build draws an answer of its own: the same records, each a new object.
+  const builds = Array.from({ length: 2 }, () => drawn(records()).drafts);
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source, "a new block is handed the old block's source").not.toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source, "a new comment is handed the old comment's source").not.toBe(
+    turn?.source
+  );
 });
 
 // A node's `author` lists every author of its first version, whoever made it first ahead of the

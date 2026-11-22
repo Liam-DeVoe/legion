@@ -38,7 +38,7 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *  and the run's four workers split its rows there, so a final row would sit in one process and
  *  judge entries whose routes another process ran. `afterAll` runs once in each worker, after
  *  the rows that worker ran, which is exactly the set it can judge - and judging only the routes
- *  this process scanned is what keeps a shard that ran none of an entry's route from failing
+ *  this process scanned is what keeps a worker that ran none of an entry's route from failing
  *  for it. */
 const scannedHere = new Set<string>();
 const matchedHere = new Set<string>();

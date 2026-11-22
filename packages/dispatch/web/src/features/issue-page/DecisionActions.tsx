@@ -127,10 +127,10 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * Both writes are the ones that tab made: Keep is `POST /artifacts/{id}/blocks/{block}/keep`
  * against the decision node's own document and block, carrying the sum of the text this node
  * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
- * comment anchored to the decision's own block and the words of its first block, its `heading`
- * (`decisionQuote`). The decision is the node of the tree read the page already holds
- * (`issueTreeKey`), found by its address among that answer's decisions (`decisionsOfAnswer`), so
- * the node makes no read of its own to draw its controls.
+ * comment anchored to the decision's own block and the words of its first paragraph, its
+ * `heading` (`decision-nodes.ts`). The decision is the node of the tree read the page already
+ * holds (`issueTreeKey`), found by its address among that answer's decisions
+ * (`decisionsOfAnswer`), so the node makes no read of its own to draw its controls.
  */
 export function DecisionActions({
   document,
@@ -198,8 +198,9 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
-  // A Change quotes the decision's heading, the words of its first block (`decisionQuote`): a
-  // decision that holds no such words, whose heading is empty, has none to anchor a Change to.
+  // A Change quotes the decision's heading, the words of its first paragraph
+  // (`decision-nodes.ts`): a decision whose first paragraph holds no words, whose heading is
+  // empty, has none to anchor a Change to.
   const quotable = decision.heading !== "";
   const keep = useKeyedWrite({
     inline: true,

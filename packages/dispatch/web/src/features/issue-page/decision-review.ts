@@ -32,8 +32,8 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * and the decision waits for review again.
  *
  * A Change is written as a comment anchored to the decision's own words (`DecisionActions.tsx`):
- * the decision node's document, and the words of its first paragraph (`decision-nodes.ts`'
- * `decisionQuote`).
+ * the decision node's document, and its `heading`, the words of its first paragraph
+ * (`decision-nodes.ts`).
  */
 
 /** The fields of a Change the Decisions filter reads (`decisionsParts`). */

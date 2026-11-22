@@ -138,7 +138,7 @@ export function decisionsOfAnswer(
  * So a decision's quote is the words of its text either way, never its markdown. Undefined for a
  * decision that holds no paragraph.
  */
-export function decisionQuote(decision: {
+function decisionQuote(decision: {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }): string | undefined {

@@ -66,21 +66,22 @@ import {
  * failed (`failures`), and asks one of them again (`retry`). The decisions' reads are the tree
  * read and the decisions view: they stand refused where the tree read stands failed, or where it
  * is still out and the decisions view stands failed, and their Retry reads again each of the two
- * that stands failed, or the tree read where neither does. The asks read is the other: a
- * person's decision is a question they answered, and the open questions are the issue's open
- * asks, which only the asks read says. A read stands refused by the page's one rule for a failed
- * read (`standsFailed`): it holds no answer, and a fetch of it failed since it last held one. Its
- * status is not the rule: TanStack Query sets a read that holds no answer back to pending, its
- * error cleared, the moment it runs again, and the read stays refused until it answers. The body
- * draws a line with a Retry for each refused read, in place of the entries that read would give;
- * while the read runs again the line stays, with the focus its Retry holds, the Retry reads busy,
- * and a Retry pressed then asks nothing more. The line says the read's failure again only for a
- * new one: a run that ends with none, cancelled or paused while the browser is offline, leaves
- * the count as it was, and with it the line's alert. How a read stands and how it is asked again
- * belong to the read, and only this module names one, so they are read here and the body knows
- * a read only by the word its line is drawn for. A read whose refetch fails over an answer it
- * already holds keeps that answer, which the view still draws from, so it is not among the
- * refused.
+ * that stands failed, or the tree read where neither does. The asks read is the other: the open
+ * questions are the issue's open asks, which only the asks read says, and it says which answered
+ * question is a person's decision only where the read carries no decision on the ask, whose
+ * `links` decide it otherwise (`decisionNodes`). A read stands refused by the page's one rule
+ * for a failed read (`standsFailed`): it holds no answer, and a fetch of it failed since it last
+ * held one. Its status is not the rule: TanStack Query sets a read that holds no answer back to
+ * pending, its error cleared, the moment it runs again, and the read stays refused until it
+ * answers. The body draws a line with a Retry for each refused read, in place of the entries that
+ * read would give; while the read runs again the line stays, with the focus its Retry holds, the
+ * Retry reads busy, and a Retry pressed then asks nothing more. The line says the read's failure
+ * again only for a new one: a run that ends with none, cancelled or paused while the browser is
+ * offline, leaves the count as it was, and with it the line's alert. How a read stands and how it
+ * is asked again belong to the read, and only this module names one, so they are read here and
+ * the body knows a read only by the word its line is drawn for. A read whose refetch fails over
+ * an answer it already holds keeps that answer, which the view still draws from, so it is not
+ * among the refused.
  *
  * The seam says too which decisions are a person's write-up of an answered question
  * (`writeUps`) - a person's decision node that settles an answered ask of this issue (`asks`),
@@ -159,8 +160,9 @@ export function useDecisionsEntries({
   // The decisions view read, watched the same way for how it stands: the page reads it
   // (`ViewReadProvider`) and holds its answer on the issue's node (`TreeNode.views`).
   const viewRead = useQuery(treeRead(viewQuery(issue.key, "decisions")));
-  // The issue's asks, which say which answered question is a person's decision
-  // (`decisionNodes`), watched the same way: the page's tree reads them under this key.
+  // The issue's asks, watched the same way: the page's tree reads them under this key. The
+  // decision the read carries on an answered ask, by its `links`, makes it a person's decision;
+  // the asks read is only the fallback where the read carries none (`decisionNodes`).
   const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
   const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer.

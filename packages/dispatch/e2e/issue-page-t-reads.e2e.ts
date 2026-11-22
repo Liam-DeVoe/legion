@@ -1,6 +1,5 @@
 import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { wordsOf } from "../web/src/features/refs/tree-fragment";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, openDetails, phase, presetCount } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
@@ -26,6 +25,7 @@ import {
   drawnNodes,
   headerStatus,
   heldAnswer,
+  linksTo,
   owedUnless,
   partUGate,
   R2_COUNTED_KINDS,
@@ -223,8 +223,13 @@ test("each filter draws its view read's rows", async ({ browser }) => {
 // (`decisionsViewServedGate`) and the page draws the decisions from the tree read's nodes, once
 // decisions are nodes of the tree read on this branch's base (`partUGate`, over
 // `heldDecisionsRead`'s decisions read: the load sends none, so where the page received none it
-// is the Decisions view the row reads itself): each decision whose `shaped` tie names a statement
-// under Spec is a line on that statement's row, never a row of its own.
+// is the Decisions view the row reads itself): each decision, not replaced, whose `shaped` tie
+// names a statement under Spec is named on that statement's line (`[data-spec-because]` in its
+// row), never a row of its own, and the page links each decision it names there to its block
+// (`spec-decided-by.ts`). So a decision is on the line where the line holds a link that
+// `linksTo` reads as the decision's row id (`idOf`, as the row has it). A decision the model
+// marks replaced (its node's `decision.replaced`) draws no line at all (root R5), so the row
+// counts none.
 // SLOW(>=2s): two seeded issues, each load waited out, and Spec pressed and read until it holds
 // still.
 test("each filter draws its view read's rows, and each decision that shaped a statement is a line on its row @owed", async ({
@@ -256,32 +261,39 @@ test("each filter draws its view read's rows, and each decision that shaped a st
         const decision = nodes.get(tuple.from.id);
         const statement = idOf(tuple.to.id);
         if (tuple.kind !== "shaped" || decision?.supertag !== "decision") return [];
+        if (decision.decision?.replaced === true) return [];
         if (!statements.has(statement)) return [];
-        const words = (
-          decision.text_tree === undefined ? decision.text : wordsOf(decision.text_tree)
-        )
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 40)
-          .trim();
-        return words === "" ? [] : [{ statement, words }];
+        return [{ row: idOf(tuple.from.id), statement }];
       });
       expect(
         lines.length,
-        "the Spec view read holds a decision that shaped a statement the Spec filter draws"
+        "the Spec view read holds a decision, not replaced, that shaped a statement the Spec " +
+          "filter draws"
       ).toBeGreaterThan(0);
       const missing: string[] = [];
-      for (const { statement, words } of lines) {
+      for (const { row, statement } of lines) {
         // The Spec rows held still across two readings in `pressFilter` above, with the page
-        // quiet, so one reading of a drawn row's text is the line that row settled on.
-        const text = ((await nodeRow(page, statement).first().textContent()) ?? "")
-          .replace(/\s+/g, " ")
-          .trim();
-        if (!text.includes(words)) missing.push(`${statement} draws no line "${words}"`);
+        // quiet, so one reading of a drawn row's line is the line that row settled on.
+        const [links] = await nodeRow(page, statement)
+          .first()
+          .locator("[data-spec-because]")
+          .evaluateAll((found) =>
+            found.map((one) =>
+              [...one.querySelectorAll("a[href]")].map((link) => link.getAttribute("href") ?? "")
+            )
+          );
+        if (!(links ?? []).some((href) => linksTo(href, [row]))) {
+          missing.push(
+            `${statement}'s line holds no link to ${row}: ` +
+              (links === undefined
+                ? "its row draws no line"
+                : `it links to ${links.length === 0 ? "nothing" : links.join(", ")}`)
+          );
+        }
       }
       expect(
         missing,
-        "each decision that shaped a statement is a line on that statement's row"
+        "each decision, not replaced, that shaped a statement is named on that statement's line"
       ).toEqual([]);
       await releaseFilter(page, "spec");
     });

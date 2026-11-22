@@ -166,10 +166,10 @@ export function SpecFilterBody({
    *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
-  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`), which the
-   *  slot passes from the page's tree: those reads are the tree's own, and the view draws from
-   *  them too - the three sentences, and the name of every reference a plain line cites. None
-   *  while they do not stand failed. */
+  /** The names read's line while it stands failed (`IssueTreeView.namesFailure`), which the
+   *  slot passes from the page's tree: that read is the tree's own, and the view draws from it
+   *  too - the name of every reference the three sentences and a plain line cite. None while it
+   *  does not stand failed. */
   namesFailure?: NamesFailure;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
@@ -218,13 +218,15 @@ export function SpecFilterBody({
   const asks = asksRead.data;
   // The decisions are the decision nodes of the Spec view read (`?view=spec`), which the page
   // holds on the issue's node (`TreeNode.views`), so the body costs no request of its own
-  // to draw them: each decision the view holds, and each question a person answered that carries
-  // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read is
-  // watched under the key the page reads it by (`ViewReadProvider`). A change of the issue marks
-  // the view stale and reads it again with its answer kept (`subscribeTreeFreshness`); a new
-  // load, a Keep, a Change, a Settle and a lens pick that lands drop it (`dropViews`), and the
-  // column then draws the answer it last held (`useLastAnswer`) until the next one lands. A read
-  // again that fails keeps its answer, which leaves the body an answer to draw too.
+  // to draw them: each decision the view holds, and each question a person answered that shaped
+  // something. The decision the read carries on the ask decides that, by its `links`; the asks
+  // read is only the fallback where the read carries none, an ask it says is answered that
+  // carries `shaped` ties (`decisionNodes`). The view read is watched under the key the page
+  // reads it by (`ViewReadProvider`). A change of the issue marks the view stale and reads it
+  // again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep, a Change, a Settle
+  // and a lens pick that lands drop it (`dropViews`), and the column then draws the answer it
+  // last held (`useLastAnswer`) until the next one lands. A read again that fails keeps its
+  // answer, which leaves the body an answer to draw too.
   const specRead = useQuery(treeRead(specQuery));
   const held = useLastAnswer(root.views?.spec);
   const decisions = useMemo(
@@ -276,7 +278,7 @@ export function SpecFilterBody({
   // (`failed`), and no other, and none of them while it is read again already. Each read of a
   // line is paired with its key's hash (`lineRead`), and each line carries how many times its
   // reads have been refused since it last stood (`useLineRefusals`), which keys its alert.
-  // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
+  // The names read's line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
   const lines = [
@@ -672,7 +674,7 @@ export function SpecFilterBody({
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
           inside a tree would break the tree's own structure of rows. The view's own reads'
-          lines come first, and the names reads' line last, as the outline draws it. The stage
+          lines come first, and the names read's line last, as the outline draws it. The stage
           gives a focus left on nothing to a line's Retry where the view draws no row, and moves
           it on to the next line, the tab-stop row or the tree as a line that held it leaves
           (`slots/stage.tsx`). */}
@@ -695,8 +697,8 @@ export function SpecFilterBody({
       ))}
       {namesFailure === undefined ? null : (
         <FailedReadLine
-          // The names reads' count of failures (`NamesFailure.failure`), which changes only with
-          // a new failure, and their Retry, which asks again each of them that holds no answer.
+          // The names read's count of failures (`NamesFailure.failure`), which changes only with
+          // a new failure, and its Retry, which asks it again while it holds no answer.
           failure={namesFailure.failure}
           key="names"
           message={STATE_LINES.names_unreadable}
