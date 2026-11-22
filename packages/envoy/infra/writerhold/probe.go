@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/natscred"
 )
 
 // probeAdmitted is the probe's first run, outside the hold, with the row still prepare: it reads the
@@ -35,7 +36,7 @@ func probeAdmitted(ctx context.Context, op *Operator) (map[string]string, error)
 	if err != nil {
 		return nil, unknownf(StepProbe, err, "verify the probe's credential as the auth service does, against its issuer's published keys")
 	}
-	if err := op.ProbeDial(ctx, strings.Join(op.URLs, ","), raw); err != nil {
+	if err := op.dialProbe(ctx, strings.Join(op.URLs, ","), raw); err != nil {
 		return nil, refusef(StepProbe, "the hold's probe was not admitted outside the hold, so its refusal in the hold would not show the hold's: %v", err)
 	}
 	return probeRecordInputs(credential), nil
@@ -97,7 +98,22 @@ func (op *Operator) probeToken() (string, error) {
 	return raw, nil
 }
 
-// Probe dials url once as the hold's probe (Restart.Probe's contract), reading the probe's
+// dialProbe dials url once, presenting token as the probe's credential in CONNECT's password
+// (natscred.ServiceUser), and answers the dial's error: nil when the server admitted it, one
+// wrapping nats.ErrAuthorization when it refused it. Only Probe and the probe's first run read it;
+// a test's probeDial stands in for it.
+func (op *Operator) dialProbe(ctx context.Context, url, token string) error {
+	if op.probeDial != nil {
+		return op.probeDial(ctx, url, token)
+	}
+	nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, token), nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(ProbeTimeout))
+	if err == nil {
+		nc.Close()
+	}
+	return err
+}
+
+// Probe dials url once as the hold's probe (Restart's probe), reading the probe's
 // credential file at this dial and presenting the token it read: nil when the server admitted it,
 // an error wrapping nats.ErrAuthorization when it refused it and that refusal is the hold's. A
 // refusal is the hold's only when the token proves the probe identity this hold's set admitted
@@ -116,7 +132,7 @@ func (op *Operator) Probe(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	err = op.ProbeDial(ctx, url, raw)
+	err = op.dialProbe(ctx, url, raw)
 	if !errors.Is(err, nats.ErrAuthorization) {
 		return err
 	}

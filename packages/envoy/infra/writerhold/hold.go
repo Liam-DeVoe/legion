@@ -29,10 +29,9 @@ type Operator struct {
 	// ProbeToken reads the probe's credential file: the raw platform token a probe dial presents,
 	// read again at each dial.
 	ProbeToken func() (string, error)
-	// ProbeDial dials url once, presenting token as the probe's credential: nil when the server
-	// admitted it, an error wrapping nats.ErrAuthorization when it refused it. Probe and the probe's
-	// first run, outside the hold, are its callers.
-	ProbeDial func(ctx context.Context, url, token string) error
+	// probeDial is a test's dial of the probe in place of the real one (dialProbe). It is
+	// unexported, so no caller outside writerhold reads a refusal of the probe without Probe's check.
+	probeDial func(ctx context.Context, url, token string) error
 	// URLs are the hub's client URLs, which the probe dials as the hub.
 	URLs []string
 	// Wait waits d, ending early with ctx's error; a sleep when nil.
@@ -1032,7 +1031,7 @@ func RestartProveAndBarrier(ctx context.Context, records *holdrecord.Client, op 
 // declared server with its proof, then the meta barrier, which runs listing inside it (`hold set`'s
 // writer census; nil for none). It returns the restarted servers.
 func restartProveAndBarrier(ctx context.Context, op *Operator, nc *nats.Conn, render *Render, declared Declared, holdID string, bindings map[string]ClaimBinding, listing func(context.Context) error) ([]Restarted, error) {
-	restart := Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, Probe: op.Probe,
+	restart := Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, probe: op.Probe,
 		Bind: func(ctx context.Context, pod string, step1, now Varz) error {
 			if err := CheckReload(StepProof, pod, step1, now); err != nil {
 				return err

@@ -62,7 +62,6 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 		URLs:         s.Cluster.URLs(),
 		Connect:      s.ConnectOperator,
 		ProbeToken:   func() (string, error) { return s.ProbeToken(), nil },
-		ProbeDial:    s.DialProbe,
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldBuckets{t: t, s: s, op: op}

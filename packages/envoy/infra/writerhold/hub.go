@@ -212,12 +212,5 @@ func openOperator(ctx context.Context, h HubFlags) (*Operator, error) {
 			return ConnectOperator(h.NATS, h.TokenFile, "envoy-infra hold")
 		},
 		ProbeToken: natscred.ServiceFile(h.ProbeTokenFile).Read,
-		ProbeDial: func(_ context.Context, url, token string) error {
-			nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, token), nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(ProbeTimeout))
-			if err == nil {
-				nc.Close()
-			}
-			return err
-		},
 	}, nil
 }

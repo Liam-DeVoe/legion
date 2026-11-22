@@ -41,7 +41,7 @@ func (b *bindings) bind(_ context.Context, pod string, step1, now Varz) error {
 
 // restartOf is the restart of the rig's hub from declared, with the refused probe and binds.
 func (r *calloutRig) restartOf(declared Declared, binds *bindings, limit time.Duration) Restart {
-	return Restart{Hub: r.hub, Declared: declared, Probe: refusedProbe, Bind: binds.bind, Limit: limit, Retry: 50 * time.Millisecond}
+	return Restart{Hub: r.hub, Declared: declared, probe: refusedProbe, Bind: binds.bind, Limit: limit, Retry: 50 * time.Millisecond}
 }
 
 // TestHoldAServerThatKeepsItsId shows step 4 stops the hold on a declared server that keeps its

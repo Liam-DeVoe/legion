@@ -142,7 +142,7 @@ func TestTheProbeCountsARefusalOnlyForTheRecordedIdentityAtEachDial(t *testing.T
 	var presented []string
 	op := &Operator{
 		ProbeToken: func() (string, error) { return current, nil },
-		ProbeDial: func(_ context.Context, _, token string) error {
+		probeDial: func(_ context.Context, _, token string) error {
 			presented = append(presented, token)
 			if admit {
 				return nil

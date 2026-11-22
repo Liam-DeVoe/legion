@@ -78,16 +78,6 @@ func (s *Stack) ConnectOperator(context.Context) (*nats.Conn, error) {
 		nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
 }
 
-// DialProbe dials url once as the hold probe, presenting token, and answers the dial's error: nil
-// when the server admitted it, one wrapping nats.ErrAuthorization when it refused it.
-func (s *Stack) DialProbe(_ context.Context, url, token string) error {
-	nc, err := nats.Connect(url, nats.UserInfo("service", token), nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(10*time.Second))
-	if err == nil {
-		nc.Close()
-	}
-	return err
-}
-
 // ProtectedBuckets are the KV buckets whose streams the hold protects by name: the session
 // consumers' record, Legion's agents, the DPoP proofs, the webhook redeliveries and each bucket a
 // listener copies.

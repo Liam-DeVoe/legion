@@ -95,7 +95,6 @@ func newHeldStackWith(t *testing.T, opts holdtest.Options) *heldStack {
 		URLs:         s.Cluster.URLs(),
 		Connect:      s.ConnectOperator,
 		ProbeToken:   func() (string, error) { return s.ProbeToken(), nil },
-		ProbeDial:    s.DialProbe,
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldStack{t: t, s: s, op: op, disks: disks, keys: &memoryKeys{versions: map[string][][]byte{}}}

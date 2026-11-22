@@ -43,12 +43,14 @@ const streamRead = 2 * time.Second
 type Restart struct {
 	Hub      KubeHub
 	Declared Declared
-	// Probe dials url, one server's own client address (KubeHub.ClientURL), with the probe's
+	// probe dials url, one server's own client address (KubeHub.ClientURL), with the probe's
 	// credential (natsgrant.HoldProbe's BROKER_NATS_SERVICES entry), closes what it opened, and
 	// returns the dial's error: nil when the server admitted the probe, an error wrapping
-	// nats.ErrAuthorization when it refused it, and any other error when the dial reached no
-	// decision.
-	Probe func(ctx context.Context, url string) error
+	// nats.ErrAuthorization when it refused it and that refusal is the hold's, and any other error
+	// when the dial reached no decision. It is unexported, and the one Restart this package builds
+	// sets it to Operator.Probe, so no caller outside writerhold counts a refusal without Probe's
+	// check of the hold's admitted-probe record.
+	probe func(ctx context.Context, url string) error
 	// Bind is step 4's binding half, the checked binary and configuration (the render's checks):
 	// the pod's image digest and revision, its claim's volume, and the server's version and
 	// config_digest against step1, its /varz at step 1, and now, its /varz after the restart. It
@@ -114,8 +116,8 @@ func (r Restart) Run(ctx context.Context, nc *nats.Conn) ([]Restarted, error) {
 	switch {
 	case len(r.Declared) == 0:
 		return nil, unknownf(StepRestart, nil, "the restart names no declared server")
-	case r.Probe == nil:
-		return nil, unknownf(StepRestart, nil, "the restart has no probe, so step 4 cannot show a server refuses it")
+	case r.probe == nil:
+		return nil, unknownf(StepRestart, nil, "the restart has no probe, so step 4 cannot show a server refuses it: a Restart is run through RestartProveAndBarrier, which sets it")
 	case r.Bind == nil:
 		return nil, unknownf(StepRestart, nil, "the restart has no binding check, so step 4 cannot show a server runs the checked binary and configuration")
 	case nc == nil:
@@ -460,7 +462,7 @@ func (r Restart) proveOnce(ctx context.Context, server DeclaredServer, before ma
 	if err != nil {
 		return Varz{}, unknownf(StepProof, err, "%s's own client address", describeServer(server.Pod, now))
 	}
-	err = r.Probe(ctx, url)
+	err = r.probe(ctx, url)
 	stop()
 	switch {
 	case err == nil:
