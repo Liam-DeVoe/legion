@@ -389,9 +389,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		args   []string
 		refuse string
 	}{
-		{[]string{"GH_EDITOR=" + editor}, []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, `"-e" runs an editor program`},
+		{[]string{"GH_EDITOR=" + editor}, []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, `"--editor" runs an editor program`},
 		{[]string{"EDITOR=" + editor}, []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, `"--editor" runs an editor program`},
-		{[]string{"VISUAL=" + editor}, []string{"issue", "create", "-R", "acme/widgets", "--title", "t", "-e"}, `"-e" runs an editor program`},
+		{[]string{"VISUAL=" + editor}, []string{"issue", "create", "-R", "acme/widgets", "--title", "t", "-e"}, `"--editor" runs an editor program`},
 		{[]string{"GH_EDITOR=" + editor}, []string{"gist", "edit", "0123456789abcdef"}, "`gh gist edit` opens an editor program"},
 		{nil, []string{"agent-task", "list"}, "`gh agent-task` sends the token to the Copilot API host"},
 	} {
