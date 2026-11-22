@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -83,8 +86,81 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 		t.Errorf("the tester's model = %q, want none: Legion's roles run the profile's @default", tester.Model)
 	}
 
-	if _, err := launch("ghost"); err == nil || !strings.Contains(err.Error(), "the deployment defines no role ghost") {
-		t.Errorf("the ghost's spawn spec = %v, want the refusal %q", err, "the deployment defines no role ghost")
+	if _, err := launch("ghost"); err == nil || !strings.Contains(err.Error(), "neither the deployment nor the plan of S1-2 defines the role ghost") {
+		t.Errorf("the ghost's spawn spec = %v, want the refusal %q", err, "neither the deployment nor the plan of S1-2 defines the role ghost")
+	}
+}
+
+// A role an owner's plan defines launches with the plan's prompt, kept as the daemon's own copy
+// under its state directory and named by the prompt's text, between the headless mechanics and
+// Legion's worker part, so it is told the SEPARATE-POD line every phase worker is told, and with
+// the model the plan gives it. Two launches of one prompt read one file, written 0600. The plan is
+// read for the claim's own issue: a role nobody defines for that issue is refused, naming the
+// issue and the role, with no prompt.
+func TestARoleOfAPlanLaunchesWithThePlansPromptAndModel(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prompt = "# Prober\n\nProbe the change."
+	stateDir := t.TempDir()
+	s := specs{stateDir: stateDir, project: "s1", prompts: composer,
+		planRole: func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+			if issue != "LEGION-43" || role != "prober" {
+				return record.PlanRole{}, false, nil
+			}
+			return record.PlanRole{Issue: issue, Role: "prober", Type: "testing", Model: "m-one", Prompt: prompt}, true, nil
+		}}
+	launch := func(issue string, role claim.Role) (runtime.SpawnSpec, error) {
+		token, err := claim.NewToken("s1", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: issue, Tree: "LEGION-42", Role: role})
+	}
+
+	spec, err := launch("LEGION-43", "prober")
+	if err != nil {
+		t.Fatalf("the prober's spawn spec: %v", err)
+	}
+	if spec.Model != "m-one" {
+		t.Errorf("the prober's model = %q, want m-one", spec.Model)
+	}
+	sum := sha256.Sum256([]byte(prompt))
+	copied := filepath.Join(stateDir, "plan-roles", hex.EncodeToString(sum[:])+".md")
+	merger, err := composer.Compose(claim.RoleMerger, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{merger.RolePromptPaths[0], copied, composer.Part("worker-common.md")}
+	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
+		t.Errorf("the prober's role prompt paths = %q, want %q", spec.Prompt.RolePromptPaths, want)
+	}
+	if info, err := os.Stat(copied); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the copy of the prober's prompt = %v, %v; want a file of mode 0600", info, err)
+	}
+	composed, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, line := strings.Index(composed, "# Prober"), strings.Index(composed, "SEPARATE-POD <ISSUE> <task> <reason>")
+	if own < 0 || line < own || !strings.Contains(composed, "Legion starts no pod for this line") {
+		t.Errorf("the prober's composed prompt holds its own text at %d and the SEPARATE-POD line at %d, want the text first and the line after it, with %q",
+			own, line, "Legion starts no pod for this line")
+	}
+	again, err := launch("LEGION-43", "prober")
+	if err != nil || !slices.Equal(again.Prompt.RolePromptPaths, spec.Prompt.RolePromptPaths) {
+		t.Errorf("a second launch of one prompt = %q, %v; want the same paths %q", again.Prompt.RolePromptPaths, err, spec.Prompt.RolePromptPaths)
+	}
+
+	for _, tc := range []struct {
+		issue string
+		role  claim.Role
+	}{{"LEGION-43", "ghost"}, {"LEGION-44", "prober"}} {
+		want := "neither the deployment nor the plan of " + tc.issue + " defines the role " + string(tc.role)
+		if _, err := launch(tc.issue, tc.role); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("the spawn spec of %s on %s = %v, want the refusal %q", tc.role, tc.issue, err, want)
+		}
 	}
 }
 

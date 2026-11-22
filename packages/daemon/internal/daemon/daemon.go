@@ -1730,7 +1730,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			roles:    cfg.Roles,
+			roles: cfg.Roles, planRole: planRoleOf(st),
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
 			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
