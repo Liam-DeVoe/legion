@@ -34,6 +34,8 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 			&net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}, true},
 		{"a host that does not resolve, net.Dial's own *net.OpError wrapping a DNS failure",
 			&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "nats.invalid", IsNotFound: true}}, true},
+		{"a request made while the connection is cut, refused at once by the empty reconnect buffer",
+			fmt.Errorf("open ENVOY_NOTIFICATIONS: %w", nats.ErrReconnectBufExceeded), true},
 		{"a NATS permission violation — a refused grant", nats.ErrPermissionViolation, false},
 		{"a NATS authorization violation — a misconfigured nkey user", nats.ErrAuthorization, false},
 		{"a bare context.DeadlineExceeded: refused by design, since an innocent slow JetStream call " +
