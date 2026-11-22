@@ -17,7 +17,7 @@ const REASONS = {
   5: "5. The box has no anchor, so it draws no Close (asserted absent below).",
   6: "6. An Agent row's box always answers a message of its thread (`agentReplyTo`), and its `AgentMessageComposer` draws the issue picker only while it answers none, so it draws no issue picker (asserted absent below).",
   7: "7. `CommentThreadBody` draws a loading line or an error in place of the thread while its read is out or failed, and `AgentThreadBody` an error where its row carries no conversation of its own; either unmounts the box as the move to another row does, and the box drawn once the thread is there again is the one that row draws.",
-  8: "8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is read when the thread is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a box that is on screen; the shell draws no thread before it knows who is signed in, and another person is the sign-in file's row.",
+  8: "8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is the reader's thread order, which a pick in the Inbox's display menu changes for every reader on the page at once, and another tab's pick for this tab's readers (`useUserPreference`). A pick moves the box to the other end of the thread on screen, at the same thread and under the same send name (`threadSendKey`), so the box there holds what the box held, as the box drawn on the move to another row and back does; the shell draws no thread before it knows who is signed in, and another person is the sign-in file's row.",
   9: "9. An Agent row's box is drawn only while its session is in the live list; a session that leaves it and comes back unmounts and draws the box again at the same thread, as the move to another row and back does.",
   10: "10. A thread in a document is drawn inside the document's page where its block is found and beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`, `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the same thread, as the move to another row and back does, and a version or an admission that hides the document's page keeps the box mounted at its thread.",
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
@@ -363,6 +363,9 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
   ...answers("InboxBody | - | form | if (paneShown && paneSelection.selectedNow.current === id)", {
+    reason: REASONS[13],
+  }),
+  ...answers("InboxBody | - | form | if (id !== undefined && byId.has(id))", {
     reason: REASONS[13],
   }),
   ...answers("InboxBody | - | form | if (shownQuestion.current === paneSelection.id) return …", {

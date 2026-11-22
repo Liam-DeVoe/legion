@@ -274,6 +274,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-read-state.e2e.ts` | reading writes the read mark and the row is re-read |
 | `e2e/inbox-reading-pane.e2e.ts` | the answer is a write; approval is the server's computation; the withdrawal is the server's |
 | `e2e/inbox-stability.e2e.ts` | rows move because writes land elsewhere and arrive live under the reader's hand |
+| `e2e/inbox-thread-order.e2e.ts` | the Inbox draws its rows and their threads from the one read (`GET /api/v1/me/inbox`), which no committed recording holds |
 | `e2e/inbox-thread-pane.e2e.ts` | opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay |
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
 | `e2e/inbox-unchanged.e2e.ts` | boots the base build and this build over a database of their own and compares the pages both serve over the same rows |

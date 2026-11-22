@@ -1,6 +1,7 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  Fragment,
   type ReactNode,
   useCallback,
   useContext,
@@ -842,6 +843,126 @@ export function AskCard({
     );
   }
 
+  // The thread, and the form that answers the ask with the way out of it, each as one keyed
+  // block, so the card moves them past each other when the order changes (below).
+  const threadBlock = <Fragment key="thread">{threadNode}</Fragment>;
+  const answerBlock = (
+    <Fragment key="answer">
+      <form
+        className="mt-3 space-y-3"
+        // While the card refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
+        // or Enter in an option, still reaches it then (`refusing`), and outside it so does a
+        // press of the held Send (`answerHeld`).
+        onSubmit={(event) => {
+          if (refusing || answerHeld) event.preventDefault();
+          else submit(event);
+        }}
+        ref={trackForm}
+      >
+        {(displayedAsk.options ?? []).length === 0 ? null : (
+          // Inside `NoTooltips`, while the card refuses, the options are refused by their group's
+          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
+          // attribute of its own on its input (`AskChoiceRow`).
+          <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
+            <legend className="sr-only">Answer options</legend>
+            {(displayedAsk.options ?? []).map((option) => (
+              <AskChoiceRow
+                checked={selected.includes(option.label)}
+                disabled={disabledWhileOut}
+                hotkey
+                key={option.label}
+                multiple={displayedAsk.multiple}
+                name={`ask-${displayedAsk.id}`}
+                onChange={() => {
+                  if (refusing) return;
+                  selectRealOption(option.label);
+                  if (isCompact)
+                    setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
+                }}
+                option={option}
+                source={source}
+              />
+            ))}
+            {isApproval ? null : (
+              <AskChoiceRow
+                checked={otherSelected}
+                disabled={disabledWhileOut}
+                multiple={displayedAsk.multiple}
+                name={`ask-${displayedAsk.id}`}
+                onChange={() => {
+                  if (refusing) return;
+                  toggleOther();
+                  if (isCompact && !otherSelected) setOwnWordsOpen(true);
+                }}
+                option={{ label: "Other" }}
+                source={source}
+              />
+            )}
+          </fieldset>
+        )}
+        {isCompact ? (
+          <>
+            {selected.length === 0 || ownWordsOpen ? null : (
+              <div className="space-y-2">
+                {submitButton}
+                {submitHintNode}
+              </div>
+            )}
+            <div>
+              <button
+                aria-controls={`${answerFieldId}-disclosure`}
+                aria-expanded={ownWordsOpen}
+                className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
+                // The Inbox's Enter opens this disclosure to reach the answer box behind it,
+                // and finds the control by this handle, as it finds the box by
+                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
+                data-ask-note-disclosure=""
+                onClick={() => {
+                  // Opening it is a move into the field behind it; closing it moves nowhere.
+                  focusNoteOnOpen.current = !ownWordsOpen;
+                  setOwnWordsOpen(!ownWordsOpen);
+                }}
+                type="button"
+              >
+                Add a note or answer in your own words
+              </button>
+              {ownWordsOpen ? (
+                <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>
+                  {answerField}
+                  {answerActions}
+                </div>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <>
+            {answerField}
+            {answerActions}
+          </>
+        )}
+        {answerFailure === null ? null : (
+          <QueryError
+            message={answerFailure.message}
+            onRetry={answerFailure.retryable ? () => submitGuard.retryLast(mutation) : undefined}
+            retrying={mutation.isPending}
+          />
+        )}
+        {clarification.error === null ? null : (
+          <QueryError
+            message={clarificationRefusal(clarification)}
+            onRetry={() => submitGuard.retryLast(clarification)}
+            retrying={clarification.isPending}
+          />
+        )}
+      </form>
+      {/* The person's way out of a question they will not answer, under the form that answers
+          it. An approval request draws none: it is answered with Approve or Request changes. */}
+      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
+        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
+      ) : null}
+    </Fragment>
+  );
+
   return (
     <article
       aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
@@ -1021,121 +1142,10 @@ export function AskCard({
         </p>
       ) : null}
       {/* The options and the answer box sit where the order puts a thread's reply box: under
-          the question in Newest first, at the foot of the card in Oldest first. */}
-      {answerFirst ? null : threadNode}
-      <form
-        className="mt-3 space-y-3"
-        // While the card refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
-        // or Enter in an option, still reaches it then (`refusing`), and outside it so does a
-        // press of the held Send (`answerHeld`).
-        onSubmit={(event) => {
-          if (refusing || answerHeld) event.preventDefault();
-          else submit(event);
-        }}
-        ref={trackForm}
-      >
-        {(displayedAsk.options ?? []).length === 0 ? null : (
-          // Inside `NoTooltips`, while the card refuses, the options are refused by their group's
-          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
-          // attribute of its own on its input (`AskChoiceRow`).
-          <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
-            <legend className="sr-only">Answer options</legend>
-            {(displayedAsk.options ?? []).map((option) => (
-              <AskChoiceRow
-                checked={selected.includes(option.label)}
-                disabled={disabledWhileOut}
-                hotkey
-                key={option.label}
-                multiple={displayedAsk.multiple}
-                name={`ask-${displayedAsk.id}`}
-                onChange={() => {
-                  if (refusing) return;
-                  selectRealOption(option.label);
-                  if (isCompact)
-                    setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
-                }}
-                option={option}
-                source={source}
-              />
-            ))}
-            {isApproval ? null : (
-              <AskChoiceRow
-                checked={otherSelected}
-                disabled={disabledWhileOut}
-                multiple={displayedAsk.multiple}
-                name={`ask-${displayedAsk.id}`}
-                onChange={() => {
-                  if (refusing) return;
-                  toggleOther();
-                  if (isCompact && !otherSelected) setOwnWordsOpen(true);
-                }}
-                option={{ label: "Other" }}
-                source={source}
-              />
-            )}
-          </fieldset>
-        )}
-        {isCompact ? (
-          <>
-            {selected.length === 0 || ownWordsOpen ? null : (
-              <div className="space-y-2">
-                {submitButton}
-                {submitHintNode}
-              </div>
-            )}
-            <div>
-              <button
-                aria-controls={`${answerFieldId}-disclosure`}
-                aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
-                // The Inbox's Enter opens this disclosure to reach the answer box behind it,
-                // and finds the control by this handle, as it finds the box by
-                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
-                data-ask-note-disclosure=""
-                onClick={() => {
-                  // Opening it is a move into the field behind it; closing it moves nowhere.
-                  focusNoteOnOpen.current = !ownWordsOpen;
-                  setOwnWordsOpen(!ownWordsOpen);
-                }}
-                type="button"
-              >
-                Add a note or answer in your own words
-              </button>
-              {ownWordsOpen ? (
-                <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>
-                  {answerField}
-                  {answerActions}
-                </div>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <>
-            {answerField}
-            {answerActions}
-          </>
-        )}
-        {answerFailure === null ? null : (
-          <QueryError
-            message={answerFailure.message}
-            onRetry={answerFailure.retryable ? () => submitGuard.retryLast(mutation) : undefined}
-            retrying={mutation.isPending}
-          />
-        )}
-        {clarification.error === null ? null : (
-          <QueryError
-            message={clarificationRefusal(clarification)}
-            onRetry={() => submitGuard.retryLast(clarification)}
-            retrying={clarification.isPending}
-          />
-        )}
-      </form>
-      {/* The person's way out of a question they will not answer, under the form that answers
-          it. An approval request draws none: it is answered with Approve or Request changes. */}
-      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
-        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
-      ) : null}
-      {answerFirst ? threadNode : null}
+          the question in Newest first, at the foot of the card in Oldest first. The two blocks
+          are one keyed list, so a change of order moves the thread to the other side of the
+          answer block rather than drawing it again: its fold stays as the reader left it. */}
+      {answerFirst ? [answerBlock, threadBlock] : [threadBlock, answerBlock]}
       <AskRecipients
         askId={displayedAsk.id}
         claimant={threadQuery.data?.claimant ?? null}

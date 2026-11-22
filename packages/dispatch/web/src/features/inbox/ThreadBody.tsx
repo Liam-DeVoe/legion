@@ -187,8 +187,12 @@ function ThreadTurns({
   });
   // The thread opens where the reader left off: under Oldest first its first unread message is
   // at the top of the column, since everything above it has been read. Newest first already puts
-  // the newest message first, so it opens where it stands.
-  const openAt = openAtFirstUnread && order === "oldest" ? threadId : undefined;
+  // the newest message first, so it opens where it stands. The order the thread opened in
+  // decides this. An order picked while the thread is open reorders it where it stands and
+  // scrolls nothing.
+  const openedIn = useRef({ order, threadId });
+  if (openedIn.current.threadId !== threadId) openedIn.current = { order, threadId };
+  const openAt = openAtFirstUnread && openedIn.current.order === "oldest" ? threadId : undefined;
   useEffect(() => {
     if (openAt === undefined) return;
     firstUnread.current?.scrollIntoView({ block: "start" });

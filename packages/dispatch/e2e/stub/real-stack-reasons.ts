@@ -173,6 +173,8 @@ export const realStackReasons: Record<string, string> = {
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
+  "inbox-thread-order.e2e.ts":
+    "the Inbox draws its rows and their threads from the one read (`GET /api/v1/me/inbox`), which no committed recording holds",
   "inbox-thread-pane.e2e.ts":
     "opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay",
   "inbox-threads.e2e.ts":

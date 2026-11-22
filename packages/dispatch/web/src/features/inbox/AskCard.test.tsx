@@ -29,6 +29,7 @@ import type {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread, unreadSetAnswer } from "../threads/replies-fixture";
+import { useThreadOrder } from "../threads/thread-order";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
@@ -1147,6 +1148,78 @@ for (const order of ["oldest", "newest"] as const) {
     }
   });
 }
+
+/** The other thread order, picked through the one preference every thread reads, as the Inbox's
+ *  display menu picks it. */
+function OrderPicker(): ReactNode {
+  const [order, setOrder] = useThreadOrder();
+  return (
+    <button onClick={() => setOrder(order === "oldest" ? "newest" : "oldest")} type="button">
+      {order === "oldest" ? "Newest first" : "Oldest first"}
+    </button>
+  );
+}
+
+// An order picked while an open ask's card is on screen moves the ask's thread to the other side
+// of its answer box. The thread is moved, not drawn again, so the fold the reader opened stays
+// open.
+test("an open ask's thread keeps its fold and its element when the thread order changes", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({ answer: null, state: "open" });
+  const replies = [
+    askReply("reply-1", "2026-10-08T01:00:00Z"),
+    askReply("reply-2", "2026-10-08T02:00:00Z"),
+    askReply("reply-3", "2026-10-08T03:00:00Z"),
+  ];
+  const { queryClient, view } = renderCard(
+    <>
+      <OrderPicker />
+      <AskCard ask={open} initialThread={{ ...thread(open, []), replies }} />
+    </>
+  );
+  try {
+    // The order is the signed-in reader's, so the picks wait for who that is.
+    await waitFor(() => expect(queryClient.getQueryData(["whoami"])).toBeDefined());
+    // Oldest first: the fold over the earliest reply, the newest two, then the answer box.
+    await waitFor(() =>
+      expect(threadReplyBodies(view.getByTestId("thread-ask-1"))).toEqual([
+        "Reply reply-2",
+        "Reply reply-3",
+      ])
+    );
+    await user.click(view.getByRole("button", { name: "Show 1 earlier reply" }));
+    const threadElement = view.getByTestId("thread-ask-1");
+    expect(threadReplyBodies(threadElement)).toEqual([
+      "Reply reply-1",
+      "Reply reply-2",
+      "Reply reply-3",
+    ]);
+    expect(precedes(threadElement, view.getByLabelText("Your answer"))).toBe(true);
+
+    for (const [pick, bodies] of [
+      ["Newest first", ["Reply reply-3", "Reply reply-2", "Reply reply-1"]],
+      ["Oldest first", ["Reply reply-1", "Reply reply-2", "Reply reply-3"]],
+    ] as const) {
+      await user.click(view.getByRole("button", { name: pick }));
+      // The same section, not one drawn again, on the side of the answer box the order names.
+      expect(view.getByTestId("thread-ask-1"), pick).toBe(threadElement);
+      expect(precedes(view.getByLabelText("Your answer"), threadElement), pick).toBe(
+        pick === "Newest first"
+      );
+      // The fold the reader opened is still open, and every reply reads in the order picked.
+      expect(
+        within(threadElement)
+          .getByRole("button", { name: "Show fewer replies" })
+          .getAttribute("aria-expanded"),
+        pick
+      ).toBe("true");
+      expect(threadReplyBodies(threadElement), pick).toEqual([...bodies]);
+    }
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(THREAD_ORDER_KEY);
+  }
+});
 
 // The fold holds what the reader has already read, never a reply they have not: the unread set
 // the mark reads (`useMarkThreadRead`) says where their reading stopped.
