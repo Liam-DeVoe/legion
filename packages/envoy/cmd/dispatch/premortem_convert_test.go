@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 )
@@ -47,23 +48,28 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 		}
 	}
 
-	for _, refused := range []struct{ name, line, says string }{
-		{"two fields", "2\tnone", "the line holds 2 fields"},
-		{"one field", "2 none no reason", "the line holds 1 fields"},
-		{"a word for a number", "two\tnone\tA reason.", `the first field "two" is no risk number`},
-		{"a negative number", "-1\tnone\tA reason.", `the first field "-1" is no risk number`},
-		{"a number with a leading zero", "08\tnone\tA reason.", `the first field "08" is no risk number`},
-		{"an empty number", "\tnone\tA reason.", `the first field "" is no risk number`},
-		{"an empty second field", "2\t\tA reason.", `the second field "" is neither none nor check addresses`},
-		{"two spaces between checks", "2\t" + check + "  " + other + "\tA reason.", "separated by one space each"},
-		{"none beside a check", "2\tnone " + check + "\tA reason.", "is neither none nor check addresses"},
-		{"a blank reason", "2\tnone\t  ", "the reason is blank"},
-		{"text that is not UTF-8", "2\tnone\tA reason \xff.", "the line is not UTF-8"},
+	// Each refusal names what is wrong on the line: the count of its fields, the field by its place
+	// and the value it holds, the reason, the encoding.
+	for _, refused := range []struct {
+		name, line string
+		names      []string
+	}{
+		{"two fields", "2\tnone", []string{"2"}},
+		{"one field", "2 none no reason", []string{"1"}},
+		{"a word for a number", "two\tnone\tA reason.", []string{"first", "two"}},
+		{"a negative number", "-1\tnone\tA reason.", []string{"first", "-1"}},
+		{"a number with a leading zero", "08\tnone\tA reason.", []string{"first", "08"}},
+		{"an empty number", "\tnone\tA reason.", []string{"first"}},
+		{"an empty second field", "2\t\tA reason.", []string{"second", "none"}},
+		{"two spaces between checks", "2\t" + check + "  " + other + "\tA reason.", []string{"second", check, other}},
+		{"none beside a check", "2\tnone " + check + "\tA reason.", []string{"second", "none", check}},
+		{"a blank reason", "2\tnone\t  ", []string{"third", "reason"}},
+		{"text that is not UTF-8", "2\tnone\tA reason \xff.", []string{"UTF-8"}},
 	} {
 		text := "# the map\n0\tnone\tA reason.\n" + refused.line + "\n"
 		if _, _, err := parsePreventedBy(text); err == nil || !strings.HasPrefix(err.Error(), "3: ") ||
-			!strings.Contains(err.Error(), refused.says) {
-			t.Errorf("a map with %s on line 3 is refused %v, want line 3 named, saying %q", refused.name, err, refused.says)
+			!namesAsAWord(err.Error(), refused.names...) {
+			t.Errorf("a map with %s on line 3 is refused %v, want line 3 named, naming %q", refused.name, err, refused.names)
 		}
 
 		path := filepath.Join(t.TempDir(), "map.tsv")
@@ -74,15 +80,17 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 		code := runSubcommand(context.Background(), []string{"premortem-convert", "--issue", "CORE-1",
 			"--artifact", "graph-premortem-md", "--prevented-by", path}, envGetter(map[string]string{}), &stdout, &stderr)
 		if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), path+":3: ") ||
-			!strings.Contains(stderr.String(), refused.says) {
-			t.Errorf("premortem-convert with %s on line 3 exited %d with stdout %q and stderr %q, want 1 naming %s:3",
-				refused.name, code, stdout.String(), stderr.String(), path)
+			!namesAsAWord(stderr.String(), refused.names...) {
+			t.Errorf("premortem-convert with %s on line 3 exited %d with stdout %q and stderr %q, want 1 naming %s:3 and %q",
+				refused.name, code, stdout.String(), stderr.String(), path, refused.names)
 		}
 	}
 
+	// The refusal of a missing flag is its first line, which names the flag; the usage that
+	// follows it names every flag.
 	var stdout, stderr bytes.Buffer
 	if code := runSubcommand(context.Background(), []string{"premortem-convert", "--issue", "CORE-1"},
-		envGetter(map[string]string{}), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--artifact is required") {
+		envGetter(map[string]string{}), &stdout, &stderr); code != 2 || !namesAsAWord(strings.SplitN(stderr.String(), "\n", 2)[0], "--artifact") {
 		t.Errorf("premortem-convert without --artifact exited %d with stderr %q, want 2 naming the flag", code, stderr.String())
 	}
 	stderr.Reset()
@@ -90,4 +98,23 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 		envGetter(map[string]string{}), &stdout, &stderr); code != 0 || !strings.Contains(stderr.String(), "three fields separated by\none tab each") {
 		t.Errorf("premortem-convert -h exited %d with stderr %q, want 0 and the usage giving the map file's format", code, stderr.String())
 	}
+}
+
+// namesAsAWord is whether text names each of names as words of its own, as the dispatch api's
+// tests hold a refusal to what it names: text split on spaces and commas, each word shorn of the
+// quotes, brackets, colons, semicolons and full stops at its ends, holds each name as one of its
+// words, and a name of several words as that run of words. A test of this package cannot import
+// a test helper of that one, so this is the same rule, word for word.
+func namesAsAWord(text string, names ...string) bool {
+	var words []string
+	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
+		words = append(words, strings.Trim(word, "\"'`()[]:;."))
+	}
+	spaced := " " + strings.Join(words, " ") + " "
+	for _, name := range names {
+		if !strings.Contains(spaced, " "+name+" ") {
+			return false
+		}
+	}
+	return true
 }

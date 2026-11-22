@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -309,13 +310,14 @@ func TestTheEraseOfARunOrAReasoningNodeHoldsItsOnlyAuthorToTheirNode(t *testing.
 // nothing. A finding and a risk stand under a pre-mortem lens, a second lens is invoked on the
 // finding, whose part_of names it lens_block, the kind the graph addresses it by, and a third on
 // the risk. The erase of the lens names the finding and the risk, the erase of the finding the
-// lens on it, and the erase of the risk the lens on it, each with that reason, and removes
-// nothing. The finding is a block node whose id names the lens: its listing takes no document
-// from its id and lists the tuple into it under its lens_block spelling. Once the lens on the
-// finding is moved to stand on the issue, the retraction and the assertion of its part_of into
-// the finding stand in the log and block nothing; and once the lens on the risk is erased, the
-// finding, the risk and the lens are erased in turn, and no tuple into the finding is left under
-// either spelling.
+// lens on it, and the erase of the risk the lens on it, each with that reason - a blocker naming
+// the node standing under it and the part_of it states, and no projection row, which the blocker
+// of a tuple a row states names - and removes nothing. The finding is a block node whose id names
+// the lens: its listing takes no document from its id and lists the tuple into it under its
+// lens_block spelling. Once the lens on the finding is moved to stand on the issue, the
+// retraction and the assertion of its part_of into the finding stand in the log and block
+// nothing; and once the lens on the risk is erased, the finding, the risk and the lens are erased
+// in turn, and no tuple into the finding is left under either spelling.
 func TestTheEraseOfANodeIsRefusedWhileANodeOfAStandingKindStandsUnderIt(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -379,7 +381,9 @@ func TestTheEraseOfANodeIsRefusedWhileANodeOfAStandingKindStandsUnderIt(t *testi
 		partOf(graphstore.KindLens, onRisk, graphstore.KindRisk, risk),
 	})
 
-	const standsHere = " states " + graphstore.TuplePartOf + " into this node, which is where it stands"
+	// A blocker of a node standing under the erased one names that node, kind:id, and the part_of
+	// it states, and names no row: the blocker of a tuple a projection row states names both of
+	// those too, and its row.
 	for _, refused := range []struct {
 		kind, id string
 		under    []string
@@ -397,12 +401,12 @@ func TestTheEraseOfANodeIsRefusedWhileANodeOfAStandingKindStandsUnderIt(t *testi
 			t.Fatalf("the erase of %s:%s removed it while %v stood under it", refused.kind, refused.id, refused.under)
 		}
 		for _, under := range refused.under {
-			named := false
-			for _, blocker := range erasure.Blockers {
-				named = named || strings.HasPrefix(blocker, under+standsHere)
-			}
+			named := slices.ContainsFunc(erasure.Blockers, func(blocker string) bool {
+				return namesAsAWord(blocker, under, graphstore.TuplePartOf) && !namesAsAWord(blocker, "row")
+			})
 			if !named {
-				t.Errorf("the erase of %s:%s names no blocker for %s standing under it among %v", refused.kind, refused.id, under, erasure.Blockers)
+				t.Errorf("the erase of %s:%s names no blocker for %s standing under it, its part_of and no row, among %v",
+					refused.kind, refused.id, under, erasure.Blockers)
 			}
 		}
 		if _, held, err := graphstore.ReadNode(ctx, database.Pool, refused.kind, refused.id); err != nil || !held {
@@ -453,4 +457,23 @@ func TestTheEraseOfANodeIsRefusedWhileANodeOfAStandingKindStandsUnderIt(t *testi
 	if into != 0 {
 		t.Errorf("the erased finding leaves %d tuple(s) into it, want none under either spelling", into)
 	}
+}
+
+// namesAsAWord is whether text names each of names as words of its own, as the dispatch api's
+// tests hold a refusal to what it names: text split on spaces and commas, each word shorn of the
+// quotes, brackets, colons, semicolons and full stops at its ends, holds each name as one of its
+// words, and a name of several words as that run of words. A test of this package cannot import
+// a test helper of that one, so this is the same rule, word for word.
+func namesAsAWord(text string, names ...string) bool {
+	var words []string
+	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
+		words = append(words, strings.Trim(word, "\"'`()[]:;."))
+	}
+	spaced := " " + strings.Join(words, " ") + " "
+	for _, name := range names {
+		if !strings.Contains(spaced, " "+name+" ") {
+			return false
+		}
+	}
+	return true
 }
