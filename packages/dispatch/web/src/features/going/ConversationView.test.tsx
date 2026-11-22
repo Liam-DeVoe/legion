@@ -12,9 +12,10 @@ import { useOpenPlan } from "./usePlan";
 
 // The steps of a run as the bar draws them (design v3, state 3): one line for each call, in the
 // present tense with "…" while it runs and in the past tense once it ended, or one sentence that
-// says why it failed; no line for a call with no words, or for a change of an approved plan,
-// which its row's tick shows; the model's prose beside its calls while they run, never as the
-// answer; and under the answer, the line that says results were withheld from the model.
+// says why it failed, whatever order its call, tool and reply frames came in, and no line left
+// running once the run ended; no line for a call with no words, or for a change of an approved
+// plan, which its row's tick shows; the model's prose beside its calls while they run, never as
+// the answer; and under the answer, the line that says results were withheld from the model.
 
 function record(state: GoingRun["state"]): GoingRun {
   const at = new Date().toISOString();
@@ -174,6 +175,87 @@ test("one withheld result reads in the singular", async () => {
     expect((await screen.findByTestId("going-run-withheld")).textContent).toBe(
       "The model's content filter held back one result, so this answer may miss it."
     );
+  } finally {
+    restore();
+  }
+});
+
+/** The step lines the bar draws, each with whether it runs. */
+function stepLines(): readonly (readonly [string | null, string | null])[] {
+  return screen
+    .getAllByTestId("going-step")
+    .map((step) => [step.textContent, step.getAttribute("data-running")]);
+}
+
+test("a call frame draws its call running before the call ends, and its tool frame ends that line", async () => {
+  const restore = await showRun("working", [
+    [
+      "call",
+      { kind: "read", label: "Reading DEMO-15", step: 2, text: "Checking DEMO-15.", tool: "read" },
+    ],
+    ["call", { kind: "read", label: "Reading the messages of DEMO-7", step: 3, tool: "call_tool" }],
+    ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
+  ]);
+  try {
+    await waitFor(() =>
+      expect(stepLines()).toEqual([
+        ["Read DEMO-15", "false"],
+        ["Reading the messages of DEMO-7…", "true"],
+      ])
+    );
+    expect(screen.getByTestId("going-step-words").textContent).toBe("Checking DEMO-15.");
+  } finally {
+    restore();
+  }
+});
+
+test("a tool frame after its call frame, or before its reply frame, draws one line per call", async () => {
+  const restore = await showRun("done", [
+    // The first call, as a run sends it now: its call frame, its tool frame, then its reply.
+    ["call", { kind: "read", label: "Reading DEMO-15", step: 2, text: "", tool: "read" }],
+    ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
+    ["reply", { labels: ["Reading DEMO-15"], step: 1, text: "", tools: ["read"] }],
+    // The second, as a run recorded before call frames: its tool frame, then its reply.
+    [
+      "tool",
+      {
+        items: ["DEMO-7"],
+        kind: "read",
+        label: "Read the comments of DEMO-7",
+        step: 4,
+        tool: "read",
+      },
+    ],
+    ["reply", { labels: ["Reading the comments of DEMO-7"], step: 3, text: "", tools: ["read"] }],
+    ["reply", { labels: [], step: 5, text: "DEMO-15 waits on DEMO-7.", tools: [] }],
+    ["end", { offers: [], reason: "", state: "done" }],
+  ]);
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("going-run-answer").textContent).toBe("DEMO-15 waits on DEMO-7.")
+    );
+    expect(stepLines()).toEqual([
+      ["Read DEMO-15", "false"],
+      ["Read the comments of DEMO-7", "false"],
+    ]);
+  } finally {
+    restore();
+  }
+});
+
+test("no running line stays once the run ended: a call its end cut draws no line", async () => {
+  const restore = await showRun("stopped", [
+    ["call", { kind: "read", label: "Reading DEMO-15", step: 2, text: "Checking.", tool: "read" }],
+    ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
+    ["call", { kind: "read", label: "Reading the messages of DEMO-7", step: 3, tool: "call_tool" }],
+    ["end", { offers: [], reason: "STOPPED: its person stopped it", state: "stopped" }],
+  ]);
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("going-run-state").textContent).toContain("Stopped")
+    );
+    expect(stepLines()).toEqual([["Read DEMO-15", "false"]]);
+    expect(screen.queryByTestId("going-step-words")).toBeNull();
   } finally {
     restore();
   }

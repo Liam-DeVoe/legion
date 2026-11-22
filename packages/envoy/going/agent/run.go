@@ -49,6 +49,8 @@ const (
 
 // The frames a run's steps show its person's bar.
 const (
+	// frameCall is one tool call, as it starts: callFrame.
+	frameCall = "call"
 	// frameTool is one tool call, as it ended: toolFrame.
 	frameTool = "tool"
 	// frameReply is one model reply: replyFrame.
@@ -57,6 +59,20 @@ const (
 	// (going.BlockData), shown beside the run's answer.
 	frameBlock = "block"
 )
+
+// callFrame is the data of a call frame, which a tool call sends as it starts (callStarted): the
+// step its tool frame will carry, the tool, the kind of step it is, and the present form of its
+// tool's label filled from its arguments, which the bar shows while the call runs. The first call
+// frame of a model call carries the prose that model call streamed so far (Text), "" where it
+// streamed none, which the bar shows as the header line of its calls; each later call frame of
+// that model call carries none.
+type callFrame struct {
+	Step  int     `json:"step"`
+	Tool  string  `json:"tool"`
+	Kind  string  `json:"kind"`
+	Label string  `json:"label"`
+	Text  *string `json:"text,omitempty"`
+}
 
 // toolFrame is the data of a tool frame: the step, the tool, its one-line note for the model and
 // whether it was refused; and what the bar shows of it: its label, the past form of its tool's
@@ -124,6 +140,9 @@ type worker struct {
 	// end.
 	mu      sync.Mutex
 	stepped []agentwire.SavedStep
+	// prose is the prose the model call in flight streams, which the first call frame of its
+	// step carries (callStarted); nil between model calls.
+	prose atomic.Pointer[stepProse]
 
 	// grantEnded is the reason a call's grant ended with, which stops the run; lost is set once
 	// the run is no longer held under its lease, after which the worker writes nothing more of it;
@@ -313,11 +332,12 @@ type stepOutcome struct {
 }
 
 // step makes one step: one agentloop.Run of one model call, from the run's saved steps, with the
-// tools it calls; the model call is saved (OnStep), each tool call as it ends (toolRun). The
-// watchdog gives up the run when the step runs past its model call's time and watchdogGrace. A
-// call the chat model's content filter refused, or whose reply it stopped, saves nothing, and
-// the step is made again (withhold). The run's last model call, which is offered no tool, is told
-// so (lastCallNote).
+// tools it calls; each tool call shows its call frame as it starts (callStarted), with the prose
+// the model call streamed so far (OnText) on the first, and is saved as it ends (toolRun); the
+// model call is saved once its tools ran (OnStep). The watchdog gives up the run when the step
+// runs past its model call's time and watchdogGrace. A call the chat model's content filter
+// refused, or whose reply it stopped, saves nothing, and the step is made again (withhold). The
+// run's last model call, which is offered no tool, is told so (lastCallNote).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld)
 	if err != nil {
@@ -351,8 +371,15 @@ func (w *worker) step() stepOutcome {
 		calls = w.saveReply(base, step)
 		return errStepTaken
 	}
-	if w.agent.config.Hooks {
-		request.OnText = hookOnText
+	prose := &stepProse{}
+	w.prose.Store(prose)
+	defer w.prose.Store(nil)
+	request.OnText = func(delta string) error {
+		prose.add(delta)
+		if w.agent.config.Hooks {
+			return hookOnText(delta)
+		}
+		return nil
 	}
 	result, kept, err := w.runModel(request)
 	switch {
@@ -581,11 +608,11 @@ func withheldTold(withheld map[int]string) string {
 const toolPanicked = "it panicked"
 
 // toolRun is the agentloop Run of tool in the step whose model call is numbered base: it makes the
-// call do makes as the step numbered after base by the tool call's index, and saves it as that
-// step, with what the model is told of its result and the words the bar shows of it (ended). A do
-// that panics is saved as a refusal naming the panic, and the panic goes on to agentloop's
-// recover, so the run's next step, which starts from the saved steps, tells the model the tool
-// failed.
+// call do makes as the step numbered after base by the tool call's index, which it shows the bar
+// first as a running call (callStarted), and saves it as that step, with what the model is told of
+// its result and the words the bar shows of it (ended). A do that panics is saved as a refusal
+// naming the panic, and the panic goes on to agentloop's recover, so the run's next step, which
+// starts from the saved steps, tells the model the tool failed.
 func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, step int, input json.RawMessage) (string, bool)) func(context.Context, agentloop.ToolCall) (string, bool) {
 	return func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
 		step := base + call.Index
@@ -600,6 +627,7 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 			// step of the plan's kind: the bar draws a write only as the tick of a plan's row.
 			kind = kindPlan
 		}
+		w.callStarted(callFrame{Step: step, Tool: tool, Kind: kind, Label: presentLabel(label, arguments)})
 		saveStep := func(result string, refused bool) {
 			if w.lost.Load() {
 				return
@@ -624,6 +652,61 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 		saveStep(result, refused)
 		return result, refused
 	}
+}
+
+// callStarted sends call's frame as the call starts, once, so the bar shows the call's line while
+// it runs; the first call frame of a step carries the prose its model call streamed so far
+// (stepProse.first). A send that fails is logged, and the run goes on: the call's tool frame still
+// ends its step. A run no longer held sends nothing, and a send the server refuses as no longer
+// held loses the run, as a step's save does.
+func (w *worker) callStarted(call callFrame) {
+	if w.lost.Load() {
+		return
+	}
+	if prose := w.prose.Load(); prose != nil {
+		call.Text = prose.first()
+	}
+	frame, _ := json.Marshal(call)
+	request := agentwire.FramesRequest{Run: w.run.ID, LeaseToken: w.run.LeaseToken, Frames: []agentwire.Frame{{Name: frameCall, Data: frame}}}
+	if _, err := w.agent.client.Frames(w.ctx, request); err != nil {
+		var refused *agentwire.Error
+		if errors.As(err, &refused) && refused.Code == agentwire.CodeStaleLease {
+			w.lose()
+			return
+		}
+		if w.ctx.Err() == nil {
+			slog.Warn("agent: send a call's frame", "run", w.run.ID, "step", call.Step, "error", err)
+		}
+	}
+}
+
+// stepProse is the prose one model call streams (agentloop.Request.OnText), which the first call
+// frame of its step carries: the prose so far as that call starts, since the stream and the
+// step's tools run on goroutines of their own.
+type stepProse struct {
+	mu   sync.Mutex
+	text strings.Builder
+	told bool
+}
+
+// add adds delta, the next of the prose the model call streamed.
+func (p *stepProse) add(delta string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.text.WriteString(delta)
+}
+
+// first is the prose streamed so far, "" for none, the first time a call frame of the step asks
+// for it, and nil each later time.
+func (p *stepProse) first() *string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.told {
+		return nil
+	}
+	p.told = true
+	text := p.text.String()
+	return &text
 }
 
 // save saves one step of the run with body, and keeps it for the history of the next step. A

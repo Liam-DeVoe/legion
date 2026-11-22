@@ -1,5 +1,5 @@
 // going_agent_test.go holds the server's side of agent/v1 as the agent meets it: the client of
-// going/agentwire speaking the six calls over a real Unix socket to a server on a real database,
+// going/agentwire speaking the seven calls over a real Unix socket to a server on a real database,
 // whose NOTIFYs a listener hub delivers as cmd/dispatch's does.
 package api
 
@@ -267,15 +267,17 @@ func goingEventually(t *testing.T, what string, done func() bool) {
 	}
 }
 
-// TestTheAgentWireCalls: the six calls of agent/v1 against the server, over its socket. A call with
-// no secret or another one is refused. A stale lease token is refused and writes nothing - a step,
-// a write, an end - and so is a write whose lease another claim took while its route ran, which
-// its transaction checks as it commits. The server runs 16 calls at once and the 17th waits for
-// one to end; a panicking route answers an error and the server answers the next call; an answer
-// past 1 MiB is cut. A claim takes no run whose shape is above the build's, a person works at most
-// 3 runs at once and queues at most 20, a claim waits for a run that becomes ready, a hello frees
-// the leases of this server's earlier instances and of no other server's, and a renew is answered
-// at once when its run is stopped.
+// TestTheAgentWireCalls: the seven calls of agent/v1 against the server, over its socket. A call
+// with no secret or another one is refused. A stale lease token is refused and writes nothing - a
+// step, a frames call, a write, an end - and so is a write whose lease another claim took while its
+// route ran, which its transaction checks as it commits; the owner's frames call appends its frames
+// after the step's and saves no step, and a frame with no name, or a call of none, is refused. The
+// server runs 16 calls at once and the 17th waits for one to end; a panicking route answers an
+// error and the server answers the next call; an answer past 1 MiB is cut. A claim takes no run
+// whose shape is above the build's, a person works at most 3 runs at once and queues at most 20, a
+// claim waits for a run that becomes ready, a hello frees the leases of this server's earlier
+// instances and of no other server's, and a renew is answered at once when its run is stopped,
+// after which its step and its frames are refused.
 func TestTheAgentWireCalls(t *testing.T) {
 	rig := newGoingAgentRig(t, func(agent *AgentListener) { agent.renewWait = goingRenewWait })
 	ctx := context.Background()
@@ -304,6 +306,9 @@ func TestTheAgentWireCalls(t *testing.T) {
 			Body: json.RawMessage(`{"reply":"a stale owner's"}`), Note: "a stale step",
 			Frames: []agentwire.Frame{{Name: "text", Data: json.RawMessage(`"stale"`)}}})
 		requireAgentCode(t, err, agentwire.CodeStaleLease, "a step under a stale token")
+		_, err = rig.client.Frames(ctx, agentwire.FramesRequest{Run: run, LeaseToken: stale,
+			Frames: []agentwire.Frame{{Name: "call", Data: json.RawMessage(`{"step":2,"label":"a stale owner's"}`)}}})
+		requireAgentCode(t, err, agentwire.CodeStaleLease, "a frames call under a stale token")
 		_, err = rig.call(goingRouteCall(run, stale, 1, 1, "dispatch_issue_update", map[string]any{"issue": issue, "title": "Renamed by a stale owner"}))
 		requireAgentCode(t, err, agentwire.CodeStaleLease, "a write under a stale token")
 		err = rig.client.End(ctx, agentwire.EndRequest{Run: run, LeaseToken: stale, State: agentwire.StateDone})
@@ -326,6 +331,22 @@ func TestTheAgentWireCalls(t *testing.T) {
 		if err != nil || saved.Sequence != 2 {
 			t.Fatalf("the owner's step answered %+v, %v; want its two frames at 1 and 2", saved, err)
 		}
+		// The owner's frames call appends its frame after the step's two, and saves no step.
+		appended, err := rig.client.Frames(ctx, agentwire.FramesRequest{Run: run, LeaseToken: token,
+			Frames: []agentwire.Frame{{Name: "call", Data: json.RawMessage(`{"step":2,"label":"Reading the owner's"}`)}}})
+		if err != nil || appended.Sequence != 3 {
+			t.Fatalf("the owner's frames call answered %+v, %v; want its frame at 3", appended, err)
+		}
+		if steps := rig.count(t, `select count(*) from going_run_steps where run_id = $1::uuid`, run); steps != 1 {
+			t.Fatalf("the run holds %d steps after the frames call, want the owner's one step", steps)
+		}
+		if call := rig.count(t, `select count(*) from going_run_events where run_id = $1::uuid and sequence = 3 and name = 'call' and data->>'label' = 'Reading the owner''s'`, run); call != 1 {
+			t.Fatal("the run's events hold no call frame at 3")
+		}
+		_, err = rig.client.Frames(ctx, agentwire.FramesRequest{Run: run, LeaseToken: token, Frames: []agentwire.Frame{{Data: json.RawMessage(`{}`)}}})
+		requireAgentCode(t, err, agentwire.CodeBadRequest, "a frames call whose frame has no name")
+		_, err = rig.client.Frames(ctx, agentwire.FramesRequest{Run: run, LeaseToken: token})
+		requireAgentCode(t, err, agentwire.CodeBadRequest, "a frames call of no frame")
 
 		// Another claim takes the lease while the write's route runs: the route's transaction
 		// checks the lease as it commits, so the change is rolled back.
@@ -544,5 +565,8 @@ func TestTheAgentWireCalls(t *testing.T) {
 		_, err := rig.client.Step(ctx, agentwire.StepRequest{Run: claimed.ID, LeaseToken: claimed.LeaseToken, Step: 1,
 			Kind: agentwire.StepModel, Body: json.RawMessage(`{}`), Note: "after the stop"})
 		requireAgentCode(t, err, agentwire.CodeStaleLease, "a step of a stopped run")
+		_, err = rig.client.Frames(ctx, agentwire.FramesRequest{Run: claimed.ID, LeaseToken: claimed.LeaseToken,
+			Frames: []agentwire.Frame{{Name: "call", Data: json.RawMessage(`{"step":1}`)}}})
+		requireAgentCode(t, err, agentwire.CodeStaleLease, "a frames call of a stopped run")
 	})
 }

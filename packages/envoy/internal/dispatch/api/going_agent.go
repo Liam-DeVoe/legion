@@ -7,12 +7,12 @@ package api
 // call only under the secret it made at its start, compared in constant time.
 //
 // A run is a job on going_runs: queued, it is ready; a claim takes it under a lease, a random
-// token each claim makes anew, which every step, call and end of the run carries and the server
-// checks in the transaction that writes it, so an owner whose lease ended writes nothing. The
-// agent keeps one renew waiting, which renews its leases for goingLeaseTerm and is answered after
-// goingRenewWait, or at once when the person stops one of its runs. A NOTIFY on GoingRunsChannel
-// wakes the waiting claims and renews of every process: a run that becomes ready and a run that
-// is stopped send one. A person's runs share one lock (goingPersonLock): at most
+// token each claim makes anew, which every step, frames call, call and end of the run carries and
+// the server checks in the transaction that writes it, so an owner whose lease ended writes
+// nothing. The agent keeps one renew waiting, which renews its leases for goingLeaseTerm and is
+// answered after goingRenewWait, or at once when the person stops one of its runs. A NOTIFY on
+// GoingRunsChannel wakes the waiting claims and renews of every process: a run that becomes ready
+// and a run that is stopped send one. A person's runs share one lock (goingPersonLock): at most
 // goingWorkingPerPerson work at once, which leaves the next one queued, and at most
 // goingQueuedPerPerson wait in the queue, which refuses a new one (admitGoingRun).
 //
@@ -455,6 +455,8 @@ func (a *AgentListener) dispatch(ctx context.Context, request agentwire.Request)
 		return goingAgentDecoded(request.Body, func(renew agentwire.RenewRequest) (any, *agentwire.Error) { return a.renew(ctx, renew) })
 	case agentwire.CallStep:
 		return goingAgentDecoded(request.Body, func(step agentwire.StepRequest) (any, *agentwire.Error) { return a.step(ctx, step) })
+	case agentwire.CallFrames:
+		return goingAgentDecoded(request.Body, func(frames agentwire.FramesRequest) (any, *agentwire.Error) { return a.frames(ctx, frames) })
 	case agentwire.CallCall:
 		return goingAgentDecoded(request.Body, func(call agentwire.CallRequest) (any, *agentwire.Error) { return a.call(ctx, call) })
 	case agentwire.CallEnd:
@@ -486,7 +488,8 @@ func goingAgentFailed(call string, err error) *agentwire.Error {
 	return goingAgentRefusal(agentwire.CodeInternal, "%s: %v", call, err)
 }
 
-// goingStaleLease is the refusal of a step, call, end or renew whose lease is not the run's.
+// goingStaleLease is the refusal of a step, frames call, call, end or renew whose lease is not the
+// run's.
 func goingStaleLease(run string) *agentwire.Error {
 	return goingAgentRefusal(agentwire.CodeStaleLease,
 		"run %s is not held under this lease token: another owner claimed it, or it no longer works; nothing was written", run)
@@ -998,10 +1001,8 @@ func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest)
 	if request.Step < 1 || request.Kind == "" || !json.Valid(request.Body) {
 		return agentwire.StepAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a step has a number from 1, a kind and a JSON body")
 	}
-	for _, frame := range request.Frames {
-		if frame.Name == "" || !json.Valid(frame.Data) {
-			return agentwire.StepAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "each frame of a step has a name and JSON data")
-		}
+	if refusal := goingFramesRefused(request.Frames, "a step"); refusal != nil {
+		return agentwire.StepAnswer{}, refusal
 	}
 	tx, err := a.s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -1036,6 +1037,57 @@ func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest)
 		a.settleSuspect(request.Run)
 	}
 	return agentwire.StepAnswer{Sequence: sequence}, nil
+}
+
+// frames appends frames to a run's events, in sequence, and saves no step: the frame of a tool
+// call as the call starts, which the bar shows while the call runs. It is refused as a step is:
+// a frame with no name or no JSON data, and a lease token that is not the run's or a run that no
+// longer works, checked under the run's row held for share in the transaction that appends, so a
+// stale owner appends nothing; and its request is bounded as a step's (agentwire.RequestLimit).
+// It ends no suspicion (settleSuspect): a call's frame goes before the call, which may be what
+// kills the agent.
+func (a *AgentListener) frames(ctx context.Context, request agentwire.FramesRequest) (agentwire.FramesAnswer, *agentwire.Error) {
+	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
+		return agentwire.FramesAnswer{}, refusal
+	}
+	if len(request.Frames) == 0 {
+		return agentwire.FramesAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a frames call carries one frame or more")
+	}
+	if refusal := goingFramesRefused(request.Frames, "a frames call"); refusal != nil {
+		return agentwire.FramesAnswer{}, refusal
+	}
+	tx, err := a.s.deps.Store.Pool.Begin(ctx)
+	if err != nil {
+		return agentwire.FramesAnswer{}, goingAgentFailed(agentwire.CallFrames, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if held, err := goingLeaseHeld(ctx, tx, request.Run, request.LeaseToken); err != nil {
+		return agentwire.FramesAnswer{}, goingAgentFailed(agentwire.CallFrames, err)
+	} else if !held {
+		return agentwire.FramesAnswer{}, goingStaleLease(request.Run)
+	}
+	if err := appendGoingRunFrames(ctx, tx, request.Run, request.Frames); err != nil {
+		return agentwire.FramesAnswer{}, goingAgentFailed(agentwire.CallFrames, err)
+	}
+	var sequence int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(sequence), 0) from going_run_events where run_id = $1::uuid`, request.Run).Scan(&sequence); err != nil {
+		return agentwire.FramesAnswer{}, goingAgentFailed(agentwire.CallFrames, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return agentwire.FramesAnswer{}, goingAgentFailed(agentwire.CallFrames, err)
+	}
+	return agentwire.FramesAnswer{Sequence: sequence}, nil
+}
+
+// goingFramesRefused refuses the frames of of, a step or a frames call, where one has no name or
+// no JSON data.
+func goingFramesRefused(frames []agentwire.Frame, of string) *agentwire.Error {
+	for _, frame := range frames {
+		if frame.Name == "" || !json.Valid(frame.Data) {
+			return goingAgentRefusal(agentwire.CodeBadRequest, "each frame of %s has a name and JSON data", of)
+		}
+	}
+	return nil
 }
 
 // goingLeaseHeld locks run's row for share in tx and reports whether token is its lease token and

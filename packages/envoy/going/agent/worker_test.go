@@ -24,7 +24,8 @@ import (
 )
 
 // fakeServer is the server's side of agent/v1 for one worker: it saves each step a run saves,
-// answers each call the run makes with what call answers, and keeps each end.
+// appends the frames of each step and each frames call to the run's events, answers each call the
+// run makes with what call answers, and keeps each end.
 type fakeServer struct {
 	call func(agentwire.CallRequest) agentwire.CallAnswer
 
@@ -32,6 +33,8 @@ type fakeServer struct {
 	steps []agentwire.StepRequest
 	calls []agentwire.CallRequest
 	ends  []agentwire.EndRequest
+	// events is each frame of the run's events, in the order the server took them.
+	events []agentwire.Frame
 }
 
 // newFakeServer is a fakeServer on a socket of the test's own, and the agent's client of it.
@@ -76,7 +79,13 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 		var step agentwire.StepRequest
 		_ = json.Unmarshal(request.Body, &step)
 		s.steps = append(s.steps, step)
+		s.events = append(s.events, step.Frames...)
 		answer = agentwire.StepAnswer{}
+	case agentwire.CallFrames:
+		var frames agentwire.FramesRequest
+		_ = json.Unmarshal(request.Body, &frames)
+		s.events = append(s.events, frames.Frames...)
+		answer = agentwire.FramesAnswer{}
 	case agentwire.CallCall:
 		var call agentwire.CallRequest
 		_ = json.Unmarshal(request.Body, &call)
@@ -629,5 +638,93 @@ func TestAWindowOfTurnsPastTheBoundStopsTheRun(t *testing.T) {
 	end, _ := server.end(t)
 	if end.State != agentwire.StateFailed || end.Reason != ReasonHistoryTooLarge || fake.Count() != 0 {
 		t.Errorf("the run ended %s with %q after %d model calls, want failed with %q before any", end.State, end.Reason, fake.Count(), ReasonHistoryTooLarge)
+	}
+}
+
+// TestACallsLineShowsAsItStarts: each tool call sends its call frame as it starts, so the run's
+// events hold it right before the tool frame its saved step carries: the step that tool frame
+// carries, the tool, its kind and the present form of its label, the words the reply frame names
+// the call with. The calls of a model call run one at a time, in any order; the call frame of the
+// first to start carries the prose that model call streamed so far, and a later one none. The
+// reply frame, saved once the model call's tools ran, comes after them.
+func TestACallsLineShowsAsItStarts(t *testing.T) {
+	const prose = "Checking DEMO-15 and its comments."
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if len(request.ToolResults()) > 0 {
+			return agenttest.Reply{Text: "DEMO-15 has no comments."}
+		}
+		return agenttest.Reply{Text: prose, Calls: []agenttest.Call{
+			{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-15"}},
+			{Name: toolRead, Arguments: map[string]any{"ref": "dispatch://DEMO-15/comments"}},
+		}}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-15"}`)}
+	})
+	workRun(t, fake.Model(), client, "what is DEMO-15")
+	if end, _ := server.end(t); end.State != agentwire.StateDone {
+		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	var names []string
+	var calls []callFrame
+	var tools []toolFrame
+	var replies []replyFrame
+	for _, frame := range server.events {
+		names = append(names, frame.Name)
+		var err error
+		switch frame.Name {
+		case frameCall:
+			var call callFrame
+			err = json.Unmarshal(frame.Data, &call)
+			calls = append(calls, call)
+		case frameTool:
+			var tool toolFrame
+			err = json.Unmarshal(frame.Data, &tool)
+			tools = append(tools, tool)
+		case frameReply:
+			var reply replyFrame
+			err = json.Unmarshal(frame.Data, &reply)
+			replies = append(replies, reply)
+		}
+		if err != nil {
+			t.Fatalf("the %s frame %s does not read: %v", frame.Name, frame.Data, err)
+		}
+	}
+	if want := []string{frameCall, frameTool, frameCall, frameTool, frameReply, frameReply}; !slices.Equal(names, want) {
+		t.Fatalf("the run's events hold the frames %q, want %q: each call's frame before its tool frame, and the reply once its tools ran", names, want)
+	}
+	// The reply frame names the calls in the model's order, the order of their steps.
+	for i, want := range []callFrame{
+		{Step: 2, Tool: toolRead, Kind: kindRead, Label: "Reading DEMO-15"},
+		{Step: 3, Tool: toolRead, Kind: kindRead, Label: "Reading the comments of DEMO-15"},
+	} {
+		if label := replies[0].Labels[i]; label != want.Label {
+			t.Errorf("the reply frame names call %d %q, want %q", i, label, want.Label)
+		}
+		at := slices.IndexFunc(calls, func(call callFrame) bool { return call.Step == want.Step })
+		if at == -1 {
+			t.Errorf("no call frame names step %d", want.Step)
+			continue
+		}
+		if got := calls[at]; got.Tool != want.Tool || got.Kind != want.Kind || got.Label != want.Label {
+			t.Errorf("the call frame of step %d is %+v, want the tool, kind and present label of %+v", want.Step, got, want)
+		}
+		// Each call frame is the one right before its own tool frame.
+		if tools[at].Step != want.Step {
+			t.Errorf("call frame %d, of step %d, came before the tool frame of step %d, want its own", at, want.Step, tools[at].Step)
+		}
+	}
+	// The prose streams on a goroutine of its own, so the first call frame carries what of it
+	// arrived before its call started.
+	if first := calls[0].Text; first == nil || !strings.HasPrefix(prose, *first) {
+		t.Errorf("the first call frame carries the prose %v, want what the model call streamed so far of %q", first, prose)
+	}
+	if second := calls[1].Text; second != nil {
+		t.Errorf("the second call frame of the model call carries the prose %q, want none", *second)
+	}
+	if replies[0].Step != 1 || replies[0].Text != prose {
+		t.Errorf("the reply frame is step %d with %q, want step 1 with the whole prose %q", replies[0].Step, replies[0].Text, prose)
 	}
 }

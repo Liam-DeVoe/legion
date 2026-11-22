@@ -1,5 +1,5 @@
 // Package agentwire is agent/v1, the contract between the Dispatch server and its agent process
-// (envoy-dispatch agent): the six calls the agent makes of the server over a Unix socket, each
+// (envoy-dispatch agent): the seven calls the agent makes of the server over a Unix socket, each
 // request and answer with a fixed JSON shape and a size limit, the frame each travels in, and a
 // client that makes them. Both processes import it, so neither can send a shape the other does
 // not read.
@@ -14,6 +14,8 @@
 //   - renew: renew the instance's leases, carrying its health figures; answered after a wait, or
 //     at once when a run of it is stopped.
 //   - step: save one step of a run, with the frames the person's bar shows of it.
+//   - frames: append frames the person's bar shows of a run to its events, saving no step: the
+//     frame of a tool call as the call starts.
 //   - call: one read or write of Dispatch, a read of GitHub, or a read of the web, as the run's
 //     person.
 //   - end: end the run's turn.
@@ -35,14 +37,15 @@ const Version = "agent/v1"
 // starts it, which the agent sends with every call.
 const SecretSize = 32
 
-// The six calls, as Request.Call names them.
+// The seven calls, as Request.Call names them.
 const (
-	CallHello = "hello"
-	CallClaim = "claim"
-	CallRenew = "renew"
-	CallStep  = "step"
-	CallCall  = "call"
-	CallEnd   = "end"
+	CallHello  = "hello"
+	CallClaim  = "claim"
+	CallRenew  = "renew"
+	CallStep   = "step"
+	CallFrames = "frames"
+	CallCall   = "call"
+	CallEnd    = "end"
 )
 
 // The six kinds of call (CallRequest.Kind).
@@ -184,6 +187,9 @@ const (
 	// the model read, beside the frames it shows.
 	stepRequestLimit = 2 << 20
 	stepAnswerLimit  = 4 << 10
+	// A frames call holds frames alone, bounded as the frames of a step are: by a step's limits.
+	framesRequestLimit = stepRequestLimit
+	framesAnswerLimit  = stepAnswerLimit
 	// A call's arguments are what the model wrote, at most a reply's 512 KiB.
 	callRequestLimit = 1 << 20
 	// A call answers at most CallBodyLimit bytes of body, which JSON carries as base64.
@@ -207,6 +213,8 @@ func RequestLimit(call string) int {
 		return renewRequestLimit
 	case CallStep:
 		return stepRequestLimit
+	case CallFrames:
+		return framesRequestLimit
 	case CallCall:
 		return callRequestLimit
 	case CallEnd:
@@ -225,6 +233,8 @@ func AnswerLimit(call string) int {
 		return renewAnswerLimit
 	case CallStep:
 		return stepAnswerLimit
+	case CallFrames:
+		return framesAnswerLimit
 	case CallCall:
 		return callAnswerLimit
 	case CallEnd:
@@ -259,9 +269,9 @@ const (
 	CodeBadRequest = "BAD_REQUEST"
 	// CodeTooLarge is a frame past its call's size limit.
 	CodeTooLarge = "TOO_LARGE"
-	// CodeStaleLease is a step, call, end or renew whose lease token is not the run's own, or
-	// whose run no longer works: another owner claimed it, or it was stopped. Nothing of it was
-	// written.
+	// CodeStaleLease is a step, frames, call, end or renew whose lease token is not the run's
+	// own, or whose run no longer works: another owner claimed it, or it was stopped. Nothing of
+	// it was written.
 	CodeStaleLease = "STALE_LEASE"
 	// CodeUnknownTool is a route call naming no tool of the server's table.
 	CodeUnknownTool = "UNKNOWN_TOOL"
@@ -496,6 +506,21 @@ type StepRequest struct {
 
 // StepAnswer is the sequence of the last frame the run's events hold once the step is saved.
 type StepAnswer struct {
+	Sequence int64 `json:"sequence"`
+}
+
+// FramesRequest appends Frames to a run's events, in order, and saves no step: the frame of a
+// tool call as the call starts, which the person's bar shows while the call runs. The frames of
+// a step travel with its StepRequest.
+type FramesRequest struct {
+	Run        string  `json:"run"`
+	LeaseToken string  `json:"lease_token"`
+	Frames     []Frame `json:"frames"`
+}
+
+// FramesAnswer is the sequence of the last frame the run's events hold once the frames are
+// appended.
+type FramesAnswer struct {
 	Sequence int64 `json:"sequence"`
 }
 

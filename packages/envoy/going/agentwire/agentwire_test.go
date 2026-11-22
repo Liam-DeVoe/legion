@@ -101,7 +101,8 @@ func fakeServer(t *testing.T, answer func(Request) []byte) string {
 
 // The client sends the contract's version, the secret and the call's own body, decodes the
 // answer's body into the call's shape, hands back the server's refusal as an *Error with its code
-// and reason, and refuses an answer frame past the call's answer limit.
+// and reason, and refuses an answer frame past the call's answer limit. A frames call carries its
+// run, its lease token and its frames, and reads back the sequence the server answers.
 func TestTheClientSpeaksTheContract(t *testing.T) {
 	secret := bytes.Repeat([]byte{7}, SecretSize)
 	path := fakeServer(t, func(request Request) []byte {
@@ -117,6 +118,15 @@ func TestTheClientSpeaksTheContract(t *testing.T) {
 				return reply
 			}
 			reply, _ := json.Marshal(Answer{Body: json.RawMessage(`{"freed":2}`)})
+			return reply
+		case CallFrames:
+			var frames FramesRequest
+			if err := json.Unmarshal(request.Body, &frames); err != nil || frames.Run != "r" || frames.LeaseToken != "l" ||
+				len(frames.Frames) != 1 || frames.Frames[0].Name != "call" || string(frames.Frames[0].Data) != `{"step":2}` {
+				reply, _ := json.Marshal(Answer{Error: &Error{Code: CodeBadRequest, Message: "not the call frame sent"}})
+				return reply
+			}
+			reply, _ := json.Marshal(Answer{Body: json.RawMessage(`{"sequence":3}`)})
 			return reply
 		case CallCall:
 			reply, _ := json.Marshal(Answer{Error: &Error{Code: CodeGrantEnded, Message: "signed out", Reason: "SESSION_ENDED"}})
@@ -139,6 +149,10 @@ func TestTheClientSpeaksTheContract(t *testing.T) {
 	if !errors.As(err, &refused) || refused.Code != CodeGrantEnded || refused.Reason != "SESSION_ENDED" {
 		t.Fatalf("a refused call answered %v, want *Error GRANT_ENDED with its reason", err)
 	}
+	appended, err := client.Frames(ctx, FramesRequest{Run: "r", LeaseToken: "l", Frames: []Frame{{Name: "call", Data: json.RawMessage(`{"step":2}`)}}})
+	if err != nil || appended.Sequence != 3 {
+		t.Fatalf("a frames call answered %+v, %v; want the sequence 3 its frame took", appended, err)
+	}
 	_, err = Client{Path: path, Secret: []byte("wrong")}.Hello(ctx, HelloRequest{Instance: "i-1"})
 	if !errors.As(err, &refused) || refused.Code != CodeUnauthorized {
 		t.Fatalf("a hello under another secret answered %v, want *Error UNAUTHORIZED", err)
@@ -146,5 +160,16 @@ func TestTheClientSpeaksTheContract(t *testing.T) {
 	var tooLarge FrameTooLargeError
 	if err := client.End(ctx, EndRequest{Run: "r", State: StateDone}); !errors.As(err, &tooLarge) {
 		t.Fatalf("an end answered 8 KiB answered %v, want the frame refused past the end's limit", err)
+	}
+}
+
+// A frames call carries frames alone, and is bounded as the frames of a step are: by a step's own
+// request and answer limits, which the server reads every request within.
+func TestAFramesCallIsBoundedAsAStepsFramesAre(t *testing.T) {
+	if request, step := RequestLimit(CallFrames), RequestLimit(CallStep); request != step || request > MaxRequestLimit {
+		t.Errorf("a frames request is bounded at %d bytes, want a step's %d, within the %d the server reads", request, step, MaxRequestLimit)
+	}
+	if answer, step := AnswerLimit(CallFrames), AnswerLimit(CallStep); answer != step {
+		t.Errorf("a frames answer is bounded at %d bytes, want a step's %d", answer, step)
 	}
 }

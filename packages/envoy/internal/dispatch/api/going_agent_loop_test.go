@@ -744,6 +744,73 @@ func TestARunsBlockIsDrawnFromItsSavedResults(t *testing.T) {
 	}
 }
 
+// TestACallsFrameReachesTheRunsEventsBeforeItsToolFrame: the agent's real loop, over the server's
+// socket, sends a tool call's call frame as the call starts, so the run's events hold it before the
+// call's tool frame, with the step that tool frame carries, the tool, its kind and the present form
+// of its label, and with the prose its model call streamed so far; the reply frame, saved once the
+// model call's tools ran, comes after both and names the call with the same words.
+func TestACallsFrameReachesTheRunsEventsBeforeItsToolFrame(t *testing.T) {
+	rig := newGoingAgentRig(t, nil)
+	loop := newGoingLoop(t, rig)
+	issue := rig.issue(t, "The issue the run reads")
+	const words, prose = "what does the issue say", "Reading the issue."
+	loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return agenttest.Reply{Text: prose, Calls: []agenttest.Call{{Name: "read", Arguments: map[string]any{"issue": issue}}}}
+		}
+		return answered("It says what its title says.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+	}
+	type frame struct {
+		name   string
+		Step   int      `json:"step"`
+		Tool   string   `json:"tool"`
+		Kind   string   `json:"kind"`
+		Label  string   `json:"label"`
+		Text   *string  `json:"text"`
+		Labels []string `json:"labels"`
+	}
+	rows, err := rig.database.Pool.Query(context.Background(), `select name, data from going_run_events where run_id = $1::uuid order by sequence`, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (frame, error) {
+		var read frame
+		var data []byte
+		if err := row.Scan(&read.name, &data); err != nil {
+			return read, err
+		}
+		return read, json.Unmarshal(data, &read)
+	})
+	if err != nil {
+		t.Fatalf("read the run's events: %v", err)
+	}
+	var names []string
+	for _, read := range frames {
+		names = append(names, read.name)
+	}
+	if want := []string{"call", "tool", "reply", "reply", agentwire.FrameEnd}; strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Fatalf("the run's events hold the frames %q, want %q: the call's frame before its tool frame, and its reply once it ran", names, want)
+	}
+	call, tool, reply := frames[0], frames[1], frames[2]
+	label := "Reading " + issue
+	if call.Step != 2 || call.Tool != "read" || call.Kind != "read" || call.Label != label {
+		t.Errorf("the call frame is step %d of %s, kind %q, %q; want step 2 of read, kind read, %q", call.Step, call.Tool, call.Kind, call.Label, label)
+	}
+	if call.Text == nil || !strings.HasPrefix(prose, *call.Text) {
+		t.Errorf("the call frame carries the prose %v, want what its model call streamed so far of %q", call.Text, prose)
+	}
+	if tool.Step != call.Step || tool.Tool != call.Tool {
+		t.Errorf("the tool frame is step %d of %s, want the call frame's step %d of %s", tool.Step, tool.Tool, call.Step, call.Tool)
+	}
+	if reply.Step != 1 || len(reply.Labels) != 1 || reply.Labels[0] != label {
+		t.Errorf("the reply frame is step %d with the words %q, want step 1 naming its call %q", reply.Step, reply.Labels, label)
+	}
+}
+
 // TestARunWhoseSavedStepNamesAToolThisBuildLacksFails: a run whose saved step names a tool this
 // build's agent does not know, as a later build that has the tool saves one, fails with
 // UNKNOWN_TOOL naming the tool, and its model is never called (R15, check c25's last row); a run

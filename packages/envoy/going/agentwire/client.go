@@ -49,6 +49,13 @@ func (c Client) Step(ctx context.Context, request StepRequest) (StepAnswer, erro
 	return answer, err
 }
 
+// Frames appends frames to a run's events, saving no step.
+func (c Client) Frames(ctx context.Context, request FramesRequest) (FramesAnswer, error) {
+	var answer FramesAnswer
+	err := c.do(ctx, CallFrames, request, &answer)
+	return answer, err
+}
+
 // Call makes one call of a run.
 func (c Client) Call(ctx context.Context, request CallRequest) (CallAnswer, error) {
 	var answer CallAnswer
