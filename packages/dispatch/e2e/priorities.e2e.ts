@@ -1079,14 +1079,15 @@ const BASE_GROUP_BY = [
 ];
 const BASE_PRIORITIES_GROUP_BY = ["Nothing", "Owner", "Newest event"];
 
-/** Every text the page's main content draws that holds the word parked, which no text of the
- *  priority pages uses (dispatch://INFRA-2947/ask/3cdc235c-aadd-402d-ad50-73bde8950d2a): its
- *  visible text, and the names and hints its elements carry (`aria-label`, `title`,
- *  `placeholder`), each read once the page is drawn. */
+/** Every text the page's main content holds that holds the word parked, which no text of the
+ *  priority pages uses (dispatch://INFRA-2947/ask/3cdc235c-aadd-402d-ad50-73bde8950d2a): every
+ *  text node, the ones only a screen reader reads included, and the names and hints its elements carry
+ *  (`aria-label`, `title`, `placeholder`), each read once the page is drawn. */
 async function parkedTexts(page: Page): Promise<string[]> {
   return page.getByTestId("main-content").evaluate((main) => {
     const found: string[] = [];
-    if (/parked/i.test(main.innerText)) found.push(`text: ${main.innerText.match(/.*parked.*/i)}`);
+    const text = main.textContent ?? "";
+    if (/parked/i.test(text)) found.push(`text: ${text.match(/.{0,60}parked.{0,60}/i)}`);
     for (const element of main.querySelectorAll("*"))
       for (const name of ["aria-label", "title", "placeholder"]) {
         const value = element.getAttribute(name);

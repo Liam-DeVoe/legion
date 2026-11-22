@@ -970,9 +970,11 @@ test("a drag cancelled with Escape keeps its own release off the card's link", a
   const region = await boardRegion();
   const alpha = await within(region).findByRole("article", { name: "CORE-1 Alpha" });
   await act(async () => {
+    // The press that starts a dnd-kit drag, as in `dropInPlace` above.
     fireEvent.mouseDown(alpha, { button: 0, clientX: 10, clientY: 10 });
   });
   await act(async () => {
+    // The move that lifts the card: user-event sends no mousemove of its own.
     fireEvent.mouseMove(document, { clientX: 10, clientY: 40 });
   });
   await act(async () => {
@@ -981,11 +983,13 @@ test("a drag cancelled with Escape keeps its own release off the card's link", a
     fireEvent.keyDown(document, { code: "Escape", key: "Escape" });
   });
   await act(async () => {
+    // The release of that same drag, with the button still down.
     fireEvent.mouseUp(document, { clientX: 10, clientY: 40 });
   });
   expect(region.querySelector(".opacity-50")).toBeNull();
   let followed = true;
   await act(async () => {
+    // The assertion reads fireEvent's boolean: whether the click was cancelled.
     followed = fireEvent.click(within(region).getByRole("link", { name: /CORE-1/ }), {
       button: 0,
     });
@@ -1006,6 +1010,7 @@ test("a drop's mark never cancels a click outside the Board", async () => {
   await dropInPlace(await within(region).findByRole("article", { name: "CORE-1 Alpha" }));
   let followed = false;
   await act(async () => {
+    // The assertion reads fireEvent's boolean: whether the click was cancelled.
     followed = fireEvent.click(elsewhere, { button: 0 });
   });
   expect(followed).toBe(true);
@@ -1566,9 +1571,11 @@ test("a card added while another is dragged is not held, and the anchor holds ag
   });
   await painted();
   await act(async () => {
+    // The press that starts a dnd-kit drag, as in `dropInPlace` above.
     fireEvent.mouseDown(dragged, { button: 0, clientX: 10, clientY: 10 });
   });
   await act(async () => {
+    // The move that lifts the card: user-event sends no mousemove of its own.
     fireEvent.mouseMove(document, { clientX: 10, clientY: 40 });
   });
   expect(dragged.className).toContain("opacity-50");
@@ -1579,9 +1586,12 @@ test("a card added while another is dragged is not held, and the anchor holds ag
   expect(window.scrollY).toBe(0);
 
   await act(async () => {
+    // dnd-kit's own cancel reads `code`, not `key` (`core.esm.js` `handleKeydown`), and this
+    // key is one step of the mouse drag above, which user-event cannot drive.
     fireEvent.keyDown(document, { code: "Escape", key: "Escape" });
   });
   await act(async () => {
+    // The release of that same drag, with the button still down.
     fireEvent.mouseUp(document, { clientX: 10, clientY: 40 });
   });
   await painted();

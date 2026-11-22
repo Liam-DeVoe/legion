@@ -844,10 +844,12 @@ test("a column drag shuts the sort tooltip, and no hover opens one until the dro
   const sort = (name: string) => within(table).getByRole("button", { name });
   await user.hover(sort("Minutes"));
   expect(screen.getByRole("tooltip")).toBeDefined();
+  // A header's drag start: HTML5 drag and drop, which user-event has no form for.
   fireEvent.dragStart(sort("Minutes"));
   expect(screen.queryByRole("tooltip")).toBeNull();
   await user.hover(sort("Region"));
   expect(screen.queryByRole("tooltip")).toBeNull();
+  // The drop that ends that drag, which user-event has no form for either.
   fireEvent.drop(within(table).getByRole("columnheader", { name: /Region/ }));
   expect(screen.queryByRole("tooltip")).toBeNull();
   await user.unhover(sort("Region"));
@@ -871,6 +873,8 @@ test("a column the caller's order keeps in place is not dragged and names no dra
   await user.unhover(sort("Service"));
 
   const service = within(table).getByRole("columnheader", { name: /Service/ });
+  // The drag start, drag over and drop of one header onto another: HTML5 drag and drop, which
+  // user-event has no form for.
   fireEvent.dragStart(sort("Minutes"));
   fireEvent.dragOver(service);
   fireEvent.drop(service);

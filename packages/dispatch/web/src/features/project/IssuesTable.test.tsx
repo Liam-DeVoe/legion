@@ -1304,6 +1304,8 @@ test("on a phone a header dropped after Title or onto Title moves there, and a r
   const drag = (dragged: RegExp, onto: RegExp) => {
     const handle = header(dragged).querySelector('button[draggable="true"]');
     if (handle === null) throw new Error(`The ${dragged} header has no drag handle`);
+    // A header's drag start, drag over, drop and drag end: HTML5 drag and drop, which user-event
+    // has no form for.
     fireEvent.dragStart(handle);
     fireEvent.dragOver(header(onto));
     fireEvent.drop(header(onto));
