@@ -75,8 +75,14 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
-// telling names (tellPassedOver).
+// telling names (tellPassedOver). Every plan_steps row of the issue is read first, before anything
+// is passed over or written, so the default steps are named from the rows that show which names a
+// key held, as a version an owner gives is (record.NameAgents).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	steps, err := e.store.PlanStepsOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
 		return err
@@ -90,23 +96,26 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	return e.takeFirstPlan(ctx, tx, issue, stored, earlier)
+	return e.takeFirstPlan(ctx, tx, issue, stored, earlier, steps)
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
 // generation, and tells what passed over earlier (tellPassedOver): the project's default steps for
-// none (defaultRows), a plan of another generation carried from its start (CarryPlan without
-// carried), and the generation's own rows kept as they are. planFirstStep and the stop of a task
-// before that step (taskStopped) take the first plan through it.
-func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
+// none (defaultRows), named from steps, every plan_steps row of the issue as planFirstStep read
+// them, a plan of another generation carried from its start (CarryPlan without carried), and the
+// generation's own rows kept as they are. planFirstStep and the stop of a task before that step
+// (taskStopped) take the first plan through it.
+func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion,
+	steps []record.PlanStep,
+) error {
 	switch {
 	case stored == nil:
 		sessions, err := e.keySessions(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		version, tasks, steps := e.defaultRows(issue, sessions)
-		if err := e.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
+		version, tasks, named := e.defaultRows(issue, steps, sessions)
+		if err := e.store.PutPlan(ctx, tx, version, tasks, named); err != nil {
 			return err
 		}
 		stored = &record.StoredPlan{Version: version}
@@ -121,13 +130,15 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 // defaultRows is the plan of issue's run whose owner gave none: version 0 of the source
 // default, given now, with no document and no giver, and one task, default, whose block names no
 // steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act. Its
-// agents are named from their own steps and sessions, the names whose claims hold a key's session
-// (keySessions), so no agent of the default steps takes the claim of a key an earlier plan gave.
-func (e *Engine) defaultRows(issue record.Issue, sessions record.KeySessions) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// agents are named as a given version's are (record.NameAgents): from earlier, every plan_steps
+// row of the issue, and sessions, the names whose claims hold a key's session (keySessions), so no
+// agent of the default steps takes the name of a key an earlier plan gave, whatever release wrote
+// the rows that show it.
+func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, sessions record.KeySessions) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, record.NameAgents(nil, sessions, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
+	return version, []record.PlanTask{task}, record.NameAgents(earlier, sessions, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its

@@ -22,13 +22,15 @@ import (
 // reviewer`, starts key k on the claim implementer. Version 2, `implementer reviewer`, names its
 // step 1 from version 1's rows, which name key k, so it takes implementer-2. Version 3, `planner
 // implementer reviewer`, is named from version 2's rows alone, which name no key, and its
-// implementer still takes a name of its own, implementer-3, and runs step 2 there, since the claim
-// implementer holds key k's session. Version 4, `implementer:k reviewer`, gives key k implementer
-// again, from that claim, and its start names key k, the agent whose session the claim holds, so
-// the claim resumes it. After each start the claim it reached records the start's agent, as the
-// runner does; no start may reach a claim whose session is another agent's. The fault: version 3's
-// implementer took implementer and ran on key k's session, which the runner leaves behind as
-// another agent's, so key k's return found that claim holding the other agent's session.
+// implementer takes implementer-2 again, a name only an agent with no key held, never implementer,
+// since the claim implementer holds key k's session; it runs step 2 there, and that claim, whose
+// session is version 2's step 1's, starts it in a session of its own. Version 4, `implementer:k
+// reviewer`, gives key k implementer again, from that claim, and its start names key k, the agent
+// whose session the claim holds, so the claim resumes it. After each start the claim it reached
+// records the start's agent, as the runner does; no start may reach a claim whose session is
+// another key's. The fault: version 3's implementer took implementer and ran on key k's session,
+// which the runner leaves behind as another agent's, so key k's return found that claim holding
+// the other agent's session.
 func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -49,7 +51,7 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 			role: claim.RoleImplementer, place: 1, agent: "key:k"},
 		{steps: []string{"implementer", "reviewer"}, names: []claim.Agent{"implementer-2", "reviewer"},
 			role: claim.RoleImplementer, place: 1, agent: "step:1:a"},
-		{steps: []string{"planner", "implementer", "reviewer"}, names: []claim.Agent{"planner", "implementer-3", "reviewer"},
+		{steps: []string{"planner", "implementer", "reviewer"}, names: []claim.Agent{"planner", "implementer-2", "reviewer"},
 			role: claim.RoleImplementer, place: 2, agent: "step:2:a"},
 		{steps: []string{"implementer:k", "reviewer"}, names: []claim.Agent{"implementer", "reviewer"},
 			role: claim.RoleImplementer, place: 1, agent: "key:k"},
@@ -78,7 +80,7 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 		if row := roleRowNow(t, pool, engine, key, v.role); row.Claim != reached {
 			t.Fatalf("version %d: step %d runs on the claim %q, want %q", version, v.place, row.Claim, reached)
 		}
-		if held := sessionAgentOf(t, pool, reached); held != "" && held != start.Agent {
+		if held := sessionAgentOf(t, pool, reached); held != start.Agent && strings.HasPrefix(held, "key:") {
 			t.Fatalf("version %d: the start for %s reaches %s, whose session is %s's", version, start.Agent, reached, held)
 		} else if version == 4 && held != "key:k" {
 			t.Fatalf("version 4: the claim %s records the agent %q of its session, want key:k's, which the start resumes", reached, held)

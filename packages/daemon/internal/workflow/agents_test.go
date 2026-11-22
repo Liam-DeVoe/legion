@@ -220,26 +220,82 @@ func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
 
 // The project's default steps are named from their own steps when the first step of a run with no
 // owner's plan writes them: each agent has a name, the steps of a key share it. A name whose claim
-// holds the session of a key an earlier plan gave (record.KeySessions) is that key's, so the
-// default steps' implementer takes implementer-2 beside it.
+// holds the session of a key an earlier plan gave (record.KeySessions) is that key's, and so is a
+// name an earlier row of a key held, so the default steps' implementer takes implementer-2 beside
+// either; a name an earlier row with no key held is free.
 func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	engine := returnEngine()
 	engine.cfg.DefaultSteps = []plan.Step{{Role: "implementer"}, {Role: "tester", Key: "r"}, {Role: "reviewer", Key: "r"}}
 	for _, tc := range []struct {
+		earlier  []record.PlanStep
 		sessions record.KeySessions
 		want     []claim.Agent
 	}{
 		{want: []claim.Agent{"implementer", "tester", "tester"}},
 		{sessions: record.KeySessions{"implementer": "k"}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
+		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"}},
+			want: []claim.Agent{"implementer-2", "tester", "tester"}},
+		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer"}},
+			want: []claim.Agent{"implementer", "tester", "tester"}},
 	} {
-		_, _, steps := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 1}, tc.sessions)
+		_, _, steps := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 2}, tc.earlier, tc.sessions)
 		var names []claim.Agent
 		for _, step := range steps {
 			names = append(names, step.Agent)
 		}
 		if !slices.Equal(names, tc.want) {
-			t.Fatalf("the default steps beside the key sessions %v are named %q, want %q", tc.sessions, names, tc.want)
+			t.Fatalf("the default steps beside the rows %+v and the key sessions %v are named %q, want %q", tc.earlier, tc.sessions, names, tc.want)
 		}
+	}
+}
+
+// A run with no owner's plan names its default steps from every earlier row of the issue as well
+// as from the claims' sessions, as a given version is named, so rows a release before the claim
+// recorded its session's agent wrote keep a key's name for it: generation 1 ran default steps
+// `implementer:k reviewer`, its rows naming key k implementer, and no claim records key k's
+// session (that release records none). Generation 2's first step writes the default steps
+// `implementer reviewer`, whose implementer has no key, so it takes implementer-2: key k's claim,
+// and the session it holds, wait for key k. The control: generation 1's rows name no key, and the
+// implementer takes implementer, the name only a step with no key held. The fault: the default
+// steps were named from no earlier row, so their implementer took implementer, and with it the
+// session key k's claim holds unrecorded, which the claim gives the first start that reaches it.
+func TestTheDefaultStepsKeepANameAKeyHeldInRowsOfAnEarlierGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		want claim.Agent
+	}{
+		{name: "generation 1's rows name key k implementer", key: "k", want: "implementer-2"},
+		{name: "control: generation 1's rows name no key", want: "implementer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := engineRunningByDefault(t, "implementer", "reviewer")
+			root := stepRoot(t, pool, phase.Admitted)
+			roles := plan.BuiltinRoles()
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutPlan(t.Context(), tx,
+					record.PlanVersion{Issue: root.Key, Generation: 1, Source: record.PlanSourceDefault, GivenAt: stepClock},
+					[]record.PlanTask{{Issue: root.Key, Generation: 1, Task: plan.DefaultTask, BlockText: "The project's default steps.",
+						StepsByDefault: true, State: record.TaskWaiting}},
+					[]record.PlanStep{
+						{Issue: root.Key, Generation: 1, Task: plan.DefaultTask, Position: 1, Role: "implementer", AgentKey: tc.key,
+							Type: roles["implementer"].Type, Agent: "implementer"},
+						{Issue: root.Key, Generation: 1, Task: plan.DefaultTask, Position: 2, Role: "reviewer",
+							Type: roles["reviewer"].Type, Agent: "reviewer"},
+					})
+			})
+			root.Generation = 2
+			seedIssue(t, pool, root)
+
+			firstStep(t, pool, engine, root.Key)
+
+			stored := planStandingOf(t, pool, engine, root.Key, 2).plan
+			assertDefaultPlan(t, stored, root.Key, 2, []string{"implementer/implementation", "reviewer/review"})
+			if got := agentsOfTask(stored, plan.DefaultTask); !slices.Equal(got, []claim.Agent{tc.want, "reviewer"}) {
+				t.Fatalf("the agents of generation 2's default steps = %q, want %s and reviewer", got, tc.want)
+			}
+		})
 	}
 }
 
