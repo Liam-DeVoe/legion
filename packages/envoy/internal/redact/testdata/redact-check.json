@@ -5924,8 +5924,8 @@
       "capture": "githubapp.answer-words/blob-encoding",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "is in an encoding that is not base64\", sha, path)",
-        "replacement": "has encoding %q, want base64\", sha, path, payload.Encoding)"
+        "preimage": "is in an encoding that is not base64\", ShownBody(sha), ShownBody(path))",
+        "replacement": "has encoding %q, want base64\", ShownBody(sha), ShownBody(path), payload.Encoding)"
       }
     },
     {
