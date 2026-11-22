@@ -295,14 +295,23 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
+  "rerun_child takes parent include where its todo would put the child in work under a parent that is not, which " +
+  "moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming each), and its answer's queued " +
+  "names the status writes it queued. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
   "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
   "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
-  "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
-  "controller's report issue's icebox, because that issue holds no work. " +
+  "One write is not that move: the controller's report issue's icebox, because that issue holds no work. " +
+  "A todo on an issue in Legion's work writes no status, and on a root whose architect claim failed it starts that " +
+  "claim again in its session. " +
+  "Dispatch keeps a parent in work while a child of it is: a backlog or icebox that would leave a child in work under " +
+  "the issue takes children, include to move the open issues under it with it or unlink to take them out from under " +
+  "it (CHILDREN_ARGUMENT_REQUIRED, naming each), and a todo that would put the issue in work under a parent that is " +
+  "not takes parent include, which moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming " +
+  "each). The answer's queued names each status write the call queued. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
   "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
@@ -497,7 +506,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and register_gate's reason for its basis. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and register_gate's reason for its basis. No other operation takes it. rerun_child takes only issue and parent: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -507,6 +516,18 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     plan_reason: { type: "string" },
     round: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
+    children: {
+      type: "string",
+      enum: ["include", "unlink"],
+      description:
+        "set_status's children argument, with backlog or icebox: include moves each open issue under the issue with it, unlink takes each open child out from under it. The daemon requires one where the move would leave a child in work under the issue (CHILDREN_ARGUMENT_REQUIRED, naming each)",
+    },
+    parent: {
+      type: "string",
+      enum: ["include"],
+      description:
+        "set_status's and rerun_child's parent argument, with a todo: include moves each issue above the issue that is not in work to in_progress with it. The daemon requires it where the todo would put the issue in work under a parent that is not (PARENT_ARGUMENT_REQUIRED, naming each)",
+    },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: {
@@ -824,7 +845,7 @@ test("rerun_child refuses a reason before any grant, naming issue and the dispat
   const refusals = [
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
-      'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
+      'rerun_child does not accept field "reason"; it takes issue, parent. Say why in a dispatch comment on the child',
     ],
     // Every field the operation does not take is named, as a phase op's refusal names them.
     [
@@ -2343,6 +2364,142 @@ test("the controller reads the state without a grant and sets an issue's status 
   });
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});
+
+/** The refusal a tool call answers with, as `toolFailure` writes it. */
+const refusal = (text: string) => ({
+  content: [{ type: "text" as const, text }],
+  details: {},
+  isError: true,
+});
+
+// k41 of dispatch://INFRA-4730 (R24 of dispatch://INFRA-3320): a backlog or icebox that would
+// leave a child in work under the issue takes set_status's children argument, include or unlink,
+// which the tool sends in the daemon's own words, and the answer is the daemon's own, the status
+// writes the call queued. A children argument the daemon would refuse — a word outside the two,
+// or one beside a todo, which moves no issue out of work — is refused before the controller's
+// grant is minted, and nothing reaches the daemon.
+test("set_status children", async () => {
+  const queued = { queued: [{ issue: "LEGION-208", status: "backlog", row: 41 }] };
+  const minted: string[] = [];
+  const { calls, daemon } = recordingDaemon({ answers: { issueStatus: queued } });
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  for (const [status, children] of [
+    ["backlog", "include"],
+    ["icebox", "unlink"],
+  ] as const) {
+    await expect(
+      run({ op: "set_status", issue: "LEGION-208", status, children })
+    ).resolves.toEqual({ content: [{ type: "text", text: JSON.stringify(queued) }], details: queued });
+    expect(calls.at(-1)).toEqual([
+      "issueStatus",
+      { grantId: "controller-grant-1", issue: "LEGION-208", status, children },
+    ]);
+  }
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [
+      { op: "set_status", issue: "LEGION-208", status: "backlog", children: "keep" },
+      "set_status's children must be include or unlink",
+    ],
+    [
+      { op: "set_status", issue: "LEGION-208", status: "todo", children: "include" },
+      "set_status's children goes with backlog or icebox, which move an issue out of work",
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual(refusal(text));
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toHaveLength(2);
+});
+
+// k41 of dispatch://INFRA-4730: a todo that would put the issue in work under a parent that is not
+// takes set_status's parent argument, include, which the tool sends as it is named, and a todo
+// that names none sends none, so the daemon judges it by the rule (PARENT_ARGUMENT_REQUIRED). A
+// parent argument the daemon would refuse — a word other than include, or one beside a backlog or
+// icebox, which moves no issue into work — is refused before the grant is minted.
+test("set_status parent", async () => {
+  const queued = { queued: [{ issue: "LEGION-209", status: "todo", row: 42 }] };
+  const minted: string[] = [];
+  const { calls, daemon } = recordingDaemon({ answers: { issueStatus: queued } });
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  await expect(
+    run({ op: "set_status", issue: "LEGION-209", status: "todo", parent: "include" })
+  ).resolves.toEqual({ content: [{ type: "text", text: JSON.stringify(queued) }], details: queued });
+  expect(calls.at(-1)).toEqual([
+    "issueStatus",
+    { grantId: "controller-grant-1", issue: "LEGION-209", status: "todo", parent: "include" },
+  ]);
+  await run({ op: "set_status", issue: "LEGION-209", status: "todo" });
+  const [, plain] = calls.at(-1) ?? [];
+  expect(Object.keys(plain ?? {}).sort()).toEqual(["grantId", "issue", "status"]);
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [
+      { op: "set_status", issue: "LEGION-209", status: "todo", parent: "unlink" },
+      "set_status's parent must be include",
+    ],
+    [
+      { op: "set_status", issue: "LEGION-209", status: "icebox", parent: "include" },
+      "set_status's parent goes with todo, which moves an issue into work",
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual(refusal(text));
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toHaveLength(2);
+});
+
+// k41 of dispatch://INFRA-4730: an architect's rerun_child takes the parent argument as set_status
+// does, since its todo may put the child in work under a parent that is not, and answers the
+// daemon's own answer, the todo it queued. A parent other than include, and a children argument,
+// which no todo takes, are refused before the claim's grant is minted.
+test("rerun_child parent", async () => {
+  const queued = { queued: [{ issue: "LEGION-209", status: "todo", row: 42 }] };
+  const { calls, daemon } = recordingDaemon({ answers: { childRerun: queued } });
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    dispatch: noDispatch,
+    session: () => claimSession("architect"),
+  });
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context());
+
+  await expect(
+    run({ op: "rerun_child", issue: "LEGION-209", parent: "include" })
+  ).resolves.toEqual({ content: [{ type: "text", text: JSON.stringify(queued) }], details: queued });
+  expect(calls.slice(-2)).toEqual([
+    ["grant", { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" }],
+    ["childRerun", { grantId: "grant-208", issue: "LEGION-209", parent: "include" }],
+  ]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [{ op: "rerun_child", issue: "LEGION-209", parent: "unlink" }, "rerun_child's parent must be include"],
+    [
+      { op: "rerun_child", issue: "LEGION-209", children: "include" },
+      'rerun_child does not accept field "children"; it takes issue, parent',
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual(refusal(text));
+  }
+  expect(calls).toHaveLength(before);
 });
 
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the

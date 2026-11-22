@@ -405,10 +405,25 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
+    // The controller's set_status answers each status write it queued (contract 215), and takes
+    // the children argument with a backlog or icebox and the parent argument with a todo, which
+    // Dispatch's parent rule asks for.
     [
       "issueStatus",
       "/legion/v1/issues/status",
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
+      "issue-status.json",
+    ],
+    [
+      "issueStatus",
+      "/legion/v1/issues/status",
+      { grantId: "grant-208", issue: "LEGION-208", status: "backlog", children: "unlink" },
+      "issue-status.json",
+    ],
+    [
+      "issueStatus",
+      "/legion/v1/issues/status",
+      { grantId: "grant-208", issue: "LEGION-208", status: "todo", parent: "include" },
       "issue-status.json",
     ],
     [
@@ -491,6 +506,12 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "childRerun",
       "/legion/v1/children/rerun",
       { grantId: "grant-208", issue: "LEGION-209" },
+      "child-rerun.json",
+    ],
+    [
+      "childRerun",
+      "/legion/v1/children/rerun",
+      { grantId: "grant-208", issue: "LEGION-209", parent: "include" },
       "child-rerun.json",
     ],
   ];

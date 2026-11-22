@@ -1,5 +1,7 @@
 import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
+  LEGION_CHILDREN_ARGUMENTS,
+  LEGION_PARENT_ARGUMENTS,
   LEGION_PHASES,
   LegionGateRegisterRequest,
   type LegionGrant,
@@ -104,17 +106,18 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
  * `read_build` is a phase op and has a line here too: a controller session runs it on this
  * file's own branch rather than through `executePhaseOp`, so this is where its one check that
- * it takes no field stands. */
+ * it takes no field stands. set_status takes the two arguments of Dispatch's parent rule and
+ * rerun_child its parent one (`parentRuleArguments`). */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step", "basis", "basisVersion", "reason"],
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
-  rerun_child: ["issue"],
+  rerun_child: ["issue", "parent"],
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
-  set_status: ["issue", "status"],
+  set_status: ["issue", "status", "children", "parent"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
   pause: ["reason"],
@@ -122,6 +125,48 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
+
+/** The arguments of Dispatch's parent rule (R24 of dispatch://INFRA-3320) that set_status and
+ * rerun_child send, as the call names them: `children`, include or unlink, which goes with a
+ * backlog or icebox, and `parent`, include, which goes with a todo (rerun_child's status is
+ * todo). A call that names one wrongly is refused here in the daemon's own words (its
+ * INVALID_CHILDREN and INVALID_PARENT), before a grant is minted; a call that names neither
+ * sends neither. */
+function parentRuleArguments(
+  parameters: Record<string, unknown>,
+  operation: string,
+  status: (typeof ISSUE_STATUSES)[number]
+): {
+  readonly children?: (typeof LEGION_CHILDREN_ARGUMENTS)[number];
+  readonly parent?: (typeof LEGION_PARENT_ARGUMENTS)[number];
+} {
+  let children: (typeof LEGION_CHILDREN_ARGUMENTS)[number] | undefined;
+  if (parameters.children !== undefined) {
+    children = LEGION_CHILDREN_ARGUMENTS.find((word) => word === parameters.children);
+    if (children === undefined) {
+      throw new Error(`${operation}'s children must be ${LEGION_CHILDREN_ARGUMENTS.join(" or ")}`);
+    }
+    if (status === "todo") {
+      throw new Error(
+        `${operation}'s children goes with backlog or icebox, which move an issue out of work`
+      );
+    }
+  }
+  let parent: (typeof LEGION_PARENT_ARGUMENTS)[number] | undefined;
+  if (parameters.parent !== undefined) {
+    parent = LEGION_PARENT_ARGUMENTS.find((word) => word === parameters.parent);
+    if (parent === undefined) {
+      throw new Error(`${operation}'s parent must be ${LEGION_PARENT_ARGUMENTS.join(" or ")}`);
+    }
+    if (status !== "todo") {
+      throw new Error(`${operation}'s parent goes with todo, which moves an issue into work`);
+    }
+  }
+  return {
+    ...(children === undefined ? {} : { children }),
+    ...(parent === undefined ? {} : { parent }),
+  };
+}
 
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
@@ -405,7 +450,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and register_gate's reason for its basis. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and register_gate's reason for its basis. No other operation takes it. rerun_child takes only issue and parent: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -416,6 +461,21 @@ function toolSchema(pi: PiApi): unknown {
     plan_reason: phaseOp.plan_reason,
     round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
+    // The two arguments of Dispatch's parent rule, in the contract's own words
+    // (`LEGION_CHILDREN_ARGUMENTS`, `LEGION_PARENT_ARGUMENTS`), as the steps above are, so this
+    // schema and the daemon's request admit the same words.
+    children: z
+      .enum(LEGION_CHILDREN_ARGUMENTS)
+      .describe(
+        "set_status's children argument, with backlog or icebox: include moves each open issue under the issue with it, unlink takes each open child out from under it. The daemon requires one where the move would leave a child in work under the issue (CHILDREN_ARGUMENT_REQUIRED, naming each)"
+      )
+      .optional(),
+    parent: z
+      .enum(LEGION_PARENT_ARGUMENTS)
+      .describe(
+        "set_status's and rerun_child's parent argument, with a todo: include moves each issue above the issue that is not in work to in_progress with it. The daemon requires it where the todo would put the issue in work under a parent that is not (PARENT_ARGUMENT_REQUIRED, naming each)"
+      )
+      .optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
@@ -667,14 +727,23 @@ export function createLegionTool(deps: {
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
+        "rerun_child takes parent include where its todo would put the child in work under a parent that is not, which " +
+        "moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming each), and its answer's queued " +
+        "names the status writes it queued. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
         "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
-        "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
-        "controller's report issue's icebox, because that issue holds no work. " +
+        "One write is not that move: the controller's report issue's icebox, because that issue holds no work. " +
+        "A todo on an issue in Legion's work writes no status, and on a root whose architect claim failed it starts that " +
+        "claim again in its session. " +
+        "Dispatch keeps a parent in work while a child of it is: a backlog or icebox that would leave a child in work under " +
+        "the issue takes children, include to move the open issues under it with it or unlink to take them out from under " +
+        "it (CHILDREN_ARGUMENT_REQUIRED, naming each), and a todo that would put the issue in work under a parent that is " +
+        "not takes parent include, which moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming " +
+        "each). The answer's queued names each status write the call queued. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
@@ -814,9 +883,11 @@ export function createLegionTool(deps: {
           if (status === undefined) {
             throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);
           }
+          const parentRule = parentRuleArguments(parameters, operation, status);
           const { grantId } = await controllerGrant(active.sessionID);
-          await client.issueStatus({ grantId, issue, status });
-          return jsonSuccess({});
+          // The daemon's answer: each status write the call queued, none for a todo on an issue
+          // in Legion's work, which writes no status.
+          return jsonSuccess(await client.issueStatus({ grantId, issue, status, ...parentRule }));
         }
         switch (operation) {
           case "register_gate": {
@@ -960,12 +1031,12 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "rerun_child": {
+            // Validated whole before the grant is minted: its todo takes the parent argument
+            // alone. The answer is the daemon's: the status write the call queued.
+            const issue = requiredString(parameters, operation, "issue");
+            const parentRule = parentRuleArguments(parameters, operation, "todo");
             const grantId = await mintClaimGrant(client, active);
-            await client.childRerun({
-              grantId,
-              issue: requiredString(parameters, operation, "issue"),
-            });
-            return jsonSuccess({});
+            return jsonSuccess(await client.childRerun({ grantId, issue, ...parentRule }));
           }
           default:
             throw new Error(`Unsupported legion operation: ${operation}`);

@@ -5,8 +5,10 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
+  LEGION_CHILDREN_ARGUMENTS,
   LEGION_FAILURE_CAUSES,
   LEGION_HELD_REASONS,
+  LEGION_PARENT_ARGUMENTS,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -51,6 +53,7 @@ import {
   LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionStatusCallResponse,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
@@ -158,7 +161,9 @@ const schemas: Record<string, z.ZodType> = {
   "operator-claims.json": LegionOperatorClaimsResponse,
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
-  "issue-status.json": LegionEmptyResponse,
+  // The status calls' answer (contract 215), the writes the controller's set_status and an
+  // architect's rerun_child queued (internal/api's StatusCallResponse).
+  "issue-status.json": LegionStatusCallResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -167,7 +172,7 @@ const schemas: Record<string, z.ZodType> = {
   "phase-retry.json": LegionEmptyResponse,
   "signoff.json": LegionEmptyResponse,
   "root-close.json": LegionEmptyResponse,
-  "child-rerun.json": LegionEmptyResponse,
+  "child-rerun.json": LegionStatusCallResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
@@ -938,9 +943,11 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 
 // The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
-// `design_gate`.
-test("the held words are the daemon's, with awaiting_children before design_gate", () => {
+// `design_gate`, and dispatch://INFRA-4730 `chain_unknown`, an issue on a Dispatch chain the
+// daemon's copy cannot show to its top, at the head of the ladder (contract 215).
+test("the held words are the daemon's, with chain_unknown first and awaiting_children before design_gate", () => {
   expect(LEGION_HELD_REASONS).toEqual([
+    "chain_unknown",
     "tree_closed",
     "tree_parked",
     "label_off",
@@ -1800,6 +1807,16 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
     ],
     [
+      "issue status with its children argument",
+      LegionIssueStatusRequest,
+      { grantId: "grant-208", issue: "LEGION-208", status: "backlog", children: "include" },
+    ],
+    [
+      "issue status with its parent argument",
+      LegionIssueStatusRequest,
+      { grantId: "grant-208", issue: "LEGION-208", status: "todo", parent: "include" },
+    ],
+    [
       "project pause",
       LegionProjectPauseRequest,
       { grantId: "controller-grant-1", reason: "the model provider is refusing every turn" },
@@ -1850,6 +1867,11 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
+    [
+      "child with its parent argument",
+      LegionChildRequest,
+      { grantId: "grant-208", issue: "LEGION-209", parent: "include" },
+    ],
     // The claim wire's own bodies (contracts 21 and 46), read from the goldens the Go side
     // writes rather than invented here.
     ["ready", LegionReadyRequest, ready],
@@ -1886,6 +1908,31 @@ test("an escalation rejects empty required fields", () => {
   for (const field of ["grantId", "issue", "reason"] as const) {
     expect(LegionEscalateRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
   }
+});
+
+// Contract 215: set_status takes the two arguments of Dispatch's parent rule and rerun_child the
+// parent one, each in the daemon's own words (`intake.IncludeArgument`, `intake.UnlinkArgument`):
+// `children` is `include` or `unlink` and `parent` is `include`. A word the daemon refuses
+// (`INVALID_CHILDREN`, `INVALID_PARENT`) is refused here before the request leaves the pane, and
+// rerun_child takes no `children`, since its todo moves no issue out of work.
+test("a status call's children and parent arguments are the daemon's words", () => {
+  expect(LEGION_CHILDREN_ARGUMENTS).toEqual(["include", "unlink"]);
+  expect(LEGION_PARENT_ARGUMENTS).toEqual(["include"]);
+  const status = { grantId: "grant-208", issue: "LEGION-208" };
+  for (const children of LEGION_CHILDREN_ARGUMENTS) {
+    expect(
+      LegionIssueStatusRequest.safeParse({ ...status, status: "icebox", children }).success
+    ).toBeTrue();
+  }
+  expect(
+    LegionIssueStatusRequest.safeParse({ ...status, status: "backlog", children: "keep" }).success
+  ).toBeFalse();
+  expect(
+    LegionIssueStatusRequest.safeParse({ ...status, status: "todo", parent: "unlink" }).success
+  ).toBeFalse();
+  const rerun = { grantId: "grant-208", issue: "LEGION-209" };
+  expect(LegionChildRequest.safeParse({ ...rerun, parent: "unlink" }).success).toBeFalse();
+  expect(LegionChildRequest.safeParse({ ...rerun, children: "include" }).success).toBeFalse();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {
@@ -1949,16 +1996,16 @@ test("the state golden names what every blocked issue waits on", () => {
 });
 
 // Contract 51: the cap counts the issues at work, so `active` and `waiting` name issues of any
-// depth and say nothing about which trees run. `trees` says it instead — the root of every live
-// tree — and each issue's `tree` names its own root, so a child is told from a root. The computed
-// golden carries a child: LEGION-209 stands in LEGION-208's tree, and all three live trees are
-// named while one issue alone holds a slot. Neither key is required: a daemon at this contract
-// strips both from the state it serves a caller whose pod's plugin is older than 51
-// (`api.stateFor`, `withoutTrees`). So a body without them parses, and a reader of it
-// learns nothing about which trees run rather than losing the whole state; what is refused is a
-// `tree` that is no issue key. A daemon older than this plugin is kept away by the boot gate and
-// `legion probe-image`, not by this schema.
-test("the state names the live trees and each issue's own tree", () => {
+// depth and say nothing about which roots are in work. `trees` says it instead — the roots in
+// Legion's work, read from Dispatch's chain since contract 215 — and each issue's `tree` names its
+// gate root, so a child is told from a root. The computed golden carries a child: LEGION-209's
+// gate root is LEGION-208, and all three roots in work are named while one issue alone holds a
+// slot. Neither key is required: a daemon at this contract strips both from the state it serves a
+// caller whose pod's plugin is older than 51 (`api.stateFor`, `withoutTrees`). So a body without
+// them parses, and a reader of it learns nothing about which roots are in work rather than losing
+// the whole state; what is refused is a `tree` that is no issue key. A daemon older than this
+// plugin is kept away by the boot gate and `legion probe-image`, not by this schema.
+test("the state names the roots in work and each issue's gate root", () => {
   const state = LegionStateResponse.parse(fixture("state-controller-claim.json"));
 
   expect(state.admission?.active).toEqual(["LEGION-208"]);
@@ -1987,15 +2034,17 @@ test("the state names the live trees and each issue's own tree", () => {
   expect(LegionStateResponse.safeParse(malformed).success).toBeFalse();
 });
 
-// Contract 38: a release is accepted whatever its children's links say, so the answer says which
-// of them it started and which it left held, with what each held child waits on. No plugin code
-// reads the answer — the `legion` tool hands it to the agent whole — so a body with `released`
-// alone is read, and `held` carries the same `{issue, blockedBy}` row the state's `blocked` does.
-test("a wave release answers what it started and what it held", () => {
+// Contract 38: a release says which of its children it started and which it left held, with what
+// each held child waits on, and since contract 215 each status write it queued (`queued`), a todo
+// for each child in the wave's order. No plugin code reads the answer — the `legion` tool hands it
+// to the agent whole — so a body with `released` alone is read, and `held` carries the same
+// `{issue, blockedBy}` row the state's `blocked` does.
+test("a wave release answers what it started, what it held and what it queued", () => {
   expect(LegionWaveReleaseResponse.parse(fixture("wave-release.json"))).toEqual({
     released: ["LEGION-209"],
     started: [],
     held: [],
+    queued: [{ issue: "LEGION-209", status: "todo", row: 43 }],
   });
   expect(
     LegionWaveReleaseResponse.safeParse({
@@ -2006,6 +2055,28 @@ test("a wave release answers what it started and what it held", () => {
   ).toBeTrue();
   expect(LegionWaveReleaseResponse.safeParse({ released: ["LEGION-209"] }).success).toBeTrue();
   expect(LegionWaveReleaseResponse.safeParse({ released: "LEGION-209" }).success).toBeFalse();
+  expect(
+    LegionWaveReleaseResponse.safeParse({ queued: [{ issue: "LEGION-209", row: 0 }] }).success
+  ).toBeFalse();
+});
+
+// Contract 215: set_status and rerun_child answer once their call's transaction commits, naming
+// each status write the call queued, and no write where the call writes none (a todo on an issue
+// in Legion's work). The `legion` tool hands the answer to the agent whole, so a body without
+// `queued`, which a daemon below 215 answered, is read too; a row that is no outbox row's id is
+// refused.
+test("a status call answers the writes it queued", () => {
+  expect(LegionStatusCallResponse.parse(fixture("issue-status.json"))).toEqual({
+    queued: [{ issue: "LEGION-208", status: "backlog", row: 41 }],
+  });
+  expect(LegionStatusCallResponse.parse(fixture("child-rerun.json"))).toEqual({
+    queued: [{ issue: "LEGION-209", status: "todo", row: 42 }],
+  });
+  expect(LegionStatusCallResponse.safeParse({ queued: [] }).success).toBeTrue();
+  expect(LegionStatusCallResponse.safeParse({}).success).toBeTrue();
+  expect(
+    LegionStatusCallResponse.safeParse({ queued: [{ issue: "LEGION-208", row: -1 }] }).success
+  ).toBeFalse();
 });
 
 test("the Stage 3 state golden carries the record status and pending Dispatch status write", () => {
@@ -2750,14 +2821,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
-  // the keys contract 214 added aside: the mark names the contract the caller is served at, 199,
-  // the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
+  // the keys contracts 214 and 215 added aside: the mark names the contract the caller is served
+  // at, 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
   // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
   // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
   // fixture does not hold. No band stands between 199 and 202 but the repositories block's, and
-  // the one band above 202 is contract 214's, which takes every root's `treeRuns` and the
-  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), so
-  // the narrowing changes this one block and those keys and nothing beside them.
+  // the two bands above 202 are contract 214's, which takes every root's `treeRuns` and the
+  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and
+  // contract 215's, which takes `daemon.convertedAt` (`withoutConvertedAt`) and reads a
+  // `chain_unknown` hold as `unclassified`, of which the golden holds none, so the narrowing
+  // changes this one block and those keys and nothing beside them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2774,6 +2847,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
+  if (!isJsonObject(rest.daemon)) {
+    throw new Error("state fixture lacks its daemon block");
+  }
+  delete rest.daemon.convertedAt;
   if (!isJsonObject(rest.issues)) {
     throw new Error("state fixture lacks its issues");
   }

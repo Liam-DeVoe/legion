@@ -2726,11 +2726,16 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 }
 
 // `legion state` prints what the project holds beside what it waits on: how many issues the
-// admission list holds and how many of each word for why, in the ladder's own order
-// (record.HeldReasons) whatever order the state lists them in, and `none` where it holds
-// nothing, as the blocked line reads. The prefix names the admission list, which is what tells
-// a reader the line from the held lifecycle rows the same output prints below it. A grep of the
-// source would pass on a comment, so this reads what the command prints.
+// admission list holds and how many of each word for why, the words this build knows in the
+// ladder's own order (record.HeldReasons) whatever order the state lists them in, then each word
+// it does not know, sorted, so the counts add up to the total a later daemon's state names, and
+// `none` where it holds nothing, as the blocked line reads. The prefix names the admission list,
+// which is what tells a reader the line from the held lifecycle rows the same output prints below
+// it. A grep of the source would pass on a comment, so this reads what the command prints.
+//
+// Negative control, run when this was written: with heldAdmissionSummary walking
+// record.HeldReasons alone, as it did before, the words it does not know are left out of the
+// counts and both cases that carry them fail.
 func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 	admission := func(held string) string {
 		return `"admission":{"cap":2,"active":["LEGION-208"],"waiting":["LEGION-211"],"blocked":[],"held":` + held + `}`
@@ -2742,14 +2747,27 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 		{
 			name: "two words, counted in the ladder's order",
 			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
-				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
+				`{"issue":"LEGION-210","reason":"chain_unknown"},` +
 				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
-			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
+			want: "admission.held: 3 issues — chain_unknown 1, design_gate 2\n",
 		},
 		{
 			name: "one issue no word is true of",
 			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
 			want: "admission.held: 1 issue — unclassified 1\n",
+		},
+		{
+			name: "words this build does not know, counted after the known ones in sorted order",
+			held: `[{"issue":"LEGION-209","reason":"waits_on_a_moon"},` +
+				`{"issue":"LEGION-210","reason":"label_off"},` +
+				`{"issue":"LEGION-212","reason":"awaits_a_vote","heldBy":["LEGION-208"]},` +
+				`{"issue":"LEGION-213","reason":"waits_on_a_moon"}]`,
+			want: "admission.held: 4 issues — label_off 1, awaits_a_vote 1, waits_on_a_moon 2\n",
+		},
+		{
+			name: "only a word this build does not know",
+			held: `[{"issue":"LEGION-209","reason":"awaits_a_vote"}]`,
+			want: "admission.held: 1 issue — awaits_a_vote 1\n",
 		},
 		{name: "none", held: `[]`, want: "admission.held: none\n"},
 	} {

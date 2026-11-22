@@ -587,7 +587,9 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "legion %s on %s — schema %d, boot %d started %s (first boot %s)\n",
 		state.Daemon.Project, address, state.Daemon.SchemaVersion, state.Daemon.Boots,
 		state.Daemon.StartedAt.Format(time.RFC3339), state.Daemon.FirstBootAt.Format(time.RFC3339))
-	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
+	// `admission.trees` is the roots in Legion's work (R22 of dispatch://INFRA-3320): an issue in
+	// work with no issue above it in work on its Dispatch chain.
+	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d roots in work; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
@@ -661,9 +663,10 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 
 // heldAdmissionSummary is the one line an operator reads for the issues the daemon's own record
 // holds in the workflow that stand in neither the active set nor the waiting line
-// (api.Admission.Held): how many, and how many of each word for why, in the ladder's own order
-// (record.HeldReasons), so two readings of one state print one line. A word no row carries is
-// left out.
+// (api.Admission.Held): how many, and how many of each word for why, the words this build knows
+// in the ladder's own order (record.HeldReasons) and then each word it does not know in sorted
+// order, so two readings of one state print one line and the counts add up to the total whatever
+// words a later daemon writes. A word no row carries is left out.
 //
 // The prefix names the admission list because `legion state` prints a second held line below
 // this one, the lifecycle rows the daemon holds behind their issues' running ones
@@ -682,7 +685,11 @@ func heldAdmissionSummary(held []api.HeldIssue) string {
 	for _, reason := range record.HeldReasons {
 		if count := counts[reason]; count > 0 {
 			words = append(words, fmt.Sprintf("%s %d", reason, count))
+			delete(counts, reason)
 		}
+	}
+	for _, reason := range slices.Sorted(maps.Keys(counts)) {
+		words = append(words, fmt.Sprintf("%s %d", reason, counts[reason]))
 	}
 	noun := "issues"
 	if len(held) == 1 {
