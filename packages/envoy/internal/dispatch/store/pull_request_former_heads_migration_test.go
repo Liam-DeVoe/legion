@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // formerHeadsInstall is the version of the migration that makes pull_request_former_heads: the
@@ -498,4 +499,90 @@ func TestTheFormerHeadsInstallWaitsOutABusyWriterAndGivesWayInACycle(t *testing.
 		}
 		installed(t, store)
 	})
+}
+
+// TestAResultAndARowThatStartsAtItsIssueAtOnceLeaveTheCandidate: after the install, a tester's
+// result at 1111… against CORE-1's check and the first write of CORE-1's #72 at 2222… run in two
+// transactions at once. Each trigger reads what the other wrote only once the other committed, so
+// each reads under CORE-1's lock: whichever transaction comes second waits for the first's commit
+// and then reads its write. Either way #72 ends with 1111… as a candidate, unverified.
+func TestAResultAndARowThatStartsAtItsIssueAtOnceLeaveTheCandidate(t *testing.T) {
+	ctx := context.Background()
+	for _, resultFirst := range []bool{false, true} {
+		name := "the row starts first"
+		if resultFirst {
+			name = "the result is recorded first"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := openEmptyTestStore(t)
+			documents := installFixture(t, store)
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			connect := func(what string) *pgx.Conn {
+				t.Helper()
+				conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
+				if err != nil {
+					t.Fatalf("connect %s: %v", what, err)
+				}
+				t.Cleanup(func() { conn.Close(context.Background()) })
+				return conn
+			}
+			row := func(db interface {
+				Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+			}) error {
+				_, err := db.Exec(ctx, `insert into pull_request_heads (repo, number, head_sha, state, issue_key)
+					values ('acme/widgets', 72, $1, 'open', 'CORE-1')`, installH2)
+				return err
+			}
+			result := func(db interface {
+				Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+			}) error {
+				_, err := db.Exec(ctx, installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], installH1)
+				return err
+			}
+			first, second := row, result
+			if resultFirst {
+				first, second = result, row
+			}
+			held, err := connect("the first writer").Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the first writer: %v", err)
+			}
+			defer held.Rollback(context.Background())
+			if err := first(held); err != nil {
+				t.Fatalf("the first write: %v", err)
+			}
+			conn := connect("the second writer")
+			pid, done := conn.PgConn().PID(), make(chan error, 1)
+			go func() { done <- second(conn) }()
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if len(done) > 0 {
+					t.Log("the second write committed while the first was open")
+					break
+				}
+				var waits bool
+				if err := store.Pool.QueryRow(ctx, `select exists (select 1 from pg_locks where pid = $1 and not granted)`, pid).Scan(&waits); err != nil {
+					t.Fatalf("read the lock waits: %v", err)
+				}
+				if waits {
+					t.Log("the second write waits for a lock while the first is open")
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the second write neither committed nor waited for a lock")
+				}
+			}
+			if err := held.Commit(ctx); err != nil {
+				t.Fatalf("commit the first write: %v", err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("the second write: %v", err)
+			}
+			heads, _ := formerHeadsAndOwed(t, store)
+			if !slices.Contains(heads, "acme/widgets#72@1111 unverified") {
+				t.Fatalf("after a result at 1111… and #72's start at CORE-1, written at once, the former heads are %v, want #72@1111 unverified among them: each trigger read before the other's write committed", heads)
+			}
+		})
+	}
 }
