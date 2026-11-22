@@ -3092,6 +3092,73 @@ function factsOf<T extends Fact["type"]>(
   );
 }
 
+/** An exact npm version (no range, no tag): what an Oh My Pi plugins package.json pins a package
+ *  at when it gives one, so `bun install` installs that version and no other. */
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** A package an Oh My Pi plugins package.json pins by an exact npm version (`"<name>":
+ *  "<version>"`), with the manifest that pins it. */
+export interface NpmPin {
+  readonly package: string;
+  readonly version: string;
+  readonly manifest: Pick<Manifest, "repository" | "path">;
+}
+
+/** The packages the plugin lists of `manifests` pin by an exact npm version, in the manifests'
+ *  order. build.ts reads each as that version ships it. */
+export function npmPins(manifests: readonly Manifest[]): NpmPin[] {
+  return manifests.flatMap((manifest) =>
+    manifest.facts.flatMap((fact): NpmPin[] =>
+      fact.type === "installs-package" && fact.repo === "" && EXACT_VERSION.test(fact.version)
+        ? [{ package: fact.package, version: fact.version, manifest }]
+        : []
+    )
+  );
+}
+
+/** The release tag of `version` of the package whose package.json is `manifestPath` in its
+ *  repository: `<directory>-v<version>` for a package in a directory (the directory's name, as
+ *  `pi-envoy-v15.1.2` names a release of packages/pi-envoy), `v<version>` for one at the root. */
+export function releaseTag(manifestPath: string, version: string): string {
+  const dir = path.posix.dirname(manifestPath);
+  return dir === "." ? `v${version}` : `${path.posix.basename(dir)}-v${version}`;
+}
+
+/** The names of the skills an npm tarball of an Oh My Pi plugin package ships, from its files
+ *  (`files`, by path inside the package: the tarball's `package/` taken off): each directory its
+ *  manifest (`omp`, else `pi`) declares (`declaredSkillEntries`) that stays inside the package,
+ *  else `skills/`, the directory itself when it holds a SKILL.md, else each directory one level
+ *  below it that does, as Oh My Pi scans a skill directory. */
+export function tarballSkills(files: ReadonlyMap<string, string>): string[] {
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(files.get("package.json") ?? "null");
+  } catch {
+    return [];
+  }
+  const manifest =
+    pkg !== null && typeof pkg === "object"
+      ? (Reflect.get(pkg, "omp") ?? Reflect.get(pkg, "pi"))
+      : undefined;
+  const dirs = (declaredSkillEntries(manifest) ?? ["skills"]).flatMap((entry) => {
+    const dir = insidePackage(entry);
+    return dir === undefined ? [] : [dir];
+  });
+  const names = new Set<string>();
+  for (const dir of dirs) {
+    const prefix = dir === "" ? "" : `${dir}/`;
+    if (files.has(`${prefix}SKILL.md`)) {
+      names.add(path.posix.basename(dir));
+      continue;
+    }
+    for (const file of files.keys()) {
+      const rest = file.startsWith(prefix) ? file.slice(prefix.length).split("/") : [];
+      if (rest.length === 2 && rest[1] === "SKILL.md" && rest[0] !== undefined) names.add(rest[0]);
+    }
+  }
+  return [...names].sort();
+}
+
 /** A repository an installer pins: a `github:` dependency of an Oh My Pi plugins package.json, an
  *  `ensure_vendor` clone or a `gh skill install` of an installer script, the marketplace
  *  repository an installer installs a plugin from, and the source repository of each plugin an

@@ -40,6 +40,7 @@ import {
 } from "./copies";
 import { mtimeRange } from "./countsql";
 import { blindOrder } from "./judge";
+import { loadProfile } from "./load";
 import { psqlRows } from "./psql-rows";
 import { READER_TRIES } from "./readers";
 import {
@@ -94,6 +95,15 @@ const ROOT_DIGESTS = ["2026-11-20T00:10:00.000Z", ROOT_BUILD, "2026-11-20T02:30:
 const POWERS_OLD = "7".repeat(40);
 const POWERS_AT = "2026-11-20T01:30:00.000Z";
 const POWERS_MADE = "2026-11-20T00:30:00.000Z";
+/** The commit of acme/kit's release tag kit-v1.0.0, whose packages/kit ships kit-one alone. */
+const KIT_V1 = "8".repeat(40);
+/** acme/dots before POWERS_AT: its plugin list pins @acme/kit 1.0.0, and it holds no pool yet. */
+const DOTS_OLD = "9".repeat(40);
+/** The release tags GitHub lists of each made-up repository. */
+const TAGS: Readonly<Record<string, readonly string[]>> = {
+  "acme/skills": ["pi-acme-v1.0.0"],
+  "acme/kit": ["kit-v1.0.0", "kit-v2.0.0"],
+};
 const LINE = "2. Write each step's result on one line.";
 const scratch = temporaryDirectory("skill-cuts-build", { real: true });
 
@@ -1167,7 +1177,13 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   "acme/dots": {
     "omp/plugins/package.json": JSON.stringify({
       name: "omp-plugins",
-      dependencies: { "acme-powers": "github:acme/powers#v1.2.0" },
+      dependencies: {
+        "acme-powers": "github:acme/powers#v1.2.0",
+        // Packages the dev box pins by npm versions, and a clone that is one skill at its root.
+        "@acme/kit": "2.0.0",
+        "@acme/gone": "3.0.0",
+        "acme-one": "github:acme/one-skill#v1",
+      },
     }),
     "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }),
     "omp/extensions/skill-pools.ts": [
@@ -1192,6 +1208,24 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   "acme/pack": {
     "skills/pack-one/SKILL.md": skillMd("pack-one"),
     "skills/pack-later/SKILL.md": skillMd("pack-later"),
+  },
+  // Two packages: kit tags each release; gone tags none, and the registry's tarball of gone
+  // 3.0.0 ships gone-one alone.
+  "acme/kit": {
+    "packages/kit/package.json": JSON.stringify({ name: "@acme/kit", omp: { skills: ["skills"] } }),
+    "packages/kit/skills/kit-one/SKILL.md": skillMd("kit-one"),
+    "packages/kit/skills/kit-two/SKILL.md": skillMd("kit-two"),
+    "packages/gone/package.json": JSON.stringify({
+      name: "@acme/gone",
+      omp: { skills: ["skills"] },
+    }),
+    "packages/gone/skills/gone-one/SKILL.md": skillMd("gone-one"),
+    "packages/gone/skills/gone-two/SKILL.md": skillMd("gone-two"),
+  },
+  // A repository that is one skill, at its root.
+  "acme/one-skill": {
+    "package.json": JSON.stringify({ name: "acme-one", pi: { skills: ["."] } }),
+    "SKILL.md": skillMd("one-skill"),
   },
 };
 
@@ -1218,6 +1252,62 @@ const PINNED: Record<string, { sha: string; files: Record<string, string> }> = {
       "skills/power-one/SKILL.md": skillMd("power-one"),
     },
   },
+  [`acme/kit@${KIT_V1}`]: {
+    sha: KIT_V1,
+    files: {
+      "packages/kit/package.json": JSON.stringify({
+        name: "@acme/kit",
+        omp: { skills: ["skills"] },
+      }),
+      "packages/kit/skills/kit-one/SKILL.md": skillMd("kit-one"),
+    },
+  },
+  "acme/kit@kit-v1.0.0": { sha: KIT_V1, files: {} },
+  [`acme/dots@${DOTS_OLD}`]: {
+    sha: DOTS_OLD,
+    files: {
+      ...Object.fromEntries(
+        Object.entries(REPOSITORIES["acme/dots"] ?? {}).filter(
+          ([file]) => file !== "skills-sources.json"
+        )
+      ),
+      "omp/plugins/package.json": JSON.stringify({
+        name: "omp-plugins",
+        dependencies: {
+          "acme-powers": "github:acme/powers#v1.2.0",
+          "@acme/kit": "1.0.0",
+          "@acme/gone": "3.0.0",
+          "acme-one": "github:acme/one-skill#v1",
+        },
+      }),
+    },
+  },
+};
+
+/** A gzipped tar of `files`, each under `package/`, as npm packs a package. */
+function tgz(files: Record<string, string>): Uint8Array {
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const blocks: Uint8Array[] = [];
+  for (const [name, text] of Object.entries(files)) {
+    const body = encode(text);
+    const header = new Uint8Array(512);
+    header.set(encode(`package/${name}`), 0);
+    header.set(encode(`${body.length.toString(8).padStart(11, "0")}\0`), 124);
+    header.set(encode("0"), 156);
+    blocks.push(header, body, new Uint8Array((512 - (body.length % 512)) % 512));
+  }
+  blocks.push(new Uint8Array(1024));
+  return Bun.gzipSync(Buffer.concat(blocks));
+}
+
+/** The registry's tarballs of the made-up packages, by `<name>@<version>`: gone 3.0.0 ships
+ *  gone-one alone. */
+const TARBALLS: Readonly<Record<string, () => Uint8Array>> = {
+  "@acme/gone@3.0.0": () =>
+    tgz({
+      "package.json": JSON.stringify({ name: "@acme/gone", omp: { skills: ["skills"] } }),
+      "skills/gone-one/SKILL.md": skillMd("gone-one"),
+    }),
 };
 /** The files of `repository` at the commit `id`: SHA's, or a PINNED commit's. */
 const filesAt = (repository: string, id: string): Record<string, string> | undefined =>
@@ -1277,6 +1367,7 @@ const ghCalls: string[][] = [];
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
+  npm: async (name, version) => TARBALLS[`${name}@${version}`]?.(),
   gh: async (args) => {
     ghCalls.push([...args]);
     const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -1302,6 +1393,12 @@ const io = (lines: string[]): BuildIo => ({
       return ok(JSON.stringify({ data: { repository: Object.fromEntries(blobs) } }));
     }
     if (/^repos\/[^/]+\/[^/]+$/.test(route)) return ok("main\n");
+    const tags = /^repos\/([^/]+\/[^/]+)\/git\/matching-refs\/tags\/(.+)$/.exec(route);
+    if (tags !== null) {
+      const start = decodeURIComponent(tags[2] ?? "");
+      const listed = (TAGS[tags[1] ?? ""] ?? []).filter((tag) => tag.startsWith(start));
+      return ok(listed.map((tag) => `refs/tags/${tag}\n`).join(""));
+    }
     const commits = /^(repos\/[^/]+\/[^/]+)\/commits\?(.*)$/.exec(route);
     if (commits !== null) {
       const ref = new URLSearchParams(commits[2]).get("sha");
@@ -1313,6 +1410,7 @@ const io = (lines: string[]): BuildIo => ({
       const until = Date.parse(new URLSearchParams(commits[2]).get("until") ?? "");
       if (repo === "acme/powers" && until < Date.parse(POWERS_MADE)) return ok("null\n");
       if (repo === "acme/powers" && until < Date.parse(POWERS_AT)) return ok(`${POWERS_OLD}\n`);
+      if (repo === "acme/dots" && until < Date.parse(POWERS_AT)) return ok(`${DOTS_OLD}\n`);
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
@@ -3061,6 +3159,106 @@ test("a subagent's profile reads its packages at its root's last prompt build be
   );
 });
 
+test("a subagent whose dev box pins packages by npm versions gets each package as the version its plugin list pinned at the root's last prompt build ships it, its pool as its own start has it, and a skill at a repository's root with the path .", async () => {
+  // The suite's copies output, with acme/dots as the dev box's repository (it holds an installer
+  // script and Claude Code's settings) and its installs of acme/kit and acme/one-skill.
+  const copies = path.join(setupDir, "copies-dots");
+  mkdirSync(copies, { recursive: true });
+  for (const file of ["prefix-table.tsv", "loaders.tsv", "repositories.tsv"]) {
+    writeFileSync(path.join(copies, file), readFileSync(path.join(copiesDir, file)));
+  }
+  const rows = (lines: (string | number)[][]) => lines.map((row) => `${row.join("\t")}\n`).join("");
+  writeFileSync(
+    path.join(copies, "manifests.tsv"),
+    `${readFileSync(path.join(copiesDir, "manifests.tsv"), "utf8")}${rows([
+      ["acme/dots", "installers/omp.sh", "installer-script", "tree", 1, "clones", ""],
+      ["acme/dots", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+    ])}`
+  );
+  // acme/dots's plugin list installs @acme/kit, whose repository the copies output read; the
+  // pinned clone acme/one-skill it names no unit of, so the build reads it at its pin.
+  const list = ["acme/dots", "omp/plugins/package.json", "omp-plugins", "installs"];
+  writeFileSync(
+    path.join(copies, "installers.tsv"),
+    `${readFileSync(path.join(copiesDir, "installers.tsv"), "utf8")}${rows([
+      [
+        ...list,
+        "package:@acme/kit",
+        "omp",
+        "kit-one",
+        "acme/kit",
+        "packages/kit/skills/kit-one",
+        "",
+      ],
+    ])}`
+  );
+  writeFileSync(
+    path.join(copies, "skill-copies.tsv"),
+    `${readFileSync(path.join(copiesDir, "skill-copies.tsv"), "utf8")}${rows([
+      ["acme/kit", "packages/kit/skills/kit-one", "kit-one", 10, "no", "no", "", "", ""],
+    ])}`
+  );
+  const out = path.join(scratch, "npm-pins", "cases.jsonl");
+  const sessions = sessionsFile("npm-pins.jsonl", ["pinned-subagent"]);
+  const lines: string[] = [];
+  const code = await main(buildArgs(sessions, out, "1", "--copies", copies), io(lines));
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const [c] = loadCases(out, old);
+  const skills = (c?.profile.skills ?? []).map(
+    (skill) => `${skill.name} ${skill.repo} ${skill.path} ${skill.commit}`
+  );
+  // The plugin list at the root's build (DOTS_OLD) pins @acme/kit 1.0.0, whose release tag ships
+  // kit-one alone; the later list's 2.0.0 does not count. @acme/gone 3.0.0 has no tag, and its
+  // tarball ships gone-one alone. acme/one-skill's skill is at its root.
+  expect(skills).toEqual(
+    expect.arrayContaining([
+      `kit-one acme/kit packages/kit/skills/kit-one ${KIT_V1}`,
+      `gone-one acme/kit packages/gone/skills/gone-one ${SHA}`,
+      `one-skill acme/one-skill . ${SHA}`,
+      `pack-one acme/pack skills/pack-one ${PACK_PIN}`,
+    ])
+  );
+  expect(skills.filter((each) => /^(kit-two|gone-two) /.test(each))).toEqual([]);
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence["read times of acme/dots"]).toStartWith(
+    `its plugin lists, installers and settings at ${DOTS_OLD} (the root's last prompt build ${ROOT_BUILD}), its pool directories at ${SHA}`
+  );
+  const versionOf = (name: string) =>
+    Object.entries(evidence).find(([item]) => item.startsWith(`version of package:${name} `))?.[1];
+  expect(versionOf("@acme/kit")).toStartWith(
+    `acme/dots:omp/plugins/package.json at ${DOTS_OLD} pins @acme/kit 1.0.0; its release tag kit-v1.0.0 (gh api repos/acme/kit/git/matching-refs/tags/kit-v1.0.0) is acme/kit at ${KIT_V1}`
+  );
+  expect(versionOf("@acme/gone")).toContain(
+    "GitHub lists no tag gone-v3.0.0 of acme/kit (gh api repos/acme/kit/git/matching-refs/tags/gone-v3.0.0), so the registry's tarball (https://registry.npmjs.org/@acme/gone/-/gone-3.0.0.tgz) names the skills it ships (gone-one)"
+  );
+  // The same session as a load task's: its profile is written with the root skill's path ".",
+  // and load reads it.
+  const from = path.join(scratch, "npm-pins", "tasks.jsonl");
+  writeFileSync(
+    from,
+    `${JSON.stringify({ id: "r1", text: "Read the alpha steps.", label: "need", source: "session", store: "store_a", pathHash: pathHash(sessionPath("pinned-subagent")) })}\n`
+  );
+  writeFileSync(`${from}.summary.json`, JSON.stringify({ command: "build-tasks", skill: "alpha" }));
+  const dir = path.join(scratch, "npm-pins", "profiles");
+  const args = ["build-tasks", "--config", config, "--copies", copies, "--count", countDir];
+  const said: string[] = [];
+  const tasksCode = await main([...args, "--reprofile", from, "--profiles-out", dir], io(said));
+  expect({ tasksCode, said: tasksCode === EXIT.ok ? "" : said.join("") }).toEqual({
+    tasksCode: EXIT.ok,
+    said: "",
+  });
+  const written = loadProfile(path.join(dir, "r1.json"), "omp", "alpha").profile;
+  expect(written.skills).toContainEqual({
+    repo: "acme/one-skill",
+    commit: SHA,
+    path: ".",
+    name: "one-skill",
+  });
+});
+
 test("a dev-box profile installs the units its dev box's own installers install though the session read none of them, leaves out a skill its Oh My Pi config ignores, and installs a skill that hides itself as not listed", async () => {
   // The copies output of the suite, with acme/home named as the dev box's repository: it holds an
   // installer script and Claude Code's settings.
@@ -3126,7 +3324,7 @@ test("a dev-box profile installs the units its dev box's own installers install 
   const held = task?.differs.added.find((item) => item.item.startsWith("held once: "));
   expect(held?.item).toBe("held once: skill alpha (acme/skills skills/alpha)");
   expect(held?.source).toStartWith(
-    "package:@acme/pi-acme installs it (acme/home:omp/plugins/package.json) too, the same copy; a host that had it there at another commit than the first install's lists that one as pi-acme/alpha (NAMESPACE_RULE)"
+    "package:@acme/pi-acme ships it (acme/skills:packages/pi-acme/package.json) too, the same copy; a host that had it there at another commit than the first install's lists that one as pi-acme/alpha (NAMESPACE_RULE)"
   );
   const profile = JSON.parse(readFileSync(path.resolve(dir, `${task?.task}.json`), "utf8"));
   const alphas = profile.skills.filter((skill: { name: string }) => skill.name === "alpha");

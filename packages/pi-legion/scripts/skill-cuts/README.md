@@ -530,16 +530,37 @@ A subagent's profile (a session that recorded its prompt) is read at two times. 
 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and
 895-902), a subagent of a subagent its parent's, and the subagent rescans only the skill
 directories an extension names (session/session-tools.ts, lines 2350-2560). So each repository is
-read at the root session's last prompt build before the subagent's start, and a pool's
-repositories (a skills-sources pool's and each repository it clones) at the subagent's start. The
-root is the file the topmost `<…>Z_<id>` directory of the subagent's path stands for, and each
-prompt build writes one `system-prompt-digest` line in it (session/session-tools.ts, lines
-1795-1830). `digest-times.sql` reads the times of those lines before the subagent's start, one
-query a store for `--reprofile` and one a subagent session otherwise, and no other text of the
-file. With no build before the start (a root the store does not hold, or one with no digest line
-before it), every repository is read at the subagent's start. The `read times` evidence item
-names both times and which was used; a pin whose tag has no commit at the time read leaves its
-repository at the commit read, and the evidence says so.
+read at the root session's last prompt build before the subagent's start, and each repository a
+skills-sources pool clones at the subagent's start. A pool's host (the dotfiles: its
+skills-sources.json, plugin lists, installers and settings) is read at both: its plugin lists,
+installers and settings at the root's build, what the parent loaded, and its pool directories at
+the subagent's start, what Oh My Pi rescans then; the `read times of <repository>` evidence item
+names both commits. The root is the file the topmost `<…>Z_<id>` directory of the subagent's path
+stands for, and each prompt build writes one `system-prompt-digest` line in it
+(session/session-tools.ts, lines 1795-1830). `digest-times.sql` reads the times of those lines
+before the subagent's start, one query a store for `--reprofile` and one a subagent session
+otherwise, and no other text of the file. With no build before the start (a root the store does
+not hold, or one with no digest line before it), every repository is read at the subagent's
+start. The `read times` evidence item names both times and which was used; a pin whose tag has no
+commit at the time read leaves its repository at the commit read, and the evidence says so.
+
+A package a plugin list pins by an exact npm version (`"@scope/name": "1.2.3"`, no range) ships
+the skills of that release, not its repository's default branch: `bun install` installs that
+version. Its release tag is `<directory>-v<version>` of its repository (`pi-envoy-v15.1.2` names a
+release of `packages/pi-envoy`), or `v<version>` for a package at the repository's root; when
+GitHub lists that tag (`gh api repos/<repo>/git/matching-refs/tags/<tag>`) and its tree holds the
+package, the package's skills are read there, as copies.ts reads a package, and installed at that
+commit. Else the registry's tarball of the version (`https://registry.npmjs.org/<name>/-/<name less
+its scope>-<version>.tgz`, one small download) names the skills it ships, each installed from the
+repository at the commit read; a version of neither ships nothing to the profile. Each read is a
+`version of <unit>` evidence item. The dev box's own plugin lists come first when two pin one
+package.
+
+A skill at its repository's root (a clone that is one skill, or a package whose manifest declares
+`.`) has the path `.` in a profile, which cases.ts's schema and load accept. A task profile is
+checked against the schema load reads it with (cases.ts's Profile and a context) before it is
+written: one load would refuse is never written, and its task fails (`--profiles-out`) or is left
+out (`--reprofile`) with the schema's words.
 
 Each case and each load task's profile carries a `listing measure` evidence item, whose source
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives

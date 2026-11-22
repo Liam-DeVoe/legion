@@ -20,7 +20,7 @@ import { readTargets, SessionMessage } from "../skill-scenarios/transcript";
 import { schemaFaults } from "./common";
 
 /** A file of a repository at a commit: the repository (`owner/name`), the commit, and the path
- * inside it. */
+ * inside it; `.` for the repository's root (a skill at the root, build.ts). */
 const RepoPath = {
   repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
   commit: z.string().min(1),
