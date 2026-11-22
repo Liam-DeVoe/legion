@@ -74,8 +74,8 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
    stream. While the row is still `prepare`, the probe runs once and must be admitted, so its
    refusal in that hold cannot come from its own credential; a probe the hub refuses here stops
    `hold set`, naming the probe's error, before its intent and its move of the row. The intent
-   records the admitted credential's fingerprint (a sha256 of the account the token names and its
-   audiences, never the token) and its expiry.
+   records the admitted-probe record: the sha256 of the whole token as read from the probe's
+   credential file (never the token), the token's issuer and its expiry.
 2. The row moves to `held`; the probe is refused.
 3. The writer census: complete listings, literal destinations, push consumers, sources and message
    schedules.
@@ -93,13 +93,29 @@ the one-command lock and writes a new intent before it restarts anything, then r
 again, and its done entry follows that intent. A buckets or streams command given `--hold` of a
 hold whose `hold set` is not done (one `hold prepare` made, or one whose set stopped) runs that set
 first, and that set checks `--minters-report` as `hold set` does, printing each allowance and
-recording it in its done entry. On a `held` row the rerun runs no probe
-outside the hold, so it counts the probe's refusal as the hold's only on this hold's own proof:
-the journal holds the admitted-probe record (a), the rerun's credential has its fingerprint (b),
-and that credential lapses after now plus the probe's timeout (c). Otherwise the rerun is UNKNOWN,
-naming which, and changes nothing. The residual: a credential the auth service stops admitting
-between the two runs, its probe entry dropped from the services it lists, still has its fingerprint
-and its expiry, so its refusal reads as the hold's.
+recording it in its done entry.
+
+### The probe's refusal
+
+Each dial of the probe, at `hold set`'s step 2 and at the proof of each restarted server in
+`hold set`, `hold prove` and `RestartProveAndBarrier`, reads the probe's credential file again,
+presents the token it read, and counts the server's refusal as the hold's only when this hold's
+signed journal holds the admitted-probe record (a), the token's sha256 is the recorded one (b),
+and the recorded expiry is after now plus the probe's 10 s timeout (c). Otherwise the dial is
+UNKNOWN, naming which, and the command stops. `hold set`'s rerun on a `held` row, `hold prove` and
+`RestartProveAndBarrier` make the same check before they write or restart anything. `hold abort`
+dials no probe, so it still ends the hold.
+
+The residuals of this check:
+
+- The probe credential must outlive the hold. A credential rotated mid-hold (the kubelet rewrites a
+  projected token in place) or expiring within the probe's timeout no longer matches, so the next
+  command stops UNKNOWN; the operator aborts the hold and sets a new one.
+- The check proves that the probe presents the token the hold admitted, not that the hub would
+  admit it now. A probe entry dropped from the services the auth service lists between the
+  admission and a later dial keeps the token's hash and expiry, so its refusal reads as the hold's.
+- A token another issuer minted, or one with a bad signature, is refused by the hash: it is not the
+  admitted token, whatever its account and audiences say.
 
 ## Workflows and their commands
 

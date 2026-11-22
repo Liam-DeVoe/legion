@@ -3,7 +3,6 @@ package natscred
 import (
 	"encoding/base64"
 	"encoding/json"
-	"slices"
 	"testing"
 	"time"
 )
@@ -18,28 +17,24 @@ func jwtOf(t *testing.T, claims map[string]any) string {
 	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".x"
 }
 
-// ReadClaims reads the account a token names (its email before its subject, as Identity does), its
-// audiences whether `aud` is one string or a list, and its expiry; a token that names no account or
-// no expiry is an error.
+// ReadClaims reads who issued a token and when it lapses; a token that names no issuer or no expiry
+// is an error, and so is a raw string that is no JWT.
 func TestReadClaims(t *testing.T) {
 	exp := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 	for _, c := range []struct {
-		name     string
-		claims   map[string]any
-		identity string
-		audience []string
+		name, issuer string
+		claims       map[string]any
 	}{
-		{"a projected Kubernetes token, aud a list", map[string]any{"sub": "system:serviceaccount:a:b", "aud": []string{"x", "y"}, "exp": exp.Unix()}, "system:serviceaccount:a:b", []string{"x", "y"}},
-		{"a Google identity token, aud one string", map[string]any{"sub": "123", "email": "probe@example.iam.gserviceaccount.com", "aud": "x", "exp": exp.Unix()}, "probe@example.iam.gserviceaccount.com", []string{"x"}},
-		{"no aud", map[string]any{"sub": "s", "exp": exp.Unix()}, "s", nil},
+		{"a projected Kubernetes token", "https://kubernetes.default.svc", map[string]any{"iss": "https://kubernetes.default.svc", "sub": "system:serviceaccount:a:b", "aud": []string{"x"}, "exp": exp.Unix()}},
+		{"a Google identity token", "https://accounts.google.com", map[string]any{"iss": "https://accounts.google.com", "email": "probe@example.iam.gserviceaccount.com", "aud": "x", "exp": exp.Unix()}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := ReadClaims(jwtOf(t, c.claims))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Identity != c.identity || !slices.Equal(got.Audience, c.audience) || !got.Expiry.Equal(exp) {
-				t.Fatalf("ReadClaims = %+v, want identity %q, audience %v, expiry %s", got, c.identity, c.audience, exp)
+			if got.Issuer != c.issuer || !got.Expiry.Equal(exp) {
+				t.Fatalf("ReadClaims = %+v, want issuer %q, expiry %s", got, c.issuer, exp)
 			}
 		})
 	}
@@ -47,9 +42,8 @@ func TestReadClaims(t *testing.T) {
 		name   string
 		claims map[string]any
 	}{
-		{"no account", map[string]any{"aud": "x", "exp": exp.Unix()}},
-		{"no expiry", map[string]any{"sub": "s", "aud": "x"}},
-		{"aud of another type", map[string]any{"sub": "s", "aud": 7, "exp": exp.Unix()}},
+		{"no issuer", map[string]any{"sub": "s", "exp": exp.Unix()}},
+		{"no expiry", map[string]any{"iss": "i", "sub": "s"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got, err := ReadClaims(jwtOf(t, c.claims)); err == nil {

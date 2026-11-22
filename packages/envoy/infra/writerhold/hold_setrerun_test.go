@@ -17,10 +17,10 @@ import (
 func (h *heldStack) stoppedInHeld(w holdrecord.Workflow) string {
 	h.t.Helper()
 	id := h.prepared(w)
-	real := h.op.Probe
-	h.op.Probe = func(context.Context, string) error { return nil }
+	real := h.op.ProbeDial
+	h.op.ProbeDial = func(context.Context, string, string) error { return nil }
 	code, _, stderr := h.run(actionSet, "--hold", id, "--reason", "a set whose probe the hub admits")
-	h.op.Probe = real
+	h.op.ProbeDial = real
 	require.Equal(h.t, 1, code, "hold set with an admitted probe")
 	require.Contains(h.t, stderr, "admitted the hold's probe")
 	require.Equal(h.t, natsgrant.OperatorPhaseHeld, h.row().Phase)

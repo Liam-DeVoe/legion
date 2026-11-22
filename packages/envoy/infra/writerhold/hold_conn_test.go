@@ -20,10 +20,13 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// probe dials url with the hold probe's credential and answers the dial's error.
+// probe dials url with the probe's credential as the operator reads it now and answers the dial's
+// error as the hub gave it (ProbeDial), whatever the hold has recorded: what the hub does.
 func (h *heldStack) probe(url string) error {
 	h.t.Helper()
-	return h.op.Probe(context.Background(), url)
+	token, err := h.op.ProbeToken()
+	require.NoError(h.t, err)
+	return h.op.ProbeDial(context.Background(), url, token)
 }
 
 // The probe: outside a hold it connects, which shows its credential and its non-empty grant are
