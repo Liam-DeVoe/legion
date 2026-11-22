@@ -492,7 +492,7 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
 }
 
 const ROOT_COMPLETION_REFUSAL =
-  "handoff_complete is not available to a root architect session, which runs no phase";
+  "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step";
 
 /** The three words `read_build` answers under `daemonContractNote`, where `daemonContract` is
  * null: the daemon answered the health route and stated no contract, which a daemon older than

@@ -766,7 +766,7 @@ test("a record carrying keys no schema names at three depths is read, and read_r
 test("a root architect's handoff_complete is refused as unavailable before its own fields are checked, after any field it never takes", async () => {
   const root = runtime({ ...implementer, role: "architect" });
   const refusal =
-    "handoff_complete is not available to a root architect session, which runs no phase";
+    "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step";
   for (const input of [
     { op: "handoff_complete" },
     { op: "handoff_complete", summary: "x" },

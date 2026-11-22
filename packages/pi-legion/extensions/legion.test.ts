@@ -2953,7 +2953,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         content: [
           {
             type: "text",
-            text: "handoff_complete is not available to a root architect session, which runs no phase",
+            text: "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step",
           },
         ],
       });

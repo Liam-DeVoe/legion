@@ -562,7 +562,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
       content: [
         {
           type: "text",
-          text: "handoff_complete is not available to a root architect session, which runs no phase",
+          text: "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step",
         },
       ],
       details: {},
@@ -576,7 +576,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step',
       },
     ],
   });
@@ -1597,8 +1597,9 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
   expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
-  // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
-  // verdict of the wrong shape; and a phase, which the daemon knows from the grant.
+  // Refused before any daemon call: a root architect, which reports its own steps with
+  // complete_step; a missing summary; a verdict of the wrong shape; and a phase, which the daemon
+  // knows from the grant.
   const before = calls.length;
   const refusals = [
     [claimSession("architect"), { summary: "Done." }, "root architect session"],
