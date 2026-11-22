@@ -262,7 +262,7 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end.
+ * refusals together at the end. It runs under {@link REMOVAL_HANG_MS}, not Bun's 5 s hook default.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -272,7 +272,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, REMOVAL_HANG_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -303,7 +303,8 @@ export function temporaryDirectories(
  *
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
- * somehow exists already fails the file rather than handing two suites one directory.
+ * somehow exists already fails the file rather than handing two suites one directory. The
+ * `afterAll` runs under {@link REMOVAL_HANG_MS}, not Bun's 5 s hook default.
  */
 export function temporaryDirectory(
   prefix: string,
@@ -320,9 +321,18 @@ export function temporaryDirectory(
   });
   afterAll(() => {
     removeTree(directory);
-  });
+  }, REMOVAL_HANG_MS);
   return directory;
 }
+
+/**
+ * The bound of each hook that removes a maker's directories. A hang guard, not a verdict: a removal
+ * ends when the tree is gone, and how long that takes is the disk's, which a loaded machine slows
+ * past Bun's 5 s hook default (Bun times out a synchronous hook too, once it returns). The guard
+ * is far above any removal seen and under a CI job's limit, so a removal that never ends still
+ * fails the hook, named by Bun.
+ */
+export const REMOVAL_HANG_MS = 120_000;
 
 /** `-`, the one character the name template trims from a caller's prefix. */
 const DASH = 45;

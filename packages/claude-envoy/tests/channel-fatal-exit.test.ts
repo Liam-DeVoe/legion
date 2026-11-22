@@ -9,7 +9,7 @@ import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
-import { moduleRoot } from "@legion/test-fixtures/temporary-directories"
+import { moduleRoot, REMOVAL_HANG_MS } from "@legion/test-fixtures/temporary-directories"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
 
@@ -58,9 +58,11 @@ function homeRoot(): string {
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 const cleanups: (() => Promise<void> | void)[] = []
+// The cleanups' bound is a hang guard, not a verdict: they end when the server's exit is read and
+// its home is gone, which a loaded machine slows past Bun's 5 s hook default.
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
-})
+}, REMOVAL_HANG_MS)
 
 /** A NATS server that refuses every client: the INFO asking for a credential, then nats-server's
  * own refusal of the CONNECT, which is what a hub's auth service answers a token it does not admit. */

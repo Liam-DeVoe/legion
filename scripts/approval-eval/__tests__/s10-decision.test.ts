@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { moduleRoot } from "@legion/test-fixtures/temporary-directories";
+import { moduleRoot, REMOVAL_HANG_MS } from "@legion/test-fixtures/temporary-directories";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "../reserve";
 import {
   closureDigestOf,
@@ -44,9 +44,11 @@ beforeAll(async () => {
   scratch = await realpath(await mkdtemp(join(moduleRoot(), "s10-decision-")));
 });
 
+// The removal's bound is a hang guard, not a verdict: removing the closure copies ends when they
+// are gone, which a loaded disk slows past Bun's 5 s hook default.
 afterAll(async () => {
   if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
-});
+}, REMOVAL_HANG_MS);
 
 /** A directory under this file's scratch directory, by its real path, as Bun resolves imports. */
 async function directory(name: string): Promise<string> {
