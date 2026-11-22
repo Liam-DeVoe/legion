@@ -10399,6 +10399,48 @@
       }
     },
     {
+      "kind": "gate-moved",
+      "variant": "opened-unchanged",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "gate-moved on ALPHA-1260",
+      "payload": {
+        "kind": "gate-moved",
+        "issue": "ALPHA-1260",
+        "gate": "open",
+        "step": "spec",
+        "document": "dispatch://ALPHA-1260/spec",
+        "artifact": "60e99053-546d-984f-f51a-21022028993c",
+        "version": 3,
+        "merge": "released",
+        "unchanged_since": 2
+      }
+    },
+    {
+      "kind": "gate-moved",
+      "variant": "opened-unchanged",
+      "sample": 2,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "gate-moved on BRAVO-2260",
+      "payload": {
+        "kind": "gate-moved",
+        "issue": "BRAVO-2260",
+        "gate": "open",
+        "step": "spec",
+        "document": "dispatch://BRAVO-2260/spec",
+        "artifact": "14c9e47c-dc4d-cb63-cc61-0e1fde1c6c5c",
+        "version": 4,
+        "merge": "released",
+        "unchanged_since": 3
+      }
+    },
+    {
       "kind": "approved-round-stuck",
       "variant": "merge-state",
       "sample": 1,

@@ -43,15 +43,20 @@ const (
 // tellGateMoved): the gate (a Gate word), the step, the step's document (a dispatch:// link that
 // names the issue the document is of: the tree's root, or, for a gate the root carried, the old
 // root whose document a person approves), the artifact id, the version, and what the move does to
-// a merge the gate holds (a Merge word).
+// a merge the gate holds (a Merge word). An opening sent to a reader owed no news of the approved
+// design names, where the record shows it, the version of that step's document the reader took,
+// since which nothing it holds changed (UnchangedSince, workflow's openingDelivery): for a phase
+// worker the version its phase took, nothing its issue holds having changed since, and for the
+// root's architect the version it took, nothing the tree holds having changed since.
 type GateMovedRecord struct {
 	RoleHead
-	Gate     string `json:"gate"`
-	Step     string `json:"step"`
-	Document string `json:"document"`
-	Artifact string `json:"artifact"`
-	Version  int    `json:"version"`
-	Merge    string `json:"merge"`
+	Gate           string `json:"gate"`
+	Step           string `json:"step"`
+	Document       string `json:"document"`
+	Artifact       string `json:"artifact"`
+	Version        int    `json:"version"`
+	Merge          string `json:"merge"`
+	UnchangedSince int    `json:"unchanged_since,omitempty"`
 }
 
 // ApprovedRoundStuckRecord is the message to the reviewer that the round it approved is stuck

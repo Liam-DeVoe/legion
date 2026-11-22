@@ -204,7 +204,9 @@ func keptFacts(kept record.KeptDecisions) (*texts.KeptFacts, map[string]texts.Wo
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
 // about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
-// liveness: this claim is live, which is precisely why it is being given its task.
+// liveness: this claim is live, which is precisely why it is being given its task. A start queued
+// for news alone carries no task of the phase (startsWork), so it covers nothing, and the worker is
+// given its task beside it.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
 	stop := actingStop(run, root)
 	return stop != 0 || queuedStartActs(run, stop, current)
@@ -233,7 +235,12 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // delivery's place while no prompt of it waits on a result, or waits for its turn to end
 // (supervise's queue), and carries the sentence in front of itself while the record is untold.
 // A worker that came back holding only that delivery — its ready found it holding one from an
-// earlier launch its agent never read — would otherwise be given no phase task at all.
+// earlier launch its agent never read — would otherwise be given no phase task at all. A task of
+// news of the approved design alone is no work of the phase either (supervise.HoldsWork): it tells
+// the worker what changed and nothing of what to do, so a claim that holds only that is given its
+// phase's task too. An owed entry's task takes the news task's place while no turn has taken it,
+// and carries that news itself (supervise's Machine.supersedes); the phase's resume task carries
+// no entry, so it waits behind the news task until a turn has taken it.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -291,8 +298,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
-	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
+	// A claim holding only the daemon's own delivery of a relaunch's record, or only a task of news
+	// alone, holds no work (above).
+	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
@@ -326,9 +334,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // issue whose document the step's row is bound to, the old root's for a row a carried gate
 // brought, or the bare artifact reference where the record does not say that issue, which the
 // outbox names from Dispatch when it publishes the catch-up, NameCatchUpDocuments) and
-// how it stands. A child's architect owns the child and every issue whose recorded parent chain
-// reaches it (record.Beneath), at the child's own generation: a child registers no gate and no
-// hand-over creates one, so its catch-up states no step and is neither handed over nor carried.
+// how it stands. The steps are the ones the tree is gated on (classify.TreeSteps), so a criteria
+// row the architect registered beside a deployment that gates spec and not criteria is listed
+// after the spec, gated as the spec is. A child's architect owns the child and every issue whose
+// recorded parent chain reaches it (record.Beneath), at the child's own generation: a child
+// registers no gate and no hand-over creates one, so its catch-up states no step and is neither
+// handed over nor carried.
 //
 // Of the issues it owns, in key order, each one that is not done is named with its fields, and
 // each done one by its key alone. Beside them come the children not yet released whole
@@ -357,10 +368,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		if err != nil {
 			return texts.CatchUpFacts{}, err
 		}
-		required := classify.RequiredSteps(steps)
+		gated := classify.TreeSteps(steps, gates)
+		required := classify.RequiredSteps(gated)
 		catchUp.Gates = make([]texts.CatchUpGate, 0, len(required))
 		for _, step := range required {
-			stated := texts.CatchUpGate{Step: string(step), Gated: slices.Contains(steps, step), Document: stepRef(issue.Key, step)}
+			stated := texts.CatchUpGate{Step: string(step), Gated: slices.Contains(gated, step), Document: stepRef(issue.Key, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
 				if recorded.ApprovedVersion != nil {

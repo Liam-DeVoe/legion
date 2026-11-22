@@ -15,10 +15,10 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
-// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0 or c03d3afe for a sentence main wrote
-// since (a format verb, %s, %[1]s or %d, and … stand for any text), the readers, and the passage of
-// the readers' prompt (packages/daemon/internal/prompts) that gives each of them its own rule for
-// the step, quoted word for word from the one line of the file that holds it.
+// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe or b537812f for a sentence
+// main wrote since (a format verb, %s, %[1]s or %d, and … stand for any text), the readers, and the
+// passage of the readers' prompt (packages/daemon/internal/prompts) that gives each of them its own
+// rule for the step, quoted word for word from the one line of the file that holds it.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -345,7 +345,7 @@ var goldenSteps = []goldenStep{
 	{texts.CatchUp, "; start or resume your issue as your role says", "architect (child)",
 		goPrompts + "architect.md", "Start or resume your issue from it as your role says."},
 	{texts.CatchUp, "; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", "architect (root)",
-		goPrompts + "architect-root.md", "so read each one's evidence, then `sign_off` a parent only on an approved head that carries the merges of every child its criteria need"},
+		goPrompts + "architect-root.md", "so read each one's evidence, then `sign_off` a parent only after its last round, on an approved head at which its checks pass"},
 	{texts.CatchUp, "; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", "architect (child)",
 		goPrompts + "architect.md", "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence."},
 	{texts.CatchUp, "Your tool calls in flight were never answered.", "architect",
@@ -382,8 +382,8 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "A reason already posted (`reason_posted: true`) is on the issue, so no one need post it again"},
 	{texts.ChildStatus, "Its own architect starts with it and owns it while that architect holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed notices", "architect",
 		goPrompts + "architect-common.md", "The child's own architect starts with it and owns it while that architect holds its role: its decomposition, its children and its acceptance."},
-	{texts.ChildStatus, "Take %s back with a backward move to run %s under it now, or leave %s where it is and it starts once %s has closed.", "architect",
-		goPrompts + "architect-common.md", "take the ancestor back with `request_backward_move` to run it under the ancestor now, or leave it to start at the ancestor's close."},
+	{texts.ChildStatus, "Take %[2]s back with a backward move to run %[1]s under it now, unless the pull request of %[2]s has merged, or leave %[1]s where it is and it starts once %[2]s has closed.", "architect",
+		goPrompts + "architect-common.md", "take the ancestor back with `request_backward_move` to run it under the ancestor now, unless the ancestor's pull request has merged, or leave it to start at the ancestor's close."},
 	{texts.ChildStatus, "It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.", "architect",
 		goPrompts + "architect-common.md", "It runs under its own architect, and its work reaches your tree only through your tree's own issues."},
 	{texts.ChildrenFirst, "A child you released and a child you did not release leave by the same status write. ", "architect",
@@ -646,6 +646,10 @@ var goldenSteps = []goldenStep{
 		goPrompts + "worker-common.md", "With `gate: open`, a person approved version `version` of the gated document of `step` (`document`), and that approval opened the gate."},
 	{texts.GateMoved, "The design gate of %s opened: a person approved version %d of its %s document (%s), ", "architect (root)",
 		goPrompts + "architect-common.md", "With `gate: open`, a person approved version `version` of the gated document of `step` (`document`), and that approval opened the gate."},
+	{texts.GateMoved, " Nothing your issue holds changed since version %d, which your phase took.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "`unchanged_since` names the version of that step's document that your phase took, and says that nothing your issue holds changed since that version"},
+	{texts.GateMoved, " Nothing the tree holds changed since version %d, which you took.", "architect (root)",
+		goPrompts + "architect-common.md", "`unchanged_since` names the version of that step's document that you took, and says that nothing the tree holds changed since that version"},
 	{texts.ApprovedRoundStuck, " The issue waits in reviewing until GitHub reports the head clean, unstable or has_hooks", "reviewer",
 		goPrompts + "reviewer.md", "The issue waits in `reviewing` until GitHub reports that head `clean`, `unstable` or `has_hooks`."},
 	{texts.ApprovedRoundStuck, "The daemon reads no ruleset and so names no required check: …, which makes the missing check the thing to look for.", "reviewer",

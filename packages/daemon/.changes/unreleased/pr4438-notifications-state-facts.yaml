@@ -112,6 +112,10 @@ body: |-
   took the pod: only a release that suspended the role, or a ready of it, ends the pause's claim on
   it, as for the update-stalled notice's `suspended_by: pause`, and a role message the pause held
   for it stays owed to it, so the resume launches it for that message, a `low` one included.
+  A design gate's opening tells a reader owed no news of the approved design the version of the
+  step's document it took, since which nothing it holds changed, as a field of its gate-moved
+  message (`unchanged_since`), and a news task that carries the opening, or that says a later
+  version closed the gate again, leads with that message's record.
   A notice is published with its kind's urgency, and a `low` text wakes no released pod. Of the
   role messages to a role whose pod is released, only
   a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes

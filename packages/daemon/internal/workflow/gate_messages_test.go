@@ -1,24 +1,31 @@
 package workflow
 
 import (
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A new version of an approved spec closes the tree's design gate under the workers already
-// running on it, and its approval opens it again. Each move sends one gate-moved message, at med,
+// running on it, and its approval opens it again. The close sends one gate-moved message, at med,
 // naming the step, its document and the version, to every worker holding a phase in the tree and
 // to the root architect, so nobody goes on building to a design the person is being asked about
-// again (dispatch://INFRA-714/spec R5).
+// again (dispatch://INFRA-714/spec R5). The opening reaches each of them once as well: here each
+// took version 3 and is owed version 4, so each is told the opening by the task that carries that
+// news, which leads with it. None is sent the opened message beside that task: each told row
+// records the opening as owed, and the approval queues the reconcile that sends the news.
 func TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -30,28 +37,200 @@ func TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened(t *tes
 	seedIssue(t, pool, record.Issue{Key: "LEGION-210", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "a child not started", Parent: new("LEGION-208"), Phase: phase.Admitted,
 		Generation: 4, Status: "todo", Rank: "W"})
-	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
+	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	took3 := map[record.DesignStep]int{record.DesignStepSpec: 3}
+	seedTold(t, pool, "LEGION-208", record.AudienceHolder, took3)
+	seedTold(t, pool, "LEGION-209", record.AudienceHolder, took3)
+	seedTold(t, pool, "LEGION-208", record.AudienceArchitect, took3)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyMirrored(t, pool, engine, "version-4", intake.DispatchArtifact{
 		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
+	assertOpeningsOwed(t, pool, "LEGION-208")
 	applyMirrored(t, pool, engine, "approved-4", intake.DispatchArtifact{
 		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 4})
 
 	closed := gateMoved(record.DesignStepSpec, "artifact-208", 4, false)
-	opened := gateMoved(record.DesignStepSpec, "artifact-208", 4, true)
 	assertRoleMessages(t, pool, "LEGION-208", []roleTold{
 		toldMed(treeRoleToken(t, "LEGION-208", claim.RolePlanner), closed),
 		toldMed(treeRoleToken(t, "LEGION-208", claim.RoleArchitect), closed),
-		toldMed(treeRoleToken(t, "LEGION-208", claim.RolePlanner), opened),
-		toldMed(treeRoleToken(t, "LEGION-208", claim.RoleArchitect), opened),
 	})
 	assertRoleMessages(t, pool, "LEGION-209", []roleTold{
 		toldMed(treeRoleToken(t, "LEGION-209", claim.RoleTester), closed),
-		toldMed(treeRoleToken(t, "LEGION-209", claim.RoleTester), opened),
 	})
 	assertRoleMessages(t, pool, "LEGION-210", nil)
+	assertOpeningsOwed(t, pool, "LEGION-208", "LEGION-208/architect", "LEGION-208/holder", "LEGION-209/holder")
+	assertOutboxCount(t, pool, "design_changes", 1)
+}
+
+// The opening is decided for each holder in one place (openingDelivery): a holder owed news of the
+// approved design is told the opening by the task that carries that news and is sent no role
+// message, its told row recording the opening as owed; a holder owed nothing is sent the opened
+// message naming the version its phase took, since which nothing its issue holds changed
+// (unchanged_since).
+// Here a new version of the Verification document is approved: its checks are the root's alone, so
+// the root's reviewer and the root architect are owed it, and the child is not.
+func TestAnOpeningGoesAsNewsToAnOwedReviewerAndAsTheMessageWithTheClauseToAnUnowedChild(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 4, Status: "needs_review", Rank: "U"})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "a child at work", Parent: new(gatedRoot), Phase: phase.Implementing,
+		Generation: 4, Status: "in_progress", Rank: "V"})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+		LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+		LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
+	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
+	seedTold(t, pool, "LEGION-209", record.AudienceHolder, took)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
+	engine := stepsEngine(twoSteps(), nil)
+
+	applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
+		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
+	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
+
+	closed := gateMoved(record.DesignStepCriteria, criteriaDoc, 2, false)
+	opened := gateMoved(record.DesignStepCriteria, criteriaDoc, 2, true)
+	assertRoleMessages(t, pool, gatedRoot, []roleTold{
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleReviewer), closed),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), closed),
+	})
+	assertRoleMessages(t, pool, "LEGION-209", []roleTold{
+		toldMed(treeRoleToken(t, "LEGION-209", claim.RoleImplementer), closed),
+		toldMed(treeRoleToken(t, "LEGION-209", claim.RoleImplementer), unchangedSince(opened, 1)),
+	})
+	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
+}
+
+// A member in accepting is held by the architect that owns it (the owner walk,
+// record.OwningIssue), and the gate's opening reaches that architect with the member's news. A
+// child whose own architect holds its role, and whose holder row is owed the approved version, has
+// the opening settled as owed on that row, so the news-only start the reconcile queues for the
+// child's architect leads with the opening. That architect is sent no role message, at the close
+// or at the opening: a child's own architect is not told of the root's gate. The control is the
+// same child with no architect of its own, which the tree root's architect holds: its row owes no
+// opening, since the root's architect is told the opening once, on its own row.
+func TestTheOpeningIsOwedToAnAcceptingChildsRowOnlyWhereAChildsArchitectHoldsIt(t *testing.T) {
+	const root, child = "LEGION-208", "LEGION-209"
+	for _, tc := range []struct {
+		name string
+		own  bool
+		owed []string
+	}{
+		{"the child's own architect holds its role", true, []string{root + "/architect", root + "/holder", child + "/holder"}},
+		{"the child has no architect of its own", false, []string{root + "/architect", root + "/holder"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: root, Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 4, Status: "in_progress", Rank: "U"})
+			seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: root, Project: "LEGION", Title: "a child waiting for its acceptance", Parent: new(root), Phase: phase.Accepting,
+				Generation: 4, Status: "needs_review", Rank: "V"})
+			seedGate(t, pool, record.DesignGate{Issue: root, ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+			took3 := map[record.DesignStep]int{record.DesignStepSpec: 3}
+			seedTold(t, pool, root, record.AudienceHolder, took3)
+			seedTold(t, pool, child, record.AudienceHolder, took3)
+			seedTold(t, pool, root, record.AudienceArchitect, took3)
+			seedArchitectClaimIn(t, pool, root, root, 4, supervise.StateWorking, "")
+			if tc.own {
+				seedArchitectClaimIn(t, pool, root, child, 4, supervise.StateWorking, "")
+			}
+			engine := testEngine(config.DesignGateRootIssues, nil)
+
+			applyMirrored(t, pool, engine, "version-4", intake.DispatchArtifact{
+				Key: root, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
+			applyMirrored(t, pool, engine, "approved-4", intake.DispatchArtifact{
+				Key: root, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 4})
+
+			closed := gateMoved(record.DesignStepSpec, "artifact-208", 4, false)
+			assertRoleMessages(t, pool, root, []roleTold{
+				toldMed(treeRoleToken(t, root, claim.RolePlanner), closed),
+				toldMed(treeRoleToken(t, root, claim.RoleArchitect), closed),
+			})
+			assertRoleMessages(t, pool, child, nil)
+			assertOpeningsOwed(t, pool, root, tc.owed...)
+		})
+	}
+}
+
+// A version whose only change is an answered decision block arrives as Dispatch writes it: the
+// approval it carries forward first, then the version (docs/mutation.go appends the carried
+// approval before the version), so the gate goes from open to open and never moves. Nothing is
+// sent: no role message, and no opening is owed to anyone. The carried approval raises the gate's
+// approved version, so it queues the reconcile, which finds the change decision-only and raises
+// what each holder took without a task (the daemon's design_changes executor).
+func TestADecisionOnlyCarryFromOpenToOpenSendsNothing(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 4, Status: "in_progress", Rank: "U"})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "a child under test", Parent: new(gatedRoot), Phase: phase.Testing,
+		Generation: 4, Status: "testing", Rank: "V"})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	took4 := map[record.DesignStep]int{record.DesignStepSpec: 4}
+	seedTold(t, pool, gatedRoot, record.AudienceHolder, took4)
+	seedTold(t, pool, "LEGION-209", record.AudienceHolder, took4)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took4)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	applyMirrored(t, pool, engine, "carried-5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: "artifact-208",
+		Kind: intake.DispatchArtifactApproved, Version: 5, Reason: intake.CarriedApprovalReasonPrefix + " 4.", Mark: record.EventMark{Seq: 11}})
+	applyMirrored(t, pool, engine, "version-5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: "artifact-208",
+		Kind: intake.DispatchArtifactVersion, Version: 5})
+
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.LatestVersion != 5 || gate.ApprovedVersion == nil || *gate.ApprovedVersion != 5 {
+		t.Fatalf("the spec gate = %+v, want it at version 5 and approved at 5: the carry this case reads never landed", gate)
+	}
+	assertOutboxCount(t, pool, "role_message", 0)
+	assertOpeningsOwed(t, pool, gatedRoot)
+	assertOutboxCount(t, pool, "design_changes", 1)
+}
+
+// A changes request closes the gate on the version its holders took, and a person's approval of
+// that same version opens it again. Nothing any holder took changed, so nobody is owed a news task:
+// every holder told the gate closed is sent the opened message, naming that version as the one its
+// phase took, since which nothing its issue holds changed (unchanged_since), and the architect the
+// same field, the version it took for the tree.
+func TestAChangesRequestThenARestoreTellsEveryHolderNothingChanged(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 4, Status: "in_progress", Rank: "U"})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "a child under test", Parent: new(gatedRoot), Phase: phase.Testing,
+		Generation: 4, Status: "testing", Rank: "V"})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: new(4),
+		ApprovedMark: record.EventMark{Seq: 9}, EverOpened: true})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	took4 := map[record.DesignStep]int{record.DesignStepSpec: 4}
+	seedTold(t, pool, gatedRoot, record.AudienceHolder, took4)
+	seedTold(t, pool, "LEGION-209", record.AudienceHolder, took4)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took4)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	applyMirrored(t, pool, engine, "changes-4", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: "artifact-208",
+		Kind: intake.DispatchArtifactChangesRequested, Version: 4, Reason: "name the rollback path", Mark: record.EventMark{Seq: 11}})
+	applyMirrored(t, pool, engine, "restored-4", stepApproval(gatedRoot, "artifact-208", 4, record.EventMark{Seq: 12}))
+
+	closed := gateMoved(record.DesignStepSpec, "artifact-208", 4, false)
+	opened := gateMoved(record.DesignStepSpec, "artifact-208", 4, true)
+	assertRoleMessages(t, pool, gatedRoot, []roleTold{
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleImplementer), closed),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), closed),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleImplementer), unchangedSince(opened, 4)),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), unchangedSince(opened, 4)),
+	})
+	assertRoleMessages(t, pool, "LEGION-209", []roleTold{
+		toldMed(treeRoleToken(t, "LEGION-209", claim.RoleTester), closed),
+		toldMed(treeRoleToken(t, "LEGION-209", claim.RoleTester), unchangedSince(opened, 4)),
+	})
+	assertOpeningsOwed(t, pool, gatedRoot)
 }
 
 // A gate event that moves nothing — an approval of a gate already open — tells nobody: the
@@ -74,15 +253,21 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 // is held while any required step is closed (the outbox's designGateClosed over
 // classify.StandingGate), so an "opened" message sent while another document is still under
 // review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
-// under the steps INFRA-1272 gates).
+// under the steps INFRA-1272 gates). The opening is told at the spec's own approval and at no
+// earlier event: the merger and the architect each took the versions before the two new ones, so
+// each is owed their news, and each is told the opening by the task that carries it, its told row
+// recording the opening as owed once the spec's approval opens the gate, and not before.
 func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
-		LatestVersion: 1, ApprovedVersion: new(1)})
+		LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
-		LatestVersion: 3, ApprovedVersion: new(3)})
+		LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
 	seedTreeLifecycle(t, pool, gatedRoot)
+	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
+	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
 	engine := stepsEngine(twoSteps(), nil)
 
 	// The spec's new version closes the standing gate; the Verification document's own new
@@ -93,20 +278,17 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 	applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
 		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
 	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
-	closed, opened := gateMoved(record.DesignStepSpec, "artifact-208", 4, false), gateMoved(record.DesignStepSpec, "artifact-208", 4, true)
-	assertRoleMessages(t, pool, gatedRoot, []roleTold{
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleMerger), closed),
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), closed),
-	})
+	closed := []roleTold{
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleMerger), gateMoved(record.DesignStepSpec, "artifact-208", 4, false)),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), gateMoved(record.DesignStepSpec, "artifact-208", 4, false)),
+	}
+	assertRoleMessages(t, pool, gatedRoot, closed)
+	assertOpeningsOwed(t, pool, gatedRoot)
 
 	// The spec's own approval is the one that opens every gated step, so it is the one told.
 	applyMirrored(t, pool, engine, "spec-approved-4", stepApproval(gatedRoot, "artifact-208", 4, record.EventMark{Seq: 12}))
-	assertRoleMessages(t, pool, gatedRoot, []roleTold{
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleMerger), closed),
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), closed),
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleMerger), opened),
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), opened),
-	})
+	assertRoleMessages(t, pool, gatedRoot, closed)
+	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
 }
 
 // The message and the merger's start hold ask one question, so they read one predicate
@@ -161,7 +343,10 @@ func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 // The other half of the same hole: a registration whose read of Dispatch carries the person's
 // approval opens the standing gate, and a merger told the gate closed waits for the message that
 // says it opened again. Without it that merger waits for a message no event will send, since the
-// approval the registration carries moves no gate afterwards.
+// approval the registration carries moves no gate afterwards. The merger and the architect took the
+// version the registration finds approved (a changes request had closed the gate on it), so each
+// is owed no news, and each is sent the opened message naming that version as the one it took
+// (unchanged_since).
 func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
@@ -171,6 +356,9 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 4})
 	seedTreeLifecycle(t, pool, gatedRoot)
+	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 4}
+	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
 	engine := stepsEngine(twoSteps(), nil)
 
 	applyMirrored(t, pool, engine, "register-approved-4", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepSpec,
@@ -179,9 +367,10 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 
 	opened := gateMoved(record.DesignStepSpec, "artifact-208", 4, true)
 	assertRoleMessages(t, pool, gatedRoot, []roleTold{
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleMerger), opened),
-		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), opened),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleMerger), unchangedSince(opened, 4)),
+		toldMed(treeRoleToken(t, gatedRoot, claim.RoleArchitect), unchangedSince(opened, 4)),
 	})
+	assertOpeningsOwed(t, pool, gatedRoot)
 }
 
 // seedMergingRoot records the gated tree's root in merging, where its merger holds the phase the
@@ -194,15 +383,27 @@ func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // gateMoved is the gate-moved message of one move of LEGION-208's design gate (workflow's
-// tellGateMoved): the move, the step and its document, the version, and the merge it holds or
-// releases.
+// tellGateMoved): the move, the step and its document (the spec, or the Verification document
+// filed under its slug), the version, and the merge it holds or releases.
 func gateMoved(step record.DesignStep, document string, version int, open bool) texts.GateMovedRecord {
+	ref := "dispatch://LEGION-208/spec"
+	if step == record.DesignStepCriteria {
+		ref = "dispatch://LEGION-208/artifact/" + dispatch.VerificationSlug
+	}
 	moved := texts.GateMovedRecord{RoleHead: texts.RoleHead{Kind: texts.GateMoved, Issue: "LEGION-208"}, Gate: texts.GateClosed,
-		Step: string(step), Document: "dispatch://LEGION-208/spec", Artifact: document, Version: version, Merge: texts.MergeHeld}
+		Step: string(step), Document: ref, Artifact: document, Version: version, Merge: texts.MergeHeld}
 	if open {
 		moved.Gate, moved.Merge = texts.GateOpened, texts.MergeReleased
 	}
 	return moved
+}
+
+// unchangedSince is opened as it is sent to a reader owed no news of the approved design: naming
+// version, the version of the step's document the reader took (for the root architect, the one it
+// took for the tree), since which nothing it holds changed (openingDelivery).
+func unchangedSince(opened texts.GateMovedRecord, version int) texts.GateMovedRecord {
+	opened.UnchangedSince = version
+	return opened
 }
 
 // toldMed is rec told to role at med, the urgency of every gate-moved message.
@@ -218,4 +419,38 @@ func treeRoleToken(t *testing.T, issue string, role claim.Role) string {
 		t.Fatalf("role token of %s's %s: %v", issue, role, err)
 	}
 	return string(token)
+}
+
+// seedTold records what issue's audience took of its tree's approved design: each step of versions
+// raised to its version from whatever the row took.
+func seedTold(t *testing.T, pool *pgxpool.Pool, issue string, audience record.DesignAudience, versions map[record.DesignStep]int) {
+	t.Helper()
+	items := make([]record.NewsItem, 0, len(versions))
+	for step, version := range versions {
+		items = append(items, record.NewsItem{Step: step, To: version})
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().RaiseTold(t.Context(), tx, issue, audience, items, time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
+	})
+}
+
+// assertOpeningsOwed holds the told rows of tree that owe the opening, each `<issue>/<audience>`,
+// to want, in any order.
+func assertOpeningsOwed(t *testing.T, pool *pgxpool.Pool, tree string, want ...string) {
+	t.Helper()
+	var owed []string
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		rows, err := record.NewStore().TreeTold(t.Context(), tx, tree)
+		for _, row := range rows {
+			if row.OpeningOwed {
+				owed = append(owed, row.Issue+"/"+string(row.Audience))
+			}
+		}
+		return err
+	})
+	slices.Sort(owed)
+	want = slices.Sorted(slices.Values(want))
+	if !slices.Equal(owed, want) {
+		t.Fatalf("the told rows of %s owing the opening = %v, want %v", tree, owed, want)
+	}
 }

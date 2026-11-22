@@ -324,6 +324,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: goldenSkippedKeys},
 	{kind: texts.GateMoved, from: "workflow/gate.go:tellGateMoved (the gate, the version, the document)",
 		keys: []string{"issue", "gate", "version", "artifact"}, links: []string{"document"}},
+	{kind: texts.GateMoved, variants: []string{"opened-unchanged"}, from: "workflow/gate.go:openingDelivery at b537812f (the version the reader took, since which nothing it holds changed)",
+		keys: []string{"issue", "gate", "version", "unchanged_since"}},
 	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, stuckMergeStateReason (the head, the pull request, its merge state)",
 		keys: []string{"issue", "pull_request", "head", "merge_state", "passed"}},
 	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",

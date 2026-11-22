@@ -683,6 +683,18 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 				"version", 2+r.n, "merge", merge))
 	}
 
+	// gate-moved: an opening to a reader owed no news of the approved design, naming the version of
+	// the step's document it took, since which nothing it holds changed (workflow's openingDelivery).
+	{
+		artifact := r.id("gate-moved/opened-unchanged")
+		moved := workflow.GateMovedMessage(issue, record.DesignStepSpec, artifact, 2+r.n, true)
+		moved.UnchangedSince = 1 + r.n
+		b.roleMessage(r, "opened-unchanged", claim.RoleImplementer, issue, moved,
+			texts.UrgencyOf(texts.GateMoved, claim.RoleImplementer, texts.Variant{}),
+			goldenWant("issue", issue, "gate", texts.GateOpened, "step", "spec", "document", "dispatch://"+issue+"/spec", "artifact", artifact,
+				"version", 2+r.n, "merge", texts.MergeReleased, "unchanged_since", 1+r.n))
+	}
+
 	// approved-round-stuck.
 	{
 		stuck := goldenStuckRequest(r)
