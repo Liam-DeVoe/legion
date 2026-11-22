@@ -100,6 +100,15 @@ revision:
   it: every session's prefix is `session`, so a record of one session can name another session's
   consumer and pass the fence. A reader that deletes what a record names calls `Names.Cleanup`,
   which does all three.
+
+  The prefix and the fixed name come from one table in this package (`Naming`, `FamilyNaming`):
+  `SessionNaming()` (`session~<nuid>`, fixed `s-<session id>`), `DurableNaming()` for a key
+  `DurableKey` made (`<durable>~<nuid>`, fixed the durable's name), and `LogicalNaming()` for
+  Dispatch's and a daemon's durables (`<logical>~<nuid>`, fixed the logical name). Every creator
+  builds its `Config.Prefix` and `Config.Fixed` from it, and `CheckFamily(family, logical,
+  record)` is `Check` by the family's own naming, for a reader with no creator's `Config`, such as
+  the operator's module, which cannot import the creators' packages. Its nil means what `Check`'s
+  does.
 - **The owner check.** A consumer a record names is used only when the consumer's own metadata
   names the key (`Names.Owns`, `Config.Metadata`). It is checked before every read, adoption and
   delete of such a name, so a record that names another key's consumer is malformed, and nothing

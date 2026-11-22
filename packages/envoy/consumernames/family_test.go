@@ -1,0 +1,61 @@
+package consumernames
+
+import (
+	"errors"
+	"testing"
+)
+
+// familyCase is a record of logical in the store of family, and whether its family's creator
+// serves it: the round-6 cases, which CheckFamily and each creator's own read must answer alike.
+type familyCase struct {
+	name, family, logical string
+	record                Record
+	served                bool
+}
+
+// familyCases are the round-6 cases for every family the table names: a convert's open replace of
+// a session's fixed name among them, which a family table with no fixed rule refuses.
+func familyCases() []familyCase {
+	durable := DurableKey("listener-m a")
+	daemon := "daemon/p"
+	return []familyCase{
+		{"a session's own current", SessionFamily, "ses-A", Record{Current: "session~A", Start: 3}, true},
+		{"a current that is the session's fixed name", SessionFamily, "ses-A", Record{Current: "s-ses-A", Start: 3}, false},
+		{"a convert's open replace of s-ses-A", SessionFamily, "ses-A", Record{Start: 3, Op: &Op{Kind: OpReplace, Old: "s-ses-A", Candidate: "session~B", ReservedAt: testEpoch}}, true},
+		{"another session's fixed name as the old name", SessionFamily, "ses-A", Record{Start: 3, Op: &Op{Kind: OpReplace, Old: "s-ses-B", Candidate: "session~B", ReservedAt: testEpoch}}, false},
+		{"a retired fixed name", SessionFamily, "ses-A", Record{Current: "session~A", Start: 3, Retired: []string{"s-ses-A"}}, false},
+		{"a session's current of the listener's durable", SessionFamily, "ses-A", Record{Current: "listener-m~A", Start: 3}, false},
+		{"a durable's own current", SessionFamily, durable, Record{Current: "listener-m a~A", Start: 3}, true},
+		{"a durable's current of the session prefix", SessionFamily, durable, Record{Current: "session~A", Start: 3}, false},
+		{"a durable's old name that is its own name", SessionFamily, durable, Record{Start: 3, Op: &Op{Kind: OpReplace, Old: "listener-m a", Candidate: "listener-m a~B", ReservedAt: testEpoch}}, true},
+		{"Dispatch's own current", DispatchFamily, "delivery-events", Record{Current: "delivery-events~A", Start: 3}, true},
+		{"Dispatch's current of its other durable", DispatchFamily, "delivery-events", Record{Current: "delivery-jobs~A", Start: 3}, false},
+		{"Dispatch's old name that is its fixed name", DispatchFamily, "delivery-events", Record{Start: 3, Op: &Op{Kind: OpReplace, Old: "delivery-events", Candidate: "delivery-events~B", ReservedAt: testEpoch}}, true},
+		{"a daemon's own current", daemon, "legion-go-p-wake", Record{Current: "legion-go-p-wake~A", Start: 3}, true},
+		{"a daemon's current of a session", daemon, "legion-go-p-wake", Record{Current: "session~A", Start: 3}, false},
+	}
+}
+
+// CheckFamily judges each record as the family's creator does, by the family's own naming: the
+// cases its creators serve pass, and the others are ErrMalformedRecord. A family no store keeps is
+// ErrInvalidFamily, and a durable's key DurableKey did not make ErrInvalidKey. Each creator's own
+// answer and naming are held to the table in its package (internal/bus, cmd/listener).
+func TestCheckFamilyJudgesARecordAsItsFamilysCreator(t *testing.T) {
+	for _, c := range familyCases() {
+		t.Run(c.name, func(t *testing.T) {
+			err := CheckFamily(c.family, c.logical, c.record)
+			if c.served && err != nil || !c.served && !errors.Is(err, ErrMalformedRecord) {
+				t.Fatalf("CheckFamily(%s, %s, %+v) = %v; want served %t", c.family, c.logical, c.record, err, c.served)
+			}
+		})
+	}
+	if err := CheckFamily("daemon", "legion-go-p-wake", Record{}); !errors.Is(err, ErrInvalidFamily) {
+		t.Errorf("CheckFamily of the family daemon = %v, want ErrInvalidFamily", err)
+	}
+	if err := CheckFamily(SessionFamily, "durable.", Record{}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("CheckFamily of the key durable. = %v, want ErrInvalidKey", err)
+	}
+	if durable, ok := durableOfKey(DurableKey("listener-m a/b")); !ok || durable != "listener-m a/b" {
+		t.Errorf("durableOfKey(DurableKey(listener-m a/b)) = %q, %t", durable, ok)
+	}
+}
