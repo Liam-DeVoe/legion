@@ -23,14 +23,15 @@ import (
 const fleetShare = time.Second
 
 // registerFleetProcess writes the server_processes row of another server process straight into
-// the registry, as fleetProcess does, and leaves the read of the fleet the service's sockets share
-// as it was, for a row that watches that read itself.
-func registerFleetProcess(t *testing.T, service *Service, version, creatable int, age time.Duration) {
+// the registry, as fleetProcess does, with the owner lock protocol its build registers (fleetProcess
+// says which), and leaves the read of the fleet the service's sockets share as it was, for a row
+// that watches that read itself.
+func registerFleetProcess(t *testing.T, service *Service, version, creatable, ownerLockProtocol int, age time.Duration) {
 	t.Helper()
 	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() - make_interval(secs => $3))`,
-		version, creatable, age.Seconds()); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, owner_lock_protocol, heartbeat_at)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, $3, now() - make_interval(secs => $4))`,
+		version, creatable, ownerLockProtocol, age.Seconds()); err != nil {
 		t.Fatalf("add a server process reading schema version %d: %v", version, err)
 	}
 }
@@ -63,7 +64,8 @@ func TestASocketsAdmissionSeesAFleetChangeOnceTheSharedReadIsASecondOld(t *testi
 	if socket, authenticated := admittedAs(t, server.URL, artifactID, current, token); !socket || !authenticated {
 		t.Fatalf("a current page with no other process live was admitted writable=%t by its socket and %t by its token, want read-write", socket, authenticated)
 	}
-	registerFleetProcess(t, service, 0, 0, 0)
+	// A build that predates the fleet columns predates the owner lock protocol too: its row is at 0.
+	registerFleetProcess(t, service, 0, 0, 0, 0)
 
 	moveTo(fleetShare - time.Millisecond)
 	if socket, authenticated := admittedAs(t, server.URL, artifactID, current, token); !socket || !authenticated {
