@@ -24,8 +24,15 @@ import (
 // one per line, so a test can start natsd as a process and signal it as a script does.
 const natsdArgsEnv = "NATSD_TEST_ARGS"
 
+// natsdDrawsEnv, beside natsdArgsEnv, names the addresses that natsd's claim draws first, comma
+// separated, before LoopbackIP's: a row forces the address a second natsd meets.
+const natsdDrawsEnv = "NATSD_TEST_DRAWS"
+
 func TestMain(m *testing.M) {
 	if args, ok := os.LookupEnv(natsdArgsEnv); ok {
+		if draws := os.Getenv(natsdDrawsEnv); draws != "" {
+			drawHost = drawsFirst(strings.Split(draws, ","))
+		}
 		if err := run(strings.Split(args, "\n")); err != nil {
 			fmt.Fprintf(os.Stderr, "natsd: %v\n", err)
 			os.Exit(1)
@@ -35,12 +42,30 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// drawsFirst draws hosts in order, then what testport.LoopbackIP draws.
+func drawsFirst(hosts []string) func() net.IP {
+	return func() net.IP {
+		if len(hosts) == 0 {
+			return testport.LoopbackIP()
+		}
+		host := hosts[0]
+		hosts = hosts[1:]
+		return net.ParseIP(host)
+	}
+}
+
 // startNatsd starts this test binary as natsd on args and returns it, with the address its log
 // names on the line a script reads (`Listening for client connections on <address>:<port>`).
 func startNatsd(t *testing.T, args ...string) (*exec.Cmd, string) {
 	t.Helper()
+	return startNatsdWith(t, nil, args...)
+}
+
+// startNatsdWith is startNatsd with env added to natsd's environment.
+func startNatsdWith(t *testing.T, env []string, args ...string) (*exec.Cmd, string) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), natsdArgsEnv+"="+strings.Join(args, "\n"))
+	cmd.Env = append(append(os.Environ(), env...), natsdArgsEnv+"="+strings.Join(args, "\n"))
 	out, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	cmd.Stderr = cmd.Stdout
@@ -129,8 +154,10 @@ func TestNatsdTakesTheLoopbackAddressItIsGivenAndRefusesAnyOther(t *testing.T) {
 		require.ErrorIs(t, err, os.ErrNotExist, "natsd claimed %s, which its caller gave it", host)
 	}
 
+	// listenHost itself, the check run makes before it starts a server: a check that let one of
+	// these through then fails here by name, not by a server started in the test process.
 	for _, refused := range []string{"0.0.0.0", "10.1.2.3", "localhost"} {
-		err := run([]string{"-a", refused, "-p", "-1", "-store_dir", t.TempDir()})
+		_, _, err := listenHost(refused, 0)
 		require.ErrorContains(t, err, "no loopback address", "-a %s", refused)
 	}
 }
@@ -138,7 +165,8 @@ func TestNatsdTakesTheLoopbackAddressItIsGivenAndRefusesAnyOther(t *testing.T) {
 // With -claim-for, the claim is that process's and outlasts natsd: a script starts natsd with
 // -claim-for $$, stops it, and restarts it with -a on the address it read and its old port, while
 // the claim keeps every other stack off that address. A second natsd started in the gap, as a
-// second stack starts one, is given another address, so its port cannot be the restart's.
+// second stack starts one, whose claim draws that very address first, is given another, so its
+// port cannot be the restart's, and the claim still names the script.
 func TestARestartWithClaimForKeepsTheAddressAndThePort(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("off Linux every natsd shares 127.0.0.1")
@@ -148,19 +176,22 @@ func TestARestartWithClaimForKeepsTheAddressAndThePort(t *testing.T) {
 	host, port, err := net.SplitHostPort(address)
 	require.NoError(t, err)
 	claim := filepath.Join(testport.ClaimDir(), host)
+	t.Cleanup(func() { _ = testport.Release(testport.ClaimDir(), host, os.Getpid()) })
 	require.NoError(t, first.Process.Signal(syscall.SIGTERM))
 	require.NoError(t, first.Wait())
 	raw, err := os.ReadFile(claim)
 	require.NoError(t, err, "the claim on %s went with the first natsd", host)
 	require.Equal(t, fmt.Sprint(os.Getpid()), strings.TrimSpace(string(raw)))
 
-	_, other := startNatsd(t, "-p", port, "-store_dir", t.TempDir())
+	_, other := startNatsdWith(t, []string{natsdDrawsEnv + "=" + host}, "-p", port, "-store_dir", t.TempDir())
 	otherHost, _, err := net.SplitHostPort(other)
 	require.NoError(t, err)
-	require.NotEqual(t, host, otherHost, "a second stack's natsd took the claimed %s", host)
+	require.NotEqual(t, host, otherHost, "a second stack's natsd, whose claim drew %s first, took it while the script held it", host)
+	raw, err = os.ReadFile(claim)
+	require.NoError(t, err, "the claim on %s is gone after a second natsd drew it", host)
+	require.Equal(t, fmt.Sprint(os.Getpid()), strings.TrimSpace(string(raw)), "the second natsd took the claim on %s", host)
 
 	_, again := startNatsd(t, "-a", host, "-p", port, "-store_dir", store)
 	require.Equal(t, address, again, "the restart came back elsewhere")
 	require.True(t, natsInfo(again))
-	require.NoError(t, testport.Release(testport.ClaimDir(), host, os.Getpid()))
 }

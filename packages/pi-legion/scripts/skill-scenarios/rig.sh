@@ -796,6 +796,10 @@ services_up() {
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
+  # $S outlasts the batch and the checkout, and claim_nats_host uses a loopbackhost it finds there
+  # as it is, so each batch builds its own from this checkout: one built from an older checkout
+  # would claim by that checkout's rule.
+  rm -f "$S/loopbackhost"
   claim_nats_host "$S" || fail "no loopback address could be claimed for NATS (above)"
   docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')

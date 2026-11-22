@@ -11,7 +11,9 @@ const NATS_IMAGE =
 
 export interface NatsServer {
   readonly url: string;
-  /** Removes the container, and fails, naming them, when a client is still connected to it. */
+  /** Removes the container, and fails, naming them, when a client is still connected to it. Await
+   *  it: it reads the server's clients first and removes the container only then, so a stop left
+   *  floating in a file's last hook can end with the test process and leave the container running. */
   stop(): Promise<void>;
 }
 

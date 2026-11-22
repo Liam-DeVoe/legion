@@ -18,7 +18,8 @@
 # binary already there is used as it is), and claims an address for this script's process ($$),
 # which it sets in nats_host. The claim is a file in /tmp/legion-loopback-hosts-<uid> naming this
 # process (internal/testport's Claim), so no other script or natsd of this user takes the address
-# while this script runs, and it is free again once this process exits, even unreleased.
+# while this script runs, and it is free again once this process exits, even unreleased. That
+# directory must be this user's own with mode 0700, and a claim refuses one that is not, naming it.
 # loopbackhost binds port 0 on the address before it prints it, so an address that is not up fails
 # here and names itself. On Linux every address of 127.0.0.0/8 is the loopback, and the address is
 # one of 127.1.0.1 through 127.254.255.254; elsewhere only 127.0.0.1 is up, and it is 127.0.0.1.

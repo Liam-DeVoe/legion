@@ -15,10 +15,16 @@ import (
 
 // ClaimDir is the directory every claim of this user is a file in: one fixed path, read from no
 // variable, so two stacks whose environments differ (a script runs natsd under `env -i`, and a
-// run sets TMPDIR to a directory of its own) still see each other's claims.
+// run sets TMPDIR to a directory of its own) still see each other's claims. It is in the shared
+// /tmp, so Claim uses it only as a directory of this user's, which no other user may enter.
 func ClaimDir() string {
 	return filepath.Join("/tmp", "legion-loopback-hosts-"+strconv.Itoa(os.Getuid()))
 }
+
+// claimDraws is how many addresses Claim draws before it gives up: an address a live process
+// holds is drawn again, and with 16,516,096 to draw from, this many held in a row means the draw
+// is broken (one that gives the same address every time), not that the machine is full.
+const claimDraws = 64
 
 // Claim is a loopback address LoopbackIP draws that no live process of this user has claimed, now
 // claimed for owner, a process id: the file dir/<address> holds owner's id. A claim keeps two
@@ -34,15 +40,22 @@ func ClaimDir() string {
 // Two processes that draw the same address at the same moment, both after its owner died, can
 // both take it; with 16,516,096 addresses to draw from, that is no case a script meets.
 func Claim(dir string, owner int) (string, error) {
+	return ClaimFrom(dir, owner, LoopbackIP)
+}
+
+// ClaimFrom is Claim with each address drawn from draw rather than LoopbackIP, so a test can
+// choose the address a claim meets: one a live process holds, or one that is not up.
+func ClaimFrom(dir string, owner int, draw func() net.IP) (string, error) {
 	if runtime.GOOS != "linux" {
 		return "127.0.0.1", nil
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("make the loopback claims directory: %w", err)
+	if err := ownClaimDir(dir); err != nil {
+		return "", err
 	}
 	sweep(dir)
-	for {
-		host := LoopbackIP().String()
+	held := ""
+	for range claimDraws {
+		host := draw().String()
 		listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 		if err != nil {
 			return "", fmt.Errorf("loopback address %s is not up: %w", host, err)
@@ -55,6 +68,44 @@ func Claim(dir string, owner int) (string, error) {
 		if claimed {
 			return host, nil
 		}
+		held = host
+	}
+	return "", fmt.Errorf("no loopback address claimed in %d draws: a live process held each one drawn, the last %s", claimDraws, held)
+}
+
+// ownClaimDir makes dir, a directory only this user may enter, when it is missing, and refuses it
+// unless it is one: a directory, not a link to one, owned by this user, with mode 0700. ClaimDir
+// is a fixed path in the shared /tmp, so another user can make it first: with mode 0755 to refuse
+// every claim, or 0777 to remove claims or plant them.
+func ownClaimDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("make the loopback claims directory: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("read the loopback claims directory: %w", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !info.IsDir() || !ok || int(stat.Uid) != os.Getuid() || info.Mode().Perm() != 0o700 {
+		owner := "an unknown user"
+		if ok {
+			owner = "uid " + strconv.FormatUint(uint64(stat.Uid), 10)
+		}
+		return fmt.Errorf("the loopback claims directory %s is %s with mode %04o, owned by %s; a claim needs a directory of uid %d with mode 0700: remove %s",
+			dir, kindOf(info), uint32(info.Mode().Perm()), owner, os.Getuid(), dir)
+	}
+	return nil
+}
+
+// kindOf names what a file is, for ownClaimDir's refusal.
+func kindOf(info fs.FileInfo) string {
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		return "a symbolic link"
+	case info.IsDir():
+		return "a directory"
+	default:
+		return "a file"
 	}
 }
 

@@ -67,7 +67,9 @@ authorization {
   }, 120_000);
   afterAll(async () => {
     for (const connection of open) await connection.close();
-    server?.stop();
+    // Awaited: stop reads the server's clients and only then removes the container, so a stop
+    // left floating when this file runs alone or last never removes it (nats-server.ts).
+    await server?.stop();
   }, 60_000);
 
   test("answers a frame and a probe asked on its own reply prefix, and nothing else gets out", async () => {

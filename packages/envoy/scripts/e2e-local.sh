@@ -20,8 +20,10 @@
 # (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
 # addr). natsd listens on a loopback address of its own, which it claims itself (127.0.0.1 off
 # Linux), so no client of another stack on this machine reaches it. E2E_NATS_PORT and E2E_PORT set
-# a port explicitly; it is used as given, and one already in use fails with "address already in
-# use". The session opens no port of its own: it takes its
+# a port explicitly; it is used as given. An E2E_PORT already in use fails with "address already in
+# use". An E2E_NATS_PORT another program holds on 127.0.0.1 does not stop natsd on Linux, since natsd
+# serves that port on its own address; off Linux, where natsd shares 127.0.0.1, it fails the same
+# way. The session opens no port of its own: it takes its
 # messages from its session consumer over NATS, as every shipped plugin does. It keeps two records
 # of its own. The offers file takes every frame as the transport offers it, so a frame offered
 # twice is two lines there and the absence of a second offer can be read at all. The frames file
@@ -322,9 +324,10 @@ stop_nats() {
 # loopback address of its own (127.0.0.1 off Linux), which it names on the line that names its
 # port, so no client of another stack on this machine reaches it. It must never pass on another
 # server: something already holding an E2E_NATS_PORT — a run left behind, or another program —
-# greets a connection exactly as ours would, while ours exits with "address already in use". So
-# the address is read from our own server's log once it says it is ready, and the wait ends the
-# moment our own process is gone.
+# greets a connection exactly as ours would. On Linux it holds 127.0.0.1 or another address, never
+# the one ours claimed; off Linux ours exits with "address already in use". So the address is read
+# from our own server's log once it says it is ready, and the wait ends the moment our own process
+# is gone.
 wait_for_nats() {
   local deadline=$((SECONDS + 30))
   local banner address

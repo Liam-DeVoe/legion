@@ -30,7 +30,9 @@
 # and dev-airlock-stands as well under --project-access, each an executable file, and refuses
 # before it creates or starts anything -- no database, no port, no process -- when one is missing
 # or is not, naming each such file. It copies them into this run's own bin directory, where a
-# build would have put them, so everything after that step is the same either way.
+# build would have put them, so everything after that step is the same either way. They must be
+# built from this revision: natsd above all, which this script starts with -claim-for (below), a
+# flag a natsd built before it existed refuses at its start ("flag provided but not defined").
 #
 # With --project-access the broker asks this run's Dispatch whether a project is private and who
 # may see it, and the stack runs the airlock beside it: the broker's own proxy, and
@@ -194,6 +196,7 @@ With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, a
 agent-secrets-helper, natsd and natsprobe in <dir> in place of building them, and
 dev-airlock-stands too under --project-access; a directory short of any of them, or holding one
 that is not an executable file, is refused, naming each, before anything is created or started.
+Build them from this revision: an older natsd refuses -claim-for, which this run passes it.
 
 With --callout, run the hub behind the NATS auth service in two brokers, and the listener and
 Dispatch with NATS service tokens rather than no credential.
@@ -754,8 +757,9 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # natsd listens on a loopback address of its own (127.0.0.1 off Linux), so no client of another
 # stack on this machine reaches it, and every URL here is built from the address it reports. The
 # first start claims that address for this script (-claim-for $$), so the claim outlasts a restart
-# and no other stack's natsd takes the address while this one is down; it is freed when this
-# script exits (internal/testport's Claim).
+# and no other stack's natsd takes the address while this one is down. Nothing removes the claim's
+# file: it names this script's process, so once this script has exited the address is free, and
+# the next claim on this machine sweeps the file (internal/testport's Claim).
 #
 # start_natsd PORT MONITOR starts it on the client port PORT and, with --callout, the monitor port
 # MONITOR in place of callout_natsd_args's -1: -1 both at the start, and at a restart the ports it

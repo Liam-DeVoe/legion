@@ -102,7 +102,9 @@
 # inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
 # PGSERVICE or PGSERVICEFILE variable of the caller's. natsd listens on a loopback address it
 # claims for this script's process (-claim-for $$; 127.0.0.1 off Linux), read from its log, and
-# check 2's restart is given that address and port back with -a and -p.
+# check 2's restart is given that address and port back with -a and -p. Nothing removes that
+# claim's file: once this script has exited the address is free, and the next claim on this
+# machine sweeps the file (internal/testport's Claim).
 set -Eeuo pipefail
 
 # This script's own three ENVOY_SESSION_STATES_* inputs are read first: the sweep below drops every
