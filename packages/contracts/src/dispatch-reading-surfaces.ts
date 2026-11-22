@@ -116,6 +116,7 @@ export type DispatchReadingSurface =
   | "node-row-chip"
   | "outline-crumb"
   | "issue-pin"
+  | "plan-task-line"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -544,9 +545,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "node-row-child-title",
   },
   // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
-  // line a filter's row names a node's parent by, a crumb above a zoom and a pin in Details, each
-  // projected from the node's own words and cut by R1's first-line rule; and a chip, which names
-  // a tie's target.
+  // line a filter's row names a node's parent by, a crumb above a zoom, a pin in Details and a
+  // task's line in the Plan view, each projected from the node's own words and cut by R1's
+  // first-line rule; and a chip, which names a tie's target.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
@@ -612,6 +613,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "issue-pin",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.test.tsx",
+      test: "a step's line reads a reference by its target's name, as the task's folded line does",
+    },
+    reach: "/issues/<ISSUE>?preset=plan with the new issue page on, a step's line in the chart",
+    reason: `The Plan view names a task on one line - the line a step's row of the chart labels its bar with, and a task's link in the line of tasks that need each other - its first line cut by R1's first-line rule with its ellipsis, and its kind's word where its words hold none, read as the task's folded line in the outline is (\`node-row-first-line\`). ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "plan-task-line",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
