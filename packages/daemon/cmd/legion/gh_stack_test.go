@@ -1,13 +1,17 @@
 package main
 
 import (
+	"io"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -112,7 +116,12 @@ func TestGhStackRoutesByTheRepositoryItActsOn(t *testing.T) {
 		{name: "an unknown flag", argv: []string{"stack", "view", "--bogus"}, remotes: acme, refuse: `has no flag "--bogus" in gh-stack 0.3.0`},
 		{name: "another command's flag", argv: []string{"stack", "view", "--remote", "origin"}, remotes: acme, refuse: `has no flag "--remote"`},
 		{name: "an unknown shorthand", argv: []string{"stack", "view", "-x"}, remotes: acme, refuse: "has no flag -x"},
-		{name: "a flag before the command", argv: []string{"stack", "--json", "view"}, remotes: acme, refuse: `has no flag "--json"`},
+		{name: "a flag before the command", argv: []string{"stack", "--json", "view"}, remotes: acme, refuse: "before its command's name"},
+		{name: "a help before the command takes the next word", argv: []string{"stack", "-h", "push", "submit", "--help=false"}, remotes: acme, refuse: "before its command's name"},
+		{name: "a help before the command hides a write", argv: []string{"stack", "-h", "view", "link", "--help=false", "a", "b"}, env: map[string]string{"GH_REPO": "acme/other"}, remotes: acme, refuse: "before its command's name"},
+		{name: "a version before the command", argv: []string{"stack", "--version", "alias"}, remotes: acme, refuse: "before its command's name"},
+		{name: "a help turned off", argv: []string{"stack", "submit", "--help=false"}, remotes: acme, refuse: "gives --help a value"},
+		{name: "a shorthand help turned off", argv: []string{"stack", "push", "-h=false"}, remotes: acme, refuse: "gives -h a value"},
 		{name: "a boolean given a value that is no boolean", argv: []string{"stack", "view", "--json=maybe"}, remotes: acme, refuse: "a flag of no value"},
 		{name: "a flag with no value", argv: []string{"stack", "push", "--remote"}, remotes: acme, refuse: "no value"},
 		{name: "alias", argv: []string{"stack", "alias", "gs"}, remotes: acme, refuse: "`gh stack alias` is no command of gh-stack 0.3.0 this runs"},
@@ -152,28 +161,140 @@ func TestGhStackRoutesByTheRepositoryItActsOn(t *testing.T) {
 
 // gh-stack takes the remote it pushes to and fetches from, where --remote is absent, from
 // branch.<b>.pushRemote, remote.pushDefault, branch.<b>.remote or gh-stack.remote, and hands it to
-// git ahead of its refspecs, so a value of one of them that starts with `-` is refused. Control:
-// the same settings naming origin route the call.
-func TestGhStackRefusesAGitSettingGitWouldReadAsAnOption(t *testing.T) {
+// git ahead of its refspecs: a value that starts with `-` is an option of git's own, and a URL or
+// a path pushes outside the repository the call is routed by, so each is refused, and only a
+// listed remote or `.` routes. Settings that make that git run another program are refused too.
+// Control: the same settings naming origin route the call.
+func TestGhStackRefusesAGitSettingThatMovesOrRunsItsGit(t *testing.T) {
+	push := func() error {
+		_, err := ghTargetOf([]string{"stack", "push"}, nil, savedGhHelp, readGitRemotes, ownersOwnDirectories)
+		return err
+	}
+	// git config takes no value that starts with `-` on its command line, so each is written into
+	// the repository's configuration file itself.
+	set := func(t *testing.T, repository, key, value string) {
+		section, name, _ := strings.Cut(key, ".")
+		if sub, leaf, ok := strings.Cut(name, "."); ok && section != "gh-stack" && section != "core" {
+			name = leaf
+			section += " \"" + sub + "\""
+		}
+		appendTo(t, filepath.Join(repository, ".git", "config"), "["+section+"]\n\t"+name+" = "+value+"\n")
+	}
 	for _, key := range []string{"remote.pushDefault", "branch.main.pushRemote", "branch.main.remote", "gh-stack.remote"} {
+		for value, refuse := range map[string]string{
+			"--upload-pack=touch PWNED":             "is no remote",
+			"/tmp/another-repository":               "is no remote",
+			"https://github.com/acme/elsewhere.git": "is no remote",
+		} {
+			t.Run(key+"="+value, func(t *testing.T) {
+				repository := inClone(t, []string{"config", key, "origin"})
+				if err := push(); err != nil {
+					t.Fatalf("with %s=origin, ghTargetOf = %v; want acme's directory", key, err)
+				}
+				set(t, repository, key, value)
+				if err := push(); err == nil || !strings.Contains(err.Error(), refuse) || !strings.Contains(err.Error(), strings.ToLower(key)) {
+					t.Errorf("with %s=%s, ghTargetOf = %v; want a refusal naming %s", key, value, err, strings.ToLower(key))
+				}
+			})
+		}
+	}
+	t.Run("branch.main.remote=.", func(t *testing.T) {
+		inClone(t, []string{"config", "branch.main.remote", "."})
+		if err := push(); err != nil {
+			t.Errorf("with branch.main.remote=., git's name for this repository, ghTargetOf = %v; want acme's directory", err)
+		}
+	})
+	for _, key := range []string{"remote.origin.receivepack", "remote.origin.uploadpack", "core.sshCommand", "protocol.ext.allow", "protocol.allow"} {
 		t.Run(key, func(t *testing.T) {
-			repository := inClone(t, []string{"config", key, "origin"})
-			if target, err := ghTargetOf([]string{"stack", "push"}, nil, savedGhHelp, readGitRemotes, ownersOwnDirectories); err != nil || target.owner != "acme" {
-				t.Fatalf("with %s=origin, ghTargetOf = %+v, %v; want acme's directory", key, target, err)
-			}
-			// git config takes no value that starts with `-` on its command line, so it is written
-			// into the repository's configuration file itself.
-			section, name, _ := strings.Cut(key, ".")
-			if sub, leaf, ok := strings.Cut(name, "."); ok {
-				appendTo(t, filepath.Join(repository, ".git", "config"), "["+section+" \""+sub+"\"]\n\t"+leaf+" = --upload-pack=touch PWNED\n")
-			} else {
-				appendTo(t, filepath.Join(repository, ".git", "config"), "["+section+"]\n\t"+name+" = --upload-pack=touch PWNED\n")
-			}
-			_, err := ghTargetOf([]string{"stack", "push"}, nil, savedGhHelp, readGitRemotes, ownersOwnDirectories)
-			if err == nil || !strings.Contains(err.Error(), "starts with `-`") || !strings.Contains(err.Error(), strings.ToLower(key)) {
-				t.Errorf("with %s=--upload-pack=…, ghTargetOf = %v; want a refusal naming %s", key, err, strings.ToLower(key))
+			repository := inClone(t)
+			set(t, repository, key, "touch PWNED")
+			if err := push(); err == nil || !strings.Contains(err.Error(), "run another program") || !strings.Contains(err.Error(), strings.ToLower(key)) {
+				t.Errorf("with %s set, ghTargetOf = %v; want a refusal naming it", key, err)
 			}
 		})
+	}
+}
+
+// ghStackCobraTree is gh-stack's command tree as cobra v1.10.2 (gh-stack v0.3.0's, and this
+// module's) builds it from ghStackCommands: each command with its flags and shorthands, the root
+// with a version, under an outer `gh` command as gh-stack's cmd/root.go Execute wraps it. Each
+// command records its name in ran when it runs; a help or a version records nothing.
+func ghStackCobraTree(ran *string) *cobra.Command {
+	root := &cobra.Command{Use: "stack", Version: ghStackVersion, SilenceUsage: true, SilenceErrors: true}
+	for name, entry := range ghStackCommands {
+		if name == "help" || name == "delete" {
+			continue
+		}
+		command := &cobra.Command{Use: name, RunE: func(*cobra.Command, []string) error { *ran = name; return nil }}
+		if name == "unstack" {
+			command.Aliases = []string{"delete"}
+		}
+		short := map[string]string{}
+		for letter, long := range entry.short {
+			short[long] = string(letter)
+		}
+		for flag, takesValue := range entry.flags {
+			if takesValue {
+				command.Flags().StringP(flag, short[flag], "", "")
+			} else {
+				command.Flags().BoolP(flag, short[flag], false, "")
+			}
+		}
+		root.AddCommand(command)
+	}
+	gh := &cobra.Command{Use: "gh", SilenceUsage: true, SilenceErrors: true}
+	gh.SetHelpFunc(func(*cobra.Command, []string) {})
+	gh.SetOut(io.Discard)
+	gh.SetErr(io.Discard)
+	gh.AddCommand(root)
+	return gh
+}
+
+// Whatever argv `legion gh stack` admits, gh-stack runs the command the wrapper read, or none: a
+// command cobra would run is one readGhStackCall named, so the checks that hang on the command
+// (submit's --auto, the writes' one repository and template, alias and feedback) are the ones
+// that run. Every argv of up to three words over a vocabulary of commands, flags and values is
+// run through both, then 60,000 longer ones drawn with a fixed seed. Control: the vocabulary
+// holds the help-before-the-command shapes that made the two disagree before.
+func TestGhStackRunsTheCommandTheWrapperRead(t *testing.T) {
+	words := []string{"submit", "push", "view", "link", "alias", "feedback", "delete", "help", "completion",
+		"-h", "--help", "--help=false", "-h=false", "-v", "--version", "--version=false", "--auto", "--auto=false",
+		"--remote", "--remote=origin", "--json", "-m", "-b", "-y", "-A", "-Am", "--", "-", "origin", "x"}
+	compare := func(argv []string) {
+		call, err := readGhStackCall(argv)
+		if err != nil {
+			return
+		}
+		ran := ""
+		tree := ghStackCobraTree(&ran)
+		tree.SetArgs(append([]string{"stack"}, argv...))
+		_ = tree.Execute()
+		want := call.name
+		if want == "delete" {
+			want = "unstack"
+		}
+		if ran != "" && ran != want {
+			t.Errorf("readGhStackCall(%q) read %q, and gh-stack's parser runs %q", argv, call.name, ran)
+		}
+	}
+	var walk func(prefix []string)
+	walk = func(prefix []string) {
+		compare(prefix)
+		if len(prefix) == 3 {
+			return
+		}
+		for _, word := range words {
+			walk(append(slices.Clone(prefix), word))
+		}
+	}
+	walk(nil)
+	draw := rand.New(rand.NewPCG(5217, 4975))
+	for range 60000 {
+		argv := make([]string, 4+draw.IntN(3))
+		for i := range argv {
+			argv[i] = words[draw.IntN(len(words))]
+		}
+		compare(argv)
 	}
 }
 
@@ -266,6 +387,12 @@ func TestGhStackRunsOnlyTheImagesOwnCopy(t *testing.T) {
 		{name: "no program", break_: func(p string) { os.Remove(p) }, owner: os.Getuid(), refuse: "no such file"},
 		{name: "a program writable by its group", break_: func(p string) { os.Chmod(p, 0o775) }, owner: os.Getuid(), refuse: "writable by others"},
 		{name: "a directory writable by others", break_: func(p string) { os.Chmod(filepath.Dir(p), 0o757) }, owner: os.Getuid(), refuse: "writable by others"},
+		{name: "the extensions directory writable by its group", break_: func(p string) { os.Chmod(filepath.Dir(filepath.Dir(p)), 0o775) }, owner: os.Getuid(), refuse: "writable by others"},
+		{name: "the extensions directory a link", break_: func(p string) {
+			extensions := filepath.Dir(filepath.Dir(p))
+			os.Rename(extensions, extensions+".real")
+			os.Symlink(extensions+".real", extensions)
+		}, owner: os.Getuid(), refuse: "is a symbolic link"},
 		{name: "a program that does not run", break_: func(p string) { os.Chmod(p, 0o644) }, owner: os.Getuid(), refuse: "no executable file"},
 		{name: "a program that is a link", break_: func(p string) {
 			other := p + ".real"

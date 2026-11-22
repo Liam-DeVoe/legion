@@ -113,13 +113,16 @@ var ghStackCommands = func() map[string]ghStackCommand {
 	}
 }()
 
-// ghStackRoot is gh-stack's root command, which takes its help and its version (cobra's -v).
-var ghStackRoot = ghStackCommand{flags: map[string]bool{"version": false}, short: map[byte]string{'v': "version"}}
+// ghStackAlone are the arguments gh-stack's root takes, each as a call's only argument: its help
+// and its version.
+var ghStackAlone = []string{"-h", "--help", "-v", "--version"}
 
 // ghStackRemoteSettings are the git settings gh-stack takes a remote's name from where --remote
-// is absent (internal/git/gitops.go, ResolveRemote), as `git config --get-regexp` matches their
-// canonical, lower-case names.
-const ghStackRemoteSettings = `^(branch\..*\.(pushremote|remote)|remote\.pushdefault|gh-stack\.remote)$`
+// is absent (internal/git/gitops.go, ResolveRemote), and the settings that make the git it runs
+// for a fetch or a push run another program (a remote's uploadpack and receivepack,
+// core.sshCommand) or take a transport that runs one (protocol.allow and protocol.<name>.allow,
+// which admit `ext::`), as `git config --get-regexp` matches their canonical, lower-case names.
+const ghStackRemoteSettings = `^(branch\..*\.(pushremote|remote)|remote\.pushdefault|gh-stack\.remote|remote\..*\.(uploadpack|receivepack)|core\.sshcommand|protocol\.(.*\.)?allow)$`
 
 // ghStackTarget is the target of `gh stack args…` (the file's comment says how it is read).
 func ghStackTarget(args []string, env map[string]string, remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
@@ -176,12 +179,18 @@ type ghStackCall struct {
 // against ghStackCommands: `--name`, `--name=value` and, for a flag that takes a value,
 // `--name value`, whatever that value starts with; a cluster of shorthands, `-Au`, where one
 // taking a value takes the rest of the cluster, after one `=`, or the next argument; and `-h` and
-// `--help` everywhere. Before the command's name only the root's flags may stand. `--`, an
-// unknown command or flag, a boolean given a value that is no boolean, a value that starts with
-// `-`, and `submit` without --auto are refused, each naming the argument.
+// `--help` after the command's name. The command's name comes first: cobra finds it before it
+// adds the help and version flags, so it reads a flag before the name as taking the next word,
+// and `-h push submit --help=false` runs submit; so the root takes its help or version only as
+// the call's one argument (ghStackAlone), and a help given a value, which can turn it off, is
+// refused. `--`, an unknown command or flag, a boolean given a value that is no boolean, a value
+// that starts with `-`, and `submit` without --auto are refused, each naming the argument.
 func readGhStackCall(args []string) (ghStackCall, error) {
 	var call ghStackCall
-	command := ghStackRoot
+	if len(args) == 1 && slices.Contains(ghStackAlone, args[0]) {
+		return call, nil
+	}
+	var command ghStackCommand
 	auto := false
 	take := func(name, value, arg string) error {
 		if strings.HasPrefix(value, "-") {
@@ -212,10 +221,15 @@ func readGhStackCall(args []string) (ghStackCall, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case call.name == "" && strings.HasPrefix(arg, "-") && arg != "-":
+			return call, fmt.Errorf("`gh stack` is given %q before its command's name, where gh-stack's parser reads a flag as taking the next word, so it sends nothing; name the command first (`gh stack --help` and `gh stack --version` stand alone)", arg)
 		case arg == "--":
 			return call, errors.New("`gh stack` is given `--`, after which gh-stack takes an argument that starts with `-` as a branch it hands to git, where it is an option of git's own, so it sends nothing")
 		case strings.HasPrefix(arg, "--"):
 			name, value, valued := strings.Cut(arg[2:], "=")
+			if name == "help" && valued {
+				return call, fmt.Errorf("`gh stack` gives --help a value in %q, which can turn a help off and run the command, so it sends nothing", arg)
+			}
 			takesValue, known := flagOf(name)
 			if !known {
 				return call, fmt.Errorf("`gh stack%s` has no flag %q in gh-stack %s, so it sends nothing", commandSuffix(call.name), arg, ghStackVersion)
@@ -250,6 +264,9 @@ func readGhStackCall(args []string) (ghStackCall, error) {
 					return call, fmt.Errorf("`gh stack%s` has no flag -%c in gh-stack %s (in %q), so it sends nothing", commandSuffix(call.name), cluster[j], ghStackVersion, arg)
 				}
 				rest := cluster[j+1:]
+				if name == "help" && strings.HasPrefix(rest, "=") {
+					return call, fmt.Errorf("`gh stack` gives -h a value in %q, which can turn a help off and run the command, so it sends nothing", arg)
+				}
 				if takesValue, _ := flagOf(name); !takesValue {
 					if value, ok := strings.CutPrefix(rest, "="); ok {
 						if err := boolean(name, value, arg); err != nil {
@@ -298,9 +315,11 @@ func commandSuffix(name string) string {
 }
 
 // ghStackRemotesAreNames refuses a --remote value that is no remote of the working directory's
-// remote lines, a remote whose name starts with `-`, and a setting gh-stack takes a remote from
-// (ghStackRemoteSettings) whose value does: gh-stack hands each to `git fetch` or `git push` ahead
-// of its refspecs, where git reads it as an option of its own.
+// remote lines, a remote whose name starts with `-`, a setting gh-stack takes a remote from whose
+// value is no such remote and not `.` (git's name for this repository), and any setting that makes
+// git run another program (ghStackRemoteSettings): gh-stack hands the remote to `git fetch` or
+// `git push` ahead of its refspecs, where git reads `-…` as an option of its own, and a URL or a
+// path there pushes outside every repository this routed by.
 func ghStackRemotesAreNames(call ghStackCall, lines []ghRemote) error {
 	var names []string
 	for _, line := range lines {
@@ -323,8 +342,13 @@ func ghStackRemotesAreNames(call ghStackCall, lines []ghRemote) error {
 	}
 	for _, line := range settings {
 		key, value, _ := strings.Cut(line, " ")
-		if strings.HasPrefix(value, "-") {
-			return fmt.Errorf("the git setting %s starts with `-`, and gh-stack hands it to git as the remote to push to, where it is an option of git's own, so `gh stack` sends nothing; unset it", key)
+		switch {
+		case strings.HasPrefix(key, "branch.") || key == "remote.pushdefault" || key == "gh-stack.remote":
+			if value != "." && !slices.Contains(names, value) {
+				return fmt.Errorf("the git setting %s names %q, which is no remote `git remote -v` lists here, and gh-stack would push or fetch there, outside the repository this call is routed by, so `gh stack` sends nothing; set it to one of them or unset it", key, value)
+			}
+		default:
+			return fmt.Errorf("the git setting %s makes the git gh-stack runs for a fetch or a push run another program, so `gh stack` sends nothing; unset it", key)
 		}
 	}
 	return nil

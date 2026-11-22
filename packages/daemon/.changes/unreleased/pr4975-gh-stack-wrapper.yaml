@@ -5,12 +5,14 @@ body: |-
     else the working directory's github.com remotes, refused where they name two owners. It runs
     the image's root-owned copy at /opt/legion/gh-extensions/gh-stack directly, so no other
     program named gh-stack and no gh alias gets the token. Every flag is read against gh-stack
-    0.3.0's own, because gh-stack hands --remote, branches and other values to `git fetch` and
-    `git push`, where a value that starts with `-` would run a command: such a value, an unknown
-    flag or command, `--`, a --remote that names no listed remote, and a remote or push setting
-    that starts with `-` are refused. `gh stack submit` needs --auto, since its editor writes pull
-    request text no guard reads, and the pull request template `submit` and `link` post goes to the
-    leak guard. `gh stack alias` and `gh stack feedback` are refused.
+    0.3.0's own, with its command's name first, because gh-stack hands --remote, branches and
+    other values to `git fetch` and `git push`, where a value that starts with `-` would run a
+    command: such a value, an unknown flag or command, a flag before the command's name, a help
+    given a value, `--`, a --remote that names no listed remote, a push setting that names no
+    listed remote, and a setting that makes git run another program are refused. `gh stack submit`
+    needs --auto, since its editor writes pull request text no guard reads, and the pull request
+    template `submit` and `link` post goes to the leak guard. `gh stack alias` and
+    `gh stack feedback` are refused.
 time: 2026-11-22T08:34:40Z
 custom:
     Issue: pr4975

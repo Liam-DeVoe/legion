@@ -178,9 +178,12 @@ that execs `legion gh` by its absolute path), and every command under a `GH_HOST
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
 `gh stack`, the github/gh-stack extension the worker image ships, is the one extension it runs,
-with nothing before `stack`. It runs the image's copy itself, not through gh, and only where
-`/opt/legion/gh-extensions/gh-stack/gh-stack` is a regular executable file that is root's, in
-directories that are root's, none writable by another, so a pane, which has none, refuses it.
+with nothing before `stack`, and with its command's name first: before the name, gh-stack's
+parser reads a flag as taking the next word, so only `gh stack --help` or `--version` alone may
+stand there, and a help given a value, which can turn it off, is refused. It runs the image's
+copy itself, not through gh, and only where `/opt/legion/gh-extensions/gh-stack/gh-stack` is a
+regular executable file that is root's, in directories that are root's, none writable by
+another, so a pane, which has none, refuses it.
 gh-stack acts on the one repository go-gh resolves, `GH_REPO` where set and otherwise one of the
 working directory's `github.com` remotes or a `gh-resolved` setting's repository, and none of its
 arguments names another (a pull request URL is read for its number), so it runs with the
@@ -189,12 +192,15 @@ routes to, and is refused where those route to two. gh-stack hands `--remote`, b
 other values to `git fetch` and `git push`, where one that starts with `-` is an option of git's
 own (`--upload-pack=<command>` runs that command), so every flag is read against the pinned
 release's, and an unknown flag or command, `--`, a value that starts with `-`, a `--remote` that
-names no listed remote and a remote or a `branch.*.pushRemote`, `remote.pushDefault`,
-`branch.*.remote` or `gh-stack.remote` setting that starts with `-` are refused. `submit` without
-`--auto` is refused, since its editor writes pull request text no guard reads, and so are
-`alias` and `feedback`. `submit` and `link` must find one repository, the one their pushes went
-to, and hand the guard the pull request template they would post. Its update check, which reads
-github/gh-stack's releases with the call's token, is off for every call.
+names no listed remote and a remote whose name starts with `-` are refused. A
+`branch.*.pushRemote`, `remote.pushDefault`, `branch.*.remote` or `gh-stack.remote` setting must
+name a listed remote or `.`, since a URL or a path there pushes outside the routed repository,
+and a remote's `uploadpack` or `receivepack`, `core.sshCommand` or a `protocol` `allow` setting,
+each of which makes git run another program, is refused. `submit` without `--auto` is refused,
+since its editor writes pull request text no guard reads, and so are `alias` and `feedback`.
+`submit` and `link` must find one repository, the one their pushes went to, and hand the guard
+the pull request template they would post. Its update check, which reads github/gh-stack's
+releases with the call's token, is off for every call.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
 (`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
