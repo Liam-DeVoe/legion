@@ -125,9 +125,11 @@ func newEdgeLiveRigWithBuckets(t *testing.T, edge natsgrant.Permissions, buckets
 	}
 	t.Cleanup(client.Close)
 	rig.dispatch = client
-	// The edge's grant creates and raises no bucket's stream, so it finds each bucket the shared
-	// listeners made at their start; Dispatch's user, whose grant holds each one's create, makes
-	// them here before any edge starts.
+	// The edge's grant creates and raises no bucket's stream, so it finds each bucket made before
+	// it starts: a deployment's copied buckets by the operator's `envoy-infra buckets`, the others
+	// by the shared listeners at their start. Dispatch's user, whose grant holds each one's create,
+	// makes them here before any listener starts, so a shared listener starts on the server as the
+	// rig left it (startShared).
 	for _, bucket := range buckets {
 		if _, err := client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
 			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
@@ -159,10 +161,12 @@ func (r *edgeLiveRig) startEdge(t *testing.T) *listenerProcess {
 	return startEdgeListenerProcess(t, r.binary, r.uri, edgeLiveMachine, r.broker, bus.NkeySeedEnvVar+"="+r.seeds["edge"])
 }
 
-// startShared starts a shared listener as its own user, one no session shares.
+// startShared starts a shared listener as its own user, one no session shares, on the server as
+// the rig left it (startListenerProcessAsIs): the rig made every bucket the listener copies, and
+// the shared listener's grant does not let the harness mark the server as a fixture's.
 func (r *edgeLiveRig) startShared(t *testing.T) *listenerProcess {
 	t.Helper()
-	return startListenerProcess(t, r.binary, r.uri, "example-shared", bus.NkeySeedEnvVar+"="+r.seeds["shared"])
+	return startListenerProcessAsIs(t, r.binary, r.uri, "example-shared", bus.NkeySeedEnvVar+"="+r.seeds["shared"])
 }
 
 // connect connects to the server as the user name names.
