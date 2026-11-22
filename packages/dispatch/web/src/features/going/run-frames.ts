@@ -4,19 +4,29 @@ import { type RunEvent, type RunState, runEnded, runNext } from "./run-states";
 
 /**
  * One run as its frames have built it so far (`GET /api/v1/going/runs/{id}/events`): its steps -
- * each model reply and each tool call, a tool call showing as working from the reply that made it
- * until its own frame says how it ended - the prose the model wrote, the blocks the server drew,
- * the plan it proposed and how its turn ended. Every field is a frame's; nothing is guessed.
+ * each tool call, working from the reply that made it until its own frame says how it ended - the
+ * prose the model wrote, the blocks the server drew, the plan it proposed and how its turn ended.
+ * Every field is a frame's; nothing is guessed.
  */
 
 /** A tool call of a run: its place among the run's steps (`id`, which never changes), its tool,
- *  its one-line note once it ended, and whether it was refused. */
+ *  the words the bar shows for it, the kind of step its frame says it is, the items it named and
+ *  answered, and whether it was refused. */
 export interface RunStep {
   readonly id: number;
   readonly tool: string;
   /** The step the call is, once its frame arrived; undefined while it runs. */
   readonly step: number | undefined;
-  readonly note: string;
+  /** The call's words: the present form of its label while it runs, from the reply that made it;
+   *  once its own frame came, the past form, or the one sentence of a call that failed. Empty
+   *  for a call that has none, such as one of a run recorded before calls had words. */
+  readonly label: string;
+  /** What the call is - read, search, look, chart, plan, review or write - once its frame says
+   *  so; empty while it runs. A write is a change of an approved plan, which the plan's card
+   *  shows. */
+  readonly kind: string;
+  /** The keys and references of the items the call named and answered. */
+  readonly items: readonly string[];
   readonly refused: boolean;
   readonly running: boolean;
 }
@@ -32,8 +42,14 @@ export interface RunEnd {
 export interface RunFrames {
   readonly state: RunState;
   readonly steps: readonly RunStep[];
-  /** The model's prose, each reply's in order: the last is the answer. */
+  /** The prose of each reply that called no tool, in order: the last is the answer. */
   readonly replies: readonly string[];
+  /** The prose of the last reply that called tools, which the bar shows while those calls run:
+   *  it is no part of the answer. */
+  readonly working: string;
+  /** How many tool results the run withheld from the model, as the reply that ended its turn
+   *  says: the answer may miss what they hold. */
+  readonly withheld: number;
   readonly blocks: readonly GoingBlockData[];
   /** The plan's number and state as the last plan frame said them. */
   readonly plan: { readonly number: number; readonly state: string } | undefined;
@@ -52,7 +68,16 @@ export const STARTED_RUN: RunFrames = {
   replies: [],
   state: "working",
   steps: [],
+  withheld: 0,
+  working: "",
 };
+
+/** The texts of a frame's list field, none where it holds no list. */
+function textsOf(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
 
 /** The event an `end` frame is to the run's state: a turn that waits on its plan, done, failed,
  *  stopped by a bound of its level (it offers Continue), or stopped by its person. */
@@ -75,25 +100,29 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
   const fields = objectOf(data);
   switch (name) {
     case "reply": {
-      const tools = Array.isArray(fields.tools)
-        ? fields.tools.filter((tool): tool is string => typeof tool === "string")
-        : [];
+      const tools = textsOf(fields.tools);
+      const labels = textsOf(fields.labels);
       const reply = textOf(fields.text);
+      const calls = tools.length > 0;
       return {
         ...run,
-        replies: reply === "" ? run.replies : [...run.replies, reply],
+        replies: calls || reply === "" ? run.replies : [...run.replies, reply],
         state: runNext(run.state, "step").state,
         steps: [
           ...run.steps,
           ...tools.map((tool, index) => ({
             id: run.steps.length + index,
-            note: "",
+            items: [],
+            kind: "",
+            label: labels[index] ?? "",
             refused: false,
             running: true,
             step: undefined,
             tool,
           })),
         ],
+        withheld: typeof fields.withheld === "number" ? fields.withheld : run.withheld,
+        working: calls ? reply : "",
       };
     }
     case "tool": {
@@ -101,14 +130,17 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       const at = run.steps.findIndex((step) => step.running && step.tool === tool);
       const ended: RunStep = {
         id: at === -1 ? run.steps.length : at,
-        note: textOf(fields.note),
+        items: textsOf(fields.items),
+        kind: textOf(fields.kind),
+        label: textOf(fields.label),
         refused: fields.error === true,
         running: false,
         step: typeof fields.step === "number" ? fields.step : undefined,
         tool,
       };
       // The call's frame ends the first call of its tool still shown as running; a call no reply
-      // named (a row of an approved plan the runner made) is a step of its own.
+      // named (a row of an approved plan the runner made, the review of a plan) is a step of its
+      // own.
       const steps =
         at === -1
           ? [...run.steps, ended]
@@ -131,9 +163,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
     }
     case "end": {
       const end: RunEnd = {
-        offers: Array.isArray(fields.offers)
-          ? fields.offers.filter((offer): offer is string => typeof offer === "string")
-          : [],
+        offers: textsOf(fields.offers),
         reason: textOf(fields.reason),
         state: textOf(fields.state),
       };

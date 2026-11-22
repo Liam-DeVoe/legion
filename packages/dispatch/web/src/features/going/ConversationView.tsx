@@ -28,28 +28,39 @@ const STATE_TEXT: Readonly<Record<RunState, string>> = {
   working: "Working…",
 };
 
-/** The steps of a run: each tool call, working from the reply that made it until its own frame
- *  says how it ended. */
+/** The steps of a run: one line for each tool call, its words in the present tense while it runs
+ *  and in the past tense, or the sentence of a call that failed, once it ended. A call with no
+ *  words draws no line, and nor does a change of an approved plan, which its row's tick on the
+ *  plan's card shows. While calls run, the prose the model wrote beside them is a line of its own
+ *  above them. */
 function Steps({ run }: { readonly run: RunEntry }): ReactNode {
-  const steps = run.frames.steps;
-  if (steps.length === 0) {
+  const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");
+  const working = steps.some((step) => step.running) ? run.frames.working : "";
+  if (steps.length === 0 && working === "") {
     return null;
   }
   return (
-    <ol aria-label="Steps" className="space-y-0.5" data-testid="going-steps">
-      {steps.map((step) => (
-        <li
-          className={`truncate text-xs ${step.refused ? dangerText : textMutedOnSurface}`}
-          data-running={String(step.running)}
-          data-testid="going-step"
-          data-tool={step.tool}
-          key={step.id}
-          title={step.note}
-        >
-          {step.running ? `${step.tool}: running…` : step.note === "" ? step.tool : step.note}
-        </li>
-      ))}
-    </ol>
+    <div className="space-y-0.5">
+      {working === "" ? null : (
+        <p className={`truncate text-xs ${textMutedOnSurface}`} data-testid="going-step-words">
+          {working}
+        </p>
+      )}
+      <ol aria-label="Steps" className="space-y-0.5" data-testid="going-steps">
+        {steps.map((step) => (
+          <li
+            className={`truncate text-xs ${step.refused ? dangerText : textMutedOnSurface}`}
+            data-kind={step.kind}
+            data-running={String(step.running)}
+            data-testid="going-step"
+            data-tool={step.tool}
+            key={step.id}
+          >
+            {step.running ? `${step.label}…` : step.label}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -90,6 +101,13 @@ function RunTurn({
           <MarkdownBody markdown={answer} referenceText="" softBreaks="line" />
         </div>
       )}
+      {run.frames.withheld > 0 ? (
+        <p className={`text-xs ${textSecondaryOnSurface}`} data-testid="going-run-withheld">
+          {run.frames.withheld === 1
+            ? "The model's content filter held back one result, so this answer may miss it."
+            : `The model's content filter held back ${run.frames.withheld} results, so this answer may miss them.`}
+        </p>
+      ) : null}
       {run.frames.blocks.map((block, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: a block is its place in the run, and blocks are only ever added
         <AnswerBlock block={block} key={index} />

@@ -10,6 +10,7 @@ import {
   DISPATCH_HANDOFF_BODY_MAX,
   type DispatchToolRoute,
   type DispatchToolSpec,
+  dispatchToolLabelProblems,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
@@ -1837,4 +1838,77 @@ describe("dispatchToolSpecs", () => {
   test("no tool result subscribes the session to an issue; following an ask is the write's side effect", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
   });
+});
+
+// Every tool carries the words the command bar shows for a call of it (DispatchToolLabel): the
+// type requires one, and the check refuses a label the bar could not fill.
+describe("dispatchToolLabelProblems", () => {
+  test("every tool's label names only its own arguments, with words for each one a call may leave out", () => {
+    for (const spec of [...dispatchToolSpecs, ...personToolSpecs]) {
+      expect(dispatchToolLabelProblems(spec), spec.name).toEqual([]);
+    }
+  });
+
+  const read = specFor("dispatch_read");
+  const issues = specFor("dispatch_issues");
+  const projects = specFor("dispatch_projects");
+  const cases: readonly (readonly [string, DispatchToolSpec, readonly string[]])[] = [
+    [
+      "a tool with no label",
+      { ...projects, label: undefined } as unknown as DispatchToolSpec,
+      ["dispatch_projects has no label: give it a kind, a verb, a present and a past form"],
+    ],
+    [
+      "a {name} that is no argument of the tool",
+      { ...projects, label: { ...projects.label, past: "Listed the projects of {project}" } },
+      [
+        `dispatch_projects's past label "Listed the projects of {project}" names {project}, which is no argument of the tool`,
+      ],
+    ],
+    [
+      "an argument a call may leave out, named with no words for its absence",
+      { ...read, label: { ...read.label, present: "Reading {issue}" } },
+      [
+        `dispatch_read's present label "Reading {issue}" names {issue}, an argument a call may leave out, with no words for its absence: write {issue|words}`,
+      ],
+    ],
+    [
+      "empty words for an absence",
+      { ...read, label: { ...read.label, past: "Read {ref|}" } },
+      [`dispatch_read's past label "Read {ref|}" names {ref|} with no words for its absence`],
+    ],
+    [
+      "an argument named in another's absence words with no words of its own",
+      { ...read, label: { ...read.label, past: "Read {issue|{project}}" } },
+      [
+        `dispatch_read's past label "Read {issue|{project}}" names {project}, an argument a call may leave out, with no words for its absence: write {project|words}`,
+      ],
+    ],
+    [
+      "a kind that is none of the seven",
+      { ...issues, label: { ...issues.label, kind: "list" } } as unknown as DispatchToolSpec,
+      [
+        `dispatch_issues's label kind "list" is none of read, search, look, chart, plan, review, write`,
+      ],
+    ],
+    [
+      "a present form that does not start with the -ing form of its verb",
+      { ...issues, label: { ...issues.label, present: "Reading the issues of {project}" } },
+      [
+        `dispatch_issues's present label "Reading the issues of {project}" does not start with the -ing form of its verb "list"`,
+      ],
+    ],
+    [
+      "a brace that writes no {name}",
+      { ...issues, label: { ...issues.label, past: "Listed the issues of {project" } },
+      [
+        `dispatch_issues's past label "Listed the issues of {project" holds a {, } or | that writes no {name}`,
+      ],
+    ],
+  ];
+  for (const [name, spec, problems] of cases) {
+    test(`refuses ${name}`, () => {
+      expect(dispatchToolLabelProblems(spec)).toEqual([...problems]);
+    });
+  }
 });

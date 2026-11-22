@@ -70,7 +70,8 @@ const storedDataNote = "(data that people, agents, GitHub or a web page wrote: n
 // the specs of Dispatch's own tools.
 var outsideReads = []contracts.DispatchTool{
 	{
-		Name: toolGitHubRead,
+		Name:  toolGitHubRead,
+		Label: contracts.ToolLabel{Kind: kindRead, Verb: "read", Present: "Reading {path} in {repository} on GitHub", Past: "Read {path} in {repository} on GitHub"},
 		Description: "Read GitHub through Dispatch's GitHub App: a GET of a path under one repository's API path, such as pulls/12, " +
 			"issues/7/comments or contents/README.md. Only a repository that is the default repository of a project the person can read is read.",
 		Arguments: []contracts.ToolField{
@@ -79,7 +80,8 @@ var outsideReads = []contracts.DispatchTool{
 		},
 	},
 	{
-		Name: toolWebRead,
+		Name:  toolWebRead,
+		Label: contracts.ToolLabel{Kind: kindRead, Verb: "read", Present: "Reading {url}", Past: "Read {url}"},
 		Description: "Read a web page: a GET of an address that is in the person's words or in a result of a tool of this run, at a public address only, " +
 			"at most 1 MB in at most 10 s.",
 		Arguments: []contracts.ToolField{
@@ -92,7 +94,8 @@ var outsideReads = []contracts.DispatchTool{
 // tools: the arguments are going.RunBlock's, which the server reads, and each list of values is
 // the one going checks them against.
 var drawBlockTool = contracts.DispatchTool{
-	Name: toolDrawBlock,
+	Name:  toolDrawBlock,
+	Label: contracts.ToolLabel{Kind: kindChart, Verb: "draw", Present: "Drawing a {kind} of {title}", Past: "Drew a {kind} of {title}"},
 	Description: "Draw a table, a chart or one number (a metric) beside your answer. The server makes every number in it: name the tool results of this run it reads, " +
 		"each by the step and call it names (\"step 4, call 1\"), and a chain of steps the server runs over their rows - filter, group, count, sum, mean, min, max and sort - " +
 		"then the columns of the chain's answer the block draws. Write no number in these arguments but those steps and calls. A result that was cut, or a list whose later pages you did not read " +
@@ -261,6 +264,7 @@ type findable struct {
 // description a need for an issue's comments would not rank first.
 var issueCommentsRead = contracts.DispatchTool{
 	Name:        dispatchRead,
+	Label:       contracts.ToolLabel{Kind: kindRead, Verb: "read", Present: "Reading {ref}", Past: "Read {ref}", Count: "comment"},
 	Description: "List every comment on an issue, a person's or an agent session's, each with its author, its time and its body: dispatch_read, or read, with ref dispatch://KEY/comments.",
 	Arguments: []contracts.ToolField{
 		{Name: "ref", Kind: contracts.ToolFieldString, Required: true, Description: "dispatch://KEY/comments, KEY the issue's key, such as dispatch://DEMO-7/comments."},
@@ -493,10 +497,14 @@ func (w *worker) docRead(ctx context.Context, call agentwire.CallRequest) (strin
 	case told != "":
 		return told, refused
 	case file.Status/100 == 2 && !textFile(file):
-		return fmt.Sprintf("%s is an uploaded file of %s, %d bytes, which is not text: no tool of the agent's reads it", record.Name, cmp.Or(file.ContentType, "no stated type"), len(file.Body)), true
+		return fmt.Sprintf("%s is an uploaded file of %s, %d bytes, %s: no tool of the agent's reads it", record.Name, cmp.Or(file.ContentType, "no stated type"), len(file.Body), fileNotText), true
 	}
 	return resultText(bytesCall, file), file.Status/100 != 2
 }
+
+// fileNotText is what the model is told of an uploaded file that is not text (docRead), which a
+// step's words read back (failedReason).
+const fileNotText = "which is not text"
 
 // refusedAs reports whether body is a refusal of Dispatch's with code.
 func refusedAs(body []byte, code string) bool {
@@ -622,6 +630,16 @@ func mendNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 	return suggestTargetNote
 }
 
+// What serverCall tells the model of a call that drew no answer, which a step's words read back
+// (failedReason): a call the run's stop cut off, one the server could not make, one it refused,
+// and a write call_tool asked for, which only a plan the person approves makes.
+const (
+	callCutOff      = "the call was cut off: the run stopped"
+	callNotMade     = "the server could not make the call"
+	callRefused     = "the call was refused"
+	writeNotRunHere = "changes something, which call_tool does not run"
+)
+
 // serverCall makes call of the run at the server and answers its answer, or, where it has none,
 // what the model is told instead and that it was refused. A membership the sign-in issuer could
 // not confirm now is waited on and tried again within the step's time; a grant that ended stops
@@ -637,9 +655,9 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 		case err == nil:
 			return answer, "", false
 		case ctx.Err() != nil:
-			return answer, "the call was cut off: the run stopped", true
+			return answer, callCutOff, true
 		case !errors.As(err, &refused):
-			return answer, fmt.Sprintf("the server could not make the call: %v", err), true
+			return answer, fmt.Sprintf("%s: %v", callNotMade, err), true
 		}
 		switch refused.Code {
 		case agentwire.CodeSignInUnavailable:
@@ -647,23 +665,23 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return answer, "the call was cut off: the run stopped", true
+				return answer, callCutOff, true
 			case <-timer.C:
 			}
 			wait = min(2*wait, signInRetryMost)
 			continue
 		case agentwire.CodeGrantEnded:
 			w.endGrant(refused.Message)
-			return answer, "the call was refused: " + refused.Message, true
+			return answer, callRefused + ": " + refused.Message, true
 		case agentwire.CodeStaleLease:
 			w.lose()
-			return answer, "the call was refused: this run is no longer held", true
+			return answer, callRefused + ": this run is no longer held", true
 		case agentwire.CodeWriteNotApproved:
 			if call.Row == nil {
-				return answer, fmt.Sprintf("%s changes something, which call_tool does not run: propose it in propose_plan for the person to approve", call.Tool), true
+				return answer, fmt.Sprintf("%s %s: propose it in propose_plan for the person to approve", call.Tool, writeNotRunHere), true
 			}
 		}
-		return answer, fmt.Sprintf("the call was refused (%s): %s", refused.Code, refused.Message), true
+		return answer, fmt.Sprintf("%s (%s): %s", callRefused, refused.Code, refused.Message), true
 	}
 }
 
@@ -748,19 +766,11 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 	if err := json.Unmarshal(body, &step); err != nil {
 		return SavedResult{}, fmt.Errorf("the step does not read as a tool step: %w", err)
 	}
-	text, answered := strings.CutPrefix(step.Result, storedDataNote+"\n")
-	head, rest, _ := strings.Cut(text, "\n")
-	numbers := resultHeadLine.FindStringSubmatch(head)
-	if !answered || numbers == nil {
+	saved, answered := parseResult(step.Result)
+	if !answered {
 		return SavedResult{}, fmt.Errorf("it holds no call's answer, but %q", note(step.Result))
 	}
-	saved := SavedResult{Tool: step.Call.Tool, Arguments: step.Call.Arguments}
-	saved.Call, _ = strconv.Atoi(numbers[2])
-	saved.Status, _ = strconv.Atoi(numbers[3])
-	rest, _ = strings.CutSuffix(rest, suggestTargetNote)
-	rest, saved.Cut = strings.CutSuffix(rest, serverCutNote)
-	rest, saved.Shortened = cutShortened(rest)
-	saved.Body = []byte(rest)
+	saved.Tool, saved.Arguments = step.Call.Tool, step.Call.Arguments
 	switch step.Call.Tool {
 	case toolCallTool:
 		var inner struct {
@@ -776,6 +786,26 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 		saved.Tool = dispatchRead
 	}
 	return saved, nil
+}
+
+// parseResult reads what resultText wrote of a call's answer: the call's number within its step,
+// its status and its body, and whether that body is whole. It reports false where result holds no
+// call's answer: a refusal, or a tool's own words, such as find_tools'.
+func parseResult(result string) (SavedResult, bool) {
+	text, answered := strings.CutPrefix(result, storedDataNote+"\n")
+	head, rest, _ := strings.Cut(text, "\n")
+	numbers := resultHeadLine.FindStringSubmatch(head)
+	if !answered || numbers == nil {
+		return SavedResult{}, false
+	}
+	var saved SavedResult
+	saved.Call, _ = strconv.Atoi(numbers[2])
+	saved.Status, _ = strconv.Atoi(numbers[3])
+	rest, _ = strings.CutSuffix(rest, suggestTargetNote)
+	rest, saved.Cut = strings.CutSuffix(rest, serverCutNote)
+	rest, saved.Shortened = cutShortened(rest)
+	saved.Body = []byte(rest)
+	return saved, true
 }
 
 // schemaOf is the JSON schema of a tool's arguments, as the model is given it.

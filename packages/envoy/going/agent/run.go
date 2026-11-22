@@ -58,20 +58,32 @@ const (
 	frameBlock = "block"
 )
 
-// toolFrame is the data of a tool frame: the step, the tool, its one-line note and whether it
-// was refused.
+// toolFrame is the data of a tool frame: the step, the tool, its one-line note for the model and
+// whether it was refused; and what the bar shows of it: its label, the past form of its tool's
+// label filled from its arguments, with the count of a list it answered, or one sentence that
+// says why it failed (ended); the kind of step it is; the count of the results of a list or a
+// search; and the items it named and answered, by key or reference.
 type toolFrame struct {
-	Step  int    `json:"step"`
-	Tool  string `json:"tool"`
-	Note  string `json:"note"`
-	Error bool   `json:"error"`
+	Step  int      `json:"step"`
+	Tool  string   `json:"tool"`
+	Note  string   `json:"note"`
+	Error bool     `json:"error"`
+	Label string   `json:"label"`
+	Kind  string   `json:"kind"`
+	Count int      `json:"count,omitempty"`
+	Items []string `json:"items"`
 }
 
-// replyFrame is the data of a reply frame: the step, the reply's prose and the tools it called.
+// replyFrame is the data of a reply frame: the step, the reply's prose, the tools it called, the
+// present form of each call's label filled from its arguments, in the order of tools, which the
+// bar shows while the call runs, and, on a reply that ends the run's turn, how many tool results
+// the run withheld from the model (withhold), which the bar says under the answer.
 type replyFrame struct {
-	Step  int      `json:"step"`
-	Text  string   `json:"text"`
-	Tools []string `json:"tools"`
+	Step     int      `json:"step"`
+	Text     string   `json:"text"`
+	Tools    []string `json:"tools"`
+	Labels   []string `json:"labels"`
+	Withheld int      `json:"withheld,omitempty"`
 }
 
 // errStepTaken ends agentloop.Run once its one model call of a step finished and was saved: each
@@ -512,9 +524,13 @@ func faultDetail(detail string) string {
 // saveReply saves step, the model call of the step numbered base, and answers the tools it
 // called. A call of a tool the run does not have is saved marked unknown (toolCall.Unknown): the
 // model made the name up, and a later step reads it as such rather than as a tool of a later build.
+// A reply that ends the run's turn where the run withheld tool results from the model saves the
+// notice of them (withheldTold) after its prose, which the model reads in its later history; its
+// frame carries the prose alone and how many results were withheld, which the bar says in its own
+// words.
 func (w *worker) saveReply(base int, step agentloop.Step) []string {
 	var body modelBody
-	var tools []string
+	tools, labels := []string{}, []string{}
 	known := w.knownTools()
 	for _, block := range step.Blocks {
 		switch block.Kind {
@@ -527,17 +543,20 @@ func (w *worker) saveReply(base int, step agentloop.Step) []string {
 			}
 			body.Calls = append(body.Calls, toolCall{ID: block.ToolCallID, Tool: block.Name, Arguments: input, Unknown: !known[block.Name]})
 			tools = append(tools, block.Name)
+			labels = append(labels, presentLabel(stepLabel(block.Name, input)))
 		}
 	}
+	prose, withheld := body.Text, 0
 	if len(w.withheld) > 0 && (len(tools) == 0 || slices.Contains(tools, toolProposePlan)) {
 		body.Text = strings.TrimSpace(body.Text + withheldTold(w.withheld))
+		withheld = len(w.withheld)
 	}
 	body.Output = step.Usage.Output
 	line := note(body.Text)
 	if len(tools) > 0 {
 		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
 	}
-	frame, _ := json.Marshal(replyFrame{Step: base, Text: body.Text, Tools: append([]string{}, tools...)})
+	frame, _ := json.Marshal(replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld})
 	w.save(agentwire.StepRequest{Step: base, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body)
 	return tools
 }
@@ -557,11 +576,16 @@ func withheldTold(withheld map[int]string) string {
 		len(named), strings.Join(named, ", "))
 }
 
+// toolPanicked is what the model is told of a tool that panicked (toolRun), which a step's words
+// read back (failedReason).
+const toolPanicked = "it panicked"
+
 // toolRun is the agentloop Run of tool in the step whose model call is numbered base: it makes the
 // call do makes as the step numbered after base by the tool call's index, and saves it as that
-// step, with what the model is told of its result. A do that panics is saved as a refusal naming
-// the panic, and the panic goes on to agentloop's recover, so the run's next step, which starts
-// from the saved steps, tells the model the tool failed.
+// step, with what the model is told of its result and the words the bar shows of it (ended). A do
+// that panics is saved as a refusal naming the panic, and the panic goes on to agentloop's
+// recover, so the run's next step, which starts from the saved steps, tells the model the tool
+// failed.
 func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, step int, input json.RawMessage) (string, bool)) func(context.Context, agentloop.ToolCall) (string, bool) {
 	return func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
 		step := base + call.Index
@@ -569,12 +593,20 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 		if !json.Valid(input) {
 			input = json.RawMessage(`{}`)
 		}
+		label, arguments := stepLabel(tool, input)
+		kind := label.Kind
+		if kind == kindWrite {
+			// A change call_tool asks for outside an approved plan is refused, and shows as a
+			// step of the plan's kind: the bar draws a write only as the tick of a plan's row.
+			kind = kindPlan
+		}
 		saveStep := func(result string, refused bool) {
 			if w.lost.Load() {
 				return
 			}
 			line := note(fmt.Sprintf("%s %s: %s", tool, input, result))
-			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused})
+			end := ended(label, arguments, result, refused)
+			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused, Label: end.label, Kind: kind, Count: end.count, Items: end.items})
 			frames := []agentwire.Frame{{Name: frameTool, Data: frame}}
 			if block, drew := w.drawn.LoadAndDelete(step); drew {
 				frames = append(frames, agentwire.Frame{Name: frameBlock, Data: block.(json.RawMessage)})
@@ -584,7 +616,7 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 		}
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				saveStep(fmt.Sprintf("the tool %s failed: it panicked (%v)", tool, recovered), true)
+				saveStep(fmt.Sprintf("the tool %s failed: %s (%v)", tool, toolPanicked, recovered), true)
 				panic(recovered)
 			}
 		}()

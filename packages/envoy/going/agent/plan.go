@@ -25,6 +25,9 @@ const modeAutoReview = "auto_review"
 // toolReviewPlan is the one tool the review's model call is given.
 const toolReviewPlan = "review_plan"
 
+// reviewPlanSchema is review_plan's arguments: the numbers of the changes the words ask for.
+var reviewPlanSchema = json.RawMessage(`{"type":"object","properties":{"asked":{"type":"array","items":{"type":"integer"}}},"required":["asked"]}`)
+
 // reviewPrompt is the system prompt of the review's model call.
 const reviewPrompt = `You review a plan of changes that an assistant of Dispatch proposed for a person, before any of them is made.
 
@@ -95,7 +98,7 @@ func (w *worker) review() stepOutcome {
 	request.Tools = []agentloop.Tool{{
 		Name:        toolReviewPlan,
 		Description: "Name the changes of the plan, by their numbers, that the person's own words ask for.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"asked":{"type":"array","items":{"type":"integer"}}},"required":["asked"]}`),
+		Schema:      reviewPlanSchema,
 		Run: func(_ context.Context, call agentloop.ToolCall) (string, bool) {
 			var named struct {
 				Asked []int `json:"asked"`
@@ -126,7 +129,14 @@ func (w *worker) review() stepOutcome {
 	slices.Sort(asked)
 	asked = slices.Compact(asked)
 	line := note(fmt.Sprintf("auto-review of plan %d: the words ask for changes %v", plan.Plan, asked))
-	frame, _ := json.Marshal(toolFrame{Step: base, Tool: toolReviewPlan, Note: line})
+	passed := 0
+	for _, row := range plan.Rows {
+		if slices.Contains(asked, row.Row) {
+			passed++
+		}
+	}
+	frame, _ := json.Marshal(toolFrame{Step: base, Tool: toolReviewPlan, Note: line, Kind: reviewPlanLabel.Kind,
+		Label: fmt.Sprintf("%s · %d of %d passed", reviewPlanLabel.Past, passed, len(plan.Rows)), Items: []string{}})
 	w.save(agentwire.StepRequest{Step: base, Kind: agentwire.StepReview, Note: line, Frames: []agentwire.Frame{{Name: frameTool, Data: frame}}},
 		reviewBody{Plan: plan.Plan, Asked: asked, Text: text})
 	w.merge()
@@ -217,7 +227,9 @@ func (w *worker) runRows(rows []agentwire.PlanRun) {
 			return
 		}
 		line := note(fmt.Sprintf("change %d of plan %d, %s %s: %s", row.Row, row.Plan, row.Tool, row.Arguments, result))
-		frame, _ := json.Marshal(toolFrame{Step: step, Tool: row.Tool, Note: line, Error: refused})
+		// A row the runner makes shows in the bar as the tick of its row on the plan's card alone.
+		end := ended(namedLabel(row.Tool), labelArguments(row.Arguments), result, refused)
+		frame, _ := json.Marshal(toolFrame{Step: step, Tool: row.Tool, Note: line, Error: refused, Label: end.label, Kind: kindWrite, Count: end.count, Items: end.items})
 		w.save(agentwire.StepRequest{Step: step, Kind: agentwire.StepTool, Note: line, Frames: []agentwire.Frame{{Name: frameTool, Data: frame}}},
 			toolBody{Call: toolCall{ID: fmt.Sprintf("plan-%d-row-%d", row.Plan, row.Row), Tool: row.Tool, Arguments: row.Arguments},
 				Result: result, Error: refused, Row: &planRow})

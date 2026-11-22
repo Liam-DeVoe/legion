@@ -30,8 +30,46 @@ export interface DispatchToolRoute {
   readonly body?: readonly string[];
 }
 
+/** What a step of a run is, as the command bar counts and folds its steps: a read, a search, a
+ *  look for a tool, a chart drawn, a plan proposed, the review of a plan, or a change of an
+ *  approved plan, which the bar shows only as the tick of its row. */
+export const DISPATCH_TOOL_LABEL_KINDS = [
+  "read",
+  "search",
+  "look",
+  "chart",
+  "plan",
+  "review",
+  "write",
+] as const;
+
+export type DispatchToolLabelKind = (typeof DISPATCH_TOOL_LABEL_KINDS)[number];
+
+/**
+ * The words the command bar shows for one call of a tool, a verb on an object: its `kind`; its
+ * base `verb` ("read"), which the words of a call that failed start with ("Could not read
+ * DSP-12"); `present` while the call runs ("Reading {issue}") and `past` once it ended ("Read
+ * {issue}"); and, for a tool that answers a list, the noun its results are counted by (`count`,
+ * "hit", "issue"), which the past form is followed by: "Searched for \"x\" · 3 hits". `{name}` is
+ * the call's value of its argument `name`. A form that names an argument a call may leave out
+ * writes the words shown in its place after a `|`, `{project|Dispatch}`, and those words may name
+ * one more argument the same way, `{issue|{project|the page's issue}}`. `{ref}` is the item the
+ * call names: by its reference, else by its issue, project, artifact or message. The present form
+ * starts with the -ing form of `verb`. Each form names only the tool's own arguments, so a tool
+ * with no argument names none.
+ */
+export interface DispatchToolLabel {
+  readonly kind: DispatchToolLabelKind;
+  readonly verb: string;
+  readonly present: string;
+  readonly past: string;
+  readonly count?: string;
+}
+
 export interface DispatchToolSpec {
   readonly name: string;
+  /** The words the command bar shows for a call of this tool. */
+  readonly label: DispatchToolLabel;
   readonly description: string;
   readonly arguments: <E extends SchemaNode<E>>(z: SchemaApi<E>) => ToolArgumentsShape;
   readonly validation?: {
@@ -73,6 +111,108 @@ export function dispatchToolSchema<E extends SchemaNode<E>>(
         spec.validation.refusal ?? spec.validation.message,
         schemaOptions
       );
+}
+
+/** One argument of a tool as its label reads it: whether a call may leave it out. */
+class LabelArgument implements SchemaNode<LabelArgument> {
+  constructor(readonly omittable: boolean) {}
+  optional(): LabelArgument {
+    return new LabelArgument(true);
+  }
+  nullable(): LabelArgument {
+    return this;
+  }
+  describe(): LabelArgument {
+    return this;
+  }
+}
+
+/** The schema facade a label check reads a tool's arguments through: each argument, required. */
+const labelArgumentsApi: SchemaApi<LabelArgument> = {
+  string: () => new LabelArgument(false),
+  number: () => new LabelArgument(false),
+  boolean: () => new LabelArgument(false),
+  enum: () => new LabelArgument(false),
+  literal: () => new LabelArgument(false),
+  array: () => new LabelArgument(false),
+  unknown: () => new LabelArgument(false),
+  object: () => new LabelArgument(false),
+  refineObject: () => new LabelArgument(false),
+};
+
+/** A `{name}` of a label form, with the words shown when the call leaves it out after a `|`;
+ *  those words may hold one `{name}` of their own, a second argument shown in the first's place. */
+const LABEL_PLACEHOLDER = /\{([^{}|]*)(?:\|((?:[^{}]|\{[^{}]*\})*))?\}/g;
+
+/**
+ * What is wrong with a tool's label (`DispatchToolLabel`), a sentence for each problem, and none
+ * for a label the command bar can fill: a tool with no label, a kind that is none of the seven, a
+ * verb that is not one lowercase word, a count noun that is not lowercase words, an empty form, a
+ * present form that does not start with the -ing form of its verb, a past form that does not start
+ * with a capital, a `{`, `}` or `|` that writes no `{name}`, a `{name}` that is no argument of the
+ * tool, and a `{name}` of an argument a call may leave out with no words for its absence.
+ */
+export function dispatchToolLabelProblems(spec: DispatchToolSpec): string[] {
+  // A spec built past the type, as a test builds one, may hold no label.
+  const label: Partial<DispatchToolLabel> | undefined = spec.label;
+  if (typeof label?.present !== "string" || typeof label.past !== "string") {
+    return [`${spec.name} has no label: give it a kind, a verb, a present and a past form`];
+  }
+  const problems: string[] = [];
+  if (!DISPATCH_TOOL_LABEL_KINDS.some((kind) => kind === label.kind)) {
+    const kinds = DISPATCH_TOOL_LABEL_KINDS.join(", ");
+    problems.push(`${spec.name}'s label kind "${label.kind}" is none of ${kinds}`);
+  }
+  const verb = label.verb ?? "";
+  if (!/^[a-z]+$/.test(verb)) {
+    problems.push(`${spec.name}'s label verb "${verb}" is not one lowercase word`);
+  }
+  if (label.count !== undefined && !/^[a-z]+(?: [a-z]+)*$/.test(label.count)) {
+    problems.push(`${spec.name}'s label count "${label.count}" is not lowercase words`);
+  }
+  const takes = spec.arguments(labelArgumentsApi) as Record<string, LabelArgument>;
+  // Each `{name}` of text, and each of the words written for its absence.
+  const named = (text: string, at: string): void => {
+    for (const [, name = "", absent] of text.matchAll(LABEL_PLACEHOLDER)) {
+      const argument = takes[name];
+      if (argument === undefined) {
+        problems.push(`${at} names {${name}}, which is no argument of the tool`);
+      } else if (absent !== undefined && absent.trim() === "") {
+        problems.push(`${at} names {${name}|} with no words for its absence`);
+      } else if (argument.omittable && absent === undefined) {
+        problems.push(
+          `${at} names {${name}}, an argument a call may leave out, with no words for its absence: write {${name}|words}`
+        );
+      }
+      if (absent !== undefined) named(absent, at);
+    }
+  };
+  const forms = [
+    ["present", label.present],
+    ["past", label.past],
+  ] as const;
+  for (const [form, text] of forms) {
+    const at = `${spec.name}'s ${form} label "${text}"`;
+    if (text.trim() === "") {
+      problems.push(`${at} is empty`);
+      continue;
+    }
+    const first = text.split(" ", 1)[0] ?? "";
+    if (
+      form === "present" &&
+      (!/^[A-Z][a-z]*ing$/.test(first) || !first.toLowerCase().startsWith(verb.replace(/e$/, "")))
+    ) {
+      problems.push(`${at} does not start with the -ing form of its verb "${verb}"`);
+    }
+    if (form === "past" && !/^[A-Z]/.test(first)) {
+      problems.push(`${at} does not start with a capital`);
+    }
+    if (/[{}|]/.test(text.replace(LABEL_PLACEHOLDER, ""))) {
+      problems.push(`${at} holds a {, } or | that writes no {name}`);
+    }
+    named(text, at);
+  }
+  return problems;
 }
 
 const ISSUE_REFERENCE =
@@ -922,6 +1062,12 @@ const RELATED_CHECK_RESULT =
 export const dispatchToolSpecs = [
   {
     name: "dispatch_issue",
+    label: {
+      kind: "write",
+      verb: "create",
+      present: 'Creating the issue "{title}" in {project}',
+      past: 'Created the issue "{title}" in {project}',
+    },
     example: { project: "DSP", title: "Native workspace" },
     description:
       "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
@@ -994,6 +1140,7 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_issue_update",
+    label: { kind: "write", verb: "update", present: "Updating {issue}", past: "Updated {issue}" },
     example: {
       issue: "DSP-1",
       priority: 1,
@@ -1132,6 +1279,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_claim",
+    label: {
+      kind: "write",
+      verb: "change",
+      present: "Changing the claim on {issue}",
+      past: "Changed the claim on {issue}",
+    },
     example: { issue: "DSP-1" },
     description:
       "Claim a Dispatch issue before you start implementing it, so no other session takes the same work, " +
@@ -1169,6 +1322,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_ask",
+    label: {
+      kind: "write",
+      verb: "ask",
+      present: "Asking a question on {ref|the page's issue}",
+      past: "Asked a question on {ref|the page's issue}",
+    },
     example: {
       issue: "DSP-1",
       question:
@@ -1252,6 +1411,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_edit_ask",
+    label: {
+      kind: "write",
+      verb: "edit",
+      present: "Editing the ask {ask}",
+      past: "Edited the ask {ask}",
+    },
     example: {
       ask: "01234567-0000-4000-8000-000000000001",
       question:
@@ -1330,6 +1495,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_resolve_ask",
+    label: {
+      kind: "write",
+      verb: "resolve",
+      present: "Resolving the ask {ask}",
+      past: "Resolved the ask {ask}",
+    },
     example: {
       ask: "01234567-0000-4000-8000-000000000001",
       kind: "retracted",
@@ -1361,6 +1532,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_resolve_comment",
+    label: {
+      kind: "write",
+      verb: "resolve",
+      present: "Resolving the comment {comment}",
+      past: "Resolved the comment {comment}",
+    },
     example: { comment: "01234567-0000-4000-8000-000000000001" },
     description:
       "Resolve a review comment thread once it has been addressed - typically your own comment " +
@@ -1381,6 +1558,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_follow",
+    label: {
+      kind: "write",
+      verb: "change",
+      present: "Changing whether you follow the ask {ask}",
+      past: "Changed whether you follow the ask {ask}",
+    },
     example: { ask: "01234567-0000-4000-8000-000000000001", action: "follow" },
     description:
       "Follow or unfollow an ask. Every session that opens or replies to an ask follows it: its answer, " +
@@ -1399,6 +1582,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_comment",
+    label: {
+      kind: "write",
+      verb: "comment",
+      present: "Commenting on {ref|the page's issue}",
+      past: "Commented on {ref|the page's issue}",
+    },
     example: { issue: "DSP-1", body: "Looks good." },
     description:
       "Add review feedback to an issue or project document quote, or reply to a question asked with dispatch ask. " +
@@ -1462,6 +1651,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_suggest",
+    label: {
+      kind: "write",
+      verb: "suggest",
+      present: "Suggesting a change to {ref|a document}",
+      past: "Suggested a change to {ref|a document}",
+    },
     example: {
       issue: "DSP-1",
       artifact: "spec",
@@ -1502,6 +1697,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_message",
+    label: {
+      kind: "write",
+      verb: "send",
+      present: "Sending a message to {issue|a conversation}",
+      past: "Sent a message to {issue|a conversation}",
+    },
     example: { issue: "DSP-1", body: "Implementation started." },
     description:
       "Post a note humans must read now: a reply to a human's message or a deliverable that landed. A to-do only a human can " +
@@ -1545,6 +1746,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_send_to_agent",
+    label: {
+      kind: "write",
+      verb: "send",
+      present: "Sending a message to the agent session {session}",
+      past: "Sent a message to the agent session {session}",
+    },
     example: {
       session: "01234567-0000-4000-8000-000000000001",
       body: "DSP-1: the rota is nowhere written down. Please write it up.",
@@ -1591,6 +1798,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_doc_edit",
+    label: {
+      kind: "write",
+      verb: "edit",
+      present: "Editing the text of {ref|a document}",
+      past: "Edited the text of {ref|a document}",
+    },
     example: {
       issue: "DSP-1",
       artifact: "spec",
@@ -1696,6 +1909,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_doc_read",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the text of {ref|a document}",
+      past: "Read the text of {ref|a document}",
+    },
     example: { issue: "DSP-1" },
     description:
       "Read a live document or a named document version, or the text of an uploaded file at its latest or named version. " +
@@ -1733,6 +1952,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_request_approval",
+    label: {
+      kind: "write",
+      verb: "request",
+      present: "Requesting approval of {artifact|the spec} of {issue|{project|the page's issue}}",
+      past: "Requested approval of {artifact|the spec} of {issue|{project|the page's issue}}",
+    },
     example: { issue: "DSP-1", summary: "A live sync replaces the nightly export." },
     description:
       "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
@@ -1801,6 +2026,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_plan_approve",
+    label: {
+      kind: "write",
+      verb: "approve",
+      present: "Approving version {version} of the plan of {issue}",
+      past: "Approved version {version} of the plan of {issue}",
+    },
     example: { issue: "DSP-1", version: 2 },
     description:
       "Record the plan review's approval of an issue's plan at the version it reviewed. A plan is " +
@@ -1823,6 +2054,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_review",
+    label: {
+      kind: "write",
+      verb: "review",
+      present: "Reviewing version {version} of {artifact|the spec} of {issue}",
+      past: "Reviewed version {version} of {artifact|the spec} of {issue}",
+    },
     example: { issue: "DSP-1", version: 2, verdict: "approved" },
     description:
       "Approve one version of an issue's document, or request changes on it, as the person your " +
@@ -1870,6 +2107,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_result",
+    label: {
+      kind: "write",
+      verb: "record",
+      present: "Recording a result of {check|a check} on {issue|the page's issue}",
+      past: "Recorded a result of {check|a check} on {issue|the page's issue}",
+    },
     example: {
       issue: "DSP-1",
       check: "k1",
@@ -1952,6 +2195,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_results",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the check results of {issue}",
+      past: "Read the check results of {issue}",
+      count: "result",
+    },
     example: { issue: "DSP-1" },
     description:
       "Print each check of an issue's Verification document with every result recorded against " +
@@ -2009,6 +2259,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_artifact",
+    label: {
+      kind: "write",
+      verb: "upload",
+      present: "Uploading {name} to {issue|{project|the page's issue}}",
+      past: "Uploaded {name} to {issue|{project|the page's issue}}",
+    },
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
@@ -2051,6 +2307,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_read",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading {ref|an item}",
+      past: "Read {ref|an item}",
+    },
     example: { issue: "DSP-1" },
     description:
       "Read an issue or document summary, targeted ask, or targeted comment reply chain, or the conversation " +
@@ -2132,6 +2394,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_search",
+    label: {
+      kind: "search",
+      verb: "search",
+      present: 'Searching {project|Dispatch} for "{query}"',
+      past: 'Searched {project|Dispatch} for "{query}"',
+      count: "hit",
+    },
     example: { query: "astrolabe" },
     description:
       "Search every issue, document, comment, ask, and message for a keyword or phrase and get deep links. " +
@@ -2176,6 +2445,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_related",
+    label: {
+      kind: "search",
+      verb: "search",
+      present: "Searching {project} for related work",
+      past: "Searched {project} for related work",
+      count: "related item",
+    },
     example: { project: "CORE", title: "Retry failed webhook deliveries" },
     description:
       "Run the related-item check that dispatch issue, dispatch ask and a new decision block in " +
@@ -2218,6 +2494,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_issues",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the issues of {project}",
+      past: "Listed the issues of {project}",
+      count: "issue",
+    },
     example: { project: "PROJ", limit: 250, offset: 250 },
     description:
       "List a project's issues for a roadmap or backlog pass: every issue in one project, each carrying " +
@@ -2286,6 +2569,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_project",
+    label: {
+      kind: "write",
+      verb: "save",
+      present: "Saving the project {key}",
+      past: "Saved the project {key}",
+    },
     example: { key: "CORE", name: "Core" },
     description:
       "Create a Dispatch project from a key and a name, so issues and project documents can be filed under it. " +
@@ -2322,6 +2611,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_projects",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the projects",
+      past: "Listed the projects",
+      count: "project",
+    },
     example: {},
     description:
       "List every Dispatch project, one per line: its key, then its name. Check the keys that exist " +
@@ -2332,6 +2628,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_priorities",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the priorities of {project|every project}",
+      past: "Listed the priorities of {project|every project}",
+      count: "priority",
+    },
     example: {},
     description:
       "List every live priority the deployment is working towards, in rank order, with the work " +
@@ -2359,6 +2662,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_architecture_sync",
+    label: {
+      kind: "write",
+      verb: "sync",
+      present: "Syncing the architecture of {project}",
+      past: "Synced the architecture of {project}",
+    },
     example: { project: "CORE", repo: "acme/infra" },
     description:
       "Import a project's architecture model from its source repositories now, instead of waiting " +
@@ -2393,6 +2702,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_open_asks",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the open asks in {project|your work}",
+      past: "Listed the open asks in {project|your work}",
+      count: "ask",
+    },
     example: {},
     description:
       "List active unanswered asks, oldest first, with age and whose reply is needed. Omit project to " +
@@ -2411,6 +2727,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_answers",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the answers people wrote to you",
+      past: "Read the answers people wrote to you",
+      count: "answer",
+    },
     example: {},
     description:
       "List every answer and comment a person wrote to this session in the last 72 hours, newest first, each in full: " +
@@ -2424,6 +2747,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_whoami",
+    label: {
+      kind: "read",
+      verb: "check",
+      present: "Checking who you are on Dispatch",
+      past: "Checked who you are on Dispatch",
+    },
     example: {},
     description:
       "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
@@ -2432,6 +2761,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_limits",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the limits of Dispatch",
+      past: "Read the limits of Dispatch",
+    },
     example: {},
     description:
       "The bounds this Dispatch server holds a write to, read from the server itself: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long an ask's question and options are together, how long a body an event carries whole may be, and how many bytes a request, a document and a handoff body may hold. Dispatch refuses a text over a bound and names the block or the field it passed; no tool and no command cuts or refuses your text before the server reads it, so these numbers are what decides whether a write is taken.",
@@ -2440,6 +2775,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_handoff_write",
+    label: {
+      kind: "write",
+      verb: "write",
+      present: "Writing the {phase} handoff of {issue}",
+      past: "Wrote the {phase} handoff of {issue}",
+    },
     example: {
       issue: "DSP-1",
       phase: "implement",
@@ -2471,6 +2812,12 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_handoff_read",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the {phase} handoff of {issue}",
+      past: "Read the {phase} handoff of {issue}",
+    },
     example: { issue: "DSP-1", phase: "implement" },
     description:
       "Read the newest handoff recorded for one phase of an issue, or the version you name: one " +
@@ -2492,6 +2839,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_steps",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the steps Legion ran on {issue}",
+      past: "Read the steps Legion ran on {issue}",
+      count: "step",
+    },
     example: { issue: "DSP-1" },
     description:
       "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
@@ -2513,6 +2867,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_plans",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the plans Legion ran in {project}",
+      past: "Read the plans Legion ran in {project}",
+      count: "issue",
+    },
     example: { project: "INFRA" },
     description:
       "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
@@ -2546,6 +2907,13 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_inbox",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading your inbox",
+      past: "Read your inbox",
+      count: "item",
+    },
     example: {},
     description:
       "List what the Inbox of the person you act for shows, read with your own credential. " +

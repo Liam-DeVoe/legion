@@ -125,6 +125,20 @@ function renderToolRoute(route: DispatchToolRoute): string {
   return `{${parts.join(", ")}}`;
 }
 
+// A tool's label as a composite literal, its count noun left out where the spec states none.
+function renderToolLabel(label: DispatchToolSpec["label"]): string {
+  const parts = [
+    `Kind: ${goString(label.kind)}`,
+    `Verb: ${goString(label.verb)}`,
+    `Present: ${goString(label.present)}`,
+    `Past: ${goString(label.past)}`,
+  ];
+  if (label.count !== undefined) {
+    parts.push(`Count: ${goString(label.count)}`);
+  }
+  return `ToolLabel{${parts.join(", ")}}`;
+}
+
 // The Go the action catalogue is built from: every dispatch tool with its own description, its
 // own arguments, the words of its cross-field rule where its spec states one, and a call those
 // arguments accept, then the person tools the command bar alone calls (personToolSpecs). Which of
@@ -139,6 +153,7 @@ export function renderDispatchTools() {
         .join("\n");
       const parts = [
         `Name: ${goString(spec.name)}`,
+        `Label: ${renderToolLabel(spec.label)}`,
         `Description: ${goString(spec.description)}`,
         `Arguments: []ToolField{\n${fields}\n}`,
         `Example: json.RawMessage(${goString(JSON.stringify(spec.example))})`,
@@ -195,18 +210,32 @@ type ToolField struct {
 }
 
 // DispatchTool is one tool of the \`dispatch\` CLI as its spec states it: the name it is called
-// by, the whole description a model chooses it on, the arguments it takes, a call those
-// arguments accept, the whole words of the cross-field rule its spec states beside its arguments
-// (Validation, DispatchToolSpec.validation's message), empty for a spec that states none, and, for
-// a tool that calls one route of the table as it stands, that route's binding (Routes), empty for
-// a tool whose command is written by hand.
+// by, the words the command bar shows for a call of it (Label), the whole description a model
+// chooses it on, the arguments it takes, a call those arguments accept, the whole words of the
+// cross-field rule its spec states beside its arguments (Validation, DispatchToolSpec.validation's
+// message), empty for a spec that states none, and, for a tool that calls one route of the table
+// as it stands, that route's binding (Routes), empty for a tool whose command is written by hand.
 type DispatchTool struct {
 	Name        string          \`json:"name"\`
+	Label       ToolLabel       \`json:"label"\`
 	Description string          \`json:"description"\`
 	Arguments   []ToolField     \`json:"arguments"\`
 	Example     json.RawMessage \`json:"example"\`
 	Validation  string          \`json:"validation,omitempty"\`
 	Routes      []ToolRoute     \`json:"routes,omitempty"\`
+}
+
+// ToolLabel is the words the command bar shows for one call of a tool, as dispatch-tools.ts's
+// DispatchToolLabel states them: the kind of step it is (read, search, look, chart, plan, review
+// or write), its base verb, its present form while the call runs and its past form once it ended,
+// each naming an argument as {name} and an argument a call may leave out as {name|words shown in
+// its place}, and the noun a tool that answers a list counts its results by, empty for another.
+type ToolLabel struct {
+	Kind    string \`json:"kind"\`
+	Verb    string \`json:"verb"\`
+	Present string \`json:"present"\`
+	Past    string \`json:"past"\`
+	Count   string \`json:"count,omitempty"\`
 }
 
 // ToolRoute is one route of the table a tool calls, as dispatch-tools.ts binds it: the method,

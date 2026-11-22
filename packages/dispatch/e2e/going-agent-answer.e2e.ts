@@ -85,6 +85,8 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
     await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-running", "false", {
       timeout: RUN_STEPS_MS,
     });
+    // The ended step reads as words: the read's past form, never the tool's name or its JSON.
+    await expect(run.getByTestId("going-step").first()).toHaveText(`Read ${issue.key}`);
     const running = await page.evaluate(() => {
       const seen: unknown = Reflect.get(window, "__goingRunningSteps");
       return Array.isArray(seen) ? seen.map(String) : [];

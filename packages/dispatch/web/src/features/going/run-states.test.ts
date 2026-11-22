@@ -95,15 +95,28 @@ for (const [state, event, next, send] of rows) {
 
 test("a reply's tool calls show as running steps until each call's frame ends it", () => {
   const replied = withRunFrame(STARTED_RUN, "reply", {
+    labels: ["Reading CORE-1"],
     step: 1,
     text: "Reading the issue.",
     tools: ["call_tool"],
   });
   expect(replied.steps).toEqual([
-    { id: 0, note: "", refused: false, running: true, step: undefined, tool: "call_tool" },
+    {
+      id: 0,
+      items: [],
+      kind: "",
+      label: "Reading CORE-1",
+      refused: false,
+      running: true,
+      step: undefined,
+      tool: "call_tool",
+    },
   ]);
   const ended = withRunFrame(replied, "tool", {
     error: false,
+    items: ["CORE-1"],
+    kind: "read",
+    label: "Read CORE-1",
     note: "call_tool dispatch_read: CORE-1",
     step: 2,
     tool: "call_tool",
@@ -111,14 +124,18 @@ test("a reply's tool calls show as running steps until each call's frame ends it
   expect(ended.steps).toEqual([
     {
       id: 0,
-      note: "call_tool dispatch_read: CORE-1",
+      items: ["CORE-1"],
+      kind: "read",
+      label: "Read CORE-1",
       refused: false,
       running: false,
       step: 2,
       tool: "call_tool",
     },
   ]);
-  expect(ended.replies).toEqual(["Reading the issue."]);
+  // The prose beside the calls is the run's working words, no part of its answer.
+  expect(ended.replies).toEqual([]);
+  expect(ended.working).toBe("Reading the issue.");
   expect(ended.state).toBe("working");
 });
 

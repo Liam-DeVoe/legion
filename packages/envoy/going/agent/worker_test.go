@@ -122,6 +122,25 @@ func (s *fakeServer) end(t *testing.T) (agentwire.EndRequest, []modelBody) {
 	return s.ends[0], replies
 }
 
+// lastReply is the frame of the run's last saved model step.
+func (s *fakeServer) lastReply(t *testing.T) replyFrame {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var reply replyFrame
+	for _, step := range s.steps {
+		for _, frame := range step.Frames {
+			if frame.Name == frameReply {
+				reply = replyFrame{}
+				if err := json.Unmarshal(frame.Data, &reply); err != nil {
+					t.Fatalf("step %d's reply frame does not read: %v", step.Step, err)
+				}
+			}
+		}
+	}
+	return reply
+}
+
 // workRun works one turn of a fast run of words on model, at the server client calls.
 func workRun(t *testing.T, model agentloop.Model, client agentwire.Client, words string) {
 	t.Helper()
@@ -210,9 +229,14 @@ func TestAContentFilterRefusalIsMadeAgainWithTheResultsWithheld(t *testing.T) {
 		if strings.Contains(retried, injected) || !strings.Contains(retried, withheldNote) {
 			t.Errorf("the retry gave the model the results %q, want the search's withheld, without its text", retried)
 		}
+		// The model reads the notice in its own reply in its later history; the bar reads the
+		// count in the reply's frame, beside the answer alone.
 		answer := replies[len(replies)-1].Text
 		if !strings.Contains(answer, "step 2 (search), was withheld from the chat model") {
-			t.Errorf("the answer is %q, which does not tell the person the search's result was withheld", answer)
+			t.Errorf("the saved reply is %q, which does not hold the notice the model reads of the search's result withheld", answer)
+		}
+		if frame := server.lastReply(t); frame.Withheld != 1 || frame.Text != "No session is named the architect of DEMO-3." {
+			t.Errorf("the answer's frame carries %d withheld and the text %q, want 1 and the answer alone", frame.Withheld, frame.Text)
 		}
 	})
 

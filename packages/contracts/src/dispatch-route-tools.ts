@@ -238,6 +238,13 @@ function dismissInboxProblem(input: Record<string, unknown>): string | undefined
 export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_list_routes",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the routes of Dispatch's API",
+      past: "Listed the routes of Dispatch's API",
+      count: "route",
+    },
     example: {},
     description:
       "List every route of this Dispatch server's API with its method, who may call it, the scopes it needs and what it does. Use it to learn what Dispatch serves before a read or a write no other command names.",
@@ -247,6 +254,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_block_schema",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the schema of typed blocks",
+      past: "Read the schema of typed blocks",
+    },
     example: {},
     description:
       "Read the schema of the typed blocks a Dispatch document holds (check, requirement, plan_task, ask and the others): each block type, its attributes and their kinds. Use it before writing a typed block into a document.",
@@ -256,6 +269,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_check_markdown",
+    label: {
+      kind: "read",
+      verb: "check",
+      present: "Checking how Dispatch stores a text",
+      past: "Checked how Dispatch stores a text",
+    },
     example: { markdown: "# Notes\n\n- one\n" },
     description:
       "Show the markdown Dispatch would store for a text: the parse and the render every write of a whole document makes. It writes nothing. Use it to see whether a text keeps its spelling before you upload it as a document.",
@@ -267,6 +286,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_find_related",
+    label: {
+      kind: "search",
+      verb: "search",
+      present: "Searching {project} for related work",
+      past: "Searched {project} for related work",
+      count: "related item",
+    },
     example: { project: "DSP", title: "Search misses renamed issues" },
     description: `Run the related-item check an issue create runs over a title and a text, without writing anything, and list the related issues, documents and asks it finds. Use it before filing work to find what already covers it. The title and the text together are at most ${RELATED_QUERY_MAX} characters (400 CAP_EXCEEDED otherwise); dispatch related runs the same check with a text as long as a spec.`,
     arguments: (z) => ({
@@ -309,6 +335,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_check_result",
+    label: {
+      kind: "read",
+      verb: "check",
+      present: "Checking a result of {check} on {issue}",
+      past: "Checked a result of {check} on {issue}",
+    },
     example: {
       issue: "DSP-1",
       check: "k1",
@@ -343,6 +375,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_repo_mappings",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing which repositories map to which projects",
+      past: "Listed which repositories map to which projects",
+      count: "mapping",
+    },
     example: {},
     description:
       "List the GitHub repository to project mappings as the last release left them, each with whether it was its project's default and the name it was renamed to. Nothing changes them any more, and Dispatch finds no project from a repository: a project's default repository is the one dispatch set-default-repository sets.",
@@ -352,6 +391,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_check_app_installation",
+    label: {
+      kind: "read",
+      verb: "check",
+      present: "Checking the GitHub App on {owner}/{repo}",
+      past: "Checked the GitHub App on {owner}/{repo}",
+    },
     example: { owner: "acme", repo: "infra" },
     description:
       "Say whether Dispatch's GitHub App is installed on a repository, which Dispatch needs to read it and to receive its webhook events. Use it when a repository's pull requests or architecture do not reach Dispatch.",
@@ -366,6 +411,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_architecture_sources",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the architecture sources",
+      past: "Listed the architecture sources",
+      count: "source",
+    },
     example: {},
     description:
       "List every project's architecture sources, the repositories each project's component model is imported from, with each source's branch and its last import.",
@@ -375,6 +427,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_project_architecture_sources",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the architecture sources of {project}",
+      past: "Listed the architecture sources of {project}",
+      count: "source",
+    },
     example: { project: "DSP" },
     description:
       "List one project's architecture sources in the order they were added, each with its branch, its last imported commit, its component count and its last error.",
@@ -384,6 +443,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_first_architecture_source",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the first architecture source of {project}",
+      past: "Read the first architecture source of {project}",
+    },
     example: { project: "DSP" },
     description:
       "Read a project's first architecture source alone, or null when it has none: the answer Dispatch builds from before projects had several sources. Prefer dispatch list-project-architecture-sources, which lists them all.",
@@ -393,6 +458,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_save_architecture_source",
+    label: {
+      kind: "write",
+      verb: "save",
+      present: "Saving {owner}/{repo} as an architecture source of {project}",
+      past: "Saved {owner}/{repo} as an architecture source of {project}",
+    },
     example: { project: "DSP", owner: "acme", repo: "infra", branch: "main" },
     description: `Add a repository as an architecture source of a project, or move a source to another branch, after Dispatch proves its GitHub App can read that branch (409 SOURCE_ACCESS otherwise). A save resets the source's import bookkeeping and keeps its components. ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
@@ -409,6 +480,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_remove_architecture_source",
+    label: {
+      kind: "write",
+      verb: "remove",
+      present: "Removing the architecture source {owner}/{repo} from {project}",
+      past: "Removed the architecture source {owner}/{repo} from {project}",
+    },
     example: { project: "DSP", owner: "acme", repo: "infra" },
     description:
       "Remove one architecture source of a project and the components it imported; every other source's components stay. Undo does not bring the source or its components back.",
@@ -425,6 +502,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_sync_first_architecture_source",
+    label: {
+      kind: "write",
+      verb: "sync",
+      present: "Syncing the first architecture source of {project}",
+      past: "Synced the first architecture source of {project}",
+    },
     example: { project: "DSP" },
     description:
       "Import every architecture source of a project now and answer one row, the first whose import failed or else the first: the answer Dispatch gave before projects had several sources. Prefer dispatch architecture-sync, which answers every source.",
@@ -437,6 +520,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_default_assignees",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the default assignees of the projects",
+      past: "Listed the default assignees of the projects",
+      count: "assignee",
+    },
     example: {},
     description:
       "List every project with its default assignee, the person its unowned work and its questions on unowned issues reach.",
@@ -446,6 +536,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_set_default_assignee",
+    label: {
+      kind: "write",
+      verb: "set",
+      present: "Setting the default assignee of {project} to {assignee}",
+      past: "Set the default assignee of {project} to {assignee}",
+    },
     example: { project: "DSP", assignee: "ana@example.com" },
     description: `Move a project's default assignee to another person, who then gets the project's unowned work and every question on an issue nobody holds. The assignee is the email of a person who has signed in; a project always names one, so it cannot be cleared. ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
@@ -460,6 +556,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_set_default_repository",
+    label: {
+      kind: "write",
+      verb: "set",
+      present: "Setting the default repository of {project}",
+      past: "Set the default repository of {project}",
+    },
     example: { project: "DSP", repo: "acme/infra" },
     description: `Set or clear a project's default repository: the repository an issue of the project resolves to when neither the issue nor an issue above it names one. Use it when a person names the repository a project's work is done in. ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
@@ -479,6 +581,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_new_issue_settings",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the new-issue settings",
+      past: "Read the new-issue settings",
+    },
     example: {},
     description:
       "Read what the dashboard's search bar files a person's unmatched words as: the label the new issue carries and the session it is routed to, each empty where this deployment set none.",
@@ -488,6 +596,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_delivery_settings",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the delivery settings",
+      past: "Read the delivery settings",
+    },
     example: {},
     description:
       "Read the delivery timeline's configuration: the deploy repository, the workflow paths, the production job names and the rest the Delivery and Pipeline pages read, or null when nobody has set it.",
@@ -497,6 +611,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_set_delivery_settings",
+    label: {
+      kind: "write",
+      verb: "change",
+      present: "Changing the delivery settings",
+      past: "Changed the delivery settings",
+    },
     example: {
       deploy_repo: "acme/deploy",
       deploy_workflow_path: ".github/workflows/deploy.yml",
@@ -558,6 +678,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_legion_daemon",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the Legion daemon of {project}",
+      past: "Read the Legion daemon of {project}",
+    },
     example: { project: "DSP" },
     description:
       "Read the Legion daemon a project's Legion state is read from: its address, who first named a daemon for the project, and when the setting was last written; or null when the project names none.",
@@ -567,6 +693,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_set_legion_daemon",
+    label: {
+      kind: "write",
+      verb: "set",
+      present: "Setting the Legion daemon of {project}",
+      past: "Set the Legion daemon of {project}",
+    },
     example: { project: "DSP", state_url: "https://legion.example.com" },
     description: `Name the Legion daemon a project's Legion state is read from, by its address: an absolute http or https URL with a host and no path, user, password, query or fragment (400 LEGION_SETTING_INPUT otherwise). ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
@@ -583,6 +715,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_unset_legion_daemon",
+    label: {
+      kind: "write",
+      verb: "remove",
+      present: "Removing the Legion daemon of {project}",
+      past: "Removed the Legion daemon of {project}",
+    },
     example: { project: "DSP" },
     description: `Stop reading a project's Legion daemon; what Dispatch already read stays. ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({ project: z.string().describe(PROJECT_KEY) }),
@@ -594,6 +732,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_legion_board",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the Legion board of {project}",
+      past: "Read the Legion board of {project}",
+    },
     example: { project: "DSP" },
     description: `Read a project's Legion board: each issue Legion runs, in its column (queue, design, planning, implementing, testing, reviewing and the rest), with its phase, its slot, the roles working it and what it waits on, and the slots in use. ${AS_DATA}`,
     arguments: (z) => ({ project: z.string().describe(PROJECT_KEY) }),
@@ -602,6 +746,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_delivery_run",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the deploy run {run}",
+      past: "Read the deploy run {run}",
+    },
     example: { run: 123456789 },
     description:
       "Read one run of the deploy repository's workflows with every job it ran, each with its result and timings. Use it to see why a deploy failed or how long it took.",
@@ -613,6 +763,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_create_session_group",
+    label: {
+      kind: "write",
+      verb: "create",
+      present: 'Creating the session group "{name}"',
+      past: 'Created the session group "{name}"',
+    },
     example: { name: "Release train", sessions: ["session-0123456789abcdef"] },
     description:
       "Create a Delivery session group: a name that stands as the parent agent of every pull request whose first session the group holds. Use it when a person asks to see several sessions' pull requests as one on the Delivery page. Undo does not delete the group: delete it to take it back.",
@@ -627,6 +783,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_edit_session_group",
+    label: {
+      kind: "write",
+      verb: "edit",
+      present: "Editing the session group {group}",
+      past: "Edited the session group {group}",
+    },
     example: { group: "0190c7d2-1111-7222-8333-444444444444", add: ["session-0123456789abcdef"] },
     description: `Rename a Delivery session group, add sessions to it or remove sessions from it. An edit that would leave it empty is refused. ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
@@ -649,6 +811,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_delete_session_group",
+    label: {
+      kind: "write",
+      verb: "delete",
+      present: "Deleting the session group {group}",
+      past: "Deleted the session group {group}",
+    },
     example: { group: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Delete a Delivery session group; its sessions show as themselves again. Undo does not bring the group back.",
@@ -661,6 +829,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_ci_reconcile_passes",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the CI reconcile passes",
+      past: "Listed the CI reconcile passes",
+      count: "pass",
+    },
     example: {},
     description:
       "List the CI reconcile passes of the last 24 hours, newest first, each with what it read from GitHub and where it left its cursor. Use it to see whether Dispatch is keeping up with the pull requests' checks.",
@@ -670,6 +845,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_users",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the users of Dispatch",
+      past: "Listed the users of Dispatch",
+      count: "user",
+    },
     example: {},
     description:
       "List everyone who has signed in to Dispatch, by lowercase email: the people an issue may be assigned to.",
@@ -679,6 +861,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_dashboard_builds",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading which dashboard builds are served",
+      past: "Read which dashboard builds are served",
+      count: "build",
+    },
     example: {},
     description:
       "Read which builds of the dashboard Dispatch's server processes serve now. Use it to tell whether a release reached every process.",
@@ -688,6 +877,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_create_priority",
+    label: {
+      kind: "write",
+      verb: "create",
+      present: 'Creating the priority "{title}"',
+      past: 'Created the priority "{title}"',
+    },
     example: { title: "Ship the command bar" },
     description:
       "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default; a title whose slug is no id is refused, and then the call names one). Issues state the priorities they advance. Undo does not delete the priority: delete it to take it back.",
@@ -718,6 +913,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_edit_priority",
+    label: {
+      kind: "write",
+      verb: "edit",
+      present: "Editing the priority {priority}",
+      past: "Edited the priority {priority}",
+    },
     example: { priority: "ship-the-command-bar", title: "Ship the command bar to everyone" },
     description:
       "Change a priority's title, description or owner, or move it in the order: rank names the priority it lands above (before), the one it lands below (after), or both. Each field named is written and each left out is left alone; a call names at least one of title, description, owner and rank. Undo does not change it back.",
@@ -759,6 +960,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_delete_priority",
+    label: {
+      kind: "write",
+      verb: "delete",
+      present: "Deleting the priority {priority}",
+      past: "Deleted the priority {priority}",
+    },
     example: { priority: "ship-the-command-bar" },
     description:
       "Delete a priority: it leaves the list, and its history still names who ended it and when. Undo does not bring it back.",
@@ -768,6 +975,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_priority_history",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the history of the priority {priority}",
+      past: "Read the history of the priority {priority}",
+    },
     example: { priority: "ship-the-command-bar" },
     description: `Read one priority's history, newest first: every change of its title, description, owner, order and state, and every issue that stated or dropped advancing it, each with who and when. ${AS_DATA}`,
     arguments: (z) => ({ priority: z.string().describe("The priority's id.") }),
@@ -776,6 +989,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_resolve_issue",
+    label: {
+      kind: "read",
+      verb: "find",
+      present: "Finding the issue {ref} names",
+      past: "Found the issue {ref} names",
+    },
     example: { ref: "acme/infra#12" },
     description:
       "Find the Dispatch issue key a reference names: a native key, or a GitHub owner/repo#n reference of an issue or pull request Dispatch holds.",
@@ -787,6 +1006,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_issue_summary",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the summary of {issue}",
+      past: "Read the summary of {issue}",
+    },
     example: { issue: "DSP-1" },
     description:
       "Read what a reference to an issue shows without the whole issue: its key, project, title, status and documents, each document with its slug, kind and latest version.",
@@ -796,6 +1021,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_issue_references",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading what refers to {issue}",
+      past: "Read what refers to {issue}",
+      count: "reference",
+    },
     example: { issue: "DSP-1" },
     description:
       "Read an issue's references one hop in each direction: links, every node the issue's own content (its documents, asks, comments and messages) links to, and linked_from, every node that links to the issue or to its content, each row with the node, its name, the kinds of its links and the issue's node at the near end; members, the documents of links with their versions. A parent or a child is in neither list. versions latest keeps only each member's latest version.",
@@ -816,6 +1048,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_collaborators",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing who worked on {issue}",
+      past: "Listed who worked on {issue}",
+      count: "collaborator",
+    },
     example: { issue: "DSP-1" },
     description:
       "List everyone who worked an issue: the people (its assignee, who claimed it, who wrote on it or answered its asks) and the agent sessions, with why each is listed and when they last acted. Use it to find who to ask about an issue.",
@@ -825,6 +1064,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_question_map",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the question map of the {kind} {id}",
+      past: "Read the question map of the {kind} {id}",
+    },
     example: { kind: "artifact", id: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Read the question map of the document a document version, an ask, a comment or a message belongs to: each ask block of that document by its block id, with the id and the dispatch:// reference of the ask Dispatch made for it.",
@@ -839,6 +1084,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_reference_targets",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading what references point at",
+      past: "Read what references point at",
+      count: "target",
+    },
     example: { ref: ["dispatch://DSP-1"] },
     description:
       "Read what many dispatch:// references point at in one read: for each, the kind of node, the words shown for it (an issue's title, a document's name, an ask's question) and whether it is gone.",
@@ -852,6 +1104,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_block_links",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the links between blocks of two documents",
+      past: "Read the links between blocks of two documents",
+      count: "link",
+    },
     example: { from: "dispatch://DSP-1/spec", to: "dispatch://DSP-1/artifact/plan-md" },
     description:
       "Read the links from blocks of one document to blocks of another, newest first, with the kind of each link and the version that wrote it. Use it to see which plan tasks serve which requirements.",
@@ -866,6 +1125,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_issue_subscribers",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the subscribers of {issue}",
+      past: "Listed the subscribers of {issue}",
+      count: "subscriber",
+    },
     example: { issue: "DSP-1" },
     description: "List the agent sessions subscribed to an issue's events.",
     arguments: (z) => ({ issue: z.string().describe(ISSUE_KEY) }),
@@ -874,6 +1140,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_unsubscribe_issue",
+    label: {
+      kind: "write",
+      verb: "unsubscribe",
+      present: "Unsubscribing the agent session {session} from {issue}",
+      past: "Unsubscribed the agent session {session} from {issue}",
+    },
     example: { issue: "DSP-1", session: "session-0123456789abcdef" },
     description:
       "Unsubscribe an agent session from an issue's events. Use it when a person asks to stop a session hearing about an issue. A session that hears the issue only through a broader topic, one that covers other issues too, is refused (409 NOT_REMOVABLE). Undo does not subscribe it again: a session subscribes itself.",
@@ -889,6 +1161,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_coverage",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading what the requirements of {issue} lack",
+      past: "Read what the requirements of {issue} lack",
+    },
     example: { issue: "DSP-1" },
     description:
       "Read what each requirement of an issue's spec lacks: for each requirement block, how many checks and plan tasks serve it, and one line per gap (a requirement with no check, or with no plan task once a plan exists).",
@@ -898,6 +1176,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_issue_messages",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the messages of {issue}",
+      past: "Read the messages of {issue}",
+      count: "message",
+    },
     example: { issue: "DSP-1" },
     description: `List an issue's message threads, oldest first, each root message with its deliveries and its replies. ${AS_DATA}`,
     arguments: (z) => ({ issue: z.string().describe(ISSUE_KEY) }),
@@ -906,6 +1191,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_role_holders",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading who holds the Legion roles of {issue}",
+      past: "Read who holds the Legion roles of {issue}",
+    },
     example: { issue: "DSP-1" },
     description:
       "Read the session that holds each Legion role of an issue (architect, planner, implementer, tester, reviewer, merger), as the Legion daemon last published it.",
@@ -915,6 +1206,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_handoff",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the handoff {handoff}",
+      past: "Read the handoff {handoff}",
+    },
     example: { handoff: "0190c7d2-1111-7222-8333-444444444444" },
     description: `Read one handoff by its id, with its body exactly as written. ${AS_DATA}`,
     arguments: (z) => ({ handoff: z.string().describe("The handoff's id.") }),
@@ -923,6 +1220,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_message_blocks",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the blocks of the message {message}",
+      past: "Read the blocks of the message {message}",
+    },
     example: { message: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Read the blocks of one message's body, each with its stable block id, which a reply names to answer one block. A direct message, one on no issue, is read as a session in its conversation unless the credential acts as its person: name that session in session.",
@@ -940,6 +1243,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_redeliver_message",
+    label: {
+      kind: "write",
+      verb: "deliver",
+      present: "Delivering the message {message} again",
+      past: "Delivered the message {message} again",
+    },
     example: { message: "0190c7d2-1111-7222-8333-444444444444", delivery: "aside" },
     description:
       "Deliver a targeted message to its session again, in a delivery mode the session takes (aside, btw or steer). Use it when a person asks to resend a message whose delivery failed. A delivery sent is not undone.",
@@ -955,6 +1264,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_accept_message_delivery",
+    label: {
+      kind: "write",
+      verb: "accept",
+      present: "Accepting a delivery of the message {message}",
+      past: "Accepted a delivery of the message {message}",
+    },
     example: { message: "0190c7d2-1111-7222-8333-444444444444", attempt: "1" },
     description:
       "Record that this session took one delivery attempt of a message as its person's own turn. Dispatch accepts only the latest attempt, never accepted and not failed, of a direct message to this session (on no issue and from no broadcast) that a person wrote themselves and sent as an aside or a steer, where that person asked for the attempt within the last minute; any other attempt is refused (409). Only the session the attempt reached may accept it. It is not undone.",
@@ -970,6 +1285,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_my_answers",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing your answers to asks",
+      past: "Listed your answers to asks",
+      count: "answer",
+    },
     example: {},
     description: `List the answers the person you act for gave to asks, newest first, a page at a time. ${AS_DATA}`,
     arguments: (z) => ({
@@ -984,6 +1306,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_mark_thread_read",
+    label: {
+      kind: "write",
+      verb: "mark",
+      present: "Marking the thread {thread} read",
+      past: "Marked the thread {thread} read",
+    },
     example: {
       thread: "0190c7d2-1111-7222-8333-444444444444",
       read_through: "2026-11-19T00:00:00Z",
@@ -1002,6 +1330,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_mark_inbox_read",
+    label: {
+      kind: "write",
+      verb: "mark",
+      present: "Marking your inbox read",
+      past: "Marked your inbox read",
+    },
     example: { read_through: "2026-11-19T00:00:00Z" },
     description: `Mark every unread thread of the Inbox of the person you act for read up to a time, narrowed as the Inbox narrows (kind, priority, urgency, project, and issue or artifact). It takes no thread out of the Inbox. ${INBOX_OWNER_RULE} Undo does not mark them unread.`,
     arguments: (z) => ({
@@ -1019,6 +1353,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_dismiss_inbox",
+    label: {
+      kind: "write",
+      verb: "dismiss",
+      present: "Dismissing items of your inbox",
+      past: "Dismissed items of your inbox",
+    },
     example: {
       threads: ["reply:0190c7d2-1111-7222-8333-444444444444"],
       seen_replies: { "reply:0190c7d2-1111-7222-8333-444444444444": { version: 3 } },
@@ -1063,6 +1403,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_search_coverage",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading how much the meaning search covers",
+      past: "Read how much the meaning search covers",
+    },
     example: {},
     description:
       "Read how much of Dispatch the meaning search covers: the embedding model, and for each kind of item how many carry a current vector, how many wait for one and how long the oldest has waited.",
@@ -1072,6 +1418,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_count_related_checks",
+    label: {
+      kind: "read",
+      verb: "count",
+      present: "Counting the related-item checks of {project|every project}",
+      past: "Counted the related-item checks of {project|every project}",
+    },
     example: { project: "DSP" },
     description:
       "Count the related-item checks Dispatch ran when issues, asks and decision blocks were written, by outcome, by how they searched and by why a check was not made, with their timings.",
@@ -1089,6 +1441,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_near_copy_checks",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the near-copy checks of {project}",
+      past: "Listed the near-copy checks of {project}",
+      count: "check",
+    },
     example: { project: "DSP" },
     description:
       "List one project's near-copy checks, oldest first: a row for each issue create the near-copy gate answered, with its outcome (refused, forced, nudged, passed or not_made) and the issues it found close to the create.",
@@ -1107,6 +1466,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_near_copy_check",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the near-copy check {check}",
+      past: "Read the near-copy check {check}",
+    },
     example: { check: "0190c7d2-1111-7222-8333-444444444444" },
     description: "Read one near-copy check with the issues it found close to the create.",
     arguments: (z) => ({ check: z.string().describe("The near-copy check's id.") }),
@@ -1115,6 +1480,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_agent_messages",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the messages of the agent session {session}",
+      past: "Read the messages of the agent session {session}",
+      count: "message",
+    },
     example: { session: "session-0123456789abcdef" },
     description: `List the messages of one agent session's conversation on the Agents page, each with its deliveries and replies. ${AS_DATA}`,
     arguments: (z) => ({ session: z.string().describe(SESSION_ID) }),
@@ -1123,6 +1495,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_agent_document",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the document {document} of the agent session {session}",
+      past: "Read the document {document} of the agent session {session}",
+    },
     example: { session: "session-0123456789abcdef", document: "screenshot-png" },
     description:
       "Read the record of one file or picture a person or the session uploaded to an agent session's conversation, by its slug: its name, kind and versions. dispatch doc-read reads a version's content, by the reference dispatch://agent/<session id>/artifact/<slug>@v<N>.",
@@ -1137,6 +1515,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_broadcast",
+    label: {
+      kind: "write",
+      verb: "send",
+      present: "Sending one message to several agent sessions",
+      past: "Sent one message to several agent sessions",
+    },
     example: {
       session_ids: ["session-0123456789abcdef"],
       body: "The deploy is paused until 14:00.",
@@ -1156,6 +1540,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_broadcasts",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the broadcasts",
+      past: "Listed the broadcasts",
+      count: "broadcast",
+    },
     example: {},
     description: `List the 50 most recent broadcasts, newest first, each with its author, body and delivery mode and two counts: recipients, the sessions it went to, and replies, those that answered. dispatch read-broadcast names the sessions. ${AS_DATA}`,
     arguments: () => ({}),
@@ -1164,6 +1555,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_broadcast",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the broadcast {broadcast}",
+      past: "Read the broadcast {broadcast}",
+    },
     example: { broadcast: "0190c7d2-1111-7222-8333-444444444444" },
     description: `Read one broadcast with each session's delivery. ${AS_DATA}`,
     arguments: (z) => ({ broadcast: z.string().describe("The broadcast's id.") }),
@@ -1172,6 +1569,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_decisions",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the decisions of {issue}",
+      past: "Listed the decisions of {issue}",
+      count: "decision",
+    },
     example: { issue: "DSP-1" },
     description: `List an issue's decisions: each section of its decisions.md in document order, with its block_id, heading, text and text_sha256, the asks it mentions, its links to spec blocks, the Keep a person recorded (kept) and whether it waits on review; and open_questions, the issue's open asks whose block is in its spec. ${AS_DATA}`,
     arguments: (z) => ({ issue: z.string().describe(ISSUE_KEY) }),
@@ -1180,6 +1584,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_ask",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the ask {ask}",
+      past: "Read the ask {ask}",
+    },
     example: { ask: "0190c7d2-1111-7222-8333-444444444444" },
     description: `Read one ask with its question, options, state, answers, replies and followers. ${AS_DATA}`,
     arguments: (z) => ({ ask: z.string().describe(ASK_ID) }),
@@ -1188,6 +1598,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_ask_followers",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing who follows the ask {ask}",
+      past: "Listed who follows the ask {ask}",
+      count: "follower",
+    },
     example: { ask: "0190c7d2-1111-7222-8333-444444444444" },
     description: "List the sessions that follow an ask, whom its answer and its replies reach.",
     arguments: (z) => ({ ask: z.string().describe(ASK_ID) }),
@@ -1196,6 +1613,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_answer_ask",
+    label: {
+      kind: "write",
+      verb: "answer",
+      present: "Answering the ask {ask}",
+      past: "Answered the ask {ask}",
+    },
     example: {
       ask: "0190c7d2-1111-7222-8333-444444444444",
       expected_edited_at: null,
@@ -1231,6 +1654,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_decline_ask",
+    label: {
+      kind: "write",
+      verb: "decline",
+      present: "Declining the ask {ask}",
+      past: "Declined the ask {ask}",
+    },
     example: { ask: "0190c7d2-1111-7222-8333-444444444444", note: "Not mine to decide." },
     description:
       "Decline an ask as the person you act for, with a note saying why: it closes without an answer and the asker is told. It is not undone.",
@@ -1243,6 +1672,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_comment",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the comment {comment}",
+      past: "Read the comment {comment}",
+    },
     example: { comment: "0190c7d2-1111-7222-8333-444444444444" },
     description: `Read one comment with its thread, its anchor and its deliveries. ${AS_DATA}`,
     arguments: (z) => ({ comment: z.string().describe(COMMENT_ID) }),
@@ -1251,6 +1686,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_comment_blocks",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the blocks of the comment {comment}",
+      past: "Read the blocks of the comment {comment}",
+    },
     example: { comment: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Read the blocks of one comment's body, each with its stable block id, which a reply names to answer one block.",
@@ -1260,6 +1701,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_reopen_comment",
+    label: {
+      kind: "write",
+      verb: "reopen",
+      present: "Reopening the comment {comment}",
+      past: "Reopened the comment {comment}",
+    },
     example: { comment: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Reopen a resolved comment thread, named by its root comment (a reply, or a comment under an ask, is refused), so it shows as open again. Undo resolves it again.",
@@ -1269,6 +1716,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_redeliver_comment",
+    label: {
+      kind: "write",
+      verb: "deliver",
+      present: "Delivering the comment {comment} again",
+      past: "Delivered the comment {comment} again",
+    },
     example: {
       comment: "0190c7d2-1111-7222-8333-444444444444",
       delivery: "aside",
@@ -1293,6 +1746,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_reply_comment_delivery",
+    label: {
+      kind: "write",
+      verb: "answer",
+      present: "Answering a delivery of the comment {comment}",
+      past: "Answered a delivery of the comment {comment}",
+    },
     example: {
       comment: "0190c7d2-1111-7222-8333-444444444444",
       attempt: 1,
@@ -1337,6 +1796,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_accept_suggestion",
+    label: {
+      kind: "write",
+      verb: "accept",
+      present: "Accepting the suggestion {comment}",
+      past: "Accepted the suggestion {comment}",
+    },
     example: { comment: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Accept a suggestion: its change is written into the document as its next version and the suggestion is resolved. Undo does not take the change back out.",
@@ -1346,6 +1811,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_reject_suggestion",
+    label: {
+      kind: "write",
+      verb: "reject",
+      present: "Rejecting the suggestion {comment}",
+      past: "Rejected the suggestion {comment}",
+    },
     example: { comment: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Reject a suggestion: the document stays as it is and the suggestion is resolved. Its writer is told at once, so it is not undone.",
@@ -1355,6 +1826,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_edit_comment",
+    label: {
+      kind: "write",
+      verb: "edit",
+      present: "Editing the comment {comment}",
+      past: "Edited the comment {comment}",
+    },
     example: { comment: "0190c7d2-1111-7222-8333-444444444444", body: "Corrected wording." },
     description:
       "Replace the words of a comment the person you act for wrote; another's comment is refused (403 NOT_AUTHOR). The new words replace whatever the comment holds when the edit lands. Undo does not put the old words back.",
@@ -1370,6 +1847,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_document_events",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the events of the document {document}",
+      past: "Read the events of the document {document}",
+      count: "event",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description: `Page the event log of a project's document: its versions, its comments and asks, its reviews and its renames, each with who and when. An issue's document is refused (400 ARTIFACT_LINKED), since its events are its issue's, which dispatch read lists with the issue's events; so is a file of an agent's conversation (400 ARTIFACT_AGENT_OWNED). after pages oldest first and takes neither before nor order desc (400 INVALID_QUERY); before pages newest first, whatever order says. ${AS_DATA}`,
     arguments: (z) => ({
@@ -1404,6 +1888,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_document_references",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading what refers to the document {document}",
+      past: "Read what refers to the document {document}",
+      count: "reference",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Read a document's references one level in each direction: outgoing, every item or document its content mentions, and every document block it mentions that a current version holds, with that document; and referenced_by, every item or document that mentions the document or one of its current blocks, each once.",
@@ -1413,6 +1904,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_document_changes",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the changes to the document {document} from version {from} to {to}",
+      past: "Read the changes to the document {document} from version {from} to {to}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444", from: 1, to: 2 },
     description: `Read what changed between two stored versions of one document: the ## sections and the blocks whose text differs, that moved, or that one version alone holds, with every ask block cut out of both; decision_only says the two differ only in their asks, unchanged that they differ in nothing a section or block holds. A version the document does not have is 404 NOT_FOUND, and an artifact that is no document 400 NOT_DOCUMENT. ${AS_DATA}`,
     arguments: (z) => ({
@@ -1439,6 +1936,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_document_subscribers",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the subscribers of the document {document}",
+      past: "Listed the subscribers of the document {document}",
+      count: "subscriber",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "List the agent sessions subscribed to a project document's events. An issue's document is refused (400 ARTIFACT_LINKED), since its subscribers are its issue's, which dispatch list-issue-subscribers lists; so is a file of an agent's conversation (400 ARTIFACT_AGENT_OWNED).",
@@ -1448,6 +1952,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_unsubscribe_document",
+    label: {
+      kind: "write",
+      verb: "unsubscribe",
+      present: "Unsubscribing the agent session {session} from the document {document}",
+      past: "Unsubscribed the agent session {session} from the document {document}",
+    },
     example: {
       document: "0190c7d2-1111-7222-8333-444444444444",
       session: "session-0123456789abcdef",
@@ -1466,6 +1976,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_document",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the document {document}",
+      past: "Read the document {document}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Read one document's record by its id: its name, slug, kind, owner, versions and approval state, without its text. dispatch doc-read reads its text.",
@@ -1475,6 +1991,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_rename_document",
+    label: {
+      kind: "write",
+      verb: "rename",
+      present: "Renaming the document {document} to {name}",
+      past: "Renamed the document {document} to {name}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444", name: "design.md" },
     description:
       "Rename a document. Its id and its versions stay. Dispatch refuses to rename an issue's spec or an uploaded file or picture, and refuses a name another document of the same owner holds or one that would make the document a role document such as plan.md. Undo does not rename it back: rename it again.",
@@ -1487,6 +2009,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_remove_document",
+    label: {
+      kind: "write",
+      verb: "remove",
+      present: "Removing the document {document}",
+      past: "Removed the document {document}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Remove a document of an issue that is still untouched: made by typing a title and never written in, with nothing in Dispatch pointing at it. Dispatch refuses any other document (409 ARTIFACT_NOT_UNTOUCHED) and a project's document (400 ARTIFACT_PROJECT_DOCUMENT). Use it only when a person asks to delete that document. Undo does not bring it back.",
@@ -1496,6 +2024,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_rebuild_document",
+    label: {
+      kind: "write",
+      verb: "rebuild",
+      present: "Rebuilding the document {document}",
+      past: "Rebuilt the document {document}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Rebuild, as the person you act for, a document whose stored edit history no longer loads: the history is replaced by one built from the latest version's markdown, which writes no version, or from the markdown given, which is written as the document's next version where it differs from the latest. A document whose history loads is refused (409 DOCUMENT_LOADS), and so is one open in an editor now (409 DOCUMENT_LIVE). Undo does not bring the old history or the version back.",
@@ -1516,6 +2050,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_list_reviews",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing the reviews of the document {document}",
+      past: "Listed the reviews of the document {document}",
+      count: "review",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description: `List a document's reviews, each approval or changes request with its version, its reviewer and its reason. ${AS_DATA}`,
     arguments: (z) => ({ document: z.string().describe(DOCUMENT_ID) }),
@@ -1524,6 +2065,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_review_document",
+    label: {
+      kind: "write",
+      verb: "review",
+      present: "Reviewing the document {document}",
+      past: "Reviewed the document {document}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444", state: "approved" },
     description:
       "Approve a document's latest settled version, or request changes on it with a reason, as the person you act for: what the document header's Approve and Request changes record, answering the open approval ask when there is one. dispatch review reviews a version you name. A review is the person's own word, so it is not undone.",
@@ -1551,6 +2098,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_block",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the block {block} of the document {document}",
+      past: "Read the block {block} of the document {document}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444", block: "b1" },
     description:
       "Read where one block stands in a document, by its block id: its type, its path from the top-level block down (each node's type, id and index) and, for a table block, row or cell, its place in the table: a row's or a cell's row index and the opening words of each cell of that row, and a cell's column and the text of the header cell over it. It answers no other text: dispatch doc-read reads the block's own.",
@@ -1565,6 +2118,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_keep_decision",
+    label: {
+      kind: "write",
+      verb: "keep",
+      present: "Keeping the decision {block} of the document {document}",
+      past: "Kept the decision {block} of the document {document}",
+    },
     example: {
       document: "0190c7d2-1111-7222-8333-444444444444",
       block: "b1",
@@ -1589,6 +2148,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_name_version",
+    label: {
+      kind: "write",
+      verb: "name",
+      present: "Naming a version of the document {document}",
+      past: "Named a version of the document {document}",
+    },
     example: { issue: "DSP-1", document: "spec", summary: "Agreed with Ana" },
     description:
       "Name a document's current version with a summary, so its history shows the point it was agreed at. Name the document by its slug with its issue or its project, or by its id alone. Undo does not take the name back.",
@@ -1622,6 +2187,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_my_state",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading your state on each issue",
+      past: "Read your state on each issue",
+    },
     example: {},
     description:
       "Read the dashboard state of the person you act for on each issue: whether they pinned it, the event they read up to, the issue's list of the items pinned on its page (pinned_items:<kind>:<id>) and dismissed, and the state's seq, its version.",
@@ -1631,6 +2202,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_my_agent_state",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading your state on each agent session",
+      past: "Read your state on each agent session",
+    },
     example: {},
     description:
       "Read the dashboard state of the person you act for on each agent session: what they pinned and what they read and cleared.",
@@ -1640,6 +2217,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_set_agent_state",
+    label: {
+      kind: "write",
+      verb: "change",
+      present: "Changing your state on the agent session {session}",
+      past: "Changed your state on the agent session {session}",
+    },
     example: { session: "session-0123456789abcdef", pinned: true },
     description:
       "Change the dashboard state of the person you act for on one agent session: pin or unpin it, clear its conversation before a time, or mark it read; a call names at least one of the four. Undo does not change it back.",
@@ -1672,6 +2255,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_document_read_mark",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading how far you read the document {document}",
+      past: "Read how far you read the document {document}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Read the version of a document the person you act for last read, which the dashboard shows a document's changes since.",
@@ -1681,6 +2270,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_mark_document_read",
+    label: {
+      kind: "write",
+      verb: "mark",
+      present: "Marking the document {document} read at version {version}",
+      past: "Marked the document {document} read at version {version}",
+    },
     example: { document: "0190c7d2-1111-7222-8333-444444444444", version: 3 },
     description:
       "Record the version of a document the person you act for has read. Undo does not change it back.",
@@ -1696,6 +2291,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_snooze_ask",
+    label: {
+      kind: "write",
+      verb: "snooze",
+      present: "Snoozing the ask {ask}",
+      past: "Snoozed the ask {ask}",
+    },
     example: { ask: "0190c7d2-1111-7222-8333-444444444444", snoozed_until: "2026-11-20T09:00:00Z" },
     description:
       "Snooze an ask in the Inbox of the person you act for until a time in the future; it shows under Later meanwhile. Undo does not end the snooze: end it to take it back.",
@@ -1713,6 +2314,12 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_unsnooze_ask",
+    label: {
+      kind: "write",
+      verb: "unsnooze",
+      present: "Unsnoozing the ask {ask}",
+      past: "Unsnoozed the ask {ask}",
+    },
     example: { ask: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "End the snooze of an ask in the Inbox of the person you act for, so it shows as waiting again. Undo does not snooze it again.",
@@ -1722,6 +2329,13 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_read_event_log",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading Dispatch's event log",
+      past: "Read Dispatch's event log",
+      count: "event",
+    },
     example: { limit: 50 },
     description: `Page Dispatch's event log across every issue and document, oldest first, after an event id. ${AS_DATA}`,
     arguments: (z) => ({
@@ -1751,6 +2365,12 @@ export const dispatchRouteToolSpecs = [
 export const personToolSpecs = [
   {
     name: "dispatch_hand_ask",
+    label: {
+      kind: "write",
+      verb: "hand",
+      present: "Handing the ask {ask} to {asked_of}",
+      past: "Handed the ask {ask} to {asked_of}",
+    },
     example: { ask: "0190c7d2-1111-7222-8333-444444444444", asked_of: "ana@example.com" },
     description:
       "Hand an open ask to another person as the person you act for, when they say someone else should answer it: the ask then waits on that person. Undo does not hand it back.",
@@ -1766,6 +2386,12 @@ export const personToolSpecs = [
   },
   {
     name: "dispatch_set_issue_state",
+    label: {
+      kind: "write",
+      verb: "change",
+      present: "Changing your state on {issue}",
+      past: "Changed your state on {issue}",
+    },
     example: {
       issue: "DSP-1",
       dismissed: ["pinned_items:ask:0190c7d2-1111-7222-8333-444444444444"],

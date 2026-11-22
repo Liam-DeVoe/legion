@@ -197,8 +197,14 @@ test("opening a conversation again shows each step of its runs once", async () =
   });
   // Each run's stream carries a reply that calls a tool, the call's own frame, and the end.
   const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(async (id, onFrame) => {
-    onFrame("reply", { text: `Reading for ${id}.`, tools: ["call_tool"] });
-    onFrame("tool", { note: `read for ${id}`, step: 2, tool: "call_tool" });
+    onFrame("reply", { labels: [`Reading the notes of ${id}`], text: "", tools: ["call_tool"] });
+    onFrame("tool", {
+      kind: "read",
+      label: `Read the notes of ${id}`,
+      note: `read for ${id}`,
+      step: 2,
+      tool: "call_tool",
+    });
     onFrame("end", { offers: [], reason: "", state: "done" });
   });
   try {
@@ -216,12 +222,12 @@ test("opening a conversation again shows each step of its runs once", async () =
         .filter((shown) => shown.getAttribute("data-run") === run)
         .flatMap((shown) => within(shown).queryAllByTestId("going-step"))
         .map((step) => step.textContent);
-    await waitFor(() => expect(steps("r-2")).toEqual(["read for r-2"]));
+    await waitFor(() => expect(steps("r-2")).toEqual(["Read the notes of r-2"]));
 
     await user.click(first as HTMLElement);
 
-    expect(steps("r-2")).toEqual(["read for r-2"]);
-    expect(steps("r-3")).toEqual(["read for r-3"]);
+    expect(steps("r-2")).toEqual(["Read the notes of r-2"]);
+    expect(steps("r-3")).toEqual(["Read the notes of r-3"]);
     expect(stream.mock.calls.map(([id]) => id)).toEqual(["r-2", "r-3"]);
   } finally {
     read.mockRestore();
