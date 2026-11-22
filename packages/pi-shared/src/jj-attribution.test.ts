@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { memoryRoot } from "@legion/test-fixtures/temporary-directories";
 import { jjBinary } from "@legion/test-fixtures/version-control-tools";
 import {
   exportJjSessionAttribution,
@@ -453,7 +454,11 @@ describe("exportJjSessionAttribution", () => {
     "the overlay's three templates give each jj command the running pair",
     async () => {
       if (JJ === null) throw new Error("no jj on PATH on GitHub Actions (install-jj installs one)");
-      const root = await stateDir("jj-attribution-jj-");
+      // On the memory root (`memoryRoot`): the repository below leaves about 230 entries, which
+      // the afterEach removes under Bun's 5 s for a hook, and on a dev box's shared disk at a load
+      // near 1,500 that removal timed out.
+      const root = await mkdtemp(path.join(memoryRoot(), "jj-attribution-jj-"));
+      dirs.push(root);
       // A base chain and a home of the test's own, so no jj or git configuration of the host
       // reaches the repository, and the identity jj needs comes from JJ_USER and JJ_EMAIL.
       const base = path.join(root, "base.toml");

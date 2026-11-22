@@ -10,6 +10,7 @@ import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { memoryRoot } from "@legion/test-fixtures/temporary-directories";
 import {
   versionControlEnvironment,
   versionControlIdentity,
@@ -923,6 +924,11 @@ async function run(
   return await runTool(found, cwd, env, args);
 }
 
+/** Where the two rows below make their repositories: the memory root (`memoryRoot`). Their jj and
+ * git leave about 210 and 90 entries, which the afterEach above removes under Bun's 5 s for a
+ * hook; with the scratch on a dev box's shared disk at a load near 1,500 that removal timed out. */
+const jjScratchRoot = memoryRoot();
+
 /** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */
 const jj = (cwd: string, env: Record<string, string>, ...args: string[]) =>
   run("jj", cwd, env, ...args);
@@ -930,7 +936,7 @@ const jj = (cwd: string, env: Record<string, string>, ...args: string[]) =>
 test.skipIf(withoutJj)(
   "against a real jj workspace, the implementer's report refuses an @- the branch does not carry and a record naming another commit, and names @- once it is pushed and recorded",
   async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-record-"));
+    const root = await mkdtemp(path.join(jjScratchRoot, "legion-handoff-record-"));
     scratch.push(root);
     const workspace = path.join(root, "workspace");
     const childEnv = await isolatedHome(root);
@@ -1048,7 +1054,7 @@ test.skipIf(withoutJj)(
 test.skipIf(withoutJj)(
   "a jj that fails on a stale git lock names it, its age, and when it goes",
   async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-lock-"));
+    const root = await mkdtemp(path.join(jjScratchRoot, "legion-handoff-lock-"));
     scratch.push(root);
     const workspace = path.join(root, "workspace");
     const childEnv = await isolatedHome(root);

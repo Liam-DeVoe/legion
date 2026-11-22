@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b's `kill` end of one role: role_kill_sh signals the worker-shim of one role-init, and
@@ -12,7 +12,10 @@ import { scriptFunctions } from "./script-functions";
 const lib = join(import.meta.dir, "role-namespaces.sh");
 const stage4b = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(stage4b);
-const dir = temporaryDirectory("stage4b-role-kill-test");
+// On the memory root (`memoryRoot`): the rows leave their proc roots here (own_proc), about 320
+// entries in all, and the file's afterAll removes them under Bun's 5 s for a hook, which on a dev
+// box's shared disk at a load near 1,500 timed out.
+const dir = temporaryDirectory("stage4b-role-kill-test", { root: memoryRoot() });
 // The home every bash this file starts runs under, so none of them reads the caller's. The
 // children below take PATH, this home and the case's own names, and nothing else of the caller's.
 const home = join(dir, "home");
