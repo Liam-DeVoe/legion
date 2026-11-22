@@ -35,19 +35,21 @@ const (
 	// soakWaitingPlans is how many plans wait for their person at once.
 	soakWaitingPlans = 1000
 	// soakRunBytes is less than what the agent's live heap may grow by for each run the soak
-	// works: check c21's bound. With each run's context ended as its turn ends (worker.work),
-	// the soak read 54.6 bytes a run.
-	soakRunBytes = 1 << 10
+	// works. With each run's context ended as its turn ends (worker.work), three soaks on the
+	// build farm read 59.9, 56.7 and 66.0 bytes a run (INFRA-1588, 2026-11-22); 256 bytes a run
+	// is room for noise over the most of them, and a run's context left live in the agent, about
+	// 500 bytes a run, passes it. c21's own bound, 1 KiB, let that pass.
+	soakRunBytes = 256
 	// soakAgentPlanBytes is less than what the agent's live heap may grow by for each plan that
 	// waits. The agent holds nothing of a plan whose run ended its turn, so the bound is tens of
 	// bytes, not a kilobyte: a run's context left live among the agent's held about 490 bytes a
-	// plan, which a bound of 1 KiB let pass. With each run's context ended, the soak read 2.6
-	// bytes a plan; 64 bytes a plan, 64,000 over the soak's plans, is room for noise over the
-	// 2,600 that reading found. The reading that sets it is this test's own line on the build
-	// farm, "N plans wait: the agent's live heap A -> B bytes (+D, X bytes a plan)".
+	// plan, which a bound of 1 KiB let pass. With each run's context ended, three soaks on the
+	// build farm read 3.4, 19.8 and -6.4 bytes a plan; 64 bytes a plan is room for noise over the
+	// most of them.
 	soakAgentPlanBytes = 64
 	// soakServerPlanBytes is less than what the server's live heap may grow by for each plan
-	// that waits: check c21's bound.
+	// that waits: check c21's bound. The same three soaks read -899.1, -863.4 and +186.6 bytes a
+	// plan, a spread of a kilobyte either way that a smaller bound would read as a leak.
 	soakServerPlanBytes = 1 << 10
 	// soakBatch is how many runs the soak starts at once, four times the agent's 8 slots, each of
 	// a person of its own, so no slot waits for the test and no person's bound of 3 runs at once.
@@ -444,7 +446,7 @@ func (s agentServer) serverLiveHeap(t *testing.T, profiler string) int64 {
 // (check c21). Once the server's caches are full, a soak of 1,000 runs - answers, searches, reads
 // of a spec of 1 MiB, approved plans, follow-ups, runs their person stops, runs stopped at a
 // bound of their level, runs that lose their lease and runs whose tool panics - grows the agent's
-// live heap by less than 1 KiB for each run (soakRunBytes, c21's bound), and the agent's
+// live heap by less than 256 bytes for each run (soakRunBytes), and the agent's
 // goroutines come back to their count at the soak's start. Then 1,000 plans wait for their
 // person: the agent runs no goroutine more, and its live heap grows by less than 64 bytes for
 // each (soakAgentPlanBytes), since it holds nothing of a plan whose run ended its turn; a bound
