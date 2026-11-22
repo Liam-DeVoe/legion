@@ -1199,8 +1199,14 @@ func newOutsideBrokerRig(t *testing.T) outsideBrokerRig {
 // personToken is the broker's answer for a dev box session's token acting for person: live,
 // bound to the rig's caller's key and scoped to that person rather than to one project.
 func (r outsideBrokerRig) personToken(person string) ciphertoken.Introspection {
+	return r.personTokenListing(person)
+}
+
+// personTokenListing is personToken listing projects: the one project a restricted member's token
+// lists, which a token of theirs listing none or several may not (restrictedBrokerTokenList).
+func (r outsideBrokerRig) personTokenListing(person string, projects ...string) ciphertoken.Introspection {
 	answer := liveNamedToken(r.caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = person, ciphertoken.ProjectScopePerson, nil
+	answer.Person, answer.ProjectScope, answer.Projects = person, ciphertoken.ProjectScopePerson, projects
 	return answer
 }
 
@@ -1231,7 +1237,7 @@ func wantAPIError(t *testing.T, err error, status int, code, what string) {
 func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token"
-	rig.broker.Says(token, rig.personToken(accessErin))
+	rig.broker.Says(token, rig.personTokenListing(accessErin, "ACC"))
 	withOutside := rig.offDeps
 	withOutside.RestrictedAdmission = testOutsideRule(rig.database.Pool)
 	on, off := directServer(withOutside), directServer(rig.offDeps)
@@ -1320,7 +1326,7 @@ func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *tes
 func TestABrokerTokensConnectionClosesOnceItsPersonsMemberKindChanges(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token-holding-a-socket"
-	rig.broker.Says(token, rig.personToken(accessErin))
+	rig.broker.Says(token, rig.personTokenListing(accessErin, "ACC"))
 	if _, err := rig.database.Pool.Exec(context.Background(), `update people set member_kind = 'full' where email = $1`, accessErin); err != nil {
 		t.Fatal(err)
 	}
@@ -1516,8 +1522,10 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 // write, the tie of the session to its person (session_owners, access.TieSession), which a server
 // makes once per pair it has not recorded. One that names no person reads and writes nothing. The
 // instrument is shown seeing a list read in the same run: a restricted owner's token, which must
-// read one, resolves in two reads and the tie, and holds no scope (brokerTokenActor gives a
-// restricted member's broker token none, whatever scope the broker answered).
+// read one, lists the one project such a token may (restrictedBrokerTokenList), so it resolves in
+// three reads, the third the record of the private projects its list names (access.RecordListedReach,
+// which writes none here), and the tie, and holds no scope (brokerTokenActor gives a restricted
+// member's broker token none, whatever scope the broker answered).
 func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
@@ -1544,8 +1552,8 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
 			serviceOnlyToken(rig.caller.jkt), false, 0, 0, false},
 		{"erin, a restricted member, with restricted members admitted", "erins-broker-token",
-			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":[],"service":null,"session":"` + brokerTestSession + `"}`,
-			rig.personToken(accessErin), true, 2, 1, true},
+			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","projects":["ACC"],"project":"ACC","scopes":[],"service":null,"session":"` + brokerTestSession + `"}`,
+			rig.personTokenListing(accessErin, "ACC"), true, 3, 1, true},
 	} {
 		rig.broker.Says(test.token, test.answer)
 		handler := rig.off

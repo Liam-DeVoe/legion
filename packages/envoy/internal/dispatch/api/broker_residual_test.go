@@ -179,7 +179,9 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const erinsBrokerToken = "erins-person-scoped-broker-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, nil
+	// The person scope with one project: a restricted member's broker token listing other than one
+	// acts for nobody (restrictedBrokerTokenList).
+	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, []string{"ACC"}
 	stub.Says(erinsBrokerToken, answer)
 	whoami := httptest.NewRecorder()
 	served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
@@ -227,8 +229,9 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 // kind for it in the same request (brokerPersonAdmitted), so it gives the token no scope: whoami
 // answers none, and GET /api/v1/inbox and POST /api/v1/me/agent-tokens are 403
 // OAUTH_SCOPE_REQUIRED. So an outside person's agent mints no token and decides nothing, whatever
-// the broker answered. A full member's person-scope token, the control, holds the person scope and
-// reads its inbox.
+// the broker answered. erin's token lists ACC alone, the one project such a token may list
+// (restrictedBrokerTokenList). A full member's person-scope token naming no project, the control,
+// holds the person scope and reads its inbox.
 //
 // Control: brokerTokenActor giving a person-scope token the person's scopes whatever their member
 // kind, and erin's token holds person and approve and reads her inbox, named.
@@ -241,13 +244,14 @@ func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
 	caller := newBrokerCaller(t)
 	for _, c := range []struct {
 		person, token string
+		projects      []string
 		restricted    bool
 	}{
-		{accessErin, "erins-person-scoped-broker-token", true},
-		{accessCarol, "carols-person-scoped-broker-token", false},
+		{accessErin, "erins-person-scoped-broker-token", []string{"ACC"}, true},
+		{accessCarol, "carols-person-scoped-broker-token", nil, false},
 	} {
 		answer := liveNamedToken(caller.jkt)
-		answer.Person, answer.ProjectScope, answer.Projects = c.person, ciphertoken.ProjectScopePerson, nil
+		answer.Person, answer.ProjectScope, answer.Projects = c.person, ciphertoken.ProjectScopePerson, c.projects
 		stub.Says(c.token, answer)
 		whoami := httptest.NewRecorder()
 		served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", c.token, nil))

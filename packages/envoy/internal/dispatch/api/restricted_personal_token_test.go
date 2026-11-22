@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -410,5 +412,67 @@ func TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes(t *testing
 			t.Errorf("%s %s with a credential of erin's holding %v: handler ran %t, answered %d %s; want 403 %s naming the browser and no handler",
 				row.method, row.pattern, model.Scopes, ran, response.Code, response.Body.String(), codeRestrictedMember)
 		}
+	}
+}
+
+// TestARestrictedMembersBrokerTokenListingOtherThanOneProjectActsForNobody (R16: an outside
+// person's agent's token lists exactly one project): the broker mints a restricted member's machine
+// login the named scope with the one project its trade names, but a broker whose project check is
+// off, an older one, or a token minted before that rule can answer a token of theirs listing none
+// or several. Dispatch holds it as it holds their personal token: erin's person-scope token listing
+// none, and one listing ACC and OTH, are each 403 RESTRICTED_MEMBER saying the token lists exactly
+// one project, on a request and at a socket's heartbeat (callerStillResolves). Her token listing
+// ACC alone acts, holding no scope, in either project scope. carol's person-scope token listing
+// none, a full member's, acts with the person scope as before, so each refusal is the member's.
+//
+// Control: restrictedBrokerTokenList answering nil, and erin's token listing none answers 200 and
+// the row fails at its first check.
+func TestARestrictedMembersBrokerTokenListingOtherThanOneProjectActsForNobody(t *testing.T) {
+	stub := ciphertokentest.NewStubBroker(t)
+	handler, _, served := newRegisteredAccessServer(t, testServerOptions{admitsRestricted: true, brokerTokens: stubBrokerTokens(t, stub)})
+	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Other project"}, "alice"); created.Code != http.StatusCreated {
+		t.Fatalf("alice creates OTH: status=%d body=%s", created.Code, created.Body.String())
+	}
+	for _, project := range []string{"ACC", "OTH"} {
+		if listed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+			t.Fatalf("alice names erin on %s's list: status=%d body=%s", project, listed.Code, listed.Body.String())
+		}
+	}
+	caller := newBrokerCaller(t)
+	says := func(token, person, scope string, projects ...string) {
+		answer := liveNamedToken(caller.jkt)
+		answer.Person, answer.ProjectScope, answer.Projects = person, scope, projects
+		stub.Says(token, answer)
+	}
+	whoami := func(token string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+		return response
+	}
+	for _, refused := range []struct {
+		token    string
+		projects []string
+	}{
+		{"erins-token-listing-none", nil},
+		{"erins-token-listing-two", []string{"ACC", "OTH"}},
+	} {
+		says(refused.token, accessErin, ciphertoken.ProjectScopePerson, refused.projects...)
+		wantRestrictedRefusal(t, whoami(refused.token), "erin's broker token listing "+projectCount(len(refused.projects)), "GET /api/v1/whoami", "exactly one project")
+		_, _, err := served.callerStillResolves(caller.presenting(t, http.MethodGet, "/ws/live", refused.token, nil))
+		wantAPIError(t, err, http.StatusForbidden, codeRestrictedMember, "the heartbeat of a socket erin's broker token listing "+projectCount(len(refused.projects))+" opened")
+	}
+	for _, acts := range []struct{ token, scope string }{
+		{"erins-token-listing-acc", ciphertoken.ProjectScopePerson},
+		{"erins-named-token-of-acc", ciphertoken.ProjectScopeNamed},
+	} {
+		says(acts.token, accessErin, acts.scope, "ACC")
+		if response := whoami(acts.token); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"scopes":[]`) {
+			t.Errorf("erin's %s broker token listing ACC: GET /api/v1/whoami = %d %s, want 200 holding no scope", acts.scope, response.Code, response.Body.String())
+		}
+	}
+	says("carols-token-listing-none", accessCarol, ciphertoken.ProjectScopePerson)
+	if response := whoami("carols-token-listing-none"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"scopes":["person"]`) {
+		t.Errorf("carol's person-scope broker token listing none: GET /api/v1/whoami = %d %s, want 200 holding the person scope", response.Code, response.Body.String())
 	}
 }

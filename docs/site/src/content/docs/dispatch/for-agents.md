@@ -85,13 +85,14 @@ decides only which private projects it sees: a private project needs a token tha
   token that lists projects is refused a write of the whole deployment, such as `dispatch project`
   or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; one that lists none makes it as its person does,
   and so does a broker access token acting as its person while no project is private.
-- A restricted member's token that lists projects sees those of them its person sees, and nothing
-  of any other project; one that lists none sees the public projects its person sees. Of what
-  belongs to no project, it reads only the people and agent sessions of those projects, its own,
-  and the direct conversations its person is in whose agent sessions it reads. A read of the
-  whole deployment, such as `dispatch priorities`, is refused `403 DEPLOYMENT_READ_REFUSED`, and a
-  write of it `403 RESTRICTED_MEMBER`, except the revoke of its person's own credential grant or
-  sign-in, which a token that lists no project makes as its person does.
+- A restricted member's token is their agent's: it holds no scope and lists exactly one project,
+  so it approves no login, makes no token and decides, dismisses or revokes no credential, and a
+  token of theirs that lists none or several acts for nobody, `403 RESTRICTED_MEMBER`. It sees its
+  project if its person sees it, and nothing of any other project. Of what belongs to no project,
+  it reads only the people and agent sessions of that project, its own, and the direct
+  conversations its person is in whose agent sessions it reads. A read of the whole deployment,
+  such as `dispatch priorities`, is refused `403 DEPLOYMENT_READ_REFUSED`, and a write of it
+  `403 RESTRICTED_MEMBER`.
 - The shared token, and any other credential that acts for no person, sees the public projects
   and the private projects its list names.
 

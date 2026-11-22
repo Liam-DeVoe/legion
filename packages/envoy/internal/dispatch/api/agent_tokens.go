@@ -782,7 +782,7 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	}
 	if restricted {
 		if len(projects) != 1 {
-			return model.Actor{}, errRestrictedTokenList(len(projects))
+			return model.Actor{}, errRestrictedTokenList(len(projects), personalTokenListRemedy)
 		}
 		scopes = nil
 	}
@@ -981,14 +981,19 @@ func tokenOwnerOutsideOff() error {
 		"this token's owner is a restricted member from outside the sign-in domain, and this deployment admits nobody from outside it, so the token acts for nobody")
 }
 
-// errRestrictedTokenList is the refusal of a restricted owner's personal token that lists listed
-// projects, other than one (personalTokenActor, R16): 403 RESTRICTED_MEMBER, saying how its owner
-// makes it act again. Like every refusal of a token, it names no owner.
-func errRestrictedTokenList(listed int) error {
+// errRestrictedTokenList is the refusal of a token acting for a restricted member that lists listed
+// projects, other than one (R16): their personal token (personalTokenActor) or a broker token
+// naming them (brokerTokenActor). It is 403 RESTRICTED_MEMBER, saying what makes such a token act:
+// remedy, the step its kind of token takes. Like every refusal of a token, it names no owner.
+func errRestrictedTokenList(listed int, remedy string) error {
 	return errorf(http.StatusForbidden, codeRestrictedMember,
-		"this token's owner is a restricted member, and %s; this token lists %s, so it acts for nobody until its owner names its one project at their browser (PATCH /api/v1/me/agent-tokens/{id}) or mints another",
-		restrictedTokenProjectRule, projectCount(listed))
+		"this token's owner is a restricted member, and %s; this token lists %s, so it acts for nobody until %s",
+		restrictedTokenProjectRule, projectCount(listed), remedy)
 }
+
+// personalTokenListRemedy is what makes a restricted owner's personal token that lists other than
+// one project act again (errRestrictedTokenList).
+const personalTokenListRemedy = "its owner names its one project at their browser (PATCH /api/v1/me/agent-tokens/{id}) or mints another"
 
 func newAgentToken() (string, [sha256.Size]byte, error) {
 	var randomBytes [32]byte

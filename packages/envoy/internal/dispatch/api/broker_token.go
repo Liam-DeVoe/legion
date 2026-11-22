@@ -98,11 +98,31 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 		case s.deps.BrokerTokens.Lapsed(live):
 			return model.Actor{}, true, errBrokerTokenLapsed()
 		}
+		if err := restrictedBrokerTokenList(admission, live); err != nil {
+			return model.Actor{}, true, err
+		}
 		person := live.Person
 		return model.Actor{Owner: &person, Viewer: &model.Viewer{Person: person, Restricted: admission.Restricted}}, true, nil
 	}
 	caller, _, err = s.optionalActor(r)
 	return caller, false, err
+}
+
+// restrictedBrokerTokenList is the refusal of a broker token naming a restricted member that lists
+// other than one project, admission being what brokerPersonAdmitted read of its person, or nil
+// (R16: an outside person's agent's token lists exactly one project). The broker mints a restricted
+// member's machine login the project scope named with the one project its trade names, and refuses
+// a trade naming none or several, but a broker whose project check is off, an older broker during a
+// rollout, or a token minted before that rule can still answer one, so Dispatch holds it here, as it
+// holds their personal token (personalTokenActor), with the same 403 RESTRICTED_MEMBER
+// (errRestrictedTokenList). Its every request and its socket's every heartbeat ask it
+// (brokerTokenActor, callerStillResolves).
+func restrictedBrokerTokenList(admission brokerAdmission, caller ciphertoken.Caller) error {
+	if !admission.Restricted || len(caller.Projects) == 1 {
+		return nil
+	}
+	return errRestrictedTokenList(len(caller.Projects),
+		"its machine trades its login for a token naming the one project its agent works in")
 }
 
 // brokerTokenHeld is the refusal of a broker token whose introspection answered its person held
@@ -550,7 +570,9 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string, p
 // gives under the rule that signs people in. So a revocation and the admission rule answer before
 // a hold. A not-held answer whose deadline has passed (ciphertoken.Verifier.Lapsed, an IAP
 // deployment's person with no active Workspace Directory answer in 24 hours) is 503
-// BROKER_UNAVAILABLE, saying whether the token's person may still act could not be read.
+// BROKER_UNAVAILABLE, saying whether the token's person may still act could not be read. After
+// those, a token naming a restricted member that lists other than one project is 403
+// RESTRICTED_MEMBER (restrictedBrokerTokenList, R16).
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
@@ -597,6 +619,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	case s.deps.BrokerTokens.Lapsed(caller):
 		return model.Actor{}, false, errBrokerTokenLapsed()
 	}
+	if err := restrictedBrokerTokenList(admission, caller); err != nil {
+		return model.Actor{}, false, err
+	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No
 	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
@@ -613,7 +638,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// broker scoped to their person gets none for the same reason: a broker whose project check is
 	// off, an older broker during a rollout, or a token minted before the broker held restricted
 	// members to one project can still answer one, and brokerPersonAdmitted has read the member's
-	// kind above, so the scope does not rest on the broker's check alone. A token that names a
+	// kind above, so the scope does not rest on the broker's check alone. Such a token that lists
+	// other than one project acts for nobody (restrictedBrokerTokenList, above). A token that names a
 	// service and no person gets none either, whatever scope the broker answered: there is no
 	// person for it to act as, and a scope that said otherwise would let it act as the session's
 	// own id on the routes that read what belongs to a person. A read-only token is one of those,

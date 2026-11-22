@@ -176,7 +176,7 @@ func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const erinsBrokerToken = "erins-person-scoped-broker-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, nil
+	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, []string{"ACC"}
 	stub.Says(erinsBrokerToken, answer)
 	brokerWhoami := httptest.NewRecorder()
 	served.ServeHTTP(brokerWhoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
