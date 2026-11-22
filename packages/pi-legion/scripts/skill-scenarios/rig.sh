@@ -223,8 +223,9 @@
 #   SKILL_SCENARIOS_DOCKER_TIMEOUT  seconds one Docker call of judge-omp may wait on the daemon
 #                             (default 300): the image's inspect, each pull, and the judge's
 #                             container around its omp, whose run is bounded at this plus
-#                             SKILL_SCENARIOS_TIMEOUT; a call past it ends the judge with a refusal
-#                             that names the call (cmd_judge_omp)
+#                             SKILL_SCENARIOS_TIMEOUT; a call past it ends the judge at once with a
+#                             refusal that names the call, with no further call and no further pull
+#                             (cmd_judge_omp)
 #   SKILL_SCENARIOS_MEMORY_MAX  the memory an agent's own systemd user scope may hold, with no
 #                             swap (default 8G): an agent past it is killed alone (launch)
 #   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
@@ -1601,8 +1602,10 @@ judge_keys() {
 # a test run that start a judge failed inside one stall of the daemon), so each has a bound of its
 # own (judge_docker):
 # SKILL_SCENARIOS_DOCKER_TIMEOUT for the image's inspect and for each pull, and that plus omp's own
-# SKILL_SCENARIOS_TIMEOUT for the run. A call past its bound ends the judge with a refusal that
-# names the call and its bound. A stall shorter than the bound costs only time.
+# SKILL_SCENARIOS_TIMEOUT for the run. A call past its bound ends the judge at once with a refusal
+# that names the call and its bound: no further call, and no further pull after a pull its bound
+# ended, waits on a daemon that stalled, so a stalled daemon costs a judge one call's bound, not the
+# sum of every call's. A stall shorter than the bound costs only time.
 #
 # judge_docker SECONDS DOCKER-ARG... runs `docker DOCKER-ARG...` and kills it at SECONDS: the
 # client of a stalled daemon may ignore a TERM (`docker run` hands it to its container and waits on).
@@ -1663,28 +1666,32 @@ cmd_judge_omp() {
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
   # failed pull names itself. The registry answers one request of a batch badly now and then (a
-  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
-  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
-  # words are kept, and only for the refusal: an attempt the next one makes good says nothing. An
-  # inspect the daemon does not answer is no missing image: it refuses the judge, naming the call.
+  # token it refuses to mint, a manifest GET it drops) and serves the next, so a failed pull is
+  # asked again, three times in all a couple of seconds apart, before the rig refuses. Only the last
+  # attempt's own words are kept, and only for the refusal: an attempt the next one makes good says
+  # nothing. A pull the daemon does not answer within its bound is not asked again: it refuses the
+  # judge at once, naming the call, as an inspect the daemon does not answer does, which is no
+  # missing image.
   local inspected=0
   judge_docker "$docker_timeout" image inspect "$judge_image" >/dev/null 2>&1 || inspected=$?
   [ -z "$docker_late" ] ||
     fail "judge-omp: docker image inspect $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
   if [ "$inspected" != 0 ]; then
-    local pulled='' pull_error='' attempt
+    local pull=1 pull_error='' attempt
     for attempt in 1 2 3; do
+      # The command substitution's subshell keeps judge_docker's docker_late to itself, so it says
+      # how the pull ended in its status: 0 pulled, 1 failed, 2 ended by its bound.
+      pull=0
       pull_error=$(judge_docker "$docker_timeout" pull --quiet "$judge_image" 2>&1 >/dev/null || {
-        code=$?
-        [ -z "$docker_late" ] || echo "docker pull did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
-        exit "$code"
-      }) && {
-        pulled=1
-        break
-      }
+        [ -z "$docker_late" ] || exit 2
+        exit 1
+      }) || pull=$?
+      [ "$pull" != 0 ] || break
+      [ "$pull" != 2 ] ||
+        fail "judge-omp: docker pull $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
       [ "$attempt" -eq 3 ] || sleep 2
     done
-    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
+    [ "$pull" = 0 ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
   fi
   # shellcheck disable=SC2016 # the container's own bash expands the script's words
   judge_docker "$((docker_timeout + omp_timeout))" run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \

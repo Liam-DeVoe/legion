@@ -39,12 +39,11 @@ const WORLD_VARS = `here=${import.meta.dir} worker_repo=${RIG_WORLD.repository} 
 
 // Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
-// what they wait for: the most of two runs of rig.sh judge-omp (a row of judge-omp's describe
-// starts two judges) and four rig.sh steps, the limit of every other row.
+// what they wait for: the most of a row of judge-omp's describe (JUDGE_OMP: the row's measured
+// normal work and one Docker call's bound, since a stalled call ends the row at once) and four
+// rig.sh steps, the limit of every other row.
 setDefaultTimeout(
-  fileLimit(
-    Math.max(rowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP), rowLimit(JUDGE_OMP, JUDGE_OMP))
-  )
+  fileLimit(Math.max(rowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP), rowLimit(JUDGE_OMP)))
 );
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
@@ -1016,16 +1015,38 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       { mode: 0o755 }
     );
   });
+  // A Docker daemon that stalls is the machine's, not one row's. Once rig.sh refuses a judge run at
+  // the rows' own Docker bound (JUDGE_OMP_ENVIRONMENT) for a call that bound ended, every later row
+  // that needs Docker would wait on the same stalled daemon, call after call, and a daemon that
+  // stalls every call would add those bounds up past the CI job's timeout. So that judge's row
+  // fails at once with the rig's refusal and starts no judge after it, and each later row that
+  // needs Docker (dockerTest) fails at once with the same refusal, starting none. The rows that
+  // plant a `docker` of their own with bounds of seconds (stalledDocker, SHORT) wait on no daemon
+  // of the machine, so they neither set this nor stop for it.
+  let daemonStall: string | undefined;
+  /** rig.sh's refusal of a judge for a Docker call its bound ended (judge_docker's docker_late). */
+  const LATE_CALL = /^skill-scenarios: judge-omp: docker .+ did not end within its bound of \d+ s/;
+  /** A row that reaches the container: skipped without Docker, and failed at once after a stall. */
+  const dockerTest = (name: string, row: () => void) =>
+    test.skipIf(skip)(name, () => {
+      if (daemonStall !== undefined) {
+        throw new Error(
+          `${daemonStall}: the judge of an earlier row met that stall, and this row starts no judge on the stalled daemon`
+        );
+      }
+      row();
+    });
   // Each judge waits for the bounds rig.sh judge-omp runs under (JUDGE_OMP), which the row hands it
   // (JUDGE_OMP_ENVIRONMENT): a Docker daemon that stalls less than a call's bound costs the row
-  // time, and one that stalls longer ends the judge with the rig's refusal naming the call.
+  // time, and one that stalls longer ends the judge with the rig's refusal naming the call, and,
+  // at the rows' own Docker bound, the row with it.
   const judge = (
     kind: string,
     dir: string,
     output = "answer.json",
     env: Record<string, string> = {}
-  ) =>
-    spawnWithin(
+  ) => {
+    const result = spawnWithin(
       { ...JUDGE_OMP, part: `rig.sh judge-omp ${kind}` },
       ["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output],
       {
@@ -1042,6 +1063,18 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         },
       }
     );
+    if (env.SKILL_SCENARIOS_DOCKER_TIMEOUT === undefined) {
+      const late = result.stderr
+        .toString()
+        .split("\n")
+        .find((line) => LATE_CALL.test(line));
+      if (late !== undefined) {
+        daemonStall = late;
+        throw new Error(late);
+      }
+    }
+    return result;
+  };
   let jobs = 0;
   function judgeDir(): string {
     const dir = path.join(work, "judging", `job-${++jobs}`);
@@ -1074,7 +1107,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
 
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
-  test.skipIf(skip)(
+  dockerTest(
     "ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model",
     () => {
       const dir = judgeDir();
@@ -1119,7 +1152,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
   // own directory (as a findings judge did, given no check), or that writes anything but its one
   // answer file and its sessions.
-  test.skipIf(skip)(
+  dockerTest(
     "a judge sees only its own directory, read-only, with its answer file and sessions writable",
     () => {
       const dir = judgeDir();
@@ -1143,7 +1176,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
-  test.skipIf(skip)("bare loads no skill, and judge-omp exits with omp's status", () => {
+  dockerTest("bare loads no skill, and judge-omp exits with omp's status", () => {
     const dir = judgeDir();
     writeFileSync(path.join(dir, "exit-status"), "3\n");
     const result = judge("bare", dir);
@@ -1162,7 +1195,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   // command's call record, a path one judge could leave its private input in for another to read.
   // The first judge writes a marker into every directory it can write outside its own directory;
   // the second, of the same kind, looks for one anywhere it can read.
-  test.skipIf(skip)("one judge cannot leave a file that a second judge can read", () => {
+  dockerTest("one judge cannot leave a file that a second judge can read", () => {
     const first = judgeDir();
     const env = (word: string) => ({
       SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
@@ -1189,16 +1222,17 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
 
   /**
    * A `docker` first on PATH for a daemon that never answers one kind of call, `hang` (it sleeps
-   * far past any bound, as a stalled daemon's client waits on), answers an image's inspect with
-   * `inspect` (1: the daemon lacks the image), fails each pull, and answers a run at once. It
-   * writes each call's first two words to calls.txt beside it. No row of it needs Docker itself.
+   * far past any bound, as a stalled daemon's client waits on; `none` stalls no call), answers an
+   * image's inspect with `inspect` (1: the daemon lacks the image), fails each pull at once with a
+   * line of its own on stderr, and answers a run at once. It writes each call's first two words to
+   * calls.txt beside it. No row of it needs Docker itself.
    */
-  function stalledDocker(hang: "image" | "pull" | "run", inspect = 0) {
+  function stalledDocker(hang: "image" | "pull" | "run" | "none", inspect = 0) {
     const bin = freshDir("judge-stalled-docker");
     const calls = path.join(bin, "calls.txt");
     writeFileSync(
       path.join(bin, "docker"),
-      `#!/bin/bash\nprintf '%s %s\\n' "$1" "$2" >>${JSON.stringify(calls)}\n[ "$1" != ${hang} ] || exec sleep 600\ncase $1 in image) exit ${inspect} ;; pull) exit 1 ;; esac\n`,
+      `#!/bin/bash\nprintf '%s %s\\n' "$1" "$2" >>${JSON.stringify(calls)}\n[ "$1" != ${hang} ] || exec sleep 600\ncase $1 in image) exit ${inspect} ;; pull) echo 'the registry refused the pull' >&2; exit 1 ;; esac\n`,
       { mode: 0o755 }
     );
     return {
@@ -1235,16 +1269,33 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     expect(existsSync(`${dir}.key`)).toBe(false);
   });
 
-  // Catches: a pull that waits on a stalled daemon with no bound, and a refusal that names no call.
-  test("each pull the daemon does not answer within its bound fails, and the judge is refused after the last", () => {
+  // Catches: a pull that waits on a stalled daemon with no bound, a refusal that names no call, and
+  // a pull its bound ended asked again, each attempt another bound on a daemon that stalled.
+  test("a pull the daemon does not answer within its bound ends the judge at once, naming the call", () => {
     const docker = stalledDocker("pull", 1);
     const result = judge("bare", judgeDir(), "answer.json", { ...SHORT, PATH: docker.PATH });
     expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
       code: 1,
       refusals: [
         expect.stringMatching(
+          /^skill-scenarios: judge-omp: docker pull \S+ did not end within its bound of 2 s \(SKILL_SCENARIOS_DOCKER_TIMEOUT\)$/
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual(["image inspect", "pull --quiet"]);
+  });
+
+  // Catches: a registry's one bad answer, which the next pull makes good, refusing the judge, and a
+  // refusal after the last attempt that drops that attempt's own words.
+  test("a pull that fails within its bound is asked again, and the judge is refused after the last", () => {
+    const docker = stalledDocker("none", 1);
+    const result = judge("bare", judgeDir(), "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
           new RegExp(
-            `^skill-scenarios: judge-omp: docker could not pull \\S+ in ${JUDGE_PULLS} attempts: docker pull did not end within its bound of 2 s \\(SKILL_SCENARIOS_DOCKER_TIMEOUT\\)$`
+            `^skill-scenarios: judge-omp: docker could not pull \\S+ in ${JUDGE_PULLS} attempts: the registry refused the pull$`
           )
         ),
       ],
@@ -1338,7 +1389,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // home or session bus, one whose models.yml still names the host key command (which the
     // container cannot run), one that mints more than once per judge run, a token the judge can
     // read only by a path outside its mounts, and a token left on disk once the judge ends.
-    test.skipIf(skip)(
+    dockerTest(
       "a gateway judge starts in the container on a token the host minted once, and the token file is gone after",
       () => {
         // The first judge-omp call builds both profiles, and each install's preflight mints once.
@@ -1378,7 +1429,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
     // for nothing now, so there is no window for a watcher to look through, and a row that
     // waited for one would be waiting on a sleep.
-    test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
+    dockerTest("the token file is the owner's alone while the judge runs", () => {
       const dir = gatewayDir();
       const result = gatewayJudge("bare", dir);
       expect(judged(result)).toEqual(judgedCleanly);
@@ -1388,7 +1439,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
-    test.skipIf(skip)(
+    dockerTest(
       "removes the token file when the judge fails, and starts no judge when the key command fails",
       () => {
         const dir = gatewayDir();
@@ -1418,7 +1469,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
 
   // Catches: a judge profile whose built-from records an empty commit line when the rig's root is
   // no checkout, so a judge's model run cannot be traced to the code that built it.
-  test.skipIf(skip)("fails, naming the rig's root, when the root is no checkout", () => {
+  dockerTest("fails, naming the rig's root, when the root is no checkout", () => {
     const top = freshDir("judge-root");
     const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
     mkdirSync(scripts, { recursive: true });

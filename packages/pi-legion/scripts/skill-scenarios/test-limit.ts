@@ -38,18 +38,42 @@ export function fileRowLimit(...waits: readonly Wait[]): number {
 export const RIG_STEP: Wait = { part: "a rig.sh step", boundMs: 240_000 };
 
 /**
+ * The normal work of one row of judge-omp's describe in rig.test.ts: what the row waits for while
+ * the Docker daemon answers, its judges' profile builds, Docker calls and omp runs, at the slowest
+ * CI has timed. The pi-legion job's logs of 19 green runs of ci.yaml from 19 to 22 November
+ * (eight of this pull request's own, runs 44602402176 to 45016840919; six of main's merge queue,
+ * runs 45039572770 to 45039647589; five of other pull requests', runs 45042707758 to
+ * 45043296472) time each row whole: in every one the slowest row of the describe was its first
+ * judge, "ste runs omp in the directory on its prompt, …", which builds both judge profiles,
+ * inspects and pulls the image and runs the judge, at 2,519.76 to 5,445.92 ms, the slowest in job
+ * 137261061682 of main's run 45039636190.
+ */
+export const JUDGE_ROW_WORK: Wait = { part: "a judge-omp row's normal work", boundMs: 5_446 };
+
+/**
+ * The margin of the repository's other bounds on Docker calls, those of
+ * packages/envoy-client/src/__tests__/nats-server.ts: NATS_START_HOOK_MS gives a container's start
+ * 4.4 times the slowest `docker run -d` measured, and NATS_STOP_HOOK_MS its removal twice the
+ * slowest `docker rm -f -v`. A judge's Docker calls bring its image and start its container, so
+ * they take the start's.
+ */
+export const DOCKER_BOUND_MARGIN = 4.4;
+
+/**
  * One Docker call of `rig.sh judge-omp`: the judge image's inspect, one pull of it, or the daemon's
  * part of the judge's run, its container's start and end around omp. rig.sh kills each at
  * SKILL_SCENARIOS_DOCKER_TIMEOUT, which JUDGE_OMP_ENVIRONMENT gives it from this, and then refuses
- * the judge, naming the call. The box's Docker restarts at 06:45Z, and a call fails for 1 to 2
- * minutes around it; as the daemon's stall of 20 November ended, `docker version` took 81 s; a pull
- * moves the image, 115 MB as `docker image inspect` sizes it, which 300 s carries at 0.4 MB/s. 300 s
- * is past each: a stall shorter than it costs the row time, not a fail, and a stall as long as that
- * one of 20 November, about 52 minutes, still ends the row, with the rig's refusal naming the call.
+ * the judge at once, naming the call. The bound guards against a daemon that does not answer, so
+ * it comes from the slowest call of these rows a daemon that answered took: CI's logs time rows,
+ * not calls, and a row's time bounds each of its calls from above, so the slowest row
+ * (JUDGE_ROW_WORK, 5,446 ms) stands for that call. DOCKER_BOUND_MARGIN times it is 23.96 s, and
+ * rig.sh takes whole seconds: 24 s. The devbox's daemon is far slower under load (nats-server.ts
+ * measured a `docker run -d` of 113.4 s at a load of 1,531), and there a call past 24 s fails its
+ * row, naming the call.
  */
 export const JUDGE_DOCKER_CALL: Wait = {
   part: "a Docker call of rig.sh judge-omp",
-  boundMs: 300_000,
+  boundMs: Math.ceil((DOCKER_BOUND_MARGIN * JUDGE_ROW_WORK.boundMs) / 1000) * 1000,
 };
 
 /**
@@ -60,24 +84,24 @@ export const JUDGE_DOCKER_CALL: Wait = {
  */
 export const JUDGE_STANDIN_OMP: Wait = { part: "the judge's stand-in omp", boundMs: 120_000 };
 
-/** The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two. */
+/**
+ * The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two: a
+ * pull that fails within its bound is asked again, and a pull its bound ends is not.
+ */
 export const JUDGE_PULLS = 3;
 
 /**
- * One `rig.sh judge-omp` of rig.test.ts, the sum of the bounds it runs under, one after another:
- * its own work on the host (RIG_STEP: the first call builds both judge profiles), the image's
- * inspect, at most JUDGE_PULLS pulls and the pauses between them, and the judge's run, which is
- * the daemon's part (JUDGE_DOCKER_CALL) and omp's own (JUDGE_STANDIN_OMP).
+ * The wait of one row of judge-omp's describe in rig.test.ts, and of each judge it starts: the
+ * row's normal work (JUDGE_ROW_WORK) and one Docker call's bound, the largest of them, the run's,
+ * which is the daemon's part (JUDGE_DOCKER_CALL) and omp's own (JUDGE_STANDIN_OMP). A call its
+ * bound ends ends the judge at once with rig.sh's refusal, with no further call and no further
+ * pull, and the row at once with that refusal, starting no judge after it; each later row of the
+ * describe that needs Docker fails at once with the same refusal. So a stalled daemon costs the
+ * describe one call's bound, not the sum of every call's.
  */
 export const JUDGE_OMP: Wait = {
   part: "rig.sh judge-omp",
-  boundMs:
-    RIG_STEP.boundMs +
-    JUDGE_DOCKER_CALL.boundMs +
-    JUDGE_PULLS * JUDGE_DOCKER_CALL.boundMs +
-    (JUDGE_PULLS - 1) * 2_000 +
-    JUDGE_DOCKER_CALL.boundMs +
-    JUDGE_STANDIN_OMP.boundMs,
+  boundMs: JUDGE_ROW_WORK.boundMs + JUDGE_DOCKER_CALL.boundMs + JUDGE_STANDIN_OMP.boundMs,
 };
 
 /** The environment that gives `rig.sh judge-omp` the bounds JUDGE_OMP counts, in seconds. */
