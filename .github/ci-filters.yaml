@@ -113,6 +113,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/cipherclient/*'
@@ -1248,6 +1249,7 @@ go_notices:
   - 'packages/envoy/internal/cipher/policy/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/secrets/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/githubappjwt/*'
@@ -1307,6 +1309,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
 test_fixtures:
   - *ci_router
@@ -2113,6 +2116,7 @@ listener_server_change:
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
   - 'packages/envoy/internal/cipher/wire/*'
