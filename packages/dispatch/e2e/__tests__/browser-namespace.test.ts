@@ -85,26 +85,33 @@ async function connectThrough(
   return { code: answer[1], socket };
 }
 
-test("the browser's network is its own unless CI or the variable says otherwise, and no other value is read", () => {
-  expect(browserNetwork({})).toBe("own");
-  expect(browserNetwork({ CI: "true" })).toBe("host");
-  expect(browserNetwork({ CI: "true", [browserNetworkVariable]: "own" })).toBe("own");
-  expect(browserNetwork({ [browserNetworkVariable]: "host" })).toBe("host");
-  expect(() => browserNetwork({ [browserNetworkVariable]: "none" })).toThrow(
+const makes = () => undefined;
+const refuses = () => "unshare: write failed /proc/self/uid_map: Operation not permitted";
+
+test("the browser's network is its own where this machine makes one, unless CI or the variable says otherwise, and no other value is read", () => {
+  expect(browserNetwork({ TEST_WORKER_INDEX: "0" }, makes)).toBe("own");
+  expect(browserNetwork({ TEST_WORKER_INDEX: "0" }, refuses)).toBe("host");
+  expect(browserNetwork({ CI: "true" }, makes)).toBe("host");
+  expect(browserNetwork({ CI: "true", [browserNetworkVariable]: "own" }, refuses)).toBe("own");
+  expect(browserNetwork({ [browserNetworkVariable]: "host" }, makes)).toBe("host");
+  expect(() => browserNetwork({ [browserNetworkVariable]: "none" }, makes)).toThrow(
     `${browserNetworkVariable} is "none"`
   );
 });
 
 test("a Chromium launch names the launcher where the network is its own, and keeps its arguments", () => {
   const args = ["--enable-precise-memory-info"];
-  expect(chromiumLaunchOptions({ args }, {})).toEqual({ args, executablePath: browserLauncher });
-  expect(chromiumLaunchOptions({ args }, { CI: "true" })).toEqual({ args });
+  expect(chromiumLaunchOptions({ args }, { [browserNetworkVariable]: "own" })).toEqual({
+    args,
+    executablePath: browserLauncher,
+  });
+  expect(chromiumLaunchOptions({ args }, { [browserNetworkVariable]: "host" })).toEqual({ args });
 });
 
 // Every Chromium project the config runs on this machine's network launches through the
 // launcher, and none else does: the visual projects run in a container with no network of its
 // own, and the launcher starts Chromium alone. The config is read in a child, as Playwright reads
-// it, with the variable unset and with CI set.
+// it (the import is that child's own), with the namespace named and with CI set and nothing named.
 test(
   "the config launches every Chromium project but the visual ones through the launcher, and none on CI",
   async () => {
@@ -123,7 +130,7 @@ test(
       expect(run.code).toBe(0);
       return JSON.parse(run.stdout) as [string, string, string | null][];
     };
-    const own = await read({});
+    const own = await read({ [browserNetworkVariable]: "own" });
     const launched = own.filter(([, , path]) => path === browserLauncher).map(([name]) => name);
     expect(launched.sort()).toEqual(
       own

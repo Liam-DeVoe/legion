@@ -26,11 +26,12 @@
  *      plain-HTTP projects') is mapped the same way here.
  *
  *  `DISPATCH_E2E_BROWSER_NETWORK` chooses: `own` for this namespace, `host` for the host's
- *  network. Unset, it is `host` on CI and `own` everywhere else: a CI job's browser runs in a
- *  container or on a runner that refuses an unprivileged user namespace, and makes this
- *  namespace nowhere. Firefox and WebKit, and the visual review's Chromium, which runs in a
- *  container with no network of its own (`e2e/visual-run.sh`), are started as before. */
-import { spawn } from "node:child_process";
+ *  network. Unset, it is `host` on CI, where no job asked for this namespace and a job's browser
+ *  runs in a container of its own, and elsewhere `own` where this machine lets this user make it,
+ *  else `host`, said once on the run's output with the reason (an issue pod's runtime may refuse
+ *  an unprivileged user namespace). Firefox and WebKit, and the visual review's Chromium, which
+ *  runs in a container with no network of its own (`e2e/visual-run.sh`), are started as before. */
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection, createServer, isIPv4, type Server } from "node:net";
@@ -46,16 +47,85 @@ export const browserNetworkVariable = "DISPATCH_E2E_BROWSER_NETWORK";
 
 export type BrowserNetwork = "own" | "host";
 
-/** The network a run's Chromium gets: what `DISPATCH_E2E_BROWSER_NETWORK` names, else `host` on
- *  CI and `own` elsewhere. Any other value is refused rather than read as either. */
-export function browserNetwork(env: NodeJS.ProcessEnv = process.env): BrowserNetwork {
+/** The namespace's own setup, run as its root: the loopback device and the dummy link up, then
+ *  the browser's command under a user namespace that maps this user's uid and gid back. Its
+ *  arguments are the uid, the gid and the command. */
+const namespaceSetup = [
+  "set -e",
+  "ip link set lo up",
+  "ip link add dispatch0 type dummy",
+  "ip address add 192.0.2.1/32 dev dispatch0",
+  "ip link set dispatch0 up",
+  "uid=$1 gid=$2",
+  "shift 2",
+  'exec unshare --user --map-user="$uid" --map-group="$gid" -- "$@"',
+].join("\n");
+
+/** The `unshare` command that makes the namespace and runs `command` in it as this user. */
+function inNamespace(command: readonly string[]): string[] {
+  return [
+    "unshare",
+    "--user",
+    "--map-root-user",
+    "--net",
+    "--",
+    "sh",
+    "-c",
+    namespaceSetup,
+    "browser-namespace",
+    String(process.getuid?.() ?? 0),
+    String(process.getgid?.() ?? 0),
+    ...command,
+  ];
+}
+
+let probed: { readonly refusal: string | undefined } | undefined;
+
+/** Why this machine refuses this user the namespace, read by making one and running `true` in
+ *  it exactly as the launcher runs the browser, once per process; undefined where it makes one. */
+export function namespaceRefusal(): string | undefined {
+  if (probed === undefined) {
+    const [program, ...args] = inNamespace(["true"]);
+    const made = spawnSync(program ?? "", args, { encoding: "utf8", timeout: 10_000 });
+    probed = {
+      refusal:
+        made.status === 0
+          ? undefined
+          : (made.error?.message ?? (made.stderr.trim() || `exit ${made.status ?? made.signal}`)),
+    };
+  }
+  return probed.refusal;
+}
+
+let toldHost = false;
+
+/** The network a run's Chromium gets: what `DISPATCH_E2E_BROWSER_NETWORK` names; unset, `host`
+ *  on CI, else `own` unless `refusal` says why this machine makes no namespace, which the run's
+ *  own process (not a worker) says once. Any other value is refused rather than read as either. */
+export function browserNetwork(
+  env: NodeJS.ProcessEnv = process.env,
+  refusal: () => string | undefined = namespaceRefusal
+): BrowserNetwork {
   const named = env[browserNetworkVariable];
-  if (named === undefined || named === "") return env.CI ? "host" : "own";
   if (named === "own" || named === "host") return named;
-  throw new Error(
-    `${browserNetworkVariable} is ${JSON.stringify(named)}: it is "own" (Chromium in a network ` +
-      `namespace of its own) or "host" (Chromium on the host's network), or unset.`
-  );
+  if (named !== undefined && named !== "") {
+    throw new Error(
+      `${browserNetworkVariable} is ${JSON.stringify(named)}: it is "own" (Chromium in a network ` +
+        `namespace of its own) or "host" (Chromium on the host's network), or unset.`
+    );
+  }
+  if (env.CI) return "host";
+  const refused = refusal();
+  if (refused === undefined) return "own";
+  if (!toldHost && env.TEST_WORKER_INDEX === undefined) {
+    toldHost = true;
+    console.log(
+      `e2e: Chromium runs on the host's network, where a network the host adds or removes fails ` +
+        `the requests waiting for a connection: this machine made no network namespace for it ` +
+        `(${refused}). ${browserNetworkVariable}=own makes that an error.`
+    );
+  }
+  return "host";
 }
 
 /** The executable Playwright starts in place of Chromium for a namespace of its own. */
@@ -251,20 +321,6 @@ function registryExecutable(bundle: unknown, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** The namespace's own setup, run as its root: the loopback device and the dummy link up, then
- *  the browser's command under a user namespace that maps this user's uid and gid back. Its
- *  arguments are the uid, the gid and the command. */
-const namespaceSetup = [
-  "set -e",
-  "ip link set lo up",
-  "ip link add dispatch0 type dummy",
-  "ip address add 192.0.2.1/32 dev dispatch0",
-  "ip link set dispatch0 up",
-  "uid=$1 gid=$2",
-  "shift 2",
-  'exec unshare --user --map-user="$uid" --map-group="$gid" -- "$@"',
-].join("\n");
-
 /** Runs `command` with this process's standard streams and Chromium's two pipes (descriptors 3
  *  and 4, `--remote-debugging-pipe`), passes it the signals this process gets, and exits as it
  *  does. */
@@ -296,21 +352,8 @@ async function launch(args: readonly string[]): Promise<void> {
   server.once("error", reject);
   server.listen(join(directory, String(proxyPort)), resolve);
   await promise;
-  const uid = process.getuid?.() ?? 0;
-  const gid = process.getgid?.() ?? 0;
   runAsChild(
-    [
-      "unshare",
-      "--user",
-      "--map-root-user",
-      "--net",
-      "--",
-      "sh",
-      "-c",
-      namespaceSetup,
-      "browser-namespace",
-      String(uid),
-      String(gid),
+    inNamespace([
       process.execPath,
       fileURLToPath(import.meta.url),
       "inside",
@@ -320,7 +363,7 @@ async function launch(args: readonly string[]): Promise<void> {
       ...args,
       `--proxy-server=socks5://127.0.0.1:${proxyPort}`,
       "--proxy-bypass-list=<-loopback>",
-    ],
+    ]),
     () => {
       server.close();
       rmSync(directory, { force: true, recursive: true });

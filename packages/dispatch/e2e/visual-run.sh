@@ -215,16 +215,6 @@ IFS= read -r line <&4 || line=""
   exit 1
 }
 
-# `$forward` and `$ports` are lists and must split into words, which is what the disable is for.
-# The limits are docs/testing.md's rule for a container a test starts ("In a script, `docker
-# run` takes `--cpus` and `--memory` before the image"), sized to this work: one worker per
-# project and one project at a time, so one Chromium drawing one page, with the test process
-# beside it. `--ipc=host` is Playwright's own recommendation for Chromium, whose shared memory
-# would otherwise be the container's 64 MB /dev/shm; it shares no network. `--user` keeps every
-# file the run writes - a new baseline, a diff, a trace - owned by the person who ran it, which
-# is also the owner of the relay's sockets, and `HOME=/tmp` gives that uid, which the image has
-# no home for, a writable one.
-
 # The run's output directory, read from the arguments before the container starts, since two
 # things below need it: the run record a zero exit must leave there, and the line a failed run
 # prints. Playwright writes a failed row's `-actual.png`, `-expected.png` and `-diff.png` under it,
@@ -292,6 +282,18 @@ results=${output:-e2e/test-results}
 # nothing a run would keep: Playwright empties its output directory as each run starts.
 rm -f -- "$results/.last-run.json"
 
+# `$forward` and `$ports` are lists and must split into words, which is what the disable is for.
+# The limits are docs/testing.md's rule for a container a test starts ("In a script, `docker
+# run` takes `--cpus` and `--memory` before the image"), sized to this work: one worker per
+# project and one project at a time, so one Chromium drawing one page, with the test process
+# beside it. `--ipc=host` is Playwright's own recommendation for Chromium, whose shared memory
+# would otherwise be the container's 64 MB /dev/shm; it shares no network. `--user` keeps every
+# file the run writes - a new baseline, a diff, a trace - owned by the person who ran it, which
+# is also the owner of the relay's sockets, and `HOME=/tmp` gives that uid, which the image has
+# no home for, a writable one. `DISPATCH_E2E_BROWSER_NETWORK=host`, after the sweep so it wins
+# over a host value, starts the container's Chromium as it is: it already has a namespace of its
+# own, the container's, and the config makes none inside it (e2e/browser-namespace.ts).
+
 status=0
 # shellcheck disable=SC2086
 docker run --rm --network none --ipc=host --user "$(id -u):$(id -g)" \
@@ -303,6 +305,7 @@ docker run --rm --network none --ipc=host --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   $forward \
   -e "DISPATCH_E2E_VISUAL_SEED=$seed_in_container" \
+  -e DISPATCH_E2E_BROWSER_NETWORK=host \
   ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f \
   node e2e/visual-relay.ts container "$sockets_in_container" $ports -- \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
