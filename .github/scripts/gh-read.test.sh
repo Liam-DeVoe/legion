@@ -55,13 +55,16 @@ fi
 #   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
 #   raw          present: GET /repos/o/r/raw answers this file's bytes as text/plain, a body gh's
 #                request trace prints as it came, line for line.
-# and appends `<epoch> <method> <path>` to `log` for every request it answers.
+# and appends `<epoch> <method> <path>` to `log` for every request it answers. The server answers
+# each request in a thread of its own, and gh release view and edit send two at once, so the steps
+# that read a state file and then write one (spent-until, secondary-done) run under one lock.
 cat > "$work/github.py" <<'PY'
 import http.server
 import json
 import os
 import socketserver
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -73,6 +76,12 @@ RELEASE = {"id": 1, "tag_name": "v1", "name": "the draft's name", "body": "the d
            "html_url": "http://github.localhost/o/r/releases/tag/v1",
            "upload_url": "http://uploads.github.localhost/repos/o/r/releases/1/assets{?name,label}",
            "tarball_url": "t", "zipball_url": "z"}
+
+# The lock the read-then-write steps hold. Without it two threads both find spent-until unset, the
+# second truncates the file after the first wrote it, and the first reads it empty: int('') raises,
+# its request is answered by nothing, and gh reports an EOF, no rate limit, so the helper has
+# nothing to wait for (run 45015045673).
+STATE_LOCK = threading.Lock()
 
 
 def read(name, default=""):
@@ -102,10 +111,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         now = time.time()
         with open(os.path.join(state, "log"), "a") as log:
             log.write(f"{now:.3f} {self.command} {path}\n")
-        if path != "/rate_limit" and read("spend-for") and not read("spent-until"):
-            with open(os.path.join(state, "spent-until"), "w") as handle:
-                handle.write(str(int(now) + int(read("spend-for"))))
-        spent_until = int(read("spent-until", "0"))
+        with STATE_LOCK:
+            if path != "/rate_limit" and read("spend-for") and not read("spent-until"):
+                with open(os.path.join(state, "spent-until"), "w") as handle:
+                    handle.write(str(int(now) + int(read("spend-for"))))
+            spent_until = int(read("spent-until", "0"))
+            secondary = (path != "/rate_limit" and read("secondary") != ""
+                         and (not read("secondary-done") or os.path.exists(os.path.join(state, "secondary-always"))))
+            if secondary:
+                with open(os.path.join(state, "secondary-done"), "w") as handle:
+                    handle.write("1")
         spent = now < spent_until or os.path.exists(os.path.join(state, "always-spent"))
         if path == "/rate_limit":
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
@@ -114,10 +129,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(float(read("rate-limit-delay", "0")))
             self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
                               "rate": bucket})
-        elif (path != "/rate_limit" and read("secondary")
-              and (not read("secondary-done") or os.path.exists(os.path.join(state, "secondary-always")))):
-            with open(os.path.join(state, "secondary-done"), "w") as handle:
-                handle.write("1")
+        elif secondary:
             status, retry_after = read("secondary").split()
             self.answer(int(status), {
                 "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
