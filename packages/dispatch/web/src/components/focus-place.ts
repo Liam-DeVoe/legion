@@ -41,13 +41,12 @@ import { ROW_SELECTOR } from "./row-marker";
 const FORM_FIELDS = ["button", "textarea", "input", "select"];
 
 /** A link or a form control the page has not taken out of the Tab order: `tabindex="-1"` is a
- *  page's word that the keyboard does not stop there - a strip's scroll buttons the pointer alone
- *  uses, a tab of a tab list other than the selected one, and a control of a row of the issue
- *  page's outline while that row holds no Tab stops (`tabStops`), since the keys move the focus
- *  between those rows. A hand-off that counted them would land where no key could have taken the
- *  reader: at 390 px in Chromium, "66 more rows below" on the outline drew its rows in its place,
- *  the rescue landed on the first one's "more · 106 words", and that row, holding the focus,
- *  opened its body and drew its words whole. */
+ *  page's word that the keyboard does not stop there - a tab of a tab list other than the
+ *  selected one, and a control of a row of the issue page's outline while that row holds no Tab
+ *  stops (`tabStops`), since the keys move the focus between those rows. A hand-off that counted
+ *  them would land where no key could have taken the reader: at 390 px in Chromium, "66 more rows
+ *  below" on the outline drew its rows in its place, the rescue landed on the first one's "more ·
+ *  106 words", and that row, holding the focus, opened its body and drew its words whole. */
 const IN_TAB_ORDER = ':not([tabindex="-1"])';
 
 /** An element given a Tab stop of its own: any `tabindex` but -1. */

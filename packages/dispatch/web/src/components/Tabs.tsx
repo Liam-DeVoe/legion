@@ -76,7 +76,7 @@ export function Tabs<Id extends string>({
 }): ReactNode {
   const tabRefs = useRef<Partial<Record<Id, HTMLButtonElement | null>>>({});
   const pointerCapturedScroll = useRef(false);
-  const tablistFade = useScrollEnds({ ends: "trailing" });
+  const tablistFade = useScrollEnds();
 
   const selectTab = (tab: Id) => {
     if (!pointerCapturedScroll.current) {

@@ -607,47 +607,32 @@ test("Clear filters stays in view in the Inbox's row however many narrowings are
   expect(hidden, hidden.join("; ")).toEqual([]);
 });
 
-/** Which chips of the control row `row` a pointer reader sees whole, in the row's order: a chip
- *  that no box above it and not the window cuts (`shownOf`, handed in as `measure`), and that
- *  neither scroll button of the row covers, since each is laid over one end of the strip. */
-function chipsSeenWhole(row: Element, measure: string): boolean[] {
-  const shown = new Function(`return (${measure})`)() as typeof shownOf;
-  const buttons = [...row.querySelectorAll('button[aria-label^="Scroll filters"]')].map((button) =>
-    button.getBoundingClientRect()
-  );
-  return [...row.querySelectorAll('[data-control="chip"]')].map((chip) => {
-    const reading = shown(chip);
-    const covered = buttons.some(
-      (box) => box.left < reading.right - 1 && box.right > reading.left + 1
-    );
-    return reading.shown >= reading.width - 1 && !covered;
-  });
+/** The names of the narrowings' chips `within` draws, `Remove <label> filter` as `filterChips`
+ *  names each, in their order: the chips line's, or the panel's that `+N more` opens. */
+function chipNames(within: Locator): Promise<string[]> {
+  return within
+    .getByRole("button", { name: /^Remove .* filter$/ })
+    .evaluateAll((all) => all.map((chip) => chip.getAttribute("aria-label") ?? ""));
 }
 
-/** Where a chips strip comes to rest, as its `scrollLeft`: unchanged over five frames, since a
- *  scroll button's press scrolls it smoothly and a wheel may too. */
-function stripAtRest(strip: Locator): Promise<number> {
-  return strip.evaluate((node) => {
-    const { promise, resolve } = Promise.withResolvers<number>();
-    let last = node.scrollLeft;
-    let still = 0;
-    const frame = () => {
-      still = node.scrollLeft === last ? still + 1 : 0;
-      last = node.scrollLeft;
-      if (still >= 5) resolve(last);
-      else requestAnimationFrame(frame);
-    };
-    requestAnimationFrame(frame);
-    return promise;
+/** The controls of the chips line of the control row `row` that the reader does not see whole
+ *  (`shownOf`, handed in as `measure`): each chip, `+N more` and Clear filters, by its name. */
+function cutInChipsLine(row: Element, measure: string): string[] {
+  const shown = new Function(`return (${measure})`)() as typeof shownOf;
+  const line = row.lastElementChild;
+  return [...(line?.querySelectorAll("a[href], button") ?? [])].flatMap((control) => {
+    const reading = shown(control);
+    if (reading.shown >= reading.width - 1) return [];
+    const name = (control.getAttribute("aria-label") ?? control.textContent ?? "").trim();
+    return [`"${name}" (${Math.round(reading.shown)} of ${Math.round(reading.width)}px shown)`];
   });
 }
 
 /** Sixteen narrowings over the long Inbox that keep all twenty-two of its items: its four
  *  priorities and four urgencies, four kinds, and four projects of which CORE holds them all (the
  *  address keeps three project keys no project has, EDGE, MESH and PIER, which match no row).
- *  Their chips are more than the row shows whole at once at any of `READING_WIDTHS`, and none is
- *  wider than the nine chips' widest, `Urgency: Blocking`, so each fits between the scroll
- *  buttons at 390 px. */
+ *  Their chips are more than the chips line holds at any of `READING_WIDTHS`, so each width
+ *  draws `+N more`. */
 const SIXTEEN_NARROWINGS = `/?${[
   "priority=P0,P1,P2,P3",
   "urgency=blocking,high,med,low",
@@ -655,152 +640,84 @@ const SIXTEEN_NARROWINGS = `/?${[
   "project=CORE,EDGE,MESH,PIER",
 ].join("&")}`;
 
-// SLOW(>=2s): twenty-two seeded questions, the row's chips paged through at five widths.
-test("a pointer reaches and removes every chip of the Inbox's row with the row's scroll buttons, at every width", async ({
+/** The name of the row's `+N more`, `<N> more filters`, as a screen reader hears what it opens,
+ *  and of the panel it opens. */
+const MORE_FILTERS = /^\d+ more filters?$/;
+
+// SLOW(>=2s): twenty-two seeded questions, the row's chips read at five widths with the panel of
+// its +N more opened at each, and a chip taken off from that panel.
+test("the Inbox's chips that the line has no room for are listed behind one +N more, each drawn once, and a pointer takes one off from its panel, at every width", async ({
   page,
 }) => {
   await seedLongInbox();
   const row = controlRow(page.getByTestId("main-content"));
-  const chips = control(row, CONTROL.chip);
-  // The strip the chips scroll in is their own parent.
-  const strip = chips.first().locator("..");
-  const left = row.getByRole("button", { exact: true, name: "Scroll filters left" });
-  const right = row.getByRole("button", { exact: true, name: "Scroll filters right" });
-  const scrollLeft = () => strip.evaluate((node) => node.scrollLeft);
-  // One press on Scroll filters right, waited out until the strip has moved and stopped.
-  const pressRight = async (where: string) => {
-    const from = await scrollLeft();
-    await right.click();
-    await expect
-      .poll(scrollLeft, {
-        message: `${where}: a press on Scroll filters right left the strip at ${from}px`,
-      })
-      .not.toBe(from);
-    return stripAtRest(strip);
-  };
+  const more = row.getByRole("button", { name: MORE_FILTERS });
   const readings: string[] = [];
   for (const size of READING_WIDTHS) {
     const where = `${size.width}x${size.height}`;
     await page.setViewportSize(size);
-    // Where every chip is shown whole there is nothing to page to, so neither button is drawn:
-    // one chip, which the strip shows whole at every width.
+    // Where every chip fits the line no `+N more` is drawn: one chip, which every line holds.
     await page.goto("/?priority=P0");
-    await expect(chips).toHaveCount(1);
-    // The one chip was counted above, so what the strip shows of it is the settled layout.
-    const alone = await row.evaluate(chipsSeenWhole, shownOf.toString());
-    expect(alone, `${where}: the one chip is not shown whole`).toEqual([true]);
     await expect(
-      right,
-      `${where}: the one chip is shown whole, yet Scroll filters right is drawn`
-    ).toHaveCount(0);
-    await expect(
-      left,
-      `${where}: the one chip is shown whole, yet Scroll filters left is drawn`
-    ).toHaveCount(0);
+      row.getByRole("button", { exact: true, name: "Remove Priority: P0 filter" })
+    ).toBeVisible();
+    await expect(more, `${where}: one chip, which the line holds, draws +N more`).toHaveCount(0);
 
     await page.goto(SIXTEEN_NARROWINGS);
-    await expect(chips).toHaveCount(16);
-    expect(await scrollLeft(), `${where}: the strip does not open at its start`).toBe(0);
-    const seen = new Set<number>();
-    const look = async () => {
-      // Each call follows the chips' count or a press waited out to rest, so the strip is still.
-      const whole = await row.evaluate(chipsSeenWhole, shownOf.toString());
-      for (const [index, shown] of whole.entries()) if (shown) seen.add(index);
-    };
-    await look();
-    const atStart = seen.size;
-    // The paging below is the row's claim at each width, so a width that shows every chip whole
-    // at the start is named here rather than passed by with nothing paged.
+    await expect(more, `${where}: sixteen chips draw no +N more`).toBeVisible();
+    // `+N more` was waited for above, and the row draws it in the commit that draws the chips
+    // beside it, so its name and the line's chips are read from one settled line.
+    const name = (await more.getAttribute("aria-label")) ?? "";
+    const line = await chipNames(row);
+    const cut = await row.evaluate(cutInChipsLine, shownOf.toString());
+    expect(cut, `${where}: the chips line cuts ${cut.join(", ")}`).toEqual([]);
+    // Opened by a pointer: a panel named as `+N more` is, listing every chip the line left out
+    // and none it draws, with the focus on its first chip.
+    await more.click();
+    const panel = page.getByRole("dialog", { exact: true, name });
+    await expect(panel, `${where}: ${name} opened no panel named for it`).toBeVisible();
+    await expect(
+      panel.getByRole("button").first(),
+      `${where}: the panel of ${name} opened with the focus elsewhere`
+    ).toBeFocused();
+    const listed = await chipNames(panel);
     expect(
-      atStart,
-      `${where}: all 16 chips are shown whole at the start, so no scroll button has a chip to page to`
-    ).toBeLessThan(16);
-    await expect(
-      left,
-      `${where}: the strip is at its start, yet Scroll filters left is drawn`
-    ).toHaveCount(0);
-    const stops: number[] = [];
-    while (seen.size < 16) {
-      const before = seen.size;
-      await expect(
-        right,
-        `${where}: ${before} of 16 chips seen whole after ${stops.length} presses, and Scroll filters right is not drawn`
-      ).toBeVisible();
-      stops.push(Math.round(await pressRight(where)));
-      await look();
-      expect(
-        seen.size,
-        `${where}: press ${stops.length} on Scroll filters right (strip at ${stops.at(-1)}px) brought no more chip wholly into view: ${before} of 16 seen`
-      ).toBeGreaterThan(before);
-    }
-    await expect(
-      right,
-      `${where}: every chip was seen whole after ${stops.length} presses (strip at ${stops.at(-1)}px), yet Scroll filters right is still drawn`
-    ).toHaveCount(0);
-    await expect(
-      left,
-      `${where}: the strip is paged to its end (${stops.at(-1)}px), and Scroll filters left is not drawn`
-    ).toBeVisible();
-
-    // A mouse's plain wheel scrolls the page, not the strip; Shift and the wheel, and a sideways
-    // wheel, are the two wheel moves that scroll it, and each must.
-    const wheeled: number[] = [];
-    for (const [move, deltaX, deltaY, shift] of [
-      ["Shift and a vertical wheel", 0, 200, true],
-      ["a sideways wheel", 200, 0, false],
-    ] as const) {
-      await strip.evaluate((node) => {
-        node.scrollLeft = 0;
-      });
-      await stripAtRest(strip);
-      // The strip was drawn with its sixteen chips above and has come to rest, so it has a box.
-      const box = await strip.boundingBox();
-      if (box === null) throw new Error(`${where}: the strip has no box`);
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      if (shift) await page.keyboard.down("Shift");
-      await page.mouse.wheel(deltaX, deltaY);
-      if (shift) await page.keyboard.up("Shift");
-      await expect
-        .poll(scrollLeft, { message: `${where}: ${move} over the strip left it at 0px` })
-        .toBeGreaterThan(0);
-      wheeled.push(Math.round(await stripAtRest(strip)));
-    }
-    readings.push(
-      `${where}: ${atStart} of 16 chips shown whole at the start; every chip seen whole after ${stops.length} presses on Scroll filters right (strip at ${stops.join(", ")}px); Shift and the wheel moved the strip 0 to ${wheeled[0]}px, a sideways wheel 0 to ${wheeled[1]}px`
-    );
+      `${line.length + listed.length} chips, ${new Set([...line, ...listed]).size} of them named once, ${listed.length} in the panel`,
+      `${where}: the line draws ${line.join(", ")} and the panel of ${name} lists ${listed.join(", ")}`
+    ).toBe(`16 chips, 16 of them named once, ${name.split(" ")[0]} in the panel`);
+    // Escape closes it, and hands the focus back to `+N more`.
+    await page.keyboard.press("Escape");
+    await expect(panel, `${where}: Escape left the panel of ${name} open`).toHaveCount(0);
+    await expect(more, `${where}: Escape did not hand the focus back to ${name}`).toBeFocused();
+    readings.push(`${where}: ${line.length} chips in the line, and ${name} listing the rest`);
   }
 
-  // And the chip the pointer paged to is one it can take off, in place.
+  // And a chip the panel lists is one a pointer takes off there, in place.
   await page.setViewportSize({ height: 664, width: 390 });
   await page.goto(NINE_NARROWINGS);
-  await expect(chips).toHaveCount(9);
-  let presses = 0;
-  // Each turn reads after the nine chips' count or a press waited out to rest, so the strip is
-  // still and what it shows whole is settled.
-  while (!(await row.evaluate(chipsSeenWhole, shownOf.toString())).at(-1)) {
-    expect(
-      presses,
-      "390x664: nine presses on Scroll filters right never showed the last chip whole"
-    ).toBeLessThan(9);
-    await pressRight("390x664");
-    presses++;
-  }
-  const last = chips.last();
-  await expect(last).toHaveAttribute("aria-label", "Remove Project: CORE filter");
+  await expect(more, "390x664: nine chips draw no +N more").toBeVisible();
+  await more.click();
+  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+  const last = panel.getByRole("button", { exact: true, name: "Remove Project: CORE filter" });
+  await expect(last, "390x664: the panel does not list the last chip, Project: CORE").toBeVisible();
   await last.click();
+  await expect(last, "390x664: pressing Project: CORE in the panel left it drawn").toHaveCount(0);
+  await expect
+    .poll(() => new URL(page.url()).searchParams.has("project"), {
+      message: "390x664: the address kept ?project=",
+    })
+    .toBe(false);
+  expect(
+    new URL(page.url()).searchParams.get("priority"),
+    "390x664: the press took the priorities"
+  ).toBe("P0,P1,P2");
+  // The panel still lists the chips before it, so the focus stays in the panel, on its last.
   await expect(
-    chips,
-    "390x664: pressing the last chip did not leave 8 chips in the row"
-  ).toHaveCount(8);
-  const address = new URL(page.url());
-  expect(address.searchParams.has("project"), "390x664: the address kept ?project=").toBe(false);
-  expect(address.searchParams.get("priority"), "390x664: the press took the priorities").toBe(
-    "P0,P1,P2"
-  );
-  readings.push(
-    `390x664: the last chip shown whole after ${presses} presses, and pressed: 8 chips left`
-  );
-  await test.info().attach("the row's chips paged through by its scroll buttons", {
+    panel.getByRole("button").last(),
+    "390x664: the focus left the panel when Project: CORE was taken off"
+  ).toBeFocused();
+  readings.push("390x664: Project: CORE taken off from the panel of +N more");
+  await test.info().attach("the row's chips and the panel of its +N more", {
     body: readings.join("\n"),
     contentType: "text/plain",
   });
@@ -4366,39 +4283,35 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     await expect(markAll, `${where}: Enter on Mark all read left it drawn`).toHaveCount(0);
     await focusOn(where, "Enter on Mark all read", blocked, "Blocked on you");
 
-    // A scroll button of the chips line, pressed by a pointer while a chip holds the focus: the
-    // press takes no focus, and the button that goes at the strip's end takes none with it.
-    await page.goto(NINE_NARROWINGS);
-    const chips = control(row, CONTROL.chip);
-    await expect(chips, `${where}: the nine narrowings draw no nine chips`).toHaveCount(9);
-    const strip = chips.first().locator("..");
-    const chip = chips.first();
-    const chipName = (await chip.getAttribute("aria-label")) ?? "the first chip";
-    await chip.focus();
-    for (const side of ["right", "left"] as const) {
-      const button = row.getByRole("button", { exact: true, name: `Scroll filters ${side}` });
-      await expect(
-        button,
-        `${where}: Scroll filters ${side} is not drawn, so no chip is out of view that way`
-      ).toBeVisible();
-      // The first turn follows the wait above, each later one a strip held still for five frames,
-      // and the button goes in the render its last scroll event makes, so the count is settled.
-      for (let press = 1; (await button.count()) > 0; press++) {
-        expect(
-          press,
-          `${where}: Scroll filters ${side} never reached the strip's end`
-        ).toBeLessThan(12);
-        const from = await strip.evaluate((node) => node.scrollLeft);
-        await button.click();
-        await expect
-          .poll(() => strip.evaluate((node) => node.scrollLeft), {
-            message: `${where}: press ${press} on Scroll filters ${side} left the strip at ${from}px`,
-          })
-          .not.toBe(from);
-        await stripAtRest(strip);
-        await focusOn(where, `press ${press} on Scroll filters ${side}`, chip, `"${chipName}"`);
-      }
-    }
+    // `+N more` of the chips line, opened by Enter: its panel takes the focus onto its first chip,
+    // Escape hands it back to `+N more`, and a chip taken off in the panel by Enter hands it to
+    // the panel's chip now at its place.
+    await page.goto(SIXTEEN_NARROWINGS);
+    const more = row.getByRole("button", { name: MORE_FILTERS });
+    await expect(more, `${where}: sixteen narrowings draw no +N more`).toBeVisible();
+    const morePanel = page.getByRole("dialog", { name: MORE_FILTERS });
+    const firstInPanel = morePanel.getByRole("button").first();
+    await more.focus();
+    await page.keyboard.press("Enter");
+    await focusOn(where, "Enter on +N more", firstInPanel, "the panel's first chip");
+    await page.keyboard.press("Escape");
+    await expect(morePanel, `${where}: Escape left the panel of +N more open`).toHaveCount(0);
+    await focusOn(where, "Escape in the panel of +N more", more, "+N more");
+    await page.keyboard.press("Enter");
+    await focusOn(where, "Enter on +N more again", firstInPanel, "the panel's first chip again");
+    // The chip the Enter below takes off, read once the panel has handed it the focus above.
+    const taken = (await firstInPanel.getAttribute("aria-label")) ?? "";
+    await page.keyboard.press("Enter");
+    await expect(
+      morePanel.getByRole("button", { exact: true, name: taken }),
+      `${where}: Enter on "${taken}" in the panel of +N more left it drawn`
+    ).toHaveCount(0);
+    await focusOn(
+      where,
+      `Enter on "${taken}" in the panel of +N more`,
+      firstInPanel,
+      "the panel's chip now at its place"
+    );
 
     // The List's pager: Next pressed until the last page and Previous until the first, each
     // refused there rather than disabled, so the focus stays on the button pressed.

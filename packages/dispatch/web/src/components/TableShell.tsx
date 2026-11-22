@@ -198,7 +198,7 @@ export function TableShell({
 }: TableShellProps): ReactNode {
   const recipe = RECIPE[size];
   const style = useMemo(() => ({ size, stickyHead }), [size, stickyHead]);
-  const ends = useScrollEnds({ ends: "trailing" });
+  const ends = useScrollEnds();
   return (
     <div
       className={joined(recipe.wrapper, className ?? "", fadeTrailing ? ends.fade : "")}

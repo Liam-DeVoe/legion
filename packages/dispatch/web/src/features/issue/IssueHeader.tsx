@@ -143,7 +143,7 @@ export function IssueHeader({
     }
   }, [parentEditing]);
   // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
-  const railFade = useScrollEnds({ ends: "trailing" });
+  const railFade = useScrollEnds();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();

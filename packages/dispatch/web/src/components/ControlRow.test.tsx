@@ -1,9 +1,10 @@
 import { expect, mock, spyOn, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { afterRescue, RescuedMain } from "../__tests__/focus-rescue";
+import { installResizeObserver } from "../__tests__/scroll-box";
 import { Chip } from "./Chip";
 import { ControlRow, type ControlRowProps } from "./ControlRow";
 
@@ -21,12 +22,11 @@ const HEIGHT_RULE_CSS =
  *  (1440 and 1280) are. Below it the first line and the page's own slot wrap, so that a phone's
  *  search box is a search box and a phone's own controls stay on the screen. */
 const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}.sm\:shrink-0{flex-shrink:0}`;
-/** Tailwind's definitions of the size the row's own controls keep everywhere: the 44 px touch
- *  target of Clear filters and of the two scroll buttons. */
-const TARGET_CSS = ".min-h-11{min-height:2.75rem}.h-11{height:2.75rem}.w-11{width:2.75rem}";
-/** Tailwind's `md:` sizes as they apply from 768 px up, where a mouse is the pointer and the
+/** Tailwind's definition of the size Clear filters keeps everywhere: the 44 px touch target. */
+const TARGET_CSS = ".min-h-11{min-height:2.75rem}";
+/** Tailwind's `md:` size as it applies from 768 px up, where a mouse is the pointer and the
  *  compact size gives that target up. */
-const MOUSE_CSS = String.raw`.md\:min-h-8{min-height:2rem}.md\:h-8{height:2rem}.md\:w-8{width:2rem}`;
+const MOUSE_CSS = String.raw`.md\:min-h-8{min-height:2rem}`;
 
 function Row(props: Partial<ControlRowProps>) {
   return (
@@ -125,18 +125,23 @@ test("from the sm breakpoint up the first line is one line, and however many chi
     expect(getComputedStyle(first).flexWrap).toBe("nowrap");
     expect(getComputedStyle(first).gap).toBe("0.5rem");
 
-    // The chips never wrap: a chip that does not fit is scrolled to, so nine chips take the
-    // same one line as one does (R1: one more line at most, however many narrowings are on).
+    // The chips never wrap: a chip that does not fit is listed behind `+N more`, so nine chips
+    // take the same one line as one does (R1: one more line at most, however many narrowings are
+    // on).
     expect(getComputedStyle(chipsLine).flexWrap).toBe("nowrap");
     const strip = slotOf("chips");
     expect(getComputedStyle(strip).flexWrap).toBe("nowrap");
-    expect(getComputedStyle(strip).overflowX).toBe("auto");
-    // The strip takes the line's room the rest of it leaves, and gives way rather than push
-    // Clear filters past the edge.
-    expect(getComputedStyle(strip).flexGrow).toBe("1");
+    // And nothing in the line scrolls sideways.
+    expect(getComputedStyle(strip).overflowX).not.toMatch(/auto|scroll/);
+    // The box the chips and `+N more` share takes the line's room the rest of it leaves, and
+    // gives way rather than push Clear filters past the edge, as the strip in it does.
+    const box = strip.parentElement;
+    if (box === null) throw new Error("the strip is drawn outside a box of its own");
+    expect(getComputedStyle(box).flexGrow).toBe("1");
+    expect(getComputedStyle(box).minWidth).toBe("0");
     expect(getComputedStyle(strip).minWidth).toBe("0");
-    // A chip the strip has no room for is scrolled to, never squeezed: a page's own chip that
-    // could shrink would be drawn narrower than its text, under the next chip.
+    // A chip the line draws is never squeezed: a page's own chip that could shrink would be
+    // drawn narrower than its text, under the next chip.
     expect(getComputedStyle(screen.getByTestId("chips")).flexShrink).toBe("0");
     // And no box in the row may take another line at all.
     const wrapping = Array.from(row().querySelectorAll("*")).filter(
@@ -177,7 +182,7 @@ test("below the phone breakpoint the first line and the page's own controls wrap
     expect(getComputedStyle(chipsLine).flexWrap).toBe("nowrap");
     const strip = slotOf("chips");
     expect(getComputedStyle(strip).flexWrap).toBe("nowrap");
-    expect(getComputedStyle(strip).overflowX).toBe("auto");
+    expect(getComputedStyle(strip).overflowX).not.toMatch(/auto|scroll/);
   } finally {
     view.unmount();
     removeCss();
@@ -193,8 +198,8 @@ test("while a chip is on, Clear filters is drawn from onClear at the end of the 
     const [first, chipsLine] = lines();
     expect(first.contains(clear)).toBe(false);
     expect(chipsLine.lastElementChild).toBe(clear);
-    // Outside the strip and the box its scroll buttons are laid over, so no number of chips
-    // scrolls it away or covers it, and after it in the reading order.
+    // Outside the strip and the box the chips share with `+N more`, so no number of chips pushes
+    // it out of view, and after them in the reading order.
     const strip = slotOf("chips");
     expect(strip.contains(clear)).toBe(false);
     expect(strip.parentElement?.contains(clear)).toBe(false);
@@ -248,71 +253,6 @@ test("Clear filters keeps the 44 px target, and gives it up from md only at the 
     view.rerender(<Row onClear={() => {}} size="compact" />);
     expect(minHeight(TARGET_CSS)).toBe("44px");
     expect(minHeight(`${TARGET_CSS}${MOUSE_CSS}`)).toBe("32px");
-  } finally {
-    view.unmount();
-  }
-});
-
-test("no scroll button is drawn while nothing is out of view on either side", () => {
-  // happy-dom lays nothing out, so the strip never overflows here: the buttons are hidden, not
-  // drawn disabled.
-  const view = render(<Row onClear={() => {}} />);
-  try {
-    expect(screen.queryByRole("button", { name: "Scroll filters left" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Scroll filters right" })).toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
-test("a scroll button keeps the 44 px target, and gives it up from md only at the compact size", () => {
-  const view = render(<Row />);
-  // Its box under `css`: a window below `md` (the target alone), or from it (with `md:`).
-  const box = (css: string) => {
-    const removeCss = withCss(css);
-    try {
-      const style = getComputedStyle(screen.getByRole("button", { name: "Scroll filters right" }));
-      return { height: style.height, width: style.width };
-    } finally {
-      removeCss();
-    }
-  };
-  try {
-    // happy-dom lays nothing out, so the strip is told it holds more than it shows, and a scroll
-    // of it reads that again: the right button is drawn.
-    const strip = slotOf("chips");
-    Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 1000 });
-    act(() => {
-      strip.dispatchEvent(new Event("scroll"));
-    });
-    const target = { height: "44px", width: "44px" };
-    expect(box(TARGET_CSS)).toEqual(target);
-    expect(box(`${TARGET_CSS}${MOUSE_CSS}`)).toEqual(target);
-    view.rerender(<Row size="compact" />);
-    expect(box(TARGET_CSS)).toEqual(target);
-    expect(box(`${TARGET_CSS}${MOUSE_CSS}`)).toEqual({ height: "32px", width: "32px" });
-  } finally {
-    view.unmount();
-  }
-});
-
-test("a chip that takes the focus is scrolled wholly into view inside the strip", async () => {
-  const user = userEvent.setup();
-  const view = render(
-    <ControlRow
-      chips={
-        <button data-testid="chip" type="button">
-          Chip
-        </button>
-      }
-    />
-  );
-  try {
-    const chip = screen.getByTestId("chip");
-    const scrolled = spyOn(chip, "scrollIntoView").mockImplementation(() => {});
-    await user.tab();
-    expect(document.activeElement).toBe(chip);
-    expect(scrolled).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
   } finally {
     view.unmount();
   }
@@ -522,6 +462,241 @@ test("a removal that commits later hands the focus on then, whatever held it mea
     expect(search).toHaveFocus();
   } finally {
     view.unmount();
+  }
+});
+
+/** The width of `+N more` in a line `layOutLine` lays out, whatever its N. */
+const MORE_WIDTH = 60;
+
+/**
+ * Lays the chips line out as a browser would, which happy-dom does not: the box the chips and
+ * `+N more` share is `room.width` px wide, each chip as wide as `widths` says for its words, and
+ * `+N more` `MORE_WIDTH` px; the chips stand 8 px apart (`gap-2`). Any other element is a box of
+ * no width. A test that changes `room.width` reports it to the line's observers. Answers what
+ * puts happy-dom's own layout back.
+ */
+function layOutLine(room: { width: number }, widths: Readonly<Record<string, number>>): () => void {
+  const removeCss = withCss(".gap-2{column-gap:8px}");
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const words = this.textContent ?? "";
+    let width = widths[words] ?? 0;
+    if (this.firstElementChild?.hasAttribute("data-chip-strip") === true) width = room.width;
+    else if (/^\+\d+ more$/.test(words)) width = MORE_WIDTH;
+    return new DOMRect(0, 0, width, 44);
+  });
+  return () => {
+    boxes.mockRestore();
+    removeCss();
+  };
+}
+
+/** The words of each chip the line draws, in its order. */
+function lineChips(): string[] {
+  const strip = document.querySelector("[data-chip-strip]");
+  return Array.from(strip?.children ?? [], (chip) => chip.textContent ?? "");
+}
+
+/** The words of each chip the open panel of `+N more` lists, in its order. */
+function panelChips(name: string): string[] {
+  const panel = screen.getByRole("dialog", { name });
+  return within(panel)
+    .getAllByRole("button")
+    .map((chip) => chip.textContent ?? "");
+}
+
+/** Four chips of 100 px. A 300 px line holds two of them and `+2 more`, which take 100 + 8 +
+ *  100 + 8 + 60 = 276 px; a third chip would take it to 384. */
+const FOUR = { Alpha: 100, Beta: 100, Delta: 100, Gamma: 100 };
+
+test("chips past the line's room are drawn behind one +N more, named for what it opens, and nothing scrolls the line", () => {
+  const restore = layOutLine({ width: 300 }, FOUR);
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma", "Delta"]} />);
+  try {
+    expect(lineChips()).toEqual(["Alpha", "Beta"]);
+    const more = screen.getByRole("button", { name: "2 more filters" });
+    expect(more).toHaveTextContent("+2 more");
+    expect(more).toHaveAttribute("data-control", "chip");
+    expect(more).toHaveAttribute("aria-haspopup", "dialog");
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    // At the end of the chips, outside the strip, and before Clear filters.
+    expect(document.querySelector("[data-chip-strip]")?.nextElementSibling).toBe(more);
+    expect(lines()[1].lastElementChild).toBe(screen.getByRole("button", { name: "Clear filters" }));
+    // The chips left out are drawn nowhere until it opens, and no control scrolls the line.
+    expect(screen.queryByRole("button", { name: "Gamma" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delta" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Scroll filters/ })).toBeNull();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("+N more opens a panel of the chips left out, with the focus on its first, and each chip is drawn once", async () => {
+  const user = userEvent.setup();
+  const restore = layOutLine({ width: 300 }, FOUR);
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma", "Delta"]} />);
+  try {
+    const more = screen.getByRole("button", { name: "2 more filters" });
+    await user.click(more);
+    expect(panelChips("2 more filters")).toEqual(["Gamma", "Delta"]);
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
+    // In the line or in the panel, never both.
+    for (const name of ["Alpha", "Beta", "Gamma", "Delta"]) {
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
+    }
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("Escape in the panel, and Tab past its last chip, close it and hand the focus back to +N more", async () => {
+  const user = userEvent.setup();
+  const restore = layOutLine({ width: 300 }, FOUR);
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma", "Delta"]} />);
+  try {
+    const more = screen.getByRole("button", { name: "2 more filters" });
+    await user.click(more);
+    expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(more).toHaveFocus();
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    // Opened again from the keyboard, and left by Tab past its last chip.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Delta" })).toHaveFocus();
+    await user.tab();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(more).toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("a chip taken off in the panel goes, and the room it frees takes the next chip into the line as +N counts down", async () => {
+  const user = userEvent.setup();
+  // Two 100 px chips and `+3 more` take 276 px of a 300 px line, and the 200 px chip after them
+  // does not fit. With it gone, the 16 px chip after it does: 100 + 8 + 100 + 8 + 16 + 8 + 60 is
+  // 300 px.
+  const restore = layOutLine(
+    { width: 300 },
+    { Alpha: 100, Beta: 100, Delta: 100, Gamma: 16, Wide: 200 }
+  );
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Wide", "Gamma", "Delta"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "3 more filters" }));
+    expect(screen.getByRole("button", { name: "Wide" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Wide" })).toBeNull();
+    expect(lineChips()).toEqual(["Alpha", "Beta", "Gamma"]);
+    expect(screen.getByRole("button", { name: "1 more filter" })).toHaveTextContent("+1 more");
+    expect(panelChips("1 more filter")).toEqual(["Delta"]);
+    // The panel stands, so the focus stays in it, on the chip now at the place of the one taken
+    // off.
+    expect(screen.getByRole("button", { name: "Delta" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("the panel's last chip taken off closes the panel, and the focus goes to the line's last chip", async () => {
+  const user = userEvent.setup();
+  // Two of three 100 px chips and `+1 more` fit a 300 px line; the two alone need no `+N more`.
+  const restore = layOutLine({ width: 300 }, { Alpha: 100, Beta: 100, Gamma: 100 });
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "1 more filter" }));
+    expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
+    // Delete takes a chip off in the panel as it does in the line.
+    await user.keyboard("{Delete}");
+    expect(screen.queryByRole("button", { name: "Gamma" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: /more filters?$/ })).toBeNull();
+    expect(lineChips()).toEqual(["Alpha", "Beta"]);
+    // Not the page's body: the chip before the place the panel's chips stood at.
+    expect(screen.getByRole("button", { name: "Beta" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("a line that widens takes back the chips that now fit, and one that narrows hands them to +N more again", () => {
+  const sizes = installResizeObserver();
+  const room = { width: 300 };
+  const restore = layOutLine(room, FOUR);
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma", "Delta"]} />);
+  try {
+    expect(lineChips()).toEqual(["Alpha", "Beta"]);
+    // Four 100 px chips and their three gaps take 424 px: a 440 px line holds them all, and
+    // needs no `+N more`.
+    room.width = 440;
+    sizes.resize();
+    expect(lineChips()).toEqual(["Alpha", "Beta", "Gamma", "Delta"]);
+    expect(screen.queryByRole("button", { name: /more filters?$/ })).toBeNull();
+    room.width = 300;
+    sizes.resize();
+    expect(lineChips()).toEqual(["Alpha", "Beta"]);
+    expect(screen.getByRole("button", { name: "2 more filters" })).toHaveTextContent("+2 more");
+  } finally {
+    view.unmount();
+    restore();
+    sizes.restore();
+  }
+});
+
+test("a first chip wider than the whole line is still drawn in it, before +N more", () => {
+  const long = "Label: a name that runs past the line";
+  const restore = layOutLine({ width: 300 }, { Beta: 50, [long]: 400 });
+  const view = render(<RemovableChips names={[long, "Beta"]} />);
+  try {
+    expect(lineChips()).toEqual([long]);
+    expect(screen.getByRole("button", { name: "1 more filter" })).toHaveTextContent("+1 more");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("each chip of a fragment is a chip of the line, as the Inbox hands its agent chip before the rest", () => {
+  const restore = layOutLine(
+    { width: 300 },
+    { "Asks from Planner": 100, "Type: Question": 100, "Urgency: High": 100 }
+  );
+  const view = render(
+    <ControlRow
+      chips={
+        <>
+          <span>
+            <Chip aria-label="Clear agent filter" onClick={() => {}}>
+              Asks from Planner
+            </Chip>
+          </span>
+          {[
+            <Chip key="type" onClick={() => {}}>
+              Type: Question
+            </Chip>,
+            <Chip key="urgency" onClick={() => {}}>
+              Urgency: High
+            </Chip>,
+          ]}
+        </>
+      }
+    />
+  );
+  try {
+    expect(lineChips()).toEqual(["Asks from Planner", "Type: Question"]);
+    expect(screen.getByRole("button", { name: "1 more filter" })).toHaveTextContent("+1 more");
+  } finally {
+    view.unmount();
+    restore();
   }
 });
 
@@ -746,35 +921,4 @@ test("a control of a dialog drawn in a slot hands its focus to no control of the
     "with no rescue": { focus: "the page", scrolls: 0 },
     "with the page's rescue": { focus: "Session groups", scrolls: 0 },
   });
-});
-
-test("a press on a scroll button takes no focus, so a chip that held it keeps it", async () => {
-  const user = userEvent.setup();
-  const view = render(
-    <ControlRow
-      chips={
-        <button data-testid="chip" type="button">
-          Chip
-        </button>
-      }
-    />
-  );
-  try {
-    // happy-dom lays nothing out, so the strip is told it holds more than it shows, and a scroll
-    // of it reads that again: the right button is drawn.
-    const chip = screen.getByTestId("chip");
-    const strip = slotOf("chip");
-    Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 1000 });
-    act(() => {
-      strip.dispatchEvent(new Event("scroll"));
-    });
-    const scrolled = spyOn(strip, "scrollBy").mockImplementation(() => {});
-    spyOn(chip, "scrollIntoView").mockImplementation(() => {});
-    act(() => chip.focus());
-    await user.click(screen.getByRole("button", { name: "Scroll filters right" }));
-    expect(scrolled).toHaveBeenCalled();
-    expect(chip).toHaveFocus();
-  } finally {
-    view.unmount();
-  }
 });
