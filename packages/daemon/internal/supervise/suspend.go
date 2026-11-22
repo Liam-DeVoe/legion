@@ -83,7 +83,12 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // is being taken: a held stop's wait for the copy ends there (turnCopyHolds), and so does a new
 // one's. A suspension that may not be held (RequestSuspend.NeverHold) is decided now too, as it
 // always was for a claim in no turn: its asker read the claim in no turn and is owed the stop at
-// once.
+// once. The gate and the wait each read the clock, so the copy's due can fall between the two
+// reads: the suspension is then held, but no wait for the copy begins (waitForTurnCopy), and the
+// copy's end would run nothing. The held stop runs in this decision instead (suspendHeld), as it
+// would have past the due, and the asker is answered as the stop is: nothing once it lands, and
+// the runtime's error where it refuses the stop, which stays held and is tried again at the probe
+// interval.
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -94,8 +99,8 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 		return m.suspendNow(ctx, request, false)
 	}
 	err = m.holdRequest(request, asked, heldForTurnCopy)
-	if !m.turnCopy.stopWaits {
-		m.waitForTurnCopy()
+	if !m.turnCopy.stopWaits && !m.waitForTurnCopy() {
+		return m.suspendHeld(ctx)
 	}
 	return err
 }

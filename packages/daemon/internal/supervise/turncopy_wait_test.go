@@ -7,6 +7,8 @@ package supervise
 
 import (
 	"errors"
+	goruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -271,4 +273,83 @@ func TestADroppedStopTakesItsWaitForTheTurnsCopyWithIt(t *testing.T) {
 		h.wantState(StateSuspended)
 		h.wantCalls("Suspend", 1)
 	})
+}
+
+// dueAtTheGate is h's clock with one seam: the read suspend's gate makes (turnCopyInBudget, asked
+// by suspend) answers the time as it stands, and then moves the clock to due, firing nothing, so
+// the copy's due falls between that read and the next one of the same decision.
+type dueAtTheGate struct {
+	*fakeClock
+	due   time.Time
+	moved bool
+}
+
+func (c *dueAtTheGate) Now() time.Time {
+	gate := readBySuspendsGate()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now
+	if gate && !c.moved {
+		c.moved, c.now = true, c.due
+	}
+	return now
+}
+
+// readBySuspendsGate is whether the clock is being read by turnCopyInBudget asked by suspend
+// itself, the gate's read, rather than through waitForTurnCopy or anything else.
+func readBySuspendsGate() bool {
+	pc := make([]uintptr, 32)
+	frames := goruntime.CallersFrames(pc[:goruntime.Callers(2, pc)])
+	for {
+		frame, more := frames.Next()
+		if strings.HasSuffix(frame.Function, ".(*Machine).turnCopyInBudget") {
+			asker, _ := frames.Next()
+			return strings.HasSuffix(asker.Function, "/supervise.suspend")
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+// gateMoved is whether the gate's read came and moved the clock to the due.
+func (c *dueAtTheGate) gateMoved() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.moved
+}
+
+// suspend reads the clock in its gate (turnCopyInBudget) and again where the wait for the copy
+// begins (waitForTurnCopy). A suspension that reaches an idle claim while its turn's copy is being
+// taken, with the copy's due falling between those two reads, is held at the gate, and then no
+// wait for the copy begins: no bound is armed, and the copy's end runs only a stop whose wait has
+// begun (endTurnCopyWait). The held stop runs in that decision instead, as it would have past the
+// due, and the claim is suspended by the asker, who is answered that nothing is held.
+//
+// The control is suspend without that run: the claim is then left idle holding the stop with no
+// wait for the copy, which nothing runs, and the test fails there.
+func TestASuspensionWhoseCopysDueFallsInsideItsDecisionRunsInThatDecision(t *testing.T) {
+	h, _ := copyingHarness(t)
+	h.reach(StateIdle)
+	h.advance(time.Minute)
+	clock := &dueAtTheGate{fakeClock: h.clock, due: turnCopyDue(t, h)}
+	h.m.mu.Lock()
+	h.m.deps.Clock = clock
+	h.m.mu.Unlock()
+
+	err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "the tree of LEGION-208 lingers"})
+
+	if !clock.gateMoved() {
+		t.Fatal("suspend's gate never read the clock, so the copy's due did not fall inside the decision")
+	}
+	if c := h.claim(); c.SuspensionHeld && !h.armed(TimerTurnCopy) {
+		t.Fatalf("the claim is %s holding the stop with no wait for the copy (the suspension answered %v): nothing will run it", c.State, err)
+	}
+	if err != nil {
+		t.Fatalf("the suspension whose copy's due fell inside its decision = %v, want it decided in that decision", err)
+	}
+	h.wantCalls("Suspend", 1)
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon || c.SuspensionHeld {
+		t.Fatalf("the claim is %s by %q holding a stop = %t, want it suspended by the daemon, holding none", c.State, c.SuspendedBy, c.SuspensionHeld)
+	}
 }
