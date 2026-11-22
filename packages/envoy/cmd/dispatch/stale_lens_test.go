@@ -1,7 +1,7 @@
 //go:build basebuild
 
 // The basebuild tag, and how a test of it is run: store_census_test.go. This file's test builds two
-// earlier builds with baseBuildOf, main's, the commit MAIN_BASELINE_SHA names, and the one
+// earlier builds with testbaseline.Build, main's, the commit MAIN_BASELINE_SHA names, and the one
 // BASELINE_SHA names, and is run as
 //
 //	BASELINE_SHA=$(git merge-base origin/legion/INFRA-1150 HEAD) MAIN_BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild -timeout 30m ./cmd/dispatch/ -run '^TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress$' -count=1 -v
@@ -56,8 +56,8 @@ const (
 // dispatch://INFRA-1150's, the commit BASELINE_SHA names, whose removal states the document's node
 // gone and nothing more and whose create writes the document's node (queueNewArtifact). The test
 // refuses a BASELINE_SHA whose migrations lack 20261109013400 (graph_store) and a
-// MAIN_BASELINE_SHA whose migrations hold it. Each earlier build is built by baseBuildOf and run
-// through startDispatchProcessWith with dispatchOptions.Binary, as
+// MAIN_BASELINE_SHA whose migrations hold it. Each earlier build is built by testbaseline.Build
+// and run through startDispatchProcessWith with dispatchOptions.Binary, as
 // TestTheStoreCensusReadsZeroDifferences runs its older build. The earlier builds boot on the
 // empty database first, in the order of their releases, and this build after them, so every build
 // serves on the schema this build migrates.
@@ -217,9 +217,9 @@ func newStaleLensRoll(t *testing.T) *staleLensRoll {
 		databaseURL: databaseURL,
 		pool:        pool,
 		main: &earlierBuild{name: "main's build (" + mainCommit + ")",
-			binary: baseBuildOf(t, mainCommit, testbaseline.MainVariable)},
+			binary: testbaseline.Build(t, mainCommit, testbaseline.MainVariable)},
 		base: &earlierBuild{name: "dispatch://INFRA-1150's build (" + baseCommit + ")",
-			binary: baseBuildOf(t, baseCommit, testbaseline.Variable)},
+			binary: testbaseline.Build(t, baseCommit, testbaseline.Variable)},
 		head: cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp),
 	}
 	roll.startEarlierBuilds(t)

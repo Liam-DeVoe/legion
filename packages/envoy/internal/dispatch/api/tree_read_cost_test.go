@@ -1,0 +1,1446 @@
+//go:build basebuild
+
+package api
+
+// This tree's check c-read-cost: no read this tree moves gets slower, and no event outruns its node.
+//
+// The test is TestNoReadThisTreeMovesGetsSlower at the end of this file; everything above it is
+// the corpus it writes, the two servers it boots and the six reads it measures. It carries the
+// basebuild tag, as cmd/dispatch's store_census_test.go does, because it builds the server of an
+// earlier commit (testbaseline.Build), which needs a checkout that holds that commit; no CI job
+// builds the tag. It stands in this package, outside cmd/dispatch, because its last step runs
+// TestNoEventOutrunsItsNode, which holds the server's own comment write at a seam only this
+// package's tests can set (server.beforeCommentCommit). It takes from 1 to 3 hours and is run on
+// its own, by name, as
+//
+//	BASELINE_SHA=<the commit the pull request body's BASELINE_SHA= line names> go test -tags basebuild ./internal/dispatch/api/ -run '^TestNoReadThisTreeMovesGetsSlower$' -timeout 170m -count=1 -v
+//
+// from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
+// database on.
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testbaseline"
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// The corpus, as c-read-cost states it: one issue of 2,000 blocks at a depth of 6, one person with
+// 10,000 delivered entries, one node with 500 backlinks, one requirement served by 50 checks, and
+// history unrelated to the actor at ten times the actor's own. The corpus states its own shape so
+// that a reading is reproducible, and every count is held to before anything is measured.
+const (
+	// readCostTreeBlocks and readCostTreeDepth are the issue whose tree is expanded: one document
+	// of that many blocks, whose deepest block sits that many list levels down.
+	readCostTreeBlocks = 2_000
+	readCostTreeDepth  = 6
+	// readCostEntries is what the reader's inbox holds, delivered as the three kinds of row the
+	// Inbox page draws: open asks waiting on them, comment threads they wrote in that somebody
+	// else answered, and their one-off messages to an agent that the agent answered.
+	readCostEntries      = 10_000
+	readCostThreads      = 4_000
+	readCostConversation = 1_000
+	readCostAsks         = readCostEntries - readCostThreads - readCostConversation
+	// readCostAskers is how many agent sessions open the asks, so that no one session's advice,
+	// which every ask it opens reads (writeAdvice), reads thousands of open asks of its own.
+	readCostAskers = 50
+	// readCostBacklinks is how many comments cite the one node the references panel is read on.
+	readCostBacklinks = 500
+	// readCostChecks is how many check blocks serve the one requirement the coverage read and
+	// the chain read are read on.
+	readCostChecks = 50
+	// The actor's own history is what the reader wrote: the roots of their threads and their
+	// messages to the agent. The history unrelated to them is ten times that, as documents of
+	// another person in another project, readCostUnrelatedBlocks blocks each.
+	readCostOwnHistory        = readCostThreads + readCostConversation
+	readCostUnrelatedBlocks   = 2_000
+	readCostUnrelatedDocument = 10 * readCostOwnHistory / readCostUnrelatedBlocks
+)
+
+// The sampling, as inbox_dismissed_scale_test.go takes it and widened to p99: one warm-up reading
+// that is not counted, then readCostRuns readings of each read on each side. p99 by nearest rank
+// is the ceil(0.99 x n)th reading, so at 200 it is the 198th rather than the slowest.
+const readCostRuns = 200
+
+// The waits. A first boot migrates a whole schema and this head's boot migrates the corpus, so a
+// boot gets readCostBootWait, asked every readCostBootPoll since each asking reads the process's
+// whole output. readCostOwedWait and readCostOwedPoll are the check's: every owed count is read
+// every 2 s and the run fails once one has stayed above zero for 300 s. The release before drains
+// what its own writes left owed before its side is measured, within readCostDrainWait, which no
+// check states.
+const (
+	readCostBootWait  = 15 * time.Minute
+	readCostBootPoll  = 500 * time.Millisecond
+	readCostStopWait  = 2 * time.Minute
+	readCostOwedWait  = 300 * time.Second
+	readCostOwedPoll  = 2 * time.Second
+	readCostDrainWait = 30 * time.Minute
+)
+
+// readCostWriters is how many writes the seed keeps in flight at once on the release before: the
+// corpus is about 15,000 writes, which one at a time cost the run tens of minutes.
+const readCostWriters = 8
+
+// The people, the sessions and the projects of the corpus. Every person is named by the trusted
+// header, which records them as signed in on their first request (identity.HeaderIdentity), so an
+// issue can be assigned to them.
+const (
+	readCostReader   = "reader@read-cost.example"
+	readCostWriter   = "writer@read-cost.example"
+	readCostStranger = "stranger@read-cost.example"
+	// readCostConverse is the agent the reader messages, which answers each message.
+	readCostConverse = "ses_read_cost_converse"
+	readCostProject  = "READ"
+	readCostElsewise = "ELSE"
+	// readCostSearchWord is the word of the reader's own thread roots that search reads, which no
+	// other row of the corpus holds.
+	readCostSearchWord = "quillwort"
+)
+
+// The credentials and the build stamps. Both builds serve one database in turn, so each carries
+// the same signing key, which a process whose key a live peer does not share is refused for
+// (processes.Register). readCostOtherBuild is the commit of the other build whose announcement the
+// run writes (T7b's step reads the newest one naming a commit other than its own); no build of the
+// repository carries it.
+const (
+	readCostSigningKey = "read-cost-signing-key"
+	readCostAgentToken = "read-cost-agent-token"
+	readCostOtherBuild = "0123456789abcdef0123456789abcdef01234567"
+)
+
+// readCostFullCommit is a whole commit id, which is all BASELINE_SHA may name: the run reads it
+// from the pull request body that way, and a branch name or a short id names a commit that moves.
+var readCostFullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// readCostChainBaselinePath is where the chain read's own baseline is recorded. The chain read
+// replaces no read, so its first run records its readings here, with the pod and the date, and
+// gates on nothing; every later run over the same corpus on the same pod is held to twice that
+// recorded p50.
+var readCostChainBaselinePath = filepath.Join("testdata", "read-cost-chain-baseline.json")
+
+// ───── the two servers ────────────────────────────────────────────────────
+
+// readCostServer is one build's process over the run's database, read and written over HTTP on
+// loopback through the one client both sides share, so both sides of every read are read the same
+// way and neither runs in the test process.
+type readCostServer struct {
+	name    string
+	commit  string
+	port    int
+	process *cmdtest.Process
+	client  *http.Client
+}
+
+// readCostAnswer is one answer of a server: its status, its body, and the time from the request's
+// send to its body's last byte. The request body is encoded before that clock starts.
+type readCostAnswer struct {
+	status int
+	body   []byte
+	took   time.Duration
+}
+
+func (a readCostAnswer) String() string {
+	body := strings.TrimSpace(string(a.body))
+	if len(body) > 2_000 {
+		body = body[:2_000] + "…"
+	}
+	return fmt.Sprintf("%d %s", a.status, body)
+}
+
+// readCostClient is the one HTTP client both sides are read and written through. It keeps a
+// connection per writer alive, so no reading pays for a dial.
+func readCostClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = readCostWriters
+	return &http.Client{Transport: transport, Timeout: 10 * time.Minute}
+}
+
+// startReadCostServer starts binary, a build stamped with commit, over databaseURL on a loopback
+// port the test holds until the process serves on it, and waits until it serves. It inherits
+// nothing from the test's environment: a home of its own, the person named by a trusted header,
+// the shared agent bearer, no NATS, and listener as its Envoy listener.
+func startReadCostServer(t *testing.T, client *http.Client, name, binary, commit, databaseURL, listener string) *readCostServer {
+	t.Helper()
+	home := t.TempDir()
+	held := cmdtest.HoldPort(t)
+	environment := map[string]string{
+		"HOME":                             home,
+		"XDG_CONFIG_HOME":                  home,
+		"XDG_DATA_HOME":                    home,
+		"DATABASE_URL":                     databaseURL,
+		"DISPATCH_AGENT_TOKEN":             readCostAgentToken,
+		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
+		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
+		"DISPATCH_LISTEN_HOST":             "127.0.0.1",
+		"DISPATCH_PORT":                    strconv.Itoa(held.Port),
+		"DISPATCH_WEB_DIST":                home,
+		"DISPATCH_NATS_DISABLED":           "1",
+		"DISPATCH_SIGNING_KEY":             readCostSigningKey,
+		"DISPATCH_TEST_HOOKS":              "1",
+		"ENVOY_URL":                        listener,
+	}
+	cmd := exec.Command(binary)
+	cmd.Dir = home
+	for variable, value := range environment {
+		cmd.Env = append(cmd.Env, variable+"="+value)
+	}
+	slices.Sort(cmd.Env)
+	held.Pass(cmd, "DISPATCH_LISTEN_FD")
+	server := &readCostServer{name: name, commit: commit, port: held.Port, process: cmdtest.Start(t, name, cmd), client: client}
+	server.waitServing(t)
+	return server
+}
+
+func (s *readCostServer) url(path string) string {
+	return "http://127.0.0.1:" + strconv.Itoa(s.port) + path
+}
+
+// waitServing waits until the process has logged that it serves on its own port and /healthz
+// there answers 200, and fails with the tail of its output when it exits first or never does.
+func (s *readCostServer) waitServing(t *testing.T) {
+	t.Helper()
+	started := time.Now()
+	listening := `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(s.port)
+	exited := false
+	served := testwait.Holds(readCostBootWait, readCostBootPoll, func() bool {
+		select {
+		case <-s.process.Exited:
+			exited = true
+			return true
+		default:
+		}
+		if !strings.Contains(s.process.Output.String(), listening) {
+			return false
+		}
+		response, err := s.client.Get(s.url("/healthz"))
+		if err != nil {
+			return false
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		return response.StatusCode == http.StatusOK
+	})
+	switch {
+	case exited:
+		t.Fatalf("%s exited before it served:\n%s", s.name, readCostTail(s.process.Output.String()))
+	case !served:
+		t.Fatalf("%s did not serve within %s:\n%s", s.name, readCostBootWait, readCostTail(s.process.Output.String()))
+	}
+	t.Logf("%s serves at %s, %s after it started", s.name, s.url(""), time.Since(started).Round(time.Millisecond))
+}
+
+// stop sends the process SIGTERM, as a deploy stops it, and waits until it has exited, so the
+// next build boots over a database no process of this one serves.
+func (s *readCostServer) stop(t *testing.T) {
+	t.Helper()
+	s.process.Terminate(t)
+	stopped := testwait.Holds(readCostStopWait, readCostBootPoll, func() bool {
+		select {
+		case <-s.process.Exited:
+			return true
+		default:
+			return false
+		}
+	})
+	if !stopped {
+		t.Fatalf("%s was still running %s after SIGTERM:\n%s", s.name, readCostStopWait, readCostTail(s.process.Output.String()))
+	}
+	t.Logf("%s stopped", s.name)
+}
+
+// send sends body as JSON to path, as login - the person the trusted header names, asking for
+// display trees as the dashboard asks on every request - or, where login is empty, on the shared
+// agent bearer, whose body names the session it acts as. It never fails the test, so a writer
+// goroutine may call it.
+func (s *readCostServer) send(method, path, login string, body any) (readCostAnswer, error) {
+	var payload io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return readCostAnswer{}, fmt.Errorf("encode the body of %s %s: %w", method, path, err)
+		}
+		payload = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, s.url(path), payload)
+	if err != nil {
+		return readCostAnswer{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if login == "" {
+		request.Header.Set("Authorization", "Bearer "+readCostAgentToken)
+	} else {
+		request.Header.Set("X-Dispatch-User", login)
+		request.Header.Set("Dispatch-Trees", "1")
+	}
+	started := time.Now()
+	response, err := s.client.Do(request)
+	if err != nil {
+		return readCostAnswer{}, fmt.Errorf("%s %s on %s: %w", method, path, s.name, err)
+	}
+	defer response.Body.Close()
+	read, err := io.ReadAll(response.Body)
+	took := time.Since(started)
+	if err != nil {
+		return readCostAnswer{}, fmt.Errorf("read the answer to %s %s on %s: %w", method, path, s.name, err)
+	}
+	return readCostAnswer{status: response.StatusCode, body: read, took: took}, nil
+}
+
+// write is send that answers an error unless the server answered status.
+func (s *readCostServer) write(method, path, login string, body any, status int) (readCostAnswer, error) {
+	answer, err := s.send(method, path, login, body)
+	if err != nil {
+		return answer, err
+	}
+	if answer.status != status {
+		return answer, fmt.Errorf("%s %s on %s answered %s, want %d", method, path, s.name, answer, status)
+	}
+	return answer, nil
+}
+
+// expect is write on the test's goroutine: an answer other than status fails the test, naming what.
+func (s *readCostServer) expect(t *testing.T, what, method, path, login string, body any, status int) readCostAnswer {
+	t.Helper()
+	answer, err := s.write(method, path, login, body, status)
+	if err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	return answer
+}
+
+// read is a GET as the reader that must answer 200, decoded into into.
+func (s *readCostServer) read(t *testing.T, what, path string, into any) {
+	t.Helper()
+	answer := s.expect(t, what, http.MethodGet, path, readCostReader, nil, http.StatusOK)
+	if err := json.Unmarshal(answer.body, into); err != nil {
+		t.Fatalf("%s: decode GET %s on %s: %v: %s", what, path, s.name, err, answer)
+	}
+}
+
+// readCostTail is the last lines of a process's output, which a failure quotes: the whole of it
+// holds an access line for every request of the run.
+func readCostTail(output string) string {
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	return strings.Join(lines[max(0, len(lines)-60):], "\n")
+}
+
+// readCostListener is a stand-in Envoy listener: every session it is asked about is live and takes
+// every delivery, and every send is handed over at once, so the reader's messages to the agent are
+// delivered and the agent can answer each one.
+func readCostListener(t *testing.T) string {
+	t.Helper()
+	var sends atomic.Int64
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch session, lookup := strings.CutPrefix(r.URL.Path, "/v1/registry/"); {
+		case r.Method == http.MethodGet && lookup:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": session, "title": session, "capabilities": []string{"btw", "aside", "steer"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			var send struct {
+				TargetSession string `json:"target_session"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&send)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"event_id": "read-cost-" + strconv.FormatInt(sends.Add(1), 10), "recipient": send.TargetSession,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(listener.Close)
+	return listener.URL
+}
+
+// ───── the run's database ─────────────────────────────────────────────────
+
+// readCostDatabase creates an empty database for this run alone on the server
+// DISPATCH_TEST_DATABASE_URL names and answers its URL; it is dropped when the test ends. It is
+// empty, and no clone of a migrated template, because the release before must migrate it itself.
+// The variable unset fails the run rather than skipping it, since a skipped measurement reads as
+// one that held.
+func readCostDatabase(t *testing.T) string {
+	t.Helper()
+	raw := strings.TrimSpace(os.Getenv(storetest.DatabaseURLEnv))
+	if raw == "" {
+		t.Fatalf("%s is unset: c-read-cost boots both builds over a database it creates on that server", storetest.DatabaseURLEnv)
+	}
+	server, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("read %s: %v", storetest.DatabaseURLEnv, err)
+	}
+	suffix := make([]byte, 6)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatalf("name the run's database: %v", err)
+	}
+	name := "read_cost_" + hex.EncodeToString(suffix)
+	admin := *server
+	admin.Path = "/postgres"
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, admin.String())
+	if err != nil {
+		t.Fatalf("connect to the test server: %v", err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "create database "+name); err != nil {
+		t.Fatalf("create the run's database: %v", err)
+	}
+	t.Cleanup(func() { dropReadCostDatabase(t, admin.String(), name) })
+	own := *server
+	own.Path = "/" + name
+	t.Logf("the run's database is %s", name)
+	return own.String()
+}
+
+// dropReadCostDatabase drops the run's database once every process on it has gone, trying again
+// while Postgres still tears down a backend whose client has closed (55006).
+func dropReadCostDatabase(t *testing.T, adminURL, name string) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		t.Logf("drop the run's database %s: connect: %v", name, err)
+		return
+	}
+	defer conn.Close(ctx)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		_, err := conn.Exec(ctx, "drop database if exists "+name)
+		if err == nil {
+			return
+		}
+		var postgres *pgconn.PgError
+		if !errors.As(err, &postgres) || postgres.Code != "55006" || time.Now().After(deadline) {
+			t.Logf("drop the run's database %s: %v", name, err)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// readCostConnect opens the test's own connection to the run's database, for the owed counts, the
+// announcement, the view's definition and vacuum, none of which is a read the run measures.
+func readCostConnect(t *testing.T, databaseURL string) *pgx.Conn {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("connect to the run's database: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	return conn
+}
+
+// readCostVacuum runs `vacuum (analyze)` over the run's database before a side is measured: a
+// freshly written table has no statistics and no all-visible pages, and a plan chosen over that is
+// one production never runs (cmd/dispatch-seed's vacuum says the same).
+func readCostVacuum(t *testing.T, conn *pgx.Conn, side string) {
+	t.Helper()
+	started := time.Now()
+	if _, err := conn.Exec(context.Background(), `vacuum (analyze)`); err != nil {
+		t.Fatalf("vacuum (analyze) before the %s is measured: %v", side, err)
+	}
+	t.Logf("vacuum (analyze) before the %s is measured took %s", side, time.Since(started).Round(time.Millisecond))
+}
+
+// ───── the corpus, written through the release before's own writers ──────
+
+// readCostCorpus is what the reads address in the corpus.
+type readCostCorpus struct {
+	// treeIssue holds treeDocument, the document of readCostTreeBlocks blocks its tree expands.
+	treeIssue, treeDocument string
+	// coverageIssue's spec holds the requirement r1, which readCostChecks checks serve.
+	coverageIssue string
+	// citedIssue is the node readCostBacklinks comments cite.
+	citedIssue string
+	// askIssues are the issues assigned to the reader that their asks and threads stand on.
+	askIssues []string
+}
+
+// seedReadCost writes the corpus through the server's own API, as its own writers store it: no
+// row is written by SQL.
+func seedReadCost(t *testing.T, s *readCostServer) *readCostCorpus {
+	t.Helper()
+	started := time.Now()
+	for _, person := range []string{readCostReader, readCostWriter, readCostStranger} {
+		s.expect(t, "sign in "+person, http.MethodGet, "/api/v1/whoami", person, nil, http.StatusOK)
+	}
+	s.expect(t, "create the project "+readCostProject, http.MethodPost, "/api/v1/projects", readCostWriter,
+		map[string]string{"key": readCostProject, "name": "The reads this tree moves"}, http.StatusCreated)
+	s.expect(t, "create the project "+readCostElsewise, http.MethodPost, "/api/v1/projects", readCostStranger,
+		map[string]string{"key": readCostElsewise, "name": "History unrelated to the reader"}, http.StatusCreated)
+
+	corpus := &readCostCorpus{}
+	corpus.treeIssue = createReadCostIssue(t, s, readCostProject, "The issue whose tree is expanded", "", readCostWriter)
+	corpus.treeDocument = uploadReadCostDocument(t, s, corpus.treeIssue, "tree.md", readCostTreeText(), readCostWriter)
+
+	corpus.coverageIssue = createReadCostIssue(t, s, readCostProject, "The requirement fifty checks serve",
+		":::requirement{#r1}\nOne requirement that fifty checks serve.\n:::\n", readCostWriter)
+	uploadReadCostDocument(t, s, corpus.coverageIssue, "verification.md", readCostVerificationText(corpus.coverageIssue), readCostWriter)
+
+	corpus.citedIssue = createReadCostIssue(t, s, readCostProject, "The issue five hundred comments cite", "", readCostWriter)
+	citing := createReadCostIssue(t, s, readCostProject, "The comments that cite it", "", readCostWriter)
+	readCostInParallel(t, "comments citing "+corpus.citedIssue, readCostBacklinks, func(index int) error {
+		_, err := s.write(http.MethodPost, "/api/v1/issues/"+citing+"/comments", readCostWriter, map[string]string{
+			"body": fmt.Sprintf("Comment %d cites dispatch://%s as the issue it leans on.", index, corpus.citedIssue),
+		}, http.StatusCreated)
+		return err
+	})
+
+	seedReadCostInbox(t, s, corpus)
+	seedReadCostUnrelated(t, s)
+	t.Logf("seeded the corpus through %s in %s", s.name, time.Since(started).Round(time.Millisecond))
+	return corpus
+}
+
+// seedReadCostInbox writes the reader's readCostEntries delivered entries: readCostAsks open asks
+// on issues assigned to them, opened by readCostAskers agent sessions; readCostThreads comment
+// threads, each a root the reader wrote and the writer's answer; and readCostConversation one-off
+// messages the reader sent the agent, each answered by it.
+func seedReadCostInbox(t *testing.T, s *readCostServer, corpus *readCostCorpus) {
+	t.Helper()
+	for index := range readCostAskers {
+		corpus.askIssues = append(corpus.askIssues, createReadCostIssue(t, s, readCostProject,
+			fmt.Sprintf("Questions waiting on the reader, batch %02d", index), "", readCostReader))
+	}
+	readCostInParallel(t, "asks waiting on the reader", readCostAsks, func(index int) error {
+		asker := index % readCostAskers
+		_, err := s.write(http.MethodPost, "/api/v1/issues/"+corpus.askIssues[asker]+"/asks", "", map[string]any{
+			"question": fmt.Sprintf("Which way does question %d of asker %d go?", index, asker),
+			"actor":    map[string]string{"kind": "session", "id": fmt.Sprintf("ses_read_cost_asker_%02d", asker)},
+		}, http.StatusCreated)
+		return err
+	})
+	readCostInParallel(t, "threads the reader wrote and the writer answered", readCostThreads, func(index int) error {
+		issue := corpus.askIssues[index%len(corpus.askIssues)]
+		root, err := s.write(http.MethodPost, "/api/v1/issues/"+issue+"/comments", readCostReader, map[string]string{
+			"body": fmt.Sprintf("Thread %d of the reader, on the %s by the pond.", index, readCostSearchWord),
+		}, http.StatusCreated)
+		if err != nil {
+			return err
+		}
+		id, err := readCostIDOf(root)
+		if err != nil {
+			return err
+		}
+		_, err = s.write(http.MethodPost, "/api/v1/issues/"+issue+"/comments", readCostWriter, map[string]string{
+			"body": fmt.Sprintf("The writer answers thread %d.", index), "reply_to": id,
+		}, http.StatusCreated)
+		return err
+	})
+	readCostInParallel(t, "messages the reader sent the agent and the agent answered", readCostConversation, func(index int) error {
+		sent, err := s.write(http.MethodPost, "/api/v1/agents/"+readCostConverse+"/messages", readCostReader, map[string]string{
+			"body": fmt.Sprintf("Direct question %d to the agent.", index), "delivery": "btw",
+		}, http.StatusCreated)
+		if err != nil {
+			return err
+		}
+		id, err := readCostIDOf(sent)
+		if err != nil {
+			return err
+		}
+		_, err = s.write(http.MethodPost, "/api/v1/messages/"+id+"/reply", "", map[string]any{
+			"actor": map[string]string{"kind": "session", "id": readCostConverse}, "attempt": 1,
+			"body": fmt.Sprintf("The agent's answer to question %d.", index),
+		}, http.StatusCreated)
+		return err
+	})
+}
+
+// seedReadCostUnrelated writes the history unrelated to the reader: readCostUnrelatedDocument
+// documents of another person in another project, readCostUnrelatedBlocks blocks each, ten times
+// the rows the reader wrote, none naming the reader or holding the word their search reads.
+func seedReadCostUnrelated(t *testing.T, s *readCostServer) {
+	t.Helper()
+	issue := createReadCostIssue(t, s, readCostElsewise, "The stranger's ledgers", "", readCostStranger)
+	readCostInParallel(t, "documents of unrelated history", readCostUnrelatedDocument, func(index int) error {
+		var text strings.Builder
+		fmt.Fprintf(&text, "# The stranger's ledger %d\n\n", index)
+		for entry := range readCostUnrelatedBlocks - 1 {
+			fmt.Fprintf(&text, "Entry %d of ledger %d records the tide at the lighthouse.\n\n", entry, index)
+		}
+		_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", readCostStranger,
+			map[string]string{"name": fmt.Sprintf("ledger-%02d.md", index), "content": text.String()}, http.StatusCreated)
+		return err
+	})
+}
+
+// createReadCostIssue creates an issue of project held by assignee, who also writes it, and answers
+// its key. It is forced past the near-copy check, which the corpus's titles, written for what hangs
+// under them, would trip.
+func createReadCostIssue(t *testing.T, s *readCostServer, project, title, spec, assignee string) string {
+	t.Helper()
+	body := map[string]any{"project": project, "title": title, "force": true, "assignee": assignee}
+	if spec != "" {
+		body["spec"] = spec
+	}
+	answer := s.expect(t, "create the issue "+title, http.MethodPost, "/api/v1/issues", assignee, body, http.StatusCreated)
+	var created struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(answer.body, &created); err != nil || created.Key == "" {
+		t.Fatalf("read the issue %q back: %v: %s", title, err, answer)
+	}
+	return created.Key
+}
+
+// uploadReadCostDocument writes the first version of a document of issue as login and answers its
+// artifact id.
+func uploadReadCostDocument(t *testing.T, s *readCostServer, issue, name, content, login string) string {
+	t.Helper()
+	answer := s.expect(t, "upload "+name+" to "+issue, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", login,
+		map[string]string{"name": name, "content": content}, http.StatusCreated)
+	var uploaded struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(answer.body, &uploaded); err != nil || uploaded.Artifact.ID == "" {
+		t.Fatalf("read the upload of %s back: %v: %s", name, err, answer)
+	}
+	return uploaded.Artifact.ID
+}
+
+// readCostIDOf is the id an answer names, for a writer goroutine.
+func readCostIDOf(answer readCostAnswer) (string, error) {
+	var named struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(answer.body, &named); err != nil || named.ID == "" {
+		return "", fmt.Errorf("read the id out of %s: %v", answer, err)
+	}
+	return named.ID, nil
+}
+
+// readCostInParallel runs job for each index below jobs on readCostWriters goroutines and fails the
+// test with the first error any of them answered, once all have stopped.
+func readCostInParallel(t *testing.T, what string, jobs int, job func(index int) error) {
+	t.Helper()
+	started := time.Now()
+	var (
+		next   atomic.Int64
+		failed atomic.Bool
+		first  error
+		once   sync.Once
+		group  sync.WaitGroup
+	)
+	for range readCostWriters {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for !failed.Load() {
+				index := int(next.Add(1) - 1)
+				if index >= jobs {
+					return
+				}
+				if err := job(index); err != nil {
+					once.Do(func() { first = fmt.Errorf("%s, number %d: %w", what, index, err) })
+					failed.Store(true)
+					return
+				}
+			}
+		}()
+	}
+	group.Wait()
+	if first != nil {
+		t.Fatal(first)
+	}
+	t.Logf("wrote %d %s in %s", jobs, what, time.Since(started).Round(time.Millisecond))
+}
+
+// readCostTreeText is the document the tree issue expands: a heading, a spine of bullet lists
+// nesting readCostTreeDepth levels deep, a paragraph, and a flat list filling it out to
+// readCostTreeBlocks blocks. Each level of the spine is a list block and the paragraph of its one
+// item, and the flat list is one block and each of its items one more, so the count is arithmetic;
+// it is never taken on trust, since both sides read it back before anything is measured.
+func readCostTreeText() string {
+	var text strings.Builder
+	text.WriteString("# The tree this issue expands\n\n")
+	for level := range readCostTreeDepth {
+		text.WriteString(strings.Repeat("  ", level))
+		fmt.Fprintf(&text, "- nesting level %d\n", level+1)
+	}
+	// Without this paragraph the flat list's items would join the spine's outermost list.
+	text.WriteString("\nThe items below fill the tree out.\n\n")
+	for index := range readCostTreeBlocks - 3 - 2*readCostTreeDepth {
+		fmt.Fprintf(&text, "- item %d of the tree\n", index)
+	}
+	return text.String()
+}
+
+// readCostVerificationText is the Verification document of readCostChecks checks, each serving the
+// requirement r1 of issue's spec.
+func readCostVerificationText(issue string) string {
+	var text strings.Builder
+	for index := range readCostChecks {
+		fmt.Fprintf(&text, ":::check{#c%d serves=\"dispatch://%s/spec#b-r1\" surface=\"cli\" run=\"go test ./...\"}\n"+
+			"Check %d proves the one requirement.\n:::\n\n", index+1, issue, index+1)
+	}
+	return text.String()
+}
+
+// ───── the owed counts ────────────────────────────────────────────────────
+
+// readCostOwedCount is one count a backfill or a conversion step owes, as the SQL that reads it.
+type readCostOwedCount struct {
+	name, sql string
+}
+
+// readCostBaseOwed is what the release before's own block index still owes after its writes: a
+// document whose version it has not indexed, and the comments, messages and asks whose own blocks
+// it has not. Its side is measured once all four read 0, so no tick of its own runs over the corpus
+// while it is read.
+var readCostBaseOwed = []readCostOwedCount{
+	{"document_block_versions_owed", `(select count(*) from document_block_versions where version is null)`},
+	{"comment_block_state_owed", `(select count(*) from comment_block_state where owed_at is not null)`},
+	{"message_block_state_owed", `(select count(*) from message_block_state where owed_at is not null)`},
+	{"ask_block_state_owed", `(select count(*) from ask_block_state where owed_at is not null)`},
+}
+
+// readCostHeadOwed is what this tree's backfills still owe at this head, read as the preamble of
+// the issue tree's Verification document reads its backfill's counts: the documents owed a block
+// index by either mark (a null version, or the backfill's store_owed_at), and the comments,
+// messages and asks owed one of their own blocks; then the object pass that names the issues,
+// documents, asks and messages an earlier build wrote with no node, and this build's block-index
+// event cursor, which is behind while it has not read every event the log holds. The boot's run of
+// the graph store's backfill is read from its own log line (readCostBackfillDone). $1 is this
+// head's commit.
+var readCostHeadOwed = []readCostOwedCount{
+	{"document_block_versions_owed", `(select count(*) from document_block_versions where version is null or store_owed_at is not null)`},
+	{"comment_block_state_owed", `(select count(*) from comment_block_state where owed_at is not null)`},
+	{"message_block_state_owed", `(select count(*) from message_block_state where owed_at is not null)`},
+	{"ask_block_state_owed", `(select count(*) from ask_block_state where owed_at is not null)`},
+	{"object_nodes_owed", `(select count(*) from block_index_event_cursors where object_nodes_owed_at is not null)`},
+	{"block_index_cursor_behind", `(select case when exists (select 1 from block_index_event_cursors where build_commit = $1)
+		and not exists (select 1 from block_index_event_cursors where build_commit = $1
+		                and event_id < (select coalesce(max(id), 0) from events)) then 0 else 1 end)`},
+}
+
+// readCostBackfillDone is the line the boot's run of the graph store's backfill logs once it has
+// run to its end (runBootBackfill).
+const readCostBackfillDone = `msg="dispatch: boot backfill done"`
+
+// waitReadCostOwed reads every count of counts every readCostOwedPoll, never on a fixed sleep,
+// printing each reading with the database's clock_timestamp(), and returns once every count reads 0
+// and, where ended is given, the line it names has been logged. Past within it fails, naming each
+// count that stayed above zero.
+func waitReadCostOwed(t *testing.T, conn *pgx.Conn, side string, counts []readCostOwedCount, within time.Duration,
+	ended func() bool, endedName string, args ...any) {
+	t.Helper()
+	columns := make([]string, len(counts))
+	for index, count := range counts {
+		columns[index] = count.sql
+	}
+	statement := `select clock_timestamp()::text, ` + strings.Join(columns, ", ")
+	started := time.Now()
+	var stayed []string
+	settled := testwait.Holds(within, readCostOwedPoll, func() bool {
+		values := make([]int64, len(counts))
+		var at string
+		targets := []any{&at}
+		for index := range values {
+			targets = append(targets, &values[index])
+		}
+		if err := conn.QueryRow(context.Background(), statement, args...).Scan(targets...); err != nil {
+			t.Fatalf("%s: read the owed counts: %v", side, err)
+		}
+		var line strings.Builder
+		stayed = nil
+		for index, count := range counts {
+			fmt.Fprintf(&line, " %s=%d", count.name, values[index])
+			if values[index] != 0 {
+				stayed = append(stayed, fmt.Sprintf("%s=%d", count.name, values[index]))
+			}
+		}
+		if ended != nil {
+			done := ended()
+			fmt.Fprintf(&line, " %s=%t", endedName, done)
+			if !done {
+				stayed = append(stayed, endedName+"=false")
+			}
+		}
+		t.Logf("c-read-cost: %s owes at %s:%s", side, at, line.String())
+		return len(stayed) == 0
+	})
+	if !settled {
+		t.Fatalf("c-read-cost: %s still owes after %s: %s", side, within, strings.Join(stayed, ", "))
+	}
+	t.Logf("c-read-cost: %s owes nothing, %s after the wait began", side, time.Since(started).Round(time.Millisecond))
+}
+
+// ───── the shape of the corpus, held on each side ─────────────────────────
+
+// readCostDepth is how many list levels down the document's deepest block sits, as the server's
+// own block-path read answers it: the path from the top-level block down holds the list and its
+// item at each level, so the levels are half its length. It reads the spine, the first blocks of
+// the document, and stops at the first block as deep as the shape states.
+func readCostDepth(t *testing.T, s *readCostServer, document string, blocks []readCostBlock) int {
+	t.Helper()
+	deepest := 0
+	for _, block := range blocks {
+		var path struct {
+			Path []struct {
+				Type string `json:"type"`
+			} `json:"path"`
+		}
+		s.read(t, "read where a block of the tree stands", "/api/v1/artifacts/"+document+"/blocks/"+block.ID, &path)
+		deepest = max(deepest, len(path.Path)/2)
+		if deepest >= readCostTreeDepth {
+			break
+		}
+	}
+	return deepest
+}
+
+// readCostBlock is one block of a document as GET /api/v1/artifacts/{id}/blocks answers it.
+type readCostBlock struct {
+	ID string `json:"id"`
+}
+
+// readCostShape is what one side reads back of the corpus before it is measured, and holds to the
+// shape c-read-cost states: a count short of it is not the corpus the check measures, and a read
+// measured over it would be a reading of something else.
+type readCostShape struct {
+	failed []string
+}
+
+// hold prints one count side read of the corpus beside the figure the check states, and keeps it
+// as a failure where it falls short of least, or, where exact, differs from it: the corpus writes
+// exactly that many where its writes alone decide the count, and at least that many where a build
+// may answer a row twice, a comment's block beside the comment.
+func (shape *readCostShape) hold(t *testing.T, side, what string, read, least int, exact bool) {
+	t.Helper()
+	held := read >= least
+	if exact {
+		held = read == least
+	}
+	word := "at least"
+	if exact {
+		word = "exactly"
+	}
+	t.Logf("c-read-cost: %s holds %s: %d, which the check states as %s %d", side, what, read, word, least)
+	if !held {
+		shape.failed = append(shape.failed, fmt.Sprintf("%s: %d, want %s %d", what, read, word, least))
+	}
+}
+
+// require fails the run with every count that fell short, before anything is measured over a
+// corpus that is not the one the check states.
+func (shape *readCostShape) require(t *testing.T, side string) {
+	t.Helper()
+	if len(shape.failed) > 0 {
+		t.Fatalf("c-read-cost: the corpus on %s is not the shape c-read-cost states, so no reading of it is the measurement the check asks for:\n%s",
+			side, strings.Join(shape.failed, "\n"))
+	}
+}
+
+// requireReadCostOldShape reads the corpus back through the release before's reads, each one the
+// read its side measures.
+func requireReadCostOldShape(t *testing.T, s *readCostServer, corpus *readCostCorpus) {
+	t.Helper()
+	shape := &readCostShape{}
+	var blocks []readCostBlock
+	s.read(t, "read the tree's blocks", "/api/v1/artifacts/"+corpus.treeDocument+"/blocks", &blocks)
+	shape.hold(t, s.name, "blocks of the tree's document", len(blocks), readCostTreeBlocks, true)
+	shape.hold(t, s.name, "levels of the tree's deepest block", readCostDepth(t, s, corpus.treeDocument, blocks), readCostTreeDepth, false)
+
+	var asks []json.RawMessage
+	s.read(t, "read the asks waiting on the reader", "/api/v1/inbox?assignee=me", &asks)
+	var threads struct {
+		Total int `json:"total"`
+	}
+	s.read(t, "read the reader's threads", "/api/v1/me/replies?kind=reply,agent&state=inbox", &threads)
+	var messages []json.RawMessage
+	s.read(t, "read the agent's messages", "/api/v1/agents/"+readCostConverse+"/messages", &messages)
+	t.Logf("c-read-cost: %s answers the reader %d asks, %d threads and %d messages of their conversation with the agent",
+		s.name, len(asks), threads.Total, len(messages))
+	shape.hold(t, s.name, "entries delivered to the reader (asks and threads)", len(asks)+threads.Total, readCostEntries, false)
+
+	requireReadCostSharedShape(t, s, corpus, shape)
+	shape.require(t, s.name)
+}
+
+// requireReadCostNewShape reads the corpus back through this head's own reads, and answers whether
+// this head serves the one inbox read: where it answers 404 the read is not at this head, which
+// fails the run naming the route, and every other read is still measured.
+func requireReadCostNewShape(t *testing.T, s *readCostServer, corpus *readCostCorpus) bool {
+	t.Helper()
+	shape := &readCostShape{}
+	var tree struct {
+		Nodes []struct {
+			Kind string `json:"kind"`
+		} `json:"nodes"`
+		Cursor *string `json:"cursor"`
+	}
+	s.read(t, "read the tree", "/api/v1/issues/"+corpus.treeIssue+"/tree", &tree)
+	blocks := 0
+	for _, node := range tree.Nodes {
+		if node.Kind == refs.BlockNodeKind {
+			blocks++
+		}
+	}
+	if tree.Cursor != nil {
+		shape.failed = append(shape.failed, fmt.Sprintf("the tree read answered a cursor (%s): the tree does not fit one page", *tree.Cursor))
+	}
+	shape.hold(t, s.name, "block nodes of the tree read", blocks, readCostTreeBlocks, true)
+	var documentBlocks []readCostBlock
+	s.read(t, "read the tree's blocks", "/api/v1/artifacts/"+corpus.treeDocument+"/blocks", &documentBlocks)
+	shape.hold(t, s.name, "levels of the tree's deepest block", readCostDepth(t, s, corpus.treeDocument, documentBlocks), readCostTreeDepth, false)
+
+	served := true
+	inbox, err := s.send(http.MethodGet, "/api/v1/me/inbox?state=inbox", readCostReader, nil)
+	switch {
+	case err != nil:
+		t.Fatalf("read the reader's inbox: %v", err)
+	case inbox.status == http.StatusNotFound:
+		served = false
+		t.Errorf("c-read-cost: %s answers GET /api/v1/me/inbox with %s: this head holds no one inbox read, the read that replaces "+
+			"GET /api/v1/inbox, GET /api/v1/me/replies and GET /api/v1/agents/{session_id}/messages, so the inbox has no new "+
+			"reading and fails its bound; every other read is still measured", s.name, inbox)
+	case inbox.status != http.StatusOK:
+		t.Fatalf("read the reader's inbox: GET /api/v1/me/inbox?state=inbox on %s answered %s", s.name, inbox)
+	default:
+		var entries struct {
+			Total int `json:"total"`
+		}
+		if err := json.Unmarshal(inbox.body, &entries); err != nil {
+			t.Fatalf("decode the reader's inbox: %v: %s", err, inbox)
+		}
+		shape.hold(t, s.name, "entries of the reader's one inbox read", entries.Total, readCostEntries, false)
+	}
+
+	var chain struct {
+		Requirements []struct {
+			BlockID string   `json:"block_id"`
+			Checks  []string `json:"checks"`
+		} `json:"requirements"`
+	}
+	s.read(t, "read the chain", "/api/v1/issues/"+corpus.coverageIssue+"/chain", &chain)
+	checks := -1
+	for _, requirement := range chain.Requirements {
+		if requirement.BlockID == "r1" || len(chain.Requirements) == 1 {
+			checks = len(requirement.Checks)
+		}
+	}
+	shape.hold(t, s.name, "checks the chain read names under the requirement", checks, readCostChecks, true)
+
+	requireReadCostSharedShape(t, s, corpus, shape)
+	shape.require(t, s.name)
+	return served
+}
+
+// requireReadCostSharedShape holds what both sides read through the same routes: the backlinks of
+// the cited issue, which the references panel lists and its header counts, the checks the coverage
+// read counts under the requirement, and an answer of the search the reader makes.
+func requireReadCostSharedShape(t *testing.T, s *readCostServer, corpus *readCostCorpus, shape *readCostShape) {
+	t.Helper()
+	var references struct {
+		Edges []json.RawMessage `json:"edges"`
+	}
+	s.read(t, "read the cited issue's references", "/api/v1/references?to="+url.QueryEscape("dispatch://"+corpus.citedIssue), &references)
+	shape.hold(t, s.name, "backlinks the references panel lists", len(references.Edges), readCostBacklinks, false)
+	var issue struct {
+		ReferencedByCount int `json:"referenced_by_count"`
+	}
+	s.read(t, "read the cited issue", "/api/v1/issues/"+corpus.citedIssue, &issue)
+	shape.hold(t, s.name, "backlinks the cited issue's header counts", issue.ReferencedByCount, readCostBacklinks, false)
+
+	var coverage struct {
+		Requirements []struct {
+			BlockID string `json:"block_id"`
+			Checks  int    `json:"checks"`
+		} `json:"requirements"`
+	}
+	s.read(t, "read the coverage", "/api/v1/issues/"+corpus.coverageIssue+"/coverage", &coverage)
+	checks := -1
+	for _, requirement := range coverage.Requirements {
+		if requirement.BlockID == "r1" {
+			checks = requirement.Checks
+		}
+	}
+	shape.hold(t, s.name, "checks the coverage read counts under the requirement", checks, readCostChecks, true)
+
+	var search struct {
+		Total int `json:"total"`
+	}
+	s.read(t, "search", "/api/v1/search?q="+readCostSearchWord, &search)
+	shape.hold(t, s.name, "matches of the reader's search", search.Total, 1, false)
+}
+
+// ───── the six reads ──────────────────────────────────────────────────────
+
+// readCostRead is one read this tree moves: what the page reads now (new), what it read before
+// (old, nil for a read that replaces nothing), each as one reading that may take several requests
+// and answers their summed time, and what each side's requests are, for the table.
+type readCostRead struct {
+	name, oldRoutes, newRoutes string
+	old, new                   func(s *readCostServer) (time.Duration, error)
+}
+
+// readCostGets times the GETs of paths as the reader, one after another, and answers their summed
+// time: one reading of a read the page makes as those requests. An answer other than 200 is no
+// reading of the read, and fails it.
+func readCostGets(paths ...string) func(s *readCostServer) (time.Duration, error) {
+	return func(s *readCostServer) (time.Duration, error) {
+		var took time.Duration
+		for _, path := range paths {
+			answer, err := s.write(http.MethodGet, path, readCostReader, nil, http.StatusOK)
+			if err != nil {
+				return 0, err
+			}
+			took += answer.took
+		}
+		return took, nil
+	}
+}
+
+// readCostReads are the six reads. Where the route stands at both commits - the coverage read,
+// the references panel with the header's backlink count, and search - each side is that route. The
+// inbox's new read replaces three, which a reading of the release before makes one after another,
+// as its page did. The tree read replaces the reads of an issue's documents, which for this issue
+// is its one document's blocks. The chain read replaces nothing, so it carries a baseline of its
+// own (readCostChainBound).
+func readCostReads(corpus *readCostCorpus) []readCostRead {
+	cited := "/api/v1/references?to=" + url.QueryEscape("dispatch://"+corpus.citedIssue)
+	inboxOld := []string{"/api/v1/inbox?assignee=me", "/api/v1/me/replies?kind=reply,agent&state=inbox",
+		"/api/v1/agents/" + readCostConverse + "/messages"}
+	return []readCostRead{
+		{
+			name: "inbox", oldRoutes: strings.Join(inboxOld, " + "), newRoutes: "/api/v1/me/inbox?state=inbox",
+			old: readCostGets(inboxOld...), new: readCostGets("/api/v1/me/inbox?state=inbox"),
+		},
+		{
+			name:      "issue tree expansion",
+			oldRoutes: "/api/v1/artifacts/{tree document}/blocks", newRoutes: "/api/v1/issues/{tree issue}/tree",
+			old: readCostGets("/api/v1/artifacts/" + corpus.treeDocument + "/blocks"),
+			new: readCostGets("/api/v1/issues/" + corpus.treeIssue + "/tree"),
+		},
+		{
+			name:      "coverage",
+			oldRoutes: "/api/v1/issues/{issue}/coverage", newRoutes: "/api/v1/issues/{issue}/coverage",
+			old: readCostGets("/api/v1/issues/" + corpus.coverageIssue + "/coverage"),
+			new: readCostGets("/api/v1/issues/" + corpus.coverageIssue + "/coverage"),
+		},
+		{
+			name:      "chain",
+			oldRoutes: "none: the chain read replaces no read", newRoutes: "/api/v1/issues/{issue}/chain",
+			new: readCostGets("/api/v1/issues/" + corpus.coverageIssue + "/chain"),
+		},
+		{
+			name:      "references panel with its backlink counts",
+			oldRoutes: "/api/v1/references?to={issue} + /api/v1/issues/{issue}", newRoutes: "/api/v1/references?to={issue} + /api/v1/issues/{issue}",
+			old: readCostGets(cited, "/api/v1/issues/"+corpus.citedIssue),
+			new: readCostGets(cited, "/api/v1/issues/"+corpus.citedIssue),
+		},
+		{
+			name:      "search",
+			oldRoutes: "/api/v1/search?q=" + readCostSearchWord, newRoutes: "/api/v1/search?q=" + readCostSearchWord,
+			old: readCostGets("/api/v1/search?q=" + readCostSearchWord),
+			new: readCostGets("/api/v1/search?q=" + readCostSearchWord),
+		},
+	}
+}
+
+// readCostReading is one read's readings on one side: the three percentiles and every reading, so
+// a number in the table can be read against the spread it came from.
+type readCostReading struct {
+	p50, p95, p99 time.Duration
+	runs          []time.Duration
+}
+
+// measureReadCost takes one warm-up reading that is not counted - the first run of a statement on
+// a connection pays for the pages every run after it finds cached - and then readCostRuns readings,
+// with the percentiles inbox_dismissed_scale_test.go takes (percentileOfDismissedScale, a nearest
+// rank, so every number printed is a reading that happened), widened to p99.
+func measureReadCost(t *testing.T, s *readCostServer, read string, take func(*readCostServer) (time.Duration, error)) readCostReading {
+	t.Helper()
+	if _, err := take(s); err != nil {
+		t.Fatalf("c-read-cost: the warm-up reading of %s on %s: %v", read, s.name, err)
+	}
+	runs := make([]time.Duration, 0, readCostRuns)
+	for range readCostRuns {
+		took, err := take(s)
+		if err != nil {
+			t.Fatalf("c-read-cost: a reading of %s on %s: %v", read, s.name, err)
+		}
+		runs = append(runs, took)
+	}
+	sorted := slices.Clone(runs)
+	slices.Sort(sorted)
+	reading := readCostReading{
+		p50:  percentileOfDismissedScale(sorted, 0.50),
+		p95:  percentileOfDismissedScale(sorted, 0.95),
+		p99:  percentileOfDismissedScale(sorted, 0.99),
+		runs: runs,
+	}
+	t.Logf("c-read-cost: %s on %s: p50 %.1f ms, p95 %.1f ms, p99 %.1f ms over %d readings",
+		read, s.name, msOf(reading.p50), msOf(reading.p95), msOf(reading.p99), readCostRuns)
+	return reading
+}
+
+// measureReadCostSide takes every read of reads that the side has (old, or new) on s, keyed by name.
+func measureReadCostSide(t *testing.T, s *readCostServer, reads []readCostRead, old bool, skip map[string]bool) map[string]readCostReading {
+	t.Helper()
+	readings := map[string]readCostReading{}
+	for _, read := range reads {
+		take := read.new
+		if old {
+			take = read.old
+		}
+		if take == nil || skip[read.name] {
+			continue
+		}
+		readings[read.name] = measureReadCost(t, s, read.name, take)
+	}
+	return readings
+}
+
+// ───── the chain read's own baseline ──────────────────────────────────────
+
+// readCostPod is the machine a reading was taken on. Host names the pod; the rest is what decides
+// whether two runs ran on the same kind of machine, which a pod's own name does not, since every
+// run of the check gets a pod of its own.
+type readCostPod struct {
+	Host      string `json:"host"`
+	CPUs      int    `json:"cpus"`
+	CPUModel  string `json:"cpu_model"`
+	MemoryKiB int64  `json:"memory_kib"`
+	Platform  string `json:"platform"`
+}
+
+// moved is each way pod differs from other as a kind of machine, nothing where the two are the
+// same kind.
+func (pod readCostPod) moved(other readCostPod) []string {
+	var moved []string
+	if pod.CPUs != other.CPUs {
+		moved = append(moved, fmt.Sprintf("cpus %d -> %d", other.CPUs, pod.CPUs))
+	}
+	if pod.CPUModel != other.CPUModel {
+		moved = append(moved, fmt.Sprintf("cpu model %q -> %q", other.CPUModel, pod.CPUModel))
+	}
+	if pod.MemoryKiB != other.MemoryKiB {
+		moved = append(moved, fmt.Sprintf("memory %d KiB -> %d KiB", other.MemoryKiB, pod.MemoryKiB))
+	}
+	if pod.Platform != other.Platform {
+		moved = append(moved, fmt.Sprintf("platform %s -> %s", other.Platform, pod.Platform))
+	}
+	return moved
+}
+
+// readCostPodNow is the machine this run reads on: its host name, its CPUs and their model, the
+// memory the kernel reports, and the platform.
+func readCostPodNow() readCostPod {
+	host, _ := os.Hostname()
+	pod := readCostPod{Host: host, CPUs: runtime.NumCPU(), Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	if info, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		for line := range strings.Lines(string(info)) {
+			if name, value, found := strings.Cut(line, ":"); found && strings.TrimSpace(name) == "model name" {
+				pod.CPUModel = strings.TrimSpace(value)
+				break
+			}
+		}
+	}
+	if info, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for line := range strings.Lines(string(info)) {
+			if value, found := strings.CutPrefix(line, "MemTotal:"); found {
+				pod.MemoryKiB, _ = strconv.ParseInt(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "kB")), 10, 64)
+				break
+			}
+		}
+	}
+	return pod
+}
+
+// readCostCorpusName is the corpus a chain reading was taken over, as the constants that write it
+// state it: a run over another corpus reads another read.
+func readCostCorpusName() string {
+	return fmt.Sprintf("%d blocks at depth %d; %d entries (%d asks, %d threads, %d messages); %d backlinks; %d checks; "+
+		"%d unrelated rows; %d readings", readCostTreeBlocks, readCostTreeDepth, readCostEntries, readCostAsks, readCostThreads,
+		readCostConversation, readCostBacklinks, readCostChecks, readCostUnrelatedDocument*readCostUnrelatedBlocks, readCostRuns)
+}
+
+// readCostChainBaseline is the chain read's recorded baseline: its readings, the commit they were
+// taken at, the corpus, the pod and the date.
+type readCostChainBaseline struct {
+	RecordedAt string      `json:"recorded_at"`
+	Commit     string      `json:"commit"`
+	Corpus     string      `json:"corpus"`
+	Pod        readCostPod `json:"pod"`
+	Runs       int         `json:"runs"`
+	P50MS      float64     `json:"p50_ms"`
+	P95MS      float64     `json:"p95_ms"`
+	P99MS      float64     `json:"p99_ms"`
+}
+
+// readCostChainBound reads the chain read's recorded baseline and answers it where it holds for
+// this run: the same corpus on the same kind of pod. Where none is recorded, or the corpus or the
+// pod moved, it records this run's reading as the baseline, with the pod and the date, says what
+// moved, and answers nil: that run gates the chain read on nothing. The record is printed whole,
+// so a run whose working copy is thrown away (a cluster Job) leaves it in its log to be committed
+// at readCostChainBaselinePath.
+func readCostChainBound(t *testing.T, commit string, reading readCostReading) *readCostChainBaseline {
+	t.Helper()
+	now := readCostChainBaseline{
+		RecordedAt: time.Now().UTC().Format(time.RFC3339), Commit: commit, Corpus: readCostCorpusName(), Pod: readCostPodNow(),
+		Runs: readCostRuns, P50MS: msOf(reading.p50), P95MS: msOf(reading.p95), P99MS: msOf(reading.p99),
+	}
+	var moved []string
+	recorded, err := os.ReadFile(readCostChainBaselinePath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		moved = append(moved, "no baseline was recorded")
+	case err != nil:
+		t.Fatalf("read the chain read's baseline %s: %v", readCostChainBaselinePath, err)
+	default:
+		var before readCostChainBaseline
+		if err := json.Unmarshal(recorded, &before); err != nil {
+			t.Fatalf("decode the chain read's baseline %s: %v", readCostChainBaselinePath, err)
+		}
+		if before.Corpus != now.Corpus {
+			moved = append(moved, fmt.Sprintf("the corpus moved from %q to %q", before.Corpus, now.Corpus))
+		}
+		moved = append(moved, now.Pod.moved(before.Pod)...)
+		if len(moved) == 0 {
+			t.Logf("c-read-cost: the chain read's baseline was recorded at %s on %s (%s) at %s: p50 %.1f ms, p95 %.1f ms, p99 %.1f ms",
+				before.RecordedAt, before.Pod.Host, readCostPodName(before.Pod), before.Commit, before.P50MS, before.P95MS, before.P99MS)
+			return &before
+		}
+	}
+	encoded, err := json.MarshalIndent(now, "", "  ")
+	if err != nil {
+		t.Fatalf("encode the chain read's baseline: %v", err)
+	}
+	if err := os.WriteFile(readCostChainBaselinePath, append(encoded, '\n'), 0o644); err != nil {
+		t.Fatalf("record the chain read's baseline at %s: %v", readCostChainBaselinePath, err)
+	}
+	compact, _ := json.Marshal(now)
+	t.Logf("c-read-cost: the chain read records its own baseline, since %s, and gates on nothing in this run; written to %s: %s",
+		strings.Join(moved, "; "), readCostChainBaselinePath, compact)
+	return nil
+}
+
+// readCostPodName is a pod's kind, as a reader is told it.
+func readCostPodName(pod readCostPod) string {
+	return fmt.Sprintf("%d CPUs of %s, %d KiB, %s", pod.CPUs, pod.CPUModel, pod.MemoryKiB, pod.Platform)
+}
+
+// ───── the run ────────────────────────────────────────────────────────────
+
+// No read this tree moves gets slower, and no event outruns its node.
+//
+// Six reads are measured, each over HTTP through one client against a server process over one
+// database: the inbox, the issue tree expansion, the coverage read, the chain read, the references
+// panel with its backlink counts, and search. The old side of each is the answer of the read it
+// replaces, on the build of the commit BASELINE_SHA names; the new side is this head's. The run has
+// four steps. First, it seeds the corpus on the release before, through that build's own writers,
+// and measures the old side there. Second, it stops that server and boots this head over the same
+// database, which migrates it; it then writes the announcement of another build listing every
+// relation kind and the capability of the three children, and boots this head again, so that the
+// boot's step deleting what the children kept for one release (startup.Retire) runs, and prints the
+// view definition the references panel is then measured over. Third, it waits until every backfill
+// of this tree owes nothing, reading each owed count every 2 s and failing after 300 s, and holds
+// the corpus to its stated shape through this head's own reads. Fourth, and only then, it measures
+// the new side. The two sides are minutes apart in one run, which is the comparison a shared box
+// allows.
+//
+// Each read is held to a ratio of its own baseline's p50, as dismissedScaleBounds holds that
+// test's operations: the inbox to 2.00 against the reads it replaces, and each other read to twice
+// its baseline's p50. The chain read replaces nothing, so its first run records its own baseline
+// with the pod and the date and gates on nothing; every later run is held to twice that recorded
+// p50. Every p99 is printed and bound at nothing, since the 198th of 200 readings on a Postgres
+// shared with every other suite moves further than a change does. The run then reads the event
+// horizon from the subscriber's side (TestNoEventOutrunsItsNode) and prints its own wall time.
+//
+// It fails, never skips, where BASELINE_SHA is unset or names no 40-character commit, before it
+// builds or measures anything: a reading of the replaced reads needs the server of that commit.
+func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
+	began := time.Now()
+	t.Cleanup(func() {
+		t.Logf("c-read-cost: TestNoReadThisTreeMovesGetsSlower took %s of wall time", time.Since(began).Round(time.Second))
+	})
+	baseCommit := readCostBaseCommit(t)
+	databaseURL := readCostDatabase(t)
+	headCommit := gitOutput(t, ".", "rev-parse", "HEAD")
+	if !readCostFullCommit.MatchString(headCommit) || headCommit == baseCommit {
+		t.Fatalf("this head's commit %q must be a whole commit other than %s=%s, or the two builds cannot be told apart",
+			headCommit, testbaseline.Variable, baseCommit)
+	}
+	baseBinary := testbaseline.Build(t, baseCommit, testbaseline.Variable)
+	headBinary := cmdtest.BuildCommand(t, cmdtest.Command{
+		Name:   "envoy-dispatch-head",
+		Dir:    envoyModuleRoot(t),
+		Target: "./cmd/dispatch",
+		Flags:  []string{"-ldflags", "-X main.buildCommit=" + headCommit},
+	})
+	t.Logf("c-read-cost: the old side runs on the build of %s, the commit %s names; the new side on the build of this "+
+		"checkout's working copy, stamped with its HEAD %s", baseCommit, testbaseline.Variable, headCommit)
+	client := readCostClient()
+	listener := readCostListener(t)
+	conn := readCostConnect(t, databaseURL)
+
+	// ───── first: the corpus and the old side, on the release before ─────
+	base := startReadCostServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
+	corpus := seedReadCost(t, base)
+	waitReadCostOwed(t, conn, base.name, readCostBaseOwed, readCostDrainWait, nil, "")
+	readCostVacuum(t, conn, "old side")
+	requireReadCostOldShape(t, base, corpus)
+	reads := readCostReads(corpus)
+	old := measureReadCostSide(t, base, reads, true, nil)
+	base.stop(t)
+
+	// ───── second: this head over the same database, booted twice ─────
+	first := startReadCostServer(t, client, "this head's first boot ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
+	if _, err := conn.Exec(context.Background(), `insert into server_build_announcements (commit, tuple_kinds) values ($1, $2)`,
+		readCostOtherBuild, refs.TupleKinds()); err != nil {
+		t.Fatalf("announce another build listing every relation kind: %v", err)
+	}
+	t.Logf("c-read-cost: announced another build, %s, listing every relation kind and capability: %v", readCostOtherBuild, refs.TupleKinds())
+	first.stop(t)
+	head := startReadCostServer(t, client, "this head ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
+	var view string
+	if err := conn.QueryRow(context.Background(), `select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&view); err != nil {
+		t.Fatalf("read the definition of graph_edges: %v", err)
+	}
+	t.Logf("c-read-cost: the references panel is measured over this definition of graph_edges:\n%s", view)
+
+	// ───── third: every owed count at 0, then the corpus's shape at this head ─────
+	waitReadCostOwed(t, conn, head.name, readCostHeadOwed, readCostOwedWait,
+		func() bool { return strings.Contains(head.process.Output.String(), readCostBackfillDone) }, "boot_backfill_done", headCommit)
+	readCostVacuum(t, conn, "new side")
+	served := requireReadCostNewShape(t, head, corpus)
+
+	// ───── fourth: the new side ─────
+	missing := map[string]bool{"inbox": !served}
+	now := measureReadCostSide(t, head, reads, false, missing)
+	chain := readCostChainBound(t, headCommit, now["chain"])
+	head.stop(t)
+
+	t.Logf("c-read-cost: old side %s, new side %s; %d readings of each read on each side", baseCommit, headCommit, readCostRuns)
+	t.Log("c-read-cost: read\told p50 ms\tnew p50 ms\told p95 ms\tnew p95 ms\told p99 ms\tnew p99 ms\tratio of p50s\tbound")
+	for _, read := range reads {
+		t.Logf("c-read-cost: %s", readCostRow(read, old, now, chain, missing))
+	}
+	for _, read := range reads {
+		for _, side := range []struct {
+			name     string
+			readings map[string]readCostReading
+		}{{"old", old}, {"new", now}} {
+			if reading, ok := side.readings[read.name]; ok {
+				t.Logf("c-read-cost: %s, %s side, every reading in order, in ms: %v", read.name, side.name, readCostMilliseconds(reading.runs))
+			}
+		}
+	}
+
+	// The bounds, one subtest per read, so a read over its bound names itself and the rest still
+	// report theirs. Each is taken on the p50, where this hardware can tell a slower read from its
+	// own noise; the p99s above are printed and bound at nothing.
+	for _, read := range reads {
+		t.Run(read.name, func(t *testing.T) {
+			reading, measured := now[read.name]
+			switch {
+			case missing[read.name]:
+				t.Errorf("%s: this head answers %s with 404, so the read has no new reading to hold to %.2fx", read.name, read.newRoutes, dismissedScaleRatioBound)
+			case !measured:
+				t.Errorf("%s: no new reading was taken", read.name)
+			case read.old == nil && chain == nil:
+				t.Logf("%s: this run recorded the read's own baseline and holds it to nothing", read.name)
+			case read.old == nil:
+				if ratio := msOf(reading.p50) / chain.P50MS; ratio > dismissedScaleRatioBound {
+					t.Errorf("%s: p50 %.1f ms is %.2fx its recorded baseline's p50 of %.1f ms (%s), over %.2fx",
+						read.name, msOf(reading.p50), ratio, chain.P50MS, chain.RecordedAt, dismissedScaleRatioBound)
+				}
+			default:
+				before := old[read.name]
+				if ratio := float64(reading.p50) / float64(before.p50); ratio > dismissedScaleRatioBound {
+					t.Errorf("%s: p50 %.1f ms is %.2fx the p50 of %.1f ms of the read it replaces (%s), over %.2fx",
+						read.name, msOf(reading.p50), ratio, msOf(before.p50), read.oldRoutes, dismissedScaleRatioBound)
+				}
+			}
+		})
+	}
+
+	// Last, the event horizon from the subscriber's side: a held commit shows no event, a released
+	// one shows the event and its node together, and a rollback shows none ever.
+	t.Run("the event horizon: no event outruns its node", TestNoEventOutrunsItsNode)
+}
+
+// readCostBaseCommit reads BASELINE_SHA and fails, never skips, where it is unset or names no
+// 40-character commit, naming the variable, before anything is built or read; then it holds the
+// checkout to that commit (testbaseline.Commit).
+func readCostBaseCommit(t *testing.T) string {
+	t.Helper()
+	named := strings.TrimSpace(os.Getenv(testbaseline.Variable))
+	if named == "" {
+		t.Fatalf("%s is unset: c-read-cost reads each replaced read on the server of the commit it names, so it measures nothing "+
+			"without it; set it to the 40-character commit of the pull request body's %s= line", testbaseline.Variable, testbaseline.Variable)
+	}
+	if !readCostFullCommit.MatchString(named) {
+		t.Fatalf("%s=%q names no 40-character commit: c-read-cost reads the commit the pull request body pins, whole", testbaseline.Variable, named)
+	}
+	if commit := testbaseline.Commit(t); commit != named {
+		t.Fatalf("%s=%s resolves to %s in this checkout", testbaseline.Variable, named, commit)
+	}
+	return named
+}
+
+// readCostRow is one read's row of the table: its two p50s, p95s and p99s and the ratio of its
+// p50s, with the bound that ratio is held to.
+func readCostRow(read readCostRead, old, now map[string]readCostReading, chain *readCostChainBaseline, missing map[string]bool) string {
+	reading, measured := now[read.name]
+	switch {
+	case missing[read.name] || !measured:
+		before := old[read.name]
+		return fmt.Sprintf("%s\t%.1f\tmissing\t%.1f\tmissing\t%.1f\tmissing\t-\t%.2fx on p50: this head does not serve %s",
+			read.name, msOf(before.p50), msOf(before.p95), msOf(before.p99), dismissedScaleRatioBound, read.newRoutes)
+	case read.old == nil && chain == nil:
+		return fmt.Sprintf("%s\t-\t%.1f\t-\t%.1f\t-\t%.1f\t-\tnone: this run records the read's own baseline",
+			read.name, msOf(reading.p50), msOf(reading.p95), msOf(reading.p99))
+	case read.old == nil:
+		return fmt.Sprintf("%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.2fx on p50 of the baseline recorded at %s",
+			read.name, chain.P50MS, msOf(reading.p50), chain.P95MS, msOf(reading.p95), chain.P99MS, msOf(reading.p99),
+			msOf(reading.p50)/chain.P50MS, dismissedScaleRatioBound, chain.RecordedAt)
+	default:
+		before := old[read.name]
+		return fmt.Sprintf("%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.2fx on p50 of %s",
+			read.name, msOf(before.p50), msOf(reading.p50), msOf(before.p95), msOf(reading.p95), msOf(before.p99), msOf(reading.p99),
+			float64(reading.p50)/float64(before.p50), dismissedScaleRatioBound, read.oldRoutes)
+	}
+}
+
+// readCostMilliseconds is every reading in milliseconds to a tenth, in the order taken.
+func readCostMilliseconds(runs []time.Duration) []float64 {
+	milliseconds := make([]float64, len(runs))
+	for index, run := range runs {
+		milliseconds[index] = float64(run.Microseconds()/100) / 10
+	}
+	return milliseconds
+}

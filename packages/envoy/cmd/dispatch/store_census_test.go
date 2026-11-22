@@ -322,60 +322,11 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 // binary. The commit is the one BASELINE_SHA names (testbaseline.Commit): the fork point with
 // main for a branch that lands on main, the parent's head for a child stacked on it, and for a
 // check whose branch builds on branches that have not merged yet, a commit holding every such
-// branch (TestThePredicateAndTheLensReadsGetNoSlower's base). It is baseBuildOf of that commit.
+// branch (TestThePredicateAndTheLensReadsGetNoSlower's base). It is testbaseline.Build of that
+// commit, the build every test of the tag boots.
 func baseBuild(t *testing.T) string {
 	t.Helper()
-	return baseBuildOf(t, testbaseline.Commit(t), testbaseline.Variable)
-}
-
-// baseBuildOf builds `./cmd/dispatch` at commit, the commit the environment variable variable
-// names, and answers the binary: baseBuild's commit, or another earlier build a test serves beside
-// it, as TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress serves main's
-// (testbaseline.MainVariable). The source is that commit's own tree, taken out of the repository
-// with `git archive` into a directory of this test's own, so the build is that commit's and not
-// this working copy's. The binary is stamped with that commit as the image build stamps one,
-// `-ldflags "-X main.buildCommit=<commit>"`, so the process registers and reports the build it is
-// (processes.Live reads two unstamped builds as one fleet). The directory and the binary go when
-// the test ends, so every run extracts and builds again, which is about a minute.
-func baseBuildOf(t *testing.T, commit, variable string) string {
-	t.Helper()
-	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	// No socket is bound anywhere under the tree, so the room asked for is the directory the
-	// build runs in rather than the longest path of the archive.
-	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
-	archive := exec.Command("git", "-C", root, "archive", commit)
-	extract := exec.Command("tar", "-x", "-C", source)
-	pipe, err := archive.StdoutPipe()
-	if err != nil {
-		t.Fatalf("read the tree of %s: %v", commit, err)
-	}
-	// The archive's stdout is the pipe tar reads, so its own failure is read from its stderr
-	// alone: asking for both, as CombinedOutput does, is `exec: Stdout already set` and the
-	// build never runs.
-	var problems strings.Builder
-	archive.Stderr = &problems
-	extract.Stdin = pipe
-	if err := extract.Start(); err != nil {
-		t.Fatalf("extract the tree of %s: %v", commit, err)
-	}
-	if err := archive.Start(); err != nil {
-		t.Fatalf("read the tree of %s: %v", commit, err)
-	}
-	if err := archive.Wait(); err != nil {
-		t.Fatalf("read the tree of %s: %v\n%s", commit, err, problems.String())
-	}
-	if err := extract.Wait(); err != nil {
-		t.Fatalf("extract the tree of %s: %v", commit, err)
-	}
-	binary := cmdtest.BuildCommand(t, cmdtest.Command{
-		Name:   "envoy-dispatch-base",
-		Dir:    filepath.Join(source, "packages", "envoy"),
-		Target: "./cmd/dispatch",
-		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
-		Env:    os.Environ(),
-	})
-	t.Logf("the older build is %s, from %s, the commit %s names, stamped with that commit", binary, commit, variable)
-	return binary
+	return testbaseline.Build(t, testbaseline.Commit(t), testbaseline.Variable)
 }
 
 // baseRelease is the envoy-dispatch binary of the base release, which the Verification
@@ -431,17 +382,6 @@ func agentUpload(t *testing.T, p *dispatchProcess, issue, name, content string) 
 	t.Helper()
 	answer := asAgentSession(t, p, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": name, "content": content}, http.StatusCreated)
 	return uploadedID(t, answer)
-}
-
-func gitOutput(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // ───── what the older build writes ────────────────────────────────────────
