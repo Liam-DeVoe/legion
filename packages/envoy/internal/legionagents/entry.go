@@ -4,12 +4,13 @@
 // the listener's PUT routes; Dispatch reads it through the GET routes (cmd/listener/api.go).
 //
 // Key layout. session.<session_id> holds the entry, and two index keys hold the same entry JSON:
-// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is
-// reserved for the daemon's own record (INFRA-204), and no read here reaches it: every read is a
-// session key or an issue or role prefix. A write claims the session key first, by compare-and-swap,
-// and writes the index keys after it, so a session two writes race for is listed under the winner's
-// issue alone. Nothing is ever deleted, so a closed issue's agents keep their entries and no read
-// replays delete markers.
+// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>, the role token being the claim
+// token of the session's agent, which names the agent and not the role its step is on.
+// project.<legion_project> is reserved for the daemon's own record (INFRA-204), and no read here
+// reaches it: every read is a session key or an issue or role token prefix. A write claims the
+// session key first, by compare-and-swap, and writes the index keys after it, so a session two
+// writes race for is listed under the winner's issue alone. Nothing is ever deleted, so a closed
+// issue's agents keep their entries and no read replays delete markers.
 package legionagents
 
 import (
@@ -26,8 +27,10 @@ import (
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
 // declares (listenerwire.LegionAgentEntry). Its role is one of Roles or a role the deployment
-// defines: a name of roleGrammar but controller (Validate). Readers ignore fields they do not
-// know, so a later writer may add some.
+// defines: a name of roleGrammar but controller (Validate), the role of the step its agent runs as
+// of the entry's latest write. Its role token is the claim token of that agent, which ends in the
+// agent's name, the role of its first step. Readers ignore fields they do not know, so a later
+// writer may add some.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -75,8 +78,6 @@ var (
 	issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
 	// rolePattern is a role of the grammar.
 	rolePattern = regexp.MustCompile(`^` + roleGrammar + `$`)
-	// roleTokenPattern is an issue role's token: legion-<project>-<issue project>-<number>-<role>.
-	roleTokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-[a-z0-9]+-[0-9]+-(` + roleGrammar + `)$`)
 )
 
 // isRole reports whether role is a role of an issue: a name of the grammar but the controller's.
@@ -84,7 +85,7 @@ func isRole(role string) bool {
 	return role != "controller" && rolePattern.MatchString(role)
 }
 
-// ErrInvalid is a session id, issue key, role token or entry the registry refuses. Each refusal
+// ErrInvalid is a session id, issue key, claim token or entry the registry refuses. Each refusal
 // wraps it with the field and the rule it breaks.
 var ErrInvalid = errors.New("invalid legion agent")
 
@@ -94,16 +95,18 @@ var ErrNotFound = errors.New("unknown legion agent")
 // ErrTooMany is a batch of more than MaxBatch entries.
 var ErrTooMany = fmt.Errorf("a batch takes at most %d legion agents", MaxBatch)
 
-// ConflictError is a write that would move a recorded session to another issue or role: a session
-// belongs to one issue and role for good, so no index key is ever orphaned. Every write claims the
+// ConflictError is a write that would move a recorded session to another issue or another claim:
+// a session belongs to one claim of one issue for good, so no index key is ever orphaned. Its role
+// is not held: an agent keeps its claim and its session across the roles of its steps, and a write
+// of the session on another role's step keeps every key where it was. Every write claims the
 // session key before it writes an index key (Store.write), so the refusal holds against a
 // concurrent write and a write that ended partway alike.
 type ConflictError struct {
-	SessionID, Issue, Role string
+	SessionID, Issue, RoleToken string
 }
 
 func (e *ConflictError) Error() string {
-	return fmt.Sprintf("legion agent %s is recorded for %s %s", e.SessionID, e.Issue, e.Role)
+	return fmt.Sprintf("legion agent %s is recorded for %s as %s", e.SessionID, e.Issue, e.RoleToken)
 }
 
 // BatchError is the refusal of one entry of a batch, which refuses the whole batch.
@@ -156,21 +159,16 @@ func ValidateIssue(issue string) error {
 	return nil
 }
 
-// ValidateRoleToken refuses a token that is not the token of an issue's role.
+// ValidateRoleToken refuses a token that is not the claim token of an agent of an issue
+// (CutClaimToken).
 func ValidateRoleToken(token string) error {
 	if limit := len("legion-") + maxProjectBytes + 1 + maxIssueBytes + 1 + maxRoleBytes; len(token) > limit {
 		return invalid("role_token is %d bytes, past %d", len(token), limit)
 	}
-	if match := roleTokenPattern.FindStringSubmatch(token); match == nil || !isRole(match[1]) {
-		return invalid("role_token %q is not legion-<legion_project>-<issue>-<role>", token)
+	if _, _, _, ok := CutClaimToken(token); !ok {
+		return invalid("role_token %q is not legion-<legion_project>-<issue>-<agent>", token)
 	}
 	return nil
-}
-
-// RoleToken is the token of issue's role under the Legion project token project, the one a valid
-// entry carries.
-func RoleToken(project, issue, role string) string {
-	return "legion-" + project + "-" + strings.ToLower(issue) + "-" + role
 }
 
 // Validate refuses an entry the registry does not store. Both writes, one entry and a batch, refuse
@@ -191,8 +189,9 @@ func Validate(entry Entry) error {
 	if !isRole(entry.Role) {
 		return invalid("role %q is not one of %s or a role of the grammar ^%s$ but controller", entry.Role, strings.Join(Roles, ", "), roleGrammar)
 	}
-	if want := RoleToken(entry.LegionProject, entry.Issue, entry.Role); entry.RoleToken != want {
-		return invalid("role_token %q is not legion-<legion_project>-<issue>-<role>, %q", entry.RoleToken, want)
+	if project, issue, _, ok := CutClaimToken(entry.RoleToken); !ok || project != entry.LegionProject || issue != entry.Issue {
+		return invalid("role_token %q is not legion-<legion_project>-<issue>-<agent>, the claim token of an agent of %s under %s",
+			entry.RoleToken, entry.Issue, entry.LegionProject)
 	}
 	if len(entry.Title) > maxTitleBytes {
 		return invalid("title is %d bytes, past %d", len(entry.Title), maxTitleBytes)
@@ -211,11 +210,12 @@ func isUTCTimestamp(value string) bool {
 	return err == nil && strings.HasSuffix(value, "Z")
 }
 
-// sameSession reports whether stored and next name the same issue and role, the fields a session
-// keeps for good.
+// sameSession reports whether stored and next name the same Legion project, issue and claim
+// token, the fields a session keeps for good. The role is not one of them: it is the role of the
+// step the session's agent runs, which changes as the agent's steps do.
 func sameSession(stored, next Entry) bool {
 	return stored.LegionProject == next.LegionProject && stored.Issue == next.Issue &&
-		stored.Role == next.Role && stored.RoleToken == next.RoleToken
+		stored.RoleToken == next.RoleToken
 }
 
 // startedAt is the entry's start, the order a role token's sessions replace each other in. A stored
@@ -231,9 +231,9 @@ func oldestFirst(a, b Entry) int {
 	return cmp.Or(startedAt(a).Compare(startedAt(b)), cmp.Compare(a.RecordedAt, b.RecordedAt), cmp.Compare(a.SessionID, b.SessionID))
 }
 
-// succession derives each session's replacement among entries, every one of one role token: the
-// next session to start replaced it, at that session's start. It returns them newest first, the
-// first being the role's current holder.
+// succession derives each session's replacement among entries, every one of one role token, one
+// agent's claim: the next session to start replaced it, at that session's start. It returns them
+// newest first, the first being the claim's current session.
 func succession(entries []Entry) []Agent {
 	slices.SortFunc(entries, oldestFirst)
 	agents := make([]Agent, len(entries))
@@ -248,9 +248,9 @@ func succession(entries []Entry) []Agent {
 	return agents
 }
 
-// issueOrder lists an issue's agents by role, the six in workflow order and then every other role
-// by name, then by role token, then newest first, each role token's replacements derived among its
-// own sessions.
+// issueOrder lists an issue's agents by role, the role of each entry's latest write, the six in
+// workflow order and then every other role by name, then by role token, then newest first, each
+// role token's replacements derived among its own sessions.
 func issueOrder(entries []Entry) []Agent {
 	byToken := map[string][]Entry{}
 	for _, entry := range entries {
