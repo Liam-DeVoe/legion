@@ -907,26 +907,33 @@ func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry
 	entry.UpdatedAt = r.now().UnixMilli()
 	// The gap mark the session is owed (SessionEntry.RepositoryGap) is carried from the entry this
 	// write replaces, never from this registry's copy where that copy trails the bucket. carried
-	// holds that mark through the write loop: the copy's entry where the copy holds one at the
-	// fence, else the bucket's read. The copy's entry is at the fence's revision whenever the copy
-	// holds one, since the copy stores an entry only at or past its fence and moves the fence with
-	// it (kvwatch.Copy.FenceFor). A fence of another epoch reads 0, and a key the copy holds no
-	// entry of is no entry to carry a mark from, so either is read from the bucket first, and the
-	// write is fenced on the revision it read. The mark is written back only where carryGap is set
-	// (PutWithin); PutClearingGap leaves the entry's own, so a claim refresh over a forged record
-	// drops a mark no writer's record stands for.
+	// holds that mark through the write loop. For PutWithin it is the copy's entry where the copy
+	// holds one at the fence, else the bucket's read (readEntry). The copy's entry is at the fence's
+	// revision whenever the copy holds one, since the copy stores an entry only at or past its fence
+	// and moves the fence with it (kvwatch.Copy.FenceFor). A fence of another epoch reads 0, and a
+	// key the copy holds no entry of is no entry to carry a mark from, so either is read from the
+	// bucket first, and the write is fenced on the revision it read.
+	//
+	// PutClearingGap writes no mark, so a claim refresh over a forged record drops the forged mark.
+	// But a lost compare-and-swap, or a cache that holds no entry, means a write may have landed
+	// since the claim read the record: carried is taken from the stream leader (readEntryFromLeader),
+	// so a relay's mark on this session's own writer's record that stands now is carried rather than
+	// cleared, and the session is not made to miss the one notice the mark owes; a record no writer's
+	// stands for is written over at its true sequence with no mark.
 	carried := entry.RepositoryGap
 	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
 	replaced, cached := r.cache.Get(sessionID)
 	revision := r.cache.FenceFor(epoch, sessionID)
 	known := cached && revision > 0
-	if known {
+	if known && carryGap {
 		carried = replaced.entry.RepositoryGap
 	}
 	r.mu.RUnlock()
 	for retry := false; ; retry = true {
-		if !known {
+		switch {
+		case known:
+		case carryGap:
 			stored, at, err := readEntry(ctx, kv, sessionID, retry)
 			switch {
 			case errors.Is(err, errUndecodableEntry):
@@ -934,18 +941,23 @@ func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry
 				// On a retry the leader's read reports a message the server wrote, or a marker, at
 				// the sequence it is stored at, so the write replaces it there rather than fencing
 				// for good on the sequence a direct get read from another stream's header.
-				revision = at
-				carried = ""
+				revision, carried = at, ""
 			case err != nil:
 				return fmt.Errorf("read session %s from the bucket before writing it: %w", sessionID, err)
 			default:
-				revision = at
+				revision, carried = at, stored.RepositoryGap
+			}
+		default:
+			stored, at, found, err := readEntryFromLeader(ctx, kv, sessionID)
+			if err != nil {
+				return fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
+			}
+			revision, carried = at, ""
+			if found {
 				carried = stored.RepositoryGap
 			}
 		}
-		if carryGap {
-			entry.RepositoryGap = carried
-		}
+		entry.RepositoryGap = carried
 		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
 		if err != nil {
 			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)

@@ -391,3 +391,60 @@ func TestSessionRegistryDeleteIf_AKeyThatBecameAMarkerReReadsAndAnswersDeleted(t
 		t.Errorf("DeleteIf(%s) = %s, want %s: the retry re-reads the key, finds the marker, and answers deleted", key, outcome, EntryDeleted)
 	}
 }
+
+// raceOnFirstUpdate runs before once, just before the first Update through this handle, so a test
+// lands a competing write between a writer's read of a key's revision and its conditional write,
+// making that write lose the compare-and-swap.
+type raceOnFirstUpdate struct {
+	nats.KeyValue
+	updates int
+	before  func()
+}
+
+func (kv *raceOnFirstUpdate) Update(key string, value []byte, last uint64) (uint64, error) {
+	kv.updates++
+	if kv.updates == 1 && kv.before != nil {
+		kv.before()
+	}
+	return kv.KeyValue.Update(key, value, last)
+}
+
+// N1: PutClearingGap writes no gap mark, so a claim refresh over a forged record drops the forged
+// mark. But when its write loses a compare-and-swap to this session's own writer's record that landed
+// in between - a registration, or a relay's gap-mark write - the retry reads that record from the
+// leader (readEntryFromLeader) and carries its gap mark rather than clearing it, so the session is not
+// made to miss the one notice the mark owes. Control (b785a2a6db): the retry clears the mark whatever
+// landed, and the record ends with none.
+func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	other := openBindingRegistry(t, client)
+	ctx := context.Background()
+	const sessionID = "ses_clear_gap_race"
+	if err := r.Put(sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	// A relay's gap-mark write lands on the session's record just before PutClearingGap's own write,
+	// so that write loses the compare-and-swap and the loop reads the leader again.
+	var raced bool
+	seam := &raceOnFirstUpdate{KeyValue: r.watcher.KV().Legacy(), before: func() {
+		if err := other.SetRepositoryGap(ctx, sessionID, "relay-mark"); err != nil {
+			t.Errorf("land the relay's gap mark: %v", err)
+		}
+		raced = true
+	}}
+	useKV(t, r, seam)
+	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
+	}
+	if !raced {
+		t.Fatal("the racing write never landed, so no lost compare-and-swap drove the retry")
+	}
+	stored, found, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !found {
+		t.Fatalf("read %s after the refresh: found=%t err=%v", sessionID, found, err)
+	}
+	if stored.RepositoryGap != "relay-mark" {
+		t.Errorf("PutClearingGap dropped the writer's gap mark on a lost race: gap=%q, want relay-mark", stored.RepositoryGap)
+	}
+}
