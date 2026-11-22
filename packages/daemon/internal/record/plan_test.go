@@ -67,7 +67,8 @@ func readPlan(t *testing.T, tx pgx.Tx, issue string, generation uint64) *StoredP
 	return plan
 }
 
-// The plan of an issue is three tables keyed by the issue and its generation: one task and its two
+// The plan of an issue is four tables keyed by the issue and its generation, the roles a version
+// defines among them (plan_roles): one task and its two
 // steps read back as they were written, every column of each, and the generation beside it reads
 // no plan at all. A plan given before the daemon records its issue is written at generation 0, and
 // no row of the issues table is needed for it: the plan names an issue the daemon has not recorded.

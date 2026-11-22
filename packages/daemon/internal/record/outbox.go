@@ -855,7 +855,7 @@ type CatchUpGate struct {
 }
 
 // CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role that runs the
-// issue's step where it stands at step (Issue.StepRole), a role the deployment defines, which the
+// issue's step where it stands at step (Issue.StepRole), a role the deployment or the issue's plan defines, which the
 // phase alone does not name; it is absent at every other phase.
 type CatchUpIssue struct {
 	Key      string      `json:"key"`

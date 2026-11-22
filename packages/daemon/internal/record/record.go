@@ -1137,7 +1137,7 @@ const (
 
 // MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
 // already is, every phase after it up to the merge, which the issue keeps while the implementer
-// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment defines runs, after the
+// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment or the issue's plan defines runs, after the
 // implementer or before it (a step before it has no pull request, so nothing is asked there). An
 // issue that stands in none of them - before its implementation, or out of the workflow - has no
 // pull request work to merge forward. They are also the phases a head move is read for a conflict

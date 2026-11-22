@@ -79,10 +79,11 @@ type Config struct {
 	// the one task default of an issue whose owner gives no plan, and of a task whose block names
 	// neither steps nor a sub-owner. Nil takes the steps of a project that names none.
 	DefaultSteps []plan.Step
-	// Deployment is the roles a step of this deployment names, each with its type
-	// (config.Config.Deployment): Legion's own and each role of `roles`. A stored step takes the
-	// type of its role here (planSteps). A Config that sets no roles takes Legion's own
-	// (plan.BuiltinRoles).
+	// Deployment is what this deployment gives a plan (config.Config.Deployment): the roles a step
+	// names, Legion's own and each role of `roles`, each with its type, its model and its harness,
+	// the listed models and the owner's role. A stored step takes the type plan.RolesOf gives its
+	// role, the plan's own role's before the deployment's (planSteps). A Config that sets no roles
+	// takes Legion's own (plan.BuiltinRoles).
 	Deployment plan.Deployment
 	Clock      func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
@@ -2460,7 +2461,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if stops {
 		return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, record.StandsAt(issue), stepSite{}, handoff))
 	}
-	// A move into the step of a role the deployment no longer defines starts no role: the task
+	// A move into the step of a role neither the deployment nor the plan in force defines starts no role: the task
 	// stops where it stands, naming the step (stopLostRole), and the step it stood at ends as the
 	// move would have ended it. A move stands in a phase a hold stands in, so a refusal of the
 	// stop is an error.
@@ -2817,8 +2818,8 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	return e.transition(ctx, tx, issue, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 }
 
-// stopLostRole stops w's task of issue, whose step at lost names a role the engine's deployment no
-// longer defines (Walk.lostAt): the daemon restarted with settings that dropped the role while a
+// stopLostRole stops w's task of issue, whose step at lost names a role neither the engine's
+// deployment nor the plan in force defines (Walk.lostAt): the daemon restarted with settings that dropped the role while a
 // task still had a step of it to run. The task stops where it stands as stop_task stops it
 // (stopTask), its step ending as end says, with the reason that names the step and the role, and
 // the task's owner is told once, in a task-stopped notice that names the lost role. The owner's
@@ -2837,7 +2838,7 @@ func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // stopLostRoles stops, at the daemon's boot, the task of each issue of the project in the workflow
-// whose task still has a step to run of a role the engine's deployment no longer defines
+// whose task still has a step to run of a role neither the engine's deployment nor the plan in force defines
 // (Walk.lostStep), running or waiting: the settings are read at the start, so a restart is where a
 // role leaves the deployment while the store still names it. A task its plan already holds
 // (planHold) has nothing to stop. A task whose stop cannot stand where its issue stands now (a root
@@ -2933,7 +2934,7 @@ type claimTarget struct {
 //
 // A claim can also come up after this read: a start already past its fences when the request's
 // fact commits brings its claim up later, with no row of its own. So each role the issue can hold
-// (record.IssueRoles: Legion's own and each role of the deployment that ran on it) but except,
+// (record.IssueRoles: Legion's own and each role of the deployment or of the issue's plan that ran on it) but except,
 // whose worker claim is none of the stored claims, is a target by the role alone: the executor
 // reaches the claim the record gives that role's step when the row runs, and treats a request for
 // a claim that does not exist as done.
