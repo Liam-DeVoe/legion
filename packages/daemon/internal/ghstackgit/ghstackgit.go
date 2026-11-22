@@ -5,12 +5,14 @@
 // image's git.
 //
 // A shape is a list of words: a literal, a literal prefix of an argument gh-stack builds as an
-// option with a value appended (`--format=…`), or a value, an argument gh-stack computes (a
-// branch, a commit, a remote, a path, a message), with the optional, repeated and alternative
-// parts gh-stack's code builds. A value never starts with `-`: gh-stack passes names it read from
-// its stack files, from GitHub and from the repository as values, so a name that starts with `-`
-// would reach git as an option of its own. Check admits a call only where it fits a shape, so
-// such a name, or any argument list gh-stack does not build, never reaches git.
+// option with a value appended (`--format=…`), a format gh-stack fills with names
+// (`refs/heads/%s:refs/heads/%s`), or a value, an argument gh-stack computes (a branch, a commit,
+// a remote, a path, a message), with the optional, repeated and alternative parts gh-stack's code
+// builds. A value never starts with `-` and is never `.` or `..`: gh-stack passes names it read
+// from its stack files, from GitHub and from the repository as values, so a name that starts with
+// `-` would reach git as an option of its own. A name in a format holds no `:` or space either,
+// so it cannot add a refspec of its own. Check admits a call only where it fits a shape, so such a
+// name, or any argument list gh-stack does not build, never reaches git; Args is what runs.
 package ghstackgit
 
 import (
@@ -32,14 +34,16 @@ var GitPath = "/opt/legion/bin:/usr/bin"
 // pre-push hook before every push.
 var RealGit = "/opt/legion/bin/git"
 
-// word is one parsed shape word: a literal, a prefix, a value, literal alternatives, or an
-// optional, repeated or alternative group.
+// word is one parsed shape word: a literal, a prefix, a format, a value, literal alternatives, or
+// an optional, repeated or alternative group.
 type word struct {
-	kind  byte
-	s     string
-	alts  []string
-	group []word
-	seqs  [][]word
+	kind    byte
+	s       string
+	texts   []string
+	numbers []byte
+	alts    []string
+	group   []word
+	seqs    [][]word
 }
 
 // parsed is shapes, parsed once.
@@ -90,6 +94,9 @@ func parse(encoded []string) ([]word, []string, string) {
 			words = append(words, word{kind: 'X', seqs: seqs})
 		case w == "$":
 			words = append(words, word{kind: 'V'})
+		case w[0] == '%':
+			texts, numbers := formatParts(w[1:])
+			words = append(words, word{kind: 'F', s: w[1:], texts: texts, numbers: numbers})
 		case w[0] == '=':
 			words = append(words, word{kind: 'L', s: w[1:]})
 		case w[0] == '^':
@@ -101,6 +108,65 @@ func parse(encoded []string) ([]word, []string, string) {
 		}
 	}
 	return words, nil, ""
+}
+
+// formatParts reads a format word into the literal text around its pieces and the number of the
+// argument each piece is: `+refs/heads/%1:refs/remotes/%2/%1` is the texts `+refs/heads/`, `:`,
+// `refs/remotes/`… with pieces 1, 2, 1.
+func formatParts(format string) ([]string, []byte) {
+	var texts []string
+	var numbers []byte
+	rest := format
+	for {
+		i := strings.IndexByte(rest, '%')
+		if i < 0 {
+			return append(texts, rest), numbers
+		}
+		if i+1 >= len(rest) || rest[i+1] < '1' || rest[i+1] > '9' {
+			panic(fmt.Sprintf("ghstackgit: format %q holds a verb other than %%1 to %%9", format))
+		}
+		texts, numbers = append(texts, rest[:i]), append(numbers, rest[i+1])
+		rest = rest[i+2:]
+	}
+}
+
+// piece says whether p may stand for a format's piece: a name or a number gh-stack computes, a
+// value (no leading `-`, not `.` or `..`) with no `:` and no space, which ref names cannot hold.
+func piece(p string) bool {
+	return p != "" && value(p) && !strings.ContainsAny(p, ": \t\n")
+}
+
+// fits says whether a is texts filled with pieces, the same number the same piece, trying every
+// way to split a, since a branch name holds `/` as the texts around it do.
+func fits(texts []string, numbers []byte, a string, bound map[byte]string) bool {
+	if !strings.HasPrefix(a, texts[0]) {
+		return false
+	}
+	a = a[len(texts[0]):]
+	if len(numbers) == 0 {
+		return a == ""
+	}
+	n := numbers[0]
+	if p, ok := bound[n]; ok {
+		return strings.HasPrefix(a, p) && fits(texts[1:], numbers[1:], a[len(p):], bound)
+	}
+	for end := 1; end <= len(a); end++ {
+		if p := a[:end]; piece(p) {
+			bound[n] = p
+			if fits(texts[1:], numbers[1:], a[end:], bound) {
+				return true
+			}
+			delete(bound, n)
+		}
+	}
+	return false
+}
+
+// value says whether a is a value gh-stack may hand git: no leading `-`, which git reads as an
+// option, and neither `.` nor `..`, which git reads as this repository, the work tree's root or
+// its parent wherever a name stands (`git checkout .` restores every file).
+func value(a string) bool {
+	return !strings.HasPrefix(a, "-") && a != "." && a != ".."
 }
 
 // match says whether args[i:] fits words, then k.
@@ -116,16 +182,21 @@ func match(words []word, args []string, i int, k func(int) bool) bool {
 		return one(func(a string) bool { return a == w.s })
 	case 'P':
 		return one(func(a string) bool { return strings.HasPrefix(a, w.s) })
+	case 'F':
+		return one(func(a string) bool { return fits(w.texts, w.numbers, a, map[byte]string{}) })
 	case 'V':
-		return one(func(a string) bool { return !strings.HasPrefix(a, "-") })
+		return one(value)
 	case 'A':
 		return one(func(a string) bool { return slices.Contains(w.alts, a) })
 	case 'O':
 		return match(w.group, args, i, next) || next(i)
 	case 'R':
+		// Once or more: each loop gh-stack builds an argument list with runs over a list it has
+		// checked is not empty, and a git call with none of its refspecs, branches or commits is
+		// one gh-stack does not make (`git push origin` alone pushes what push.default says).
 		var again func(int) bool
 		again = func(j int) bool {
-			return next(j) || match(w.group, args, j, func(after int) bool { return after > j && again(after) })
+			return match(w.group, args, j, func(after int) bool { return after > j && (next(after) || again(after)) })
 		}
 		return again(i)
 	case 'X':
@@ -147,10 +218,34 @@ func Check(args []string) error {
 	if i := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") && !option(a) }); i >= 0 {
 		return fmt.Errorf("%s: %q starts with `-` and is no option gh-stack passes to git, and a name gh-stack hands to git cannot start with `-`", call, args[i])
 	}
-	return fmt.Errorf("%s; a name gh-stack hands to git cannot start with `-`, even where it is an option gh-stack passes elsewhere", call)
+	if slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") || a == "." || a == ".." }) {
+		return fmt.Errorf("%s; a name gh-stack hands to git can neither start with `-`, even where it is an option gh-stack passes elsewhere, nor be `.` or `..`", call)
+	}
+	return fmt.Errorf("%s", call)
 }
 
-// option says whether arg is a literal of some shape, or starts with one of its prefixes.
+// Args is the argument list cmd/gh-stack-git runs the image's git with for args, or the reason it
+// runs none (Check). A `git checkout <name>` gets `--` after the name, so git reads the name as a
+// branch or a commit and never as a path: a name that is no branch but is a tracked path would
+// otherwise restore that path and throw away its uncommitted change. gh-stack checks out only
+// branches it has made or fetched, which `checkout <name> --` still switches to, and creates a
+// local branch from a remote one as before.
+func Args(args []string) ([]string, error) {
+	if err := Check(args); err != nil {
+		return nil, err
+	}
+	command := args
+	if len(command) >= 2 && command[0] == "-C" {
+		command = command[2:]
+	}
+	if len(command) == 2 && command[0] == "checkout" {
+		return append(slices.Clone(args), "--"), nil
+	}
+	return args, nil
+}
+
+// option says whether arg is a literal of some shape, starts with one of its prefixes, or starts
+// with the literal start of a format of one that starts with `-`.
 func option(arg string) bool {
 	var in func(words []word) bool
 	in = func(words []word) bool {
@@ -160,6 +255,9 @@ func option(arg string) bool {
 				return w.s == arg
 			case 'P':
 				return strings.HasPrefix(arg, w.s)
+			case 'F':
+				start, _, _ := strings.Cut(w.s, "%")
+				return strings.HasPrefix(w.s, "-") && strings.HasPrefix(arg, start)
 			case 'A':
 				return slices.Contains(w.alts, arg)
 			case 'O', 'R':

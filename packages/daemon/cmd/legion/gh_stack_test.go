@@ -781,9 +781,10 @@ func TestLegionGhStackRefusesWhatWouldRunAProgram(t *testing.T) {
 // The git calls gh-stack makes reach git through the image's gh-stack git, which runs the image's
 // git with PATH at the rest of gh-stack's PATH, so nothing that git starts finds the gh-stack
 // git: a read prints what git answers, and a push runs its pre-push hook, whose git takes an
-// option gh-stack never passes (the leak guard's own --no-replace-objects). Controls: every git
-// the gh-stack git ran was started with PATH at the second directory alone, the hook wrote what
-// its git answered, and the branch reached the destination.
+// option gh-stack never passes (the leak guard's own --no-replace-objects), and the branch
+// reaches the destination. git puts its own exec path first on a hook's PATH, so the hook half
+// shows a push and its hook work; what holds the reset is the PATH every git the gh-stack git ran
+// was started with, logged by the second directory's git, which must be that directory alone.
 func TestLegionGhStacksGitRunsGhStacksCallsAndItsHooksFindTheImagesGit(t *testing.T) {
 	rig := newGhStackRig(t)
 	destination := t.TempDir()
@@ -816,12 +817,14 @@ func TestLegionGhStacksGitRunsGhStacksCallsAndItsHooksFindTheImagesGit(t *testin
 	}
 }
 
-// A branch name that equals an option gh-stack passes git elsewhere (`-f`, which `git branch -f`
-// takes) reaches git as that option where gh-stack hands it a name: run directly, `git checkout
-// -f` throws away the work tree's uncommitted change, which shows the case is one; through
-// `legion gh stack`, the image's gh-stack git refuses the call and the change stays.
-func TestLegionGhStackRefusesANameThatIsAnOptionGhStackPasses(t *testing.T) {
-	run := func(t *testing.T, through bool) (string, string) {
+// A name gh-stack hands `git checkout` as a branch can make git throw away the work tree's
+// uncommitted change: `-f`, an option gh-stack passes git elsewhere (`git branch -f`), and
+// `tracked`, no branch but a tracked path, which git restores from the index. Run directly, each
+// `git checkout <name>` throws the change away, which shows the case is one; through
+// `legion gh stack`, the image's gh-stack git refuses `-f`, and runs `checkout tracked --`, which
+// git reads as no path and refuses, and the change stays.
+func TestLegionGhStackKeepsTheWorkTreeFromANameGitWouldNotReadAsABranch(t *testing.T) {
+	run := func(t *testing.T, name string, through bool) (string, string) {
 		rig := newGhStackRig(t)
 		tracked := filepath.Join(rig.clone, "tracked")
 		fixture := fixturegit.Isolated(t, t.TempDir())
@@ -833,7 +836,7 @@ func TestLegionGhStackRefusesANameThatIsAnOptionGhStackPasses(t *testing.T) {
 		if err := os.WriteFile(tracked, []byte("uncommitted\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		script := "git checkout \"$(printf %s -f)\"\n"
+		script := "git checkout \"$(printf %s " + name + ")\"\n"
 		var stderr string
 		if through {
 			rig.env[testGhStackEnv] = ghStackAt(t, t.TempDir(), "#!/bin/sh\n"+script)
@@ -850,15 +853,22 @@ func TestLegionGhStackRefusesANameThatIsAnOptionGhStackPasses(t *testing.T) {
 		}
 		return string(got), stderr
 	}
-	if got, out := run(t, false); got != "committed\n" {
-		t.Fatalf("run directly, `git checkout -f` left %q (it printed %q); it shows nothing about what the wrapper refuses", got, out)
-	}
-	got, stderr := run(t, true)
-	if got != "uncommitted\n" {
-		t.Errorf("through legion gh stack, the uncommitted change became %q; stderr %q", got, stderr)
-	}
-	if !strings.Contains(stderr, "is no git call gh-stack 0.3.0 makes") {
-		t.Errorf("legion gh stack printed %q, want the gh-stack git's refusal", stderr)
+	for name, refused := range map[string]string{
+		"-f":      "is no git call gh-stack 0.3.0 makes",
+		"tracked": "invalid reference: tracked",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, out := run(t, name, false); got != "committed\n" {
+				t.Fatalf("run directly, `git checkout %s` left %q (it printed %q); it shows nothing about what the wrapper keeps", name, got, out)
+			}
+			got, stderr := run(t, name, true)
+			if got != "uncommitted\n" {
+				t.Errorf("through legion gh stack, the uncommitted change became %q; stderr %q", got, stderr)
+			}
+			if !strings.Contains(stderr, refused) {
+				t.Errorf("legion gh stack printed %q, want %q", stderr, refused)
+			}
+		})
 	}
 }
 

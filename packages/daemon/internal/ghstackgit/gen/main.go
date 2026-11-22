@@ -2,12 +2,14 @@
 // source of package ghstackgit's shapes.go (generate.sh runs it). It reads every call by which
 // gh-stack's internal/git starts git, through cli/cli's git.Client (Command and
 // AuthenticatedCommand) or its own helpers (run, runRaw, runSilent, runInteractive, command,
-// path, runRebaseCommand), and every call of go-gh's internal/git Exec, and writes each as a
-// shape: the argument list it passes, each argument a literal, a literal prefix (an argument
-// built as a string that starts with `-` and a value appended), or a value, with the optional,
-// repeated and alternative parts the code builds under an if, a loop or an if and else. A value
-// stands for an argument gh-stack computes; ghstackgit admits a git call only where it fits a
-// shape and no value of it starts with `-`.
+// path, runRebaseCommand), in the functions gh-stack's other packages can reach (reachable), and
+// every call of go-gh's internal/git Exec, and writes each as a shape: the argument list it
+// passes, each argument a literal, a literal prefix (an argument built as a string that starts
+// with `-` and a value appended), a format (an fmt.Sprintf of a literal format, each %s and %d
+// numbered by its argument), or a value, with the optional, repeated and alternative parts the
+// code builds under an if, a loop or an if and else. A value stands for an argument gh-stack
+// computes; ghstackgit admits a git call only where it fits a shape and no value of it starts
+// with `-`.
 //
 // It fails, naming the code, wherever a call builds its arguments in a way it does not read, so a
 // release that adds one makes generate.sh fail rather than write a shape that admits too much.
@@ -19,6 +21,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,7 +31,7 @@ import (
 
 // tok is one argument of a shape, or a group of them.
 type tok struct {
-	kind  byte // 'L' literal, 'P' prefix, 'V' value, 'A' literal alternatives, 'O' optional, 'R' repeated, 'X' alternative groups
+	kind  byte // 'L' literal, 'P' prefix, 'F' format, 'V' value, 'A' literal alternatives, 'O' optional, 'R' repeated, 'X' alternative groups
 	s     string
 	alts  []string
 	group []tok
@@ -39,8 +42,8 @@ func lit(s string) tok    { return tok{kind: 'L', s: s} }
 func value() tok          { return tok{kind: 'V'} }
 func prefix(s string) tok { return tok{kind: 'P', s: s} }
 
-// encode writes toks as ghstackgit's shape words: "=lit", "^prefix", "$", "|a|b", "[" … "]",
-// "{" … "}", "(" … "/" … ")".
+// encode writes toks as ghstackgit's shape words: "=lit", "^prefix", "%format", "$", "|a|b",
+// "[" … "]", "{" … "}", "(" … "/" … ")".
 func encode(toks []tok) []string {
 	var out []string
 	for _, t := range toks {
@@ -49,6 +52,8 @@ func encode(toks []tok) []string {
 			out = append(out, "="+t.s)
 		case 'P':
 			out = append(out, "^"+t.s)
+		case 'F':
+			out = append(out, "%"+t.s)
 		case 'V':
 			out = append(out, "$")
 		case 'A':
@@ -154,12 +159,40 @@ func (c ctx) argTok(expr ast.Expr) tok {
 		}
 		return value()
 	case *ast.CallExpr:
+		// fmt.Sprintf with a literal format: the format itself, each %s and %d written as %<n>, the
+		// number of its argument among the call's distinct ones, so a format that repeats a name
+		// (`refs/heads/%s:refs/heads/%s` of b and b) is held to one name (ghstackgit reads each
+		// piece as no `:`, no space and no leading `-`). A format with any other verb fails the
+		// generation.
 		if sel, ok := e.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Sprintf" && len(e.Args) > 0 {
-			if format, ok := strLit(e.Args[0]); ok && strings.HasPrefix(format, "-") {
-				if i := strings.IndexByte(format, '%'); i >= 0 {
-					format = format[:i]
+			if format, ok := strLit(e.Args[0]); ok {
+				if other := strings.NewReplacer("%s", "", "%d", "").Replace(format); strings.Contains(other, "%") {
+					c.fail(e, "a Sprintf format with a verb other than %%s and %%d: %q", format)
 				}
-				return prefix(format)
+				var distinct []string
+				var numbered strings.Builder
+				arg := 1
+				for rest := format; ; {
+					i := strings.IndexByte(rest, '%')
+					if i < 0 {
+						numbered.WriteString(rest)
+						break
+					}
+					if arg >= len(e.Args) {
+						c.fail(e, "a Sprintf format with more verbs than arguments: %q", format)
+					}
+					text := types.ExprString(e.Args[arg])
+					n := slices.Index(distinct, text)
+					if n < 0 {
+						distinct, n = append(distinct, text), len(distinct)
+					}
+					if n > 8 {
+						c.fail(e, "a Sprintf format with more than nine distinct arguments: %q", format)
+					}
+					numbered.WriteString(rest[:i] + "%" + strconv.Itoa(n+1))
+					rest, arg = rest[i+2:], arg+1
+				}
+				return tok{kind: 'F', s: numbered.String()}
 			}
 		}
 		return value()
@@ -171,21 +204,41 @@ func (c ctx) argTok(expr ast.Expr) tok {
 	return value()
 }
 
-// identTok reads a string variable: the literals it is assigned in its function, or, for a
-// parameter, the literals every call in these files passes it; else a value.
+// identTok reads a string variable: the literals it is assigned in its function; the element of a
+// list it ranges over, where that list is built in the function of one kind of element; or, for a
+// parameter of an unexported function, the literals every call in these files passes it; else a
+// value.
 func (c ctx) identTok(id *ast.Ident) tok {
 	if c.depth > 8 {
 		return value()
 	}
 	var found []tok
 	ast.Inspect(c.fn.Body, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok || len(assign.Lhs) != len(assign.Rhs) {
-			return true
-		}
-		for i, lhs := range assign.Lhs {
-			if name, ok := lhs.(*ast.Ident); ok && name.Name == id.Name {
-				found = append(found, ctx{c.fs, c.fn, c.pos, c.depth + 1}.argTok(assign.Rhs[i]))
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			if len(s.Lhs) != len(s.Rhs) {
+				return true
+			}
+			for i, lhs := range s.Lhs {
+				if name, ok := lhs.(*ast.Ident); ok && name.Name == id.Name {
+					found = append(found, ctx{c.fs, c.fn, c.pos, c.depth + 1}.argTok(s.Rhs[i]))
+				}
+			}
+		case *ast.RangeStmt:
+			v, ok := s.Value.(*ast.Ident)
+			list, isIdent := s.X.(*ast.Ident)
+			if !ok || v.Name != id.Name || !isIdent {
+				return true
+			}
+			if _, param := paramIndex(c.fn, list.Name); param {
+				found = append(found, value())
+				return true
+			}
+			built := ctx{c.fs, c.fn, s.Pos(), c.depth + 1}.built(list.Name)
+			if len(built) == 1 && built[0].kind == 'R' && len(built[0].group) == 1 {
+				found = append(found, built[0].group[0])
+			} else {
+				found = append(found, value())
 			}
 		}
 		return true
@@ -205,8 +258,11 @@ func (c ctx) identTok(id *ast.Ident) tok {
 }
 
 // literals is one literal, or the alternatives of several, where every tok found is a literal;
-// else a value.
+// the one tok found, where they are all one format; else a value.
 func literals(found []tok) tok {
+	if len(found) > 0 && found[0].kind == 'F' && !slices.ContainsFunc(found, func(t tok) bool { return t.kind != 'F' || t.s != found[0].s }) {
+		return found[0]
+	}
 	var alts []string
 	for _, t := range found {
 		if t.kind != 'L' {
@@ -588,10 +644,13 @@ func runnerOf(call *ast.CallExpr, goGh bool) (string, runner, bool) {
 	return sel.Sel.Name, r, ok
 }
 
-// shapes reads every call of fs that starts git.
-func shapes(fs *files, goGh bool, credential []tok) [][]tok {
+// shapes reads every call of fs that starts git, in the functions reach admits (all, where nil).
+func shapes(fs *files, goGh bool, credential []tok, reach map[*ast.FuncDecl]bool) [][]tok {
 	var out [][]tok
 	for _, fn := range fs.funcs {
+		if reach != nil && !reach[fn] {
+			continue
+		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -638,6 +697,72 @@ func shapes(fs *files, goGh bool, credential []tok) [][]tok {
 	return out
 }
 
+// reachable is every function of stack gh-stack can run: those its other packages call by name
+// (a selector's method or function name, gh-stack calling git.X and an Ops value's X), and every
+// function of stack those call by name, and so on. A function nothing calls, such as one kept for
+// an older command, starts no git gh-stack makes, so its call is no shape.
+func reachable(stack *files, root string) map[*ast.FuncDecl]bool {
+	called := map[string]bool{}
+	gitDir := filepath.Join(root, "internal", "git")
+	check(filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && (path == gitDir || entry.Name() == "scripts" || entry.Name() == "testdata" || strings.HasPrefix(entry.Name(), ".")) && path != root {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					called[sel.Sel.Name] = true
+				}
+			}
+			return true
+		})
+		return nil
+	}))
+	reach := map[*ast.FuncDecl]bool{}
+	var visit func(fn *ast.FuncDecl)
+	visit = func(fn *ast.FuncDecl) {
+		if reach[fn] {
+			return
+		}
+		reach[fn] = true
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var name string
+			switch f := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				name = f.Sel.Name
+			case *ast.Ident:
+				name = f.Name
+			}
+			for _, other := range stack.funcs {
+				if other.Name.Name == name {
+					visit(other)
+				}
+			}
+			return true
+		})
+	}
+	for _, fn := range stack.funcs {
+		if ast.IsExported(fn.Name.Name) && called[fn.Name.Name] {
+			visit(fn)
+		}
+	}
+	return reach
+}
+
 func main() {
 	ghStack := flag.String("gh-stack", "", "gh-stack's source, at the release")
 	cli := flag.String("cli", "", "cli/cli's source, at the version gh-stack's go.mod names")
@@ -652,12 +777,15 @@ func main() {
 	}()
 
 	// cli/cli's client builds these two prefixes (git/client.go, Command and AuthenticatedCommand,
-	// with AllMatchingCredentialsPattern, the one gh-stack passes); they are checked here, so a
-	// release that builds them otherwise fails.
+	// with AllMatchingCredentialsPattern, the one gh-stack passes, and GhPath left empty, which
+	// gh-stack never sets, so the helper is `!"gh" auth git-credential`); they are checked here, so
+	// a release that builds them otherwise fails.
 	client, err := os.ReadFile(filepath.Join(*cli, "git", "client.go"))
 	check(err)
 	for _, want := range []string{
 		`args = append([]string{"-C", c.RepoDir}, args...)`,
+		`c.GhPath = "gh"`,
+		`credHelper := fmt.Sprintf("!%q auth git-credential", c.GhPath)`,
 		`preArgs = []string{"-c", "credential.helper="}`,
 		`preArgs = append(preArgs, "-c", fmt.Sprintf("credential.helper=%s", credHelper))`,
 	} {
@@ -665,7 +793,17 @@ func main() {
 			panic(fmt.Sprintf("cli/cli's git/client.go no longer holds %q", want))
 		}
 	}
-	credential := []tok{lit("-c"), lit("credential.helper="), lit("-c"), prefix("credential.helper=")}
+	check(filepath.WalkDir(*ghStack, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		source, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(source), "GhPath") {
+			panic(fmt.Sprintf("%s names GhPath, so the credential helper may be another than gh", path))
+		}
+		return err
+	}))
+	credential := []tok{lit("-c"), lit("credential.helper="), lit("-c"), lit(`credential.helper=!"gh" auth git-credential`)}
 
 	fset := token.NewFileSet()
 	stack, err := parseDir(fset, filepath.Join(*ghStack, "internal", "git"), func(name string) bool { return strings.HasPrefix(name, "mock") })
@@ -673,7 +811,7 @@ func main() {
 	gogh, err := parseDir(fset, filepath.Join(*goGh, "internal", "git"), func(string) bool { return false })
 	check(err)
 
-	all := append(shapes(stack, false, credential), shapes(gogh, true, nil)...)
+	all := append(shapes(stack, false, credential, reachable(stack, *ghStack)), shapes(gogh, true, nil, nil)...)
 	seen := map[string]bool{}
 	var lines []string
 	for _, toks := range all {

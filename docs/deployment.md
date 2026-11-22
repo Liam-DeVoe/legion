@@ -210,10 +210,13 @@ the call's token, is off for every call.
 gh-stack runs with `PATH` set to `/opt/legion/gh-stack-bin`, `/opt/legion/bin` and `/usr/bin`
 alone, each root's and writable by no one else, or the call is refused. The first holds the
 image's `git`, `packages/daemon/cmd/gh-stack-git`: it runs a git call only where its argument
-list is one gh-stack starts git with and none of the names in it starts with `-`, whatever
-gh-stack read the names from (the shapes are generated from the pinned gh-stack's source by
-`packages/daemon/internal/ghstackgit/generate.sh`), and then runs `/opt/legion/bin/git` with
-`PATH` at the other two directories, so the pre-push guard still runs and finds the image's git.
+list is one gh-stack starts git with (the calls are generated from the pinned gh-stack's source
+by `packages/daemon/internal/ghstackgit/generate.sh`), none of the names in it starts with `-`
+or is `.` or `..`, and each refspec is the one gh-stack builds of one branch name, whatever
+gh-stack read the names from. It runs `checkout <name>` as `checkout <name> --`, so git never
+reads the name as a path, and then runs `/opt/legion/bin/git` with `PATH` at the other two
+directories, so the pre-push guard still runs and finds the image's git. It exits 125 where it
+refuses a call, a code git itself does not use.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
 (`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form

@@ -18,8 +18,8 @@ body: |-
     goes to the leak guard. `gh stack alias` and `gh stack feedback` are refused. gh-stack runs
     with PATH set to root-owned image directories alone, whose `git`,
     /opt/legion/gh-stack-bin/git, runs a git call only where it is one gh-stack 0.3.0 makes, with
-    no name in it that starts with `-`, whatever gh-stack read the name from, then runs the
-    image's git.
+    no name in it that starts with `-` or is `.`, whatever gh-stack read the name from, and runs
+    `git checkout <name>` as `git checkout <name> --`, so git never reads the name as a path.
 time: 2026-11-22T08:34:40Z
 custom:
     Issue: pr4975
