@@ -577,9 +577,12 @@ export function renamedSkill(dir: string, name: string, scratch: string): string
 }
 
 /** Whether `target` (a path or a `skill://` URL) reads the SKILL.md of skill `name`, as count.sql
- *  counts a read: a read selector after the last `/` is taken off first. */
+ *  counts a read: a read selector after the last `/` is taken off first. A read of another
+ *  source's copy of the name does not: `skill://<namespace>/<name>`, or a path under a namespace's
+ *  skills directory (`namespaced/<namespace>/skills/`, where context.ts installs such a copy). */
 function readsSkillFile(target: string, name: string): boolean {
   const bare = target.replace(/:[^/]*$/, "");
+  if (/\/namespaced\/[^/]+\/skills\/[^/]+\/SKILL\.md$/.test(bare)) return false;
   return (
     bare === `skill://${name}` ||
     bare === `skill://${name}/` ||

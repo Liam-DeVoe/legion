@@ -10,6 +10,7 @@ import { pullTranscript } from "./build";
 import { loadConfig } from "./config";
 import {
   countSql,
+  digestTimesSql,
   fillTemplate,
   main,
   modelsSql,
@@ -260,6 +261,22 @@ describe("countsql.ts fills the SQL", () => {
         `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
       );
     }
+  });
+
+  test("digest-times.sql is filled with each subagent's path hash and start, as one JSON array, and refuses a hash or a time of any other form", () => {
+    const hash = createHash("sha256").update("made-up/a/b.jsonl").digest("hex");
+    const sql = digestTimesSql([{ hash, before: "2026-11-20T01:59:41.780Z" }]);
+    expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
+    expect(sql).toContain(
+      `jsonb_array_elements('[{"hash":"${hash}","before":"2026-11-20T01:59:41.780Z"}]'::jsonb)`
+    );
+    expect(sql).not.toContain("{{");
+    expect(() => digestTimesSql([{ hash: "x'; DROP TABLE y; --", before: "2026-11-20" }])).toThrow(
+      "is not a path hash of 64 hex characters"
+    );
+    expect(() => digestTimesSql([{ hash, before: "'; DROP TABLE y; --" }])).toThrow(
+      "is not a time"
+    );
   });
 });
 
@@ -1062,6 +1079,54 @@ describe.skipIf(serverDsn === undefined)(
       ]);
       // The third database holds F1's session alone: no file below its directory, so no row.
       expect(run(names.third, subagentsSql([hashOf(F1_SESSION)]))).toEqual([]);
+    });
+
+    test("digest-times.sql: for a subagent, its root (the file its topmost <…>Z_<id> directory stands for) and the times of the root's system-prompt-digest lines before the subagent's start; no row for a hash the store does not hold", () => {
+      const hashOf = (file: string) => createHash("sha256").update(storedPath(file)).digest("hex");
+      const start = (file: string) =>
+        JSON.parse(
+          readFileSync(file, "utf8")
+            .split("\n")
+            .find((line) => line.includes('"type":"session"')) ?? "{}"
+        ).timestamp as string;
+      // F1's session's own digest lines, read as Oh My Pi wrote them.
+      const digests = readFileSync(F1_SESSION, "utf8")
+        .split("\n")
+        .filter((line) => line.includes('"customType":"system-prompt-digest"'))
+        .map((line) => JSON.parse(line).timestamp as string);
+      expect(digests.length).toBeGreaterThan(0);
+      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      // Before a time after every digest line, every one counts; before the session's own start,
+      // none.
+      const late = "2030-01-01T00:00:00.000Z";
+      expect(
+        run(
+          names.first,
+          digestTimesSql([
+            { hash: hashOf(F1_SUBAGENT), before: late },
+            { hash: missing, before: late },
+          ])
+        )
+      ).toEqual([
+        {
+          hash: hashOf(F1_SUBAGENT),
+          root: hashOf(F1_SESSION),
+          rootHeld: true,
+          before: late,
+          digests,
+        },
+      ]);
+      expect(
+        run(names.first, digestTimesSql([{ hash: hashOf(F1_SUBAGENT), before: start(F1_SESSION) }]))
+      ).toEqual([
+        {
+          hash: hashOf(F1_SUBAGENT),
+          root: hashOf(F1_SESSION),
+          rootHeld: true,
+          before: start(F1_SESSION),
+          digests: digests.filter((at) => Date.parse(at) < Date.parse(start(F1_SESSION))),
+        },
+      ]);
     });
   }
 );

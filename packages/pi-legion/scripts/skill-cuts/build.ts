@@ -504,6 +504,7 @@ import {
   type TreeEntry,
 } from "./copies";
 import {
+  digestTimesSql,
   mtimeRange,
   PULL_PAGE,
   pullSql,
@@ -2229,6 +2230,8 @@ interface ProfileInput {
   readonly cwd: string | undefined;
   readonly recordedPrompt: boolean;
   readonly checkout?: Checkout;
+  /** For a subagent, when its repositories are read (PARENT_LOAD_RULE). */
+  readonly parentLoad?: ParentLoad;
 }
 
 /** The items of the profile's evidence that name the session repository, and that say there is
@@ -2404,6 +2407,71 @@ async function subagentListings(
     });
   }
   return found;
+}
+
+/** When a subagent's skills were loaded, and where Oh My Pi's source says so. */
+const PARENT_LOAD_RULE =
+  "Oh My Pi 18.18.6 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and 895-902), and a subagent of a subagent its parent's, so from its root session's last prompt build before its start (each build writes one system-prompt-digest line: session/session-tools.ts, lines 1795-1830); the subagent rescans only the skill directories an extension names (session/session-tools.ts, lines 2350-2560). So a subagent's profile reads each repository at the root's last prompt build before the subagent's start (digest-times.sql), but a pool's (a repository of an extension's skills-sources pool: copies.ts's pool units) at the subagent's start, and every repository at the subagent's start when the store holds no prompt build of its root before it";
+
+/** When the repositories of a subagent's profile are read (PARENT_LOAD_RULE): `at`, the root's
+ *  last prompt build before the subagent's start, for each but a pool's (undefined when there is
+ *  none, so every repository is read at the subagent's start), and the evidence that says both
+ *  times and which is used. */
+interface ParentLoad {
+  readonly at: string | undefined;
+  readonly line: Evidence;
+}
+
+const DigestRow = z.strictObject({
+  hash: z.string(),
+  root: z.string().nullable(),
+  rootHeld: z.boolean(),
+  before: z.string(),
+  digests: z.array(z.string()),
+});
+
+/** The ParentLoad of each subagent session of `sessions` (its path hash and start) in the store
+ *  `store`, by path hash: one digest-times.sql query, none for no session. A session the store
+ *  no longer holds is read at its start. */
+async function parentLoads(
+  command: string,
+  store: string,
+  sessions: readonly { readonly hash: string; readonly before: string }[]
+): Promise<Map<string, ParentLoad>> {
+  const rows = new Map<string, z.infer<typeof DigestRow>>();
+  if (sessions.length > 0) {
+    for (const row of await storeRows(command, store, digestTimesSql(sessions))) {
+      const parsed = DigestRow.safeParse(row);
+      if (parsed.success) rows.set(parsed.data.hash, parsed.data);
+    }
+  }
+  const loads = new Map<string, ParentLoad>();
+  for (const { hash, before } of sessions) {
+    const row = rows.get(hash);
+    const at = row?.digests.at(-1);
+    const why =
+      row === undefined
+        ? `the store ${store} holds no file of the subagent now`
+        : row.root === null
+          ? "its path names no root session's directory"
+          : !row.rootHeld
+            ? `the store ${store} holds no file of its root (${row.root.slice(0, 12)})`
+            : at === undefined
+              ? `its root (${row.root.slice(0, 12)}) holds no system-prompt-digest line before it`
+              : `its root (${row.root.slice(0, 12)}) built its prompt last at ${at} before it (${row.digests.length} builds)`;
+    loads.set(hash, {
+      at,
+      line: {
+        item: "read times",
+        source: `the subagent started at ${before}; ${why}, so ${
+          at === undefined
+            ? `each repository is read at the subagent's start ${before}`
+            : `each repository is read at ${at}, and a pool's at the subagent's start ${before}`
+        }: ${PARENT_LOAD_RULE}`,
+      },
+    });
+  }
+  return loads;
 }
 
 /** The names of the `<skills>` listing of the recorded prompt `blocks`, as capture.ts's
@@ -2809,6 +2877,23 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const checkout =
     input.checkout ?? sessionRepository(input.context, input.cwd, copies.branches.keys());
   evidence.push(checkout.line);
+  if (input.parentLoad !== undefined) evidence.push(input.parentLoad.line);
+  // The time each repository is read at (PARENT_LOAD_RULE): for a subagent whose root built its
+  // prompt before it, that build's, but a pool's repositories' (a skills-sources pool's and each
+  // repository it clones), which are read at the session's start, as for any other session.
+  const poolRepos = new Set(
+    copies.installers.flatMap((row) =>
+      (row.unit ?? "").startsWith("pool:")
+        ? [row.manifest_repository ?? "", row.copy_repository ?? ""]
+            .filter((repo) => repo !== "")
+            .map((repo) => repo.toLowerCase())
+        : []
+    )
+  );
+  const whenOf = (repo: string): { at: string; words: string } =>
+    input.parentLoad?.at !== undefined && !poolRepos.has(repo.toLowerCase())
+      ? { at: input.parentLoad.at, words: "the root's last prompt build" }
+      : { at: input.sessionStart, words: "the session's start" };
   // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
   // the working directory and then under each parent up to the checkout's root.
   const levels = [checkout.rel];
@@ -2826,22 +2911,23 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
    *  installer's pin at the session's start, below, takes its place where one names the
    *  repository). */
   const readCommit = async (repo: string): Promise<{ sha: string; line: Evidence }> => {
+    const when = whenOf(repo);
     let { branch, from } = await github.branch(repo);
     let younger = "";
     let sha: string;
     try {
-      sha = await github.commitAt(repo, branch, input.sessionStart);
+      sha = await github.commitAt(repo, branch, when.at);
     } catch (error) {
       if (transientFailure(error) || from !== "repositories.tsv") throw error;
-      younger = `${branch}, the ref repositories.tsv names, has no commit at or before the session's start; `;
+      younger = `${branch}, the ref repositories.tsv names, has no commit at or before ${when.words}; `;
       ({ branch, from } = await github.branch(repo, true));
-      sha = await github.commitAt(repo, branch, input.sessionStart);
+      sha = await github.commitAt(repo, branch, when.at);
     }
     return {
       sha,
       line: {
         item: `commit ${sha} of ${repo}`,
-        source: `${younger}the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
+        source: `${younger}the last commit of ${branch} (from ${from}) at or before ${when.words} ${when.at}: gh api repos/${repo}/commits?sha=${branch}&until=${when.at}`,
       },
     };
   };
@@ -3066,7 +3152,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const [index, value] of values.entries()) {
     const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
     if (pin === undefined || pin.ref === "" || !repositories.has(value.repo)) continue;
-    const sha = await github.commitAt(value.repo, pin.ref, input.sessionStart);
+    const when = whenOf(value.repo);
+    let sha: string;
+    try {
+      sha = await github.commitAt(value.repo, pin.ref, when.at);
+    } catch (error) {
+      // A pin's tag made after the root's last prompt build: the repository stays at the commit
+      // read above.
+      if (transientFailure(error)) throw error;
+      evidence.push({
+        item: `left out: the pin ${pin.ref} of ${value.repo}`,
+        source: `${pin.manifest.repository}:${pin.manifest.path} pins ${pin.ref}, which has no commit at or before ${when.words} ${when.at} (${messageFor(error)}), so ${value.repo} is read at ${value.commit.sha}`,
+      });
+      continue;
+    }
     if (sha === value.commit.sha) continue;
     values[index] = {
       ...value,
@@ -3074,7 +3173,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         sha,
         line: {
           item: `commit ${sha} of ${value.repo}`,
-          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${input.sessionStart}: gh api repos/${value.repo}/commits?sha=${pin.ref}&until=${input.sessionStart}`,
+          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${when.words} ${when.at}: gh api repos/${value.repo}/commits?sha=${pin.ref}&until=${when.at}`,
         },
       },
       at: await github.at(value.repo, sha, run.config.excludePaths),
@@ -3100,7 +3199,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         const pinned = `${pin.manifest.repository}:${pin.manifest.path}`;
         try {
           const ref = pin.ref === "" ? (await github.branch(pin.repository)).branch : pin.ref;
-          const sha = await github.commitAt(pin.repository, ref, input.sessionStart);
+          const when = whenOf(pin.repository);
+          const sha = await github.commitAt(pin.repository, ref, when.at);
           repositories.add(pin.repository);
           values.push({
             repo: pin.repository,
@@ -3108,7 +3208,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
               sha,
               line: {
                 item: `commit ${sha} of ${pin.repository}`,
-                source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${input.sessionStart}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${input.sessionStart}`,
+                source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${when.words} ${when.at}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at}`,
               },
             },
             at: await github.at(pin.repository, sha, run.config.excludePaths),
@@ -3996,6 +4096,14 @@ async function sessionProfile(
   const rebuilt = sessionContext(store, t, transcriptPath);
   if ("drop" in rebuilt) throw new Error(`${rebuilt.drop}: ${rebuilt.detail}`);
   const { context, project, evidence, init } = rebuilt;
+  const parentLoad =
+    init === undefined
+      ? undefined
+      : (
+          await parentLoads(run.config.psqlCommand, store.name, [
+            { hash: pathHash(transcriptPath), before: header.sessionStart },
+          ])
+        ).get(pathHash(transcriptPath));
   const profiled = await caseProfile(run, {
     store: store.name,
     context: store.context,
@@ -4004,6 +4112,7 @@ async function sessionProfile(
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
     reads: shownReads(t.items.map((item) => item.slim)),
+    parentLoad,
   });
   const secrets = scrubbed({ systemPrompt: init?.systemPrompt });
   const recorded =
@@ -4163,6 +4272,19 @@ async function caseOf(
   // reads it can reach ships the skill of the cut's repository, no step's profile installs it, and
   // the session is dropped as the step's profile check would drop it. A GitHub read that fails
   // here is the step's read too.
+  let parentLoad: ParentLoad | undefined;
+  try {
+    parentLoad =
+      init === undefined
+        ? undefined
+        : (
+            await parentLoads(run.config.psqlCommand, store.name, [
+              { hash: pathHash(transcriptPath), before: sessionStart },
+            ])
+          ).get(pathHash(transcriptPath));
+  } catch (error) {
+    return drop("profile-failed", messageFor(error));
+  }
   const profileInput = {
     store: store.name,
     context: store.context,
@@ -4170,6 +4292,7 @@ async function caseOf(
     sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
+    parentLoad,
   };
   let reachable: ProfileResult;
   try {
@@ -4663,6 +4786,15 @@ async function reprofileCases(
       .map((c) => c.source.pathHash);
     subagents.set(name, await subagentListings(config.psqlCommand, name, hashes));
   }
+  // A case whose session recorded its prompt (a subagent's) reads its repositories at its root's
+  // last prompt build before its start (PARENT_LOAD_RULE): one digest-times.sql query a store.
+  const loads = new Map<string, Map<string, ParentLoad>>();
+  for (const name of heads.keys()) {
+    const sessions = cases
+      .filter((c) => c.source.store === name && c.profile.systemPrompt !== undefined)
+      .map((c) => ({ hash: c.source.pathHash, before: c.sessionStart }));
+    loads.set(name, await parentLoads(config.psqlCommand, name, sessions));
+  }
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
   const leftOut: { id: string; why: string }[] = [];
@@ -4721,6 +4853,7 @@ async function reprofileCases(
             ? undefined
             : `/legion/workspaces/${agents.repo}/`,
         recordedPrompt: c.profile.systemPrompt !== undefined,
+        parentLoad: loads.get(store.name)?.get(c.source.pathHash),
         checkout:
           held || decided === undefined
             ? undefined

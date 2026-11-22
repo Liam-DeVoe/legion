@@ -84,6 +84,16 @@ const SHA = "0123456789abcdef0123456789abcdef01234567";
 const PACK_PIN = "4444444444444444444444444444444444444444";
 /** The commit of the made-up release v1.0.0 that acme/deploy's worker image takes memo from. */
 const REL_PIN = "6666666666666666666666666666666666666666";
+/** The directory of a made-up root session, whose subagent pinned-subagent is, and the times of
+ *  its prompt builds: the last one before the subagent's start is ROOT_BUILD. */
+const PINNED_ROOT = "/sessions/2026-11-20T00-00-00-000Z_0a1b2c3d-0000-4000-8000-000000000000";
+const ROOT_BUILD = "2026-11-20T01:10:00.000Z";
+const ROOT_DIGESTS = ["2026-11-20T00:10:00.000Z", ROOT_BUILD, "2026-11-20T02:30:00.000Z"];
+/** acme/powers before power-two came (POWERS_AT): its commit, which GitHub gives at or before a
+ *  time before POWERS_AT, and none before the repository was made (POWERS_MADE). */
+const POWERS_OLD = "7".repeat(40);
+const POWERS_AT = "2026-11-20T01:30:00.000Z";
+const POWERS_MADE = "2026-11-20T00:30:00.000Z";
 const LINE = "2. Write each step's result on one line.";
 const scratch = temporaryDirectory("skill-cuts-build", { real: true });
 
@@ -362,6 +372,28 @@ const SESSIONS: Record<
       readFirst("9ac0000", "skill://pack-one", PACK_ONE, "# pack-one\n")(lines);
     },
   },
+  // pinned-units' reads in a subagent of the root PINNED_ROOT, which built its prompt last at
+  // ROOT_BUILD before the subagent's start: acme/powers (a package) is read then, when it had
+  // power-one alone (POWERS_OLD), and acme/dots and the pool it clones are read at the subagent's
+  // start.
+  "pinned-subagent": {
+    store: "store_a",
+    path: `${PINNED_ROOT}/pinned-subagent.jsonl`,
+    change: (lines) => {
+      readFirst("90e0000", "skill://power-one", POWERS_ONE, "# power-one\n")(lines);
+      readFirst("9ac0000", "skill://pack-one", PACK_ONE, "# pack-one\n")(lines);
+      insertAfter(lines, branchHead(lines), {
+        type: "session_init",
+        id: "5e551019",
+        timestamp: "2026-11-20T01:59:43.500Z",
+        agent: "task",
+        resolvedModel: "anthropic/claude-sonnet-5-5",
+        task: "Read the alpha steps.",
+        tools: SUBAGENT_TOOLS,
+        systemPrompt: SUBAGENT_PROMPT,
+      });
+    },
+  },
   secret: {
     store: "store_a",
     change: (lines) =>
@@ -603,8 +635,8 @@ const TASK_ROWS = [
 ];
 
 /** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql, session-head.sql,
- *  session-paths.sql and subagents.sql from the store file `storeFile`, and appends each call to
- *  `logFile`. */
+ *  session-paths.sql, subagents.sql and digest-times.sql from the store file `storeFile`, and
+ *  appends each call to `logFile`. */
 const STANDIN_PSQL = (storeFile: string, logFile: string) => `
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -694,6 +726,26 @@ if (query.includes("omp_session_files_parts pt") && place) {
     }
   }
   rows.sort((a, b) => (a.parent < b.parent ? -1 : 1));
+} else if (query.includes("AS digest_times")) {
+  kind = "digests";
+  // For each subagent the query names, its root (the topmost directory named as a top-level
+  // session's, and .jsonl) and the root's digest lines' timestamps before the subagent's start.
+  const wanted = JSON.parse(literals(query.slice(query.indexOf("jsonb_array_elements(")))[0]);
+  const sha = (p) => createHash("sha256").update(p).digest("hex");
+  rows = [];
+  for (const { hash, before } of wanted) {
+    const file = Object.keys(store.files).find((p) => sha(p) === hash);
+    if (file === undefined) continue;
+    const dir = /^(.*?\\/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+Z_[0-9a-f-]+)\\//.exec(file)?.[1];
+    const root = dir === undefined ? undefined : dir + ".jsonl";
+    const text = root === undefined ? undefined : store.files[root];
+    const digests = [...(text ?? "").matchAll(/"customType":"system-prompt-digest","data":"[^"]*","id":"[^"]*","parentId":(?:"[^"]*"|null),"timestamp":"([^"]+)"/g)]
+      .map((m) => m[1])
+      .filter((at) => Date.parse(at) < Date.parse(before))
+      .sort((a, b) => Date.parse(a) - Date.parse(b));
+    rows.push({ hash, root: root === undefined ? null : sha(root), rootHeld: text !== undefined, before, digests });
+  }
+  rows.sort((a, b) => (a.hash < b.hash ? -1 : 1));
 } else if (query.includes("encode(sha256(convert_to(f.path")) {
   kind = "heads";
   // Each file of a path hash the query names: its header's cwd and timestamp and its first user
@@ -1021,6 +1073,14 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   // and quiet and shy hide themselves from the listing. No session reads any of them.
   "acme/home": {
     "installers/omp.sh": INSTALLER,
+    // The dev box's plugin list installs @acme/pi-acme, a second install path of acme/skills'
+    // alpha and beta; and acme/home's own alpha, of other text, is another source of the name.
+    "omp/plugins/package.json": JSON.stringify({
+      name: "omp-plugins",
+      dependencies: { "@acme/pi-acme": "1.0.0" },
+    }),
+    "skills/alpha/SKILL.md":
+      "---\nname: alpha\ndescription: Use for the home's own alpha.\n---\n\n# alpha of home\n",
     ".claude/settings.json": "{}\n",
     "omp/config.yml": "skills:\n  ignoredSkills:\n    - dropped\n",
     "skills/unread/SKILL.md": skillMd("unread"),
@@ -1151,6 +1211,13 @@ const PINNED: Record<string, { sha: string; files: Record<string, string> }> = {
     },
   },
   "acme/rel@v1.0.0": { sha: REL_PIN, files: { "skills/memo/SKILL.md": skillMd("memo") } },
+  [`acme/powers@${POWERS_OLD}`]: {
+    sha: POWERS_OLD,
+    files: {
+      "package.json": JSON.stringify({ name: "powers-of-acme", pi: { skills: ["./skills"] } }),
+      "skills/power-one/SKILL.md": skillMd("power-one"),
+    },
+  },
 };
 /** The files of `repository` at the commit `id`: SHA's, or a PINNED commit's. */
 const filesAt = (repository: string, id: string): Record<string, string> | undefined =>
@@ -1242,6 +1309,10 @@ const io = (lines: string[]): BuildIo => ({
       // acme/pack's later ref, the one repositories.tsv names, was made after the sessions'
       // start: GitHub gives no commit of it at or before then, and `--jq .[0].sha` prints null.
       if (repo === "acme/pack" && ref === PACK_LATER) return ok("null\n");
+      // acme/powers was made at POWERS_MADE and had power-one alone (POWERS_OLD) until POWERS_AT.
+      const until = Date.parse(new URLSearchParams(commits[2]).get("until") ?? "");
+      if (repo === "acme/powers" && until < Date.parse(POWERS_MADE)) return ok("null\n");
+      if (repo === "acme/powers" && until < Date.parse(POWERS_AT)) return ok(`${POWERS_OLD}\n`);
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
@@ -1333,6 +1404,12 @@ beforeAll(() => {
   const goodStore = files[SESSIONS.good?.store ?? "store_a"] ?? {};
   goodStore[`${sessionPath("good").slice(0, -".jsonl".length)}/Helper.jsonl`] =
     sessionText("subagent");
+  // pinned-subagent's root: its prompt builds' digest lines, the last before the subagent's start
+  // at ROOT_BUILD.
+  goodStore[`${PINNED_ROOT}.jsonl`] = ROOT_DIGESTS.map(
+    (at, n) =>
+      `${JSON.stringify({ type: "custom", customType: "system-prompt-digest", data: `d1${n}`, id: `d0${n}`, parentId: n === 0 ? null : `d0${n - 1}`, timestamp: at })}\n`
+  ).join("");
   for (const name of Object.keys(CONTROL_SESSIONS)) {
     const store = files.store_a ?? {};
     store[controlPath(name)] = controlText(name);
@@ -1740,8 +1817,10 @@ describe("build-cases over every made-up session", () => {
   /** The requests the stand-in gateway took for this build. */
   let requests: RecordedRequest[] = [];
   beforeAll(async () => {
-    // pinned-units, whose pool is held at another commit than SHA, has a build of its own below.
-    const names = [...Object.keys(SESSIONS).filter((name) => name !== "pinned-units"), "missing"];
+    // pinned-units and pinned-subagent, whose packages and pools are held at other commits than
+    // SHA, have builds of their own below.
+    const own = ["pinned-units", "pinned-subagent"];
+    const names = [...Object.keys(SESSIONS).filter((name) => !own.includes(name)), "missing"];
     const sessions = sessionsFile("all.jsonl", names, ["good", "missing"]);
     const from = recorder.requests.length;
     code = await main(buildArgs(sessions, out, "7"), io(printed));
@@ -2102,7 +2181,14 @@ describe("build-cases over every made-up session", () => {
       psqlLines(logBefore)
         .map((line) => `${line.db} ${line.kind}`)
         .sort()
-    ).toEqual(["store_a heads", "store_a subagents", "store_b heads", "store_b subagents"]);
+    ).toEqual([
+      // The subagent case's root's prompt builds' times, one query (digest-times.sql).
+      "store_a digests",
+      "store_a heads",
+      "store_a subagents",
+      "store_b heads",
+      "store_b subagents",
+    ]);
 
     const rebuilt = loadCases(fresh, old);
     expect(rebuilt.map((c) => c.id)).toEqual(cases.map((c) => c.id));
@@ -2814,8 +2900,8 @@ describe("build-cases over every made-up session", () => {
       "not-in-store": 1,
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
-    // Every session but pinned-units, and the missing one.
-    expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length - 1 + 1);
+    // Every session but pinned-units and pinned-subagent, and the missing one.
+    expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length - 2 + 1);
     expect(summary.casesBuilt).toBe(21);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
@@ -2944,6 +3030,37 @@ test("a dev-box session that read a skill of a github: dependency's package and 
   ).toBe(true);
 });
 
+test("a subagent's profile reads its packages at its root's last prompt build before its start, and its pools at its own start, and the evidence names both times", async () => {
+  const out = path.join(scratch, "pinned-subagent", "cases.jsonl");
+  const lines: string[] = [];
+  const sessions = sessionsFile("pinned-subagent.jsonl", ["pinned-subagent"]);
+  expect(await main(buildArgs(sessions, out, "1"), io(lines))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  // acme/powers, made after the root's start and before its last prompt build, is read at that
+  // build, when it had power-one alone: power-two, added later but before the subagent's start,
+  // is not installed. acme/pack, the pool's clone, is read at the subagent's start.
+  expect(
+    c?.profile.skills
+      .map((skill) => `${skill.name} ${skill.repo} ${skill.commit}`)
+      .filter((each) => !each.includes("acme/skills"))
+      .sort()
+  ).toEqual([
+    `pack-one acme/pack ${PACK_PIN}`,
+    `pack-two acme/pack ${PACK_PIN}`,
+    `power-one acme/powers ${POWERS_OLD}`,
+  ]);
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence["read times"]).toStartWith(
+    `the subagent started at 2026-11-20T01:59:41.780Z; its root (${pathHash(`${PINNED_ROOT}.jsonl`).slice(0, 12)}) built its prompt last at ${ROOT_BUILD} before it (2 builds), so each repository is read at ${ROOT_BUILD}, and a pool's at the subagent's start 2026-11-20T01:59:41.780Z: Oh My Pi 18.18.6 gives a subagent the skills its parent loaded`
+  );
+  expect(evidence[`commit ${POWERS_OLD} of acme/powers`]).toContain(
+    `at or before the root's last prompt build ${ROOT_BUILD}`
+  );
+  expect(evidence[`commit ${PACK_PIN} of acme/pack`]).toContain(
+    "at or before the session's start 2026-11-20T01:59:41.780Z"
+  );
+});
+
 test("a dev-box profile installs the units its dev box's own installers install though the session read none of them, leaves out a skill its Oh My Pi config ignores, and installs a skill that hides itself as not listed", async () => {
   // The copies output of the suite, with acme/home named as the dev box's repository: it holds an
   // installer script and Claude Code's settings.
@@ -2996,6 +3113,26 @@ test("a dev-box profile installs the units its dev box's own installers install 
   expect(measure.added).toContain("unread");
   expect(measure.added).not.toContain("quiet");
   expect(measure.added).not.toContain("shy");
+  // A load task's profile of the same session: every copy of the tested source (acme/skills'
+  // alpha) is left out, the home's alpha stays under its namespace, and the evidence says the
+  // package installs the tested source again (`held once`).
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "devbox-home", "profiles");
+  const args = ["build-tasks", "--config", config, "--copies", copies, "--count", countDir];
+  expect(await main([...args, "--reprofile", from, "--profiles-out", dir], io([]))).toBe(EXIT.ok);
+  const task = reprofileSummary(dir).profiles.tasks.find((each) =>
+    each.differs.added.some((item) => item.item.startsWith("held once: "))
+  );
+  const held = task?.differs.added.find((item) => item.item.startsWith("held once: "));
+  expect(held?.item).toBe("held once: skill alpha (acme/skills skills/alpha)");
+  expect(held?.source).toStartWith(
+    "package:@acme/pi-acme installs it (acme/home:omp/plugins/package.json) too, the same copy; a host that had it there at another commit than the first install's lists that one as pi-acme/alpha (NAMESPACE_RULE)"
+  );
+  const profile = JSON.parse(readFileSync(path.resolve(dir, `${task?.task}.json`), "utf8"));
+  const alphas = profile.skills.filter((skill: { name: string }) => skill.name === "alpha");
+  expect(alphas).toEqual([
+    { repo: "acme/home", commit: SHA, path: "skills/alpha", name: "alpha", namespace: "agent" },
+  ]);
 });
 
 test("a Legion profile installs what its deployment gives each role at its start: the every-role plugin and every other plugin of the catalog its role setup names but those the project leaves out, and the skill its worker image installs from a release", async () => {

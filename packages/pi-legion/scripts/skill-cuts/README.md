@@ -522,6 +522,24 @@ whose layout places skills by their bare name. A profile holds each copy once, s
 repository at one commit: where the session's host had the tested source at a second install path
 too (Oh My Pi lists that one as `<namespace>/<name>` when its text there differs), the task's
 evidence says so (`held once`), and the listing measure counts such a recorded name missing.
+In a load run, a read of another source's copy of the name (`skill://<namespace>/<name>`, or a
+path under `namespaced/<namespace>/skills/`, where a capture installs it) is no load of the tested
+skill; a read of `skill://<name>` or of the tested copy's path is.
+
+A subagent's profile (a session that recorded its prompt) is read at two times. Oh My Pi 18.18.6
+gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and
+895-902), a subagent of a subagent its parent's, and the subagent rescans only the skill
+directories an extension names (session/session-tools.ts, lines 2350-2560). So each repository is
+read at the root session's last prompt build before the subagent's start, and a pool's
+repositories (a skills-sources pool's and each repository it clones) at the subagent's start. The
+root is the file the topmost `<…>Z_<id>` directory of the subagent's path stands for, and each
+prompt build writes one `system-prompt-digest` line in it (session/session-tools.ts, lines
+1795-1830). `digest-times.sql` reads the times of those lines before the subagent's start, one
+query a store for `--reprofile` and one a subagent session otherwise, and no other text of the
+file. With no build before the start (a root the store does not hold, or one with no digest line
+before it), every repository is read at the subagent's start. The `read times` evidence item
+names both times and which was used; a pin whose tag has no commit at the time read leaves its
+repository at the commit read, and the evidence says so.
 
 Each case and each load task's profile carries a `listing measure` evidence item, whose source
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives
