@@ -3019,6 +3019,27 @@ deliver_review() {
     "$dir/$label.pull.json" "$(listener_url /webhook/github)" "$dir/$label.event.json"
 }
 
+# a19_pr_mergeable NUMBER LIMIT waits, up to LIMIT seconds, until GitHub reads the smoke pull request
+# NUMBER as one it would merge now: its REST mergeable_state clean, unstable or has_hooks, the three
+# states lib/workflow.sh's smoke_pr_mergeable merges at. The smoke main requires the `gate` check,
+# which has not run when the pull request opens, and until it passes GitHub reads the pull request
+# blocked. It reads as the implement App (smoke_gh, which mints a token per read, so it asks every
+# 10 s), and keeps the last state read in a19_merge_state, `unread` for a read that failed, for the
+# row's failure to name.
+a19_merge_state=
+a19_pr_mergeable() {
+  local number=$1 limit=$2 started=$SECONDS
+  note "waiting up to ${limit}s for GitHub to read #$number's mergeable_state as clean, unstable or has_hooks"
+  while :; do
+    a19_merge_state=$(smoke_gh api "repos/$repo/pulls/$number" --jq .mergeable_state 2>/dev/null) || a19_merge_state=unread
+    case "$a19_merge_state" in
+      clean | unstable | has_hooks) return 0 ;;
+    esac
+    ((SECONDS - started < limit)) || return 1
+    sleep 10
+  done
+}
+
 # check_a19: a review round the daemon's record holds open on a pull request of the smoke
 # repository, with its reviewer's completion recorded and the reviewer stopped. The record is
 # written with the daemon stopped, as the workflow writes it when a reviewer completes undecided
@@ -3069,6 +3090,18 @@ check_a19() {
   pg_sql "$daemon_db" "insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, pushes, head_counted, state)
     values ('$issue', '$repo', $number, '$branch', '$head', now(), '[]', '[]', 0, 0, '[]', 0, '', '[]', '', 'open')" >/dev/null
   note "recorded $issue's review round open on #$number at $head, the reviewer $token (session $session) completed undecided: $(review_record "$issue")"
+  # A review round whose pull request GitHub cannot merge waits on its merge state (the workflow's
+  # classify.RoundWaitsOnMergeState), and in this rig no check webhook reaches the listener to have
+  # the daemon read that state again once the smoke main's required check has run. So the daemon
+  # boots on the round only once GitHub reads the pull request mergeable (a19_pr_mergeable), and its
+  # first read of the round finds it so; a pull request GitHub never reads mergeable fails the row
+  # naming the state GitHub last gave.
+  if ! a19_pr_mergeable "$number" 600; then
+    start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
+    record_result A19 FAIL "GitHub still read $repo#$number's mergeable_state as ${a19_merge_state:-never read} 600 s after it opened, so no review could end its round"
+    return 0
+  fi
+  note "GitHub reads $repo#$number's mergeable_state as $a19_merge_state; the daemon boots on the round"
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   note "the daemon keeps the round's tree live: $(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase}')"
   # The control's footer names the pull request's head, as the reviewer's own approval will, so the

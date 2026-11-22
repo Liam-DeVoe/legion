@@ -30,23 +30,24 @@ const conversationProofTimeout = 30 * time.Second
 // daemon from its boot record on (start).
 type conversationHistory struct {
 	recorder agenthistory.Recorder
-	// mirror is nil for a daemon without `answers` that has no Envoy credential, and writes the
-	// heartbeat alone for one without `answers` that has; backfill is nil without `answers`.
+	// mirror is nil for a daemon with the answer loop off that has no Envoy credential, and writes
+	// the heartbeat alone for one with the loop off that has; backfill is nil with the loop off.
 	mirror   *agenthistory.Mirror
 	backfill func(ctx context.Context) error
 	log      *slog.Logger
 }
 
 // newConversationHistory builds the history over the daemon's store. The heartbeat says answering
-// only when answering is: `answers` set and the workflow open, so the loop runs. A daemon without
-// `answers` still says it does not answer, with its own Envoy credential, so an operator who
-// removes `answers` stops the listener's hand-offs at its next boot rather than when the last
-// answering key ages out; with no credential it writes nothing. With the answer loop on, the mirror
-// writes the history to the daemon's own Envoy listener with its own credential, and the backfill
-// reads the conversation store the loop reads: Oh My Pi's session table under a database store
-// (the URL boot read, or, under cloudsql-iam, a proxy of the daemon's own), else the pane home's
-// session files; and under tmux the Claude Code transcripts under the state directory too. environ
-// is the daemon's environment, which the pane home's profile root is resolved from.
+// only when answering is: the answer loop on and the workflow open. A daemon with the loop off
+// still says it does not answer, with its own Envoy credential, so an operator who removes
+// `answers`, or leaves it without a model provider or a conversation store, stops the listener's
+// hand-offs at its next boot rather than when the last answering key ages out; with no credential
+// it writes nothing. With the answer loop on, the mirror writes the history to the daemon's own
+// Envoy listener with its own credential, and the backfill reads the conversation store the loop
+// reads: Oh My Pi's session table under a database store (the URL boot read, or, under
+// cloudsql-iam, a proxy of the daemon's own), else the pane home's session files; and under tmux
+// the Claude Code transcripts under the state directory too. environ is the daemon's environment,
+// which the pane home's profile root is resolved from.
 func newConversationHistory(cfg config.Config, p plan, st *store.Store, environ []string, answering bool, log *slog.Logger) *conversationHistory {
 	h := &conversationHistory{
 		recorder: agenthistory.Recorder{Store: st, Harness: cfg.BackendFor, Now: p.clock.Now, Log: log},
@@ -118,8 +119,8 @@ func conversationStore(answers config.Answers, reads answersReads) func(ctx cont
 	return nil
 }
 
-// start runs the backfill, then the mirror, until the stop it returns, which waits for both to
-// end. Without a mirror it starts nothing, and without `answers` the mirror runs alone. A failed
+// start runs the backfill, then the mirror, until the stop it returns, which waits for both to end.
+// Without a mirror it starts nothing, and with the answer loop off the mirror runs alone. A failed
 // backfill is logged, and the mirror writes what the history holds: the next boot backfills again.
 func (h *conversationHistory) start(ctx context.Context) (stop func()) {
 	if h.mirror == nil {

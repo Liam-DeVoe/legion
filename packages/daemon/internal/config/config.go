@@ -237,8 +237,10 @@ type Config struct {
 	// Oh My Pi, by role; a role it leaves out runs on Oh My Pi (BackendFor).
 	WorkerBackends map[claim.Role]runtime.Backend
 	// Answers is the `answers` block, settled: the model loop that answers a question to an agent
-	// that is not running, from its own conversation. Nil when the file sets none, and the daemon
-	// then answers nothing, as before the block existed.
+	// that is not running, from its own conversation. Nil while the loop is off: the file sets no
+	// block, or sets one that names no model provider or no conversation store its runtime needs,
+	// and the loader then adds the warning that says why (resolveAnswers). The daemon then answers
+	// nothing, as before the block existed.
 	Answers *Answers
 	// RoleConfigFiles is `role_config_files`: the Oh My Pi settings overlays one role names in its
 	// PI_CONFIG_FILES and no other role does, by role, each after the overlays every role names

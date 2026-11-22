@@ -508,8 +508,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			plan.volumeReports.bind(workflow.pool, workflow.handlers)
 		}
 	}
-	// The heartbeat says answering only while the answer loop runs: `answers` set and the workflow
-	// open, whose connection the loop reads its hand-offs from.
+	// The heartbeat says answering only while the answer loop runs: the loop on (cfg.Answers
+	// settled) and the workflow open, whose connection the loop reads its hand-offs from.
 	history := newConversationHistory(cfg, plan, st, o.environment(), workflow != nil && workflow.answers != nil, log)
 	plan.registered = history.recorder.Registered
 	if history.mirror != nil {
@@ -1518,7 +1518,7 @@ type supervision struct {
 	tokens     *api.BootTokens
 	claims     []supervise.Claim
 	// answerGate keeps the answer loop and a claim's start off one conversation (answergate.go);
-	// nil without `answers`.
+	// nil with the answer loop off.
 	answerGate *answerGate
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to

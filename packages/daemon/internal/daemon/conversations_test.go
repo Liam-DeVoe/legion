@@ -285,7 +285,7 @@ func TestADaemonWhoseAnswersLeaveTheLoopOffSaysAtBootItDoesNotAnswer(t *testing.
 				t.Fatalf("LoadForValidation: %v", err)
 			}
 			if loaded.Answers != nil || len(loaded.Warnings) != 1 || !strings.HasPrefix(loaded.Warnings[0], tc.warning) {
-				t.Errorf("the loader settled answers %+v with warnings %q, want no loop and the one line %q…", loaded.Answers, loaded.Warnings, tc.warning)
+				t.Fatalf("the loader settled answers %+v with warnings %q, want no loop and the one line %q…", loaded.Answers, loaded.Warnings, tc.warning)
 			}
 			// The Kubernetes boot's own reads of the file, which the tmux boot below does not make:
 			// with the loop off they ask for no gh and no leak check.
