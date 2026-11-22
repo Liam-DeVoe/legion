@@ -162,8 +162,8 @@ command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
-search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as
-`gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
+search qualifier gh or GitHub could read otherwise, a gh alias or an extension other than `gh
+stack` below, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one whose repositories route to two directories (two owners' repositories, an
 option or a second repository naming one owner while gh acts on another's, a workspace whose
 remotes name two but for the marked `origin` above, or a repository a configured rename moved
@@ -177,6 +177,17 @@ Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+`gh stack`, the github/gh-stack extension the worker image ships, is the one extension it runs,
+with nothing before `stack` and only where gh would run the image's copy: the `gh-stack` entry of
+gh's extensions directory under `XDG_DATA_HOME` (else `$HOME/.local/share`) must be the link the
+worker shim makes to `/opt/legion/gh-extensions/gh-stack`, so a pane, which has none, refuses it.
+gh-stack acts on the one repository go-gh resolves, `GH_REPO` where set and otherwise one of the
+working directory's `github.com` remotes or a `gh-resolved` setting's repository, and none of its
+arguments names another (`--remote` picks the git remote its pushes go to, whose credential git
+asks for by its own path, and a pull request URL is read for its number), so it runs with the
+directory `GH_REPO` routes to, or the one every remote line and setting of the working directory
+routes to, and is refused where those route to two. Its update check, which reads
+github/gh-stack's releases with the call's token, is off for every call.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
 (`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form

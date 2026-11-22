@@ -31,6 +31,7 @@ Read a database outside your pod through the read-only login whose URL is in the
 
 - `command -v psql redis-cli sqlite3 nc dig unzip yq legion-testpg` shows which your digest has. `yq` is mikefarah's v4, not Debian's Python `yq`.
 - `command -v gcloud bq az mise tmux busybox` shows the cloud CLIs and rig tools. `gsutil` is not on `PATH`; `az` is a wrapper that defaults `REQUESTS_CA_BUNDLE` to Debian's roots; run `busybox <applet>`, and download nothing with `busybox wget`, which checks no certificate.
+- `gh stack` (github/gh-stack, pinned by the image) makes and keeps GitHub's stacked pull requests: a chain of branches, each pull request based on the one below, which GitHub reviews layer by layer. GitHub rebases the upper pull requests itself when a lower one merges, and its "Rebase stack" button or `gh stack rebase` does it after a lower one changes. In a Legion tree each layer is the pull request of an issue of its own, and the stack lands bottom first, each layer through its own issue's merger. It acts on the working directory's repository, and runs with that owner's token; a workspace whose remotes name two owners is refused. Its prompts and full-screen views block in an agent's shell; the forms that need neither are `gh stack init <branch>…`, `gh stack add <branch>`, `gh stack view --json` and `gh stack submit --auto`, and `gh stack <command> --help` lists each command's flags.
 
 ## A tool the image lacks
 

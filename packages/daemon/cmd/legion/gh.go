@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -901,6 +902,12 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		case strings.HasPrefix(arg, "-"):
 			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may", false)
 		default:
+			if len(walk.path) == 0 && arg == "stack" {
+				if len(rest) > 0 {
+					return ghTarget{}, cannotPlace(rest[0], "comes before `stack`, the image's gh-stack extension, which takes nothing before its name", false)
+				}
+				return ghStackTarget(env, remotes, dirFor)
+			}
 			if err := walk.check(arg); err != nil {
 				return ghTarget{}, err
 			}
@@ -945,6 +952,62 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		return ghTarget{}, err
 	}
 	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command, files: files, stdinSent: stdinSent, writesNothing: writesNothing}, nil
+}
+
+// ghStackTarget is the target of `gh stack …`: the github/gh-stack extension the worker image
+// ships at podsafety.GhExtensionsDir, and the one extension `legion gh` runs, since it reads the
+// repository it acts on in one place it can read too. gh-stack v0.3.0 builds its one API client
+// for the repository go-gh's repository.Current answers (internal/config's Repo and GitHubClient):
+// GH_REPO where set, else one of the working directory's github.com remotes or the repository a
+// gh-resolved marker names. None of its flags or arguments names another: `--remote` picks the
+// git remote its pushes and fetches go to, whose credential `legion git-credential` answers by the
+// remote's own path; a pull request URL argument is read for its number alone (cmd/utils.go,
+// parsePRURL); the rest are branches, pull request numbers and stack numbers of that repository.
+// So it routes by GH_REPO where set, else by every remote line and marker the working directory
+// holds (fromWorkingDirectory, every line counting, since gh-stack may take any of them), and the
+// call is refused where those route to two directories, as any command naming two owners is.
+// Nothing of the argv is read, and a working directory that names no repository keeps
+// GH_CONFIG_DIR, where gh-stack itself fails to find one. The extension gh would run must be the
+// image's own (ghStackIsTheImages). Its update check, which sends the token to read
+// github/gh-stack's releases, is off for every call (ghChildForced).
+func ghStackTarget(env map[string]string, remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
+	if err := ghStackIsTheImages(env); err != nil {
+		return ghTarget{}, err
+	}
+	var sel selectors
+	var err error
+	if repo := env["GH_REPO"]; repo != "" {
+		err = sel.repository(repo, "GH_REPO "+repo)
+	} else {
+		err = sel.fromWorkingDirectory(remotes, false)
+	}
+	if err != nil {
+		return ghTarget{}, err
+	}
+	dir, err := sel.dir(dirFor, "")
+	if err != nil {
+		return ghTarget{}, err
+	}
+	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: "stack", files: []leakguard.GhFile{}}, nil
+}
+
+// ghStackIsTheImages refuses `gh stack` unless the extension gh would run is the image's: gh runs
+// the `gh-stack` entry of the extensions directory under its data directory, $XDG_DATA_HOME/gh,
+// else $HOME/.local/share/gh (go-gh v2.13.0 pkg/config/config.go, DataDir), and that entry must be
+// the link the worker shim makes to podsafety.GhExtensionsDir's root-owned copy
+// (podsafety.EnsureGhExtensions). An extension of that name installed some other way, or none, is
+// another program, which reads gh's token itself, and gets none.
+func ghStackIsTheImages(env map[string]string) error {
+	data := env["XDG_DATA_HOME"]
+	if data == "" && env["HOME"] != "" {
+		data = filepath.Join(env["HOME"], ".local", "share")
+	}
+	link := filepath.Join(data, "gh", "extensions", "gh-stack")
+	want := filepath.Join(podsafety.GhExtensionsDir, "gh-stack")
+	if got, err := os.Readlink(link); data == "" || err != nil || got != want {
+		return fmt.Errorf("cannot tell which repository the command targets: `gh stack` would run the gh extension at %s, which is not the image's link to %s, so it sends no token; run it in a Legion pod, whose shim makes that link", link, want)
+	}
+	return nil
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how
