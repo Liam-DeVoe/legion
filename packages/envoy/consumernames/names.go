@@ -59,7 +59,7 @@ type Config struct {
 	// Prefix is the part of a physical name before its '~' (FreshName): "session" for a session
 	// consumer, the logical name itself for a durable. A record of logical names only consumers of
 	// that form, Prefix(logical)~<nuid>, and Fixed(logical) as an operation's old name alone
-	// (checkNames).
+	// (Check).
 	Prefix func(logical string) string
 	// Fixed is the name the family gave logical before this package, which the cutover's convert
 	// replaces: s-<session id> for a session. A record may name it only as an open operation's old
@@ -335,7 +335,7 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 }
 
 // read admits a call and reads logical's record, refusing one that names a consumer outside
-// logical's family (checkNames).
+// logical's family (Check).
 func (n *Names) read(ctx context.Context, logical string) (Selection, error) {
 	sel := Selection{Logical: logical}
 	state, err := n.cfg.Store.State(ctx)
@@ -349,7 +349,7 @@ func (n *Names) read(ctx context.Context, logical string) (Selection, error) {
 	sel.State = state
 	record, revision, err := n.cfg.Store.Read(ctx, logical)
 	if err == nil {
-		err = n.checkNames(logical, record)
+		err = n.Check(logical, record)
 	}
 	switch {
 	case err == nil:
@@ -760,7 +760,7 @@ func answered(err error) bool {
 // many times keeps a record of one size; one whose delete failed stays retired, for the cleanup. A
 // refused drop leaves it retired too, and the cleanup finds it gone. A predecessor that is the
 // fixed name (a convert's replace, settled here) is deleted and never retired, since a record's
-// retired names are fresh ones alone (checkNames): one whose delete fails is left to the cutover's
+// retired names are fresh ones alone (Check): one whose delete fails is left to the cutover's
 // census, which declares every fixed name.
 func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo, operation Operation, outcome Outcome) (Selection, error) {
 	op := sel.Record.Op

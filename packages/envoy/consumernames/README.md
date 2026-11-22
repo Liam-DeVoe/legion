@@ -92,7 +92,11 @@ revision:
   decodes anything.
 - **The family fence.** A record's current, retired names and candidate must be
   `<Prefix(logical)>~<nuid>` names of its own key. Its operation's old name may also be the key's
-  fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`.
+  fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`, naming the field.
+  `Names.Check(logical, record)` is that fence, the one the creator applies to every record it
+  reads: a reader of the store that judges a record healthy (an operator's status, census or
+  cleanup) asks it, as it decodes the bucket's values with `DecodeKVValue`, so it judges a record
+  as the creator does.
 - **The owner check.** A consumer a record names is used only when the consumer's own metadata
   names the key (`Names.Owns`, `Config.Metadata`). It is checked before every read, adoption and
   delete of such a name, so a record that names another key's consumer is malformed, and nothing
