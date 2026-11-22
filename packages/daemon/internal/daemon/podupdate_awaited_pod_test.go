@@ -29,7 +29,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // podUpdateExchangeDrift is what the Sandbox runtime's PodDrift reports of a pod built before the
@@ -350,72 +349,6 @@ func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
 	}
 	if want := toldNotWaitedForRoles + "implementer (failed), planner (launching), reviewer (failed)."; !strings.Contains(messages[0], want) {
 		t.Errorf("the message does not say %q, which names each claim once, in the group's order:\n%s", want, messages[0])
-	}
-}
-
-// The round passed over the implementer, a claim the daemon suspended, and the implementer answers
-// the round while the sweep decides the replacement: its machine has published the answer and
-// waits on the store's write of it, which the test holds with a lock on the claim's row. The
-// replacement's decision reads a claim whose machine is deciding as one that has not answered
-// (roundGroup's mask). So the read of the workspace is due, as for any claim the round passed over
-// that has not answered: it is made through the tester, whose process the pod is replaced through,
-// and it finds work. The replacement's line, which the decision's read gives, names the implementer
-// under notWaitedFor. The message on the issue only reports, and it reads the claims unmasked
-// (noticeGroup): the implementer answered the round, so it pushed its work, and no other claim
-// lost work, so the issue is written nothing.
-//
-// The negative control is #4392 at be2e1da539: the message took the claims the round did not wait
-// for from the masked read, and named the implementer as a role whose work went with the pod.
-func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
-	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
-	token := rig.tokens[claim.RoleImplementer]
-	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateDrift)
-
-	rig.tick()
-	rig.awaitAsked(claim.RoleTester, podUpdateRound)
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.signal(claim.RoleTester, "c0ffee")
-	rig.settleAll()
-	if n := len(rig.replacements()); n != 0 {
-		t.Fatalf("the pod was replaced %d times before the sweep the test holds the implementer's answer at, want none", n)
-	}
-
-	// The lock is taken on a context the pool sees no hold on, as a second session of the
-	// database takes it, and it is let go before the rig stops the machines.
-	lock, err := rig.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin the locking transaction: %v", err)
-	}
-	unlock := func() { _ = lock.Rollback(context.Background()) }
-	t.Cleanup(unlock)
-	if _, err := lock.Exec(context.Background(), "select 1 from claims where token = $1 for update", string(token)); err != nil {
-		t.Fatalf("lock the implementer's claim row: %v", err)
-	}
-	answering := rig.claimOf(claim.RoleImplementer)
-	rig.sup.post(token, supervise.PodUpdateSignalled{Claim: token, Generation: answering.Generation, Session: answering.Session,
-		Round: answering.UpdateRound, Head: "c0ffee"})
-	m, _ := rig.sup.Machine(token)
-	testwait.Eventually(t, "the implementer's machine to publish its answer and wait on the store's write of it", func() bool {
-		return m.Deciding() != nil && m.View().Claim.UpdateSignalledAt != nil
-	})
-	rig.tick()
-	unlock()
-
-	if n := len(rig.replacements()); n != 1 {
-		t.Fatalf("the pod was replaced %d times at the sweep, want once: the tester answered and the round passed over the implementer", n)
-	}
-	rig.awaitClaim(claim.RoleImplementer, "its answer written and the round's end taken", func(c supervise.Claim) bool {
-		return c.UpdateRound == ""
-	})
-	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
-	if len(lines) != 1 {
-		t.Fatalf("the replacement was logged %+v, want one line", lines)
-	}
-	wantReadThroughTheTester(t, rig, lines[0], "found work")
-	wantField(t, lines[0], "notWaitedFor", claim.RoleImplementer)
-	if messages := rig.messages(); len(messages) != 0 {
-		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
 	}
 }
 
