@@ -420,8 +420,11 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 
 // stepWrite is the identity of one run of a step of issue, the fields every write of its record
 // carries, and drawn, the experiment and the variant of issue's group (variantOf), nil for an issue
-// of no group. Every write of a step record is built here, so each names its issue's variant, and
-// a caller that has not read it does not compile.
+// of no group. Every write of a step record is built here, and each caller reads drawn with
+// variantOf first, so each write names its issue's variant. A nil drawn compiles, so the compiler
+// holds no caller to that read: TestEachStepRecordNamesTheVariantOfItsIssue holds the start, the
+// end, the rating and the late report, and TestTheStartTheBootOpensNamesTheVariantOfItsIssue the
+// start the boot opens (OpenUncountedRuns).
 func stepWrite(issue record.Issue, drawn *record.StepExperiment, place record.StepPlace, role stepRole, typ plan.Type, agent string, starts int64) record.StepRecord {
 	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
 		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation,
