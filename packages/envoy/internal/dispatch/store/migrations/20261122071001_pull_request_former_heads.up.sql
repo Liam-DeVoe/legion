@@ -41,14 +41,19 @@
 -- was carried.
 --
 -- A head an open pull request left before this release is in no write the triggers saw. Such a
--- head needs a state only where someone recorded a result at it, so the install seeds, for each
--- open pull request attributed to an issue, each distinct commit of a result recorded on that
--- issue (check_results, ci_check_results) other than the pull request's head, as a candidate:
--- verified false, since a result on the issue does not show that the commit was ever this pull
--- request's. The settler reads each such pull request's commits once and keeps the candidates
--- among them (api/check_states.go, verifyFormerHeads), and each issue holding a candidate is
--- marked owed here, so that read comes at the settler's first pass. A head left before this
--- release with no result at it is not known, and needs no state.
+-- head needs a state only where someone recorded a result at it that the settle of the pull
+-- request's issue reads: a result recorded, on any issue, against a check of that issue's
+-- Verification document (api/results_rows.go, loadCheckResults, which the settle's computation
+-- reads the results by), in check_results or ci_check_results. So the install seeds, for each open
+-- pull request attributed to an issue, each distinct commit of such a result other than the pull
+-- request's head, as a candidate: verified false, since a result there does not show that the
+-- commit was ever this pull request's. The Verification document is the issue's document of that
+-- role, by the predicate the server reads it by (api/artifacts.go, documentRolePredicate), which
+-- check_states_owe_check_block (20261121000327) states too. The settler reads each such pull
+-- request's commits once and keeps the candidates among them (api/check_states.go,
+-- verifyFormerHeads), and each issue holding a candidate is marked owed here, so that read comes
+-- at the settler's first pass. A head left before this release with no result at it is not known,
+-- and needs no state.
 --
 -- One transaction: the table, the function, both triggers and the seed commit together. The
 -- triggers' catalog write takes pull_request_heads' SHARE ROW EXCLUSIVE, held to the commit, so a
@@ -119,11 +124,13 @@ create trigger pull_request_former_heads_keep_delete after delete on pull_reques
 insert into pull_request_former_heads (repo, number, head_sha, verified)
 select distinct head.repo, head.number, result.commit_sha, false
 from pull_request_heads head
+join artifacts document on document.issue_key = head.issue_key
+  and (document.role = 'verification' or (document.role is null and document.issue_key is not null and document.slug = 'verification-md'))
 join (
-  select issue_key, commit_sha from check_results
+  select check_artifact_id, commit_sha from check_results
   union
-  select issue_key, commit_sha from ci_check_results
-) result on result.issue_key = head.issue_key
+  select check_artifact_id, commit_sha from ci_check_results
+) result on result.check_artifact_id = document.id
 where head.state = 'open' and result.commit_sha <> head.head_sha;
 
 select check_states_owe(owed.issue_key)

@@ -355,8 +355,9 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 }
 
 // verifyFormerHeads confirms the candidates the install seeded (pull_request_former_heads rows
-// whose verified is false, migration 20261122071001): the commits of results recorded on the
-// issue of an open pull request, which may or may not have been heads of that pull request. For
+// whose verified is false, migration 20261122071001): the commits of results the settle of an
+// open pull request's issue reads, recorded on any issue against a check of its Verification
+// document, which may or may not have been heads of that pull request. For
 // each open pull request of heads holding one, it reads the pull request's commits from GitHub
 // once (delivery.PullRequestCommits, a page of 100 commits per read, and GitHub lists 250 at
 // most), keeps each candidate among them as a former head and deletes the rest, in one statement.

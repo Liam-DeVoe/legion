@@ -11,8 +11,9 @@ body: |-
     `pull_request_heads` in the transaction of the write that moved the row, whichever build wrote
     it (migration `20261122071001`, one transaction with the table and the seed), so a head is kept
     whether or not a settle ran while the pull request was there. The install seeds, as
-    unverified candidates, the commits of results recorded on each open pull request's issue other
-    than its head, and marks those issues owed; the settler reads each such pull request's commits
+    unverified candidates, the commits of the results the settle of each open pull request's issue
+    reads, recorded on any issue against a check of that issue's Verification document, other than
+    its head, and marks those issues owed; the settler reads each such pull request's commits
     from GitHub once and keeps the candidates they list (only an answered list drops one; any other
     outcome keeps them and a mark after the backoff), so a head left before the release where a
     result was recorded publishes its states,
