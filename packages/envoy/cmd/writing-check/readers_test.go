@@ -416,3 +416,25 @@ func TestTheCommandsThatCopyDispatchTextRefuseAnOutputInsideARepository(t *testi
 		t.Errorf("a refused command made %s (%v)", filepath.Join(repo, "data"), err)
 	}
 }
+
+// readers writes two outputs, the cases file (--out) and the replayed state (--state); one path
+// named for both loses the state when the cases file is written over it, so readers refuses it
+// before it reads anything, as it refuses an output that is an input, also where the path does
+// not exist yet.
+func TestReadersRefusesOnePathForItsTwoOutputs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", filepath.Join(dir, "token"))
+	in := filepath.Join(dir, "cases.jsonl")
+	if err := os.WriteFile(in, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	both := filepath.Join(dir, "readers.json")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"readers", "--in", in, "--log-through", "10", "--out", both, "--state", both}, &stdout, &stderr); code != 2 {
+		t.Errorf("readers --out X --state X = %d:\n%s; want 2 and the refusal", code, stderr.String())
+	}
+	if _, err := os.Stat(both); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused readers wrote %s (%v)", both, err)
+	}
+}
