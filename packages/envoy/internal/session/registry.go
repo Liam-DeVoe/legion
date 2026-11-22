@@ -1007,10 +1007,10 @@ var errUndecodableEntry = errors.New("the stored value is no session entry")
 // than ctx (bus.Bounded), with the revision it was read at: revision 0 and no error for a key the
 // bucket holds no entry under, and the revision with errUndecodableEntry for a value DecodeEntry
 // refuses for the key. A direct get can answer a record the server stored as its copy of another
-// key, which names that other key (or none): DecodeEntry refuses it, so putWithin carries no mark
+// key, which names that other key (or none): DecodeEntry refuses it, so PutWithin carries no mark
 // from it and writes over it. A record naming no key is read as before (DecodeEntry accepts it, with
 // an empty SessionID). A write fenced on a direct get's revision over a server-stored record is
-// refused for good, since the record carries another stream's first Nats-Sequence header; putWithin
+// refused for good, since the record carries another stream's first Nats-Sequence header; PutWithin
 // reads the stream leader on the retry (readEntryFromLeader), which reports the true sequence.
 func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, error) {
 	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
