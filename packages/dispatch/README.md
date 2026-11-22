@@ -1020,11 +1020,16 @@ project while the full member comments on `SWEEP_WRITE_ISSUE` and sends the proj
 direct message that names no issue, both of which the full member's own feed must be sent; and
 the member's feed must be sent the direct message the member sends their own session,
 `SWEEP_MEMBER_SESSION`, in the window, which they then read by `GET /api/v1/messages/{id}`. A
+member who holds no session, a browser's person alone, takes `SWEEP_MEMBER_ISSUE` in its place:
+an issue of a project whose access list names the member, never of `SWEEP_PROJECT`, on which the
+member writes a comment and a message in the window, each a body alone. Their feed must be sent
+both, and they read the message by `GET /api/v1/messages/{id}`; a run takes one of the two. A
 subscription the server ends or refuses on an open socket covers no window. The comment, the
 direct messages and the question are the writes it makes. Its inputs are `SWEEP_ORIGIN`
 (`https://`, or `http://` to a loopback host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`,
-`SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`), `SWEEP_MEMBER_SESSION`,
-`SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`, a file in the
+`SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`), `SWEEP_MEMBER_SESSION` or
+`SWEEP_MEMBER_ISSUE`, `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`,
+a file in the
 conversation of a session that worked in the project alone), and `SWEEP_FULL_COOKIE`, the full
 member's session cookie: the GitHub proxy and the agent view read as the browser's person and never
 as a token, and a direct message is a person's write, so without it the proxy reads cannot fail,
@@ -1067,8 +1072,8 @@ project's session answers is read then, and may have changed since. A runner rea
 live feed over a window it prints,
 `live window <W0> <W1>` (UTC), whose end leaves the writer's 15 s delivery bound before the feed
 closes, and which holds two of the writer's writes at 15 s, so `SWEEP_LIVE_SECONDS` is at least 45
-on a runner; it writes the member's own direct
-message alone. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
+on a runner; it makes the member's own writes alone, the direct message or the comment and the
+message. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
 cookie and the fills: every `SWEEP_WRITE_EVERY` seconds it comments on `SWEEP_WRITE_ISSUE` and sends
 the fills' session of the project a direct message, and prints
 `write <began> <ended> <comment id> <message id> delivered`, or `not delivered`, as both reach the
@@ -1091,6 +1096,9 @@ SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 
   SWEEP_FULL_COOKIE=... SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
 SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
   SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
+# Or, for a member who holds no session, their own comment and message on an issue of theirs:
+SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
+  SWEEP_MEMBER_ISSUE=OWN-3 bash e2e/acceptance/restricted-sweep.sh
 ```
 
 Every row's line says whether it can fail (the full member is answered the project's object
