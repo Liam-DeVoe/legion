@@ -61,9 +61,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "dispatch-seed: --database-url is required")
 		return 2
 	}
-	// Before the store's own refusal, which names DATABASE_URL, the server's setting.
+	// Before the store reads it: the store's refusal and its parse error name DATABASE_URL, the
+	// server's setting, so a value given here is refused, or named as one pgx cannot parse, by the
+	// flag that holds it.
 	if err := pgdsn.Refusal("--database-url", *databaseURL); err != nil {
 		fmt.Fprintf(stderr, "dispatch-seed: %v\n", err)
+		return 2
+	}
+	if _, err := pgx.ParseConfig(*databaseURL); err != nil {
+		fmt.Fprintf(stderr, "dispatch-seed: %v\n", pgdsn.ConnectError("--database-url", *databaseURL, err))
 		return 2
 	}
 	if !(*scale > 0) || *scale > 1000 {

@@ -26,3 +26,20 @@ func TestRunRefusesASpillingDatabaseURLByTheFlagsName(t *testing.T) {
 		}
 	}
 }
+
+// A --database-url pgx cannot parse (a keyword DSN with spaces around password's "=") is named by
+// the flag, the one the operator set, and not by DATABASE_URL, which the store names, and with
+// none of pgx's text, which quotes the password.
+func TestRunNamesADatabaseURLPgxCannotParseByTheFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(t.Context(), []string{"--database-url", "host=db.invalid user=seed password = zqsecret0123 dbname=dispatch sslmode=requir"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("run = %d, want 2; stderr %q", code, stderr.String())
+	}
+	if want := "dispatch-seed: connect to Postgres: --database-url cannot be parsed as a Postgres DSN"; !strings.HasPrefix(stderr.String(), want) {
+		t.Errorf("stderr = %q, want %q", stderr.String(), want)
+	}
+	if strings.Contains(stderr.String(), "DATABASE_URL") || strings.Contains(stderr.String(), "zqsecret") {
+		t.Errorf("stderr = %q, which names DATABASE_URL or holds part of the password", stderr.String())
+	}
+}
