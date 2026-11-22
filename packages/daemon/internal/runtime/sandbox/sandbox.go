@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -129,8 +130,11 @@ type Runtime struct {
 	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh
 	// files may not hold its credential yet. A runtime that restarted holds it empty. Guarded by
 	// launchedMu.
-	launchedApp          map[slotKey]string
-	launchedMu           sync.Mutex
+	launchedApp map[slotKey]string
+	launchedMu  sync.Mutex
+	// credentialChecks counts the checks of slots' gh files this runtime sent, each check's id
+	// (SlotHoldsCredential).
+	credentialChecks     atomic.Uint64
 	controllerCredential runtime.ControllerCredential
 	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
 	store                Store

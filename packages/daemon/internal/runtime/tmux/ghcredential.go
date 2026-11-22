@@ -96,37 +96,12 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		repo := entry.ghRepo
-		if entry.issue == "" && role != claim.RoleController {
-			recorded, err := r.claimRepository(ctx, token)
-			if err != nil {
-				refreshFailed(fmt.Errorf("the claim's repository: %w", err))
-				continue
-			}
-			repo = recorded
-		}
-		issue := entry.issue
-		if issue == "" {
-			issue, _ = token.IssueKey()
-		}
-		bundle, err := r.paneBundle(ctx, bundles, issue, role, repo, entry.ghDefault)
+		changed, watched, bundle, err := r.writePaneCredential(ctx, bundles, entry, role)
 		if role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
 			continue
 		}
 		if err != nil {
 			refreshFailed(err)
-			continue
-		}
-		if !repo.IsZero() {
-			if routed, _, _ := ghconfig.RouteDir(bundle.Pairs, repo.Owner(), repo.Name()); bundle.Default != routed {
-				refreshFailed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed))
-				continue
-			}
-		}
-		root := runtime.GHConfigDir(r.stateDir, token)
-		changed, watched, err := r.writeWatchedBundle(entry, root, bundle)
-		if err != nil {
-			refreshFailed(fmt.Errorf("write the github credential: %w", err))
 			continue
 		}
 		if !watched {
@@ -138,6 +113,43 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 				"expiresAt", written.ExpiresAt, "dirs", changed)
 		}
 	}
+}
+
+// writePaneCredential writes entry's pane's gh files for role's App: the bundle paneBundle mints
+// on the pane's claim's issue, rendered for the pane's own repository — the one its launch minted
+// the write token for, and for a tree pane this runtime adopted, the one the daemon records for
+// the claim's issue (Options.ClaimRepository) — and written while the pane is still watched
+// (writeWatchedBundle). It answers the directories it rewrote, whether the pane is still watched,
+// and the bundle. A render whose default is not the directory the pane's own repository routes to
+// (ghconfig.RouteDir) is refused and writes nothing.
+func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bundles, entry trackedProcess, role claim.Role) ([]string, bool, ghconfig.Bundle, error) {
+	token := entry.locator.Claim
+	repo := entry.ghRepo
+	if entry.issue == "" && role != claim.RoleController {
+		recorded, err := r.claimRepository(ctx, token)
+		if err != nil {
+			return nil, false, ghconfig.Bundle{}, fmt.Errorf("the claim's repository: %w", err)
+		}
+		repo = recorded
+	}
+	issue := entry.issue
+	if issue == "" {
+		issue, _ = token.IssueKey()
+	}
+	bundle, err := r.paneBundle(ctx, bundles, issue, role, repo, entry.ghDefault)
+	if err != nil {
+		return nil, false, ghconfig.Bundle{}, err
+	}
+	if !repo.IsZero() {
+		if routed, _, _ := ghconfig.RouteDir(bundle.Pairs, repo.Owner(), repo.Name()); bundle.Default != routed {
+			return nil, false, ghconfig.Bundle{}, fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed)
+		}
+	}
+	changed, watched, err := r.writeWatchedBundle(entry, runtime.GHConfigDir(r.stateDir, token), bundle)
+	if err != nil {
+		return nil, watched, bundle, fmt.Errorf("write the github credential: %w", err)
+	}
+	return changed, watched, bundle, nil
 }
 
 // paneBundle is the gh bundle of one pane's claim of issue ("" for the controller's), and the one

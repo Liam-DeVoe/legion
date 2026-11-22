@@ -389,30 +389,11 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 		if err != nil {
 			return slotCredential{}, err
 		}
-		recorded, ok := secret.Data[GitHubDefaultKey]
-		if !ok {
-			return slotCredential{}, fmt.Errorf("Secret %s records no %s", name, GitHubDefaultKey)
+		served, bundle, held, err := r.renderSlot(ctx, pod, slot, repo, bundles, secret, role)
+		if err != nil || held.owner == "" {
+			return held, err
 		}
-		owner := string(recorded)
-		if owner == "" {
-			return slotCredential{}, nil
-		}
-		minting, cancel := call(ctx)
-		bundle, err := r.roleBundle(minting, bundles, secret.Annotations[annotationIssue], role, repo, owner)
-		cancel()
-		if err != nil {
-			return slotCredential{}, err
-		}
-		served := servedLayout(pod, slot, repo, bundle)
-		written, ok := served[owner]
-		if !ok {
-			return slotCredential{}, fmt.Errorf("the credential holds no directory for the Secret's default owner %s", owner)
-		}
-		token, err := ghconfig.TokenFromHosts([]byte(written.Hosts))
-		if err != nil {
-			return slotCredential{}, fmt.Errorf("the credential's %s: %w", owner, err)
-		}
-		held := slotCredential{owner: owner, token: token, app: written.App}
+		written := served[held.owner]
 		var changed []string
 		for _, dir := range slices.Sorted(maps.Keys(served)) {
 			if string(secret.Data[GitHubHostsKey(dir)]) != served[dir].Hosts {
@@ -464,6 +445,40 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 			return slotCredential{}, err
 		}
 	}
+}
+
+// renderSlot is what slot's Secret in pod, read as secret, holds once it is written for role's App
+// (writeSlotCredential): the gh files by the directory each is written under (servedLayout), the
+// bundle they were rendered from (built through bundles, the caller's memo, on the issue the
+// Secret records, for repo), and the default owner, the token its hosts.yml holds and the App
+// that minted it. A Secret whose default owner is empty is a slot whose gh acts as nobody, which
+// renders nothing and holds no token. It writes nothing.
+func (r *Runtime) renderSlot(ctx context.Context, pod *corev1.Pod, slot claim.Role, repo ghrepo.Repository, bundles *appauth.Bundles,
+	secret *corev1.Secret, role claim.Role) (map[string]ghconfig.Rendered, ghconfig.Bundle, slotCredential, error) {
+	recorded, ok := secret.Data[GitHubDefaultKey]
+	if !ok {
+		return nil, ghconfig.Bundle{}, slotCredential{}, fmt.Errorf("Secret %s records no %s", secret.Name, GitHubDefaultKey)
+	}
+	owner := string(recorded)
+	if owner == "" {
+		return nil, ghconfig.Bundle{}, slotCredential{}, nil
+	}
+	minting, cancel := call(ctx)
+	bundle, err := r.roleBundle(minting, bundles, secret.Annotations[annotationIssue], role, repo, owner)
+	cancel()
+	if err != nil {
+		return nil, ghconfig.Bundle{}, slotCredential{}, err
+	}
+	served := servedLayout(pod, slot, repo, bundle)
+	written, ok := served[owner]
+	if !ok {
+		return nil, ghconfig.Bundle{}, slotCredential{}, fmt.Errorf("the credential holds no directory for the Secret's default owner %s", owner)
+	}
+	token, err := ghconfig.TokenFromHosts([]byte(written.Hosts))
+	if err != nil {
+		return nil, ghconfig.Bundle{}, slotCredential{}, fmt.Errorf("the credential's %s: %w", owner, err)
+	}
+	return served, bundle, slotCredential{owner: owner, token: token, app: written.App}, nil
 }
 
 // writeLaunchCredential writes the slot of spec's claim in pod, a pod the launch keeps, for the App

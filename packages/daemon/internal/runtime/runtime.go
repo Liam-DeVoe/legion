@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // Runtime is what the supervisor has instead of a process table. Every method is about one
@@ -816,3 +817,22 @@ func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.
 	}
 	return role, nil
 }
+
+// SlotCredentials writes and reads the gh credential of a slot, which the daemon asks of a runtime
+// before it tells an owner a step whose App the owner's slot must hold, and at that step's end.
+// Both runtimes answer it.
+type SlotCredentials interface {
+	// WriteSlotCredential writes the gh credential of the App of role into the slot of token now,
+	// where the slot does not hold it already. A slot with no live process to read it is left to
+	// the claim's next launch, which writes the App SlotRole answers then.
+	WriteSlotCredential(ctx context.Context, token claim.Token, role claim.Role) error
+	// SlotHoldsCredential answers nil once the slot's gh files hold that credential, a wait
+	// (ErrSlotCredentialPending) while they do not, and ErrAwaitsPodUpdate for a pod whose
+	// launcher cannot tell.
+	SlotHoldsCredential(ctx context.Context, token claim.Token, role claim.Role) error
+}
+
+// ErrSlotCredentialPending is a slot whose gh files do not hold the credential asked of it yet
+// (SlotCredentials.SlotHoldsCredential): a wait (wait.ErrWaiting), which a later ask answers again
+// once the files hold it.
+var ErrSlotCredentialPending = wait.New("the slot's gh files do not hold the credential of its step yet")
