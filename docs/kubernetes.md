@@ -7600,7 +7600,7 @@ Then move the pods in this order:
 1. Release the project: `legion project release --operator-token-file <file>`.
    The release must end with no pod of the project left: the command exits 0, or `GET /legion/v1/operator/project/release` answers a `finishedAt`, no `endedAt`, no `result.failure`, and every line of `result.sandboxes` deleted.
    Recover a pod it left first ([Releasing a project's pods](#releasing-a-projects-pods)).
-   A project that is paused, or whose pause still holds a pod, refuses the release `409 PROJECT_PAUSED` and moves nothing: resume it and end each pod's hold first, as that section says.
+   A daemon process that has run no release refuses the release `409 PROJECT_PAUSED` while the project is paused or its pause still holds a pod, and moves nothing: resume it and end each pod's hold first, as that section says.
 
 2. Run `legion probe-boot --config <the configuration that names the other cluster>` as the daemon's identity ([Probing a configuration before the daemon boots on it](#probing-a-configuration-before-the-daemon-boots-on-it)).
    It refuses, as the boot would, a pod the other cluster would not admit, mount or start.

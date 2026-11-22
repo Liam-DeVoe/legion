@@ -2034,14 +2034,14 @@ const legionPauseHeldPod = z.object({
  * runs no workflow; `PROJECT_ALREADY_PAUSED` and `PROJECT_PAUSED` name the `pause` that stands;
  * `PROJECT_NOT_PAUSED` names the `lastPause`, where one has ended. `legion project release`'s
  * `PROJECT_PAUSED` (contract 221) names the `pause` where one stands and `heldPods`, each pod a
- * pause still holds, where one does: the release refuses while the project is paused and while a
- * pod that a pause stopped is still held after the resume, since it would delete such a pod
- * unread. A pause while a project release runs answers `PROJECT_RELEASING` (contract 221), which
- * names nothing beside its sentence, and the sentence names the release. A blank reason's refusal
- * (`PAUSE_REASON_REQUIRED`) names nothing beside its sentence and is the plain refusal
- * (`LegionErrorResponse`). The daemon client reads a refusal's code and sentence alone
- * (`LegionErrorResponse`), and the sentence says which pause it is, so this schema is what holds
- * the rest of the body to the daemon's goldens. */
+ * pause still holds, where one does: the release of a daemon process that has run none refuses
+ * while the project is paused and while a pod that a pause stopped is still held after the resume,
+ * since it would delete such a pod unread. A pause while a project release runs answers
+ * `PROJECT_RELEASING` (contract 221), which names nothing beside its sentence, and the sentence
+ * names the release. A blank reason's refusal (`PAUSE_REASON_REQUIRED`) names nothing beside its
+ * sentence and is the plain refusal (`LegionErrorResponse`). The daemon client reads a refusal's
+ * code and sentence alone (`LegionErrorResponse`), and the sentence says which pause it is, so
+ * this schema is what holds the rest of the body to the daemon's goldens. */
 export const LegionPauseFailureResponse = z.object({
   code: nonEmptyString,
   error: nonEmptyString,

@@ -338,7 +338,7 @@ func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
 		body.HeldPods = make([]PauseHeldPodView, len(refused.Held))
 		pods := make([]string, len(refused.Held))
 		for i, held := range refused.Held {
-			claims := slices.Clone(held.Claims)
+			claims := held.Claims
 			if claims == nil {
 				claims = []claim.Token{}
 			}
