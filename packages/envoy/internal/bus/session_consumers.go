@@ -178,10 +178,13 @@ type SessionConsumers struct {
 	createFault func(consumer string) error
 	// deleteAnswerFault, when not nil, runs after each consumer delete the server answered, and an
 	// error it returns replaces that answer, as a request whose answer was lost after the server
-	// applied it returns one. infoFault, when not nil, runs before each consumer info read is sent,
-	// and an error it returns fails the read unsent. Both are nil outside tests
-	// (SetDeleteAnswerFault, SetInfoFault).
+	// applied it returns one. deleteSendFault, when not nil, runs before each consumer delete is
+	// sent, and an error it returns fails the delete unsent, as a request that never reached the
+	// server returns one. infoFault, when not nil, runs before each consumer info read is sent, and
+	// an error it returns fails the read unsent. All three are nil outside tests
+	// (SetDeleteAnswerFault, SetDeleteSendFault, SetInfoFault).
 	deleteAnswerFault func(consumer string) error
+	deleteSendFault   func(consumer string) error
 	infoFault         func(consumer string) error
 	// narrowed, when not nil, hears each change of a consumer's filter that drops a subject the
 	// new filter does not contain while the stream holds messages on it from the consumer's
@@ -272,14 +275,23 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 
 // SetDeleteAnswerFault makes every consumer delete the server answered call fault(consumer name)
 // and, when it returns an error, return that error in place of the answer, as a delete whose
-// answer was lost after the server applied it does; nil removes it. SetInfoFault makes every
+// answer was lost after the server applied it does; nil removes it. SetDeleteSendFault makes every
+// consumer delete call fault(consumer name) first and, when it returns an error, return that error
+// unsent, as a delete that never reached the server does; nil removes it. SetInfoFault makes every
 // consumer info read call fault(consumer name) first and fail, unsent, with the error it returns;
-// nil removes it. They are seams for tests, which lose a restart's delete answer and fail the read
-// back of it; nothing else sets them.
+// nil removes it. They are seams for tests, which lose a restart's delete answer, with the delete
+// applied or not, and fail the read back of it; nothing else sets them.
 func (s *SessionConsumers) SetDeleteAnswerFault(fault func(consumer string) error) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	s.deleteAnswerFault = fault
+}
+
+// SetDeleteSendFault: see SetDeleteAnswerFault.
+func (s *SessionConsumers) SetDeleteSendFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.deleteSendFault = fault
 }
 
 // SetInfoFault: see SetDeleteAnswerFault.
@@ -1415,13 +1427,22 @@ func (s *SessionConsumers) delete(ctx context.Context, name string) error {
 	var response struct {
 		Error *jetstream.APIError `json:"error"`
 	}
-	err := s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response)
+	s.pendingMu.Lock()
+	sendFault := s.deleteSendFault
+	s.pendingMu.Unlock()
+	var err error
+	if sendFault != nil {
+		err = sendFault(name)
+	}
 	if err == nil {
-		s.pendingMu.Lock()
-		fault := s.deleteAnswerFault
-		s.pendingMu.Unlock()
-		if fault != nil {
-			err = fault(name)
+		err = s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response)
+		if err == nil {
+			s.pendingMu.Lock()
+			fault := s.deleteAnswerFault
+			s.pendingMu.Unlock()
+			if fault != nil {
+				err = fault(name)
+			}
 		}
 	}
 	if errors.Is(err, ErrConsumerNotGranted) {

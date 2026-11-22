@@ -1264,10 +1264,10 @@ func runListener(credentialWait time.Duration) {
 		// listening line and "webhooks open", and each one can end it with a bare error: a reader
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		// The line keeps the words it had before it named the credential, which a reader matches
-		// (the natslive edge test reads "connect to NATS and reconcile the ... stream: "), and ends
-		// naming the credential the hub refused, an nkey user by its public key, which is what an
-		// operator looks for in the hub's authorization; err names the last refusal.
-		log.Fatalf("connect to NATS and reconcile the %s stream: %v; the NATS credential: %s", bus.Stream, err, bus.CredentialName(os.LookupEnv))
+		// (the natslive edge test reads "connect to NATS and reconcile the ... stream: "), and
+		// names the credential the hub refused, an nkey user by its public key, which is what an
+		// operator looks for in the hub's authorization (startFailureLine); err names the step.
+		log.Fatal(startFailureLine(err, start, os.LookupEnv))
 	}
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
@@ -1610,10 +1610,10 @@ func runListener(credentialWait time.Duration) {
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
-	// The role lane (startRoleLane); an edge listener opens none.
-	lane, err := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger)
+	// The role lane (startRoleLane), the start's second connect; an edge listener opens none.
+	lane, err := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger, start)
 	if err != nil {
-		logger.Error("core role subscription failed", slog.String("error", err.Error()))
+		logger.Error("core role subscription failed", append([]slog.Attr{slog.String("error", err.Error())}, start.refusedCredential(os.LookupEnv)...)...)
 		client.Conn.Close()
 		os.Exit(1)
 	}
@@ -1635,9 +1635,10 @@ func runListener(credentialWait time.Duration) {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, edge.connectOptions()...)
+	delivery, err := startSessionDelivery(cfg, inactiveThreshold, client, logger, edge, start)
 	if err != nil {
-		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
+		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own",
+			append([]slog.Attr{slog.String("error", err.Error())}, start.refusedCredential(os.LookupEnv)...)...)
 		client.Conn.Close()
 		os.Exit(1)
 	}

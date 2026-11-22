@@ -269,6 +269,16 @@ const streamFullPrefix = "envoy: the message bus refused the message because its
 // listenerwire.CodeMaybeStored and the sender reads it as a send that may have landed.
 const earlierAttemptInProcessPrefix = "envoy: an earlier attempt of this message is still being stored"
 
+// notSentPrefix opens the body of the 503 a send or publish gets when the bus refused its message
+// before it sent anything, because the deployed stream, as this listener's client last read its
+// subjects, does not capture a topic this build stores (bus.ErrSubjectNotDeployed): a hub move's
+// quiesce, or an operator's edit of the subjects. It is deliberately not busUnansweredPrefix: the
+// bus was never asked, so "the message bus did not answer" would send an operator looking for an
+// outage, and a sender could not tell it from a 5xx after which the message may have arrived. It
+// is contracts.MessageNotSentPrefix, which envoy-client's transport reads as a message nothing
+// stored, so its sender may send it again once the stream captures the topic.
+const notSentPrefix = contracts.MessageNotSentPrefix
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -309,7 +319,9 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
-// has room, so the caller's retry is right.
+// has room, so the caller's retry is right. So is a message the bus refused before it sent
+// anything (notSent), under notSentPrefix: the bus was never asked, and the same message is
+// stored once the stream captures its topic again.
 //
 // A publish that may have stored its message (mayHaveStored) is the 503 with
 // listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
@@ -330,6 +342,8 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		prefix = streamFullPrefix
 	case inProcess:
 		prefix = earlierAttemptInProcessPrefix
+	case notSent(err):
+		prefix = notSentPrefix
 	}
 	if !stored && !full && !inProcess {
 		if !errors.Is(err, bus.ErrRefused) {
@@ -354,6 +368,14 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 // refusal (publishPastInProcess) read.
 func mayHaveStored(err error) bool {
 	return errors.Is(err, bus.ErrUnacknowledged)
+}
+
+// notSent reports whether a send or publish that failed with err sent nothing: the bus refused its
+// message before anything went out (bus.ErrSubjectNotDeployed) and no earlier send of it went out
+// unanswered (mayHaveStored). It is the one rule the answer's prefix (writeBusUnavailable) and the
+// request record's outcome (requestRecord.refuseBusUnavailable) read.
+func notSent(err error) bool {
+	return errors.Is(err, bus.ErrSubjectNotDeployed) && !mayHaveStored(err)
 }
 
 // writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the
@@ -811,17 +833,30 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		hasEntry := err == nil
 		var known session.KnownSession
 		if errors.Is(err, nats.ErrKeyNotFound) {
+			var recorded bool
+			known, recorded = d.known.Get(targetSession)
+			// A send to a stopped session the bus would refuse before sending anything, because
+			// the deployed stream does not capture the target's agent subject, is answered that
+			// refusal here, before the wake: a sender sends it again at Retry-After: 1 for as long
+			// as a narrowing lasts, and a wake for each of those sends would cost it nothing
+			// (senderCharge.published) and wake a pod for a message nothing took. A target neither
+			// store knows is answered 404 below whatever the stream captures, its wake charged.
+			if recorded {
+				if refusal := d.client.UndeployedRefusal(item.Topic); refusal != nil {
+					record.refuseBusUnavailable(w, refusal)
+					return
+				}
+			}
 			// A session of a released Legion issue pod is gone from the bucket with its pod, and
 			// this answer is the only sight of the message meant for it: the wake is reported so
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
 			reportAgentWake(d.wakes, logger, targetSession)
 			// The wake is what this message costs its sender, whatever is answered below, but for
-			// a publish the bus refused because the deployed stream does not capture the target's
-			// agent subject, which sent nothing and costs nothing (senderCharge.published).
+			// a publish the bus refused because a narrowing began after the check above, which
+			// sent nothing and costs nothing (senderCharge.published).
 			charge.woke()
-			var recorded bool
-			if known, recorded = d.known.Get(targetSession); !recorded {
+			if !recorded {
 				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(d.sessions, targetSession, target, recipientState))
 				return
 			}

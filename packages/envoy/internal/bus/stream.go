@@ -759,10 +759,12 @@ func subjectsOverlap(a, b string) bool {
 	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
 }
 
-// SubjectsOverlap reports whether some subject matches both patterns a and b (subjectsOverlap): a
-// caller outside this package that weighs two consumer filter subjects against each other, as the
-// listener does to find which of a session's topics the filter reduction (ReduceFilterSubjects)
-// merges into a wider one, asks it here rather than matching tokens itself.
+// SubjectsOverlap reports whether some subject matches both patterns a and b (subjectsOverlap), for
+// a caller outside this package. No production code calls it: the listener weighs a session's
+// filters through SessionConsumerReduction, which records which topics fed each merge. The
+// listener's reduction test reads it to check that each of its rows overlaps as the case says
+// (cmd/listener's TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut), and it stays
+// exported because a test in another package cannot reach the unexported one.
 func SubjectsOverlap(a, b string) bool {
 	return subjectsOverlap(a, b)
 }

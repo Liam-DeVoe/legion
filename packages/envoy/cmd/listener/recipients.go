@@ -3,6 +3,7 @@ package main
 import (
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -121,9 +122,10 @@ func mayLeaveOut(topics []string) bool {
 }
 
 // filterCarries is carriedFor judged on the session's consumer filter itself, with no shortcut: a
-// topic of topics that matches subject, in one of its forms, is not one sessionFilter leaves out.
+// topic of topics that matches subject, in one of its forms, is not one sessionFilter leaves out
+// (filterLeftOuts, which keeps that reduction's answer).
 func filterCarries(sessionID string, topics []string, subject string) bool {
-	_, leftOut := sessionFilter(sessionID, topics)
+	leftOut := filterLeftOuts.of(sessionID, topics)
 	for _, topic := range topics {
 		if slices.ContainsFunc(leftOut, func(left filterLeftOut) bool { return left.topic == topic }) {
 			continue
@@ -134,3 +136,80 @@ func filterCarries(sessionID string, topics []string, subject string) bool {
 	}
 	return false
 }
+
+// leftOutCacheSize bounds leftOutCache: past it, an insert drops arbitrary entries until half the
+// bound is left. One entry is one session's row as a matcher read it, so the bound holds the rows of
+// that many sessions with a wildcard pair or a topic outside notifications. at once, far more than
+// a listener's sessions; a row dropped is reduced again at its next message, which is the cost the
+// cache saves, not a wrong answer.
+const leftOutCacheSize = 4096
+
+// leftOutCache keeps, for each session and topic list, the topics the session's consumer filter
+// leaves out by its fourth or fifth kind (sessionFilter), so the durable path and the publish count,
+// which ask it for each message and each matching row that may leave one out (mayLeaveOut), reduce
+// a row once rather than once a message. sessionFilter's answer depends on the session id and the
+// topic list alone, so the key is both: a write that changes the row's topics is a new key, which
+// is reduced afresh, and a write that leaves them as they were keeps the answer, which is still
+// true. A row read in another order is another key, reduced to the same answer.
+type leftOutCache struct {
+	mu      sync.Mutex
+	entries map[string][]filterLeftOut
+	// reduced counts the reductions the cache ran, which a test reads to tell a hit from a miss.
+	reduced int
+}
+
+// of is the topics of topics sessionID's consumer filter leaves out by its fourth or fifth kind, as
+// sessionFilter answers it, from the cache when it holds the session and the list. The slice it
+// returns is shared: callers read it and do not change it.
+func (c *leftOutCache) of(sessionID string, topics []string) []filterLeftOut {
+	key := sessionID + "\x00" + strings.Join(topics, "\x00")
+	c.mu.Lock()
+	leftOut, ok := c.entries[key]
+	c.mu.Unlock()
+	if ok {
+		return leftOut
+	}
+	_, leftOut = sessionFilter(sessionID, topics)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reduced++
+	if c.entries == nil {
+		c.entries = make(map[string][]filterLeftOut)
+	}
+	if len(c.entries) >= leftOutCacheSize {
+		for dropped := range c.entries {
+			delete(c.entries, dropped)
+			if len(c.entries) <= leftOutCacheSize/2 {
+				break
+			}
+		}
+	}
+	c.entries[key] = leftOut
+	return leftOut
+}
+
+// isolate gives the cache a memory of its own, empty, with its count of reductions at zero, and
+// returns the func that puts back what it had. A test isolates the cache it counts, so no entry
+// another test stored answers for it.
+func (c *leftOutCache) isolate() (restore func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entries, reduced := c.entries, c.reduced
+	c.entries, c.reduced = nil, 0
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.entries, c.reduced = entries, reduced
+	}
+}
+
+// reductions is how many reductions the cache ran since it was isolated.
+func (c *leftOutCache) reductions() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reduced
+}
+
+// filterLeftOuts is the one cache of this process: the publish count (carriedFor) and the durable
+// path (skipLeftOutInterest) share it, as they share the rows they read.
+var filterLeftOuts leftOutCache

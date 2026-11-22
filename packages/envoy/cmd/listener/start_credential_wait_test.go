@@ -955,8 +955,9 @@ func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStar
 // line naming its credential's public key and the last refusal; a start whose server is not there
 // at all ends after main's ten tries, not at the bound; and the production start's bound is 180 s,
 // which main passes to the start (runListener, newNATSStart), whose option connectListenerBus hands
-// to the owning connect and, on an edge listener, to bus.Connect: bus.WithCredentialWait has one
-// call outside tests, in cmd/listener.
+// to the owning connect and, on an edge listener, to bus.Connect, and startRoleLane and
+// startSessionDelivery hand to the role lane's and the session consumers' connects:
+// bus.WithCredentialWait has one call outside tests, natsStart.option in cmd/listener.
 func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	if seedFile, child := os.LookupEnv(startChildSeedFile); child {
 		runStartChild(seedFile)

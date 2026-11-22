@@ -262,14 +262,16 @@ func WithStreamMessageReads() ConnectOption {
 // fail at it: the server refusing the connect (authorizationRefusal), or refusing a request of an
 // owning client's ensure of the stream, or of the start check (WithStartCheck), under the
 // credential's grant (ErrPublishDenied). Each try dials once, and an owning client's ensures the
-// stream, and the check runs, on a client of its own, so a failed try leaves nothing running. A
-// start check's error that is no refusal ends the start at once. After a refusal the start waits a
-// second before its next try and doubles each wait up to ten seconds, the last cut to end at
-// bound; a try in progress at the bound may finish, and its success counts, and no try begins
-// after the bound (startTryLateness says what a late wake from the last wait may still begin). Any
-// other error of a try counts toward the ten tries in a row, a second apart, that a start without
+// stream, and the check runs, on a client of its own, so a failed try leaves nothing running. An
+// ensure or a start check that fails for any other reason ends the start at once, with its own
+// error, as it ends a start without the option. After a refusal the start waits a second before
+// its next try and doubles each wait up to ten seconds, the last cut to end at bound; a try in
+// progress at the bound may finish, and its success counts, and no try begins after the bound
+// (startTryLateness says what a late wake from the last wait may still begin). A dial that fails
+// for any other reason counts toward the ten tries in a row, a second apart, that a start without
 // the option makes, and a refusal ends such a row. The start ends with an error at the first of the
-// two limits, naming the last refusal (waitOutCredentialRefusals).
+// two limits, naming the last refusal when it met one, and with the failed step's own error when it
+// met none (waitOutCredentialRefusals, credentialWaitEnded).
 //
 // refused, when not nil, is handed each refusal as it comes, on the constructor's goroutine, so the
 // caller can report that its start is waiting (cmd/listener's /healthz answers 503 naming it). Each
@@ -278,8 +280,10 @@ func WithStreamMessageReads() ConnectOption {
 // whose ensure fails at the server's first refusal. A start in the background
 // (WithConnectInBackground) never fails, so it ignores the option.
 //
-// cmd/listener alone passes it, with listenerCredentialWait: a listener started before the hub's
-// servers have reloaded its new nkey connects once they have, where it would exit and be restarted.
+// cmd/listener alone passes it, through its start (natsStart.option): to the main client, the role
+// lane (ConnectRoleLane) and the session-consumer connection (ConnectSessionConsumers), each a
+// connect of the listener's start, so a listener started before the hub's servers have reloaded
+// its new nkey connects once they have, where it would exit and be restarted.
 func WithCredentialWait(bound time.Duration, refused func(error)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.credentialWait, o.credentialRefused = bound, refused })
 }
@@ -606,9 +610,13 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // environment names, each refused before any dial. A start in the foreground with
 // WithCredentialWait waits out a refusal of the credential (waitOutCredentialRefusals), each of
 // its tries a client of its own whose start dials once (startClient) and whose check then runs
-// (WithStartCheck, checkedStart), and logs each refusal at WARN with the wait that follows it;
-// every other start is one startClient that dials up to connectTries times, connectRetryWait after
-// each dial that fails, and whose check then runs.
+// (WithStartCheck, checkedStart), and logs each refusal at WARN with the wait that follows it. A
+// try whose dial failed otherwise counts toward the ten tries in a row of a start without the
+// wait; a try whose install (an owning client's ensure of the stream among it) or start check
+// failed otherwise ends the start at once (endsStart), as such a failure ends a start without the
+// wait: no wait repairs a stream the server will not take, and the ensure's hang guard has already
+// waited out its whole bound. Every other start is one startClient that dials up to connectTries
+// times, connectRetryWait after each dial that fails, and whose check then runs.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
@@ -623,7 +631,8 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	}
 	settings := opts.connectionSettings(credential)
 	if opts.background {
-		return startClient(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
+		client, _, err := startClient(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
+		return client, err
 	}
 	if opts.credentialWait <= 0 {
 		client, _, err := checkedStart(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
@@ -642,40 +651,51 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		}
 	}
 	return waitOutCredentialRefusals(opts.credentialWait, refused, wallStartClock, func() (*Client, error) {
-		client, checkFailed, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
-		if checkFailed && !credentialRefusal(err) {
+		client, failedAt, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
+		if err != nil && failedAt != stepDial && !credentialRefusal(err) {
 			return nil, endsStart{err}
 		}
 		return client, err
 	})
 }
 
+// startStep is the step of a start's try that failed (startClient, checkedStart): its dial, its
+// install of the connection, which ensures an owning client's stream, or its start check.
+type startStep uint8
+
+const (
+	stepDial startStep = iota
+	stepInstall
+	stepCheck
+)
+
 // checkedStart is startClient in the foreground followed by the start check (WithStartCheck), when
 // the start made a client and the options name a check. It answers the client, or the error of the
-// start or of the check, and whether the check failed; a client whose check failed is closed first,
-// and checkedStart returns once its close's callbacks and recovery have run, or, when one hangs,
-// once closeSettled's bound has passed and it has logged a WARN (closeFailedStart).
-func checkedStart(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (_ *Client, checkFailed bool, _ error) {
-	client, err := startClient(urls, ownsStream, opts, settings, dialer, tries, wait)
+// start or of the check and the step that failed; a client whose check failed is closed first, and
+// checkedStart returns once its close's callbacks and recovery have run, or, when one hangs, once
+// closeSettled's bound has passed and it has logged a WARN (closeFailedStart).
+func checkedStart(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (*Client, startStep, error) {
+	client, failedAt, err := startClient(urls, ownsStream, opts, settings, dialer, tries, wait)
 	if err != nil || opts.startCheck == nil {
-		return client, false, err
+		return client, failedAt, err
 	}
 	if err := opts.startCheck(client); err != nil {
 		client.closeFailedStart()
-		return nil, true, err
+		return nil, stepCheck, err
 	}
-	return client, false, nil
+	return client, stepCheck, nil
 }
 
 // startClient is one start of the client newClient returns, over the connection settings and the
-// proxy newClient read. An owning client ensures the stream (ensureStreamWithConfig) and then
-// starts its keeper (startKeeper): once install has returned, or, connecting in the background
-// (WithConnectInBackground), in the first connection's reconnect hook once its ensure has
-// succeeded (startKeeperOnce), so its keeper runs no pass before that ensure. A start in the
-// foreground dials up to tries times, waiting wait after each dial that fails (connectTrying), and
-// one that fails stops the client it made before it closes the connection, so nothing of a failed
-// try runs on: the next try of a start that waits out refusals makes a client afresh.
-func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (*Client, error) {
+// proxy newClient read, answering the step that failed beside its error. An owning client ensures
+// the stream (ensureStreamWithConfig) and then starts its keeper (startKeeper): once install has
+// returned, or, connecting in the background (WithConnectInBackground), in the first connection's
+// reconnect hook once its ensure has succeeded (startKeeperOnce), so its keeper runs no pass
+// before that ensure. A start in the foreground dials up to tries times, waiting wait after each
+// dial that fails (connectTrying), and one that fails stops the client it made before it closes the
+// connection, so nothing of a failed try runs on: the next try of a start that waits out refusals
+// makes a client afresh.
+func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (*Client, startStep, error) {
 	c := &Client{
 		urls:                        urls,
 		name:                        opts.name,
@@ -723,14 +743,14 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 			return nil
 		}
 		if _, err := connectFirstInBackground(c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
-			return nil, err
+			return nil, stepInstall, err
 		}
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
-		return c, nil
+		return c, stepInstall, nil
 	}
 	nc, err := dial(nil)
 	if err != nil {
-		return nil, err
+		return nil, stepDial, err
 	}
 	if err := c.install(nc, ownsStream); err != nil {
 		// The constructor returns no client, so no caller can Close it: the client is stopped
@@ -743,7 +763,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		// a line of that close can then follow.
 		c.stop()
 		c.closeSettled(nc, nc.Close)
-		return nil, err
+		return nil, stepInstall, err
 	}
 	readable := true
 	if ownsStream {
@@ -757,7 +777,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 	if readable {
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
 	}
-	return c, nil
+	return c, stepInstall, nil
 }
 
 // install makes nc the client's connection, with the JetStream context taken from it, once it has
@@ -1901,14 +1921,29 @@ func (p publishPath) String() string {
 // capture it (publishPathOf). It is none of ErrRefused, ErrUnacknowledged, ErrUnavailable,
 // ErrStreamFull and ErrPublishDenied: the same publish is stored once the stream captures the topic
 // again and the client has read that, so a caller retries it as any other failure. The listener's
-// send and publish routes answer it as a bus that did not answer, 503 with Retry-After
-// (cmd/listener's writeBusUnavailable), and its webhooks 503, which the sender delivers again.
+// send and publish routes answer it 503 with Retry-After under a prefix of its own that says the
+// message was not sent and may be sent again later (cmd/listener's writeBusUnavailable,
+// contracts.MessageNotSentPrefix), not as a bus that did not answer, since the bus was never asked,
+// and its webhooks answer 503, which Dispatch's redelivery sweep has GitHub send again.
 var ErrSubjectNotDeployed = errors.New("nothing was sent: the deployed stream does not capture a topic this build stores")
 
 // subjectNotDeployed is the refusal of a publish of topic that publishPathOf refused: it wraps
 // ErrSubjectNotDeployed and names the stream and the topic.
 func subjectNotDeployed(topic string) error {
 	return fmt.Errorf("%w (stream %s, topic %s)", ErrSubjectNotDeployed, Stream, topic)
+}
+
+// UndeployedRefusal is the refusal a publish of topic meets before anything is sent, as
+// PublishAckWithin answers it (ErrSubjectNotDeployed, from the same verdict, publishPathOf), or nil
+// for a topic the client would send. A caller that does work on a publish's behalf before the
+// publish asks it first, so a publish the bus refuses raises nothing: cmd/listener's send route
+// answers this refusal before it reports a stopped target's wake, which would otherwise go out once
+// per send a sender repeats at Retry-After: 1 for as long as a narrowing lasts.
+func (c *Client) UndeployedRefusal(topic string) error {
+	if c.publishPathOf(topic) == refusedUndeployed {
+		return subjectNotDeployed(topic)
+	}
+	return nil
 }
 
 // publishPathOf is the one verdict on the path a publish of topic takes, which UsesCoreTransport,

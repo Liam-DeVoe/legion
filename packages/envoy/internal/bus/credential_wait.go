@@ -116,11 +116,12 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 
 // credentialWaitEnded is the error a start that waited out refusals of its credential ends with at
 // its bound: last, the error of its last try, and refusal, the last refusal, when there was one
-// and it is not last.
+// and it is not last. A start that met no refusal ends with last as it is, which names the step
+// that failed: the credential wait it never needed is no part of why it ended.
 func credentialWaitEnded(bound time.Duration, last, refusal error) error {
 	switch {
 	case refusal == nil:
-		return fmt.Errorf("bus: the start's %s credential wait ran out: %w", bound, last)
+		return last
 	case last == refusal:
 		return fmt.Errorf("bus: the NATS server still refused the credential when the start's %s wait ran out: %w", bound, last)
 	default:

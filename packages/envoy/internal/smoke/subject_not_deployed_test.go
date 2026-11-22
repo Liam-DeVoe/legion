@@ -16,11 +16,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The listener image refuses a send while a hub move's quiesce has narrowed the stream, so that
-// it no longer captures the target's agent subject: the send is the bus-unavailable 503 naming
-// bus.ErrSubjectNotDeployed, and nothing goes out, neither to a core subscriber nor to the stream.
+// it no longer captures the target's agent subject: the send is the 503 that says the message was
+// not sent (contracts.MessageNotSentPrefix) and names bus.ErrSubjectNotDeployed, and nothing goes
+// out, neither to a core subscriber nor to the stream.
 // It is the image's check, not the source's: an image built before the refusal, once its listener
 // has read the narrowed subjects, answers such a send 200 and hands it to whoever is subscribed
 // at that instant over core NATS, where nothing stores it.
@@ -96,6 +98,11 @@ func TestSmokeASendWhileTheStreamLacksTheAgentSubjectAnswers503(t *testing.T) {
 			t.Fatalf("a send while the stream lacks the agent subject was answered 200: %s", a.body)
 		}
 		if refused(a) {
+			// The refusal opens with the prefix envoy-client reads as a message nothing stored,
+			// never with "the message bus did not answer": the bus was never asked.
+			if !strings.HasPrefix(a.error, contracts.MessageNotSentPrefix+": ") {
+				t.Fatalf("the refusal reads %q, want it to open with %q", a.error, contracts.MessageNotSentPrefix+": ")
+			}
 			break
 		}
 		if a.status != http.StatusServiceUnavailable {

@@ -267,10 +267,14 @@ type sessionDelivery struct {
 // whose verdict decides which requested topics a registration adds to the session's row
 // (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
 // are the connection's own beside its name: in edge mode, the listener's inbox prefix
-// (edgeGrant.connectOptions).
+// (edgeGrant.connectOptions), and, from main's start, the start's credential wait
+// (startSessionDelivery, natsStart.option).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane.
+// the whole start's: main ends the process with it, as it does for the live topics lane. main
+// opens it through startSessionDelivery, as a connect of the start, so a refusal of the
+// credential, as a hub that has yet to reload a new nkey on every server makes, is waited out
+// under the start's bound before it fails; any other failure ends the start as before.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
@@ -1338,12 +1342,13 @@ func logFilterLeftOutLimited(logger *logging.Logger, limiter *leftOutLogLimiter,
 // filterLeftOutLine from fanout with the subject, at most once per session and topic within
 // fanoutLeftOutLogWindow (fanoutLeftOutLogs). Both places the durable path judges an interest
 // call it: durableNeedsDelivery, which acknowledges a message every matching session's consumer
-// holds before decoding it, and fanoutDelivery.
+// holds before decoding it, and fanoutDelivery. The row's left-out topics come from the cache the
+// publish count shares (filterLeftOuts), so a busy topic reduces each such row once.
 func skipLeftOutInterest(logger *logging.Logger, interest store.Interest, subject string) bool {
 	if carriedFor(interest.SessionID, interest.Topics, subject) {
 		return false
 	}
-	_, leftOut := sessionFilter(interest.SessionID, interest.Topics)
+	leftOut := filterLeftOuts.of(interest.SessionID, interest.Topics)
 	for _, left := range leftOut {
 		if !slices.ContainsFunc(contracts.TopicForms(left.topic), func(form string) bool { return bus.SubjectContains(form, subject) }) {
 			continue

@@ -16,7 +16,8 @@ import (
 
 // A GitHub delivery whose topic this build stores, while the deployed stream does not capture it
 // (a hub move's quiesce narrowed the stream, and the listener's client read that), is answered
-// 503, which GitHub delivers again, and logged as the failed publish it is, which the
+// 503, which tells GitHub the delivery failed (GitHub does not deliver it again on its own; Dispatch's
+// sweep delivers its own App's deliveries again), and logged as the failed publish it is, which the
 // publish-failure alarm counts; nothing is stored, and nothing went out over core NATS. Before the
 // refusal the publish went out over core NATS, nothing stored it, and the delivery was answered
 // 2xx, which GitHub takes as delivered.

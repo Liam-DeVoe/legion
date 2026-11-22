@@ -290,6 +290,51 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		})
 	}
 
+	t.Run("a restart whose delete answer is lost and the server never applied it", func(t *testing.T) {
+		const (
+			session = "ses_narrowing_lost_unapplied"
+			kept    = "notifications.team.narrowing-kept-unapplied"
+		)
+		filteringOn(t, session, pairFoo, kept)
+		store(t, stored, "narrowing-unapplied-1", "narrowing-unapplied-2")
+		deliverUnacked(t, session, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 1 {
+			t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", session, info, err)
+		}
+		name, _ := bus.SessionConsumerName(session)
+		consumers := rig.deps.consumers.consumers
+		// The delete never reaches the server, and brings no answer: the read back finds the
+		// consumer standing, so nothing was passed over.
+		consumers.SetDeleteSendFault(func(consumer string) error {
+			if consumer == name {
+				return context.DeadlineExceeded
+			}
+			return nil
+		})
+		t.Cleanup(func() { consumers.SetDeleteSendFault(nil) })
+		filter := sessionConsumerFilter(session, []string{pairFoo, pairBar, kept})
+		before := rig.harness.logs.Len()
+		if _, err := consumers.RestartAtFloor(ctx, session, filter); err == nil {
+			t.Fatalf("the restart of %s whose delete brought no answer reported no error", session)
+		}
+		consumers.SetDeleteSendFault(nil)
+		if filters := rig.filters(t, session); !slices.Contains(filters, pairFoo) {
+			t.Fatalf("the consumer of %s filters on %v, without %s: the delete landed, so the case shows nothing", session, filters, pairFoo)
+		}
+		if lines := linesIn(rig.harness.logs.String()[before:], leftLine, map[string]any{"session_id": session, "from": "narrowing"}); len(lines) != 0 {
+			t.Errorf("a delete the server never applied logged %v, want no narrowing line: the consumer still carries %s", lines, pairFoo)
+		}
+		// The next restart finds the consumer standing, counts it from its own floor and names
+		// the loss once its delete lands.
+		before = rig.harness.logs.Len()
+		if _, err := consumers.RestartAtFloor(ctx, session, filter); err != nil {
+			t.Fatalf("the next restart of %s: %v", session, err)
+		}
+		narrowed(t, rig.harness.logs.String()[before:], session, 2)
+	})
+
 	t.Run("an update of a consumer that awaits acks for messages it delivered", func(t *testing.T) {
 		const (
 			session = "ses_narrowing_update_unacked"

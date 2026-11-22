@@ -116,32 +116,36 @@ func (rig *notDeployedRig) requireStoredOnce(t *testing.T, topic string) {
 	}
 }
 
-// requireNotDeployedAnswer fails unless a is the bus-unavailable 503 of a refusal the bus made
-// because the deployed stream does not capture topic: Retry-After: 1, a body opening with
-// busUnansweredPrefix that holds the text of bus.ErrSubjectNotDeployed and names topic, and one
-// line recording bus_unavailable with status 503.
+// requireNotDeployedAnswer fails unless a is the 503 of a refusal the bus made before it sent
+// anything, because the deployed stream does not capture topic: Retry-After: 1, a body opening
+// with contracts.MessageNotSentPrefix, never busUnansweredPrefix, since the bus was never asked,
+// that holds the text of bus.ErrSubjectNotDeployed and names topic, no maybe_stored code, since
+// nothing was stored, and one line recording subject_not_deployed with status 503.
 func requireNotDeployedAnswer(t *testing.T, what string, a limitedAnswer, topic string) {
 	t.Helper()
 	a.requireStatus(t, what, http.StatusServiceUnavailable)
 	if a.retryAfter != "1" {
 		t.Fatalf("%s: Retry-After %q, want 1", what, a.retryAfter)
 	}
-	if !strings.HasPrefix(a.Error, busUnansweredPrefix+": ") || !strings.Contains(a.Error, bus.ErrSubjectNotDeployed.Error()) || !strings.Contains(a.Error, topic) {
-		t.Fatalf("%s: error %q, want it to open with %q and hold %q and %s", what, a.Error, busUnansweredPrefix+": ", bus.ErrSubjectNotDeployed, topic)
+	if !strings.HasPrefix(a.Error, contracts.MessageNotSentPrefix+": ") || !strings.Contains(a.Error, bus.ErrSubjectNotDeployed.Error()) || !strings.Contains(a.Error, topic) {
+		t.Fatalf("%s: error %q, want it to open with %q and hold %q and %s", what, a.Error, contracts.MessageNotSentPrefix+": ", bus.ErrSubjectNotDeployed, topic)
 	}
-	a.requireOutcome(t, what, outcomeBusUnavailable)
+	if strings.Contains(a.raw, `"code"`) {
+		t.Fatalf("%s: answer %s carries a code; a message nothing stored is no maybe_stored answer", what, a.raw)
+	}
+	a.requireOutcome(t, what, outcomeSubjectNotDeployed)
 	if a.line["status"] != float64(http.StatusServiceUnavailable) {
 		t.Fatalf("%s: the line's status is %v, want 503; line %v", what, a.line["status"], a.line)
 	}
 }
 
 // A send to a registered session while a hub move's quiesce has narrowed the stream, so that it
-// no longer captures the session's agent subject, is the bus-unavailable 503 with Retry-After: 1,
-// which every plugin sends again, and nothing goes out: no core subscriber is handed the envelope
-// and the stream stores nothing. The refused send costs its sender nothing, so the same send is
-// answered 200, not 429, once the stream captures the subject again and the listener has read
-// that. Before the refusal the send went out over core NATS and was answered 200: the six sends of
-// a hub move that their recipients never received.
+// no longer captures the session's agent subject, is the 503 with Retry-After: 1 that says the
+// message was not sent and may be sent again later, and nothing goes out: no core subscriber is
+// handed the envelope and the stream stores nothing. The refused send costs its sender nothing, so
+// the same send is answered 200, not 429, once the stream captures the subject again and the
+// listener has read that. Before the refusal the send went out over core NATS and was answered
+// 200: the six sends of a hub move that their recipients never received.
 func TestASendWhileTheDeployedStreamLacksTheAgentSubjectAnswers503AndStoresNothing(t *testing.T) {
 	const (
 		target = "ses_not_deployed_target"
@@ -167,11 +171,17 @@ func TestASendWhileTheDeployedStreamLacksTheAgentSubjectAnswers503AndStoresNothi
 }
 
 // A send to a stopped session, which the session store holds no entry of and the known-session
-// store a record of, reports the session's wake and is refused the same way while the stream does
-// not capture the session's agent subject: the wake costs the sender nothing for a message nothing
-// took, so the same send after the restore is stored for the stopped session and answered 200, not
-// 429. Charged for the wake, the refused send would leave a sender limited to one message a minute
-// refused for the minute after the stream captures the subject again.
+// store a record of, is refused the same way while the stream does not capture the session's agent
+// subject, and raises no wake: the route asks the bus before it reports the wake
+// (bus.Client.UndeployedRefusal), so a sender that sends again at Retry-After: 1 for a whole
+// narrowing wakes no pod for a message nothing took. The refused send costs the sender nothing, so
+// the same send after the restore is stored for the stopped session and answered 200, not 429, and
+// raises the wake then. Charged for a wake, the refused send would leave a sender limited to one
+// message a minute refused for the minute after the stream captures the subject again.
+//
+// The narrowing keeps the subject that captures the wake topic, so a wake the refused send raised
+// would be stored and handed to the rig's wake subscriber: the wake the send after the restore
+// raises is the control that the subscriber sees one.
 func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing(t *testing.T) {
 	const (
 		target = "ses_not_deployed_stopped"
@@ -180,18 +190,33 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 	agent := contracts.LegacyAgentSubject(target)
 	rig := newNotDeployedRig(t)
 	rig.recorded(t, target, nil)
-	original := rig.narrow(t, agent)
+	original := bustest.NarrowStream(t, rig.js, func(subject string) bool { return bus.SubjectContains(subject, bus.LegionWakeTopic) })
+	bustest.AwaitDeployedCapture(t, rig.harness.client, agent, false, 15*time.Second)
+	if !rig.harness.client.DeployedStreamCaptures(bus.LegionWakeTopic) {
+		t.Fatalf("the narrowed stream does not capture %s, so a wake would be refused and the check below could not see one", bus.LegionWakeTopic)
+	}
 
 	requireNotDeployedAnswer(t, "a send to a stopped session while the stream lacks its agent subject", rig.sendFrom(t, sender, target, nil), agent)
+	rig.requireNoWake(t, wakeKindAgent, target)
 
 	rig.restore(t, original, agent)
 	rig.sendFrom(t, sender, target, nil).requireStatus(t, "the same send after the restore", http.StatusOK)
 	rig.requireStoredOnce(t, agent)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		msg, err := rig.wakes.NextMsg(time.Until(deadline))
+		if err != nil {
+			t.Fatalf("no agent wake report named %s after the send the stream stored (%v): the wake subscriber sees nothing, so its silence above proves nothing", target, err)
+		}
+		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, target) {
+			break
+		}
+	}
 }
 
-// A publish to a team topic while a hub move's quiesce has narrowed the stream is the
-// bus-unavailable 503 with Retry-After: 1, which every plugin sends again, not the 400 "no stream
-// subject captures" that tells its sender to publish elsewhere, which no plugin sends again: a
+// A publish to a team topic while a hub move's quiesce has narrowed the stream is the 503 with
+// Retry-After: 1 that says the message was not sent and may be sent again later, not the 400 "no
+// stream subject captures" that tells its sender to publish elsewhere, which no plugin sends again: a
 // team topic is one this build stores. Nothing goes out, and the refused publish costs its sender
 // nothing. A topic no stream captures, which this build does not store either, keeps its 400.
 func TestAPublishWhileTheDeployedStreamLacksATeamTopicAnswers503AndStoresNothing(t *testing.T) {
