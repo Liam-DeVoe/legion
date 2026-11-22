@@ -5154,6 +5154,38 @@ describe("health", () => {
     ]);
   });
 
+  // Catches: rule 10 reading the directory health is given as the run's own world. A judge reads a
+  // copy or the archive (<judge>/archive/<id>), which no world of the run showed: the run's world
+  // is the directory its record names and the paths its namespace showed, so a name above the
+  // copy, or under it but not under a path the run showed, is read as any other (the tester's
+  // finding of 2026-11-22T04:07:41Z, the class of round 25's "a reader reads the run's archive
+  // and its recorded provenance alone"). Here the judge's directory is under what the run's world
+  // covers, as a scratch root the run shared with its judge is.
+  test("a name above or under the copy health is given is no part of the run's world", () => {
+    const judge = freshDir("health-judge");
+    const copy = (name: string, steps: Step[]) => {
+      const at = path.join(judge, "archive", name);
+      cpSync(worldRun(name, { steps, world: [`cover ${judge}`] }).dir, at, { recursive: true });
+      return at;
+    };
+    const above = copy("threads-closed-correct-head-95", [
+      { tool: "bash", args: { command: `ls -la ${judge}/archive` } },
+    ]);
+    const under = copy("threads-closed-correct-head-96", [
+      {
+        tool: "read",
+        args: { path: `${judge}/archive/threads-closed-correct-head-96/notes.md` },
+      },
+    ]);
+    const { stdout } = health(above, under);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    const hidden = `under ${judge}, which the run's world hides and does not show again (rig.sh's world_paths)`;
+    expect([above, under].map((dir) => verdict(stdout, dir))).toEqual([
+      `threads-closed-correct-head-95  unhealthy: outside its world: a bash call in ${session} names ${judge}/archive, ${hidden}`,
+      `threads-closed-correct-head-96  unhealthy: outside its world: a read call in ${session} names ${under}/notes.md, ${hidden}`,
+    ]);
+  });
+
   // A run recorded before 2026-11-19 holds an `empty` line for its system git configuration
   // (world_paths' old kind: an empty file bound over the host's), and a run since holds a `ro`
   // line for the host's own file, which nothing mounts. Catches: health reading either as a path

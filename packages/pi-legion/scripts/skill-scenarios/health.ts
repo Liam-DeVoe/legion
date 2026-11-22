@@ -73,10 +73,12 @@
  *      workspaces, the work directory, every label's checkout — outside its own directory, its
  *      /tmp (a namespace's <run>/tmp) and every path its world shows again (`outsideWorld`). An
  *      ancestor of its own directory or of a path its world shows is in its world: the namespace
- *      mounts those under the tmpfs that hides the rest, so the ancestor holds them alone. The
- *      world is rig.sh's one declaration of it (world_paths), as the run recorded it for its
- *      namespace (<run>/namespace.txt, `namespaceOf`). A run from before the namespace recorded
- *      none, and this rule does not judge it;
+ *      mounts those under the tmpfs that hides the rest, so the ancestor holds them alone. Its own
+ *      directory is the one its record names (`recorded`), never the directory health was given,
+ *      a copy or an archive no world of the run showed (the tester's finding of
+ *      2026-11-22T04:07:41Z). The world is rig.sh's one declaration of it (world_paths), as the run
+ *      recorded it for its namespace (<run>/namespace.txt, `namespaceOf`). A run from before the
+ *      namespace recorded none, and this rule does not judge it;
  *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but the caller's own:
  *      /proc/self's, /proc/thread-self's, or its shell's (`$$`, `${$}`, `$BASHPID`, `${BASHPID}`)
  *      (`otherProcess`). It reads only a run from before the rig gave each run a namespace (one
@@ -93,7 +95,9 @@
  *      half, its issue's key and the key's project and its issue branch, read from world.json,
  *      `worldWords`), a word of the measurement by rule 17's own definition (`proseNames`), a
  *      string of 16 or more characters a route of the run's fixtures.json answers with on stdout,
- *      the repositories and commits the world's workflow names excepted (`fixtureAnswers`), or a
+ *      but the repositories and commits the world's workflow names and the messages and codes of
+ *      GitHub's own that the rig's GitHub sources hold (`fixtureAnswers`, `githubWordsOf`: the
+ *      architect's ruling of 2026-11-22T04:06:48Z), or a
  *      commit of the run's own remote by a word of 7 or more of its leading hexadecimal digits
  *      (`remoteCommits`), or whose result (paired with it by its `toolCallId`) holds a page of
  *      cybermonklabs/legion or sjawhar/legion, which hold this rig's code (PROJECT_PAGE); any
@@ -328,6 +332,8 @@ import { FIELD_REFUSED, PULL_NOT_FOUND } from "./gh-view";
 import { callWrites } from "./gh-writes";
 import { githubRouteOf } from "./github-routes";
 import { labelPersonRoutes } from "./person-routes";
+import { PRODUCTION_SHAPES } from "./production-shapes";
+import { REST_REQUIRED } from "./rest-required";
 import {
   entryKind,
   holds,
@@ -424,6 +430,10 @@ interface Run {
   /** The run's own directory: the one its record (or, for a run recorded before the names left
    * the world, its pane file) names, and the one health was given. */
   readonly own: readonly string[];
+  /** The run's own directory as its record (or, for a run recorded before the names left the
+   * world, its pane file) names it, the one its agents ran in; none where neither names one.
+   * Never the directory health was given, a copy or an archive no world of the run showed. */
+  readonly recorded: readonly string[];
   /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), whose mounts the
    * run recorded (`namespaceOf`): a path under /tmp is the run's own or one its world shows, a
    * path under /dev/shm or a path its world covers is a tmpfs of the agent's launch alone
@@ -515,9 +525,10 @@ export function loadRun(
   // world, the run its pane file names.
   const identity = runIdentity(dir);
   const ranAt = typeof identity === "string" ? undefined : identity.ran;
-  const own = [path.resolve(dir), ranAt ?? pane.get("SKILL_SCENARIO_RUN")]
+  const recorded = [ranAt ?? pane.get("SKILL_SCENARIO_RUN")]
     .filter((one): one is string => one !== undefined && one !== "")
     .map((one) => path.posix.normalize(one));
+  const own = [path.posix.normalize(path.resolve(dir)), ...recorded];
   const writable = [
     ...own,
     ...[pane.get("HOME"), pane.get("TMPDIR")].filter(
@@ -582,6 +593,7 @@ export function loadRun(
     scenario,
     label,
     own,
+    recorded,
     repos,
     namespaced: ran.namespaced,
     calls,
@@ -1741,9 +1753,13 @@ function reachedIn(
  * the run's own directory or of a path its world shows is in its world: the namespace covers the
  * hidden path with a tmpfs and mounts those under it, so the ancestor holds them alone (the
  * architect's ruling of 2026-11-22T01:44:54Z: round 32's 189e7ebeb7da ran `find <work>/runs` and
- * found its own run's files alone). A run from before the namespace recorded no world, and this
- * refuses it (`namespaceOf`). What it cannot see is what rule 8 cannot: a reach that names no
- * path. */
+ * found its own run's files alone). The run's own directory is the one it ran in, as its record
+ * names it (`recorded`) and its namespace showed it, never the directory health was given: a copy
+ * or an archive is a path no world of the run showed, so a name under it or above it is read as
+ * any other (the tester's finding of 2026-11-22T04:07:41Z, the class of round 25's "a reader
+ * reads the run's archive and its recorded provenance alone"). A run from before the namespace
+ * recorded no world, and this refuses it (`namespaceOf`). What it cannot see is what rule 8
+ * cannot: a reach that names no path. */
 function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
   const world = namespaceOf(run);
   const hidden = [
@@ -1756,11 +1772,12 @@ function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
       }
     }),
   ];
-  const allowed = [...run.own, "/tmp", ...world.shown];
+  const shown = [...run.recorded, ...world.shown];
+  const allowed = [...shown, "/tmp"];
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
       if (allowed.some((dir) => inside(target, dir))) continue;
-      if ([...run.own, ...world.shown].some((dir) => inside(dir, target))) continue;
+      if (shown.some((dir) => inside(dir, target))) continue;
       const zone = hidden.find((dir) => inside(target, dir));
       if (zone !== undefined)
         return `outside its world: a ${call.tool} call in ${call.file} names ${target}, under ${zone}, which the run's world hides and does not show again (rig.sh's world_paths)`;
@@ -4536,16 +4553,80 @@ const COMMIT_WORD = /(?<![a-z0-9])[0-9a-f]{7,40}(?![a-z0-9])/g;
  * shorter one (`deletion`, `main`, `bun`) is a word any search may hold. */
 const ANSWER_LENGTH = 16;
 
+/** Every object key and every string value `value` holds, at any depth. */
+function wordsOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(wordsOf);
+  return isObject(value)
+    ? Object.entries(value).flatMap(([key, one]) => [key, ...wordsOf(one)])
+    : [];
+}
+
+/** Each entry of `value` (an array's items, an object's values), less the fields `labels` names:
+ * the rig's own label of a read, which is no word of GitHub's. */
+function entriesLess(value: unknown, labels: readonly string[]): unknown[] {
+  const entries = Array.isArray(value) ? value : isObject(value) ? Object.values(value) : [];
+  return entries.map((one) =>
+    isObject(one)
+      ? Object.fromEntries(Object.entries(one).filter(([key]) => !labels.includes(key)))
+      : one
+  );
+}
+
+/** Where the rig keeps GitHub's own words, each a file of the rig with the parts of it that hold
+ * what GitHub, or gh, wrote (the architect's ruling of 2026-11-22T04:06:48Z): the extract of
+ * GitHub's REST API description (rest-required.json's `operations` and `schemas`, which
+ * rest-required.ts derives from github/rest-api-description at DESCRIPTION_COMMIT), and the dated
+ * captures of production the README's pin table names: production-shapes.json (each of its
+ * `reads` but the read's `name`, `command` and `read_at`, the rig's label of it, whose name or
+ * command may carry the world's: `repos/fernbrook/widgets`, `--head legion/WID-1`),
+ * production-headers.json (each of its `reads` but its `command`, each of its `permissions` but
+ * its `read`) and graphql-schema.json (its `types`). gh-refused-calls.json is none: it records
+ * calls of the world's own runs, and the world's paths with them. */
+const GITHUB_SOURCES: readonly (readonly [
+  file: string,
+  parts: (json: Record<string, unknown>) => unknown,
+])[] = [
+  [REST_REQUIRED, (json) => [json.operations, json.schemas]],
+  [PRODUCTION_SHAPES, (json) => entriesLess(json.reads, ["name", "command", "read_at"])],
+  [
+    path.join(import.meta.dir, "production-headers.json"),
+    (json) => [entriesLess(json.reads, ["command"]), entriesLess(json.permissions, ["read"])],
+  ],
+  [path.join(import.meta.dir, "graphql-schema.json"), (json) => json.types],
+];
+
+/** GitHub's own words (GITHUB_SOURCES: every object key and string value of their parts), in lower
+ * case, read once. Only one of ANSWER_LENGTH or more characters can hold a stand-in's answer. */
+let githubWords: readonly string[] | undefined;
+function githubWordsOf(): readonly string[] {
+  githubWords ??= [
+    ...new Set(
+      GITHUB_SOURCES.flatMap(([file, parts]) =>
+        wordsOf(parts(JSON.parse(readFileSync(file, "utf8"))))
+          .filter((one) => one.length >= ANSWER_LENGTH)
+          .map((one) => one.toLowerCase())
+      )
+    ),
+  ];
+  return githubWords;
+}
+
 /** Every string of ANSWER_LENGTH or more characters (code points) anywhere in what a route of the
  * run's fixtures.json answers on stdout, in lower case: what the world's gh stand-in told its
- * agents of the world (`non_fast_forward`, its pull request's URL), which a query that carries it
- * sends off the world. The repositories the world's workflow names and the commits it pins
- * (`uses`) are no such string, since a search about them is the world's own (the architect's
- * ruling of 2026-11-16). None for a run with no fixtures.json. */
+ * agents of the world (its pull request's URL and body, a review's text, a node id), which a query
+ * that carries it sends off the world. No such string is one the world's workflow names, a
+ * repository or a pinned commit (`uses`), since a search about them is the world's own (the
+ * architect's ruling of 2026-11-16), nor one GitHub's own words hold, in any case
+ * (`githubWordsOf`): a message or a code of GitHub's (`Resource not accessible by integration`,
+ * `non_fast_forward`) tells nothing of the world (the architect's ruling of
+ * 2026-11-22T04:06:48Z). The string is held in GitHub's, never GitHub's in it, so a seeded body
+ * that holds `Not Found` stays the world's. None for a run with no fixtures.json. */
 function fixtureAnswers(dir: string, uses: WorkflowUses): string[] {
   const file = path.join(dir, "fixtures.json");
   if (!existsSync(file)) return [];
   const { routes } = Fixtures.parse(JSON.parse(readFileSync(file, "utf8")));
+  const github = githubWordsOf();
   const answers = routes
     .flatMap((route) => stringsOf(route.stdout))
     .filter(
@@ -4553,8 +4634,10 @@ function fixtureAnswers(dir: string, uses: WorkflowUses): string[] {
         [...one].length >= ANSWER_LENGTH &&
         !uses.repositories.has(one.toLowerCase()) &&
         !uses.commits.has(one)
-    );
-  return [...new Set(answers.map((one) => one.toLowerCase()))];
+    )
+    .map((one) => one.toLowerCase())
+    .filter((one) => !github.some((words) => words.includes(one)));
+  return [...new Set(answers)];
 }
 
 /** Every commit of the run's own remote (<run>/remote.git, all its refs' history), but those the
@@ -4594,7 +4677,8 @@ const PROJECT_PAGE =
  *     ordinary word, a case word beside a label word, a removed name. `head`, `base` and `defect`
  *     alone are ordinary words, and name nothing;
  *   - its query carries, in any case, a string of the world's gh stand-in's answers
- *     (`fixtureAnswers`), the workflow's repositories and pins excepted;
+ *     (`fixtureAnswers`), but the workflow's repositories and pins and GitHub's own messages and
+ *     codes (`githubWordsOf`, the architect's ruling of 2026-11-22T04:06:48Z);
  *   - its query names a commit of the run's own remote by a word of 7 or more of its leading
  *     digits (COMMIT_WORD, `remoteCommits`);
  *   - its result holds a page of the repository under test (PROJECT_PAGE).

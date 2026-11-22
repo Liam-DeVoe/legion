@@ -2736,15 +2736,19 @@ test("rule 13 reads a command substitution as one word of a fetcher's, and each 
 // wider, on each of the five things that carry the world off it or bring the rig's code in: a word
 // of the world's own; a word of the measurement, by the definition rule 17 reads an agent's
 // sentence by; a string of 16 or more characters a route of fixtures.json answers with on stdout,
-// in any case, the workflow's repositories and pins excepted; a commit of the run's own remote by
-// 7 or more of its leading digits; and a result holding a page of cybermonklabs/legion or
+// in any case, but the workflow's repositories and pins and every message or code of GitHub's own
+// that the rig's GitHub sources hold (the architect's ruling of 2026-11-22T04:06:48Z), a seeded
+// body that holds such a message staying the world's; a commit of the run's own remote by 7 or
+// more of its leading digits; and a result holding a page of cybermonklabs/legion or
 // sjawhar/legion. The repositories, the commits, the world's words, the remote's commits and the
 // answers are the run's own, read from its remote, its world.json and its fixtures.json.
 test("rule 13 allows a web search that carries nothing of the world or the measurement and came back with no page of the rig's code, whatever else it names", () => {
   const dir = workflowRun();
-  // The base's rules, as rig.sh's fixture_write writes that route, and a route answering with a
-  // repository and a commit the workflow names, which no route of the world answers with today:
-  // a search about the workflow may carry those.
+  const BODY = "Adds `greet(name)` and `bun greet.ts <name>`.";
+  // The base's rules and its protection's refusal, as rig.sh's fixture_write writes those routes,
+  // GitHub's codes and message; a seeded pull request's body and a comment that holds `Not
+  // Found`; and a route answering with a repository and a commit the workflow names, which no
+  // route of the world answers with today: a search about the workflow may carry those.
   writeFileSync(
     path.join(dir, "fixtures.json"),
     JSON.stringify({
@@ -2759,6 +2763,17 @@ test("rule 13 allows a web search that carries nothing of the world or the measu
           ],
         },
         {
+          match: "^gh api .*/branches/main/protection",
+          methods: ["GET"],
+          exit: 1,
+          stdout: { message: "Resource not accessible by integration", status: "403" },
+        },
+        { match: "^gh pr view", stdout: { number: 1001, body: BODY } },
+        {
+          match: "^gh api .*/issues/1001/comments",
+          stdout: [{ body: "greet prints Not Found when the name is blank." }],
+        },
+        {
           match: "^gh api .*/contents/.github/workflows",
           stdout: { uses: ["Actions/Checkout", "3d3c42e5aac5ba805825da76410c181273ba90b1"] },
         },
@@ -2769,7 +2784,7 @@ test("rule 13 allows a web search that carries nothing of the world or the measu
   const head = JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")).head as string;
   expect([[...allowed.uses.commits], allowed.answers, allowed.remote]).toEqual([
     ["3d3c42e5aac5ba805825da76410c181273ba90b1", "0c5077e51419868618aeaa5fe8019c62421857d6"],
-    ["non_fast_forward", "required_linear_history"],
+    [BODY.toLowerCase(), "greet prints not found when the name is blank."],
     [head],
   ]);
   const file = "sessions/reviewer/sub/agent.jsonl";
@@ -2830,9 +2845,17 @@ test("rule 13 allows a web search that carries nothing of the world or the measu
     ["actions/checkout WID", "", own("wid")],
     ["3d3c42e5aac5ba805825da76410c181273ba90b1 fernbrook", "", own("fernbrook")],
     ["3d3c42e5aac5ba805825da76410c181273ba90b1 WID-1", "", own("wid-1")],
-    ["non_fast_forward", "", answered("non_fast_forward")],
-    ["NON_FAST_FORWARD ruleset github", "", answered("non_fast_forward")],
-    ["actions/checkout required_linear_history", "", answered("required_linear_history")],
+    ["non_fast_forward", "", undefined],
+    ["NON_FAST_FORWARD ruleset github", "", undefined],
+    ["actions/checkout required_linear_history", "", undefined],
+    ["Resource not accessible by integration github app", "", undefined],
+    ["Not Found github api", "", undefined],
+    [BODY, "", answered(BODY.toLowerCase())],
+    [
+      "Greet prints Not Found when the name is blank. bun",
+      "",
+      answered("greet prints not found when the name is blank."),
+    ],
     [`${head.slice(0, 7)} bun`, "", committed(head.slice(0, 7))],
     [`commit ${head}`, "", committed(head)],
     [

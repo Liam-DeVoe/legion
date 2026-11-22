@@ -1024,13 +1024,45 @@ describe("health: rule 13, off-world network, a web search as a run's transcript
       stdout: [rule("deletion"), rule("non_fast_forward"), rule("required_linear_history")],
     },
     { match: "^gh pr edit( |$)", stdout: "https://github.com/fernbrook/widgets/pull/1002" },
+    {
+      match: "^gh api .*/branches/main/protection",
+      methods: ["GET"],
+      exit: 1,
+      stdout: {
+        message: "Resource not accessible by integration",
+        documentation_url:
+          "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+        status: "403",
+      },
+    },
+    {
+      match: "^gh api .*/rulesets([ ?]|$)",
+      methods: ["GET"],
+      stdout: [
+        {
+          id: 1,
+          name: "main",
+          target: "branch",
+          source_type: "Repository",
+          source: "fernbrook/widgets",
+          enforcement: "active",
+          node_id: "RRS_lACqUmVwb3NpdG9yec4AAAABzgAAAAE",
+          _links: {
+            self: { href: "https://api.github.com/repos/fernbrook/widgets/rulesets/1" },
+            html: { href: "https://github.com/fernbrook/widgets/rules/1" },
+          },
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    },
   ];
   const TRANSCRIPT =
     "sessions/2026-11-22T00-32-40-999Z_01a200ab-6027-757c-b4c1-577fcb6be0ef/MammothLungfish.jsonl";
   const QUERY = "Bun.spawnSync default stderr stdout pipe inherit";
   const INTENT = "Checking Bun spawnSync default stdio";
   const SOURCES = [
-    "[2] Spawn | Bun Docs\n    https://bun.com/docs/runtime/child-process\n    Output streams #\n\nRead the subprocess's output from the stdout and stderr properties. By default stdout is an instance of ReadableStream ; stderr is inherited from the parent process, so proc.stderr is undefined . Pass stderr: \"pipe\" to ge…",
+    '[2] Spawn | Bun Docs\n    https://bun.com/docs/runtime/child-process\n    Output streams #\n\nRead the subprocess\'s output from the stdout and stderr properties. By default stdout is an instance of ReadableStream ; stderr is inherited from the parent process, so proc.stderr is undefined . Pass stderr: "pipe" to ge…',
     '[7] bun/docs/runtime/child-process.mdx at bun-v1.3.14 · oven-sh/bun · GitHub (154mo ago)\n    https://github.com/oven-sh/bun/blob/bun-v1.3.14/docs/runtime/child-process.mdx\n    You can read results from the subprocess via the stdout and stderr properties. By default these are instances of ReadableStream.\nconst proc = Bun.spawn(["bun", "--version"]);\nconst text = await proc.stdout.text();\nconsole.log(text); // => …',
     '[8] bun.com\n    https://bun.com/docs/runtime/child-process.md\n    * Value | Description\n* "pipe" | Default for stdout. Pipe the output to a ReadableStream on the returned Subprocess object\n* "inherit" | Default for stderr. Inherit from the parent process\n* "ignore" | Discard the output\n* Bun.file() | Wri…',
   ].join("\n");
@@ -1137,13 +1169,31 @@ describe("health: rule 13, off-world network, a web search as a run's transcript
     );
   });
 
-  // Catches: a health that reads one of the ruling's five things, or its exception, otherwise
+  // Catches (the architect's ruling of 2026-11-22T04:06:48Z): a health that reads a message of
+  // GitHub's own, which the world answers with as GitHub does and the rig's GitHub sources hold
+  // (production-shapes.json's stderr `gh: Resource not accessible by integration (HTTP 403)`), as
+  // a string of the world's; and one that excepts more, a value the world itself made.
+  test("a copy whose query carries GitHub's own message is part of its world, and one carrying a value of the world's answers is not", () => {
+    const { dir } = world();
+    const copy = (query: string) => judged(dir, "web_search", { query }, SOURCES);
+    expect([
+      copy("Resource not accessible by integration github app"),
+      copy("RRS_lACqUmVwb3NpdG9yec4AAAABzgAAAAE ruleset"),
+    ]).toEqual([
+      undefined,
+      `${searched}, and its query carries "rrs_lacqumvwb3npdg9yec4aaaabzgaaaae", a string the world's gh stand-in answers with (fixtures.json)`,
+    ]);
+  });
+
+  // Catches: a health that reads one of the ruling's five things, or its exceptions, otherwise
   // than the tester's reader: these are the tester's own checks on copies of c8ef305c3eab, the
-  // remote's commit named by this remote's head.
-  test("the tester's copies: a scenario, a world word, a remote commit, a stand-in's string or a page of the rig's code is off-world, and a search about a pinned action is not", () => {
+  // remote's commit named by this remote's head. `non_fast_forward`, a code of GitHub's own, is no
+  // string of the world's since the ruling of 2026-11-22T04:06:48Z.
+  test("the tester's copies: a scenario, a world word, a remote commit or a page of the rig's code is off-world, and GitHub's own code or a search about a pinned action is not", () => {
     const { dir, head } = world();
     const copy = (query: string, text = SOURCES) => judged(dir, "web_search", { query }, text);
-    const project = "[11] legion · cybermonklabs/legion\n    https://github.com/cybermonklabs/legion\n";
+    const project =
+      "[11] legion · cybermonklabs/legion\n    https://github.com/cybermonklabs/legion\n";
     expect([
       copy("threads-closed review rules"),
       copy("fernbrook widgets greet"),
@@ -1155,7 +1205,7 @@ describe("health: rule 13, off-world network, a web search as a run's transcript
       `${searched}, and its query names "threads-closed", a word of the measurement`,
       `${searched}, and its query names "fernbrook", a word of the world's own`,
       `${searched}, and its query names ${head.slice(0, 12)}, a commit of the run's own remote`,
-      `${searched}, and its query carries "non_fast_forward", a string the world's gh stand-in answers with (fixtures.json)`,
+      undefined,
       `${searched}, and it came back with https://github.com/cybermonklabs/legion, a page of the repository under test`,
       undefined,
     ]);
