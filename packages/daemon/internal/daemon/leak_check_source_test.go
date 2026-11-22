@@ -213,6 +213,59 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 	}
 }
 
+// A read of the check GitHub answers 401 drops the owner's read lease alone, the lease the read was
+// made with (appauth.Forgetter's ForgetRead): the implementer's write lease on the same owner,
+// minted before the read, is still served from the cache after it, with no second write mint.
+func TestALeakCheckReadAnswered401KeepsTheImplementersWriteLease(t *testing.T) {
+	const checkInstallation = "77"
+	github := provisioningStandIn(t,
+		provisioningInstallation{id: checkInstallation, owner: "example-org", granted: leakCheckGrant,
+			answer: func(w http.ResponseWriter, permissions map[string]string) {
+				mintedToken(w, leakCheckLease, permissions)
+			}},
+	)
+	ctx := context.Background()
+	if _, err := github.tokens.Token(ctx, appauth.SetImplementer, "example-org"); err != nil {
+		t.Fatalf("the implementer's write lease: %v", err)
+	}
+	raw := leakCheckTarball(t)
+	var asked atomic.Int32
+	url := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, leakCheckTarballRoute) {
+			githubtest.Unexpected(t, w, r)
+			return
+		}
+		if asked.Add(1) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"message":"Bad credentials"}`)
+			return
+		}
+		_, _ = w.Write(raw)
+	}})
+	source := leakCheckSource(github.tokens, url, leakCheckSetting)
+	if _, err := source.Get(ctx, leakCheckTag); err == nil {
+		t.Fatal("the read GitHub answered 401 was served, want it refused")
+	}
+	if served, err := source.Get(ctx, leakCheckTag); err != nil || len(served.Body) == 0 {
+		t.Fatalf("the read after the 401 = %d bytes, %v; want the check, read with a new read lease", len(served.Body), err)
+	}
+	if _, err := github.tokens.Token(ctx, appauth.SetImplementer, "example-org"); err != nil {
+		t.Fatalf("the implementer's write lease after the 401: %v", err)
+	}
+	var reads, writes int
+	for _, request := range github.requestsTo(checkInstallation) {
+		if maps.Equal(request.permissions, leakCheckReadSet) {
+			reads++
+		} else {
+			writes++
+		}
+	}
+	if reads != 2 || writes != 1 {
+		t.Fatalf("%d read and %d write token requests on example-org's installation, want 2 and 1: "+
+			"the 401 drops the read lease alone, and the implementer's write lease is served from the cache", reads, writes)
+	}
+}
+
 // A mint GitHub refuses for any other reason is refused with the mint's sentence: an App with no
 // installation on the check's owner (appauth.ErrNotInstalled), and an installation whose token
 // exchange answers 401.
