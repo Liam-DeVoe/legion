@@ -77,12 +77,8 @@ type Queued struct {
 // comes back from Send wrapped as what failed ("what: err"); an empty what returns it unchanged,
 // as a statement run on its own would.
 func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
-	read := new(queuedRead)
-	b.reads = append(b.reads, read)
-	queued := Queued{query: b.batch.Queue(sql, args...), what: what, read: read}
 	b.builds = append(b.builds, nil)
-	queued.Exec(nil)
-	return queued
+	return b.queue(what, sql, args)
 }
 
 // QueueBuilt is Queue for a statement whose arguments build returns when Send reaches it, rather
@@ -93,13 +89,20 @@ func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
 // ends Send as a statement's own failure would: after the statements queued before it, whose
 // own failure comes first.
 func (b *WriteBatch) QueueBuilt(what, sql string, build func() ([]any, error)) Queued {
-	read := new(queuedRead)
-	b.reads = append(b.reads, read)
-	queued := Queued{query: b.batch.Queue(sql), what: what, read: read}
+	queued := b.queue(what, sql, nil)
 	b.builds = append(b.builds, func() ([]any, error) {
 		arguments, err := build()
 		return arguments, queued.failed(err)
 	})
+	return queued
+}
+
+// queue adds sql with args after every statement queued so far, with the read it makes of its
+// result (reads), which starts as an Exec's that drops it. Its caller adds its build (builds).
+func (b *WriteBatch) queue(what, sql string, args []any) Queued {
+	read := new(queuedRead)
+	b.reads = append(b.reads, read)
+	queued := Queued{query: b.batch.Queue(sql, args...), what: what, read: read}
 	queued.Exec(nil)
 	return queued
 }
@@ -202,9 +205,10 @@ func (r batchRow) Scan(dest ...any) error {
 // statement's callback as it reads its result. It returns the first failure: the first statement
 // that failed (the server runs none after it) or the first callback that returned an error (whose
 // later statements ran or were never sent, and are rolled back with the transaction the caller now
-// abandons), whichever comes first in the batch. The batch is empty again afterwards. An empty
-// batch sends nothing. A batch that queued an Observe is refused before anything is sent: an
-// observed read is one whose error undoes nothing, which in a transaction it would.
+// abandons), whichever comes first in the batch. An empty batch sends nothing. A batch that
+// queued an Observe is refused before anything is sent, and keeps its statements: an observed read
+// is one whose error undoes nothing, which in a transaction it would. Any other batch is empty
+// again afterwards.
 //
 // The statements go as one pipelined batch while their arguments come to sendBound or less, which
 // is every write phase but the few that carry thousands of rows. A larger one goes as several
@@ -362,8 +366,9 @@ func valueBytes(value reflect.Value) int {
 // first failure: a statement that failed, which leaves nothing of the batch committed, or an
 // observed read that failed, which leaves all of it committed. It sends the batch whole, never in
 // Send's parts, since each part would commit on its own, and builds the arguments of every
-// statement queued with QueueBuilt before it sends any: a build that fails sends nothing. The batch
-// is empty again afterwards it is sent, and an empty batch sends nothing.
+// statement queued with QueueBuilt before it sends any: a build that fails sends nothing. A
+// refused batch keeps its statements, any other is empty again afterwards, and an empty batch
+// sends nothing.
 func (b *WriteBatch) SendCommitting(ctx context.Context, pool *Pool) error {
 	if b.batch.Len() == 0 {
 		return nil

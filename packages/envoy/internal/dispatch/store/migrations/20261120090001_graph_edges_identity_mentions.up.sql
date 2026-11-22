@@ -17,10 +17,9 @@
 -- their writes). A read of any other kind drops the arm from its plan, as it drops the reply arms
 -- (20261116114517), its kind being a constant. The arm answers a tuple while its source carries the
 -- marker this release's writer of that source sets:
---   a comment     its row naming the node and holding tuples_stored (20261116124447);
---   a message     its row naming the node (20261116114515);
---   a document    its document_blocks row naming the node (20261111043000).
---   block
+--   a comment         its row naming the node and holding tuples_stored (20261116124447);
+--   a message         its row naming the node (20261116114515);
+--   a document block  its document_blocks row naming the node (20261109022248).
 -- An ask states no mention of an identity (its parts name none), and the arm answers none out of
 -- one. An item's block holds none either: the item states its identities out of its own node, so the
 -- item block arm, which reads every tuple out of an item's block, meets none.

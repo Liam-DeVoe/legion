@@ -11,7 +11,7 @@
 -- The pair is also the row's marker. A block row that names its node is one whose writer stated
 -- the block in the store - its node and its part_of to the comment, message or ask it is a block
 -- of - and a link row that names its node one whose writer stated that link as a tuple out of the
--- block's node (refs.IndexItem, refs.IndexAskParts), so graph_edges answers both from the tuples
+-- block's node (refs.IndexItem, refs.PlanAskParts), so graph_edges answers both from the tuples
 -- (migration 20261116140008). A row an older build writes during a roll names none, and its old
 -- arm answers it until the backfill takes it once.
 --

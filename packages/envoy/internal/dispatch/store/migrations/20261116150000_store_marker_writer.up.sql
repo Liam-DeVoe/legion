@@ -35,8 +35,8 @@
 -- answer, a moment an answer an older build writes is told apart by (20261116140001), so none of
 -- them takes the trigger.
 --
--- The read-state tables (the plan's T9) and user_threads' marked_version and marked_seq (T7)
--- take the same treatment when their markers land: a trigger of their own before each update,
+-- The read-state tables and user_threads' marked_version and marked_seq take the same treatment
+-- (migrations 20261116170000 and 20261116160000): a trigger of their own before each update,
 -- clearing their marker where the setting is not `on`, through a function of their marker's shape
 -- beside this one.
 --
@@ -63,26 +63,51 @@ begin
 end;
 $$;
 
+-- Each trigger's WHEN holds the function's own test, so the function is called only for an update
+-- it unmarks, one a build before this one makes. Every update of this release passes the WHEN by,
+-- and some write thousands of rows of these tables in one statement - an edit moving every
+-- unchanged block of its item, the backfill and the tick naming the nodes of the rows they mark, a
+-- refresh of mention claims - where a call of the function for each row it keeps would cost what
+-- 20261116160000 measured on user_threads, 3.5 ms of a 999-row update, against a few microseconds
+-- for the expression. A BEFORE trigger's WHEN reads the session's setting as the function does, so
+-- the row written is the same either way. The function keeps its own test, so a trigger that calls
+-- it without the WHEN still unmarks only an older build's update.
 create trigger comment_deliveries_store_marker before update on comment_deliveries
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger message_deliveries_store_marker before update on message_deliveries
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger comment_blocks_store_marker before update on comment_blocks
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger message_blocks_store_marker before update on message_blocks
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger ask_blocks_store_marker before update on ask_blocks
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger comment_block_refs_store_marker before update on comment_block_refs
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger message_block_refs_store_marker before update on message_block_refs
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();
 
 create trigger ask_block_refs_store_marker before update on ask_block_refs
-  for each row execute function store_marker_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function store_marker_unmarked_by_older_writer();

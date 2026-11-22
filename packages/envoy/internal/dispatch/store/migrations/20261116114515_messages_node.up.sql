@@ -6,7 +6,7 @@
 --   node_address   its `id` there, the message's own id.
 -- The pair is also the row's marker. A row that names its node is one whose writer stated its
 -- pointers in the store - replies_to, part_of, addressed_to and broadcast_id - and who wrote it
--- (graphstore.MessageFacts, graphstore.Authored), so graph_edges answers its replies_to edges
+-- (graphstore.MessageFacts, graphstore.AuthorFacts), so graph_edges answers its replies_to edges
 -- from the tuples (migration 20261116114517). A row an older build inserts during a roll names
 -- none, and its old arms answer it until the backfill takes it once.
 --
@@ -31,7 +31,7 @@
 -- The two node columns are nullable, and nothing fills them for a row already stored: the writers
 -- of this release set them in the insert that writes the row, which is where every trigger on that
 -- insert sees them. The foreign key is not deferrable, so Postgres checks it inside that insert,
--- and the node is written before the row (api's writeMessageNode). The key is added NOT VALID, so
+-- and the node is written before the row (api's planMessageNode). The key is added NOT VALID, so
 -- the ALTER reads no row of messages: a composite key is MATCH SIMPLE, which holds no row where a
 -- column is null, and both node columns are null in every row messages holds, so a validation could
 -- only find what it cannot look at. NOT VALID says nothing about a row written from here on, which

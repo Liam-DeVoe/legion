@@ -5,22 +5,24 @@ import "maps"
 // StoreWriteCallSites is the register of the store's writers (storeWriteCallSites), a fresh map
 // for each caller. It is held here, in a package no writer of the store imports, so the two tests
 // that read it read one list: graphstore's TestEveryStoreWriteCallSiteIsListed, which holds it to
-// the module's source and each site's driver to a test of that site's package, and graphcensus's
-// TestTheSizingCountsEveryTupleTheWritersAppend, which drives every site it lists and reads off
-// graph_tuples what each one appended.
+// the module's source and each site's driver to a test the package it names declares, and
+// graphcensus's TestTheSizingCountsEveryTupleTheWritersAppend, which drives every site it lists
+// and reads off graph_tuples what each one appended.
 func StoreWriteCallSites() map[string]string { return maps.Clone(storeWriteCallSites) }
 
 // storeWriteCallSites is every function outside the tests that calls one of graphstore's writers
 // (graphstoretest.WriteFunctions), named as docs' register names a pass: the file, from
 // internal/dispatch where it lives under it, and the function, without its receiver. Beside each
-// site is the test that drives its lock steps against the order written on api/inbox_read.go's
-// markInboxReadThreads, as "<package dir>#<Test>": the package's directory, named as a site's
-// file is (graphstore's siteKey), and the test's name. Such a test runs the site's real code,
-// holds each step it takes in another transaction, and reads where the write waits and which
-// table locks it holds by then. graphstore's TestEveryStoreWriteTakesOneLockOrder proves the order
-// on that package's own writers. A site that is not listed has had nobody prove its steps, and a
-// site whose driver is missing or names no test of that package is one c-lock-order's run drives
-// no test of, so each fails graphstore's TestEveryStoreWriteCallSiteIsListed until it is put right.
+// site is a test that runs the site's real code, as "<package dir>#<Test>": the directory of the
+// package that declares it, named as a site's file is (graphstore's siteKey), and the test's name.
+// For most sites it is the test that drives the site's lock steps against the order written on
+// api/inbox_read.go's markInboxReadThreads: it holds each step the site takes in another
+// transaction, and reads where the write waits and which table locks it holds by then.
+// graphstore's TestEveryStoreWriteTakesOneLockOrder proves the order on that package's own
+// writers. A site no lock-step test drives says so in its comment, and the test beside it runs its
+// real code. A site that is not listed has had nobody look at its steps, and a site whose test is
+// missing or names no test of that package is one c-lock-order's run drives no test of, so each
+// fails graphstore's TestEveryStoreWriteCallSiteIsListed until it is put right.
 var storeWriteCallSites = map[string]string{
 	// The follow of an ask, which records the following session's node in the caller's
 	// transaction or write phase, and each site that moves that node onto the event it appends
@@ -64,9 +66,9 @@ var storeWriteCallSites = map[string]string{
 	// row now holds (graphstore.QueueAttempted, or Attempted where the write runs no batch of its
 	// own), and the two that open an attempt queue its node before the row (graphstore.AttemptOpened's
 	// plan, through QueueNodes), as the creates listed with their own nodes do (createCommentFor,
-	// createStoredMessage, writeBroadcast). QueueAttempted appends tuples alone, which lock no row,
-	// so it adds no step to its caller's order; an opened attempt's node is one no other write can
-	// name yet, written before the row whose foreign key names it. No lock-step test drives these
+	// createStoredMessage, queueBroadcastCopy). QueueAttempted appends tuples alone, which lock no
+	// row, so it adds no step to its caller's order; an opened attempt's node is one no other write
+	// can name yet, written before the row whose foreign key names it. No lock-step test drives these
 	// sites: api's TestMentionsAreTuplesAndEveryAttemptIsANode runs each one's real code and reads
 	// what it states of its attempt.
 	"api/comment_delivery.go#openCommentDeliveryAttempt":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
@@ -84,7 +86,8 @@ var storeWriteCallSites = map[string]string{
 	"api/message_delivery.go#recordPendingMessageDelivery":    "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/message_delivery.go#replyMessage":                    "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	// The mention rule's settle of an abandoned attempt before it publishes that session's copy,
-	// which the outbox's credit filter test runs.
+	// which states it through QueueAttempted as the attempt writes above do. No lock-step test
+	// drives it: the outbox's credit filter test runs its real code.
 	"outbox/mentions.go#settleAbandoned": "outbox#TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to: written before its row, and caused by the event the
@@ -185,8 +188,9 @@ var storeWriteCallSites = map[string]string{
 	"graphstore/write.go#QueueCaused":           "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// Attempted, ToPerson and FromPerson run their queued forms (QueueAttempted, QueueToPerson,
-	// QueueFromPerson) as a batch of their own, for a writer that queues no write phase; their
-	// callers' drivers hold their steps.
+	// QueueFromPerson) as a batch of their own, for a writer that queues no write phase. ToPerson's
+	// and FromPerson's callers' drivers hold their steps; Attempted's callers are among the attempt
+	// writes above, which no lock-step test drives, and the test beside it runs their real code.
 	"graphstore/delivery_attempt.go#Attempted": "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"graphstore/from_person.go#FromPerson":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphstore/to_person.go#ToPerson":         "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
@@ -250,7 +254,8 @@ var storeWriteCallSites = map[string]string{
 	// restored wording, an approval ask's rewrite and the seed. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths to the block
 	// steps, and TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No
-	// lock-step test drives an edit or a restored wording: the test beside each runs its real code.
+	// lock-step test drives the rebuild, an edit or a restored wording: the test beside each runs its
+	// real code.
 	"refs/item_blocks.go#Queue":                        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"refs/reply_blocks.go#Queue":                       "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"refs/rebuild.go#queue":                            "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",

@@ -11,8 +11,8 @@
 -- through dev sign-in only), and no build of a release reads or writes this table: the branch
 -- that created it drops it before it merges. So no running build loses a table it reads, and a
 -- rollback to any released build finds nothing missing. The two migration files of 20261117132340
--- stay, since a database that applied that version keeps its row in schema_migrations and the
--- migrator refuses a recorded version it no longer holds.
+-- stay, since a database that applied that version keeps its row in schema_migrations: boot leaves
+-- a recorded version with no file as it is, but `envoy-dispatch versions` exits 1 on one.
 --
 -- No `if exists`: 20261117132340 creates the table unconditionally, so every database recording
 -- that version holds it, and `if exists` would pass over a schema that is not the one we think it
