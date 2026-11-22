@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
 
 import { stepIndex } from "../features/shell/roving";
 import {
@@ -470,21 +469,47 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
   // takes off the page loses the focus, as in Details a label only the open draft holds does as
   // the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's and the
-  // project's, so that label is listed only while the draft holds it. So the row's own click
-  // handler answers a press of a row that holds the focus: once the host has drawn the pick
-  // (`flushSync`), it gives the search box the focus only where the pick left the focus lost
-  // (`focusLost`, the close's check above): on the body, or an element no longer on the page. It
-  // is the page's one check for a lost focus, the one the close and the rescue ask too, and its
-  // doc says where each engine leaves the focus of an element taken away. Left to fall, the focus
-  // is the page's rescue's to hand to the control now at the lost row's place (`handOn`), the next
-  // row where one follows. A pointer press focuses none of them (`onMouseDown` below), and leaves
-  // the focus where it is. A row or a Create row the options take away holds no press, and its
-  // focus stays on the page's body, as for every change the reader did not make. A popover that
-  // closes takes the search box along, and the close above gives the focus back to the trigger
-  // instead.
+  // project's, so that label is listed only while the draft holds it. So a press of a row that
+  // holds the focus only notes it, and the commit that answers the press gives the search box the
+  // focus only where that commit left the focus lost (`focusLost`, the close's check above): on
+  // the body, or an element no longer on the page. It is the page's one check for a lost focus,
+  // the one the close and the rescue ask too, and its doc says where each engine leaves the focus
+  // of an element taken away. Left to fall, the focus is the page's rescue's to hand to the
+  // control now at the lost row's place (`handOn`), the next row where one follows. A pointer
+  // press focuses none of them (`onMouseDown` below), and leaves the focus where it is. A row or a
+  // Create row the options take away holds no press, and its focus stays on the page's body, as
+  // for every change the reader did not make. A popover that closes takes the search box along,
+  // and the close above gives the focus back to the trigger instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };
+  // Whether a row was pressed while it held the focus, until the commit that answers the press:
+  // the press asks for a render, so that commit comes even where the press changes nothing else.
+  // The row's own click handler notes it, beside the change it hands the host, so the render it
+  // asks for commits with the host's answer. Noted in the capture phase, Chromium committed that
+  // render before the row's handler ran, between React's capture and bubble listeners, and the
+  // note was spent on a commit that took nothing away (builds Job infra-2160-probe2-67cfcdb1, an
+  // Enter on a focused row; Firefox ran the row's handler first).
+  const focusedRowPressed = useRef(false);
+  const [, renderAfterPress] = useState(0);
+  const noteFocusedRow = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget !== document.activeElement) return;
+    focusedRowPressed.current = true;
+    renderAfterPress((renders) => renders + 1);
+  };
+  // Read in the commit itself, by this component's own layout effect. React runs a child's layout
+  // effects before its parent's, so this runs before the layout effect of a panel the list stands
+  // in (`PanelTrigger`'s `useFocusPlace`), which, finding the row gone and the focus lost by the
+  // reader's press, would otherwise hand the focus the pick took away to the control at the row's
+  // place, the list's trigger, first - as on the Agents page's Filter, whose role and machine
+  // lists hold a picked value no live session reports only while it is picked. And the page's
+  // rescue hands a lost focus on at a later frame (`handOn`), and a layout effect runs before any
+  // frame, whatever the update's priority.
+  useLayoutEffect(() => {
+    const pressed = focusedRowPressed.current;
+    focusedRowPressed.current = false;
+    if (pressed && focusLost()) inputRef.current?.focus();
+  });
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
@@ -657,11 +682,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                   id={optionId(option)}
                   key={option}
                   onClick={(event) => {
-                    // Answered here: the host's `onChange` is applied inside `flushSync`, so the
-                    // row is gone, or still drawn, when the check runs.
-                    const focused = event.currentTarget === document.activeElement;
-                    flushSync(() => choose(option));
-                    if (focused && focusLost()) inputRef.current?.focus();
+                    noteFocusedRow(event);
+                    choose(option);
                   }}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"

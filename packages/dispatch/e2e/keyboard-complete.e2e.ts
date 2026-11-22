@@ -11,9 +11,13 @@
  *  id.
  *
  *  The rows write - snoozes, priorities, statuses, assignees, repositories, hand-ons - and count
- *  each write at the server's own route, so they run on the real stack. They import nothing this
- *  tree adds to or changes in `web/src`: what they need from the app they read off the page or
- *  work out in `e2e/keyboard-complete.ts`. */
+ *  each write at the server's own route, so they run on the real stack. Their own imports from
+ *  `web/src` are of modules this tree does not change (`components/control-names.ts`): what they
+ *  need from the app they read off the page or work out in `e2e/keyboard-complete.ts`. The e2e
+ *  helpers they share with main's rows reach four modules this tree does change: `api/client.ts`
+ *  (through `e2e/editor.ts`), `theme/classes.ts` (through `e2e/inbox-pane-scroll.ts`), and
+ *  `features/issue-page/page-words.ts` with the `features/shell/key-text.ts` it reads (through
+ *  `e2e/issue-page.ts`, which k-list-focus's Details row opens the page with). */
 import { CONTROL } from "../web/src/components/control-names";
 import { openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import {
@@ -34,11 +38,13 @@ import {
   getIssueArtifactText,
   markThreadRead,
   patchIssue,
+  putArchitectureSource,
   putRepoProject,
   requestApproval,
   reviewArtifact,
   sessionCookie,
   snoozeAsk,
+  syncArchitectureSource,
   withOpenedAsk,
 } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -52,7 +58,9 @@ import {
   selectEditorText,
 } from "./editor";
 import { expectTimeout } from "./expect-timeout";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, displayChoice, listOf } from "./filters";
+import { nextFrames } from "./frames";
 import { drawer } from "./inbox-drawer";
 import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -73,6 +81,8 @@ import {
   seedCommentThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { gotoIssue, marginShell } from "./issue-page";
+import { withIssuePage } from "./issue-page-option";
 import {
   ARCHITECTURE_LEAF,
   answerWrites,
@@ -87,6 +97,7 @@ import {
   handOnWrites,
   holdWrites,
   issueWrites,
+  MACHINES,
   markDocument,
   newPageAt,
   OTHER_SITE,
@@ -111,6 +122,7 @@ import {
 } from "./keyboard-complete";
 import { onBody, openIssue } from "./keyboard-issue";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
+import { machineSession } from "./machines";
 import { commentWithBody } from "./margin-helpers";
 import { priorityTrigger, statusTrigger } from "./menus";
 import {
@@ -3749,6 +3761,380 @@ test("k-filter-keys: on the Agents page and the Delivery list Shift+F opens the 
   await focusPage(page, "k-filter-keys: on the Delivery timeline, the focus starts on the page");
   const timelinePanel = await shiftFOpens(page, repository, "on the Delivery timeline");
   await escapeCloses(page, timelinePanel, null, "on the Delivery timeline");
+});
+
+// ---------------------------------------------------------------------------
+// k-list-focus: every host of the shared single- or multi-pick list (`MultiSelect`), its list
+// opened by the keyboard, a choice reached by the arrows and picked by Enter. Where the list stays
+// open the focus is in its search box, also where the pick takes the picked row away; where the
+// pick closes the list the focus is on its trigger; and in no case is it on the page's body or on
+// another control. Every step's message names the list, so a failure names the host it failed on.
+// ---------------------------------------------------------------------------
+
+/** Where the focus is, read against `target` at once: `on it` where `target` holds it, else what
+ *  holds it - the page's body, or an element by its role (its tag where it has none) and its
+ *  `aria-label` (its words where it has none). A target the page does not draw, or draws more
+ *  than once, reads so rather than being waited for. */
+function focusAgainst(target: Locator): Promise<string> {
+  return target.evaluateAll((elements) => {
+    if (elements.length !== 1) return `on no one target: the page draws ${elements.length}`;
+    const focused = document.activeElement;
+    if (focused === elements[0]) return "on it";
+    if (focused === null || focused === document.body) return "on the page's body";
+    const name = focused.getAttribute("aria-label") ?? (focused.textContent ?? "").trim();
+    return `on ${focused.getAttribute("role") ?? focused.tagName.toLowerCase()} "${name.slice(0, 80)}"`;
+  });
+}
+
+/** Reads that `target` holds the focus, and still holds it two frames later, by when the commit
+ *  the last key asked for and the page's focus rescue, which hands a lost focus on a frame after
+ *  it, have both run; else fails by `step`, with what holds the focus instead. */
+async function expectFocusOn(page: Page, target: Locator, step: string): Promise<void> {
+  await expect.poll(() => focusAgainst(target), { message: step }).toBe("on it");
+  await nextFrames(page);
+  // One read: the two frames are the last the key's commit and the rescue's hand-off take.
+  expect(await focusAgainst(target), `${step}, two frames later`).toBe("on it");
+}
+
+/** The words of the row an open list's search box highlights (`aria-activedescendant`), its tick
+ *  left out; empty where it highlights none. */
+function highlightedBy(search: Locator): Promise<string> {
+  return search.evaluate((box) => {
+    const row = document.getElementById(box.getAttribute("aria-activedescendant") ?? "");
+    return (row?.textContent ?? "").replace("✓", "").trim();
+  });
+}
+
+/** Presses ArrowDown, or ArrowUp, as many times as `to` stands below, or above, `from` in `rows`,
+ *  the open list's rows in their order, and reads that its search box then highlights `to`. */
+async function arrowTo(
+  page: Page,
+  search: Locator,
+  rows: readonly string[],
+  [from, to]: readonly [string, string],
+  step: string
+): Promise<void> {
+  const by = rows.indexOf(to) - rows.indexOf(from);
+  for (let press = 0; press < Math.abs(by); press += 1) {
+    await page.keyboard.press(by > 0 ? "ArrowDown" : "ArrowUp");
+  }
+  await expect.poll(() => highlightedBy(search), { message: step }).toBe(to);
+}
+
+/** One multi-pick list of k-list-focus, its list just opened by a key. */
+interface MultiPick {
+  /** What the failures call it: "the Agents Role list". */
+  readonly what: string;
+  readonly trigger: Locator;
+  /** The name of the list's search box. */
+  readonly search: string;
+  /** The list's rows as it opens, in their order. */
+  readonly rows: readonly string[];
+  /** The row the arrows move to and Enter picks, which the pick keeps on the page. */
+  readonly pick: string;
+}
+
+/** From a multi-pick list a key has just opened: its search box holds the focus, the arrows move
+ *  the highlight from its first row down to the next and on to `pick`, and Enter picks it, which
+ *  keeps its row and the list open with the focus in the search box. Answers the search box. */
+async function multiPickKeepsFocus(page: Page, list: MultiPick): Promise<Locator> {
+  const say = (step: string) => `k-list-focus: ${list.what}, ${step}`;
+  const search = listOf(list.trigger).getByRole("combobox", { name: list.search });
+  await expectFocusOn(page, search, say("the key opens the list with the focus in its search box"));
+  await expect(
+    listOf(list.trigger).getByRole("option"),
+    say(`the list holds ${list.rows.join(", ")}`)
+  ).toHaveText(list.rows.map((row) => new RegExp(`^✓?${row}$`)));
+  const [first = "", next = first] = list.rows;
+  await expect
+    .poll(() => highlightedBy(search), { message: say("the list opens on its first row") })
+    .toBe(first);
+  await arrowTo(page, search, list.rows, [first, next], say(`ArrowDown moves to ${next}`));
+  await arrowTo(page, search, list.rows, [next, list.pick], say(`the arrows move to ${list.pick}`));
+  await page.keyboard.press("Enter");
+  const picked = listOf(list.trigger).getByRole("option", { exact: true, name: list.pick });
+  await expect(picked, say(`Enter picks ${list.pick}`)).toHaveAttribute("aria-selected", "true");
+  await expectFocusOn(
+    page,
+    search,
+    say(`Enter picks ${list.pick}, which keeps its row, and leaves the focus in the search box`)
+  );
+  await expect(list.trigger, say("Enter keeps the list open")).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  return search;
+}
+
+/** One list of the Agents page's Filter that lists a picked value no live session reports, only
+ *  while it is picked: Role, which lists such a role after the live ones (`withPicked`), and
+ *  Machine, which lists such a machine among them (`filterOptions`). */
+interface GhostList {
+  readonly what: string;
+  /** Its parameter in the page's address, and the word its trigger is named by. */
+  readonly field: "machine" | "role";
+  /** The value no live session reports, which the address the row opens picks. */
+  readonly ghost: string;
+  readonly search: string;
+  /** The list's rows as it opens with `ghost` picked, in their order. */
+  readonly rows: readonly string[];
+  /** A value a live session reports, which the arrows reach and Enter picks. */
+  readonly live: string;
+}
+
+/** Every step of k-list-focus on `list`, over the two machines' sessions and the Planner's, on the
+ *  first of them, the one session that holds a role. */
+async function ghostListFocus(page: Page, list: GhostList): Promise<void> {
+  const say = (step: string) => `k-list-focus: ${list.what}, ${step}`;
+  const now = Date.now();
+  const planner = machineSession(sessionIds.planner, "Planner", {
+    host: MACHINES[0],
+    lastSeen: now - 30_000,
+  });
+  await seedTwoMachines(now, [{ ...planner, roles: ["planner"] }]);
+  await page.setViewportSize(WIDE);
+  const trigger = page.getByRole("button", { name: `Filter by ${list.field}` });
+  const row = (value: string) => listOf(trigger).getByRole("option", { exact: true, name: value });
+  // The page with the ghost picked, its Filter panel opened by Shift+F, and the list by Tab to its
+  // trigger and Enter.
+  const openList = async (pass: string) => {
+    await page.goto(`/agents?${list.field}=${list.ghost}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+    await focusPage(page, say(`${pass}: the focus starts on the page`));
+    await page.keyboard.press("Shift+F");
+    await expect(
+      page.getByRole("dialog", { name: "Filter" }),
+      say(`${pass}: Shift+F opens the Filter panel`)
+    ).toBeVisible();
+    await tabTo(page, trigger, say(`${pass}: Tab reaches the list's trigger`));
+    await page.keyboard.press("Enter");
+  };
+
+  // The arrows and Enter in the search box: the pick of a live value keeps its row, and the
+  // unpick of the ghost takes its row away, the focus in the search box through both.
+  await openList("by the arrows");
+  const search = await multiPickKeepsFocus(page, {
+    pick: list.live,
+    rows: list.rows,
+    search: list.search,
+    trigger,
+    what: list.what,
+  });
+  await arrowTo(
+    page,
+    search,
+    list.rows,
+    [list.live, list.ghost],
+    say(`the arrows move to ${list.ghost}`)
+  );
+  await page.keyboard.press("Enter");
+  await expect(
+    row(list.ghost),
+    say(`Enter unpicks ${list.ghost} and takes its row away`)
+  ).toHaveCount(0);
+  await expectFocusOn(
+    page,
+    search,
+    say(
+      `Enter unpicks ${list.ghost}, which takes its row away, and leaves the focus in the search box`
+    )
+  );
+  await expect(trigger, say("the unpick keeps the list open")).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+
+  // Enter on the ghost's own row, focused as a screen reader's cursor focuses it: no key moves the
+  // focus from the search box to a row, since Tab there closes the list. The pick takes the
+  // focused row away inside the Filter panel, whose own hand-off for a control a press takes out
+  // of it (`useFocusPlace`) would put the focus on the list's trigger.
+  await openList("on its focused row");
+  await expectFocusOn(page, search, say("Enter on the trigger opens the list on its search box"));
+  await row(list.ghost).focus();
+  await expect(row(list.ghost), say(`the ${list.ghost} row takes the focus`)).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    row(list.ghost),
+    say(`Enter on the focused ${list.ghost} row unpicks it and takes the row away`)
+  ).toHaveCount(0);
+  await expectFocusOn(
+    page,
+    search,
+    say(
+      `Enter on the focused ${list.ghost} row, which takes the row away, leaves the focus in the search box`
+    )
+  );
+  await expect(trigger, say("the unpick keeps the list open")).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+}
+
+// SLOW(>=2s): the Agents page loaded twice, its Role list opened by key each time and picked from
+// three times.
+// @webkit @firefox: where each engine leaves the focus of a focused row a commit takes off the
+// page, which the list reads through `focusLost`, and the order of its check and the panel's.
+test("k-list-focus: on the Agents page's Filter, Enter on a role the arrows reach, on the picked role no live session reports, and on that role's focused row leaves the focus in the Role list's search box @firefox @webkit", async ({
+  page,
+}) => {
+  await ghostListFocus(page, {
+    field: "role",
+    ghost: "ghost-role",
+    live: "planner",
+    rows: ["planner", "ghost-role"],
+    search: "Search roles",
+    what: "the Agents Role list",
+  });
+});
+
+// SLOW(>=2s): the Agents page loaded twice, its Machine list opened by key each time and picked
+// from three times.
+// @webkit @firefox: where each engine leaves the focus of a focused row a commit takes off the
+// page, which the list reads through `focusLost`, and the order of its check and the panel's.
+test("k-list-focus: on the Agents page's Filter, Enter on a machine the arrows reach, on the picked machine no live session reports, and on that machine's focused row leaves the focus in the Machine list's search box @firefox @webkit", async ({
+  page,
+}) => {
+  await ghostListFocus(page, {
+    field: "machine",
+    ghost: "ghost-box",
+    live: MACHINES[0],
+    rows: ["ghost-box", ...MACHINES],
+    search: "Search machines",
+    what: "the Agents Machine list",
+  });
+});
+
+/** The repository on the fake GitHub that CORE's architecture is read from. */
+const LIST_FOCUS_ARCHITECTURE = "legion/list-focus-arch";
+
+/** CORE with an issue for Details on the new issue page: another issue of CORE holds the labels
+ *  `ledger` and `mirror`, which the labels list offers, and CORE's architecture, imported from the
+ *  fake GitHub, holds the components `ledger` and `mirror`, which the components list offers.
+ *  Answers the first issue's key. */
+async function seedDetailsLists(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const other = await createIssue({ project: "CORE", title: "Mirror audit" });
+  await patchIssue(other.key, { labels: ["ledger", "mirror"] });
+  await seedFakeGithub({
+    [LIST_FOCUS_ARCHITECTURE]: {
+      contents: "read",
+      files: {
+        "ledger.md": "---\ntitle: Ledger\n---\nWhat the ledger records.\n",
+        "mirror.md": "---\ntitle: Mirror\n---\nWhat the mirror replays.\n",
+      },
+      installation_id: 103,
+    },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: LIST_FOCUS_ARCHITECTURE });
+  expect(
+    (await syncArchitectureSource("CORE", LIST_FOCUS_ARCHITECTURE)).last_error,
+    "k-list-focus: CORE's architecture did not import"
+  ).toBeNull();
+  return issue.key;
+}
+
+// SLOW(>=2s): the fake GitHub's architecture imported, the new issue page loaded, and two lists
+// of Details opened by key and picked from.
+// @webkit @firefox: where each engine leaves the focus as a pick moves the picked row to the top
+// of the list, which the list reads through `focusLost`.
+test("k-list-focus: in Details on the new issue page, Enter on a label or a component the arrows reach leaves the focus in the labels or the components list's search box @firefox @webkit", async ({
+  page,
+}) => {
+  const key = await seedDetailsLists();
+  await withIssuePage(page.context(), "alice");
+  await page.setViewportSize(WIDE);
+  await gotoIssue(page, `/issues/${key}`);
+  const labels = marginShell(page).locator(`[data-property-control="labels ${key}"]`);
+  const components = marginShell(page).locator(`[data-property-control="components ${key}"]`);
+
+  // `l` opens Details at the Labels row with the labels' control pressed.
+  await focusPage(page, "k-list-focus: Details' labels list, the focus starts on the page");
+  await page.keyboard.press("l");
+  await multiPickKeepsFocus(page, {
+    pick: "mirror",
+    rows: ["ledger", "mirror"],
+    search: "Search or create label",
+    trigger: labels,
+    what: "Details' labels list",
+  });
+  await page.keyboard.press("Escape");
+  await expectFocusOn(
+    page,
+    labels,
+    "k-list-focus: Details' labels list, Escape puts the focus back on its trigger"
+  );
+
+  // Tab from the labels' control reaches the components', and Enter opens its list.
+  await tabTo(page, components, "k-list-focus: Details' components list, Tab reaches its trigger");
+  await page.keyboard.press("Enter");
+  await multiPickKeepsFocus(page, {
+    pick: "mirror · Mirror",
+    rows: ["ledger · Ledger", "mirror · Mirror"],
+    search: "Search components",
+    trigger: components,
+    what: "Details' components list",
+  });
+});
+
+/** From the page itself: Tab reaches the trigger of the single-pick list `what`, Enter opens the
+ *  list on its search box, ArrowDown moves the highlight off the value it opened on, and Enter
+ *  picks the row it moved to, which closes the list with the focus on its trigger, before and
+ *  after the one write of `writes`, the `sent`th, lands. */
+async function singlePickFocus(
+  page: Page,
+  what: string,
+  trigger: Locator,
+  writes: readonly KeyedWrite<unknown>[],
+  sent: number
+): Promise<void> {
+  const say = (step: string) => `k-list-focus: ${what}, ${step}`;
+  await focusPage(page, say("the focus starts on the page"));
+  await tabTo(page, trigger, say("Tab reaches the list's trigger"));
+  await page.keyboard.press("Enter");
+  const search = listOf(trigger).getByRole("combobox");
+  await expectFocusOn(page, search, say("Enter opens the list with the focus in its search box"));
+  const opened = await highlightedBy(search);
+  await page.keyboard.press("ArrowDown");
+  await expect
+    .poll(() => highlightedBy(search), { message: say("ArrowDown moves to another row") })
+    .not.toBe(opened);
+  await page.keyboard.press("Enter");
+  await expect(trigger, say("Enter closes the list")).toHaveAttribute("aria-expanded", "false");
+  await expectFocusOn(page, trigger, say("Enter puts the focus on the list's trigger"));
+  await expect.poll(() => writesSent(writes), { message: say("Enter sends one write") }).toBe(sent);
+  await expectFocusOn(
+    page,
+    trigger,
+    say("the focus is on the list's trigger once the pick's write has landed")
+  );
+}
+
+// SLOW(>=2s): today's issue page loaded, and its assignee's and its repository's lists each
+// opened by key, picked from and written.
+// @webkit @firefox: where each engine leaves the focus as a single pick closes its list and its
+// write lands.
+test("k-list-focus: on today's issue page, Enter on an assignee or a repository the arrows reach closes its list with the focus on the list's trigger @firefox @webkit", async ({
+  page,
+}) => {
+  const { issueKey, title } = await seedChoices();
+  await page.setViewportSize(WIDE);
+  const writes = issueWrites(page, issueKey);
+  await openIssue(page, issueKey, title);
+  await singlePickFocus(
+    page,
+    "the header's assignee list",
+    page.getByLabel(`Assignee of ${issueKey}`, { exact: true }),
+    writes,
+    1
+  );
+  await singlePickFocus(
+    page,
+    "the header's repository list",
+    page.getByLabel(`Repository of ${issueKey}`, { exact: true }),
+    writes,
+    2
+  );
 });
 
 // ---------------------------------------------------------------------------

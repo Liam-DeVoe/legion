@@ -374,7 +374,11 @@ const parallelProjects = [
   // How the engine handles a focused element a commit takes off the page, which a list reads
   // through `focusLost` as its focus lost: `issue-page-h`'s row that Details' labels list gives
   // its text box the focus when Enter on the focused row of a label only the draft holds takes
-  // that row away.
+  // that row away; and `keyboard-complete`'s four `k-list-focus` rows, two in which Enter on the
+  // focused row of a role or a machine no live session reports takes that row away inside the
+  // Agents page's Filter panel, whose own hand-off runs in the same commit, and in which, as in
+  // the other two, Enter on a choice the arrows reach in a host of the shared list leaves the
+  // focus in the list's search box, or on its trigger where the pick closes the list.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
@@ -477,7 +481,11 @@ const parallelProjects = [
   // How the engine handles a focused element a commit takes off the page, which a list reads
   // through `focusLost` as its focus lost: `issue-page-h`'s row that Details' labels list gives
   // its text box the focus when Enter on the focused row of a label only the draft holds takes
-  // that row away.
+  // that row away; and `keyboard-complete`'s four `k-list-focus` rows, two in which Enter on the
+  // focused row of a role or a machine no live session reports takes that row away inside the
+  // Agents page's Filter panel, whose own hand-off runs in the same commit, and in which, as in
+  // the other two, Enter on a choice the arrows reach in a host of the shared list leaves the
+  // focus in the list's search box, or on its trigger where the pick closes the list.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind

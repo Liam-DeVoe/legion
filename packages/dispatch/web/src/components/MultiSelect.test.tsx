@@ -8,6 +8,7 @@ import { useState } from "react";
 
 import { highlightedRow, panelOf, pickNamed } from "../__tests__/list-picks";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
+import { PanelTrigger } from "./PanelTrigger";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
   const [open, setOpen] = useState(false);
@@ -1261,12 +1262,69 @@ test("a focused row that its pick takes off the page gives the focus to the sear
   }
 });
 
-// Only the press of a row that holds the focus gives the search box the focus, so a press of a
-// row the focus is not on moves no focus, though its pick takes the row off the page. A pointer
-// press focuses nothing (`onMouseDown`) and leaves the focus in the search box. A click with no
-// pointer press, which the panel's taking of the focus on a pointer press inside it
-// (`AnchoredPanel`) does not see, leaves the focus on the page's body, where a focused row that
-// new options took away left it.
+/** A list inside a panel, as the Agents page's Filter holds its Role list (`AgentsPage.tsx`): the
+ *  panel's state and the list's are the host's, above the panel, so a pick draws the panel again
+ *  and the panel's hand-off for a control a press takes out of it (`useFocusPlace`) runs in the
+ *  commit that answers the pick. The options are the roles live sessions hold, then each picked
+ *  role none of them holds (`withPicked`), so the picked `ghost-role` is listed only while it is
+ *  picked. */
+function PanelListHost() {
+  const [open, setOpen] = useState(false);
+  const [roles, setRoles] = useState<string[]>(["ghost-role"]);
+  const live = ["planner", "reviewer"];
+  return (
+    <PanelTrigger label="Filter" onOpenChange={() => undefined} open stacked>
+      {() => (
+        <MultiSelect
+          emptyMessage="No role matches that."
+          label="Role"
+          onChange={setRoles}
+          onOpenChange={setOpen}
+          open={open}
+          options={[...live, ...roles.filter((role) => !live.includes(role))]}
+          searchLabel="Search roles"
+          selected={roles}
+          triggerAriaLabel="Filter by role"
+        />
+      )}
+    </PanelTrigger>
+  );
+}
+
+// INFRA-2160, review 6011312190: Enter on the focused row of a role only the pick holds unpicks it
+// and takes the row away inside the panel, whose hand-off then finds the row gone and the focus
+// lost by the reader's press, and puts the focus on the control at the row's place: the list's
+// trigger. The list's own check runs before the panel's, so the focus goes to its search box and
+// the list stays open. No key moves the focus from the search box to a row, whose Tab closes the
+// list, so the row is focused as a screen reader's cursor focuses it.
+test("a focused row its pick takes off the page, in a list inside a panel, gives the focus to the list's search box and not to its trigger", async () => {
+  const user = userEvent.setup();
+  const view = render(<PanelListHost />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Filter by role" });
+    expect(trigger, "the panel did not open with the focus on the list's trigger").toHaveFocus();
+    await user.keyboard("{Enter}");
+    const search = screen.getByRole("combobox", { name: "Search roles" });
+    expect(search, "Enter on the trigger did not open the list on its search box").toHaveFocus();
+    const ghost = screen.getByRole("option", { name: "ghost-role" });
+    act(() => ghost.focus());
+    await user.keyboard("{Enter}");
+    expect(ghost.isConnected, "the unpicked role's row is still on the page").toBe(false);
+    expect(
+      search,
+      "the pick took the row away, and the focus did not go to the list's search box"
+    ).toHaveFocus();
+    expect(trigger, "the pick closed the list").toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Only a press of the row that holds the focus is noted, so a press of a row the focus is not on
+// moves no focus, though its pick takes the row off the page. A pointer press focuses nothing
+// (`onMouseDown`) and leaves the focus in the search box. A click with no pointer press, which the
+// panel's taking of the focus on a pointer press inside it (`AnchoredPanel`) does not see, leaves
+// the focus on the page's body, where a focused row that new options took away left it.
 test("a press of a row the focus is not on, which its pick takes off the page, leaves the focus where it is", async () => {
   const user = userEvent.setup();
   const view = render(<OpenHost dropPicked options={["api", "bug", "docs"]} />);
@@ -1300,9 +1358,9 @@ test("a press of a row the focus is not on, which its pick takes off the page, l
 });
 
 // A host can keep the pick as a row is pressed, so the press changes nothing it draws. The press
-// of a focused row is answered in its own click handler and kept nowhere after it, so it answers
-// no later loss: new options that then take that row away are no press of the reader's, and its
-// focus stays on the page's body.
+// of a focused row still asks for a commit of its own, which forgets the press, so the press
+// answers no later loss: new options that then take that row away are no press of the reader's,
+// and its focus stays on the page's body.
 test("a focused row's press that changes nothing drawn answers no later loss: new options that drop the row leave the focus on the page's body", async () => {
   const user = userEvent.setup();
   const picker = (options: string[]) => (
