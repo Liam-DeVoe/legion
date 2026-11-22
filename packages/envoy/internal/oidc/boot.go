@@ -41,11 +41,13 @@ func ConfigFromEnv(getenv func(string) string, issuerVar, audienceVar string) (i
 }
 
 // IssuerRefusal is why issuer, the value of the setting named setting, is no issuer URL, or nil:
-// one that does not parse, one with a user name or a password, and one with an "@" after its host
+// one that does not parse, one with a user name or a password, one with an "@" after its host
 // (natsurl.UserinfoPastHost: where a credential holding a "/", "?" or "#" written as the user
-// lands, its head read as the host). No issuer URL has a credential, and the issuer is printed in
-// boot lines and discovery errors, so a credential pasted there would print. The refusal names the
-// setting alone, never the value. "" (unset) is no refusal.
+// lands, its head read as the host), and one with a query or a fragment, an empty one included,
+// which OpenID Connect Discovery 1.0 (§3) says an issuer identifier has none of, and where a token
+// would be pasted. The issuer is printed in boot lines, discovery errors and the broker's sign-in
+// page, so a credential pasted there would print. The refusal names the setting alone, never the
+// value. "" (unset) is no refusal.
 func IssuerRefusal(setting, issuer string) error {
 	if issuer == "" {
 		return nil
@@ -58,6 +60,8 @@ func IssuerRefusal(setting, issuer string) error {
 		return fmt.Errorf("%s cannot be read: it holds a user name or a password, which no issuer URL has", setting)
 	case natsurl.UserinfoPastHost(parsed):
 		return fmt.Errorf("%s cannot be read: %s", setting, natsurl.UserinfoPastHostReason)
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(issuer, "#"):
+		return fmt.Errorf("%s cannot be read: it holds a query or a fragment, which no issuer identifier has", setting)
 	}
 	return nil
 }

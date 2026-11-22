@@ -267,6 +267,7 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 	const both = "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain"
 	noSignIn := map[string]string{"DATABASE_URL": "postgres://dispatch", "DISPATCH_AGENT_TOKEN": "agent-token"}
 	issuerUserinfo := "madeUpIssuerUser0123:madeUpIssuerSecret0123" + "@"
+	const queryToken = "madeUpQueryToken0123456789"
 	with := func(base, overrides map[string]string) map[string]string {
 		values := map[string]string{}
 		for name, value := range base {
@@ -292,8 +293,13 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
 		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
+		// The issuer is printed through redact.URL: a value with no scheme is no plain http(s) URL.
 		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is accounts.google.com"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
+		// A made-up token percent-encoded in the issuer's path, which loads: the domain refusal
+		// prints no part of it.
+		{"a domain under an issuer with an encoded token in its path", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/%6DadeUpPathToken0123456789"}),
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
 		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
@@ -303,6 +309,14 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
 		{"a service-token issuer holding a credential", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://" + issuerUserinfo + "oidc.example/id/CLUSTER", "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
 			"DISPATCH_OIDC_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
+		// A made-up token in an issuer's query or fragment, which no issuer identifier has: refused
+		// naming the setting alone, before the domain refusal would print the issuer.
+		{"a sign-in issuer with a token in its query", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/?token=" + queryToken}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
+		{"a sign-in issuer with a token in its fragment", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/#" + queryToken}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
+		{"a service-token issuer with a token in its query", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://oidc.example/id/CLUSTER?token=" + queryToken, "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
+			"DISPATCH_OIDC_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := resolveBootConfig(envGetter(tc.env)); err == nil || err.Error() != tc.want {

@@ -516,7 +516,7 @@ func main() {
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
-		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		logServiceTokens(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -2092,6 +2092,13 @@ func (g *gitHubReads) member() *gitHubReadsMember {
 		DeliveryReconcile:  entry(githubreads.DeliveryReconcile),
 		CIReconcile:        entry(githubreads.CIReconcile),
 	}
+}
+
+// logServiceTokens logs the issuer and audience boot verifies service-account tokens under, the
+// issuer through redact.URL: oidc.IssuerRefusal has refused a credential in its userinfo, past its
+// host, or in its query or fragment, and redact.URL prints none of a value that is no plain URL.
+func logServiceTokens(boot bootConfig) {
+	slog.Info("dispatch: verifying service-account tokens", "issuer", redact.URL(boot.OIDCIssuer), "audience", boot.OIDCAudience)
 }
 
 // serviceTokenVerifier is the verifier of the projected service-account tokens boot's

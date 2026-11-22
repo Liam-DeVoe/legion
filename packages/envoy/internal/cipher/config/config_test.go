@@ -2461,9 +2461,10 @@ func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 }
 
 // Every issuer setting the broker reads refuses a value holding a credential, naming the setting
-// alone (oidc.IssuerRefusal): a made-up user name and password, and a made-up token holding a "/"
-// written as the user, its "@" past the host. No issuer URL holds either, and each is printed in
-// the broker's boot lines and discovery errors.
+// alone (oidc.IssuerRefusal): a made-up user name and password, a made-up token holding a "/"
+// written as the user, its "@" past the host, and a made-up token in the query or the fragment.
+// No issuer identifier holds any of them, and each is printed in the broker's boot lines,
+// discovery errors and sign-in page.
 func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
 	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
 	userinfo := user + ":" + secret + "@"
@@ -2473,8 +2474,10 @@ func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
 	}
 	for _, setting := range []string{"BROKER_SIGNIN_ISSUER", "BROKER_GOOGLE_OIDC_ISSUER", "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_GITHUB_ISSUER"} {
 		for shape, value := range map[string]string{
-			"userinfo":           "https://" + userinfo + "issuer.example",
-			"an @ past the host": "https://" + user + "/" + secret + "@issuer.example",
+			"userinfo":                "https://" + userinfo + "issuer.example",
+			"an @ past the host":      "https://" + user + "/" + secret + "@issuer.example",
+			"a token in the query":    "https://issuer.example/?token=" + secret,
+			"a token in the fragment": "https://issuer.example/#" + secret,
 		} {
 			t.Run(setting+"/"+shape, func(t *testing.T) {
 				e := validEnv()
