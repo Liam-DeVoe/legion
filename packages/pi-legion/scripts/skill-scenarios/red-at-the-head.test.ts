@@ -1168,8 +1168,8 @@ describe("red_fixture", () => {
     expect(after.stdout.includes("retries a refused send")).toBe(RED_WORLD[world].after === "red");
     expect(await attemptLog(1)).toEqual(before);
     expect((await attemptLog(3)).stderr).toStartWith("rig: request not modeled: ");
-    // measured: <owed>
-  }, 120_000);
+    // measured: slowest 12.30 s (world a, pod, alone, 2026-11-22 between 03:40Z and 03:45Z); world a 5.92/12.30/5.08 s and world j 5.97/6.41/4.24 s in the pod, 1.23 s and 1.27 s in CI run 44975537025 attempt 2
+  }, 37_000);
 
   // Catches: a pull request body whose check line contradicts the world's Verification document.
   // A reviewer world whose round goes on (world i) holds k1 as `after_merge` (worker_world, through
@@ -1695,8 +1695,8 @@ describe("red_fixture", () => {
         };
       })
     );
-    // measured: <owed>
-  }, 300_000);
+    // measured: slowest 52.09 s (pod, alone, 2026-11-22 between 03:40Z and 03:45Z); 44.45/38.60/52.09 s in the pod, 8.61 s, 10.02 s and 10.92 s in CI (runs at 8b339a10, 8b8c7d19 and d16b295a)
+  }, 157_000);
 
   // Catches: `gh run watch` refused by the stand-in as a request the rig does not model, a rig
   // error where gh answers it (the architect's gap review of 7bf70a93: no route took it), and an
@@ -1816,8 +1816,8 @@ describe("red_fixture", () => {
       [`run watch ${RED_RUN_ID} --compact -i 1`, true, null],
       [`run watch ${RED_RUN_ID} --exit-status`, true, 0],
     ]);
-    // measured: <owed>
-  }, 120_000);
+    // measured: slowest 8.74 s (pod, alone, 2026-11-22 between 03:40Z and 03:45Z); 7.19/6.48/8.74 s in the pod, 3.06 s, 3.20 s and 3.28 s in CI (runs at 8b339a10, 8b8c7d19 and d16b295a)
+  }, 27_000);
 
   // Catches: `gh pr checks --watch` refused by the stand-in as a request the rig does not model,
   // a rig error where gh answers it, the same class as `gh run watch` above, and an answer that
@@ -1906,8 +1906,8 @@ describe("red_fixture", () => {
       ["--watch -i 1", null],
       ["--watch --fail-fast", 0],
     ]);
-    // measured: <owed>
-  }, 120_000);
+    // measured: slowest 8.15 s (pod, alone, 2026-11-22 between 03:40Z and 03:45Z); 7.13/8.15/6.95 s in the pod, 2.23 s, 2.48 s and 2.60 s in CI (runs at 8b339a10, 8b8c7d19 and d16b295a)
+  }, 25_000);
 
   // Catches: a settlement never published, which leaves a waiting role asleep, a settlement
   // published at the press, inside the turn that pressed the re-run, and a settlement whose
