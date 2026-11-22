@@ -123,9 +123,10 @@ jobs:
       # The image's notices (packages/envoy/docker/Dockerfile): the build fails when a license cannot
       # be determined, and the listing shows the image ships both files.
       - name: List the image's third-party notices
-        run: >-
-          docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l
-          /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
+        run: |
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l \
+            /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
       # 5m bounds only what the test does: pull NATS, start both containers behind the test's
       # own 60 s health wait, and assert. This job has measured 1.82 s, 3.16 s and 1.88 s (the
       # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average

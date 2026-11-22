@@ -2517,6 +2517,7 @@ ci_filters:
   # why: .github/ci-notes/ci.md#ci_filters-the-directory-rather-than-the-workflows-the-check-names-one-by-one
   - '.github/workflows/**'
   - '.github/ci-filters.yaml'
+  - '.github/scripts/ci-log-guard.sh'
   - '.github/scripts/check-ci-filters.sh'
   - '.github/scripts/check-workflow-files.sh'
   - '.github/actionlint.yaml'
@@ -2596,6 +2597,7 @@ envoy_client:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-client.yaml'
+  - '.github/scripts/ci-log-guard.sh'
   - *bun_install
   - 'packages/envoy-client/**'
   - 'packages/cipher-client/**'

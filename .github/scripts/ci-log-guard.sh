@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# shellcheck shell=sh disable=SC3043 # `local`: dash, busybox ash and bash all have it
 # Keeps a server's text in the job log from becoming a workflow command.
 #
 # The runner reads a step's standard output and standard error line by line, and it ends a line at
@@ -44,12 +45,14 @@
 #                                 value with no marker in it.
 #
 # The two guards run CMD in an `&&`/`||` list, so a caller's `set -e` cannot end the shell before
-# the block closes. Bash runs a shell function passed as CMD without errexit there.
+# the block closes. The shell runs a function passed as CMD without errexit there.
 #
-# Sourced, never run: from a script beside this one,
-#   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"
-# and from a workflow step at the repository root, `. .github/scripts/ci-log-guard.sh`. It sets no
-# shell option and leaves no variable behind, and it runs on bash 3.2.
+# Sourced, never run, and written for POSIX sh with `local` (dash, busybox ash, bash 3.2 and on),
+# so a /bin/sh caller can source it as a bash one can. A caller names its path: a bash script beside
+# this one as `. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"`, a sh script by
+# a path it already holds (`. "$repo/.github/scripts/ci-log-guard.sh"`; sh has no BASH_SOURCE),
+# and a workflow step at the repository root as `. .github/scripts/ci-log-guard.sh`. It sets no
+# shell option and leaves no variable behind.
 # Tests: .github/scripts/ci-log-guard.test.sh.
 
 ci_log_token() {

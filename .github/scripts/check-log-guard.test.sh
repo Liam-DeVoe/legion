@@ -96,6 +96,35 @@ for found in 'go build ./cmd/x' 'gh api repos/o/r' 'sudo apt-get install -y zsh'
 done
 check "and counts seven problems" "$(contains "$out" '^::error::check-log-guard: 7 problem(s)$')"
 
+# The forms a review found the check passed: a client behind a command that runs it with options
+# of its own (their values must not be read as the client), behind find's -execdir, between two
+# brace groups on one line, and a ci_log_guard_stderr whose stdout goes to the log.
+echo "case: each client behind a runner, a find, between two groups, or a loose stderr guard fails by name"
+root=$(fixture runners "$(cat <<'SH'
+nice -n 10 go test ./...
+timeout -s KILL 5m go test ./a
+xargs -n 1 go test
+sudo -u runner apt-get install -y zsh
+env -i PATH=/usr/bin go build ./x
+command go build ./y
+find . -name go.mod -execdir go build ./... \;
+{ true; }; curl -sS https://example.com/x; { true; } 2>&1 | ci_log_guard cat
+ci_log_guard_stderr gh api repos/o/r
+command -v go
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in 'nice -n 10 go test ./...' 'timeout -s KILL 5m go test ./a' 'xargs -n 1 go test' \
+  'sudo -u runner apt-get install -y zsh' 'env -i PATH=/usr/bin go build ./x' 'command go build ./y' \
+  'find . -name go.mod -execdir go build ./... ;' 'curl -sS https://example.com/x'; do
+  check "names \`$found\`" "$(contains "$out" "step \"Fetch\" runs \`$found\`")"
+done
+check "names the stderr guard whose stdout reaches the log" \
+  "$(contains "$out" 'step "Fetch" runs .ci_log_guard_stderr gh api repos/o/r.: ci_log_guard_stderr blocks only stderr')"
+check "reads \`command -v go\` as no client, and counts nine problems" \
+  "$(contains "$out" '^::error::check-log-guard: 9 problem(s)$')"
+
 echo "case: a row with its reason allows its command, and only that one"
 root=$(fixture allowed 'docker pull ghcr.io/o/i' \
   "$(printf '.github/workflows/app.yaml\tapp\tFetch\tdocker\tthe image is pulled by digest and its text was probed')")

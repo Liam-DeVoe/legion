@@ -1265,13 +1265,27 @@ jobs:
       # why: .github/ci-notes/release.md#why-the-version-tag-is-a-carbon-copy-of-the-manifest-the-build-pushed
       - name: Tag the worker image with the legion version
         run: |
+          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
+          # job holds release credentials and runs no script of this repository
+          # (.github/scripts/check-release-credentials.sh): a fresh token from /dev/urandom, both
+          # markers on stderr, the end marker on a line of its own after the command exits. The
+          # registry's error that imagetools prints stays text.
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           test -n "$IMAGE"
           test -n "$DIGEST"
           test -n "$VERSION"
-          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
-          tagged=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE:$VERSION")
+          ci_log_guard_stderr docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST" >&2
+          tagged=$(ci_log_guard_stderr docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE:$VERSION")
           if [ "$tagged" != "$DIGEST" ]; then
-            echo "::error::$IMAGE:$VERSION names $tagged, not $DIGEST, the digest worker_image pushed"
+            echo "::error::$IMAGE:$VERSION names $tagged, not $DIGEST, the digest worker_image pushed" >&2
             exit 1
           fi
           echo "$IMAGE:$VERSION names $DIGEST"

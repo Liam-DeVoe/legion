@@ -144,7 +144,7 @@ def load_repository_yaml(path: Path):
 # a script that sources it (log_guard_read).
 LOG_GUARD = ".github/scripts/ci-log-guard.sh"
 LOG_GUARD_SOURCE = re.compile(r"\.[ \t]+(?:\.\./)*\.github/scripts/ci-log-guard\.sh")
-LOG_GUARD_GROUP = re.compile(r"\{[ \t]*(.*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
+LOG_GUARD_GROUP = re.compile(r"\{[ \t]*([^{}]*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
 LOG_GUARD_WORD = re.compile(r"(?<![\w-])ci_log_guard(?:_stderr)?[ \t]+")
 # A line of a script that sources the guard, in any form: `. <path>/ci-log-guard.sh`.
 LOG_GUARD_SCRIPT_SOURCE = re.compile(r"(?m)^[ \t]*\.[ \t].*ci-log-guard\.sh")

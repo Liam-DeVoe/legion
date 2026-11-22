@@ -26,7 +26,7 @@
 # can see a block on the wrong stream; and a step's own warning written on standard output beside
 # a block is dropped in the stdout-in-block order, so the parser can see that loss.
 #
-# The four release steps that hold credentials define the guard inline (they run no script of
+# The six release steps that hold credentials define the guard inline (they run no script of
 # this repository): each one's run: text is read out of its workflow, its definition driven with
 # the stand-in client as the library is, and each npm publish step run whole against a stand-in
 # npm; the control is the same text with the inline guard taken out.
@@ -381,7 +381,7 @@ for rel in (".github/workflows/release.yaml", ".github/workflows/release-envoy-l
             print(f"{n}\t{rel}\t{step.get('name')}\t{'publish' if publish else 'other'}")
 PY
 )
-check "the reader finds the four release steps that define the guard inline" "$(is "${#inline[@]}" 4)"
+check "the reader finds the six release steps that define the guard inline" "$(is "${#inline[@]}" 6)"
 
 # A stand-in npm for a whole publish step: `npm view` finds no published version, and `npm publish`
 # answers as a registry's 4xx would have it print, planting each form on both streams, and exits
@@ -498,5 +498,45 @@ check "control: the shell-state check sees an option set" \
   "$(is "$(bash "$work/state.sh" "$work/sets-option.sh")" changed)"
 check "sourcing and calling set no option and leave no variable" \
   "$(is "$(bash "$work/state.sh" "$lib")" same)"
+
+echo
+echo "Under dash, as a /bin/sh caller sources the library"
+
+# The library is POSIX sh with `local`: a /bin/sh caller (dash on the CI image) sources it and gets
+# the same blocks, statuses and value. A machine without dash fails here rather than skips.
+if command -v dash >/dev/null; then
+  cat >"$work/state-sh.sh" <<'SH'
+before= after=
+snap() { set -o; set | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -v -x -e _ -e LINENO -e OPTIND; }
+before=$(snap)
+. "$1"
+ci_log_guard true 2>/dev/null
+ci_log_guard_stderr true 2>/dev/null
+ci_log_block_open "$(ci_log_token)" 2>/dev/null
+after=$(snap)
+if [ "$before" = "$after" ]; then echo same; else echo changed; fi
+SH
+  check "control: under dash the shell-state check sees a variable left behind" \
+    "$(is "$(dash "$work/state-sh.sh" "$work/leaks-variable.sh" 2>&1)" changed)"
+  for attempt in 0 7; do
+    status=0
+    dash -e -c ". '$lib'; ci_log_guard '$work/client' $attempt && rc=0 || rc=\$?
+      echo '::warning::own-after' >&2; exit \$rc" >"$work/dash-$attempt.out" 2>"$work/dash-$attempt.err" || status=$?
+    got=$(parse "$work/dash-$attempt.out" "$work/dash-$attempt.err")
+    check "dash, exit $attempt: the parser sees no planted command in any order" "$(is "$(count "$got" planted)" 0)"
+    check "dash, exit $attempt: the step's own warning after the block works" \
+      "$(is "$(count "$got" "^stdout-in-block	stderr	warning	own-after\$")" 1)"
+    check "dash, exit $attempt: the command's exit status comes back" "$(is "$status" "$attempt")"
+  done
+  dash -c ". '$lib'; v=\$(ci_log_guard_stderr '$work/client' 0); printf '%s' \"\$v\"" \
+    >"$work/dash-value" 2>/dev/null || true
+  "$work/client" 0 2>/dev/null >"$work/dash-expected" || true
+  check "dash: the captured value is the command's stdout, byte for byte" \
+    "$(is "$(cmp -s "$work/dash-value" "$work/dash-expected" && echo same)" same)"
+  check "dash: sourcing and calling set no option and leave no variable" \
+    "$(is "$(dash "$work/state-sh.sh" "$lib" 2>&1)" same)"
+else
+  check "dash is on this machine (the CI image's /bin/sh)" false
+fi
 
 summary "ci-log-guard.sh"

@@ -81,6 +81,6 @@ if [ "$go_test_exit" -ne 0 ]; then
   status=1
   jq -r 'select(.Action == "fail" and .Test != null) | "FAIL \(.Package) \(.Test)"' "$events" >&2
   jq -rsj '[.[] | select(.Action == "fail" and .Test != null) | .Test] as $failed | .[] | select(.Action == "output" and .Test != null) | select(.Test as $t | any($failed[]; . == $t)) | .Output' "$events" >&2
-  cat "$work/stderr" >&2
+  ci_log_guard cat "$work/stderr"
 fi
 exit "$status"

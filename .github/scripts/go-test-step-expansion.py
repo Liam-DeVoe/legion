@@ -424,7 +424,7 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="4110a77a6aa8f5cf5304b2b1b8093b4d6b75ae085e68b9b32d7764e649fcbd2c",
+        sha256="ac3ef6d1c5df2a8d0f9d86248b6ee67f9422f6add3709e84e21cf5ec078dcd66",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

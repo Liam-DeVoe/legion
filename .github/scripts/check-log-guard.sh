@@ -47,8 +47,14 @@ from shell_commands import ASSIGNMENT, EXPRESSION, SKIP_WORDS, Scanner, command_
 MODE = sys.argv[1]
 ALLOW = Path(".github/log-guard-allow.tsv")
 WRAPPERS = ("ci_log_guard", "ci_log_guard_stderr")
-KEYWORDS = SKIP_WORDS - set(WRAPPERS)
-GROUP = re.compile(r"\{[ \t]*(.*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
+# env is a runner here (RUNNERS), read with its options, not a keyword shed before the command.
+KEYWORDS = SKIP_WORDS - set(WRAPPERS) - {"env"}
+GROUP = re.compile(r"\{[ \t]*([^{}]*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
+# A call of ci_log_guard_stderr, and what makes its stdout no part of the log: a `$(` or a backtick
+# before it on its line, or a redirection of stdout after it (`>&2`, `> file`, `1>`, `&>`).
+STDERR_CALL = re.compile(r"(?<![\w-])ci_log_guard_stderr[ \t]+")
+CAPTURED = re.compile(r"\$\(|`")
+REDIRECTED = re.compile(r"(?:^|[ \t;|&])(?:1?>>?|&>>?|>\|)")
 SHELLS = {None, "bash", "sh"}
 
 # client -> the subcommands that reach a server, or None for every use of the client. bun and bunx
@@ -106,24 +112,68 @@ def commands(run: str) -> list:
             words.pop(0)
         if words and words[0] in WRAPPERS:
             out.append((True, words[1:]))
+        elif words and words[0].rsplit("/", 1)[-1] in RUNNERS:
+            out.append((False, words))
         elif words:
             out += [(False, w) for w in command_of(words)]
     return out
 
 
+def loose_stderr_guards(run: str) -> list:
+    """Each ci_log_guard_stderr call whose stdout is neither captured nor redirected: that
+    command's stdout reaches the log outside the block. Read by the line, a backslash-continued
+    line joined to the next first."""
+    loose = []
+    for line in EXPRESSION.sub("EXPR", run).replace("\\\n", " ").split("\n"):
+        for call in STDERR_CALL.finditer(line):
+            if not CAPTURED.search(line[:call.start()]) and not REDIRECTED.search(line[call.end():]):
+                loose.append(line.strip(" \t"))
+    return loose
+
+
+# Commands that run the words after them, each with its options that take a value (their value is
+# skipped with them) and the number of plain words it takes before the command (timeout's
+# duration). env also takes `NAME=value` words; `command -v` and `command -V` look a name up rather
+# than run it.
+RUNNERS = {
+    "sudo": ({"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R", "--user", "--group", "--chdir",
+              "--host", "--prompt", "--other-user", "--role", "--type", "--close-from"}, 0),
+    "timeout": ({"-s", "--signal", "-k", "--kill-after"}, 1),
+    "nice": ({"-n", "--adjustment"}, 0),
+    "nohup": (set(), 0),
+    "stdbuf": ({"-i", "-o", "-e", "--input", "--output", "--error"}, 0),
+    "xargs": ({"-n", "-L", "-P", "-I", "-s", "-d", "-E", "-a", "--max-args", "--max-lines", "--max-procs",
+               "--replace", "--delimiter", "--eof", "--arg-file", "--max-chars"}, 0),
+    "env": ({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}, 0),
+    "command": (set(), 0),
+}
+# find runs the words after each of these, up to `;` or `+`.
+FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+
+
 def network_client(words: list) -> str:
     """The client of NETWORK the words run against a server, or ''."""
     words = list(words)
+    while words and words[0].rsplit("/", 1)[-1] in RUNNERS:
+        runner = words.pop(0).rsplit("/", 1)[-1]
+        valued, plain = RUNNERS[runner]
+        if runner == "command" and words and words[0] in ("-v", "-V"):
+            return ""
+        while words and words[0].startswith("-") and words[0] != "-":
+            flag = words.pop(0)
+            if flag in valued and words:
+                words.pop(0)
+        while runner == "env" and words and ASSIGNMENT.match(words[0]):
+            words.pop(0)
+        del words[:plain]
     if not words:
         return ""
-    # Commands that run the words after them: the client is behind them.
-    while words and words[0].rsplit("/", 1)[-1] in ("sudo", "timeout", "nice", "nohup", "stdbuf", "xargs"):
-        runner = words.pop(0).rsplit("/", 1)[-1]
-        while words and words[0].startswith("-"):
-            words.pop(0)
-        if runner == "timeout" and words:
-            words.pop(0)
-    if not words:
+    if words[0].rsplit("/", 1)[-1] == "find":
+        for i, word in enumerate(words):
+            if word in FIND_EXEC:
+                client = network_client(words[i + 1:])
+                if client:
+                    return client
         return ""
     if words[0].rsplit("/", 1)[-1] in ("bunx", "npx") and len(words) > 1 and words[1].startswith("playwright"):
         words = ["playwright"] + words[2:]
@@ -150,6 +200,7 @@ def shell_of(document: dict, holder: dict, step: dict):
 files = sorted(p for p in Path(".github/workflows").iterdir() if p.suffix in (".yaml", ".yml"))
 files += sorted(p for p in Path(".github/actions").glob("*/action.y*ml"))
 findings = {}  # (file, job, step, client) -> [command text]
+loose = []  # (file, job, step, line): a ci_log_guard_stderr whose stdout reaches the log
 unread = 0
 for path in files:
     document = yaml.safe_load(path.read_text()) or {}
@@ -168,6 +219,7 @@ for path in files:
                 client = "" if routed else network_client(words)
                 if client:
                     findings.setdefault((str(path), str(job_id), label, client), []).append(" ".join(words))
+            loose += [(str(path), str(job_id), label, line) for line in loose_stderr_guards(step["run"])]
 
 if not files:
     print("::error::check-log-guard: read no workflow file and no composite action, so it checked nothing")
@@ -179,7 +231,10 @@ if MODE == "list":
     sys.exit(0)
 
 rows = {}
-problems = []
+problems = [f"::error file={file}::job {job} step \"{label}\" runs `{line}`: ci_log_guard_stderr blocks only "
+            f"stderr, and this command's stdout is neither captured in $(…) nor redirected, so it reaches the "
+            f"log outside the block; run it as `ci_log_guard …`, or capture or redirect its stdout"
+            for file, job, label, line in loose]
 for number, line in enumerate(ALLOW.read_text().split("\n"), 1):
     if not line.strip() or line.startswith("#"):
         continue
@@ -193,11 +248,11 @@ for number, line in enumerate(ALLOW.read_text().split("\n"), 1):
 for key in sorted(findings):
     if key not in rows:
         file, job, label, client = key
-        problems.append(f"::error file={file}::job {job} step \"{label}\" runs `{findings[key][0]}`, a {client} "
-                        f"command that can copy a server's reply into the log, outside "
-                        f".github/scripts/ci-log-guard.sh: run it as `ci_log_guard …` (output to the log) or "
-                        f"`ci_log_guard_stderr …` (stdout captured), or add a row to {ALLOW} saying why it needs "
-                        f"no guard")
+        problems += [f"::error file={file}::job {job} step \"{label}\" runs `{command}`, a {client} "
+                     f"command that can copy a server's reply into the log, outside "
+                     f".github/scripts/ci-log-guard.sh: run it as `ci_log_guard …` (output to the log) or "
+                     f"`ci_log_guard_stderr …` (stdout captured), or add a row to {ALLOW} saying why it needs "
+                     f"no guard" for command in findings[key]]
 for key, number in sorted(rows.items(), key=lambda item: item[1]):
     if key not in findings:
         file, job, label, client = key
