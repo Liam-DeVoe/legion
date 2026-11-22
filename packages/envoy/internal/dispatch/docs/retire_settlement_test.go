@@ -210,3 +210,86 @@ func TestALiveWriteIntoARetiredDocumentOfAnIssueRoomIsRefusedAndTheRoomsOthersLa
 		t.Errorf("the spec's fragment reads %q after the write into it, want its words", markdown)
 	}
 }
+
+// A comment thread's margin record (ProjectMark) on a retired document of an issue room, in a
+// transaction that already holds its write to that room through another document of it, is
+// skipped as it is on a retired document whose room is its own: it writes nothing and refuses
+// nothing. The room's write read the room's own artifact, the issue's tree, under the issue's
+// owner lock (joinLiveWrite), and nothing of the retired document, which the transaction only
+// resolved into the room afterwards (targetOf, the resolution every entry point of the live path
+// makes before it takes the room): a lookup of the transaction's write by that document's id finds
+// the room's (Ledger.liveWriteFor), which proves nothing of the document. So the record reads the
+// document's retirement under the owner lock the write holds. The transaction commits its write
+// into the spec; the room's stored marks hold no record of the thread, and the retired document's
+// fragment keeps the text it held at its retirement.
+func TestAMarginRecordOnARetiredDocumentOfAnIssueRoomIsSkippedInsideTheRoomsWrite(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	const kept = "The check the retirement keeps.\n"
+	if _, err := joinedReplaceText(service, room.verification, kept, alice); err != nil {
+		t.Fatalf("write the Verification document before its retirement: %v", err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the retirement: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
+		t.Fatalf("retire the Verification document: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the retirement: %v", err)
+	}
+
+	const markID, beside = "thread-on-the-retired-document", "Written beside the thread's record.\n"
+	err = joinedWrite(service, func(ctx context.Context) error {
+		if _, err := service.ReplaceText(ctx, room.spec, beside, alice, nil); err != nil {
+			t.Fatalf("write the spec, which joins the issue room's write: %v", err)
+		}
+		if write := joinedLiveWrite(ctx, room.spec); write == nil || write.artifactID != room.tree {
+			t.Fatalf("the transaction that wrote the spec holds the write %v, want the issue room %s's", write, room.tree)
+		}
+		if _, err := service.targetOf(ctx, room.verification); err != nil {
+			t.Fatalf("resolve the retired Verification document into its room: %v", err)
+		}
+		if write := joinedLiveWrite(ctx, room.verification); write == nil || write.artifactID != room.tree {
+			t.Fatalf("a lookup by the retired Verification document's id finds the write %v, want the issue room %s's", write, room.tree)
+		}
+		return service.ProjectMark(ctx, room.verification, markID, MarkRecord{Kind: "comment", By: "user:alice", Text: "Which check?"}, alice)
+	})
+	if err != nil {
+		t.Fatalf("the margin record on the retired Verification document, in the transaction holding the issue room's write through the spec, answered %v, want nil: the record skips a retired document", err)
+	}
+
+	loaded, err := service.persistence.LoadDocument(ctx, room.tree)
+	if err != nil || loaded.Doc == nil {
+		t.Fatalf("load the issue room's stored document: %v", err)
+	}
+	if record, held := loaded.Doc.GetMap(marksMapName).Get(markID); held {
+		t.Errorf("the issue room's stored marks hold %#v under %s, want no record of the thread on the retired Verification document", record, markID)
+	}
+	fragment := func(document string) string {
+		t.Helper()
+		tree, _, err := treeOfFragments(loaded.Doc, []string{fragmentOf(room.tree, document)})
+		if err != nil {
+			t.Fatalf("read the stored fragment of %s: %v", document, err)
+		}
+		if tree == nil {
+			return ""
+		}
+		markdown, err := renderTree(tree)
+		if err != nil {
+			t.Fatalf("render the stored fragment of %s: %v", document, err)
+		}
+		return markdown
+	}
+	if markdown := fragment(room.spec); !strings.Contains(markdown, "Written beside the thread's record.") {
+		t.Errorf("the spec's stored fragment reads %q, want the transaction's write into it committed", markdown)
+	}
+	if markdown := fragment(room.verification); markdown != kept {
+		t.Errorf("the retired Verification document's stored fragment reads %q, want the text %q it held at its retirement", markdown, kept)
+	}
+}

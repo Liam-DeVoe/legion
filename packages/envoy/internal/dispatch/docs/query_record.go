@@ -230,7 +230,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 }
 
 // treeWalk is what a walk has read of the issue's tree: its root, the issue's node, and the owner
-// every address of the issue's own nodes begins with, the issue's key (ownNode); every node it
+// every address of the issue's own nodes begins with, the issue's key (refs.TreeOwns); every node it
 // took, by its address; the part_of children of each node, ranked first, in the order the children
 // read answers them; the conversation's items and their blocks, in the order the conversation read
 // answers them, the items alone, the blocks of each item, and the parent each item's loader names;
@@ -293,25 +293,33 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 	return nil
 }
 
-// readSubtrees reads, level by level, the part_of children of every node of frontier and of each
+// readSubtrees takes, level by level, the part_of children of every node of frontier and of each
 // child it takes, at the walk's cut, taking each node once. It passes over a node of another
-// issue, and over an issue's node, and so over everything under either. above marks each node it
-// takes as one of the walk's second part.
+// issue, and over an issue's node, and so over everything under either (refs.TreeOwns). Every
+// level is read in one statement (refs.TreeSubtrees), so the walk's reads do not grow with the
+// tree's depth; the levels are then taken here, in the order a read of each level answers them.
+// above marks each node it takes as one of the walk's second part.
 func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.Target, above bool) error {
+	if len(frontier) == 0 {
+		return nil
+	}
+	under, err := refs.TreeSubtrees(ctx, q, frontier, w.owner, w.cut)
+	if err != nil {
+		return err
+	}
 	for len(frontier) > 0 {
-		children, err := refs.TreeChildren(ctx, q, frontier, w.cut)
-		if err != nil {
-			return err
-		}
-		frontier = frontier[:0:0]
-		for _, child := range children {
-			if _, seen := w.nodes[child.Node]; seen || !w.ownNode(child.Node) {
-				continue
+		next := frontier[:0:0]
+		for _, parent := range frontier {
+			for _, child := range under[parent] {
+				if _, seen := w.nodes[child.Node]; seen || !refs.TreeOwns(w.owner, child.Node) {
+					continue
+				}
+				w.nodes[child.Node] = treeNodeOf(child, above)
+				w.children[child.Parent] = append(w.children[child.Parent], child.Node)
+				next = append(next, child.Node)
 			}
-			w.nodes[child.Node] = treeNodeOf(child, above)
-			w.children[child.Parent] = append(w.children[child.Parent], child.Node)
-			frontier = append(frontier, child.Node)
 		}
+		frontier = next
 	}
 	return nil
 }
@@ -322,25 +330,6 @@ func treeNodeOf(child refs.TreeChild, above bool) TreeNode {
 		Kind: child.Node.Kind, ID: child.Node.ID, Parent: child.Parent, Type: child.Type,
 		Rank: child.Rank, Ranked: child.Ranked, MadeAt: child.MadeAt, Above: above,
 	}
-}
-
-// ownNode reports whether node is a node of the walk's issue as its address tells: an issue's node
-// is never one, and a document's, a version's or a document block's is one where the walk's owner,
-// the issue's key, is the first part of its address, the document's ref_key
-// (graphstore.ArtifactRefKey). A finding of a lens and every node whose address names no issue - a
-// lens, a risk, a result - is the issue's where the walk reaches it.
-func (w *treeWalk) ownNode(node refs.Target) bool {
-	switch node.Kind {
-	case graphstore.KindIssue:
-		return false
-	case graphstore.KindArtifact, graphstore.KindVersion, refs.BlockNodeKind:
-		if _, _, finding := graphstore.ParseFindingID(node.ID); finding {
-			return true
-		}
-		owner, _, _ := strings.Cut(node.ID, "/")
-		return owner == w.owner
-	}
-	return true
 }
 
 // placeItems hangs each conversation item under its parent (WalkIssueTree): the parent its loader

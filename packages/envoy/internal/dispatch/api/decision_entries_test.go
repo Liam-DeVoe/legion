@@ -743,8 +743,11 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read what the reading states: %v", err)
 	}
+	// The reading's text_parent (refs.TupleTextParent) names the decision too, since its text sits
+	// in the decision's: that tuple is its place in the text, which no walk of the tree reads, and
+	// the part_of alone carries the tie.
 	for _, tuple := range out {
-		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf {
+		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf && tuple.Kind != refs.TupleTextParent {
 			t.Errorf("the reading points at the decision through %s as well as its part_of: the part_of carries the tie", tuple.Kind)
 		}
 		if tuple.Kind == graphstore.TupleDecidedBy {
@@ -1285,9 +1288,9 @@ func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
 
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
-// transaction: a version that removes a decision and the reading under another leaves both out
-// of the Decisions read, and one that holds no typed block at all leaves the last decision out,
-// before any block-index reconciliation.
+// transaction, deleting their document_blocks and block_refs rows in it: a version that removes a
+// decision and the reading under another leaves both out of the Decisions read, and one that holds
+// no typed block at all leaves the last decision out, before any block-index reconciliation.
 func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -1333,6 +1336,15 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 	notListed("the version that removed d2", d2)
 	if kept := requireEntry(t, readEntries(t, handler, issue.Key), "the kept decision", d1); len(kept.Readings) != 0 {
 		t.Errorf("the kept decision answers the readings %v after the version that removed g1, want none", readingsOf(kept))
+	}
+	var rows, links int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and block_id in ('d2', 'g1')),
+		       (select count(*) from block_refs where artifact_id = $1 and block_id in ('d2', 'g1'))`, doc.id).Scan(&rows, &links); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || links != 0 {
+		t.Errorf("the version that removed d2 and g1 left %d document_blocks rows and %d block_refs rows of them, want none: the write that states them gone deletes them", rows, links)
 	}
 
 	agentUploadAs(t, handler, issue.Key, "big.md", big("A paragraph and no decision.\n"), nil)

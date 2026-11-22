@@ -717,8 +717,9 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// this transaction's read phase - a second carry's refusal (refuseSecondCarry), a request's
 	// other documents (namedDocumentsApproved) - takes it off the ledger. The carry makes no such
 	// read itself: it runs at most once for a document in a transaction (refuseSecondCarry). The
-	// write advice reads the table once the write phase has run (Ledger.AfterWrites), since the
-	// write phase drops a restore's carry whose version's record is not the approved one.
+	// write advice takes the review the write phase kept (Ledger.WrittenReview) once Commit has
+	// returned, since the write phase drops a restore's carry whose version's record is not the
+	// approved one.
 	//
 	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
 	// QueueReview inserts is dated by its column's default, now() (artifact_reviews.created_at,
@@ -1067,4 +1068,29 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		ask.State, ask.Answer, ask.Resolution = answered.State, answered.Answer, answered.Resolution
 		return nil
 	})
+}
+
+// WithoutAskBlocks is a copy of node's tree with every ask block left out, wherever it stands, for
+// a reader that compares two versions apart from their ask blocks, as the change set of two
+// versions does (GET /api/v1/artifacts/{id}/changes). A container the cut empties - a blockquote
+// or a callout that held only ask blocks - is left holding one empty paragraph, which is what both
+// parsers read an empty container as. Each container on the way is a fresh node with its own
+// children; the nodes below the last container - text, inline nodes, leaves - are the parsed
+// tree's own, which nothing here changes.
+func WithoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
+	if node.Type == "text" || len(node.Children) == 0 {
+		return node
+	}
+	copied := *node
+	copied.Children = make([]*pmdoc.Node, 0, len(node.Children))
+	for _, child := range node.Children {
+		if child.Type == "ask" {
+			continue
+		}
+		copied.Children = append(copied.Children, WithoutAskBlocks(child))
+	}
+	if len(copied.Children) == 0 {
+		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
+	}
+	return &copied
 }

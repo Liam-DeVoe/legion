@@ -3,12 +3,15 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -75,27 +78,32 @@ var documentRouteXidWindows = []routeXidWindowCase{
 	// its edit time (docs.RewriteApprovalAsk) - run in the read phase, and its update, index,
 	// parts, ask.edited and stamp join the version's batch. The upload writes its version itself
 	// (storeArtifact, then MoveApprovalAsk); the edit writes it through the document service
-	// (docs' writeVersionTx, then MoveApprovalAsk).
+	// (docs' writeVersionTx, then MoveApprovalAsk). The spec is a document the spec query's record
+	// covers, so the version's version_renders row is filled once the batch has run: the record
+	// is the walk of the store as the batch leaves it (R14, R15), and so stands in the window
+	// (specVersionWindow). Its approval advice is read in the read phase.
 	{
 		name: "the spec upload under an open approval request", route: "POST /api/v1/issues/{key}/artifacts under an open approval request (storeArtifact, docs.MoveApprovalAsk)",
-		ready: readyUploadUnderApprovalRequest, window: storetest.XidBatchedWindow,
+		ready: readyUploadUnderApprovalRequest, window: specVersionWindow,
 	},
 	{
 		name: "the spec edit under an open approval request", route: "POST /api/v1/artifacts/{id}/edits under an open approval request (editArtifact, docs' writeVersionTx, MoveApprovalAsk)",
-		ready: readyEditUnderApprovalRequest, window: storetest.XidBatchedWindow,
+		ready: readyEditUnderApprovalRequest, window: specVersionWindow,
 	},
 	// A version that restores the approved text under an open request moves the request and
 	// then answers it in the approver's name (docs' writeCarriedReview, answerApprovalAsk): the
 	// answer's reads - the transaction's time, its parts' plan - run in the read phase beside the
 	// move's, and its update, parts, ask.answered and stamp, with the carried review and its
-	// artifact.approved, join the version's batch.
+	// artifact.approved, join the version's batch, from the version's insert on behind the
+	// savepoint the write phase takes for the restore's carry (docs' writeRestored), and the fill
+	// holds the pin to the record's digest (specRestoreWindow).
 	{
 		name: "the spec edit restoring the approved text under an open approval request", route: "POST /api/v1/artifacts/{id}/edits restoring the approved text (docs' carryApproval, writeCarriedReview, answerApprovalAsk)",
-		ready: readyEditRestoringTheApprovedText, window: storetest.XidBatchedWindow,
+		ready: readyEditRestoringTheApprovedText, window: specRestoreWindow,
 	},
 	{
 		name: "the spec upload restoring the approved text under an open approval request", route: "POST /api/v1/issues/{key}/artifacts restoring the approved text (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk)",
-		ready: readyUploadRestoringTheApprovedText, window: storetest.XidBatchedWindow,
+		ready: readyUploadRestoringTheApprovedText, window: specRestoreWindow,
 	},
 	{
 		name: "the agent conversation upload route", route: "POST /api/v1/agents/{session_id}/artifacts (uploadAgentArtifact, storeArtifact)",
@@ -109,7 +117,54 @@ var documentRouteXidWindows = []routeXidWindowCase{
 		name: "the document comment route", route: "POST /api/v1/artifacts/{id}/comments (createArtifactComment, createCommentFor)",
 		ready: readyDocumentComment, window: storetest.XidBatchedWindow,
 	},
+	// A Verification past the bound leaves its blocks to the reconciliation and writes its checks,
+	// with their rows, their serves and their ancestors, in its own transaction (docs'
+	// planTypedPasses): every read of that pass runs in the read phase, and its writes join the
+	// write phase's one batch. The table's other uploads hold storetest.XidSpec's 40 KB document,
+	// which cannot pass 2,000 blocks, so these two rows are the ones that run the pass. On an issue
+	// that has not converted the issue is created beside a process of the release before
+	// (holdIssuesUnconverted), which registers this build's owner lock protocol, so the row measures
+	// this build's owner locks.
+	{
+		name: "the Verification upload above the bound on an issue that has not converted", route: "POST /api/v1/issues/{key}/artifacts past the bound, an issue that has not converted (storeArtifact, docs' indexDeferredVersion, planTypedPasses)",
+		ready: readyVerificationUploadAboveTheBound(false), window: storetest.XidBatchedWindow,
+	},
+	{
+		name: "the Verification upload above the bound on a converted issue", route: "POST /api/v1/issues/{key}/artifacts past the bound, a converted issue (storeArtifact, docs' indexDocumentInRoom, indexDeferredVersion, planTypedPasses)",
+		ready: readyVerificationUploadAboveTheBound(true), window: storetest.XidBatchedWindow,
+	},
 }
+
+// specFill names what the fill of a spec version's version_renders row runs once the write phase's
+// batch has run (docs' writeStatedRenders): it reads the record of the spec's query at one cut, by
+// the walk of the issue's tree as the batch left the store (R14, R15) - the cut, the five reads of
+// the issue's conversation (its items, the asks the conversation test passes, their blocks, and the
+// ask and its blocks as their loaders read them), the read of the items' rows, the one read of the
+// tree, every level of it (refs.TreeSubtrees), the read of the issues above the issue and that of
+// the issue a view shows. The spec query takes none of the fixture's blocks, so the record reads no
+// node's values or relations.
+const specFill = "the fill, which reads the spec query's record of the issue at one cut once the batch has run (R14, R15): " +
+	"the cut, the five reads of the issue's conversation - its items, the asks the conversation test passes, their blocks, and the ask and its blocks as their loaders read them - " +
+	"the read of the items' rows, the one read of the tree, every level of it, the read of the issues above the issue and that of the issue a view shows"
+
+// specVersionWindow is the window of a version of the spec under an open approval request: the
+// write phase's batch, the fill (specFill), the version_renders row it writes (R15) and the
+// COMMIT.
+var specVersionWindow = storetest.XidWindowOf(13,
+	"the write phase's one batch, "+specFill+", the version_renders row it writes with the record's digest (R15), and the COMMIT ending them")
+
+// specRestoreWindow is the window of a version of the spec restoring the approved text under an
+// open approval request (docs' writeRestored): the batch up to the version's insert, the savepoint
+// taken before it, the batch from it on - the version's version_renders row pinned to the
+// approval's digest, the carried review and its artifact.approved, the request's answer and the
+// version's artifact.version - the fill (specFill), the update giving the pinned row its cut, the
+// savepoint's release, the batch of the settlement credit's statements and the COMMIT.
+var specRestoreWindow = storetest.XidWindowOf(17,
+	"the write phase's batch up to the restored version's insert, the savepoint the write phase takes before that insert (writeRestored), "+
+		"the batch from the insert on - the version's version_renders row pinned to the approval's digest, the carried review, its artifact.approved and the request's answer before the version's artifact.version - "+
+		specFill+", the update giving the pinned version_renders row the cut (R15), "+
+		"the release of the savepoint where the fill found the approval's digest (a rollback to it where it did not, which writes the version again with no carry), "+
+		"the batch of the settlement credit's statements, and the COMMIT ending them")
 
 // readyReviewAnsweringApprovalRequest drives POST /api/v1/artifacts/{id}/reviews on a spec with
 // an approval request open, so the person's review answers that request (closeAskTx) and
@@ -384,4 +439,50 @@ func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) locked
 			}
 			requireRequestAnsweredByTheCarry(t, fixture, request.ID)
 		})
+}
+
+// readyVerificationUploadAboveTheBound readies POST /api/v1/issues/{key}/artifacts uploading the
+// issue's first Verification document, a list past the bound and 103 checks serving the ten
+// requirements of its spec, on an issue born converted or, where not converted, created beside a
+// process of the release before (holdIssuesUnconverted): the upload leaves its blocks to the
+// block-index reconciliation and writes its checks at once (docs' planTypedPasses).
+func readyVerificationUploadAboveTheBound(converted bool) func(*testing.T, routeFixture) lockedItemWrite {
+	return func(t *testing.T, base routeFixture) lockedItemWrite {
+		t.Helper()
+		handler, database, deps := newTestServer(t, base.options)
+		if !converted {
+			holdIssuesUnconverted(t, database)
+		}
+		requirements := make([]acceptedBlock, 10)
+		for index := range requirements {
+			requirements[index] = acceptedRequirement(fmt.Sprintf("r%d", index+1))
+		}
+		issue := createInteractionIssue(t, handler, "LOCK", "Verification upload above the bound", base.spec+"\n"+typedDocument("", false, requirements...))
+		if tree, err := issueTreeOf(context.Background(), database.Pool, issue.Key); err != nil || (tree != "") != converted {
+			t.Fatalf("issue %s holds the tree %q (%v), want it converted %t", issue.Key, tree, err, converted)
+		}
+		checks := make([]acceptedBlock, 103)
+		for index := range checks {
+			checks[index] = acceptedCheck(fmt.Sprintf("c%d", index+1), fmt.Sprintf("r%d", index%10+1))
+		}
+		content := typedDocument(issue.Key, true, checks...)
+		fixture := itemRowFixture{handler: handler, database: database, deps: deps, issueKey: issue.Key, artifactID: issue.PrimaryArtifactID}
+		return fixture.routeWrite(t, "the Verification's first version and its checks",
+			func(handler http.Handler) *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
+					map[string]any{"name": "verification.md", "content": content}, "alice")
+			},
+			func(t *testing.T, answer *httptest.ResponseRecorder) {
+				if answer.Code != http.StatusCreated {
+					t.Fatalf("upload the Verification: status=%d body=%s", answer.Code, answer.Body.String())
+				}
+				verification := decodeBody[uploadedArtifact](t, answer).Artifact.ID
+				if indexed := blockIndexVersion(t, database, verification); indexed != nil {
+					t.Fatalf("the upload indexed the Verification at %d in its own request, want its blocks left to the reconciliation", *indexed)
+				}
+				if held := readHeldTypedBlock(t, database, blockKeyOf(t, database, verification)+"#c103"); held.state != graphstore.StateLive || held.rows != 1 || held.serves != 1 {
+					t.Fatalf("the upload left its check c103 as %+v, want it written at once with its row and its serves", held)
+				}
+			})
+	}
 }

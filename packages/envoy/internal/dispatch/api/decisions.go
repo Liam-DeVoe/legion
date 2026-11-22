@@ -1013,7 +1013,9 @@ type documentReadInput struct {
 
 // putDocumentRead is PUT /api/v1/me/documents/{id}/read {"version": n}: the caller has read the
 // document through that version. It is the caller's own view state, written as PUT
-// /api/v1/me/issues/{key}/state is, and announces nothing.
+// /api/v1/me/issues/{key}/state is, and announces nothing. The version is 0 or more and fits
+// user_document_reads.version, an integer column (fitsIntegerColumn); anything else is refused
+// 400 INVALID_STATE before the write.
 func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -1024,8 +1026,9 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if input.Version == nil || *input.Version < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "version must be a whole number that is not negative")
+	if input.Version == nil || *input.Version < 0 || !fitsIntegerColumn(*input.Version) {
+		writeError(w, "INVALID_STATE", http.StatusBadRequest,
+			fmt.Sprintf("version must be a whole number from 0 to %d", maxIntegerColumn))
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))

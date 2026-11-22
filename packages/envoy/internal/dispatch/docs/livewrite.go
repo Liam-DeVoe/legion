@@ -343,9 +343,7 @@ func (d liveDoc) rewrite(edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) 
 // (closedIssueCommentMark, readFork). It also says whether the room's own artifact is retired
 // (artifactOwner.Retired) - the document itself, for a document that is its own room - which takes
 // no new text (RetireDocument): such a write is refused with a RetiredDocumentError
-// (ErrDocumentRetired), and logged naming the document, before it takes the writer slot. The
-// retirement takes the same lock, so it committed before this read or waits for the write's
-// transaction.
+// (retiredWriteRefusal) before it takes the writer slot.
 //
 // A document of an issue room is a fragment of the room, whose own artifact is the issue's tree,
 // so the document's retirement is read apart (refuseRetiredFragment): before the writer slot for
@@ -368,9 +366,8 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target live
 	if err != nil {
 		return nil, err
 	}
-	if owner.Retired {
-		slog.Warn("dispatch: refuse a write into a retired document", "document", room)
-		return nil, &RetiredDocumentError{ID: room, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey}
+	if err := retiredWriteRefusal(room, owner); err != nil {
+		return nil, err
 	}
 	if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
 		return nil, err

@@ -1819,7 +1819,9 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 
 // SnapshotVersion returns the current immutable version, adding an unnamed version only when the
 // live content has changed since the previous one. The version a comment's anchor is pinned to
-// under WithCommentMarks is taken on a closed issue's document too.
+// under WithCommentMarks is taken on a closed issue's document too. A retired document
+// (RetireDocument), read under the owner's lock the version write takes, is given no version: the
+// write is refused with a RetiredDocumentError (retiredWriteRefusal).
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
 	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
@@ -1858,9 +1860,13 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
-	// comment itself (WithCommentMarks, commentMarkOperation above).
-	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
+	// comment itself (WithCommentMarks, commentMarkOperation above). A retired document is refused
+	// whatever its issue.
+	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
+		return VersionResult{}, err
+	}
+	if err := retiredWriteRefusal(artifactID, owner); err != nil {
 		return VersionResult{}, err
 	}
 	if !open && !isOwnerVerified(ctx) {
@@ -2387,22 +2393,29 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 
 // NamedVersion records the live document as a deliberately named immutable version. Like
 // SeedText and SnapshotVersion it runs inside the caller's joined transaction, which credits
-// its authors and publishes its events when it commits (Ledger.Commit).
+// its authors and publishes its events when it commits (Ledger.Commit). It takes the document
+// owner's lock first, the lock its capture's read takes (joinRead) and holds to the version's
+// write, and refuses there a closed issue's document (ErrIssueClosed) and a retired document
+// (RetireDocument), which takes no new text, with a RetiredDocumentError (retiredWriteRefusal):
+// neither is read, so no room of a retired document is loaded for it, and neither is versioned.
 func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return VersionResult{}, errUnjoined
 	}
-	rendered, capture, err := s.captureLiveTextAndAuthors(ctx, artifactID, &actor)
+	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		return VersionResult{}, err
 	}
-	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
-	if err != nil {
+	if err := retiredWriteRefusal(artifactID, owner); err != nil {
 		return VersionResult{}, err
 	}
 	if !open {
 		return VersionResult{}, ErrIssueClosed
+	}
+	rendered, capture, err := s.captureLiveTextAndAuthors(ctx, artifactID, &actor)
+	if err != nil {
+		return VersionResult{}, err
 	}
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		named:            true,

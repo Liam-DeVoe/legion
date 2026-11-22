@@ -316,8 +316,13 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepo is the repository, owner/name, an issue of this project resolves to when
+	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
+	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
+	// carries no member, so a client that does not know the member reads the same project.
+	DefaultRepo *string   `json:"default_repo,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
@@ -473,12 +478,11 @@ type PriorityIssue struct {
 	MovedBy   *Actor         `json:"moved_by"`
 }
 
-// RepoProject assigns an external repository to a native Dispatch project. Default marks the one
-// mapping of the project an issue with no repository of its own, and none on its parent chain,
-// resolves to; at most one mapping of a project is its default. RenamedTo is the full
-// `owner/name` this repository is called today, null for one that was never renamed: Dispatch
-// holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.CanonicalRepo).
+// RepoProject is one row of repo_projects. GET /api/v1/settings/repo-projects answers the rows
+// as the last release left them, and nothing writes them now. Default marks the row that was its
+// project's default repository. This release's migration copied it to the project's
+// default_repo. RenamedTo is the full `owner/name` this repository is called today, null for one
+// that was never renamed: the boot reads these pairs once (store.ReadRepoRenames).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`
@@ -628,10 +632,10 @@ type Issue struct {
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
-	// or not a project maps it; nil when it inherits.
+	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -1675,13 +1679,31 @@ type CheckCI struct {
 // marks, in document order, and one Gaps line per gap, which `dispatch read --issue` prints
 // after `Coverage: `. HasPlan says whether the issue has a plan document; before it has one, a
 // requirement with no plan task is no gap, since the plan comes after the spec's approval.
-// Nothing is ever refused for a gap.
+// Nothing is ever refused for a gap. OwedDocuments names each document of the issue that owes its
+// block index (OwedDocument), absent where none does: a check or a requirement of such a document
+// may not be counted yet, so the read drops none of them in silence.
 type IssueCoverage struct {
 	Issue          string                `json:"issue"`
 	SpecArtifactID string                `json:"spec_artifact_id"`
 	HasPlan        bool                  `json:"has_plan"`
 	Requirements   []RequirementCoverage `json:"requirements"`
 	Gaps           []string              `json:"gaps"`
+	OwedDocuments  []OwedDocument        `json:"owed_documents,omitempty"`
+}
+
+// OwedDocument is one document of an issue that owes its block index, by either mark the
+// block-index reconciliation lists a document by: its document_block_versions.version null, as
+// every version's insert leaves it until a pass indexes it, or store_owed_at set, this build's own
+// mark. ArtifactID is the document, and Version its newest version, whose blocks wait: a document
+// of an issue room, or the room's tree artifact, waits for the pass over the whole room. The
+// coverage read and the tree read each name every such document of the issue, so a check or a
+// requirement the block index has not reached yet is never dropped in
+// silence: an upload or a create whose written tree does not render as its version's markdown,
+// and a write to an issue room whose own fragment reads otherwise than its version, write no node
+// of them until the reconciliation indexes the document.
+type OwedDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // RequirementCoverage is one `requirement` block of an issue's spec and what serves it: the
@@ -2065,6 +2087,13 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Digest is what an approval of a document's version covers, the value
+	// artifact_version_text_sha256 answers for it and a review's content_sha256 pins: the digest of
+	// the record of its query where the pass that stated the version recorded one on its
+	// version_renders row, and else the sha256 of its stored markdown, so a version of a document no
+	// query covers answers its markdown's. The version read and the artifact read's version list
+	// answer it; every other read of a version, and a file's or an image's version, answers none.
+	Digest *string `json:"digest,omitempty"`
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A

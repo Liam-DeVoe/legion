@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -637,7 +636,9 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, body)
 }
 
-// refusal is every refusal a result's own fields earn, before anything is read.
+// refusal is every refusal a result's own fields earn, before anything is read. The three counts
+// are each a non-negative number check_results keeps in an integer column, so a count past that
+// column (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
@@ -652,9 +653,12 @@ func (input checkResultInput) refusal() error {
 	if !resultCommitSHA.MatchString(input.Commit) {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
 	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
+	for _, count := range []struct {
+		name  string
+		cases int
+	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
+		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
+			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
@@ -1551,7 +1555,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	known, err := delivery.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
+	known, err := s.deps.Attributor.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result", "issue", checkIssueKey, "error", err)
 		return
@@ -1559,7 +1563,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
-	if _, _, err := delivery.ReadThroughCommitPulls(
+	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
 		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)

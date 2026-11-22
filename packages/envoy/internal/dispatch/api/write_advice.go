@@ -571,9 +571,10 @@ type decisionBlockCheck struct {
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
 // PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// kept to the gates that hold a READY back: the issue is in the workflow there, and the project's own
-// list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
-// this write closed no gate anyone here knows of.
+// kept to the gates that hold a READY back: the issue is in the workflow there, and the row holds
+// its tree, as the daemon that published it says or, where it said nothing, as the project's own
+// list of gated steps says (supersededApprovalGates). Where nothing is left, this write closed no
+// gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version that approval pinned, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -582,7 +583,7 @@ type supersededApproval struct {
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
-	// issue and step, kept to the issues still in the workflow whose step the project gates.
+	// issue and step, kept to the issues still in the workflow whose row holds its tree.
 	// Omitted when empty, and empty is also what a failed gate read leaves
 	// (supersededApprovalAdvice), because an absent list and an empty one say the one thing a
 	// client acts on - Dispatch names no gate here.
@@ -597,14 +598,14 @@ type supersededApprovalGate struct {
 	Step  string `json:"step" enum:"decisions,criteria,spec"`
 }
 
-// supersededApprovalAdvice reports the approval the write of version just made stale, or nil when
-// it made none, which is every write of a document nobody has approved. It runs once the write's
-// write phase has run and before its commit (docs.Ledger.AfterWrites), so the newest review is the
-// table's, holding whatever review the transaction wrote: the approval carry's own review
-// (docs.carryApproval) where the transaction wrote one, and none where the write phase dropped the
-// carry because the version's record was not the approved one (a restore's carry, which only the
-// write phase decides). A carried approval is pinned to version itself and reports nothing, which
-// is right - the gate reopens on that carry's own artifact.approved event.
+// supersededApprovalAdvice reports the approval the write of version made stale as the document's
+// reviews stand before its write phase, or nil when they make none stale, which is every write of a
+// document nobody has approved. It runs in the write's read phase, where the table holds none of
+// the transaction's own writes, so it reads the reviews stored before it; the review the
+// transaction writes - the approval carry's own (docs.carryApproval), which the write phase keeps
+// or drops as only it decides (a restore's carry) - is set over it once Commit has returned, with
+// no statement (supersededAsWritten). A carried approval is pinned to version itself and reports
+// nothing, which is right - the gate reopens on that carry's own artifact.approved event.
 //
 // The read is the newest review of the document (docs.NewestReview), one entry of
 // artifact_reviews_by_artifact_event_seq in docs.ReviewOrder, the order the reviews' events
@@ -657,7 +658,7 @@ func (s *server) supersededApprovalAdvice(
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
 // document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
-// that hold a READY back and no others. Two things decide that, and the row alone says neither.
+// that hold a READY back and no others. Two things decide that.
 //
 // The issue must be in the workflow, which is every status but the four that take it out
 // (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
@@ -666,13 +667,28 @@ func (s *server) supersededApprovalAdvice(
 // them for as long as it stays parked - so the rows outlive the tree that ran, and only the
 // re-admission that brings it back clears them.
 //
-// The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
-// written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
-// these rows). A daemon records a gate row for a step it does not gate - with `gates.design: off`
-// the registration records the spec step, approves it, and no later event ever moves it - and
-// that gate refuses nothing. A project whose daemon has published no list gates nothing it holds,
-// and prints no clause, which is the direction this whole change takes: a reader told nothing
-// asks the architect, where a reader told a gate that is not there stops working.
+// The row must hold its tree, and the daemon that published it says whether it does
+// (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's
+// own list (projects.gated_steps, written by PUT /api/v1/projects/{key}/gated-steps) is not the
+// whole of it. A root's architect may register its Verification document as `criteria` beside a
+// deployment whose list names `spec` and not `criteria`, and that row holds the tree although the
+// list does not name its step. A daemon also records a gate row for a step it does not gate - with
+// `gates.design: off` the registration records the spec step, approves it, and no later event ever
+// moves it - and that row holds nothing.
+//
+// A null holds is a row whose publish did not say whether it holds its tree, and the rule keeps it
+// where the project's list names its step (`coalesce`), which is how every row was read before
+// the daemon said. A daemon older than the column publishes no holds, so a Dispatch with the
+// column reads that daemon's rows as it always read them. A Dispatch older than the column takes
+// a newer daemon's publish and answers 200, dropping holds, since decodeJSON ignores a member it
+// does not declare, and nothing retries the publish. Each row it took that way is null once
+// Dispatch has the column, so a `criteria` row a root registered beside a deployment whose list
+// names `spec` and not `criteria` is left out of this advice until the daemon publishes the set
+// again, which every daemon boot does. So the operator deploys Dispatch first, or restarts the
+// daemon once Dispatch has the column. For a null row, a project whose daemon has published no
+// list gates nothing, and prints no clause, which is the direction this whole change takes: a
+// reader told nothing asks the architect, where a reader told a gate that is not there stops
+// working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in. A row of a step
@@ -687,7 +703,7 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
 		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any($2::text[])
-		  and (g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[]))
+		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[]))
 		order by g.issue, array_position($2::text[], g.step)
 	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow, model.GatedStepSpec, retiredDecisionsStep)
 	if err != nil {
@@ -703,6 +719,18 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		gates = append(gates, gate)
 	}
 	return gates, rows.Err()
+}
+
+// supersededAsWritten is the approval the write of version made stale as the transaction wrote the
+// document's reviews, once Commit has returned: the rule over the review the transaction wrote
+// (docs.Ledger.WrittenReview), the approval carry's own, newer than every stored one, where the
+// write phase kept it, and else stored, what the read phase read off the table
+// (supersededApprovalAdvice). It runs no statement.
+func supersededAsWritten(ledger *docs.Ledger, artifactID string, version int, stored *supersededApproval) *supersededApproval {
+	if review, wrote := ledger.WrittenReview(artifactID); wrote {
+		return supersededBy(&review, version)
+	}
+	return stored
 }
 
 // newestReviewAsApproval is supersededApprovalAdvice's rule, over whatever queryer the caller
@@ -763,18 +791,25 @@ type movedApprovalDocument struct {
 	Version          int    `json:"version"`
 }
 
-// movedApprovalRequestAdvice reports the open approval request the write just took back from the
-// person, or nil when it took none: a document with no open request, and a request still at the
-// version its agent handed over, which is what a write whose own carry answered the request
-// leaves. It runs once the write's write phase has run and before its commit
-// (docs.Ledger.AfterWrites), so it reads the request as the transaction wrote it: moved by the
-// version (docs.MoveApprovalAsk), and answered only where the approval carry's answer was written,
-// not where the write phase dropped the carry because the version's record was not the approved
-// one (a restore's carry, which only the write phase decides).
-//
-// The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
-// the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
-// write left it.
+// movedApprovalRequestRead is what movedApprovalRequestAdvice reads in the write's read phase: the
+// open approval request naming the document as the table holds it before the write phase, nil
+// where none does, and the artifacts row of each document it names. read says the reads ran; a
+// write whose reads failed reports no request.
+type movedApprovalRequestRead struct {
+	artifactID string
+	read       bool
+	stored     *model.Ask
+	rows       map[string]model.Artifact
+}
+
+// movedApprovalRequestAdvice reads, in the write's read phase, what the report of the open approval
+// request the write took back from the person is built from (movedApprovalRequestRead.asWritten):
+// the request as the table holds it before the write phase, and the artifacts rows of the documents
+// it names. The request the transaction writes - moved by the version (docs.MoveApprovalAsk), and
+// answered where the approval carry's answer stands, which the write phase keeps or drops as only it
+// decides (a restore's carry) - is set over it once Commit has returned, with no statement. A move
+// changes the versions the request names and an answer its state, never the documents it names, so
+// the rows read here are the rows of the request the transaction leaves.
 //
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write
@@ -787,30 +822,55 @@ func (s *server) movedApprovalRequestAdvice(
 	route string,
 	issueKey string,
 	artifactID string,
-) *movedApprovalRequest {
+) movedApprovalRequestRead {
+	read := movedApprovalRequestRead{artifactID: artifactID}
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "moved_approval_request")
 	if !ok {
-		return nil
+		return read
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
 	stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
 	if err != nil {
 		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+		return read
+	}
+	if stored != nil && stored.Approval != nil {
+		if read.rows, err = movedApprovalArtifacts(ctx, adviceTx, stored.Approval.Documents); err != nil {
+			s.logAdviceError(route, issueKey, "moved_approval_request", err)
+			return read
+		}
+	}
+	read.read, read.stored = true, stored
+	return read
+}
+
+// asWritten reports the open approval request the write took back from the person, once Commit has
+// returned, or nil when it took none: a document with no open request, and a request still at the
+// version its agent handed over, which is what a write whose own carry answered the request
+// leaves. The request is the one the transaction wrote (docs.Ledger.WrittenApproval): moved by the
+// version, and answered only where the write phase kept the carry's answer, not where it dropped the
+// carry because the version's record was not the approved one, nor the answer decided on such a
+// carry's review. Where the transaction wrote no request naming the document, it is the one the read
+// phase read. It runs no statement.
+//
+// The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
+// the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
+// write left it.
+func (read movedApprovalRequestRead) asWritten(ledger *docs.Ledger) *movedApprovalRequest {
+	if !read.read {
 		return nil
 	}
-	if stored == nil || stored.Approval == nil {
+	ask := read.stored
+	if written, wrote := ledger.WrittenApproval(read.artifactID); wrote {
+		ask = &written
+	}
+	if ask == nil || ask.State != "open" || ask.Approval == nil {
 		// No request names the document, or this write's own carry answered it: it is the
 		// person's no longer, so the write took nothing back from them.
 		return nil
 	}
-	ask := *stored
 	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
 		// The request still waits on the person, so this write took nothing back from them.
-		return nil
-	}
-	rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
 		return nil
 	}
 	moved := &movedApprovalRequest{
@@ -818,9 +878,9 @@ func (s *server) movedApprovalRequestAdvice(
 		Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
 	}
 	// The owner is the first document's, because that is the document the request was opened on
-	// and the one a hand-back command names. A document whose row this read did not return
-	// leaves the request unplaced rather than placing it wrongly.
-	if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
+	// and the one a hand-back command names. A document whose row the read did not return leaves
+	// the request unplaced rather than placing it wrongly.
+	if lead, ok := read.rows[ask.Approval.Documents[0].ArtifactID]; ok {
 		if lead.IssueKey != nil {
 			moved.Issue = *lead.IssueKey
 		} else {
@@ -837,7 +897,7 @@ func (s *server) movedApprovalRequestAdvice(
 			RequestedVersion: document.RequestedVersion,
 			Version:          document.Version,
 		}
-		if artifact, ok := rows[document.ArtifactID]; ok {
+		if artifact, ok := read.rows[document.ArtifactID]; ok {
 			entry.Name = artifact.Name
 			entry.Primary = artifact.Primary
 			entry.Role = documentRoleOf(artifact)

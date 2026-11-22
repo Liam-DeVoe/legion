@@ -203,6 +203,8 @@ type issueTreeBuilder struct {
 	decisions map[refs.Target]model.Decision
 	plans     map[refs.Target]*model.IssueTreePlan
 	positions map[refs.Target]int
+	// owed is each document of the issue that owes its block index (queueOwedDocuments).
+	owed []model.OwedDocument
 }
 
 // treeAsk is what an ask's row says that its node does not: its question, its state, and the rest
@@ -964,7 +966,8 @@ const requirementBlockType = "requirement"
 // readMembers reads, for every node the answer holds, what its own members need from the rows
 // that hold them: each issue's own members, the texts of the items and their blocks, the asks'
 // questions, states and wording, the results' rows and retractions, and the decisions'
-// members through their one builder (decisionread.Decisions).
+// members through their one builder (decisionread.Decisions); and, in the batch of the texts, the
+// documents of the issue that owe their block index (queueOwedDocuments).
 func (b *issueTreeBuilder) readMembers() error {
 	answer := b.answered()
 	b.issues = map[string]*model.IssueTreeIssue{}
@@ -1082,10 +1085,9 @@ func (b *issueTreeBuilder) readMembers() error {
 			return rows.Err()
 		})
 	}
-	if batch.Len() > 0 {
-		if err := b.q.SendBatch(b.ctx, batch).Close(); err != nil {
-			return fmt.Errorf("read the texts of the tree of %s: %w", b.key, err)
-		}
+	queueOwedDocuments(batch, b.key, &b.owed)
+	if err := b.q.SendBatch(b.ctx, batch).Close(); err != nil {
+		return fmt.Errorf("read the texts of the tree of %s: %w", b.key, err)
 	}
 	if len(itemBlocks) > 0 {
 		texts, err := refs.BlockTexts(b.ctx, b.q, b.who, itemBlocks)
@@ -1452,7 +1454,7 @@ func (b *issueTreeBuilder) answer(cursor string, version int, trees *displayTree
 	issue := b.issues[b.key]
 	read := model.IssueTreeRead{
 		Issue: b.key, View: b.view, Converted: issue.Converted, Tree: issue.Tree, ViewOf: issue.ViewOf, Documents: issue.Documents,
-		Nodes: []model.IssueTreeNode{}, Tuples: []model.IssueTreeTuple{},
+		Nodes: []model.IssueTreeNode{}, Tuples: []model.IssueTreeTuple{}, OwedDocuments: b.owed,
 	}
 	if version > 0 {
 		read.Version = &version

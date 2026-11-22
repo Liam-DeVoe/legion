@@ -88,9 +88,11 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // and nodes keyed by the room's tree artifact (refs.DocumentRoomSQL), so they are read there.
 // Both statements start from the requirements the live spec marks, each through a primary key,
 // so the plan Postgres makes without their values costs little and a connection soon keeps it
-// rather than planning each read again (queueServingBlockCounts). The issue's documents and
-// whether it is a view are read in one batch too (readCoverageSpecAndView), and an issue that is a
-// view (docs.ViewOf) answers the coverage viewCoverage reads.
+// rather than planning each read again (queueServingBlockCounts). The issue's documents, whether it
+// is a view and which of its documents owe their block index are read in one batch too
+// (readCoverageSpecAndView), and an issue that is a view (docs.ViewOf) answers the coverage
+// viewCoverage reads. The answer names each document that owes its index (OwedDocuments), whose
+// checks and requirements the counts may not hold yet, whether the issue is a view or not.
 //
 // trees is the reader of a request that answers the requirements' trees, nil for every other
 // caller: each requirement the answer lists registers with it (registerRequirementTrees), in the
@@ -99,11 +101,11 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // The rows are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	spec, view, err := readCoverageSpecAndView(ctx, q, issueKey)
+	spec, view, owed, err := readCoverageSpecAndView(ctx, q, issueKey)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	coverage.SpecArtifactID, coverage.HasPlan = spec.artifactID, spec.hasPlan
+	coverage.SpecArtifactID, coverage.HasPlan, coverage.OwedDocuments = spec.artifactID, spec.hasPlan, owed
 	if spec.artifactID == "" {
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
@@ -210,14 +212,16 @@ func readCoverageSpec(ctx context.Context, q queryer, issueKey string) (coverage
 	return spec, nil
 }
 
-// readCoverageSpecAndView is readCoverageSpec of the issue issueKey and the issue it is a view of
-// (docs.ViewOf), "" where it is none, read through q in one batch, one round trip: the coverage
-// read of an issue reads both before anything else, and an approval request of a spec reads that
-// coverage, so the view costs the request no round trip of its own. The view is read for an issue
-// with no spec too, whose coverage reads nothing of it.
-func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (coverageSpec, string, error) {
+// readCoverageSpecAndView is readCoverageSpec of the issue issueKey, the issue it is a view of
+// (docs.ViewOf), "" where it is none, and the documents of the issue that owe their block index
+// (queueOwedDocuments), read through q in one batch, one round trip: the coverage read of an issue
+// reads them before anything else, and an approval request of a spec reads that coverage, so
+// neither the view nor the owed documents cost the request a round trip of its own. The view is
+// read for an issue with no spec too, whose coverage reads nothing of it.
+func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (coverageSpec, string, []model.OwedDocument, error) {
 	var spec coverageSpec
 	var view string
+	var owed []model.OwedDocument
 	batch := &pgx.Batch{}
 	batch.Queue(coverageSpecStatement, issueKey).QueryRow(func(row pgx.Row) error {
 		if err := row.Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
@@ -226,10 +230,44 @@ func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (c
 		return nil
 	})
 	docs.QueueViewOf(batch, issueKey, &view)
+	queueOwedDocuments(batch, issueKey, &owed)
 	if err := q.SendBatch(ctx, batch).Close(); err != nil {
-		return coverageSpec{}, "", err
+		return coverageSpec{}, "", nil, err
 	}
-	return spec, view, nil
+	return spec, view, owed, nil
+}
+
+// owedDocumentsStatement reads each document of the issue $1 - each artifact it holds, its tree
+// artifact among them - that owes its block index by either mark the block-index reconciliation
+// lists a document by (docs' owedDocuments): its document_block_versions.version null, or
+// store_owed_at set, with the number of its newest markdown version, 0 where it holds none, in
+// the order the documents were made.
+const owedDocumentsStatement = `
+	select a.id::text, coalesce((select max(v.number) from artifact_versions v where v.artifact_id = a.id and v.markdown is not null), 0)
+	from artifacts a
+	join document_block_versions b on b.artifact_id = a.id
+	where a.issue_key = $1 and (b.version is null or b.store_owed_at is not null)
+	order by a.created_at, a.id`
+
+// queueOwedDocuments queues, in b, the read of the documents of the issue issueKey that owe their
+// block index (owedDocumentsStatement), and fills owed with them once the batch is read, nil where
+// none owes one, so the answer carries no member (model.OwedDocument). The coverage read and the
+// tree read each take it in a batch of reads they make anyway, so the member costs neither a round
+// trip.
+func queueOwedDocuments(b *pgx.Batch, issueKey string, owed *[]model.OwedDocument) {
+	b.Queue(owedDocumentsStatement, issueKey).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			var document model.OwedDocument
+			if err := rows.Scan(&document.ArtifactID, &document.Version); err != nil {
+				return fmt.Errorf("read the documents of %s that owe their block index: %w", issueKey, err)
+			}
+			*owed = append(*owed, document)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read the documents of %s that owe their block index: %w", issueKey, err)
+		}
+		return nil
+	})
 }
 
 // coverageIssues is the issue issueKey and every issue below it that who may see

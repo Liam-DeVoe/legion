@@ -46,8 +46,10 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
+  type IssueCoverage,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
+  type IssueTreeRead,
   type ItemBlocks,
   inboxThreadRow,
   type Message,
@@ -1421,6 +1423,38 @@ test("keeps document read tokens optional for older Dispatch servers", () => {
 
   expect("token" in block).toBe(false);
   expect("token" in text).toBe(false);
+});
+
+test("keeps owed_documents optional on the coverage and tree reads for older Dispatch servers", () => {
+  // A server names each document of the issue that owes its block index, by its id and the version
+  // whose blocks wait; an issue that owes none, and a server of the release before, answer no
+  // member at all, which a reader takes as nothing owed.
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [],
+    spec_artifact_id: "spec",
+  };
+  const tree: IssueTreeRead = {
+    converted: false,
+    cursor: null,
+    documents: null,
+    issue: "CORE-1",
+    nodes: [],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "",
+    view_of: null,
+  };
+  expect("owed_documents" in coverage).toBe(false);
+  expect("owed_documents" in tree).toBe(false);
+  const owed: IssueTreeRead = {
+    ...tree,
+    owed_documents: [{ artifact_id: "verification", version: 2 }],
+  };
+  expect(owed.owed_documents ?? []).toEqual([{ artifact_id: "verification", version: 2 }]);
 });
 
 test("models a comment's and a direct message's blocks", () => {
