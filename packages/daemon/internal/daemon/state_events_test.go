@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -91,7 +92,7 @@ func (r *stateRig) serveState(t *testing.T, view source) *store.Store {
 	}
 	t.Cleanup(st.Close)
 	view.store, view.records, view.project, view.projectToken = st, r.records, "LEGION", "legion"
-	view.deployment = func() capabilities.Deployment { return capabilities.Deployment{} }
+	view.deployment = func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} }
 	view.reports = func() map[claim.Token]capabilities.Report { return nil }
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{State: &view, StateTransactions: st, Log: quietLogger()}).Handler)
 	t.Cleanup(server.Close)

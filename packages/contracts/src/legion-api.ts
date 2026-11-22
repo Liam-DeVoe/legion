@@ -917,7 +917,7 @@ const legionIssue = z.object({
  * and never changed, absent while the project has none: a reader that takes this body as its
  * starting point applies only a state message whose `stateId` is this one, since a message of
  * another id is counted in another store and its sequences say nothing of this body's. The three
- * keys of contract 207 are optional because a daemon before that contract writes none of them, and
+ * keys of contract 221 are optional because a daemon before that contract writes none of them, and
  * the route strips them from the body it serves a caller below that contract.
  * No plugin code reads a field of it: the controller's boot check read `project` here until it
  * read the health answer instead, and the controller's `read_state` hands the state to its
@@ -1088,15 +1088,18 @@ const legionAgentSecretsLoginView = z.object({
  * `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `present` or `open` from the
  * sessions' reports (`legionCapabilityReportView`), and carries no `configLine`; `live` is no
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
- * alone decides) or `boot` (what boot measured); absent on every other row (contract 25). A gap is
- * reported here, never refused (contract 16). */
+ * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
+ * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
+ * room (contract 213). A caller below 213 is served that row without `source`, since the enum it
+ * was built with names two words: a value follows the contract the caller states, else its pod's
+ * lowest recorded contract. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
   name: nonEmptyString.optional(),
   status: z.enum(["present", "unchecked", "withheld", "decided", "open"]).optional(),
   detail: nonEmptyString.optional(),
   decision: nonEmptyString.optional(),
   configLine: nonEmptyString.optional(),
-  source: z.enum(["configuration", "boot"]).optional(),
+  source: z.enum(["configuration", "boot", "caches"]).optional(),
 });
 
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
@@ -1382,13 +1385,13 @@ const legionObservedIssue = z.object({
 });
 
 /** `api.ObservedState`, the body of `GET /legion/v1/state?view=observed` (daemon API contract
- * 207): what Dispatch reads of a daemon, read in the same snapshot as the full state would be.
+ * 221): what Dispatch reads of a daemon, read in the same snapshot as the full state would be.
  * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
  * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
  * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
  * issue the full state lists. The daemon serves the view at the caller's contract with the full
  * state's own rule, so at each contract every member is the member the full state serves there:
- * a caller below 207 gets no `stateSeq`, `stateId` or `stateRun` in either answer. A request with
+ * a caller below 221 gets no `stateSeq`, `stateId` or `stateRun` in either answer. A request with
  * any other `view` gets the full state, and the daemon logs a warning for it, because a later
  * version may refuse such a request. */
 export const LegionObservedStateResponse = z.object({

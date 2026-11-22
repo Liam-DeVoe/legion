@@ -203,6 +203,12 @@
             "source": "boot"
           },
           {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
             "name": "network",
             "status": "withheld",
             "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -542,6 +548,12 @@
             "status": "present",
             "detail": "the image probe pod scheduled at its first attempt",
             "source": "boot"
+          },
+          {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
           },
           {
             "name": "network",
@@ -891,6 +903,12 @@
             "source": "boot"
           },
           {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
             "name": "network",
             "status": "withheld",
             "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -1238,6 +1256,12 @@
             "source": "boot"
           },
           {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
             "name": "network",
             "status": "withheld",
             "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -1583,6 +1607,12 @@
             "status": "present",
             "detail": "the image probe pod scheduled at its first attempt",
             "source": "boot"
+          },
+          {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
           },
           {
             "name": "network",
@@ -1935,6 +1965,12 @@
             "status": "present",
             "detail": "the image probe pod scheduled at its first attempt",
             "source": "boot"
+          },
+          {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
           },
           {
             "name": "network",
@@ -2307,6 +2343,12 @@
             "source": "boot"
           },
           {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
             "name": "network",
             "status": "withheld",
             "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -2677,6 +2719,12 @@
             "source": "boot"
           },
           {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
             "name": "network",
             "status": "withheld",
             "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -3037,6 +3085,12 @@
             "status": "present",
             "detail": "the image probe pod scheduled at its first attempt",
             "source": "boot"
+          },
+          {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
           },
           {
             "name": "network",
@@ -3414,6 +3468,12 @@
             "source": "boot"
           },
           {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
             "name": "network",
             "status": "withheld",
             "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -3788,6 +3848,12 @@
             "status": "present",
             "detail": "the image probe pod scheduled at its first attempt",
             "source": "boot"
+          },
+          {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
           },
           {
             "name": "network",

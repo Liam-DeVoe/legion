@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -68,7 +69,7 @@ func newObservedRig(t *testing.T) *observedRig {
 	r.src = &source{store: r.claims, records: r.records, project: cfg.Project, projectToken: "legion", runtime: cfg.Runtime.Name,
 		startedAt: observedAt.Add(-time.Hour), now: func() time.Time { return observedAt }, settings: api.SettingsOf(cfg),
 		experiments: cfg.ExperimentsDeclared(), stateRun: stateTestRun,
-		deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil }}
 	r.seedObserved(t)
 	return r
