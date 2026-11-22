@@ -145,7 +145,7 @@ func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
 		divergent := f.divergence()
 		code, stderr := f.pushLong(rolePushImplementer, rolePushBookmark...)
 		rewrites, printed := rolePushCountRewrites(stderr)
-		f.check(rolePushWant{others: true}, code, printed, divergent, 0)
+		f.check(rolePushWant{others: true}, rolePushBookmark, code, printed, divergent, 0)
 		f.checkHistory(rolePushImplementer, printed)
 		if rewrites != rolePushHistory {
 			t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushHistory, printed)

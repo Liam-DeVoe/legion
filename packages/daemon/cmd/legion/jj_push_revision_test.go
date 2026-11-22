@@ -314,7 +314,8 @@ func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
 // first push exits 0, origin holds push-<change> with D2 rewritten, with the implementer's author,
 // and no other ref beside main, D1 keeps the reviewer's author, the step prints the rewrite, and
 // no change is more divergent. The same push run again exits 0, without `Bookmark already exists`,
-// and leaves origin as the first push left it.
+// and leaves origin as the first push left it; the recording jj's log is read from after the first
+// push, so that each push's check reads its own real push.
 func TestAChangeOffsetPushRunAgainLeavesOriginAsItWas(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -338,11 +339,12 @@ func TestAChangeOffsetPushRunAgainLeavesOriginAsItWas(t *testing.T) {
 			}
 		}
 		divergent := f.divergence()
+		f.forgetCalls()
 		code, _, stderr := f.push(impl, args...)
 		if strings.Contains(stderr, "Bookmark already exists") {
 			t.Errorf("the push run again printed `Bookmark already exists`:\n%s", stderr)
 		}
-		f.check(again, code, stderr, divergent, 0)
+		f.check(again, args, code, stderr, divergent, 0)
 		f.onlyRefs(again)
 	})
 }

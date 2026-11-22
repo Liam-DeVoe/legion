@@ -180,7 +180,7 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 				divergent := f.divergence()
 				code, stderr := f.pushLong(rolePushImplementer, args...)
 				rewrites, printed := rolePushCountRewrites(stderr)
-				f.check(rolePushWant{others: true, ids: []rolePushIDs{{argument: args[3], commits: rolePushIDsHistory, words: 2, bound: rolePushRevisionBound}}}, code, printed, divergent, 0)
+				f.check(rolePushWant{others: true, ids: []rolePushIDs{{argument: args[3], commits: rolePushIDsHistory, words: 2, bound: rolePushRevisionBound}}}, args, code, printed, divergent, 0)
 				f.checkIDsHistory(option, rolePushImplementer)
 				if rewrites != rolePushIDsHistory {
 					t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushIDsHistory, printed)
@@ -362,7 +362,9 @@ func rolePushCommitIDs(cs []rolePushChange) []string {
 // push's command would then pass the limit. It sets no other author, prints one line `legion jj:
 // could not set the author: revision `<argument>` would go to the push as the ids of its <n>
 // commits, …` that names the limit, and the push runs as written but where the fill ran, exit 0,
-// with no change divergent and origin holding no ref beside main but those of -c:
+// with no change divergent and origin holding no ref beside main but those of -c. Where the fill
+// ran, after the step's one snapshot, the real push runs with --ignore-working-copy as its first
+// word and takes no snapshot of its own, and that line ends by saying so:
 //
 //   - `-c "<C1> | <C2>"`, C1 and C2 two commits that the reviewer made with the implementer's
 //     trailer: the step prints no rewrite, runs no metaedit and takes no snapshot (a recording jj
@@ -568,9 +570,10 @@ func TestAMetaeditPastTheLimitOfACommandRunsInParts(t *testing.T) {
 		f.mutableHistory(rolePushPartsHistory)
 		f.argMax = rolePushSize(f.env(f.path, impl)...) + rolePushPartsRoom
 		divergent := f.divergence()
-		code, stderr := f.pushLong(impl, "git", "push", "-b", "legion/K-1")
+		args := []string{"git", "push", "-b", "legion/K-1"}
+		code, stderr := f.pushLong(impl, args...)
 		rewrites, printed := rolePushCountRewrites(stderr)
-		f.check(rolePushWant{others: true}, code, printed, divergent, 0)
+		f.check(rolePushWant{others: true}, args, code, printed, divergent, 0)
 		if rewrites != rolePushPartsHistory {
 			t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushPartsHistory, printed)
 		}
