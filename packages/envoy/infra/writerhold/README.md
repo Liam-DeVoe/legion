@@ -183,6 +183,10 @@ decides, not the journal.
   `released` only with that entry's hold id (409 `hold_mismatch` otherwise), and the refusal says
   to name it with `--hold`.
 - `--bootstrap` writes the first row, and only into an empty log.
+- A restore the broker refuses 409 `clock_skew` (this machine's clock and the broker's differ by
+  more than the allowance, or the row would be signed before the latest row the broker accepted)
+  or 409 `below_floor` (a log or journal it judges by does not verify) stores nothing, and the
+  command is UNKNOWN, naming the code. Neither is a reason to send `held`.
 
 ## Stated residuals
 

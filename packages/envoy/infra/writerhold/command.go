@@ -335,7 +335,7 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		case errors.As(err, &refused) && refused.Code == "row_exists":
 			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and a row is there (row_exists)")
 		case err != nil:
-			return err
+			return restoreUnknown(err)
 		}
 		fmt.Fprintln(stdout, "wrote the first row: gen 1, phase released")
 		return nil
@@ -389,7 +389,7 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		return refusef(StepPreflight, "the log's latest entry is a prepare row%s, and the broker restores released after it only with that hold's id: restore it with `hold restore --hold <its hold id>`", other)
 	}
 	if err != nil {
-		return err
+		return restoreUnknown(err)
 	}
 	fmt.Fprintf(stdout, "restored the row: gen %d, phase %s, hold %q\n", row.Gen, row.Phase, row.HoldID)
 	if row.Phase == natsgrant.OperatorPhaseReleased && holdID != "" {
@@ -414,6 +414,19 @@ func restoreAt(ctx context.Context, records *holdrecord.Client, phase natsgrant.
 		row, err = records.RestoreRow(ctx, gen, phase, holdID, reason)
 	}
 	return row, gen, err
+}
+
+// restoreUnknown is err, a restore the broker did not take, as the command answers it: a 409
+// clock_skew (the row's signed_at outside the five-minute allowance of the broker's clock, or before
+// the latest row the broker accepted; nothing stored) is UNKNOWN naming the code, since it says
+// nothing of the log's latest entry, so it is never a reason to send held. A 409 below_floor is
+// already UNKNOWN (holdrecord answers it as ErrUnknown); every other error is returned as it is.
+func restoreUnknown(err error) error {
+	var refused *holdrecord.RouteError
+	if errors.As(err, &refused) && refused.Code == "clock_skew" {
+		return unknownf(StepPreflight, err, "the broker refused the restore 409 clock_skew and stored nothing: this machine's clock and the broker's differ by more than the allowance, or the row would be signed before the latest row the broker accepted; correct the clock and run it again")
+	}
+	return err
 }
 
 // keygen makes the operator's hold signing key: an Ed25519 pair, whose private half, the seed as
