@@ -55,9 +55,16 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    # The limit is the steps' measured sum plus the 4 minutes envoy-go keeps over its own. In CI run
+    # 45074967422 (workflow_dispatch at 2a2777f31c, where this job ran out at 30), every step up to
+    # and including the migration check took 1,688 s. The longest were cluster.test.sh's 425 s,
+    # operator-token-minters.test.sh's 376 s, daemon-release-gate.test.sh's 191 s, vm.test.sh's
+    # 187 s and dev-stack.test.sh's 99 s. The darwin vet was cut there at 125 s, so its 192 s, the
+    # pack's 36 s and the upload's 2 s are run 45065437499's (#4296 at 5c087ab025). 1,918 s is 32
+    # minutes, rounded up, and with 4 more the limit is 36.
+    timeout-minutes: 36
     env:
-      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 36 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
