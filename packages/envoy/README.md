@@ -196,9 +196,11 @@ are in [`consumernames/README.md`](consumernames/README.md).
   - The healthy answer carries `consumer_names` (`fixed` or `fresh`). When the durable's read
     fails, it is `UNKNOWN`, with `consumer_names_unknown` naming the failed read and the
     configured mode.
-  - In the fresh mode, while the start has not bound its durable over a sentinel that is absent,
-    malformed or of another family, the answer is `503` `not_ready`, with `bucket`, `key` and
-    `reason` (`absent`, `another family` or `malformed`). The start logs that state once per change.
+  - In the fresh mode, while the start has not bound its durable over a selection state that
+    refuses every call, the answer is `503` `not_ready`, with `bucket` and `reason`: `missing` (no
+    bucket), or, with `key` `envoy.bucket` too, `cutover not done` (with the sentinel's `cutover`,
+    none or `rolled_back`), `absent`, `another family` or `malformed`. The start logs a sentinel's
+    state once per change.
   - Once serving, a missing bucket, sentinel or cutover marker, or a session's lost key, is
     `200 degraded` naming `session consumer selection bucket envoy_session_consumers`, with every
     field of the healthy answer kept. A refusal clears once a call is admitted.
