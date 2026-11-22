@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -118,6 +119,10 @@ type meInboxEntry struct {
 	Ask    *openAskRow       `json:"ask,omitempty"`
 	Thread *model.MyReplyRow `json:"thread,omitempty"`
 	Agent  *meInboxAgent     `json:"agent,omitempty"`
+	// ApprovalGate is the approval gate of the issue the entry's row belongs to (approvalGate), as
+	// GET /api/v1/issues/{key} answers it, and absent for an entry of no issue: an Agent row, an
+	// ask or a thread on a project document, and an entry the page draws no row for.
+	ApprovalGate []approvalGateLine `json:"approval_gate,omitempty"`
 }
 
 // meInboxResponse is what GET /api/v1/me/inbox answers.
@@ -464,9 +469,10 @@ type meInboxRead struct {
 // meInboxPage is what the page's rows draw, read once for the whole page (meInboxPageReads) and kept
 // by the node each part belongs to: each Ask row with its reach, its thread's replies (each with the
 // targets it names, its attempts and the block it names), its rewordings and its followers; each
-// Reply row; and each Agent row's root, the replies under it (each with its attempts and its block)
-// and its session's name. The ask details every list of asks carries beside its rows are kept where
-// meInboxAsks reads them (openedEvents, backlinkCounts and askParts).
+// Reply row; each Agent row's root, the replies under it (each with its attempts and its block)
+// and its session's name; and the approval gate of each issue a row belongs to, by issue key. The
+// ask details every list of asks carries beside its rows are kept where meInboxAsks reads them
+// (openedEvents, backlinkCounts and askParts).
 type meInboxPage struct {
 	asks      map[string]openAskRow
 	reaches   map[string]askReach
@@ -477,6 +483,7 @@ type meInboxPage struct {
 	roots     map[string]model.Message
 	chains    map[string][]model.Message
 	titles    map[string]string
+	gates     map[string][]approvalGateLine
 }
 
 // meInboxRow is one entry as the statement answered it, with the parts of its page row that are
@@ -526,12 +533,13 @@ type meInboxColumns struct {
 // meInboxOnceColumns is what the statement read once for the page, each an array of the records one
 // statement answered over every row of its kind (meInboxPageReads), in that statement's order.
 type meInboxOnceColumns struct {
-	asks, opened, backlinks, parts, reach            []pgtype.UndecodedBytes
-	replies, replyNamed, replyAttempts               []pgtype.UndecodedBytes
-	askBlocks, commentBlocks, edits, followers       []pgtype.UndecodedBytes
-	threads                                          []pgtype.UndecodedBytes
-	roots, messages, attempts, messageBlocks, titles []pgtype.UndecodedBytes
-	trees                                            []pgtype.UndecodedBytes
+	asks, opened, backlinks, parts, reach                []pgtype.UndecodedBytes
+	replies, replyNamed, replyAttempts                   []pgtype.UndecodedBytes
+	askBlocks, commentBlocks, edits, followers           []pgtype.UndecodedBytes
+	threads                                              []pgtype.UndecodedBytes
+	roots, messages, attempts, messageBlocks, titles     []pgtype.UndecodedBytes
+	gateIssues, gateDocuments, gateReviews, gateRequests []pgtype.UndecodedBytes
+	trees                                                []pgtype.UndecodedBytes
 }
 
 func (once *meInboxOnceColumns) targets() []any {
@@ -540,6 +548,7 @@ func (once *meInboxOnceColumns) targets() []any {
 		&once.replies, &once.replyNamed, &once.replyAttempts, &once.askBlocks, &once.commentBlocks, &once.edits, &once.followers,
 		&once.threads,
 		&once.roots, &once.messages, &once.attempts, &once.messageBlocks, &once.titles,
+		&once.gateIssues, &once.gateDocuments, &once.gateReviews, &once.gateRequests,
 		&once.trees,
 	}
 }
@@ -647,7 +656,7 @@ func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meIn
 // followers and the claim and route, answers left empty as an Inbox row is an open ask; a Reply row
 // as listMyReplies reads one; and an Agent row's session named as nameAgentSessions names it, with
 // the conversation it draws as hydrateMessageThreads reads one, the root and every reply under it
-// oldest first.
+// oldest first. An Ask or a Reply row of an issue carries that issue's approval gate.
 func (read *meInboxRead) assemble(row *meInboxRow) error {
 	page := &read.page
 	missing := func(what string) error {
@@ -669,12 +678,18 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 		row.Ask, row.askThread = &ask, &thread
 		row.askReplies = append([]model.Comment{}, page.replies[row.Node.ID]...)
 		row.askEdits = append([]model.AskEdit{}, page.edits[row.Node.ID]...)
+		if ask.Issue != nil {
+			row.ApprovalGate = page.gates[ask.Issue.Key]
+		}
 	case meInboxPageThread:
 		thread, held := page.threads[row.Node.ID]
 		if !held {
 			return missing("thread")
 		}
 		row.Thread = &thread
+		if thread.Issue != nil {
+			row.ApprovalGate = page.gates[thread.Issue.Key]
+		}
 	case meInboxPageAgent:
 		root, held := page.roots[row.Node.ID]
 		if !held {
@@ -691,14 +706,16 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 // rows as listInbox reads them (scanAskRead) with the details loadAskDetails reads, each thread's
 // replies with the targets each names, its attempts and its named block (hydrateCommentSideTables),
 // the rewordings and followers; the Reply rows (scanMyReplyRow); each Agent row's root and the
-// replies under it, each message's attempts and the block it names, and the sessions' names; and
-// every stored tree their texts read.
+// replies under it, each message's attempts and the block it names, and the sessions' names; the
+// approval gate of each issue a row belongs to (readApprovalGates); and every stored tree their
+// texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
 		asks: map[string]openAskRow{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
 		edits: map[string][]model.AskEdit{}, followers: map[string][]model.AskFollower{},
 		threads: map[string]model.MyReplyRow{}, roots: map[string]model.Message{},
 		chains: map[string][]model.Message{}, titles: map[string]string{},
+		gates: map[string][]approvalGateLine{},
 	}
 	if err := read.readAsks(types, columns, &page); err != nil {
 		return err
@@ -711,6 +728,9 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 		page.threads[thread.ThreadID] = thread
 	}
 	if err := readAgentConversations(types, columns, &page); err != nil {
+		return err
+	}
+	if err := readApprovalGates(types, columns, &page); err != nil {
 		return err
 	}
 	for _, record := range records(types, columns.trees) {
@@ -865,6 +885,59 @@ func readAgentConversations(types *pgtype.Map, columns *meInboxOnceColumns, page
 			return fmt.Errorf("scan the agent row's session name: %w", err)
 		}
 		page.titles[session] = title
+	}
+	return nil
+}
+
+// readApprovalGates reads the approval gate of each issue a row of the page belongs to into page
+// (meInboxGateReads): each gate document's approval from its latest version, its latest review
+// and its open approval request (approvalOf), then each issue's lines (approvalGate).
+func readApprovalGates(types *pgtype.Map, columns *meInboxOnceColumns, page *meInboxPage) error {
+	reviews := map[string]model.ArtifactReview{}
+	for _, record := range records(types, columns.gateReviews) {
+		review, err := docs.ScanReview(record)
+		if err != nil {
+			return fmt.Errorf("read a gate document's latest review: %w", err)
+		}
+		reviews[review.ArtifactID] = review
+	}
+	requests := map[string]openApprovalRequest{}
+	for _, record := range records(types, columns.gateRequests) {
+		artifactID, request, err := scanOpenApprovalRequest(record)
+		if err != nil {
+			return fmt.Errorf("read a gate document's open approval request: %w", err)
+		}
+		requests[artifactID] = request
+	}
+	documents := map[string]approvalGateDocument{}
+	for _, record := range records(types, columns.gateDocuments) {
+		var id string
+		var latest int
+		if err := record.Scan(&id, &latest); err != nil {
+			return fmt.Errorf("read a gate document: %w", err)
+		}
+		var review *model.ArtifactReview
+		if found, held := reviews[id]; held {
+			review = &found
+		}
+		var request *openApprovalRequest
+		if found, held := requests[id]; held {
+			request = &found
+		}
+		// A gate document is one the issue's list holds, which a retired document is not
+		// (meInboxGateReads), so none of them is retired.
+		approval := approvalOf(latest, false, review, request)
+		documents[id] = approvalGateDocument{id: id, approval: &approval}
+	}
+	for _, record := range records(types, columns.gateIssues) {
+		var key string
+		var root bool
+		var steps []string
+		var primary, verification *string
+		if err := record.Scan(&key, &root, &steps, &primary, &verification); err != nil {
+			return fmt.Errorf("read a gate's issue: %w", err)
+		}
+		page.gates[key] = approvalGate(root, steps, documents[deref(primary)], documents[deref(verification)])
 	}
 	return nil
 }
@@ -1308,6 +1381,7 @@ type meInboxReads struct {
 //     reply under it (messageReplyChainsQuery), each message's attempts (messageDeliveriesQuery) and
 //     the block it names (refs.ReplyBlocksStatement) - and the names of their sessions
 //     (delivery.ResolveSessionTitlesQuery); each row itself is page_rows', read for its order;
+//   - the approval gate of each issue an Ask or a Reply row belongs to (meInboxGateReads);
 //   - the stored display tree of every text those rows may register with the request's reader,
 //     where the page asks for trees (meInboxTrees).
 //
@@ -1415,7 +1489,8 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 			union all
 			select b.excerpt from agent_named b`)
 	}
-	return meInboxReads{ctes: ctes, columns: []string{
+	gateCTEs, gateColumns := meInboxGateReads(askIDs, threadIDs)
+	return meInboxReads{ctes: ctes + gateCTEs, columns: append([]string{
 		`array(select row(listed.*) from (
 			select ` + openAskRowColumns + `
 			` + openAskRowFrom("$1") + `
@@ -1445,8 +1520,51 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 		`array(select row(attempt.*) from (` + bindFragment(messageDeliveriesQuery, messageIDs) + `) attempt)`,
 		`array(select row(b.*) from agent_named b)`,
 		`array(select row(titled.*) from (` + bindFragment(delivery.ResolveSessionTitlesQuery, sessions) + `) titled)`,
-		trees,
-	}}, nil
+	}, append(gateColumns, trees)...)}, nil
+}
+
+// meInboxGateReads reads the approval gate of each issue a row of the page belongs to, once for the
+// page, over the ids askIDs and threadIDs name: the issues of the Ask rows (their asks' issue_key)
+// and of the Reply rows (their user_threads rows' issue_key), each with whether it is its tree's
+// root, its project's stored gated steps, and its primary and its Verification document, each
+// named as the issue read names it (issueRowStatement); each of those documents that the issue's
+// list holds - one not retired, as issueArtifactsStatement lists them - with its latest version,
+// one probe of artifact_versions' unique (artifact_id, number) rather than a read of its version
+// rows; and their latest reviews and open approval requests, by the statements the document reads
+// run (latestReviewsStatement, openApprovalAsksStatement). Its columns come in the order
+// meInboxOnceColumns reads them, and readApprovalGates reads them.
+func meInboxGateReads(askIDs, threadIDs string) (string, []string) {
+	documentIDs := `(select ids from gate_documents)`
+	ctes := `,
+	gate_issues(key, root, steps, primary_id, verification_id) as materialized (
+		select i.key, i.parent_key is null, p.gated_steps,
+		       (select a.id from artifacts a where a.issue_key = i.key and a.is_primary),
+		       (select a.id from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `)
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = any(array(
+			select a.issue_key from asks a where a.id = any(` + askIDs + `::uuid[])
+			union
+			select u.issue_key from user_threads u where u.login = $1 and u.thread_id = any(` + threadIDs + `::uuid[])
+		))
+	),
+	gate_documents(ids) as materialized (
+		select coalesce(array_agg(d.id::text), '{}')
+		from artifacts d
+		where d.id = any(array(
+			select g.primary_id from gate_issues g
+			union
+			select g.verification_id from gate_issues g
+		))
+		  and d.retired_at is null
+	)`
+	return ctes, []string{
+		`array(select row(g.key, g.root, g.steps, g.primary_id::text, g.verification_id::text) from gate_issues g)`,
+		`array(select row(d.id::text, coalesce((select max(v.number) from artifact_versions v where v.artifact_id = d.id), 0))
+			from artifacts d where d.id = any(` + documentIDs + `::uuid[]))`,
+		`array(select row(review.*) from (` + bindFragment(latestReviewsStatement, documentIDs) + `) review)`,
+		`array(select row(request.*) from (` + bindFragment(openApprovalAsksStatement, documentIDs) + `) request)`,
+	}
 }
 
 // meInboxTrees is the stored display tree of each of texts that has one (texttrees.ReadStatement),

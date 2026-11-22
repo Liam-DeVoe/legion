@@ -35,7 +35,6 @@ import type {
   Comment,
   IssueCoverage,
   IssueDetails,
-  Project,
   UserIssueState,
 } from "../../api/types";
 import { subsetRanges } from "../../fonts/inter/subset-script";
@@ -325,16 +324,16 @@ test("the header hides whose turn when the server sent open asks without waiting
 
 // The count reads the reader's login, the decisions, the coverage, the comments and the blocks of
 // each document the outline reads that a decision's block stands in, under the keys the outline
-// reads them by, and a root issue's header reads the projects for its gated steps, under the key
-// the shell's sidebar reads them by. The header mounts again each time the reader comes back to
+// reads them by; a root issue's header reads no projects, since its gated steps come with the
+// issue's own read (`approval_gate`). The header mounts again each time the reader comes back to
 // the issue's page, and under the app's `staleTime` a read is stale 30 s after it answered
 // (`main.tsx`), each observer judging it by its own options: read with the app's defaults, the
-// header mounted again past that would send all five and the projects read again, although the
-// feed's events keep them fresh (decision 180).
+// header mounted again past that would send all five again, although the feed's events keep them
+// fresh (decision 180).
 test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
   const restore = stubHeader(issue);
   // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
-  // what says the mount came past the age the five and the projects read would go stale at.
+  // what says the mount came past the age the five would go stale at.
   const getIssue = spyOn(api, "getIssue");
   // The login, the decisions and the blocks answered here, and the coverage and the comments by
   // what the file already answers them with; the decisions answer an agent's decision that is a
@@ -346,7 +345,7 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     spyOn(api, "listComments"),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
   ];
-  // The issue has no parent, so its header reads the projects, answered by `stubHeader`'s list.
+  // The issue has no parent, and its gated steps are its own read's: the header reads no projects.
   const listProjects = spyOn(api, "listProjects");
   const sent = () => reads.map((read) => read.mock.calls.length);
   // The app's client's defaults (`main.tsx`), which a read that sets none of its own takes.
@@ -358,8 +357,8 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   try {
     // The login is the one the shell already holds, and each other read is sent once.
     await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1]));
-    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(listProjects, "the header read the projects").not.toHaveBeenCalled();
     const issueReads = getIssue.mock.calls.length;
     view.unmount();
 
@@ -372,9 +371,7 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
       0, 1, 1, 1, 1,
     ]);
-    expect(listProjects.mock.calls.length, "the header mounted again read the projects again").toBe(
-      1
-    );
+    expect(listProjects, "the header mounted again read the projects").not.toHaveBeenCalled();
   } finally {
     view.unmount();
     setSystemTime();
@@ -525,24 +522,18 @@ test("the header keeps state actions available while approval awaits", async () 
 });
 
 test("the header draws a gated root issue's steps where the header's one chip sat", async () => {
+  const awaiting = { latest_version: 1, state: "awaiting" };
+  // The gate the server answers for a root issue of a project gating both steps, which holds
+  // no Verification document.
   const restore = stubHeader({
     ...issue,
-    artifacts: [
-      {
-        ...issue.artifacts[0],
-        approval: { latest_version: 1, state: "awaiting" },
-      },
+    approval_gate: [
+      { approval: null, artifact_id: null, step: "criteria" },
+      { approval: awaiting, artifact_id: issue.primary_artifact_id, step: "spec" },
     ],
+    artifacts: [{ ...issue.artifacts[0], approval: awaiting }],
     open_asks: [approvalAsk()],
   });
-  const gated: Project = {
-    created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["criteria", "spec"],
-    open_asks: 0,
-    key: "CORE",
-    name: "Core",
-  };
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
 
   try {
@@ -568,14 +559,16 @@ test("the header draws a gated root issue's steps where the header's one chip sa
     expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
   } finally {
     view.unmount();
-    listProjects.mockRestore();
     restore();
   }
 });
 
 test("the header keeps the primary document's chip when no gated step reviews it", async () => {
+  // A deployment may gate the Verification document and not the spec; the spec still has an
+  // approval to answer, and only the header's own chip can answer it.
   const restore = stubHeader({
     ...issue,
+    approval_gate: [{ approval: null, artifact_id: null, step: "criteria" }],
     artifacts: [
       {
         ...issue.artifacts[0],
@@ -584,16 +577,6 @@ test("the header keeps the primary document's chip when no gated step reviews it
     ],
     open_asks: [approvalAsk()],
   });
-  // A deployment may gate the Verification document and not the spec; the spec still has an
-  // approval to answer, and only the header's own chip can answer it.
-  const gated: Project = {
-    created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["criteria"],
-    open_asks: 0,
-    key: "CORE",
-    name: "Core",
-  };
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
 
   try {
@@ -614,7 +597,6 @@ test("the header keeps the primary document's chip when no gated step reviews it
     expect(within(stateActions).getByRole("button", { name: "Request changes" })).not.toBeNull();
   } finally {
     view.unmount();
-    listProjects.mockRestore();
     restore();
   }
 });

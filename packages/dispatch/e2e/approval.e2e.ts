@@ -4,8 +4,11 @@ import type { WriteAdvice } from "@legion/contracts";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Artifact } from "../web/src/api/types";
 
+import { setLiveSessions } from "./agents";
 import {
   answerAsk,
+  createArtifactAsk,
+  createArtifactComment,
   createAsk,
   createComment,
   createIssue,
@@ -22,15 +25,26 @@ import {
   patchIssue,
   rejectSuggestion,
   requestApproval,
+  resolveAsk,
   reviewArtifact,
+  setGatedSteps,
   withOpenedAsk,
 } from "./api";
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
-import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
+import { peekTrigger } from "./inbox-drawer";
+import { askControls, hasReadingPane, inboxPane, inboxRow, selectRow } from "./inbox-pane";
+import {
+  agentRowId,
+  asSession,
+  replyRowId,
+  seedAgentThread,
+  seedCommentThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
-import { assertWhole } from "./unclipped";
+import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 function drawer(page: Page) {
@@ -1143,6 +1157,448 @@ test("an approval ask keeps its document link and the version it asked about onc
     await expect(link).toBeVisible();
     await link.click();
     await expect(page).toHaveURL(`/issues/${issue.key}/spec?ask=${requested.ask.id}`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// R2 of dispatch://INFRA-4948: each Inbox row of an issue wears the approval state of its issue,
+// and its reading pane draws the issue's design gate, in the issue page's words.
+// ---------------------------------------------------------------------------------------------
+
+/** The approval mark of one Inbox row, on the page or in the drawer. */
+function markOf(scope: Page | Locator, rowId: string): Locator {
+  return scope.locator(`[data-inbox-row="${rowId}"] [data-inbox-approval]`);
+}
+
+/** The reading column's head. */
+function paneHead(page: Page): Locator {
+  return inboxPane(page).locator("header").first();
+}
+
+/** The head's gate lines, in their order. */
+function paneLines(page: Page): Locator {
+  return paneHead(page).locator("[data-inbox-approval-line]");
+}
+
+/** One gate line of the head, by its step: "" is the line of the primary document alone. */
+function paneLine(page: Page, step: string): Locator {
+  return paneHead(page).locator(`[data-inbox-approval-line="${step}"]`);
+}
+
+/** Reads each gate line the head draws, in order, as the issue page draws a step line: the step's
+ *  word, where the line has one, and then its state. */
+async function expectGateLines(
+  page: Page,
+  lines: readonly (readonly [step: string, word: string | undefined, state: string])[]
+): Promise<void> {
+  await expect(paneLines(page)).toHaveCount(lines.length);
+  expect(
+    await paneLines(page).evaluateAll((drawn) =>
+      drawn.map((line) => line.getAttribute("data-inbox-approval-line"))
+    )
+  ).toEqual(lines.map(([step]) => step));
+  for (const [step, word, state] of lines) {
+    const line = paneLine(page, step);
+    await expect(line.getByText(state, { exact: true }), `${step}: ${state}`).toBeVisible();
+    if (word === undefined) {
+      await expect(line, `${step} draws its state alone`).toHaveText(state);
+    } else {
+      await expect(line.locator(":scope > span").first(), `${step}'s word`).toHaveText(word);
+    }
+  }
+}
+
+/** A new version of the spec `id`, written by the session, which moves its latest version. */
+async function editSpec(id: string): Promise<void> {
+  const before = (await getArtifact(id, { login: "alice" })).approval?.latest_version ?? 0;
+  await editArtifact(
+    id,
+    { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
+    session
+  );
+  await expect
+    .poll(async () => (await getArtifact(id, { login: "alice" })).approval?.latest_version)
+    .toBeGreaterThan(before);
+}
+
+/** An issue of `project` with a thread of the reader's in it, which is a Reply row of their
+ *  Inbox. It is forced past the near-copy check, which titles of one test would trip. */
+async function issueWithThread(project: string, title: string, parent?: string) {
+  const issue = await createIssue({
+    force: true,
+    project,
+    spec: "The plan.",
+    title,
+    ...(parent === undefined ? {} : { parent }),
+  });
+  const thread = await seedCommentThread(issue.key, `Is "${title}" ready?`, "Read it and see.");
+  return { issue, row: replyRowId(thread), spec: issue.primary_artifact_id };
+}
+
+test("the five approval states of an issue", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "STATES", name: "Five states" });
+  await setGatedSteps("STATES", ["spec"]);
+  const approve = (id: string) => reviewArtifact(id, { state: "approved" }, { login: "alice" });
+  const verificationOf = (key: string) =>
+    createIssueArtifact(key, {
+      content: "# Verification\n\nOne check.\n",
+      name: "verification.md",
+    });
+
+  const approved = await issueWithThread("STATES", "Approved at its latest version");
+  await approve(approved.spec);
+  const awaiting = await issueWithThread("STATES", "Under an open request");
+  const request = withOpenedAsk(await requestApproval(awaiting.spec, {}, session));
+  const edited = await issueWithThread("STATES", "Approved and then edited");
+  await approve(edited.spec);
+  await editSpec(edited.spec);
+  const sentBack = await issueWithThread("STATES", "Asked for changes");
+  await reviewArtifact(
+    sentBack.spec,
+    { reason: "Name the rollback path.", state: "changes_requested" },
+    { login: "alice" }
+  );
+  const never = await issueWithThread("STATES", "Never requested nor reviewed");
+  // The sixth: approved at version 1, edited, and requested again.
+  const again = await issueWithThread("STATES", "Approved, edited and requested again");
+  await approve(again.spec);
+  await editSpec(again.spec);
+  const againRequest = withOpenedAsk(await requestApproval(again.spec, {}, session));
+  // The seventh: an approved spec and an unapproved Verification document under one request.
+  const shared = await issueWithThread("STATES", "An approved spec beside its checks");
+  await verificationOf(shared.issue.key);
+  await approve(shared.spec);
+  const sharedRequest = withOpenedAsk(
+    await requestApproval(shared.spec, { include_verification: true }, session)
+  );
+  // The eighth: an edited spec and the Verification document under one request.
+  const both = await issueWithThread("STATES", "An edited spec beside its checks");
+  await verificationOf(both.issue.key);
+  await editSpec(both.spec);
+  withOpenedAsk(await requestApproval(both.spec, { include_verification: true }, session));
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // The issue page's whole text for the eighth issue's spec, which the pane line holds.
+    await page.goto(`/issues/${both.issue.key}`);
+    const issueChip = page
+      .locator('[data-approval-step="spec"]')
+      .getByRole("button", { name: /^Awaiting approval of / });
+    await expect(issueChip).toBeVisible();
+    const whole = (await issueChip.innerText()).trim();
+
+    await page.goto("/");
+    // Each row's mark, read from the list without selecting it, in the issue page's words.
+    const states = [
+      [approved.row, "Approved v1"],
+      [awaiting.row, "Awaiting approval"],
+      [edited.row, "Approved v1 · changed since"],
+      [sentBack.row, "Changes requested"],
+      [never.row, "Not requested"],
+    ] as const;
+    for (const [row, state] of states) {
+      await expect(markOf(page, row), row).toHaveText(state);
+    }
+    // The word `Draft` is drawn nowhere on the page.
+    await expect(page.getByText(/\bDraft\b/)).toHaveCount(0);
+    // Each pane line, as the issue page draws a step line: the word Spec, then the state.
+    for (const [row, state] of states) {
+      await selectRow(page, row);
+      await expectGateLines(page, [["spec", "Spec", state]]);
+    }
+
+    // The open request's row: the head keeps Approve and Request changes, and its one gate line
+    // is the document's own chip, so it draws one approval area.
+    let head = await askControls(page, request.ask.id);
+    await expect(head.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(head.getByRole("button", { exact: true, name: "Request changes" })).toBeVisible();
+    await expect(paneLines(page)).toHaveCount(1);
+    await expect(head.getByRole("button", { name: /^Awaiting approval/ })).toHaveCount(1);
+    await expect(head.locator("[data-inbox-approval-state]")).toHaveCount(0);
+
+    // The sixth issue: under its request again, with the same controls and one approval area.
+    await expect(markOf(page, again.row)).toHaveText("Awaiting approval");
+    head = await askControls(page, againRequest.ask.id);
+    await expect(head.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(head.getByRole("button", { exact: true, name: "Request changes" })).toBeVisible();
+    await expect(paneLines(page)).toHaveCount(1);
+    await expect(head.getByRole("button", { name: /^Awaiting approval/ })).toHaveCount(1);
+    // The request's card in the drawer draws the approval it follows.
+    const card = await approvalCard(page, againRequest.ask.id);
+    await expect(card).toContainText("Approved at version 1");
+    await expect(card.getByRole("button", { name: "Show diff" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(drawer(page)).toHaveCount(0);
+
+    // Approving that request moves the sixth issue's thread row and its pane line.
+    await page.goto("/");
+    const latest = (await getArtifact(again.spec, { login: "alice" })).approval?.latest_version;
+    head = await askControls(page, againRequest.ask.id);
+    await head.getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect(markOf(page, again.row)).toHaveText(`Approved v${latest}`);
+    await selectRow(page, again.row);
+    await expectGateLines(page, [["spec", "Spec", `Approved v${latest}`]]);
+
+    // The seventh issue: its spec stands approved, so the head draws no Approve, and beside the
+    // gate line the approval the request follows.
+    head = await askControls(page, sharedRequest.ask.id);
+    await expect(head.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(0);
+    await expect(paneLine(page, "spec")).toContainText("Approved at version 1");
+    await expect(paneLine(page, "spec").getByRole("button", { name: "Show diff" })).toBeVisible();
+
+    // The eighth issue: the mark is the state alone, and the pane line the issue page's text.
+    await expect(markOf(page, both.row)).toHaveText("Awaiting approval");
+    await selectRow(page, both.row);
+    await expect(paneLine(page, "spec")).toContainText(whole);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the step that holds the gate", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "FIRSTSTEP", name: "First step" });
+  await setGatedSteps("FIRSTSTEP", ["criteria", "spec"]);
+  const root = await issueWithThread("FIRSTSTEP", "The gated root");
+  await requestApproval(root.spec, {}, session);
+  await createProject({ key: "NOSTEP", name: "No gate" });
+  const ungated = await issueWithThread("NOSTEP", "An ungated issue");
+  const child = await issueWithThread("FIRSTSTEP", "A child of the gated root", root.issue.key);
+  await reviewArtifact(child.spec, { state: "approved" }, { login: "alice" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+
+    // No Verification document written, the spec under request: the gate waits on the first
+    // step, which nobody has asked for.
+    await expect(markOf(page, root.row)).toHaveText("Verification · Not requested");
+    await selectRow(page, root.row);
+    await expectGateLines(page, [
+      ["criteria", "Verification", "Not requested"],
+      ["spec", "Spec", "Awaiting approval"],
+    ]);
+
+    // The Verification document approved, the spec still under request.
+    const verification = await createIssueArtifact(root.issue.key, {
+      content: "# Verification\n\nOne check.\n",
+      name: "verification.md",
+    });
+    await reviewArtifact(verification.artifact.id, { state: "approved" }, { login: "alice" });
+    await expect(markOf(page, root.row)).toHaveText("Spec · Awaiting approval");
+    await expectGateLines(page, [
+      ["criteria", "Verification", "Approved v1"],
+      ["spec", "Spec", "Awaiting approval"],
+    ]);
+
+    // Both approved at their latest versions: the mark is the last step.
+    await reviewArtifact(root.spec, { state: "approved" }, { login: "alice" });
+    await expect(markOf(page, root.row)).toHaveText("Spec · Approved v1");
+    await expectGateLines(page, [
+      ["criteria", "Verification", "Approved v1"],
+      ["spec", "Spec", "Approved v1"],
+    ]);
+
+    // An issue of a project that gates nothing, and a child of the gated project: one line for
+    // the primary document, and a mark that names no step.
+    for (const [row, state] of [
+      [ungated.row, "Not requested"],
+      [child.row, "Approved v1"],
+    ] as const) {
+      await expect(markOf(page, row), row).toHaveText(state);
+      await selectRow(page, row);
+      await expectGateLines(page, [["", undefined, state]]);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+// The two short rows beside the pane are read by the five states and the live change, at the
+// pane's width. @phone
+test("the approval mark at phone width @phone", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "PHONEMARK", name: "Phone mark" });
+  const issue = await createIssue({
+    project: "PHONEMARK",
+    spec: "The plan.",
+    title: "An approved issue",
+  });
+  await reviewArtifact(issue.primary_artifact_id, { state: "approved" }, { login: "alice" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the approved plan?" },
+    session
+  );
+  const row = replyRowId(
+    await seedCommentThread(issue.key, "Is the plan approved?", "It is, at version 1.")
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    expect(hasReadingPane(page)).toBe(false);
+    // Below the pane's width each row is a card, and each card wears the mark.
+    await expect(page.getByTestId(`ask-${ask.id}`)).toBeVisible();
+    await expect(markOf(page, ask.id)).toHaveText("Approved v1");
+    await expect(inboxRow(page, row).locator("[data-inbox-thread-card]")).toBeVisible();
+    await expect(markOf(page, row)).toHaveText("Approved v1");
+    await assertPageFits(page);
+
+    // The drawer draws the same cards over another page.
+    await page.goto(`/issues/${issue.key}`);
+    await peekTrigger(page).click();
+    await expect(drawer(page)).toBeVisible();
+    await expect(markOf(drawer(page), ask.id)).toHaveText("Approved v1");
+    await expect(markOf(drawer(page), row)).toHaveText("Approved v1");
+    await assertPageFits(page);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a row with no issue carries no mark", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "NOISSUE", name: "No issue" });
+  // Three items of no issue: an ask on a project document, a thread on one, and an Agent row.
+  const runbook = await createProjectDocument("NOISSUE", {
+    content: "# Runbook\n\nRestart it.\n",
+    name: "Runbook",
+  });
+  const docAsk = await createArtifactAsk(
+    runbook.artifact.id,
+    { question: "Keep the runbook in the repository?" },
+    session
+  );
+  const docRoot = await createArtifactComment(runbook.artifact.id, {
+    body: "Is the runbook current?",
+  });
+  await createArtifactComment(
+    runbook.artifact.id,
+    { body: "It is.", reply_to: docRoot.id },
+    asSession()
+  );
+  const agent = agentRowId(
+    await seedAgentThread({ body: "Check the runbook, please.", replies: ["Checked."] })
+  );
+  const docThread = replyRowId(docRoot.id);
+  // Three that belong to an issue: one nobody asked about, one approved, and one approved and
+  // then closed.
+  const unasked = await issueWithThread("NOISSUE", "Nobody asked about it");
+  const approved = await issueWithThread("NOISSUE", "Approved");
+  await reviewArtifact(approved.spec, { state: "approved" }, { login: "alice" });
+  const closed = await issueWithThread("NOISSUE", "Approved and closed");
+  await reviewArtifact(closed.spec, { state: "approved" }, { login: "alice" });
+  await patchIssue(closed.issue.key, { status: "done" });
+
+  const marked = [
+    [unasked.row, "Not requested"],
+    [approved.row, "Approved v1"],
+    [closed.row, "Approved v1"],
+  ] as const;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    for (const id of [docAsk.id, docThread, agent]) {
+      await expect(inboxRow(page, id), id).toBeVisible();
+      await expect(markOf(page, id), id).toHaveCount(0);
+    }
+    for (const [id, state] of marked) {
+      await expect(markOf(page, id), id).toHaveText(state);
+    }
+
+    // The Dismissed view draws the same rows the same way.
+    for (const id of [docThread, agent, ...marked.map(([row]) => row)]) {
+      await selectRow(page, id);
+      await page.locator(`[data-inbox-dismiss="${id}"]`).first().click();
+      await expect(inboxRow(page, id), id).toHaveCount(0);
+    }
+    await page.goto("/?show=dismissed");
+    for (const id of [docThread, agent]) {
+      await expect(inboxRow(page, id), id).toBeVisible();
+      await expect(markOf(page, id), id).toHaveCount(0);
+    }
+    for (const [id, state] of marked) {
+      await expect(markOf(page, id), id).toHaveText(state);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a change recorded while the Inbox is open", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "LIVEGATE", name: "A moving gate" });
+  const issue = await createIssue({ project: "LIVEGATE", spec: "The plan.", title: "Live gate" });
+  const spec = issue.primary_artifact_id;
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Start" }, { label: "Wait" }], question: "Start the work?" },
+    session
+  );
+  const row = replyRowId(await seedCommentThread(issue.key, "Is the plan read?", "Not yet."));
+  const dismissed = replyRowId(
+    await seedCommentThread(issue.key, "Who reads the plan?", "Alice does.")
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    // The thread the Dismissed view shows at the end goes out of the Inbox first.
+    await selectRow(page, dismissed);
+    await page.locator(`[data-inbox-dismiss="${dismissed}"]`).first().click();
+    await expect(inboxRow(page, dismissed)).toHaveCount(0);
+    await selectRow(page, ask.id);
+
+    /** Both marks and the selected ask's gate line, each read as the page refreshes it. */
+    const reads = async (state: string) => {
+      await expect(markOf(page, ask.id), `the ask row at ${state}`).toHaveText(state);
+      await expect(markOf(page, row), `the thread row at ${state}`).toHaveText(state);
+      await expect(paneLine(page, ""), `the pane's line at ${state}`).toHaveText(state);
+    };
+    await reads("Not requested");
+
+    // An approval request opened, then answered with an approval.
+    await requestApproval(spec, {}, session);
+    await reads("Awaiting approval");
+    await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
+    await reads("Approved v1");
+    // A new version written.
+    await editArtifact(
+      spec,
+      { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
+      session
+    );
+    await reads("Approved v1 · changed since");
+    // A request for changes.
+    await reviewArtifact(
+      spec,
+      { reason: "Name the rollback path.", state: "changes_requested" },
+      { login: "alice" }
+    );
+    await reads("Changes requested");
+    // A second request, resolved with no review.
+    const second = withOpenedAsk(await requestApproval(spec, {}, session));
+    await reads("Awaiting approval");
+    await resolveAsk(second.ask.id, { kind: "retracted", reason: "Asked too early." }, session);
+    await reads("Changes requested");
+    // The ask row stayed selected through every change.
+    await expect(inboxRow(page, ask.id)).toHaveAttribute("data-inbox-selected", "true");
+
+    // The approval again, with the Dismissed view open on the dismissed thread of the issue.
+    await page.goto("/?show=dismissed");
+    await expect(markOf(page, dismissed)).toHaveText("Changes requested");
+    const latest = (await getArtifact(spec, { login: "alice" })).approval?.latest_version;
+    await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
+    await expect(markOf(page, dismissed)).toHaveText(`Approved v${latest}`);
   } finally {
     await alice.close();
   }

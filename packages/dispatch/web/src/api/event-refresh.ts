@@ -1,12 +1,13 @@
 import { hashKey, partialMatchKey, type QueryKey } from "@tanstack/react-query";
 
-import { askProject } from "../features/inbox/list-row";
+import { askProject, type InboxListRow, rowProject } from "../features/inbox/list-row";
 import { agentConversation, meInboxCachedRows } from "../features/inbox/one-read-rows";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentConversationQuery,
   architectureSourcesQuery,
+  meInboxDismissedQuery,
   meInboxKey,
   meInboxQuery,
   openAsksKey,
@@ -29,6 +30,7 @@ import type {
   DocumentReferenceSummary,
   EventType,
   GraphReferences,
+  IssueDetails,
   IssueSummary,
   MyReplyRow,
   OpenAskRow,
@@ -286,6 +288,60 @@ function inboxThreadRowsOf(key: string): RefreshTarget {
     when: (data) =>
       threadRowsOf(data).some((row) => row.kind !== "agent" && row.issue?.key === key),
   };
+}
+
+/**
+ * The one read's Inbox answer and the pages of what the reader dismissed, each where it holds a
+ * row `belongs` takes. Every row of an issue carries that issue's approval gate
+ * (`approvalGateOf`), which its mark and its reading pane draw, so a write that moves the gate
+ * reads again each of the two that holds a row of it, whoever holds a reply in the thread. Each
+ * key is named, since neither is a prefix of the other.
+ */
+function approvalGateReads(belongs: (row: InboxListRow) => boolean): RefreshTarget[] {
+  return [meInboxQuery().queryKey, meInboxDismissedQuery().queryKey].map((queryKey) => ({
+    exact: true,
+    queryKey,
+    when: (data) => meInboxCachedRows(data).some(belongs),
+  }));
+}
+
+/**
+ * Whether an event of an issue can move that issue's approval gate: a review of one of its
+ * documents (`artifact.approved`, `artifact.changes_requested`), a version of one, and an
+ * approval request opened or resolved with no review (`ask.opened`, `ask.resolved` of an ask of
+ * kind `approval`). Every version of the issue's documents is read, since a version of a document
+ * no line names yet - a Verification document written for the first time - moves the gate too.
+ */
+function movesApprovalGate(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "artifact.approved":
+    case "artifact.changes_requested":
+    case "artifact.version":
+      return true;
+    case "ask.opened":
+    case "ask.resolved":
+      return payloadString(event, "kind") === "approval";
+    default:
+      return false;
+  }
+}
+
+/**
+ * The reads a project's gate moves, on `project.updated`: the one read's two reads of rows where
+ * they hold a row of that project, and the issue read of every issue of the project the cache
+ * holds, whether or not the Inbox holds a row of it, since each issue read carries the gate the
+ * issue page draws its steps from (`approval_gate`). An issue read is `["issue", key]`; the reads
+ * under it carry no gate.
+ */
+function projectGateReads(project: string): RefreshTarget[] {
+  return [
+    ...approvalGateReads((row) => rowProject(row) === project),
+    {
+      queryKey: ["issue"],
+      when: (data, query) =>
+        query.queryKey.length === 2 && (data as IssueDetails | undefined)?.project === project,
+    },
+  ];
 }
 
 /** The Architecture page's tree of `project`, when it lists issue `key`: in a component's work
@@ -1013,6 +1069,8 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // detail. The detail's key names no project, so every loaded detail refreshes; mapping
       // writes are rare settings changes.
       ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
+      // A project's published gated steps move the approval gate of each of its root issues.
+      ...(event.type === "project.updated" ? projectGateReads(event.project) : []),
     ];
   }
   // The Settings table always, and the Inbox, issue, document and Reply-thread reads of a question
@@ -1139,6 +1197,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: meInboxKey });
   }
+  if (movesApprovalGate(event)) {
+    targets.push(
+      ...approvalGateReads(
+        (row) => (row.kind === "ask" ? row.ask.issue_key : row.thread.issue?.key) === key
+      )
+    );
+  }
   if (changesReferenceGraph(event)) {
     targets.push({ exact: true, queryKey: ["issue", key, "references"] });
   }
@@ -1224,11 +1289,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return targets;
   }
   if (event.type === "artifact.approved" || event.type === "artifact.changes_requested") {
+    // A review moves the rows of its own issue's open asks alone, so it reads again only the
+    // reads of the open asks that hold one, the one read's Inbox among them (`oneReadTargets`).
     targets.push(
       { queryKey: ["artifacts", key] },
       { queryKey: ["artifact", event.payload.artifact_id] },
       { queryKey: ["asks", key] },
-      { queryKey: openAsksKey }
+      inboxRowsOf(key)
     );
     if (event.payload.ask_id !== null) {
       targets.push(
@@ -1261,7 +1328,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return targets;
   }
   if (isAskEvent(event)) {
-    targets.push({ queryKey: openAsksKey });
+    // A resolution takes its own ask's row out of the reads that hold it, all rows of this issue;
+    // every other ask event may bring a row in, so it reads every read of the open asks again.
+    targets.push(event.type === "ask.resolved" ? inboxRowsOf(key) : { queryKey: openAsksKey });
     appendAskReads(targets, event);
     if (event.type === "ask.follower_added" || event.type === "ask.follower_removed") {
       return targets;

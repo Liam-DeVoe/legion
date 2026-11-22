@@ -31,7 +31,6 @@ import type {
   IssueDetails,
   IssueReferences,
   OpenAskRow,
-  Project,
   Subscriber,
   UserIssueState,
 } from "../../api/types";
@@ -2431,23 +2430,17 @@ test("IssuePage keeps state actions available while approval awaits", async () =
 });
 
 test("IssuePage draws a gated root issue's steps where the header's one chip sat", async () => {
+  const awaiting = { latest_version: 1, state: "awaiting" };
+  // The gate the server answers for a root issue of a project gating both steps, which holds
+  // no Verification document.
   const restore = stubIssuePage({
     ...issue,
-    artifacts: [
-      {
-        ...issue.artifacts[0],
-        approval: { latest_version: 1, state: "awaiting" },
-      },
+    approval_gate: [
+      { approval: null, artifact_id: null, step: "criteria" },
+      { approval: awaiting, artifact_id: issue.primary_artifact_id, step: "spec" },
     ],
+    artifacts: [{ ...issue.artifacts[0], approval: awaiting }],
   });
-  const gated: Project = {
-    created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["criteria", "spec"],
-    open_asks: 0,
-    key: "CORE",
-    name: "Core",
-  };
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
@@ -2473,14 +2466,16 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
     expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
   } finally {
     view.unmount();
-    listProjects.mockRestore();
     restore();
   }
 });
 
 test("IssuePage keeps the primary document's chip when no gated step reviews it", async () => {
+  // A deployment may gate the Verification document and not the spec; the spec still has an
+  // approval to answer, and only the header's own chip can answer it.
   const restore = stubIssuePage({
     ...issue,
+    approval_gate: [{ approval: null, artifact_id: null, step: "criteria" }],
     artifacts: [
       {
         ...issue.artifacts[0],
@@ -2488,16 +2483,6 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       },
     ],
   });
-  // A deployment may gate the Verification document and not the spec; the spec still has an
-  // approval to answer, and only the header's own chip can answer it.
-  const gated: Project = {
-    created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["criteria"],
-    open_asks: 0,
-    key: "CORE",
-    name: "Core",
-  };
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
@@ -2518,7 +2503,6 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
     expect(within(stateActions).getByRole("button", { name: "Request changes" })).not.toBeNull();
   } finally {
     view.unmount();
-    listProjects.mockRestore();
     restore();
   }
 });

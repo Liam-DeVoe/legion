@@ -84,10 +84,10 @@ export function approvalVersion(approval: ArtifactApproval): number {
   return approval.version ?? approval.latest_version;
 }
 
-/** The chip's words. `latest` is the issue page's word for the latest version, given inside
- *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
- *  everywhere else. */
-function approvalLabel(approval: ArtifactApproval, latest?: string): string {
+/** The chip's words, which the Inbox's approval mark and its pane lines draw too (`RowMarks.tsx`).
+ *  `latest` is the issue page's word for the latest version, given inside `NoTooltips` alone:
+ *  there a stale chip draws the latest version, which its `title` says everywhere else. */
+export function approvalLabel(approval: ArtifactApproval, latest?: string): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
   const version = approvalVersion(approval);

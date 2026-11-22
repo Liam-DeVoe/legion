@@ -3315,11 +3315,11 @@ test("closing References or Details takes an open Referenced by list, and its re
 });
 
 // Details' reads of the titles of the issues this one waits on, of what waits on it and the
-// titles of those, of what references it, of the project's repository mappings and of the
-// projects, whose gated steps a top-level issue's approvals name, are each read again by the
-// events that change them (`api/event-refresh.ts`), so in Details a window focus past the app's
-// 30 s staleness reads none of them again. The reader's state keeps the app's defaults, so its
-// second read shows the focus was handled.
+// titles of those, of what references it and of the project's repository mappings are each read
+// again by the events that change them (`api/event-refresh.ts`), so in Details a window focus
+// past the app's 30 s staleness reads none of them again. Details reads no projects at all: a
+// top-level issue's gated steps come with the issue's own read (`approval_gate`). The reader's
+// state keeps the app's defaults, so its second read shows the focus was handled.
 test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by, repository mapping or project again", async () => {
   const user = userEvent.setup();
   const { getIssue, getMyState, restore } = stubIssueApi();
@@ -3349,7 +3349,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       expect(titleReads(titles, waiter)).toBe(1);
       expect(listReads()).toBe(1);
       expect(api.listRepoProjects).toHaveBeenCalledTimes(1);
-      expect(api.listProjects).toHaveBeenCalledTimes(1);
+      expect(api.listProjects, "Details read the projects").not.toHaveBeenCalled();
       expect(client.isFetching()).toBe(0);
     });
     await focusPastStaleness(client);
@@ -3371,7 +3371,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       api.listRepoProjects,
       "a window focus read the project's repository mappings again"
     ).toHaveBeenCalledTimes(1);
-    expect(api.listProjects, "a window focus read the projects again").toHaveBeenCalledTimes(1);
+    expect(api.listProjects, "a window focus read the projects").not.toHaveBeenCalled();
   } finally {
     unmount();
     titles.mockRestore();

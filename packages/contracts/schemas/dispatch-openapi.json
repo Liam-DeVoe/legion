@@ -13740,6 +13740,34 @@
         ],
         "type": "object"
       },
+      "ApprovalGateLine": {
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactApproval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "step": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "approval"
+        ],
+        "type": "object"
+      },
       "ApprovalRequestInput": {
         "properties": {
           "actor": {
@@ -23056,6 +23084,12 @@
             "format": "int64",
             "type": "integer"
           },
+          "approval_gate": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalGateLine"
+            },
+            "type": "array"
+          },
           "artifacts": {
             "items": {
               "$ref": "#/components/schemas/ArtifactWithTrees"
@@ -24692,6 +24726,12 @@
         "properties": {
           "agent": {
             "$ref": "#/components/schemas/MeInboxAgent"
+          },
+          "approval_gate": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalGateLine"
+            },
+            "type": "array"
           },
           "ask": {
             "$ref": "#/components/schemas/OpenAskRow"

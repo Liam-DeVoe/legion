@@ -122,6 +122,7 @@ import {
 import { MARK_ALL_REFUSED_TEXT, MARK_ALL_STOPPED_TEXT, useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
 import { useInboxAsks } from "./one-read";
+import { rowApprovalGate } from "./one-read-rows";
 import {
   AskAnswerWritesContext,
   AskClarificationWritesContext,
@@ -133,7 +134,7 @@ import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { ReadingPane } from "./ReadingPane";
-import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
+import { RowApprovalMark, RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
 import { BulkSnoozingContext, SnoozeControl } from "./SnoozeControl";
 import {
   EVERYONE_FILTER_VALUE,
@@ -427,9 +428,9 @@ interface ShortRowProps {
 /**
  * The frame both short rows draw in, two lines deep: the kind's icon at the left edge, then
  * what the row is about and when it was last written in; under them the priority tag, an ask's
- * urgency, and what the row says about its owner. Every mark is `shrink-0`, so the title is
- * what shortens and neither the marks nor the key are ever cut. `children` is drawn under the
- * two lines.
+ * urgency, the approval state of the row's issue, and what the row says about its owner. Every
+ * mark is `shrink-0`, so the title is what shortens and neither the marks nor the key are ever
+ * cut. `children` is drawn under the two lines.
  */
 function ShortRowFrame({
   age,
@@ -481,6 +482,7 @@ function ShortRowFrame({
         <div className="flex min-w-0 items-baseline gap-2 pl-6">
           <RowPriorityTag priority={rowPriority(row)} />
           <RowUrgencyMark urgency={rowUrgency(row)} />
+          <RowApprovalMark gate={rowApprovalGate(row)} />
           {owner}
         </div>
         {children}
@@ -744,6 +746,7 @@ function InboxCardRow({
             the group's width and widen the whole document past the viewport on a phone. */}
         <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1">
           <RowUrgencyMark urgency={askUrgency(ask.urgency)} />
+          <RowApprovalMark gate={rowApprovalGate(row)} />
           {ask.issue_key === null ? null : (
             <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
           )}

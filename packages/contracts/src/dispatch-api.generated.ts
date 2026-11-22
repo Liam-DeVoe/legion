@@ -3414,6 +3414,11 @@ export interface components {
     AppInstallationResponse: {
       installed: boolean;
     };
+    ApprovalGateLine: {
+      approval: components["schemas"]["ArtifactApproval"] | null;
+      artifact_id: null | string;
+      step?: string;
+    };
     ApprovalRequestInput: {
       actor?: components["schemas"]["Actor"] | null;
       include_verification?: boolean;
@@ -5513,6 +5518,7 @@ export interface components {
       advances: components["schemas"]["IssueAdvance"][] | null;
       /** Format: int64 */
       advances_revision: number;
+      approval_gate?: components["schemas"]["ApprovalGateLine"][];
       artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
@@ -5881,6 +5887,7 @@ export interface components {
     };
     MeInboxEntry: {
       agent?: components["schemas"]["MeInboxAgent"];
+      approval_gate?: components["schemas"]["ApprovalGateLine"][];
       ask?: components["schemas"]["OpenAskRow"];
       /** Format: date-time */
       moment: string;
@@ -15463,6 +15470,7 @@ export type AmbiguousTargetError = components["schemas"]["AmbiguousTargetError"]
 export type AnchorInput = components["schemas"]["AnchorInput"];
 export type AnswerAskInput = components["schemas"]["AnswerAskInput"];
 export type AppInstallationResponse = components["schemas"]["AppInstallationResponse"];
+export type ApprovalGateLine = components["schemas"]["ApprovalGateLine"];
 export type ApprovalRequestInput = components["schemas"]["ApprovalRequestInput"];
 export type ApprovalRequestResponse = components["schemas"]["ApprovalRequestResponse"];
 export type ApproverGrantResp = components["schemas"]["ApproverGrantResp"];

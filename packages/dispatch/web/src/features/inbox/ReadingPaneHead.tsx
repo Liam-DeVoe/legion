@@ -1,7 +1,9 @@
+import type { ApprovalGateLine } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, MyReplyRow, OpenAskRow } from "../../api/types";
+import { approvalPillClassName } from "../../components/Pill";
 import {
   linkHoverText,
   linkText,
@@ -20,10 +22,67 @@ import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
+import { approvalGateOf } from "./one-read-rows";
+import { gateLineWords, gateStepWord } from "./RowMarks";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
 import { isSnoozed } from "./snooze";
 import { useControlName } from "./useControlName";
+
+/**
+ * The approval gate of the row's issue (`approvalGateOf`): one line for each line of the gate, in
+ * its order, each the step's word as the issue page names it (`gateStepWord`) and the state of
+ * that step's document in the issue page's words (`gateLineWords`), drawn in the pill the issue
+ * page draws a step's state in. A line with no step - every issue but a gated root - and one
+ * whose step word this build does not know draws its state alone.
+ *
+ * `area` is the head's own approval area, the document's `ApprovalChip` with its Approve and
+ * Request changes, and `areaDocument` the document it is for. The line of that document is that
+ * area itself, so the head draws one approval area for the document and never two.
+ */
+function ApprovalLines({
+  area,
+  areaDocument,
+  gate,
+}: {
+  area: ReactNode;
+  areaDocument: string | undefined;
+  gate: readonly ApprovalGateLine[];
+}): ReactNode {
+  return (
+    <ul
+      aria-label="Approvals"
+      className="flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-1"
+      data-inbox-approval-lines=""
+    >
+      {gate.map((line) => {
+        const step = gateStepWord(line.step);
+        const state = line.approval?.state ?? "draft";
+        return (
+          <li
+            className="flex min-w-0 flex-wrap items-center gap-2"
+            data-inbox-approval-line={line.step ?? ""}
+            key={line.step ?? "primary"}
+          >
+            {step === undefined ? null : (
+              <span className={`text-xs font-medium ${textMutedOnCanvas}`}>{step}</span>
+            )}
+            {areaDocument !== undefined && line.artifact_id === areaDocument ? (
+              area
+            ) : (
+              <span
+                className={approvalPillClassName(state)}
+                data-inbox-approval-state={state === "draft" ? "not_requested" : state}
+              >
+                {gateLineWords(line.approval)}
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 /** The page "Open page" opens: the question's issue, or — for a project document, which has no
  *  issue page — the document itself at the section the column is scrolled to. The section is the
@@ -68,9 +127,10 @@ export interface ReadingPaneHeadProps {
  * The reading column's head: what the selected question is and the controls that act on it.
  *
  * An issue question carries the issue key and title, "Open page", the issue's priority, "Assign
- * to me" while nobody holds the issue, Snooze and Copy ref. A question in a project document
- * carries the project key and the document name, "Open page" at the section, Snooze and Copy ref
- * — a project document has no assignee and no priority, so neither control applies to it.
+ * to me" while nobody holds the issue, Snooze, Copy ref and the issue's approval gate
+ * (`ApprovalLines`). A question in a project document carries the project key and the document
+ * name, "Open page" at the section, Snooze and Copy ref — a project document has no assignee, no
+ * priority and no gate, so none of the three applies to it.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
  * row (`hand()` returns the column in `Inbox.tsx`), and the selected short row beside it draws no
@@ -102,6 +162,20 @@ export function ReadingPaneHead({
   const approvalState = artifact?.approval?.state;
   const approveDrawn =
     approvalState !== undefined && approvalState !== "draft" && approvalState !== "approved";
+  const area =
+    artifact === undefined || approval === undefined ? undefined : (
+      <>
+        <ApprovalChip artifact={artifact} onReviewed={() => onAnswered(ask.id)} variant="header" />
+        {approveDrawn ? null : <EarlierApproval approval={approval} />}
+      </>
+    );
+  const gate = approvalGateOf(ask);
+  // The document the area is for is drawn in its gate line where the gate names it, and beside
+  // the gate otherwise: a request on a document no gated step reviews.
+  const areaDocument =
+    area !== undefined && gate?.some((line) => line.artifact_id === artifact?.id) === true
+      ? artifact?.id
+      : undefined;
 
   return (
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -138,15 +212,9 @@ export function ReadingPaneHead({
           Next change
         </button>
       )}
-      {artifact === undefined || approval === undefined ? null : (
-        <>
-          <ApprovalChip
-            artifact={artifact}
-            onReviewed={() => onAnswered(ask.id)}
-            variant="header"
-          />
-          {approveDrawn ? null : <EarlierApproval approval={approval} />}
-        </>
+      {areaDocument === undefined ? area : null}
+      {gate === undefined || gate.length === 0 ? null : (
+        <ApprovalLines area={area} areaDocument={areaDocument} gate={gate} />
       )}
     </header>
   );
@@ -156,8 +224,9 @@ export function ReadingPaneHead({
  * The reading column's head for a Reply or an Agent row: who the thread belongs to, **Open
  * page** - the thread's own page, which the server names in the row's `ref`: the document with
  * the thread open, the issue's conversation, or `/agents/<id>/live` for an Agent row - **Copy
- * ref**, and the **Dismiss** that takes the row out of the Inbox, which in the Dismissed view
- * reads **Move to Inbox** (`DismissControl`).
+ * ref**, the **Dismiss** that takes the row out of the Inbox, which in the Dismissed view reads
+ * **Move to Inbox** (`DismissControl`), and the approval gate of the thread's issue
+ * (`ApprovalLines`).
  *
  * **Open page** is what `o` follows here (`data-inbox-owner`), as the card's **Open** is below
  * this column's width: the key opens the thread, never the issue it happens to sit on, and it
@@ -179,6 +248,7 @@ export function ThreadPaneHead({
   thread: MyReplyRow;
 }): ReactNode {
   const reference = threadReferenceRoute(thread);
+  const gate = approvalGateOf(thread);
   const page =
     sectionBlockId === undefined ? thread.ref : `${thread.ref}${blockFragment(sectionBlockId)}`;
   return (
@@ -192,6 +262,9 @@ export function ThreadPaneHead({
       </Link>
       {reference === undefined ? null : <CopyRefButton route={reference} />}
       <DismissControl shown thread={thread} />
+      {gate === undefined || gate.length === 0 ? null : (
+        <ApprovalLines area={undefined} areaDocument={undefined} gate={gate} />
+      )}
     </header>
   );
 }

@@ -1,4 +1,5 @@
-import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, describe, expect, jest, type Mock, spyOn, test } from "bun:test";
+import type { ApprovalGateLine } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -37,10 +38,14 @@ import type {
   CredentialPendingRow,
   Issue,
   IssueDetails,
+  MeInboxEntry,
   OpenAskRow,
 } from "../../api/types";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
+import { idlePriorityWrite, mockHeaderReads } from "../issue/header-fixture";
+import { IssueHeader } from "../issue/IssueHeader";
+import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -52,6 +57,7 @@ import { SnoozeWrites } from "./ask-snooze-fixture";
 import { Inbox } from "./Inbox";
 import {
   answerOneRead,
+  answerOpenAsks,
   FIXTURE_PROJECT_DEFAULT,
   installInboxApiMocks,
   issueAsk,
@@ -59,6 +65,7 @@ import {
   mockAskReads,
   mockInboxReads,
   oneReadAnswer,
+  oneReadEntry,
   refetchInboxReads,
   withWaitingOnPerson,
 } from "./inbox-fixture";
@@ -8138,4 +8145,225 @@ test("a row the reader defers hands the selection to the next one, and the last 
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
   }
+});
+
+// ----------------------------------------------------------------------------------------
+// The approval mark (R2): each row of an issue wears the approval state of its issue, from the
+// gate its entry of the one read carries (`approval_gate`), in the issue page's words.
+// ----------------------------------------------------------------------------------------
+
+describe("the approval mark", () => {
+  /** The spec of CORE-1 approved at its latest version: the gate of a root of a project gating
+   *  the spec alone. */
+  const APPROVED: ApprovalGateLine[] = [
+    {
+      approval: { latest_version: 1, state: "approved", version: 1 },
+      artifact_id: "artifact-1",
+      step: "spec",
+    },
+  ];
+  const ASK = issueAsk();
+  const THREAD = replyRow("c1");
+
+  /** Answers the one read with an ask and a thread of CORE-1, each entry carrying `gate`, or no
+   *  gate field at all where it is undefined, as a server older than the field answers; and every
+   *  read the rows and the reading column make beside it. */
+  function answerGatedRows(gate: ApprovalGateLine[] | undefined): () => void {
+    const entries: MeInboxEntry[] = [oneReadEntry(ASK), oneReadEntry(THREAD)].map((entry) =>
+      gate === undefined ? entry : { ...entry, approval_gate: gate }
+    );
+    mocks.getMeInbox.mockImplementation(async (query = {}) =>
+      query.state === "inbox"
+        ? { ...oneReadAnswer([]), entries, total: entries.length }
+        : oneReadAnswer([])
+    );
+    const reads = [
+      answerOpenAsks([]),
+      mockAskReads([ASK]),
+      spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
+      spyOn(api, "listComments").mockResolvedValue([]),
+    ];
+    return () => {
+      for (const read of reads) read.mockRestore();
+    };
+  }
+
+  /** The Inbox the page draws, or the drawer's, which draws no reading column at any width. */
+  function renderRows(pane?: false): () => void {
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <KeymapProvider>
+            <Inbox pane={pane} />
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    return view.unmount;
+  }
+
+  /** The approval marks the row `id` names wears. */
+  function marksOf(id: string): string[] {
+    return [...document.querySelectorAll(`[data-inbox-row="${id}"] [data-inbox-approval]`)].map(
+      (mark) => mark.textContent ?? ""
+    );
+  }
+
+  const ROWS = [ASK.id, `reply:${THREAD.thread_id}`];
+
+  test("each of the four row renderers draws one approval mark", async () => {
+    const restore = answerGatedRows(APPROVED);
+    try {
+      // Below the reading column's width: the ask's card (`InboxCardRow`) and the thread's
+      // (`ThreadCardRow`).
+      let unmount = renderRows();
+      await waitFor(() => expect(rowIds()).toEqual(expect.arrayContaining(ROWS)));
+      await waitFor(() => expect(ROWS.map(marksOf)).toEqual([["Approved v1"], ["Approved v1"]]));
+      unmount();
+
+      const narrow = widenToReadingPane();
+      try {
+        // Beside it: the two short rows (`AskShortRow`, `ThreadShortRow`).
+        unmount = renderRows();
+        await waitFor(() => expect(rowIds()).toEqual(expect.arrayContaining(ROWS)));
+        await waitFor(() => expect(ROWS.map(marksOf)).toEqual([["Approved v1"], ["Approved v1"]]));
+        expect(document.querySelector('[data-inbox-row] [data-inbox-thread-card=""]')).toBeNull();
+        unmount();
+
+        // The drawer's Inbox, cards at every width.
+        unmount = renderRows(false);
+        await waitFor(() => expect(rowIds()).toEqual(expect.arrayContaining(ROWS)));
+        await waitFor(() => expect(ROWS.map(marksOf)).toEqual([["Approved v1"], ["Approved v1"]]));
+        expect(
+          document.querySelector('[data-inbox-row] [data-inbox-thread-card=""]')
+        ).not.toBeNull();
+        unmount();
+      } finally {
+        narrow();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("a row whose entry carries no gate field draws no mark and no approval attribute", async () => {
+    const restore = answerGatedRows(undefined);
+    const unmount = renderRows();
+    try {
+      await waitFor(() => expect(rowIds()).toEqual(expect.arrayContaining(ROWS)));
+      for (const id of ROWS) {
+        const row = document.querySelector(`[data-inbox-row="${id}"]`);
+        expect(row?.querySelector("[data-inbox-approval]"), id).toBeNull();
+        expect(row?.textContent ?? "", id).not.toMatch(
+          /Not requested|Approved v|Awaiting approval/
+        );
+      }
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+
+  test("a step word this build does not know draws the state alone and is counted as the first step not approved", async () => {
+    // A newer Dispatch gates a step this build has no word for, ahead of the approved spec: it
+    // is the first step not approved, so the mark is its state, with no step word before it.
+    const restore = answerGatedRows([
+      {
+        approval: { latest_version: 1, state: "awaiting", waiting_on: "human" },
+        artifact_id: "artifact-9",
+        step: "thresholds",
+      },
+      {
+        approval: { latest_version: 1, state: "approved", version: 1 },
+        artifact_id: "artifact-1",
+        step: "spec",
+      },
+    ]);
+    const unmount = renderRows();
+    try {
+      await waitFor(() =>
+        expect(ROWS.map(marksOf)).toEqual([["Awaiting approval"], ["Awaiting approval"]])
+      );
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+
+  test("an issue read with no gate field leaves the issue page's one chip", async () => {
+    // A root issue of a project that gates both steps, read from a Dispatch older than the field:
+    // the page draws its one chip for the primary document, and no step it has not read.
+    const spec: Artifact = {
+      approval: { latest_version: 1, state: "awaiting", waiting_on: "human" },
+      created_at: "2026-09-09T00:00:00Z",
+      created_by: { id: "alice", kind: "user" },
+      id: "artifact-1",
+      issue_key: "CORE-1",
+      kind: "doc",
+      name: "spec.md",
+      primary: true,
+      project: "CORE",
+      ref_key: "CORE-1/spec",
+      session_id: null,
+      slug: "spec",
+      versions: [],
+    };
+    const issue = {
+      ...narrowIssueOf(ASK, "alice"),
+      artifacts: [spec],
+      children: [],
+      design_gates: [],
+      holder_state: null,
+      last_seen: null,
+      open_asks: [],
+      parent: null,
+      primary_artifact_id: "artifact-1",
+      progress: { children: null, tasks: null },
+      referenced_by_count: 0,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+      takeable_at: null,
+    } as IssueDetails;
+    const projects = spyOn(api, "listProjects").mockResolvedValue([
+      {
+        created_at: "2026-09-09T00:00:00Z",
+        gated_steps: ["criteria", "spec"],
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
+      },
+    ]);
+    const restoreReads = mockHeaderReads();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <MarginProvider>
+            <IssueHeader
+              documentArtifact={spec}
+              isClosed={false}
+              issue={issue}
+              priorityWrite={idlePriorityWrite}
+              state={stateForIssue(undefined, issue.key)}
+            />
+          </MarginProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      const stateActions = await screen.findByTestId("issue-state-actions");
+      expect(
+        within(stateActions).getAllByRole("button", { name: "Awaiting approval" })
+      ).toHaveLength(1);
+      expect(within(stateActions).queryByTestId("issue-approval-steps")).toBeNull();
+    } finally {
+      view.unmount();
+      restoreReads();
+      projects.mockRestore();
+    }
+  });
 });

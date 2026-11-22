@@ -386,7 +386,10 @@ func oneInboxPercentiles(readings []time.Duration) (string, time.Duration) {
 // of the reads it replaces on the base build, after one of each not counted, alternating which
 // build is read first, and prints both builds' p50, p95 and p99 on one line, with each of the base
 // build's reads apart and what each build answered. It fails where the one read's p50 is above
-// oneInboxReadBound times the base build's.
+// oneInboxReadBound times the base build's. For the reader whose Inbox holds the gated issues'
+// items (seedOneInboxGate), each reading of this build keeps its answer, and once its clock has
+// stopped the answer must carry an approval gate on every entry of those issues
+// (requireOneInboxGates): a build whose statement leaves the gate out fails there.
 func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInboxSide) {
 	t.Helper()
 	const one = "/api/v1/me/inbox?state=inbox"
@@ -398,9 +401,11 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 	parts := make([][]time.Duration, len(replaced))
 	var entries, asks, rows int
 	// The reading not counted keeps its answer, to say what each build answered; every counted one
-	// drops it as it arrives (baselineServer.read).
+	// drops it as it arrives (baselineServer.read), but this build's readings of the gated items'
+	// reader, which are read for their gates.
+	gated := reader.login == oneInboxHeavy && len(this.corpus.gateIssues) > 0
 	get := func(side *oneInboxSide, reading int, path string) apiAnswer {
-		if reading == 0 {
+		if reading == 0 || (gated && side == this) {
 			return oneInboxExpect(t, side.name+": "+path+" of "+reader.shape,
 				side.server.call(t, reader.login, http.MethodGet, path, nil), http.StatusOK)
 		}
@@ -408,6 +413,9 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 	}
 	readOne := func(reading int) {
 		answer := get(this, reading, one)
+		if gated {
+			requireOneInboxGates(t, reading, answer.body, this.corpus.gateIssues)
+		}
 		if reading == 0 {
 			var read meInboxResponse
 			if err := json.Unmarshal(answer.body, &read); err != nil {
@@ -470,6 +478,52 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 	if ratio > oneInboxReadBound {
 		t.Errorf("the one read of %s has p50 %.2fms, %.2f times the base build's %.2fms for the reads it replaces, above R11's %.2f",
 			reader.shape, msOf(thisP50), ratio, msOf(baseP50), oneInboxReadBound)
+	}
+}
+
+// requireOneInboxGates fails unless body, one answer of the one read, holds an entry of each of
+// issues and carries a gate of at least one line on every entry of them.
+func requireOneInboxGates(t *testing.T, reading int, body []byte, issues []string) {
+	t.Helper()
+	var read struct {
+		Entries []struct {
+			Ask *struct {
+				Issue *struct {
+					Key string `json:"key"`
+				} `json:"issue"`
+			} `json:"ask"`
+			Thread *struct {
+				Issue *struct {
+					Key string `json:"key"`
+				} `json:"issue"`
+			} `json:"thread"`
+			ApprovalGate []json.RawMessage `json:"approval_gate"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &read); err != nil {
+		t.Fatalf("reading %d: decode the one read for its gates: %v", reading, err)
+	}
+	held := map[string]int{}
+	for _, entry := range read.Entries {
+		key := ""
+		switch {
+		case entry.Ask != nil && entry.Ask.Issue != nil:
+			key = entry.Ask.Issue.Key
+		case entry.Thread != nil && entry.Thread.Issue != nil:
+			key = entry.Thread.Issue.Key
+		}
+		if !slices.Contains(issues, key) {
+			continue
+		}
+		if len(entry.ApprovalGate) == 0 {
+			t.Fatalf("reading %d: the one read answered a row of %s with no approval gate", reading, key)
+		}
+		held[key]++
+	}
+	for _, issue := range issues {
+		if held[issue] == 0 {
+			t.Fatalf("reading %d: the one read answered no row of the gated issue %s", reading, issue)
+		}
 	}
 }
 
