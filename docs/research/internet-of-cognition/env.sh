@@ -131,14 +131,45 @@
 # deployment repository's, which it clones at the commits sources.json pins when they are
 # missing or not whole. It reads which repository that is from IOC_DEPLOYMENT_REPO alone,
 # written <owner>/<name>, since this tree is public and names it nowhere, and refuses by
-# that name when it is not set. It reads GitHub through git and the REST API and never
+# that name when it is not set; a refusal it prints, and a line of git's it passes on from
+# that repository's fetch, names that variable and never its value (ioc_env_hidden). It
+# reads GitHub through git and the REST API and never
 # through gh, which in a Legion pod is scoped to this project's owners alone. It refuses,
 # with a line naming what it could not prepare and a non-zero status, rather than leaving a
 # variable pointing at something that is not there.
 
+# ioc_env_hidden <text>; prints <text> with the deployment repository's name, the value of
+# IOC_DEPLOYMENT_REPO, written as the literal $IOC_DEPLOYMENT_REPO wherever it stands, in
+# whatever case, since GitHub reads a name without case, so its address reads
+# https://github.com/$IOC_DEPLOYMENT_REPO: the one rule by which a line that can carry the
+# name, a refusal here or a stop of check.sh, a line of git's or curl's they quote among
+# them, names the input and never its value. A value with no / names no repository, and
+# the text is printed as it stands. It runs by bash alone.
+ioc_env_hidden() {
+    local text="$1" value="${IOC_DEPLOYMENT_REPO:-}" nocase=0
+    if [[ "$value" == ?*/?* ]]; then
+        shopt -q nocasematch && nocase=1
+        shopt -s nocasematch
+        text="${text//"$value"/'$IOC_DEPLOYMENT_REPO'}"
+        [ "$nocase" = 1 ] || shopt -u nocasematch
+    fi
+    printf '%s' "$text"
+}
+
 ioc_env_refuse() {
-    printf 'env.sh cannot prepare %s: %s\n' "$1" "$2" >&2
+    printf 'env.sh cannot prepare %s: %s\n' "$(ioc_env_hidden "$1")" "$(ioc_env_hidden "$2")" >&2
     return 1
+}
+
+# ioc_env_hidden_run <command...>; runs the command, its output and error output read whole
+# and printed on stderr by ioc_env_hidden, so a line of git's that names the deployment
+# repository's address names the input, and returns the command's status.
+ioc_env_hidden_run() {
+    local said status
+    said="$("$@" 2>&1)"
+    status=$?
+    [ -z "$said" ] || printf '%s\n' "$(ioc_env_hidden "$said")" >&2
+    return "$status"
 }
 
 ioc_env_need() {
@@ -226,10 +257,10 @@ ioc_env_clone_private() {
     rm -rf "$dir" && mkdir -p "$dir" && git -C "$dir" init --quiet >&2 ||
         ioc_env_refuse "the clone $name" "git init of $dir failed" || return 1
     git -C "$dir" remote add origin "$url" ||
-        ioc_env_refuse "the clone $name" "git remote add of $url failed" || return 1
+        ioc_env_refuse "the clone $name" "git remote add of https://github.com/\$$from failed" || return 1
     # shellcheck disable=SC2086
-    ioc_env_git -C "$dir" fetch --quiet --filter=blob:none --no-tags origin $commits >&2 ||
-        ioc_env_refuse "the clone $name" "git fetch of the commits sources.json pins from $url failed, so git cannot read it here" || return 1
+    ioc_env_hidden_run ioc_env_git -C "$dir" fetch --quiet --filter=blob:none --no-tags origin $commits ||
+        ioc_env_refuse "the clone $name" "git fetch of the commits sources.json pins from https://github.com/\$$from failed, so git cannot read it here" || return 1
     : >"$dir/.git/ioc-blobs"
     for commit in $commits; do
         # shellcheck disable=SC2086
@@ -237,9 +268,9 @@ ioc_env_clone_private() {
             ioc_env_refuse "the clone $name" "it holds no tree of $commit" || return 1
     done
     # shellcheck disable=SC2086
-    awk '$2 == "blob" { print $3 }' "$dir/.git/ioc-blobs" | sort -u | ioc_env_git -C "$dir" \
-        -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head --filter=blob:none --stdin origin >&2 ||
-        ioc_env_refuse "the clone $name" "git fetch of the files under $(printf '%s, ' $paths)at the pinned commits, from $url, failed" || return 1
+    awk '$2 == "blob" { print $3 }' "$dir/.git/ioc-blobs" | sort -u | ioc_env_hidden_run ioc_env_git -C "$dir" \
+        -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head --filter=blob:none --stdin origin ||
+        ioc_env_refuse "the clone $name" "git fetch of the files under $(printf '%s, ' $paths)at the pinned commits, from https://github.com/\$$from, failed" || return 1
     printf '%s\n' "$want" >"$stamp" ||
         ioc_env_refuse "the clone $name" "its stamp $stamp could not be written"
 }

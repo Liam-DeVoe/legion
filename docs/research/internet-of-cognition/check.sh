@@ -79,9 +79,17 @@
 # signal ended; a helper by its words; count.py by its own line (count_run); a run of the
 # gate by the record fixture_run or gate_run writes for it, of a run that could not run,
 # which its reader reads by the rule of the ending record below; and a mode past its own
-# bound by the record run_mode writes, every assertion it declares unrun. SIGPIPE alone is
-# outside it, since a reader that stopped reading, as head does, sends it; a child it ends,
-# and every other status, keep the meaning their caller gives them. The bounds, each at
+# bound by the record run_mode writes, every assertion it declares unrun. The ending of a
+# run, which runs in the run's own shell outside any mode's subshell, finish, run_ending
+# and run_mode's own reading of a mode past its bound among it, and check.test.sh's summary,
+# which run_ending writes, reads each tool's status by the same functions (ending_mode); a
+# tool a signal ends there stops the ending (ending_stop) rather than a mode, nothing more
+# is read, and the run writes that stop through its one record: exit 2, every unit it
+# declares that had not already stopped could not run, of the kind environment, for that
+# stop, the run itself when what it declares was not read whole, and the stop's line is its
+# last, a record whose own write a signal ended written again by printf alone. SIGPIPE alone
+# is outside it, since a reader that stopped reading, as head does, sends it; a child it
+# ends, and every other status, keep the meaning their caller gives them. The bounds, each at
 # least three times the slowest measured run of what it bounds, with where and when that
 # was measured, are written beside BOUND_PROGRAM below; IOC_CHILD_BOUND, a
 # whole number of seconds, lowers each bound of a child above it to it, and no bound of a
@@ -91,8 +99,8 @@
 # terminal stops a program of another group that reads it, and an interrupt, a TERM or a
 # HUP a shell gets while it waits for a bounded child is passed to the child's group,
 # which then ends by that signal. What a mode runs before its prerequisites are read, the
-# prerequisites themselves, the ending, and what check.test.sh runs itself outside a run
-# of the gate are outside the rule.
+# prerequisites themselves, and what check.test.sh runs itself outside a run of the gate
+# before its summary are outside the rule.
 #
 # The ending record. Every run of a mode writes how it ended as one record beside its
 # text, a file of lines of tab-separated fields: status and its exit status; line and its
@@ -172,8 +180,9 @@
 # function, live_read, in the mode's own shell before any assertion over what it reads
 # judges: the judgement and the two records under check from Dispatch, whose copies every
 # row that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
-# Dispatch API, the GitHub budget, GitHub's answer to git ls-remote of the private
-# repository rows read, the default branch and its fetch, the fetch of each commit a
+# Dispatch API, the GitHub budget, GitHub's own name for the deployment repository and its
+# answer to git ls-remote of that private repository rows read, the default branch and its
+# fetch, the fetch of each commit a
 # landed step merged in another pull request names, the fetch of each
 # pinned clone, and the run of coordination/count.py, the walker of the count, which
 # reads the feed of the count's window, so that a read inside it that fails is that feed
@@ -213,11 +222,13 @@
 #
 # Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
 # default, so each mode declares what it needs in one table, prerequisite_table below: the
-# tools on PATH, the history, the clones and the environment variables, each with what
-# provides it. One step, prerequisites, checks every line of the mode before its first live
-# read and its first assertion, and one that is missing ends the mode exit 2, naming it and,
-# at the end of the line, what provides it. --help prints the same table after this header,
-# from the same function, so the list a reader reads is the list the mode checks.
+# tools on PATH, the history, the clones, the environment variables, and a git or a grep
+# that reads a Perl-compatible regular expression where the mode reads a token an author
+# wrote by one (whole_token), each with what provides it. One step, prerequisites, checks
+# every line of the mode before its first live read and its first assertion, and one that
+# is missing ends the mode exit 2, naming it and, at the end of the line, what provides it.
+# --help prints the same table after this header, from the same function, so the list a
+# reader reads is the list the mode checks.
 # --self-test needs its own lines and every line of --replay, --shape, --citations and
 # --landed, since it runs each of them; check.test.sh checks the lines of --self-test alone
 # before its first case, since each run a case makes checks its own mode's. Before any of
@@ -238,7 +249,15 @@
 # no entry for it. A repository's files are read from a clone at the commits sources.json
 # pins, with git show, git log and git grep: the three projects' clones and the deployment
 # repository's, a private repository IOC_DEPLOYMENT_REPO names, since this public tree names
-# it nowhere, which env.sh fetches blobless through the machine's git credential helper
+# it nowhere, read as GitHub names it: GitHub reads an owner and a name without case, and
+# the rows compare the name with what GitHub and the repository write, so the value a reader
+# gives, in whatever case, is read once, before env.sh or any row, as GitHub's own full_name
+# for it, which IOC_DEPLOYMENT_REPO then holds for env.sh and every row; no stop of a run
+# and no refusal of env.sh names the value: each writes the input, $IOC_DEPLOYMENT_REPO,
+# in its place and in place of its address, in a line of git's or curl's it quotes too
+# (deployment_repository_read, deployment_hidden, env.sh's ioc_env_hidden); env.sh fetches
+# that repository blobless through the
+# machine's git credential helper
 # (env.sh's ioc_env_clone_private). What only the REST API answers, a pull request's reviews,
 # its times and its size, is read with curl, sending the header file of the token git
 # credential fill gives for that repository ("The GitHub tokens stand on no command line"
@@ -776,10 +795,12 @@ fi
 # scratch. IOC_ENDING is unset here, so that no run this one makes writes into it, and
 # what an earlier run left at that path is removed, so it is never read as this run's.
 # ENDING_LINES gathers the record's lines in this shell until run_ending writes it whole,
-# and SCRATCH_LOST, unset until scratch_lost probes the scratch as the run ends, holds
-# that probe's answer.
+# SCRATCH_LOST, unset until scratch_lost probes the scratch as the run ends, holds that
+# probe's answer, and ENDING_STOP the line of the first stop of the ending (ending_stop),
+# empty until a tool of the ending is ended by a signal.
 ENDING="${ENDING_GIVEN:-${RUN_SCRATCH:+$RUN_SCRATCH/ending}}"
 ENDING_LINES=""
+ENDING_STOP=""
 unset IOC_ENDING SCRATCH_LOST
 [ -z "$ENDING" ] || rm -f -- "$ENDING" "$ENDING.new"
 # Every PASS and FAIL a mode reports is also written here, one line each, so its verdict
@@ -875,6 +896,12 @@ usage() {
 #   clone      the directory IOC_CLONES names can be made, under which the mode clones each
 #              repository at the commit sources.json pins; a fetch that fails is a live
 #              source that did not answer
+#   pcre       the program, git or grep, reads a Perl-compatible regular expression, which
+#              each search of a token an author wrote is read by (whole_token): git grep -P,
+#              or grep -P, finds a whole token in a line written for it (pcre_refusal), as a
+#              program built without PCRE does not, so such a machine is never read as a
+#              deliverable whose tokens no file holds; a program not on PATH is left to its
+#              tool line
 REPOSITORY_FORM='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
 prerequisite_table() {
     cat <<'TABLE'
@@ -887,15 +914,17 @@ replay|tool|go|runs the two recorded commands that count rows of our own table|c
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
-replay|variable|IOC_DEPLOYMENT_REPO|the deployment repository, as <owner>/<name>, which this public tree names nowhere: git ls-remote reads it first, env.sh clones it under IOC_CLONES/deployment and writes the header file of its token, and the rows that read it name it by this variable|export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from
+replay|variable|IOC_DEPLOYMENT_REPO|the deployment repository, as <owner>/<name>, which this public tree names nowhere: GitHub's REST API reads its own name for it first, which the variable then holds for env.sh and every row, git ls-remote reads it, env.sh clones it under IOC_CLONES/deployment and writes the header file of its token, and the rows that read it name it by this variable|export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from
 replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and the deployment repository under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 replay|tool|timeout|ends the mode, and each child of it the mode bounds, rows and count.py among them, at its bound, in a process group of its own (the header's "Every child the gate waits on ends")|apt-get install coreutils
+replay|pcre|grep|reads the clone commit each evidence file of mas-lab names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
 shape|tool|git|reads the history of this pull request|apt-get install git
 shape|tool|jq|reads sources.json|apt-get install jq
 shape|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 shape|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
 shape|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
 citations|tool|git|resolves every citation into a clone or into this repository|apt-get install git
+citations|pcre|git|reads each symbol part a citation names, its local part and each component of its prefix as a whole token, with git grep -P (whole_token, token_held)|a git built with PCRE (USE_LIBPCRE), as the distribution's git is: apt-get install git
 citations|tool|jq|reads claims.jsonl and sources.json|apt-get install jq
 citations|tool|python3|runs citations.py, the one extraction rule|apt-get install python3
 citations|tool|curl|reads each published page's live address|apt-get install curl
@@ -907,6 +936,7 @@ landed|tool|jq|reads the landed list of sources.json|apt-get install jq
 landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of each step not landed|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
 landed|tool|timeout|ends the mode, and each child of it the mode bounds, proofs among them, at its bound, in a process group of its own|apt-get install coreutils
+landed|pcre|grep|reads each record the Not landed line of a step names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
 published|tool|git|fetches the default branch into the run's scratch|apt-get install git
 published|tool|jq|reads sources.json|apt-get install jq
 published|tool|curl|reads the Dispatch API|apt-get install curl
@@ -967,10 +997,42 @@ prerequisite_missing() {
         mkdir -p "$CLONES" 2>/dev/null && return 1
         printf '%s names %s, which this run cannot make' "$name" "$CLONES"
         ;;
+    pcre)
+        command -v "$name" >/dev/null 2>&1 || return 1
+        value="$(pcre_refusal "$name")" || return 1
+        printf "the tool %s reads no Perl-compatible regular expression, which each search of a token an author wrote reads it by (whole_token): %s" "$name" "$value"
+        ;;
     *)
         printf 'prerequisite_table names the kind %s, which no rule here checks' "$kind"
         ;;
     esac
+}
+
+# pcre_refusal <git|grep>; asks the program to find a whole token (whole_token) in a line
+# written for it under this run's scratch, by git grep --no-index -P or by grep -P. It
+# returns 1 when the program finds it, and otherwise prints how the program ended, its
+# command, its status and the first line it wrote to stderr, as a git built without PCRE
+# writes "fatal: cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE", and
+# returns 0.
+pcre_refusal() {
+    local probe="$RUN_SCRATCH/pcre-probe" pattern status said how
+    pattern="$(whole_token pcre_probe)"
+    printf 'a pcre_probe line\n' >"$probe"
+    case "$1" in
+    git)
+        how="git grep -P"
+        git -C "$RUN_SCRATCH" grep --no-index -qP -- "$pattern" pcre-probe 2>"$probe.err"
+        ;;
+    *)
+        how="$1 -P"
+        "$1" -qP -- "$pattern" "$probe" 2>"$probe.err"
+        ;;
+    esac
+    status=$?
+    [ "$status" -eq 0 ] && return 1
+    said="$(head -1 "$probe.err" 2>/dev/null)"
+    printf "%s ended exit %s, '%s'" "$how" "$status" "${said:0:200}"
+    return 0
 }
 
 # prerequisites_missing <mode>; prints each prerequisite of the mode that is missing, each
@@ -1052,10 +1114,19 @@ fail() {
 # with its last line and exit 0, 1 or 2. It relies on one verdict per assertion, printed
 # after all of that assertion's parts have run: a PASS printed before a later part would
 # stand however that part ended, so every assertion of more than one part prints its PASS
-# last.
+# last. It runs in the run's own shell, after the mode's subshell, and its tools run by the
+# functions ending_mode makes: a tool a signal ends while it reads the declared list or a
+# verdict stops the ending (ending_stop), finish reads nothing more, and run_ending writes
+# every assertion it declares as one that could not run for that stop, so a killed grep is
+# never read as no PASS, nor a killed awk as nothing declared. The declared list is read
+# whole or not at all, every stage of its pipeline's status read (pipefail).
 finish() {
-    local family declared kind="" stopped=""
-    declared="$(declared_assertions "$1")"
+    local family declared kind="" stopped="" verdict
+    ending_mode
+    if ! declared="$(set -o pipefail && declared_assertions "$1")"; then
+        declared=""
+        ending_stopped || ending_stop "the list of the assertions --$1 declares, which declared_assertions reads, could not be read"
+    fi
     scratch_lost
     if [ -n "$SCRATCH_LOST" ]; then
         while IFS= read -r family; do
@@ -1071,23 +1142,47 @@ finish() {
     while IFS= read -r family; do
         [ -n "$family" ] || continue
         ending_add declared "$family"
+        ending_stopped && continue
         if grep -qxF "FAIL $family" "$REPORTED"; then
-            ending_add failed "$family"
+            verdict=failed
+        elif ending_stopped; then
+            continue
         elif grep -qxF "PASS $family" "$REPORTED"; then
-            ending_add passed "$family"
+            verdict=passed
+        elif ending_stopped; then
+            continue
         elif [ -n "$stopped" ]; then
             ending_add unrun "$family" "$kind" "$stopped"
+            continue
         else
             printf 'FAIL %s: it reported no verdict, so its code crashed, exited or was skipped before it passed or failed\n' "$family"
-            ending_add failed "$family"
+            verdict=failed
         fi
+        ending_add "$verdict" "$family"
     done <<<"$declared"
-    while IFS= read -r family; do
-        [ -n "$family" ] || continue
-        printf 'FAIL %s: --%s reported it, and the assertion table declares no such assertion for --%s\n' "$family" "$1" "$1"
-        ending_add failed "$family"
-    done < <(cut -d' ' -f2 "$REPORTED" | sort -u | grep -vxF -f <(printf '%s\n' "$declared"))
+    if ! ending_stopped; then
+        while IFS= read -r family; do
+            ending_stopped && break
+            [ -n "$family" ] || continue
+            printf 'FAIL %s: --%s reported it, and the assertion table declares no such assertion for --%s\n' "$family" "$1" "$1"
+            ending_add failed "$family"
+        done < <(cut -d' ' -f2 "$REPORTED" | sort -u | grep -vxF -f <(printf '%s\n' "$declared"))
+    fi
     run_ending assertions
+}
+
+# deployment_hidden <text>; <text> by env.sh's ioc_env_hidden, the one rule by which a line
+# that can carry the deployment repository's name writes the input, $IOC_DEPLOYMENT_REPO,
+# in place of its value and of its address, in whatever case, a line of git's or curl's a
+# stop quotes among them. It loads env.sh's functions when they are not loaded, and prints
+# <text> as it stands where env.sh cannot load. Each stop of a run is written through it:
+# cannot_run, evidence_stops, bound_stop and ending_stop.
+deployment_hidden() {
+    if declare -F ioc_env_hidden >/dev/null || { env_functions && declare -F ioc_env_hidden >/dev/null; }; then
+        ioc_env_hidden "$1"
+    else
+        printf '%s' "$1"
+    fi
 }
 
 # cannot_run <kind> <reason>; the third ending, beside every assertion passed (exit 0) and
@@ -1097,7 +1192,8 @@ finish() {
 # ends the mode's subshell; run_ending prints no line after it when nothing failed, so it
 # stands last.
 cannot_run() {
-    local line="check.sh cannot run${2//[$'\t\n']/ }"
+    local line
+    line="$(deployment_hidden "check.sh cannot run${2//[$'\t\n']/ }")"
     printf '%s\n' "$line"
     printf '%s\t%s\n' "$1" "$line" >"$RUN_SCRATCH/stopped"
     exit 2
@@ -1109,7 +1205,8 @@ cannot_run() {
 # one that could not run for it, and ends the mode's subshell. It is called only after a
 # FAIL, so the run ends exit 1 by the precedence of the header, never exit 2.
 evidence_stops() {
-    local line="${1//[$'\t\n']/ }"
+    local line
+    line="$(deployment_hidden "${1//[$'\t\n']/ }")"
     printf '%s\n' "$line"
     printf 'evidence\t%s\n' "$line" >"$RUN_SCRATCH/stopped"
     exit 2
@@ -1183,18 +1280,19 @@ bound_program() {
     bounded "$BOUND_PROGRAM" "the program '${words:0:200}'" "$@"
 }
 
-# bound_tool <tool> [<argument>...]; a local text tool of BOUND_TOOLS a mode runs by name.
-# It runs with no bound and no group of its own, and its status is read where it runs: a
-# signal, a status of 128 and a signal's number but SIGPIPE's, ends the mode by bound_stop,
-# naming the tool with its words and the function that ran it, before what it printed is
-# read; every other status is returned as it stands.
+# bound_tool <tool> [<argument>...]; a local text tool of BOUND_TOOLS a mode, or the
+# ending, runs by name. It runs with no bound and no group of its own, and its status is
+# read where it runs: a signal, a status of 128 and a signal's number but SIGPIPE's, stops
+# the shell's TOOL_STOP, bound_stop in a mode (bound_mode) and ending_stop in the ending
+# (ending_mode), naming the tool with its words and the function that ran it, before what
+# it printed is read; every other status is returned as it stands.
 bound_tool() {
     local status name words
     command "$@"
     status=$?
     if [ "$status" -gt 128 ] && [ "$status" != 141 ] && name="$(kill -l $((status - 128)) 2>/dev/null)"; then
         words="$(IFS=' ' && printf '%s' "$*")"
-        bound_stop "the program '${words:0:200}', which ${FUNCNAME[2]:-the mode} ran, was ended by signal $((status - 128)) (SIG$name)"
+        "$TOOL_STOP" "the program '${words:0:200}', which ${FUNCNAME[2]:-the mode} ran, was ended by signal $((status - 128)) (SIG$name)"
     fi
     return "$status"
 }
@@ -1206,7 +1304,7 @@ bound_tool() {
 # for has ended.
 bound_stop() {
     if [ ! -e "$RUN_SCRATCH/stopped.unprinted" ]; then
-        printf 'environment\tcheck.sh cannot run --%s: %s\n' "$MODE" "${1//[$'\t\n']/ }" >"$RUN_SCRATCH/stopped"
+        printf 'environment\tcheck.sh cannot run --%s: %s\n' "$MODE" "$(deployment_hidden "${1//[$'\t\n']/ }")" >"$RUN_SCRATCH/stopped"
         : >"$RUN_SCRATCH/stopped.unprinted"
     fi
     [ "$BASHPID" = "${MODE_SHELL:-$BASHPID}" ] || kill -USR1 "$MODE_SHELL" 2>/dev/null
@@ -1219,11 +1317,23 @@ bound_abandon() {
     exit 2
 }
 
+# tool_functions; makes each local text tool of BOUND_TOOLS that PATH holds a function of
+# its name, in the shell that calls it, that runs it by bound_tool. A tool PATH does not
+# hold is left as it is, so a tool that is missing is still missing.
+tool_functions() {
+    local program
+    for program in $BOUND_TOOLS; do
+        type -P "$program" >/dev/null 2>&1 || continue
+        eval "$program() { bound_tool $program \"\$@\"; }"
+    done
+}
+
 # bound_mode; readies the mode's own shell for the rule once its prerequisites are read:
 # it is the shell a stop reaches (MODE_SHELL), it reads /dev/null for an input that is a
 # terminal or closed, each program of BOUND_PROGRAMS that PATH holds becomes a function of
 # its name that runs it by bound_program, as env.sh's ioc_env_program does a program it
-# runs by its path, and each tool of BOUND_TOOLS one that runs it by bound_tool.
+# runs by its path, and each tool of BOUND_TOOLS one that runs it by bound_tool, which a
+# signal stops by bound_stop.
 bound_mode() {
     local program
     MODE_SHELL="$BASHPID"
@@ -1235,11 +1345,43 @@ bound_mode() {
         type -P "$program" >/dev/null 2>&1 || continue
         eval "$program() { bound_program $program \"\$@\"; }"
     done
-    for program in $BOUND_TOOLS; do
-        type -P "$program" >/dev/null 2>&1 || continue
-        eval "$program() { bound_tool $program \"\$@\"; }"
-    done
+    TOOL_STOP=bound_stop
+    tool_functions
     ioc_env_program() { bound_program "$@"; }
+}
+
+# ending_mode; readies the shell the ending runs in for the same rule (the header's "Every
+# child the gate waits on ends"): the run's own shell, outside any mode's subshell, where
+# finish, run_ending and run_mode's own reading of a mode past its bound run, and the shell
+# of check.test.sh at its summary. Each tool of BOUND_TOOLS that PATH holds becomes the
+# function bound_mode makes of it, whose status bound_tool reads where it runs, and a
+# signal that ends one stops the ending (ending_stop), since no mode is left there to stop
+# and the ending is what writes the run's record. It readies a shell once.
+ending_mode() {
+    [ "${ENDING_SHELL:-}" != "$BASHPID" ] || return 0
+    ENDING_SHELL="$BASHPID" TOOL_STOP=ending_stop
+    tool_functions
+}
+
+# ending_stop <reason>; the stop of the ending, from its own shell or from any subshell of
+# it, a substitution or a stage of a pipeline: the first stop's line, check.sh cannot run,
+# the run (RUN_WHAT) and <reason>, is held in ENDING_STOP and in $RUN_SCRATCH/ending-stopped,
+# which a subshell's stop reaches its shell by, and a later stop leaves it as it stands. It
+# exits nothing: what read the tool reads its status, the ending reads no more once
+# ending_stopped answers, and run_ending writes the record of the stop.
+ending_stop() {
+    ending_stopped && return 0
+    ENDING_STOP="$(deployment_hidden "check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: ${1//[$'\t\n']/ }")"
+    printf '%s\n' "$ENDING_STOP" >"$RUN_SCRATCH/ending-stopped" 2>/dev/null
+    return 0
+}
+
+# ending_stopped; returns 0, with ENDING_STOP holding the line of the first stop of the
+# ending, when the ending stopped, in this shell or in a subshell of it, and 1 when it did
+# not. It reads by bash alone.
+ending_stopped() {
+    [ -n "$ENDING_STOP" ] || { [ -s "$RUN_SCRATCH/ending-stopped" ] && IFS= read -r ENDING_STOP <"$RUN_SCRATCH/ending-stopped"; }
+    [ -n "$ENDING_STOP" ]
 }
 
 # bound_record <run> <name> <what>; the record of a run of the gate that bounded_run ended
@@ -1255,26 +1397,25 @@ bound_record() {
 # run_mode <mode>; runs the mode whole under its bound (mode_bound): this script runs
 # itself again for the mode, with IOC_MODE_INNER set and the record this run writes named,
 # by bounded_run, with no IOC_CHILD_BOUND lowering it, and ends with that run's status; when
-# a signal or the bound ended it, it prints the line and writes the record, every assertion
-# the mode declares unrun, of the kind environment. The run it makes runs the mode in a
-# subshell, after the one check of its prerequisites and bound_mode, so that however its
-# code ends the verdict still reads what it reported, then ends the run by finish's
-# verdict: exit 0, 1 or 2.
+# a signal or the bound ended it, that end is the stop of this run's ending (ending_stop),
+# and run_ending writes the record, every assertion the mode declares unrun, of the kind
+# environment, and prints the line. The run it makes runs the mode in a subshell, after the
+# one check of its prerequisites and bound_mode, so that however its code ends the verdict
+# still reads what it reported, then ends the run by finish's verdict: exit 0, 1 or 2.
 run_mode() {
-    local status line family
+    local status declared family
     MODE="$1"
     if [ -z "$MODE_INNER" ]; then
         [ ! -t 0 ] || exec </dev/null
         CHILD_BOUND_CAP="" IOC_MODE_INNER=1 IOC_ENDING="$ENDING" bounded_run "$(mode_bound "$1")" bash "${BASH_SOURCE[0]}" "--$1"
         status=$?
         [ -n "$BOUND_ENDED" ] || return "$status"
-        line="check.sh cannot run --$1: the mode was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
-        printf '%s\n' "$line"
+        ending_mode
+        ending_stop "the mode was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+        declared="$(set -o pipefail && declared_assertions "$1")" || declared=""
         while IFS= read -r family; do
-            [ -n "$family" ] || continue
-            ending_add declared "$family"
-            ending_add unrun "$family" environment "$line"
-        done <<<"$(declared_assertions "$1")"
+            [ -z "$family" ] || ending_add declared "$family"
+        done <<<"$declared"
         run_ending assertions
         return
     fi
@@ -1304,12 +1445,21 @@ ending_add() {
 # case that could not run with its own run's reason. When the run's own scratch takes no
 # write as it ends, what the run wrote there may be lost, so every unit it declared could
 # not run, of the kind environment, the run ends exit 2 whatever it judged, and the last
-# line names the scratch. It writes the record whole, in one write under a temporary name
-# renamed into place, prints the last line, and returns the status. A record it cannot
-# write ends the run exit 2, whatever it judged, with a last line that names the record
-# and then quotes the line the record would have held.
+# line names the scratch. When the ending stopped (ending_stop), a tool of the ending, of
+# finish, of run_mode or of run_ending itself, ended by a signal, nothing it judged is read
+# whole: every unit it declares that had not already stopped, with the kind and the reason
+# its own record holds, could not run, of the kind environment, for that stop, the run
+# itself (RUN_WHAT) when nothing declared was read, and the run ends exit 2 with the stop's
+# line as its last. It writes the record whole, in one write under a temporary name renamed
+# into place, prints the last line, and returns the status; when the write's own tool, mv,
+# is the one a signal ended, it writes the record again as the stop's by printf alone, as
+# early_end writes one, which run_ending <unit> printf asks of it. A record it cannot write
+# ends the run exit 2, whatever it judged, with a last line that names the record and then
+# quotes the line the record would have held. Its tools run by the functions ending_mode
+# makes.
 run_ending() {
-    local unit="$1" lines="$ENDING_LINES" field name kind reason total=0 failed=0 unrun=0 failed_names="" unrun_names="" unrun_cases="" first="" status line lost="" why
+    local unit="$1" direct="${2:-}" lines="$ENDING_LINES" field name kind reason total=0 failed=0 unrun=0 failed_names="" unrun_names="" unrun_cases="" first="" status line lost="" stop="" pending="" units=0 why written
+    ending_mode
     scratch_lost
     if [ -n "$SCRATCH_LOST" ]; then
         lost="check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: its own scratch $RUN_SCRATCH takes no write as it ends: $SCRATCH_LOST, so nothing it judged is read, since what it wrote there may be lost"
@@ -1318,6 +1468,24 @@ run_ending() {
             [ "$field" = declared ] || continue
             lines="$lines$field"$'\t'"$name"$'\n'"unrun"$'\t'"$name"$'\t'"environment"$'\t'"$lost"$'\n'
         done <<<"$ENDING_LINES"
+    elif ending_stopped; then
+        # Each declared unit is followed by at most one line of its own, its verdict, so a
+        # unit whose next line is no unrun of its own could not run for the stop.
+        stop="$ENDING_STOP" lines=""
+        while IFS=$'\t' read -r field name kind reason; do
+            case "$field" in
+            declared)
+                [ -z "$pending" ] || lines="$lines"unrun$'\t'"$pending"$'\t'environment$'\t'"$stop"$'\n'
+                lines="$lines"declared$'\t'"$name"$'\n' pending="$name" units=$((units + 1))
+                ;;
+            unrun)
+                lines="$lines"unrun$'\t'"$name"$'\t'"$kind"$'\t'"$reason"$'\n'
+                [ "$name" != "$pending" ] || pending=""
+                ;;
+            esac
+        done <<<"$ENDING_LINES"
+        [ -z "$pending" ] || lines="$lines"unrun$'\t'"$pending"$'\t'environment$'\t'"$stop"$'\n'
+        [ "$units" -gt 0 ] || lines=declared$'\t'"$RUN_WHAT"$'\n'unrun$'\t'"$RUN_WHAT"$'\t'environment$'\t'"$stop"$'\n'
     fi
     while IFS=$'\t' read -r field name kind reason; do
         case "$field" in
@@ -1337,6 +1505,9 @@ run_ending() {
     if [ -n "$lost" ]; then
         status=2
         line="$lost"
+    elif [ -n "$stop" ]; then
+        status=2
+        line="$stop"
     elif [ "$failed" -gt 0 ]; then
         status=1
         if [ "$unit" = cases ]; then
@@ -1356,12 +1527,22 @@ run_ending() {
         line="all $total $unit passed"
     fi
     line="${line//[$'\t\n']/ }"
-    if ! why="$({ printf 'status\t%s\nline\t%s\n%s' "$status" "$line" "$lines" >"$ENDING.new"; } 2>&1 && mv -f -- "$ENDING.new" "$ENDING" 2>&1)"; then
+    if [ -z "$direct" ]; then
+        why="$({ printf 'status\t%s\nline\t%s\n%s' "$status" "$line" "$lines" >"$ENDING.new"; } 2>&1 && mv -f -- "$ENDING.new" "$ENDING" 2>&1)"
+    else
+        why="$({ printf 'status\t%s\nline\t%s\n%s' "$status" "$line" "$lines" >"$ENDING"; } 2>&1)"
+    fi
+    written=$?
+    if [ "$written" != 0 ]; then
         rm -f -- "$ENDING.new" 2>/dev/null
+        if [ -z "$direct$lost$stop" ] && ending_stopped; then
+            run_ending "$unit" printf
+            return
+        fi
         printf '%s\n' "check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: its ending record, $ENDING, cannot be written: ${why##*: }, so no reader reads this run, which ended: $line"
         return 2
     fi
-    { [ "$status" = 2 ] && [ "$unit" = assertions ] && [ -z "$lost" ]; } || printf '%s\n' "$line"
+    { [ "$status" = 2 ] && [ "$unit" = assertions ] && [ -z "$lost$stop" ]; } || printf '%s\n' "$line"
     return "$status"
 }
 
@@ -1707,8 +1888,9 @@ PY
 # live_read <source> <file> <command...>; the one read of a live source the gate makes
 # itself, which every mode makes in its own shell before any assertion over what it reads
 # judges: the judgement and the records under check from Dispatch, a reference Dispatch is
-# asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's answer
-# to git ls-remote of the private repository rows read (private_repository_read), a clone's
+# asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's own name
+# for the deployment repository (deployment_repository_read) and its answer to git ls-remote
+# of that private repository rows read (private_repository_read), a clone's
 # fetch, and the run of coordination/count.py over the feed of the count's window
 # (count_load); a recorded command's own reads are the row's, which source_answer reads
 # (the header's live-read rule). It runs the command, writes what it printed into <file>,
@@ -2568,7 +2750,10 @@ failed_read() {
 # d-4636-files, d-4636-merged, n-3176-pr, tc-review-docs-only, tc-review-both-run,
 # tc-input-1 and tc-input-2, and evidence/concord-build-run.sh, which tc-rng-2 runs, makes
 # two more. A row or a script that comes to read that API, or a corpus that takes another
-# page, changes them.
+# page, changes them. One request more is the gate's own and is not in the total: its read
+# of GitHub's own name for the deployment repository (deployment_repository_read), made
+# with that repository's header file before the budget is read, so the budget GitHub
+# answers here already holds it, and the total is the requests still to come.
 GITHUB_CORPUS_REQUESTS=207
 GITHUB_ROW_REQUESTS=11
 github_budget() {
@@ -2590,6 +2775,58 @@ github_budget() {
     cannot_run source " --replay now: $budget has $remaining of its $limit requests left, and this mode makes $requests: $GITHUB_CORPUS_REQUESTS to read env.sh's review corpus and $GITHUB_ROW_REQUESTS for the rows. The budget resets at $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")."
 }
 
+# deployment_repository_read
+#
+# IOC_DEPLOYMENT_REPO is an input a reader writes, and GitHub reads an owner and a name
+# without case, so a value written with capitals passes the prerequisite step, git ls-remote
+# and env.sh's clone, and the rows that compare it with what GitHub and the repository write,
+# as d-87's and n-collector-keep-keys's sed of the operator's prefix, n-spend-call-cost's,
+# n-arms-precedent's jq == against GitHub's full_name and n-3176-pr's grep -F, then fail on
+# evidence that holds, and print what their sed no longer hides. So the input is read once,
+# where it enters: after github_headers has written the header files and before the budget,
+# env.sh or any row, the gate reads GitHub's own full_name for it, with the deployment
+# repository's header file, through live_read, and exports IOC_DEPLOYMENT_REPO as that name
+# for env.sh and every row, writing the header files again for it when it differs. A read
+# that gets no answer, or any answer but the repository's or a 404, ends the mode cannot
+# run, of the kind source, as the gate's other reads do; a 404, a repository GitHub does not
+# hold or one the token the machine's git credential helper gives cannot read, ends it
+# cannot run, of the kind prerequisite, naming the input. The value is printed nowhere: the
+# address stands in curl's config on its input, never on its command line, and no line
+# names the value, only the variable.
+deployment_repository_read() {
+    local file="$RUN_SCRATCH/deployment-repository" name=""
+    # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    live_read "GitHub, the read of the repository IOC_DEPLOYMENT_REPO names," "$file" deployment_repository_answer ||
+        cannot_run prerequisite " --replay: GitHub answered 404 to the read of the repository the variable IOC_DEPLOYMENT_REPO names, so it holds no such repository, or the token this machine's git credential helper gives for it cannot read it; provided by: export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from"
+    [ -s "$file" ] && IFS= read -r name <"$file"
+    [[ "$name" =~ $REPOSITORY_FORM ]] ||
+        cannot_run source " --replay: GitHub's answer to the read of the repository IOC_DEPLOYMENT_REPO names holds no full_name written <owner>/<name>"
+    [ "$name" = "$IOC_DEPLOYMENT_REPO" ] && return 0
+    export IOC_DEPLOYMENT_REPO="$name"
+    github_headers
+}
+
+# deployment_repository_answer; GitHub's answer to the read of the repository
+# IOC_DEPLOYMENT_REPO names, for live_read: its full_name, one line, and status 0; "not
+# found" and status 1 for a 404, which live_read reads as the source's answer that it holds
+# no such thing; and curl's own status otherwise, with curl's line on stderr. The address is
+# handed to curl as its config on its input, so it stands on no command line a stop names,
+# and GitHub's answer is read where it arrives: only the full_name reaches a file, the one
+# live_read writes under the run's scratch.
+deployment_repository_answer() {
+    local answer status
+    answer="$(printf 'url = "https://api.github.com/repos/%s"\n' "$IOC_DEPLOYMENT_REPO" |
+        curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_PRIVATE" -w '\n%{http_code}' --config -)"
+    status=$?
+    if [ "$status" = 22 ] && [ "${answer##*$'\n'}" = 404 ]; then
+        printf 'not found\n'
+        return 1
+    fi
+    [ "$status" = 0 ] || return "$status"
+    printf '%s\n' "${answer%$'\n'*}" | jq -r '.full_name // empty'
+}
+
 # private_repository_read
 #
 # Rows of claims.jsonl read the deployment repository, a private repository that
@@ -2598,15 +2835,17 @@ github_budget() {
 # git credential helper, and a few its pull requests through the REST API, with the token
 # the same helper gives. A reader whose git cannot read that repository would see env.sh
 # refuse its clone, or each such row's read fail, a FAIL of replay-command that is no
-# verdict on the deliverable. So the repository is read first, with git ls-remote through
-# live_read, before the budget and before env.sh builds anything, and a run whose git
-# cannot read it stops here, naming the repository and the rows that read it, each row
-# whose command reads the clone or the repository's REST API, taken from claims.jsonl and
-# not from a list kept here, rather than printing a failure nobody should act on.
+# verdict on the deliverable. So the repository is read, by the name GitHub gives it
+# (deployment_repository_read), with git ls-remote through live_read, before the budget and
+# before env.sh builds anything, and a run whose git cannot read it stops here, naming the
+# input, IOC_DEPLOYMENT_REPO, never its value, and the rows that read it, each row whose
+# command reads the clone or the repository's REST API, taken from claims.jsonl and not from
+# a list kept here, rather than printing a failure nobody should act on; a line of git's it
+# quotes names the input too, by cannot_run (deployment_hidden).
 private_repository_read() {
     local name="$IOC_DEPLOYMENT_REPO" file="$RUN_SCRATCH/private-repository" rows what
     rows="$(claims 2>/dev/null | jq -r 'select((.command // "") | test("IOC_CLONES/deployment|repos/\\$IOC_DEPLOYMENT_REPO/")) | .id' 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
-    what="GitHub's answer to git ls-remote of $name, the deployment repository IOC_DEPLOYMENT_REPO names, which the rows ${rows:-of claims.jsonl} read,"
+    what="GitHub's answer to git ls-remote of the deployment repository IOC_DEPLOYMENT_REPO names, which the rows ${rows:-of claims.jsonl} read,"
     # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
     [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
     env_functions || cannot_run gate " --replay: env.sh, which holds the git that never prompts, did not load."
@@ -4685,22 +4924,25 @@ mode_replay() {
     # run's scratch, which the EXIT trap removes however the run ends, and this function
     # removes it at its end too. env.sh clones the three repositories and the deployment
     # repository at the commits sources.json pins, so nothing clones them here.
-    # The private repository a row reads is read first, then the GitHub header files are
-    # written and the budget is read, all before the live inputs below and before the
-    # environment is prepared, so a run that cannot carry GitHub's reads refuses at once
-    # rather than after count.py's read of the feed or an install, and a refused repository
-    # is named whatever the budget. The header files are the ones env.sh's read of the
-    # review corpus and the recorded curls of GitHub's REST API send, written under this
-    # run's scratch before env.sh is sourced and again before a row when they are old
-    # (github_headers_fresh), and the budget is read with the one of
+    # The GitHub header files are written first, then the deployment repository is read by
+    # the name GitHub gives it, which IOC_DEPLOYMENT_REPO then holds for env.sh and every row
+    # (deployment_repository_read), then the private repository a row reads is read with git
+    # (private_repository_read), and then the budget is read, all before the live inputs
+    # below and before the environment is prepared, so a run that cannot carry GitHub's
+    # reads refuses at once rather than after count.py's read of the feed or an install, and
+    # a refused repository is named whatever the budget. The header files are the ones
+    # env.sh's read of the review corpus and the recorded curls of GitHub's REST API send,
+    # written under this run's scratch before env.sh is sourced and again before a row when
+    # they are old (github_headers_fresh), and the budget is read with the one of
     # cybermonklabs/legion, so it is the token's budget when there is a token
     # (github_budget). The self-test's fixture builds nothing with env.sh, so it writes them
     # only when one of its rows sends one, as check.test.sh's cases 117 to 119 plant, and
     # reads no budget.
-    private_repository_read
     if [ "${IOC_NO_ENV:-0}" != 1 ] || claims | grep -qF 'IOC_GITHUB_AUTH_'; then
         github_headers
     fi
+    deployment_repository_read
+    private_repository_read
     github_budget
     # The live inputs of the assertions below, read before any of them judges and before
     # env.sh prepares anything: the two records under check, whose copies every row that
@@ -4946,7 +5188,9 @@ replay_mas_lab() {
             fail mas-lab-directory "the directory $directory of mas-lab has no evidence file"
             continue
         fi
-        grep -q "$commit" "$EVIDENCE/mas-lab/$directory.md" || {
+        # The commit is read as a whole token (whole_token), never inside a longer run of
+        # hexadecimal digits.
+        grep -qP -- "$(whole_token "$commit")" "$EVIDENCE/mas-lab/$directory.md" || {
             missing=$((missing + 1))
             fail mas-lab-directory "the evidence file of $directory does not name the clone commit $commit"
         }
@@ -5659,13 +5903,37 @@ symbol_file() {
     printf '%s' "$name"
 }
 
+# whole_token <token>; prints the Perl-compatible regular expression that finds <token> as a
+# whole token, the one rule by which a search of a token an author wrote, a symbol, a name or
+# a word, reads it: the token's text as it stands, quoted (\Q...\E, a \E inside it written
+# \E\\E\Q), whose first character, where it is a word character, a letter, a digit or `_`
+# ([A-Za-z0-9_]), follows no word character, and whose last, where it is one, is followed by
+# none. So `matc` does not stand in `def match`, nor `TesterVerdictRequire` in
+# `TesterVerdictRequired`, while `match(` stands in `match(self)`: an end that is no word
+# character bounds the token itself.
+whole_token() {
+    local token="$1" pattern
+    pattern="\\Q${token//'\E'/'\E\\E\Q'}\\E"
+    [[ "$token" == [A-Za-z0-9_]* ]] && pattern="(?<![A-Za-z0-9_])$pattern"
+    [[ "$token" == *[A-Za-z0-9_] ]] && pattern="$pattern(?![A-Za-z0-9_])"
+    printf '%s' "$pattern"
+}
+
+# token_held <root> <commit> <token> <path>...; returns 0 when the paths at the commit hold
+# <token> as a whole token (whole_token), read by git grep -P, and 1 when they do not.
+token_held() {
+    local root="$1" commit="$2" token="$3"
+    shift 3
+    git -C "$root" grep -qP -- "$(whole_token "$token")" "$commit" -- "$@" 2>/dev/null
+}
+
 # prefix_held <family> <id> <part> <separator> <here name> <root> <commit> <path>...; holds
 # to the paths a part that resolved only by its local part, the text after its last
 # <separator>, a colon or a dot, as `Engine.match` resolves on `match`. The part's prefix,
 # the text before that separator, is split into its components, each a word of letters,
 # digits, `_` and `-`, so that `.`, `[]`, `:`, `;`, a space, a quote or a bracket parts two
-# of them, and each component stands in the paths at the commit as a whole word, as git grep
-# -w reads one: `Engine` stands in `class Engine`, and `Engin` does not. It returns 0 when
+# of them, and each component stands in the paths at the commit as a whole token
+# (token_held): `Engine` stands in `class Engine`, and `Engin` does not. It returns 0 when
 # each does, a prefix of no component among them; else it fails <family>, naming the row,
 # the part and the first component the paths do not hold, and returns 1.
 prefix_held() {
@@ -5677,7 +5945,7 @@ prefix_held() {
     while [[ "$rest" =~ $word ]]; do
         component="${BASH_REMATCH[0]}"
         rest="${rest#*"$component"}"
-        git -C "$root" grep -qwF -- "$component" "$commit" -- "$@" 2>/dev/null && continue
+        token_held "$root" "$commit" "$component" "$@" && continue
         fail "$family" "$id cites the symbol $part, which $here_name holds only by its local part '${part##*"$separator"}', and the component '$component' of its prefix '$prefix' does not stand in it as a word at $commit: each component of the prefix of a qualified name stands in its file"
         return 1
     done
@@ -5695,25 +5963,36 @@ prefix_held() {
 # citation before it. A part that is a line or a line range, written alone or after a
 # name and a colon, as `88-97`, `:188-196`, `name.py:88-97` or `askOnMessage:306`, is read
 # whole, with both ends: it resolves when its file holds that line, or the range's last
-# line, and a range whose end stands before its start names no lines and fails; a name
-# before the colon that is no file is a name its file holds. Every other part is looked for
-# in its file: as literal text, as a file name, as a prefixed name, as a path, as a regular
-# expression where the part holds `|` or `*`, and as the last element of a dotted name. A
+# line; a file's lines are numbered from 1, so a line is 1 or more and so is each end of a
+# range, and a part that names line 0, as `0` or `0-3`, names no line and fails by name; a
+# range whose end stands before its start names no lines and fails; a name before the colon
+# that is no file is a name its file holds. Every other part is looked for in its file: as
+# literal text, as a file name, as a prefixed name, as a path, as a regular expression where
+# the part holds `|` or `*`, and as the last element of a dotted name. Each search of text
+# the part names finds it as a whole token, by the one rule of whole_token (token_held): its
+# first character, where it is a letter, a digit or `_`, follows none of those in the file,
+# and its last, where it is one, is followed by none, so a part the file holds only inside a
+# longer word, `TesterVerdictRequire` beside `TesterVerdictRequired`, is not held. That rule
+# reads the part whole, its local part after its last colon or its last dot, each component
+# of a qualified name's prefix (prefix_held) and a name before a line's colon; a regular
+# expression is read as its author wrote it, since it says itself what it matches. A
 # prefixed or a dotted name, a qualified name, that its file holds only by its local part,
 # the text after its last colon or its last dot, resolves only when each component of its
-# prefix stands in the file too, as a whole word, each component a word of letters, digits,
+# prefix stands in the file too, as a whole token, each component a word of letters, digits,
 # `_` and `-` that `.`, `[]`, `:`, `;`, a space, a quote or a bracket parts from the next
 # (prefix_held); a component the file does not hold fails the citation, naming the row, the
 # part and the component, so `Engin.match` fails in a file of `class Engine` and `def
-# match`, where `Engine.match` resolves. A part that starts with a digit and holds no
-# space, and is neither text the file holds nor a line or a line range, fails by name. A
-# part written in words that none of those finds names a part of the file a reader judges,
-# and this gate does not read it; nor does it read any part of a symbol whose citation
-# writes its file in words. Each such part is written to $RUN_SCRATCH/unchecked-parts,
-# which --citations prints, one line per part with its row, so that a part nothing checked
-# is never counted as checked. Any other part that no search finds fails the citation. A
-# line names no line of a glob or a directory, so a line read against one is a figure of
-# the prose, as before any part named a file of a citation of a set.
+# match`, where `Engine.match` resolves, and `Engine.matc`, whose local part that file holds
+# only inside `match`, is held by no search and fails. A part that starts with a digit and
+# holds no space, and is neither text the file holds nor a line or a line range, fails by
+# name. A part written in words that none of those finds names a part of the file a reader
+# judges, and this gate does not read it; nor does it read any part of a symbol whose
+# citation writes its file in words. Each such part is written to
+# $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row, so
+# that a part nothing checked is never counted as checked. Any other part that no search
+# finds fails the citation. A line names no line of a glob or a directory, so a line read
+# against one is a figure of the prose, as before any part named a file of a citation of a
+# set.
 resolve_symbol() {
     local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
     # The paths the citation names, each part of its file field.
@@ -5750,6 +6029,10 @@ resolve_symbol() {
         # A line or a line range, alone or after a name and a colon.
         if [[ "$part" =~ $line_part ]]; then
             named="${BASH_REMATCH[2]}" part_line="${BASH_REMATCH[3]}" part_end="${BASH_REMATCH[5]:-${BASH_REMATCH[3]}}"
+            if [ "$part_line" -lt 1 ] || [ "$part_end" -lt 1 ]; then
+                fail "$family" "$id cites $part, which names line 0: a file's lines are numbered from 1, so a line is 1 or more and so is each end of a line range, as 1 or 1-3"
+                return 1
+            fi
             if [ "$part_end" -lt "$part_line" ]; then
                 fail "$family" "$id cites $part, a line range that ends before it starts"
                 return 1
@@ -5757,7 +6040,7 @@ resolve_symbol() {
             if [ -n "$named" ]; then
                 if path="$(symbol_file "$root" "$commit" "$named" "${pathspec[@]}")"; then
                     here=("$path") here_name="$path"
-                elif ! git -C "$root" grep -qF -- "$named" "$commit" -- "${here[@]}" 2>/dev/null; then
+                elif ! token_held "$root" "$commit" "$named" "${here[@]}"; then
                     fail "$family" "$id cites $part, and $named is neither a file beside the paths the citation names nor text the file before it, $here_name, holds at $commit"
                     return 1
                 fi
@@ -5786,13 +6069,13 @@ resolve_symbol() {
             path="$(symbol_file "$root" "$commit" "$part" "${pathspec[@]}")" && here=("$path") here_name="$path" && continue
             ;;
         esac
-        if git -C "$root" grep -qF -- "$part" "$commit" -- "${here[@]}" 2>/dev/null; then
+        if token_held "$root" "$commit" "$part" "${here[@]}"; then
             continue
         fi
         # Any other part that starts with a digit and holds no space, as "3–9" written with a
-        # dash or "12a", and that its file does not hold as text, is no line this gate reads,
-        # and fails, naming the row and the part, rather than being read as the line its
-        # first digits name.
+        # dash or "12a", and that its file does not hold as text, a whole token, is no line
+        # this gate reads, and fails, naming the row and the part, rather than being read as
+        # the line its first digits name.
         case "$part" in
         [0-9]*)
             if [[ "$part" != *[[:space:]]* ]]; then
@@ -5816,7 +6099,7 @@ resolve_symbol() {
         # mistyped component fails rather than resolving on its local part alone.
         case "$part" in
         *:*)
-            if git -C "$root" grep -qF -- "${part##*:}" "$commit" -- "${here[@]}" 2>/dev/null; then
+            if token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
                 prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
                 continue
             fi
@@ -5847,7 +6130,7 @@ resolve_symbol() {
         # (prefix_held), as `Envelope` does there.
         case "$part" in
         *.*)
-            if git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "${here[@]}" 2>/dev/null; then
+            if token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
                 prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
                 continue
             fi
@@ -6622,7 +6905,9 @@ mode_landed() {
             fi
             while IFS= read -r record; do
                 [ -n "$record" ] || continue
-                printf '%s\n' "$line" | grep -qE -- "$(printf '%s' "$record" | sed 's/[][\.*^$+?(){}|]/\\&/g')([^[:alnum:]_/-]|\$)" || {
+                # The record is read as a whole token (whole_token), and no `/` or `-` follows
+                # it either, so a reference is never read inside a longer one.
+                printf '%s\n' "$line" | grep -qP -- "$(whole_token "$record")(?![A-Za-z0-9_/-])" || {
                     bad_proof=$((bad_proof + 1))
                     fail landed-proof "the page '$title' says its step is not landed, and its Not landed line does not name the record $record, which sources.json commits for that step"
                 }

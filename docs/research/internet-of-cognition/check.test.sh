@@ -3118,17 +3118,22 @@ done
 # env.sh refuse its clone, or each row's read fail, a FAIL of replay-command that is no
 # verdict on the deliverable. --replay reads the repository with git ls-remote through
 # live_read before the GitHub budget and before env.sh builds anything
-# (private_repository_read), so such a reader gets check.sh cannot run, exit 2, naming the
-# repository and the rows. The case runs --replay over this directory with
-# IOC_DEPLOYMENT_REPO the placeholder FIXTURE_DEPLOYMENT_REPO and a git of the case's own
-# first on PATH, which refuses ls-remote of that repository with exit 128, as git does for a
-# repository its credential cannot read, and runs the real git for everything else; the run
-# must end exit 2, its last line naming the placeholder and the rows, with no FAIL line. A
-# curl of the case's own, also first on PATH, answers nothing, so a gate that read the
-# repository after the budget, or not at all, would end at the budget's read, which names
-# neither, and never start the whole replay. Both reads are the case's own plants, GitHub's,
-# so the run's reason is read as planted when it is either, and a run that ends at the
-# budget's read fails the case rather than reading as one that could not run.
+# (private_repository_read), after it read GitHub's own name for it
+# (deployment_repository_read), so such a reader gets check.sh cannot run, exit 2, naming the
+# input, IOC_DEPLOYMENT_REPO, never its value, and the rows. The case runs --replay over this
+# directory with IOC_DEPLOYMENT_REPO the placeholder FIXTURE_DEPLOYMENT_REPO and a git of
+# the case's own first on PATH, which refuses ls-remote of that repository with exit 128, as
+# git does for a repository its credential cannot read, and runs the real git for everything
+# else; the run must end exit 2, its last line naming the input and the rows, and quoting
+# git's own line with $IOC_DEPLOYMENT_REPO where git wrote the placeholder in the address,
+# with no FAIL line. A
+# curl of the case's own, also first on PATH, answers the gate's read of the repository's
+# name, the address it is handed as its config on its input, with the placeholder as
+# GitHub's full_name, and answers nothing else, so a gate that read the repository after the
+# budget, or not at all, would end at the budget's read, which names neither, and never start
+# the whole replay. Both reads are the case's own plants, GitHub's, so the run's reason is
+# read as planted when it is either, and a run that ends at the budget's read fails the case
+# rather than reading as one that could not run.
 PRIVATE="$WORK/private-repository"
 mkdir -p "$PRIVATE/bin"
 cat >"$PRIVATE/bin/git" <<'STUB'
@@ -3144,17 +3149,26 @@ STUB
 sed -i -e "s|REAL_GIT|'$(command -v git)'|" -e "s|THE_DEPLOYMENT_REPO|$FIXTURE_DEPLOYMENT_REPO|g" "$PRIVATE/bin/git"
 cat >"$PRIVATE/bin/curl" <<'STUB'
 #!/bin/sh
+case " $* " in
+*" --config - "*)
+    if grep -q 'url = "https://api\.github\.com/repos/THE_DEPLOYMENT_REPO"'; then
+        printf '{"full_name": "THE_DEPLOYMENT_REPO"}\n200'
+        exit 0
+    fi
+    ;;
+esac
 printf 'curl: (7) the stub curl of case 115 answers no %s\n' "$*" >&2
 exit 7
 STUB
+sed -i -e "s|THE_DEPLOYMENT_REPO|$FIXTURE_DEPLOYMENT_REPO|g" "$PRIVATE/bin/curl"
 chmod +x "$PRIVATE/bin/git" "$PRIVATE/bin/curl"
 out="$(PATH="$PRIVATE/bin:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
-private_case="--replay whose git cannot read the deployment repository cannot run, exit 2, naming the repository and the rows that read it, and prints no FAIL"
+private_case="--replay whose git cannot read the deployment repository cannot run, exit 2, naming the input and the rows that read it, and prints no FAIL"
 if grep -q '^FAIL' "$out/text"; then
     case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
 else
     ending_result "$private_case" 2 \
-        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of $FIXTURE_DEPLOYMENT_REPO, the deployment repository IOC_DEPLOYMENT_REPO names, which the rows n-collector-keep-keys, [^,]*(, [a-z0-9-]+)* read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/$FIXTURE_DEPLOYMENT_REPO\\.git/' not found" "$out" \
+        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of the deployment repository IOC_DEPLOYMENT_REPO names, which the rows n-collector-keep-keys, [^,]*(, [a-z0-9-]+)* read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/\\\$IOC_DEPLOYMENT_REPO\\.git/' not found" "$out" \
         '^check\.sh cannot run --replay: GitHub'
 fi
 
@@ -5234,6 +5248,247 @@ for tool in grep awk; do
         "^check\\.sh cannot run --citations: .*$tool.*signal 9 \\(SIGKILL\\)" \
         "$out" "$((EPOCHSECONDS - finish_start))" 150
 done
+
+# 177. A line a symbol part names is 1 or more, and so is each end of a line range (test
+# round 46, the tester's note on line_part). resolve_symbol read a part of digits as a line
+# and held it to a file that has at least that many lines, so at 32a62b2d a part 0 resolved
+# in any file, as did the range 0-3 in a file of three lines, and passed citation-our-code.
+# The case writes the symbol of the fixture's row f-our-1, which cites
+# packages/daemon/internal/api/handoff.go, a file of three lines, as
+# 'TesterVerdictRequired, 0' and as 'TesterVerdictRequired, 0-3', and runs --citations over
+# each, which must fail citation-our-code, naming the row, the part and line 0. Case 167's
+# honest form, 'TesterVerdictRequired, 1-3', passes it.
+for part in 0 0-3; do
+    dir="$(fresh "symbol-line-zero-$part")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    sed -i "/\"id\":\"f-our-1\"/s/\"symbol\":\"TesterVerdictRequired\"/\"symbol\":\"TesterVerdictRequired, $part\"/" "$claims_copy"
+    grep -F '"id":"f-our-1"' "$claims_copy" | grep -qF "\"symbol\":\"TesterVerdictRequired, $part\"" || {
+        printf 'FAIL the symbol part %s could not be planted in the fixture row f-our-1\n' "$part"
+        exit 1
+    }
+    case_result "a symbol part $part names line 0, which no file holds, and fails --citations, naming the row and the part" \
+        "citation-our-code: f-our-1 cites $part, which names line 0: a file's lines are numbered from 1" \
+        "$(fixture_run "$dir" --citations)"
+done
+
+# 178. A git that reads no Perl-compatible regular expression is a prerequisite --citations
+# lacks, never a deliverable whose tokens no file holds (the architect's addition of round 47
+# to the whole-token reading). resolve_symbol reads each symbol part, its local part and
+# each component of its prefix by git grep -P (whole_token, token_held), and a git built
+# without PCRE refuses every such search, 'fatal: cannot use Perl-compatible regexes when
+# not compiled with USE_LIBPCRE', so each part would read as one its file does not hold and
+# --citations would fail the deliverable for the machine. The case puts first on PATH a git
+# that refuses -P with that line and runs everything else by this machine's git, and runs
+# --citations over the fixture, which must end exit 2, cannot run, every assertion of the
+# kind prerequisite and none failed, its last line naming git, what git grep -P answered and
+# what provides it. At 32a62b2d, which read no part by -P, the run passed every assertion.
+# The honest form, this machine's git, is every other case of --citations.
+pcre_less="$WORK/git-without-pcre"
+mkdir -p "$pcre_less"
+cat >"$pcre_less/git" <<STUB
+#!/bin/sh
+# A git that reads no Perl-compatible regular expression, as a git built without PCRE.
+for a in "\$@"; do
+    case "\$a" in
+    --) break ;;
+    -P | --perl-regexp | -[!-]*P*)
+        echo 'fatal: cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE' >&2
+        exit 128
+        ;;
+    esac
+done
+exec '$(type -P git)' "\$@"
+STUB
+chmod +x "$pcre_less/git"
+"$pcre_less/git" --version >/dev/null 2>&1 &&
+    { "$pcre_less/git" -C "$WORK" grep --no-index -qP -- git "$pcre_less/git" 2>/dev/null; [ "$?" = 128 ]; } || {
+    printf 'FAIL the git that refuses -P could not be planted at %s\n' "$pcre_less/git"
+    exit 1
+}
+dir="$(fresh citations-git-without-pcre)"
+out="$(PATH="$pcre_less:$PATH" fixture_run "$dir" --citations)"
+pcre_case="--citations with a git that reads no Perl-compatible regular expression cannot run, exit 2, of the kind prerequisite, naming git, its answer and what provides it"
+ending_read "$out"
+if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] &&
+    printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --citations: the tool git reads no Perl-compatible regular expression, which each search of a token an author wrote reads it by (whole_token): git grep -P ended exit 128, 'fatal: cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE'; provided by: a git built with PCRE (USE_LIBPCRE), as the distribution's git is: apt-get install git" &&
+    [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = prerequisite ]; then
+    case_passed "$pcre_case"
+else
+    case_failed "$pcre_case" "exit $RUN_STATUS, last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+fi
+
+# 179. A tool the machine ends by a signal in the ending's other places is no verdict and
+# leaves no run without its record (the architect's ruling of round 47 on case 176: the
+# rule holds in every shell the ending runs in, and a stop there writes the environment
+# ending through the one record). Case 176 reaches finish; the three places it does not
+# reach are run_ending's own write, check.test.sh's summary, which run_ending writes, and
+# run_mode's own reading of a mode its bound or a signal ended. At 32a62b2d each tool there
+# ran with its status unread: an mv killed as it renamed the record into place left the run
+# no record, so its reader read a crash, in a mode and in the summary alike; and an awk
+# killed as run_mode read what a mode a signal ended declares left nothing declared, so the
+# run ended 'all 0 assertions passed', exit 0. The case puts first on PATH, in turn: an mv
+# that kills itself with SIGKILL as it renames a record, <x>.new to <x>, into place, under
+# the honest fixture's --citations; the same mv under a summary of check.test.sh's own form,
+# one case that passed and run_ending cases, run by gate_run; and a jq that, at its first
+# call, kills the run of the mode run_mode made, the process its environment marks
+# IOC_MODE_INNER=1 under timeout, beside an awk that kills itself when it is given
+# declared_assertions' program, under --citations. Each must end exit 2, cannot run, every
+# unit it leaves of the kind environment, its last line naming the stop: the mv and
+# run_ending, written again by printf alone; the mv and run_ending in the summary; and the
+# mode ended by signal 9, the run itself (--citations) the one unit, since what the mode
+# declares was not read whole.
+ending_bin="$WORK/ending-bin"
+mkdir -p "$ending_bin/mv" "$ending_bin/mode"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# An mv the machine ends by SIGKILL as it renames a record into place.\n'
+    printf '[ "$1" = -f ] && [ "$2" = -- ] && [ "$3" = "$4.new" ] && case "$4" in */ending) kill -9 $$ ;; esac\n'
+    printf 'exec %q "$@"\n' "$(command -v mv)"
+} >"$ending_bin/mv/mv"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# A jq that, at its first call, ends the run of the mode run_mode made by SIGKILL.\n'
+    printf 'if mkdir %q 2>/dev/null; then\n' "$ending_bin/mode/fired"
+    printf '    pid=$PPID\n'
+    printf '    while [ "${pid:-1}" -gt 1 ]; do\n'
+    printf '        parent="$(sed -n "s/^PPid:[[:space:]]*//p" "/proc/$pid/status")"\n'
+    printf '        if [ "$(cat "/proc/$parent/comm" 2>/dev/null)" = timeout ] && grep -qzx IOC_MODE_INNER=1 "/proc/$pid/environ" 2>/dev/null; then\n'
+    printf '            kill -9 "$pid"\n'
+    printf '            break\n'
+    printf '        fi\n'
+    printf '        pid="$parent"\n'
+    printf '    done\n'
+    printf 'fi\n'
+    printf 'exec %q "$@"\n' "$(command -v jq)"
+} >"$ending_bin/mode/jq"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# An awk the machine ends by SIGKILL as it reads what a mode declares.\n'
+    printf 'case "$*" in *%q*) kill -9 $$ ;; esac\n' 'mode == "self-test"'
+    printf 'exec %q "$@"\n' "$(command -v awk)"
+} >"$ending_bin/mode/awk"
+chmod +x "$ending_bin/mv/mv" "$ending_bin/mode/jq" "$ending_bin/mode/awk"
+mkdir -p "$WORK/ending-summary"
+printf '. %q && ending_add declared %q && ending_add passed %q && run_ending cases\n' "$HERE/check.sh" 'a case that passed' 'a case that passed' >"$WORK/ending-summary/check.test.sh"
+ending_start="$EPOCHSECONDS"
+dir="$(fresh ending-write-killed)"
+out="$(PATH="$ending_bin/mv:$PATH" fixture_run "$dir" --citations)"
+bound_case "the mv of run_ending, ended by SIGKILL as it renames the record of an honest --citations into place, makes it cannot run, of the kind environment, its record written again" \
+    "^check\\.sh cannot run --citations: the program 'mv -f -- .*', which run_ending ran, was ended by signal 9 \\(SIGKILL\\)\$" \
+    "$out" "$((EPOCHSECONDS - ending_start))" 150
+ending_start="$EPOCHSECONDS"
+out="$(PATH="$ending_bin/mv:$PATH" gate_run "$WORK/ending-summary/check.test.sh")"
+bound_case "the mv of check.test.sh's summary, ended by SIGKILL as it renames the record into place, makes it cannot run, of the kind environment, its record written again" \
+    "^check\\.sh cannot run check\\.test\\.sh: the program 'mv -f -- .*', which run_ending ran, was ended by signal 9 \\(SIGKILL\\)\$" \
+    "$out" "$((EPOCHSECONDS - ending_start))" 150
+ending_start="$EPOCHSECONDS"
+dir="$(fresh ending-mode-killed)"
+out="$(PATH="$ending_bin/mode:$PATH" fixture_run "$dir" --citations)"
+mode_case="a mode a signal ended, whose declared list run_mode's awk cannot read, makes --citations cannot run, of the kind environment, the run itself the one unit"
+ending_read "$out"
+if [ "$(printf '%s' "$RUN_UNRUN" | cut -f1)" = --citations ]; then
+    bound_case "$mode_case" \
+        "^check\\.sh cannot run --citations: the mode was ended by signal 9 \\(SIGKILL\\), [0-9]+ s after it started\$" \
+        "$out" "$((EPOCHSECONDS - ending_start))" 150
+else
+    case_failed "$mode_case" "exit $RUN_STATUS, the units that could not run: $(printf '%s' "$RUN_UNRUN" | cut -f1 | tr '\n' ' ')last line: $RUN_LINE"
+fi
+
+# 180. The deployment repository is read as GitHub names it, whatever case its input is
+# written in (the architect's fourth finding of round 47). GitHub reads an owner and a name
+# without case, so at 32a62b2d a value written with capitals passed the prerequisite step,
+# git ls-remote and env.sh's clone, and five rows that compare it with what GitHub and the
+# repository write failed replay-command on evidence that holds. --replay now reads GitHub's
+# own full_name for the value before the budget, env.sh or any row, and exports
+# IOC_DEPLOYMENT_REPO as that name (deployment_repository_read); a 404 ends it cannot run,
+# of the kind prerequisite, naming the variable and never the value. The case runs --replay
+# over this directory twice, with curl and git of its own first on PATH, as case 115 does:
+# with IOC_DEPLOYMENT_REPO the placeholder FIXTURE_DEPLOYMENT_REPO written in capitals, a
+# curl that answers the read of that repository, in any case, with the placeholder as
+# GitHub writes it, and a git that refuses every ls-remote: of the placeholder's address as
+# GitHub writes it with git's own two lines, and of any other with a line of its own, so the
+# run must end exit 2 quoting git's own lines, with $IOC_DEPLOYMENT_REPO in the address,
+# which only a gate that read the repository by GitHub's name reaches, and no line of its
+# text may hold the value in any case; and with a curl that answers 404, so the run must
+# end exit 2, of the kind prerequisite, naming the variable, and no line of its text may
+# hold the value. At 32a62b2d the first quoted the stub's own line, naming the capitals, and
+# the second read no repository's name.
+deployment="$WORK/deployment-name"
+mkdir -p "$deployment/found" "$deployment/missing"
+cat >"$deployment/found/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" --config - "*)
+    if grep -qi 'url = "https://api\.github\.com/repos/THE_DEPLOYMENT_REPO"'; then
+        printf '{"full_name": "THE_DEPLOYMENT_REPO"}\n200'
+        exit 0
+    fi
+    ;;
+esac
+printf 'curl: (7) the stub curl of case 180 answers no %s\n' "$*" >&2
+exit 7
+STUB
+cat >"$deployment/found/git" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" ls-remote "*)
+    for a in "$@"; do
+        case "$a" in
+        https://github.com/THE_DEPLOYMENT_REPO.git) printf "remote: Repository not found.\nfatal: repository '%s/' not found\n" "$a" >&2 ;;
+        https://*) printf 'fatal: the stub git of case 180 was given the address %s, not as GitHub writes it\n' "$a" >&2 ;;
+        esac
+    done
+    exit 128
+    ;;
+esac
+exec REAL_GIT "$@"
+STUB
+cat >"$deployment/missing/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" --config - "*)
+    printf '{"message": "Not Found", "status": "404"}\n404'
+    printf 'curl: (22) The requested URL returned error: 404\n' >&2
+    exit 22
+    ;;
+esac
+printf 'curl: (7) the stub curl of case 180 answers no %s\n' "$*" >&2
+exit 7
+STUB
+sed -i -e "s|THE_DEPLOYMENT_REPO|$FIXTURE_DEPLOYMENT_REPO|g" "$deployment/found/curl"
+sed -i -e "s|REAL_GIT|'$(command -v git)'|" -e "s|THE_DEPLOYMENT_REPO|$FIXTURE_DEPLOYMENT_REPO|g" "$deployment/found/git"
+cp "$deployment/found/git" "$deployment/missing/git"
+chmod +x "$deployment/found/curl" "$deployment/found/git" "$deployment/missing/curl" "$deployment/missing/git"
+capitals="${FIXTURE_DEPLOYMENT_REPO^^}"
+[ "$capitals" != "$FIXTURE_DEPLOYMENT_REPO" ] && [[ "$capitals" =~ $REPOSITORY_FORM ]] || {
+    printf 'FAIL the placeholder could not be written in capitals\n'
+    exit 1
+}
+out="$(PATH="$deployment/found:$PATH" IOC_DEPLOYMENT_REPO="$capitals" gate_run "$HERE/check.sh" --replay)"
+capitals_case="--replay whose IOC_DEPLOYMENT_REPO is written in capitals reads the repository by the name GitHub gives it, and git ls-remote reads that name"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$capitals_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
+elif grep -qiF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text"; then
+    case_failed "$capitals_case" "its text names the value: $(grep -ciF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text") lines"
+else
+    ending_result "$capitals_case" 2 \
+        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of the deployment repository IOC_DEPLOYMENT_REPO names, .* not found\\. fatal: repository 'https://github\\.com/\\\$IOC_DEPLOYMENT_REPO\\.git/' not found" "$out" \
+        '^check\.sh cannot run --replay: GitHub'
+fi
+out="$(PATH="$deployment/missing:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
+missing_case="--replay whose IOC_DEPLOYMENT_REPO names a repository GitHub answers 404 for cannot run, of the kind prerequisite, naming the variable and not the value"
+if grep -qiF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text"; then
+    case_failed "$missing_case" "its text names the value: $(grep -ciF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text") lines"
+else
+    ending_read "$out"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] &&
+        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay: GitHub answered 404 to the read of the repository the variable IOC_DEPLOYMENT_REPO names, so it holds no such repository, or the token this machine's git credential helper gives for it cannot read it; provided by: export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = prerequisite ]; then
+        case_passed "$missing_case"
+    else
+        case_failed "$missing_case" "exit $RUN_STATUS, last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+    fi
+fi
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
