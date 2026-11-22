@@ -1290,8 +1290,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// mention is the one the request names, else the comment's first, which is its only one
 	// wherever the transaction below takes a reply naming none. A read that finds nothing asks
 	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
-	// read that fails is the route's 500.
-	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+	// read that fails is the route's 500. An attempt past comment_deliveries.attempt's range names
+	// no delivery, so no read is made with it: the bound below (fitsIntegerColumn) answers it,
+	// where it always has.
+	var roleReply roleHolderReply
+	var err error
+	if fitsIntegerColumn(input.Attempt) {
+		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
@@ -1299,9 +1304,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		order by m.target
 		limit 1
 	`, input.Target, input.Attempt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
 	// no answer, and goes to the writing check alone. A mention's reply has no follow-up: a second
@@ -1402,6 +1408,14 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// reply was planned, so the planning holds no transaction id (INFRA-636).
 	if err := held.lock(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+
+	// The attempt is a number comment_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
 	}
 	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `

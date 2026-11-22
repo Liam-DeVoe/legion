@@ -109,7 +109,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[claimIssueInput]():       {},
 	reflect.TypeFor[actorInput]():            {},
 	reflect.TypeFor[issueDesignGatesInput](): {},
-	reflect.TypeFor[issueDesignGate]():       {"step": markEnum, "artifact_id": markIdentifier},
+	reflect.TypeFor[issueDesignGateInput]():  {"step": markEnum, "artifact_id": markIdentifier},
 	reflect.TypeFor[createHandoffInput]():    {"body": markHandoff},
 	reflect.TypeFor[stepRecordInput](): {
 		"task": markIdentifier, "report": markIdentifier, "kind": markEnum, "result": markEnum,
