@@ -344,7 +344,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		{`select k.id::text ` + asksOwed + ` and k.id = any($1::uuid[])`, writeAsksOwed},
 		{`select m.id::text ` + messagesOwed + ` and m.issue_key in (
 		      select u.issue_key from user_threads u where u.thread_id = any($1::uuid[]) and u.kind = 'message')`, writeMessages},
-		{threadCommentsOwed, writeCommentPointers},
+		{threadCommentsOwed, writeOwnedCommentPointers},
 	} {
 		rows, err := tx.Query(ctx, catchUp.read, threads)
 		if err != nil {
