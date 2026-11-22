@@ -4,10 +4,11 @@
 // goroutine among it, names or changes a value that it reads, the package's variables and those of
 // the libraries that it calls among them; only the operating system's access of a parent to its child
 // (ptrace, /proc/<pid>/mem), which no test uses, reaches its memory. The test process builds it and
-// starts a process of it for each base, though, so test code that runs before a process starts,
-// before the build or after it (a write over the binary, a change of the runtime settings in the
-// environment), chooses the code that the process runs and the runtime settings that it runs with
-// (specgraph's sweepReader).
+// starts processes of it, one for each base of a sweep and one for each of the test that takes a
+// whole record out and the test of the sweeps' judgment, though, so test code that runs before a
+// process starts, before the build or after it (a write over the binary, a change of the runtime
+// settings in the environment), chooses the code that the process runs and the runtime settings
+// that it runs with (specgraph's sweepReader).
 //
 // It reads one line per scenario from its standard input, a JSON list of the scenario's files in
 // the order of their names, each {"name": <its path in the scenario>, "data": <its bytes, in

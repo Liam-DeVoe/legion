@@ -29,12 +29,13 @@ import (
 // system's access of a parent to its child reaches that memory (ptrace, /proc/<pid>/mem), and no
 // test uses it. So each state that a sweep judges, and the states of a base that it judges by, come
 // from that process alone (readerProcess). Its code and its settings are not out of reach: the test
-// process builds the binary (newSweepReader) and starts a process of it for each base (start), so
-// test code that runs before a process starts, before the build or after it, chooses the code that
-// the process runs and the runtime settings that it gets: before the build, a test file's init among
-// it, by ENVOY_TEST_GO_OVERLAY, GOFLAGS, the go on PATH or a file on disk; after the build, by a
-// write over the binary or by a change of the runtime settings in the environment between two
-// starts (readerEnv). So test code can hide a fault of the reader from the sweeps. Only a reader
+// process builds the binary (newSweepReader) and starts processes of it (start), one for each base of
+// a sweep and one for each of the test that takes a whole record out and the test of the sweeps'
+// judgment, so test code that runs before a process starts, before the build or after it, chooses
+// the code that the process runs and the runtime settings that it gets: before the build, a test
+// file's init among it, by ENVOY_TEST_GO_OVERLAY, GOFLAGS, the go on PATH or a file on disk; after the
+// build, by a write over the binary or by a change of the runtime settings in the environment between
+// two starts (readerEnv). So test code can hide a fault of the reader from the sweeps. Only a reader
 // built and started outside the test process would close that.
 type sweepReader struct{ binary string }
 
@@ -50,8 +51,9 @@ func newSweepReader(t *testing.T) sweepReader {
 	return sweepReader{cmdtest.BuildCommand(t, cmdtest.Command{Name: "sweepreader", Target: "./internal/sweepreader"})}
 }
 
-// readerProcess is one process of the reader, which a sweep starts for each base: it reads one
-// scenario per line of its input and answers each with one line (readerLine, ask).
+// readerProcess is one process of the reader, which a sweep starts for each base, and the test that
+// takes a whole record out and the test of the sweeps' judgment once each: it reads one scenario per
+// line of its input and answers each with one line (readerLine, ask).
 type readerProcess struct {
 	cmd    *exec.Cmd
 	in     io.WriteCloser
