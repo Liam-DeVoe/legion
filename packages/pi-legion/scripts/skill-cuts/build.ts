@@ -230,7 +230,10 @@
  *   rows that the same manifests give at the session's start (copies.ts's rules, below) and that
  *   its path is under, and that unit's copy is the one the session read.
  * - Commits: each repository at the last commit of its default branch (repositories.tsv, else
- *   GitHub's) at or before the session's start. Every GitHub read goes through `gh api`
+ *   GitHub's) at or before the session's start; a unit's repository that an installer of the
+ *   units pins (copies.ts's `installerPins`: a `github:` dependency of an Oh My Pi plugins
+ *   package.json, an `ensure_vendor` clone) at the last commit of the ref that installer names at
+ *   the session's start, as the session's machine held it. Every GitHub read goes through `gh api`
  *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches. A read
  *   that fails for a transient reason is sent again by the rule copies.ts's and context.ts's reads
  *   share (common.ts's `GhRetries`: after 5, 15, 45 and 135 s, each retry said on standard error;
@@ -242,14 +245,16 @@
  *   and those of the copies installers.tsv lists for it) is read at its commit as copies.ts reads
  *   one: its tree, each `SKILL.md` outside the configuration's `excludePaths`, and each manifest
  *   file by its path; copies.ts's `resolveInstallers` then gives each unit's skills (the prepack
- *   script's list for a package, a plugin's `skills/`, an installer's linked directory), by name.
+ *   script's list for a package, the skill directories Oh My Pi scans in an Oh My Pi package, a
+ *   plugin's `skills/`, an installer's linked directory, a pool a clone holds), by name.
  *   Two units that ship copies of one name install the one the session read (its first read of
  *   that name, placed by attribute.ts's rules: the host gave the session that copy) when a unit
  *   ships it then, else the first unit's. So every skill of a profile is in its repository at the
  *   commit the profile names; the evidence names each skill installers.tsv lists that the unit did
  *   not ship then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My
  *   Pi package's directory (the `omp-package` manifest's, at that commit), or a Claude Code
- *   plugin's directory (its skills' parent), named by its last part.
+ *   plugin's directory (its skills' parent), named by its last part; a package at its
+ *   repository's root (a `github:` dependency's) by the name it is installed under.
  * - The session repository, the repository the session's working directory is a checkout of
  *   (`sessionRepository`), and the working directory's path inside that checkout: for a Legion
  *   context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/<workspace>/…`);
@@ -481,6 +486,7 @@ import {
   type GhResult,
   GitBlob,
   graphqlArgs,
+  installerPins,
   keepsEntry,
   type Manifest,
   parseJson,
@@ -1875,20 +1881,15 @@ export class GithubReads {
     return { branch, from: `gh api repos/${repo}` };
   }
 
-  /** The last commit of `branch` of `repo` at or before `at`. */
+  /** The last commit of `branch` of `repo` at or before `at`: one GET whose query is in its path,
+   *  as copies.ts reads a commit, which the pod's gh sends for a repository of any owner, a pinned
+   *  one outside the configured owners too (the same GET given as `-X GET` with `-f` fields it
+   *  refuses for an owner it holds no GitHub App token of). */
   async commitAt(repo: string, branch: string, at: string): Promise<string> {
     const sha = (
       await this.ok([
         "api",
-        "-X",
-        "GET",
-        `repos/${repo}/commits`,
-        "-f",
-        `sha=${branch}`,
-        "-f",
-        `until=${at}`,
-        "-f",
-        "per_page=1",
+        `repos/${repo}/commits?sha=${encodeURIComponent(branch)}&until=${encodeURIComponent(at)}&per_page=1`,
         "--jq",
         ".[0].sha",
       ])
@@ -2608,9 +2609,35 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         : { repo, commit, ...(await github.project(repo, commit.sha, levels, excludePaths)) };
     })
   );
-  for (const settled of reads) {
+  const values = reads.map((settled) => {
     if (settled.status === "rejected") throw settled.reason;
-    const { repo, commit, at, reads: treeReads } = settled.value;
+    return settled.value;
+  });
+  // A unit's repository that an installer of the units pins (copies.ts's `installerPins`: a
+  // `github:` dependency of an Oh My Pi plugins package.json, an `ensure_vendor` clone) is held at
+  // the ref that installer names at the session's start, as the session's machine held it then;
+  // repositories.tsv's branch names the ref the copies output read, later.
+  const pins = installerPins(
+    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : []))
+  );
+  for (const [index, value] of values.entries()) {
+    const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
+    if (pin === undefined || pin.ref === "" || !repositories.has(value.repo)) continue;
+    const sha = await github.commitAt(value.repo, pin.ref, input.sessionStart);
+    if (sha === value.commit.sha) continue;
+    values[index] = {
+      ...value,
+      commit: {
+        sha,
+        line: {
+          item: `commit ${sha} of ${value.repo}`,
+          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${input.sessionStart}: gh api repos/${value.repo}/commits?sha=${pin.ref}&until=${input.sessionStart}`,
+        },
+      },
+      at: await github.at(value.repo, sha, run.config.excludePaths),
+    };
+  }
+  for (const { repo, commit, at, reads: treeReads } of values) {
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
     if (repo === checkout.repo) projectTree = at;
@@ -2734,7 +2761,13 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         const manifest = resolved.rows.find((row) => row.unit === id && row.kind === "omp-package");
         if (manifest === undefined) return undefined;
         const dir = path.posix.dirname(manifest.manifestPath);
-        return { repo: manifest.manifestRepository, path: dir, name: path.posix.basename(dir) };
+        // A package at its repository's root (a `github:` dependency's) is named as Oh My Pi
+        // installs it, `node_modules/<name>`: its unit's name, the last part of a scoped one.
+        const name =
+          dir === "."
+            ? (id.slice("package:".length).split("/").pop() ?? "")
+            : path.posix.basename(dir);
+        return { repo: manifest.manifestRepository, path: dir, name };
       }
       if (id.startsWith("plugin:")) {
         const roots = new Set(
