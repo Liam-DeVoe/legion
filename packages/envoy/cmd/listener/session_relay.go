@@ -1570,6 +1570,10 @@ func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 	defer cancel()
 	m.forgetRepositoryGap(sessionID)
 	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
+		// This duplicates noteRepositoryGap's own tail - the lazy-map create and the store - on
+		// purpose rather than calling it: noteRepositoryGap and the other three gap functions are kept
+		// byte-identical because cybermonklabs/legion#4810 rewrites them and this pull request merges up
+		// under it; the duplicate goes once #4810 lands.
 		m.repositoryGapsMu.Lock()
 		if m.repositoryGaps == nil {
 			m.repositoryGaps = map[string]string{}
