@@ -145,9 +145,8 @@ var (
 // write of graph_nodes and graph_tuples from outside it goes through
 // (graphstoretest.WriteFunctions), the one list graphstore's register of the store's write sites
 // reads too (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row
-// follows (Write, QueueWrite, QueueNodes), the append of what a write stated under its event
-// (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete
-// of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
+// follows (Write, QueueWrite, QueueNodes) and the append of what a write stated under its event
+// (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq.
 var storeWriters = func() []string {
 	var calls []string
 	for _, name := range graphstoretest.WriteFunctions() {
@@ -508,14 +507,6 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	// quote and orphaned keys alone, which keep its artifact.
 	"packages/envoy/internal/dispatch/docs/anchor_refresh.go#docs.*Service.refreshAnchors: update update.table": {
 		tables: []string{"comments"}, sets: []string{"the anchor's orphaned and quote keys"},
-	},
-	// The erase, beside its delete of the node and its tuples (graphstore.EraseNode): first the
-	// rows whose foreign key into a projection row is required, which are a comment's mentions,
-	// deliveries and its blocks' tables and no projected table (grapherase's referencesTo), then
-	// the node's projection rows themselves.
-	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply: delete from reference.Table": {},
-	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply: delete from held.Table": {
-		tables: []string{"block_refs", "comments", "document_blocks"},
 	},
 	// The block index of a comment, a message and an ask, over the item's own tables (refs'
 	// itemTables): its block state, blocks, block texts and block links, none of them projected.
@@ -895,14 +886,13 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 // commentsRowWriters are the functions whose statements make or unmake a comments row or set a
 // column of it a tuple projects, by the file each is in and the function that issues the
 // statement, as the scan names a write: the comment create, the comment reply, the seed's
-// batches of comments, each beside the nodes the batch's rows project, the comment write of the
-// backfill and of the block-index tick, and the erase (c-projection-write, Verification v108).
+// batches of comments, each beside the nodes the batch's rows project, and the comment write of
+// the backfill and of the block-index tick (c-projection-write, Verification v108).
 var commentsRowWriters = []string{
 	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
-	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply",
 }
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was

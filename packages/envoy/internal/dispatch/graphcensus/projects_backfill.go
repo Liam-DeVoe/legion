@@ -716,7 +716,7 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []str
 	owners := events.OwnerRows{}
 	var issue, document, id string
 	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
-		owners.Add(issue, document, kind.kind+" "+id)
+		owners.Add(issue, document)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)

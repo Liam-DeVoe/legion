@@ -621,16 +621,14 @@ func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	if created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", body); created.Code != http.StatusCreated {
 		t.Fatalf("create the external issue: status=%d body=%s", created.Code, created.Body.String())
 	}
-	// Spec R5: "The record of a related-item check is written in a transaction of its own, after
-	// the write that ran the check has committed (`writeRelatedChecks`, `api/suggestions.go`)."
-	// That transaction is the window: its owner lock is advisory and its read and setting of
-	// lock_timeout write no row, so its xid comes with the batch that restores lock_timeout and
-	// inserts the related_checks row, and the window holds that batch and the COMMIT ending it.
-	// Nothing here contends for the owner lock, so the record always lands within the request and
-	// a run with no window fails.
+	// The record of a related-item check is written in a transaction of its own, after the write
+	// that ran the check has committed (insertRelatedChecks). That transaction is the window: its
+	// xid comes with the batch that inserts the related_checks row, and the window holds that batch
+	// and the COMMIT ending it. Nothing here holds a lock the insert waits on, so the record always
+	// lands within the request and a run with no window fails.
 	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(2,
-		"the related-item check's record in its own transaction (writeRelatedChecks): the batch restoring lock_timeout "+
-			"and inserting the related_checks row, and the COMMIT ending it"), func(h http.Handler) *httptest.ResponseRecorder {
+		"the related-item check's record in its own transaction (insertRelatedChecks): the batch inserting "+
+			"the related_checks row, and the COMMIT ending it"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", body)
 	})
 }
