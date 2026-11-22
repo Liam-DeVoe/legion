@@ -162,6 +162,12 @@ func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue
 // and the event's serial, which the testing move's fence counts (PutCheckStateSerial). An event of
 // an issue the workflow does not record is no state of its work and is held nowhere.
 //
+// An event at the head the issue's pull request stands at asks, on the commit, for the write of
+// legion-verdict there (askVerdictWrite), in every phase: a testing step passes at a head when each
+// check reads yes there and fails when one reads no (spec R4), so a state can be the last pass of
+// that head's steps or its refusal. An event at another head asks for nothing: that head merges
+// nothing.
+//
 // While the issue is in testing and its tester has completed, the event decides the testing move
 // again (decideTesting), whatever head it names: an event at another head can still be the one the
 // fence waits for. In any other phase, and before the tester's completion, it is held and moves
@@ -185,15 +191,20 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 	}
 	e.logOnCommit(ctx, "workflow: a check state is held", "issue", fact.Key, "check", fact.Check, "repo", fact.Repo, "head", fact.Head,
 		"state", fact.State, "reason", fact.Reason)
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if pr != nil && pr.HeadSHA == fact.Head {
+		if err := e.askVerdictWrite(ctx, tx, pr, fact.Head); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	if issue.Phase != phase.Testing {
 		return intake.Result{}, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
 	if err != nil || !row.Completed() {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, false, "")

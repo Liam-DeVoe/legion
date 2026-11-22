@@ -481,8 +481,10 @@ func TestAHeadThatMovesPastReviewAsksEachReviewStepsAgent(t *testing.T) {
 
 // Spec R5: the merger merges a head that moved past review only once legion-verdict at that head
 // is success. So the merger started in merging is told so whenever the head it starts at is not
-// the head of the reviewer's last verdict, a push of any kind having moved it there, and is told
-// nothing of it once the reviewer's verdict names that head.
+// the head of the reviewer's last verdict, a push of any kind having moved it there, and that the
+// agent of each review step is asked for its verdict on it, the owner's acceptance among them (spec
+// R4: success there takes every review step's approve at that head); and it is told nothing of it
+// once the reviewer's verdict names that head.
 func TestTheMergerWaitsForTheVerdictAtAHeadAnyPushMovedPastReview(t *testing.T) {
 	const waits = " only once legion-verdict at that head is success."
 	for _, tc := range []struct {
@@ -504,8 +506,9 @@ func TestTheMergerWaitsForTheVerdictAtAHeadAnyPushMovedPastReview(t *testing.T) 
 			if told := strings.Contains(task, "merge head "+headTwo+waits); told == tc.verdict {
 				t.Fatalf("the merger's task reads %q; told to wait for legion-verdict at %s = %t, want %t", task, headTwo, told, !tc.verdict)
 			}
-			if !tc.verdict && !strings.Contains(task, "the reviewer's verdict at head "+headOne) {
-				t.Fatalf("the merger's task reads %q, want it to name %s, the head of the reviewer's last verdict", task, headOne)
+			if !tc.verdict && (!strings.Contains(task, "the reviewer's verdict at head "+headOne) ||
+				!strings.Contains(task, "the agent of each review step is asked for its verdict on it")) {
+				t.Fatalf("the merger's task reads %q, want it to name %s, the head of the reviewer's last verdict, and the ask of each review step", task, headOne)
 			}
 		})
 	}

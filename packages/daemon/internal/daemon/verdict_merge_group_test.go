@@ -43,35 +43,45 @@ func mergeGroup(action string, number int, group string) intake.MergeGroup {
 	return intake.MergeGroup{Repo: "acme/widgets", Number: number, Action: action, HeadSHA: group}
 }
 
-// C4 (R6): a merge group's checks_requested, applied through the merge group's handler, writes
-// legion-verdict on the group's commit from its pull request's verdict at the pull request's head:
-// success where that verdict stands, failure where it does not (the reviewer asked for changes),
-// and its destroyed writes nothing.
+// C4 (R6) and C2: a merge group's checks_requested, applied through the merge group's handler,
+// writes legion-verdict on the group's commit from its pull request's verdict at the pull
+// request's head: success where that verdict stands, failure where it does not (the reviewer
+// asked for changes, or a person asked for changes of a head every step passed at), and its
+// destroyed writes nothing.
 func TestLegionVerdictMergeGroup(t *testing.T) {
-	rig := func(t *testing.T) *verdictRig {
+	rig := func(t *testing.T, seed func(*testing.T, *store.Pool)) *verdictRig {
 		t.Helper()
-		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, seed)
 		rig.w.handlers = append(rig.w.handlers, mergeGroupHandler{w: rig.w})
 		return rig
 	}
 	t.Run("checks_requested where the verdict stands", func(t *testing.T) {
-		rig := rig(t)
-		rig.approvedAndWritten(t)
+		rig := rig(t, acceptingAtCode)
+		rig.acceptedAndWritten(t)
 		rig.apply(t, mergeGroup("checks_requested", 86, "group-86"))
 		rig.written(t)
 		groupConcluded(t, rig.github, rig.pool, "group-86", "success")
 	})
 	t.Run("checks_requested where the verdict does not stand", func(t *testing.T) {
-		rig := rig(t)
+		rig := rig(t, reviewingWithPass)
 		rig.apply(t, reviewerVerdict("changes", "code", 1))
 		rig.written(t)
 		rig.apply(t, mergeGroup("checks_requested", 86, "group-86"))
 		rig.written(t)
 		groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
 	})
+	t.Run("checks_requested after a person's request for changes of a head every step passed at", func(t *testing.T) {
+		rig := rig(t, acceptingAtCode)
+		rig.acceptedAndWritten(t)
+		rig.review(t, personsReview(1, "changes_requested"))
+		rig.written(t)
+		rig.apply(t, mergeGroup("checks_requested", 86, "group-86"))
+		rig.written(t)
+		groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
+	})
 	t.Run("destroyed", func(t *testing.T) {
-		rig := rig(t)
-		rig.approvedAndWritten(t)
+		rig := rig(t, acceptingAtCode)
+		rig.acceptedAndWritten(t)
 		rig.apply(t, mergeGroup("destroyed", 86, "group-86"))
 		rig.written(t)
 		if runs := rig.github.legionRuns("group-86"); len(runs) != 0 {
@@ -146,15 +156,15 @@ func TestMergeGroupHandlerIsRegistered(t *testing.T) {
 func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *testing.T) {
 	widgets := ghrepo.MustParse("acme/widgets")
 	t.Run("a Legion head whose verdict stands", func(t *testing.T) {
-		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-		rig.approvedAndWritten(t)
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+		rig.acceptedAndWritten(t)
 		rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
 		rig.written(t)
 		groupConcluded(t, rig.github, rig.pool, "group-86", "success")
 	})
 	t.Run("a Legion head that moved past its verdict", func(t *testing.T) {
-		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-		rig.approvedAndWritten(t)
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+		rig.acceptedAndWritten(t)
 		rig.apply(t, intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 86, Branch: "legion/CAPTURE-1", Before: "code", HeadSHA: "code-2"})
 		rig.written(t)
 		rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)

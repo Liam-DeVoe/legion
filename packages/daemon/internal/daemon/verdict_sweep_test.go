@@ -230,17 +230,14 @@ var recordedAt = time.Date(2026, 11, 21, 6, 30, 0, 0, time.UTC)
 var widgets = ghrepo.MustParse("acme/widgets")
 
 // seedReviewerVerdict records CAPTURE-1's reviewer's verdict at code, as the reviewer's completion
-// recorded it before the daemon stopped: the verdict of its review step, step 4 of the task
-// default.
+// recorded it before the daemon stopped, on the plan implementer tester reviewer whose last step is
+// the reviewer's and whose every other step passed at code (reviewerLastAtCode): the verdict of
+// its review step, step 3 of its task a.
 func seedReviewerVerdict(word verdict.Word) func(*testing.T, *store.Pool) {
 	return func(t *testing.T, pool *store.Pool) {
 		t.Helper()
-		reviewingWithPass(t, pool)
-		inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: widgets, Number: 86, Head: "code", Issue: "CAPTURE-1",
-				Task: "default", Step: 4, Verdict: word, Session: "review-claim", RecordedAt: recordedAt})
-			return err
-		})
+		reviewerLastAtCode(t, pool)
+		seedStepVerdict(t, pool, "a", 3, "code", word, captureReviewer)
 	}
 }
 
@@ -354,7 +351,7 @@ func TestLegionVerdictSweepRecordsEachOpenOutsidePullRequestAtTheHeadGitHubLists
 // success run appears, and the round, which GitHub's `blocked` held while the head had no run,
 // settles as approved on the merge-state read a success asks for.
 func TestLegionVerdictSweepWritesAHeldVerdictAFailedWriteLeftUnwritten(t *testing.T) {
-	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewerLastAtCode, openCapture)
 	rig.github.mu.Lock()
 	rig.github.failCreates = 1
 	rig.github.mu.Unlock()
@@ -373,7 +370,7 @@ func TestLegionVerdictSweepWritesAHeldVerdictAFailedWriteLeftUnwritten(t *testin
 	}
 	testwait.Eventually(t, "the round to settle as approved once the sweep's success stands", func() bool {
 		got, _ := capturePhase(t, rig.pool)
-		return got == phase.Accepting
+		return got == phase.Retro
 	})
 }
 
@@ -411,10 +408,11 @@ func TestLegionVerdictAFactsWriteGoesBeforeTheSweepsWrites(t *testing.T) {
 // wrote it, writes nothing and asks no more merge-state reads: the writer asks one more read only
 // after a pass that wrote a conclusion or changed one, for GitHub to count the run it wrote, and
 // only the pass at boot asks one of a standing success. The pass still reads what R19 asks of the
-// head: the head's legion-verdict runs and its commit statuses.
+// head, the head's legion-verdict runs and its commit statuses, and what deciding the head reads:
+// the change's commits, for the Omp-Session test of every step passed there.
 func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testing.T) {
-	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
-	rig.approvedAndWritten(t)
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	rig.acceptedAndWritten(t)
 	reads := func() int {
 		_, events := rig.github.recorded()
 		return len(slices.DeleteFunc(events, func(e string) bool { return !strings.HasPrefix(e, "read pull request 86") }))
@@ -437,11 +435,11 @@ func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testi
 	if readsAfter != readsBefore {
 		t.Fatalf("the sweep over an unchanged success head made %d more reads of pull request 86, want none", readsAfter-readsBefore)
 	}
-	if made := requestsAfter - requestsBefore; made != 4 {
-		t.Fatalf("the sweep made %d requests, want 4: its page of open pull requests, the merge queue's refs, and the head's runs and statuses", made)
+	if made := requestsAfter - requestsBefore; made != 5 {
+		t.Fatalf("the sweep made %d requests, want 5: its page of open pull requests, the merge queue's refs, the change's commits, and the head's runs and statuses", made)
 	}
 	if writes, _ := rig.github.recorded(); len(writes) != 1 {
-		t.Fatalf("writes = %+v, want only the approve's", writes)
+		t.Fatalf("writes = %+v, want only the acceptance's", writes)
 	}
 }
 
@@ -582,13 +580,14 @@ func TestLegionVerdictMergeGroupAfterARestartTheBootSweepWritesTheMissingCheck(t
 }
 
 // A restart lost the merge-state read the writer asks for after a success (writeVerdictOver's
-// timer, held in memory): the reviewer's approve wrote success on code, GitHub answered both reads
-// after it with a stale `blocked`, and the round still waits, with nothing left in memory to read
-// again. The rig stands for the daemon booted again over that record, which holds no more than a
-// new runtime would. The boot pass asks for a read of each issue whose success it finds standing,
-// although it writes nothing there, and GitHub's clean answer settles the round as approved.
+// timer, held in memory): the reviewer's approve, the last step of its plan, wrote success on
+// code, GitHub answered both reads after it with a stale `blocked`, and the round still waits, with
+// nothing left in memory to read again. The rig stands for the daemon booted again over that
+// record, which holds no more than a new runtime would. The boot pass asks for a read of each issue
+// whose success it finds standing, although it writes nothing there, and GitHub's clean answer
+// settles the round as approved.
 func TestTheBootSweepReadsTheMergeStateOfAStandingSuccessARestartLeftUnsettled(t *testing.T) {
-	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewerLastAtCode, openCapture)
 	rig.github.mu.Lock()
 	rig.github.staleReads = 2
 	rig.github.mu.Unlock()
@@ -604,7 +603,7 @@ func TestTheBootSweepReadsTheMergeStateOfAStandingSuccessARestartLeftUnsettled(t
 	rig.booted(t)
 	testwait.Eventually(t, "the boot sweep's read to settle the round as approved", func() bool {
 		got, _ := capturePhase(t, rig.pool)
-		return got == phase.Accepting
+		return got == phase.Retro
 	})
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "success" {
 		t.Fatalf("legion-verdict runs on code = %+v, want the approve's success alone", runs)

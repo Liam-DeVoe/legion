@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -47,14 +49,16 @@ var widgetsEntry = config.VerdictRepository{Repository: ghrepo.MustParse("acme/w
 // daemon's own verdict token, as roleTokens mints it.
 func verdictBearer() string { return "Bearer " + setToken(appauth.SetVerdict, "acme") }
 
-// fakeRun is one check run GitHub holds at a head: its id, name, conclusion and the slug of the
-// App that made it.
+// fakeRun is one check run GitHub holds at a head: its id, name, conclusion, the slug of the App
+// that made it, and the title and summary of its output.
 type fakeRun struct {
 	ID         int64
 	Head       string
 	Name       string
 	Conclusion string
 	App        string
+	Title      string
+	Summary    string
 }
 
 // fakeStatus is one commit status GitHub holds at a head, newest last.
@@ -76,16 +80,21 @@ type fakeWrite struct {
 // verdictGitHub is GitHub's REST API for acme/widgets as the writer of legion-verdict meets it: the
 // check runs and the commit statuses of each head, created and updated by the daemon's writes; pull
 // request 86's merge state, `blocked` while its head has no legion-verdict run concluding success
-// and `clean` once it has, which is what a ruleset that requires the check answers; and any other
-// pull request named in pulls, whose reads it counts in pullReads. Each write and each read of pull
-// request 86 is recorded in order. failCreates is how many of the next creates of a check run
-// GitHub answers 502, as it does when it fails a request; staleReads is how many reads of pull
-// request 86, made once its head has a success run, still answer `blocked`, as GitHub does while it
-// has not yet counted a new run.
+// and `clean` once it has, which is what a ruleset that requires the check answers; pull request
+// 86's commits, one for each head it stood at (history), oldest first, each made by the
+// implementer's session unless messages gives its message, and none at all where noCommits is set,
+// as GitHub answers a list it cannot serve; and any other pull request named in pulls, whose reads
+// it counts in pullReads. Each write and each read of pull request 86 is recorded in order.
+// failCreates is how many of the next creates of a check run GitHub answers 502, as it does when it
+// fails a request; staleReads is how many reads of pull request 86, made once its head has a
+// success run, still answer `blocked`, as GitHub does while it has not yet counted a new run.
 type verdictGitHub struct {
 	mu          sync.Mutex
 	nextID      int64
 	head86      string
+	history     []string
+	messages    map[string]string
+	noCommits   bool
 	runs        []fakeRun
 	statuses    []fakeStatus
 	writes      []fakeWrite
@@ -97,7 +106,39 @@ type verdictGitHub struct {
 }
 
 func newVerdictGitHub() *verdictGitHub {
-	return &verdictGitHub{nextID: 1000, head86: "code", pulls: map[int]string{}, pullReads: map[int]int{}}
+	return &verdictGitHub{nextID: 1000, head86: "code", history: []string{"code"}, messages: map[string]string{}, pulls: map[int]string{},
+		pullReads: map[int]int{}}
+}
+
+// implementerCommit is the message of a commit the implementer's session made: its two trailers,
+// as `legion git` adds them.
+func implementerCommit(sha string) string {
+	return "work at " + sha + "\n\nOmp-Session: " + captureImplementerSession + "\nLegion-Role: implementer\n"
+}
+
+// commits86 is pull request 86's commits as GitHub lists them (GET /pulls/86/commits): each head
+// of history up to the one it stands at, oldest first.
+func (g *verdictGitHub) commits86() []map[string]any {
+	listed := []map[string]any{}
+	for _, sha := range g.history {
+		message, given := g.messages[sha]
+		if !given {
+			message = implementerCommit(sha)
+		}
+		listed = append(listed, map[string]any{"sha": sha, "commit": map[string]any{"message": message}})
+		if sha == g.head86 {
+			break
+		}
+	}
+	return listed
+}
+
+// runOutput is the title and summary of the output a write of a check run sent.
+func runOutput(sent map[string]any) (title, summary string) {
+	shown, _ := sent["output"].(map[string]any)
+	title, _ = shown["title"].(string)
+	summary, _ = shown["summary"].(string)
+	return title, summary
 }
 
 func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
@@ -124,6 +165,13 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			return sent
 		}
 		switch {
+		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "pulls" && parts[1] == "86" && parts[2] == "commits":
+			g.events = append(g.events, "listed the commits of pull request 86")
+			if g.noCommits {
+				http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+				return
+			}
+			answer(g.commits86())
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "pulls" && parts[1] == "86":
 			state := "blocked"
 			if slices.ContainsFunc(g.runs, func(run fakeRun) bool {
@@ -190,7 +238,9 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodPost && path == "/check-runs":
 			sent := body()
 			g.nextID++
-			run := fakeRun{ID: g.nextID, Head: fmt.Sprint(sent["head_sha"]), Name: fmt.Sprint(sent["name"]), Conclusion: fmt.Sprint(sent["conclusion"]), App: verdictAppSlug}
+			title, summary := runOutput(sent)
+			run := fakeRun{ID: g.nextID, Head: fmt.Sprint(sent["head_sha"]), Name: fmt.Sprint(sent["name"]), Conclusion: fmt.Sprint(sent["conclusion"]), App: verdictAppSlug,
+				Title: title, Summary: summary}
 			g.runs = append(g.runs, run)
 			g.events = append(g.events, fmt.Sprintf("created run %d on %s: %s", run.ID, run.Head, run.Conclusion))
 			w.WriteHeader(http.StatusCreated)
@@ -204,6 +254,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				return
 			}
 			g.runs[at].Conclusion = fmt.Sprint(sent["conclusion"])
+			g.runs[at].Title, g.runs[at].Summary = runOutput(sent)
 			g.events = append(g.events, fmt.Sprintf("updated run %d on %s: %s", id, g.runs[at].Head, g.runs[at].Conclusion))
 			answer(map[string]any{"id": id, "conclusion": g.runs[at].Conclusion})
 		case r.Method == http.MethodPost && len(parts) == 2 && parts[0] == "statuses":
@@ -378,24 +429,197 @@ func verdictReviews(t *testing.T, pool *store.Pool, number int) []store.VerdictR
 	return reviews
 }
 
-// The rows of CAPTURE-1's phases these rigs seed: the tester's pass at code, and a reviewer that
-// has given no verdict yet.
+// The rows of CAPTURE-1's phases these rigs seed: the tester's completion at code, and a reviewer
+// that has given no verdict yet.
 var (
 	testerPassAtCode = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", HandoffCommit: "code"}
 	reviewerWithout  = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"}
 )
 
-// reviewingWithPass seeds CAPTURE-1 in reviewing with the tester's pass at code and no merge state
-// read for the head, so an approval waits on GitHub's answer (workflow's reviewRound).
+// reviewingWithPass seeds CAPTURE-1 in reviewing on the default steps, with the tester's completion
+// at code, no check state held and no merge state read for the head, so an approval waits on
+// GitHub's answer (workflow's reviewRound).
 func reviewingWithPass(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	seedCapture(t, pool, phase.Reviewing, "needs_review", testerPassAtCode, reviewerWithout)
 	clearCaptureMergeState(t, pool)
 }
 
-// captureReviewer is CAPTURE-1's reviewer claim, the agent its reviewer's step records (the start
-// writes the phase worker's claim), which alone the daemon takes that step's verdict from.
-const captureReviewer claim.Token = "legion-capture-capture-1-reviewer"
+// The claims of CAPTURE-1's steps, each the agent its step's record names (the start writes the
+// phase worker's claim, and for the owner's acceptance the architect of the issue's tree), which
+// alone the daemon takes a review step's verdict from; and the session each records, which the
+// Omp-Session test reads a commit's trailer against.
+const (
+	captureReviewer           claim.Token = "legion-capture-capture-1-reviewer"
+	captureImplementer        claim.Token = "legion-capture-capture-1-implementer"
+	captureArchitect          claim.Token = "legion-capture-capture-1-architect"
+	captureImplementerSession             = "implementer-session"
+	captureReviewerSession                = "reviewer-session"
+	captureArchitectSession               = "architect-session"
+)
+
+// The places of CAPTURE-1's default steps (planner implementer tester reviewer acceptance:owner)
+// on its task default: the implementer's step, the reviewer's and the owner's acceptance.
+const (
+	implementerStep = 2
+	reviewerStep    = 4
+	acceptanceStep  = 5
+)
+
+// seedStepStart records agent as the agent of the latest start of the step at place of CAPTURE-1's
+// task, as the daemon's start writes it (workflow's startStep), and ends that run where ended: the
+// step has passed.
+func seedStepStart(t *testing.T, pool *store.Pool, task string, place int, agent claim.Token, ended bool) {
+	t.Helper()
+	at := record.StepPlace{Task: task, Kind: record.PlaceStep, Place: place}
+	started := time.Date(2026, 11, 21, 5, place, 0, 0, time.UTC)
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if _, err := records.RaiseStepStarts(ctx, tx, "CAPTURE-1", at, func(int64) record.StepRecord {
+			return record.StepRecord{Task: at.Task, Step: at.Place, Kind: at.Kind, Agent: string(agent), StartedAt: &started}
+		}); err != nil || !ended {
+			return err
+		}
+		_, _, err := records.EndStepStart(ctx, tx, "CAPTURE-1", at)
+		return err
+	})
+}
+
+// seedClaimSession records token, CAPTURE-1's claim of role, with session as the session it
+// records, and holds that session for it in claim_sessions (internal/store's HoldSessions), as the
+// claim's registration leaves them.
+func seedClaimSession(t *testing.T, pool *store.Pool, token claim.Token, role claim.Role, session string) {
+	t.Helper()
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, updated_at)
+			values ($1, 'legion', 'CAPTURE-1', 'CAPTURE-1', $2, 1, $3, '', 'ready', 0, 0, 0, 0, now())`, string(token), string(role), session); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`, session, string(token))
+		return err
+	})
+}
+
+// checkSeq is the Dispatch sequence and serial of the next check state a rig holds, so each is
+// newer than the one before it (record.Store.PutCheckState).
+var checkSeq atomic.Int64
+
+// bothChecks is the set of CAPTURE-1's checks at every head of these rigs.
+var bothChecks = []string{"k1", "k2"}
+
+// seedChecks keeps bothChecks as the set of CAPTURE-1's checks at head and each check's state there
+// that states names, as Dispatch's check.state_changed events left them (workflow's checkState): a
+// check states does not name holds no state.
+func seedChecks(t *testing.T, pool *store.Pool, head string, states map[string]string) {
+	t.Helper()
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if _, err := records.PutCheckSet(ctx, tx, "CAPTURE-1", "acme/widgets", head, bothChecks, checkSeq.Add(1)); err != nil {
+			return err
+		}
+		for check, state := range states {
+			if _, err := records.PutCheckState(ctx, tx, record.CheckState{Issue: "CAPTURE-1", Repo: "acme/widgets", Head: head, Check: check,
+				State: state, Seq: checkSeq.Add(1)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// bothYes is both checks reading yes.
+var bothYes = map[string]string{"k1": verdict.StateYes, "k2": verdict.StateYes}
+
+// checkState applies Dispatch's check.state_changed of CAPTURE-1's check at head, reading state, with
+// bothChecks as the head's set, as intake decodes it.
+func (rig *verdictRig) checkState(t *testing.T, head, check, state string) {
+	t.Helper()
+	seq := checkSeq.Add(1)
+	rig.apply(t, intake.DispatchCheckState{Key: "CAPTURE-1", Mark: record.EventMark{Seq: seq}, Repo: "acme/widgets", Head: head,
+		PullRequests: []int{86}, Checks: bothChecks, Check: check, CheckVersion: 1, State: state, Serial: seq})
+}
+
+// seedStepVerdict records agent's verdict word of the review step at place of CAPTURE-1's task at
+// head, as the workflow recorded it (recordVerdict).
+func seedStepVerdict(t *testing.T, pool *store.Pool, task string, place int, head string, word verdict.Word, agent claim.Token) {
+	t.Helper()
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: widgets, Number: 86, Head: head, Issue: "CAPTURE-1", Task: task,
+			Step: place, Verdict: word, Session: string(agent), RecordedAt: recordedAt})
+		return err
+	})
+}
+
+// seedAgents seeds the agents of CAPTURE-1's default steps and the session each claim records: the
+// implementer at its step and the reviewer at its step, each run passed, and the owner's
+// acceptance under the architect of the issue's tree, its run passed where accepted and standing
+// open otherwise.
+func seedAgents(t *testing.T, pool *store.Pool, accepted bool) {
+	t.Helper()
+	seedStepStart(t, pool, planwords.DefaultTask, implementerStep, captureImplementer, true)
+	seedStepStart(t, pool, planwords.DefaultTask, reviewerStep, captureReviewer, true)
+	seedStepStart(t, pool, planwords.DefaultTask, acceptanceStep, captureArchitect, accepted)
+	seedClaimSession(t, pool, captureImplementer, claim.RoleImplementer, captureImplementerSession)
+	seedClaimSession(t, pool, captureReviewer, claim.RoleReviewer, captureReviewerSession)
+	seedClaimSession(t, pool, captureArchitect, claim.RoleArchitect, captureArchitectSession)
+}
+
+// acceptingAt seeds CAPTURE-1 in accepting on the default steps, the reviewer's approve of code
+// recorded and the owner's acceptance not given yet, with the states of its checks at code that
+// states names.
+func acceptingAt(states map[string]string) func(*testing.T, *store.Pool) {
+	return func(t *testing.T, pool *store.Pool) {
+		t.Helper()
+		seedCapture(t, pool, phase.Accepting, "needs_review", reviewerApprovedCode)
+		seedAgents(t, pool, false)
+		seedChecks(t, pool, "code", states)
+		seedStepVerdict(t, pool, planwords.DefaultTask, reviewerStep, "code", verdict.ReviewerApprove, captureReviewer)
+	}
+}
+
+// acceptingAtCode is CAPTURE-1 in accepting on the default steps, every step but the owner's
+// acceptance passed at code: both checks yes there, and the reviewer's approve of code.
+var acceptingAtCode = acceptingAt(bothYes)
+
+// seedPlan records an owner's plan for CAPTURE-1 of one task, a, whose steps are roles, its task
+// standing at the step at place.
+func seedPlan(t *testing.T, pool *store.Pool, place int, roles ...string) {
+	t.Helper()
+	builtin := planwords.BuiltinRoles()
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		version := record.PlanVersion{Issue: "CAPTURE-1", Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: captureArchitect, GivenAt: recordedAt}
+		task := record.PlanTask{Issue: "CAPTURE-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
+			State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: place}}
+		var steps []record.PlanStep
+		for i, role := range roles {
+			steps = append(steps, record.PlanStep{Issue: "CAPTURE-1", Generation: 1, Task: "a", Position: i + 1, Role: role, Type: builtin[role].Type})
+		}
+		return record.NewStore().PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
+	})
+}
+
+// reviewingOnPlan seeds CAPTURE-1 in reviewing on a plan of roles, a task whose reviewer's step is
+// its last review step, at place: no merge state read for the head, so the reviewer's approve
+// waits on GitHub's answer (workflow's reviewRound); the implementer's step, the first, passed
+// under its claim; both claims' sessions; and both checks yes at code.
+func reviewingOnPlan(place int, roles ...string) func(*testing.T, *store.Pool) {
+	return func(t *testing.T, pool *store.Pool) {
+		t.Helper()
+		seedCapture(t, pool, phase.Reviewing, "needs_review", testerPassAtCode, reviewerWithout)
+		clearCaptureMergeState(t, pool)
+		seedPlan(t, pool, place, roles...)
+		seedStepStart(t, pool, "a", 1, captureImplementer, true)
+		seedClaimSession(t, pool, captureImplementer, claim.RoleImplementer, captureImplementerSession)
+		seedClaimSession(t, pool, captureReviewer, claim.RoleReviewer, captureReviewerSession)
+		seedChecks(t, pool, "code", bothYes)
+	}
+}
+
+// reviewerLastAtCode is CAPTURE-1 in reviewing on the plan implementer tester reviewer, whose last
+// step is the reviewer's, with every other step passed at code.
+var reviewerLastAtCode = reviewingOnPlan(3, "implementer", "tester", "reviewer")
 
 // reviewerVerdict is the reviewer's completion of reviewing with verdict at commit.
 func reviewerVerdict(verdict, commit string, n int) intake.HandoffComplete {
@@ -410,38 +634,71 @@ func personsReview(id int64, state string) intake.PullRequestReview {
 		Author: "a-writer", SubmittedAt: time.Date(2026, 11, 21, 6, 0, int(id), 0, time.UTC)}
 }
 
-// approvedAndWritten applies the reviewer's approve at code to a rig reviewingWithPass seeded, and
-// waits for the success it writes and the move to accepting that GitHub's clean answer then makes.
+// signOff is the owner's acceptance of CAPTURE-1 by the architect of its tree, as its route reads
+// it (api's signOff): the issue's generation and the run of accepting that stands.
+func (rig *verdictRig) signOff(t *testing.T) intake.SignOff {
+	t.Helper()
+	var entry record.StepEntry
+	inStore(t, rig.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
+		entry, err = record.NewStore().OpenStep(ctx, tx, "CAPTURE-1")
+		return err
+	})
+	return intake.SignOff{Issue: "CAPTURE-1", By: captureArchitect, Generation: 1, Entry: entry}
+}
+
+// soleRun fails the test unless legion-verdict has exactly one run on head, concluding conclusion,
+// and answers it.
+func (rig *verdictRig) soleRun(t *testing.T, head, conclusion string) fakeRun {
+	t.Helper()
+	runs := rig.github.legionRuns(head)
+	if len(runs) != 1 || runs[0].Conclusion != conclusion {
+		t.Fatalf("legion-verdict runs on %s = %+v, want one concluding %s", head, runs, conclusion)
+	}
+	return runs[0]
+}
+
+// approvedAndWritten applies the reviewer's approve at code to a rig reviewerLastAtCode seeded, the
+// last step of its plan, and waits for the success it writes and for the round to settle as
+// approved on GitHub's clean answer, which moves the issue on to its retro.
 func (rig *verdictRig) approvedAndWritten(t *testing.T) fakeRun {
 	t.Helper()
 	rig.apply(t, reviewerVerdict("approve", "code", 1))
 	testwait.Eventually(t, "the approve to write success on code and the round to settle as approved", func() bool {
 		got, _ := capturePhase(t, rig.pool)
-		return got == phase.Accepting
+		return got == phase.Retro
 	})
 	rig.written(t)
-	runs := rig.github.legionRuns("code")
-	if len(runs) != 1 || runs[0].Conclusion != "success" {
-		t.Fatalf("legion-verdict runs on code = %+v, want one concluding success", runs)
-	}
-	return runs[0]
+	return rig.soleRun(t, "code", "success")
 }
 
-// C2: a tester's pass and a reviewer's approve at head H write legion-verdict success on H with the
-// verdict token, in the pass that records the approve and before the merge-state read; GitHub
-// then answers a clean merge state, and the round settles as approved. The write is recorded in
-// the store and in one legion_verdict_write line.
-func TestLegionVerdictApproveWritesSuccessBeforeTheMergeStateRead(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	run := rig.approvedAndWritten(t)
-	writes, events := rig.github.recorded()
+// acceptedAndWritten applies the owner's acceptance of code to a rig acceptingAtCode seeded, the
+// last step of the default steps, and waits for the success it writes.
+func (rig *verdictRig) acceptedAndWritten(t *testing.T) fakeRun {
+	t.Helper()
+	rig.apply(t, rig.signOff(t))
+	rig.written(t)
+	return rig.soleRun(t, "code", "success")
+}
+
+// successWrittenFirst fails the test unless run is the one write of rig's head code, a completed
+// legion-verdict concluding success made with the verdict token, recorded in the store and in one
+// legion_verdict_write line, and GitHub saw it before its first read of pull request 86's merge
+// state, which answers clean.
+func successWrittenFirst(t *testing.T, rig *verdictRig, run fakeRun) {
+	t.Helper()
+	writes, _ := rig.github.recorded()
 	if len(writes) != 1 || writes[0].Method != http.MethodPost || writes[0].Bearer != verdictBearer() ||
 		writes[0].Body["head_sha"] != "code" || writes[0].Body["conclusion"] != "success" || writes[0].Body["name"] != verdict.CheckName ||
 		writes[0].Body["status"] != "completed" {
 		t.Fatalf("writes = %+v, want one POST of a completed legion-verdict concluding success on code with the verdict token", writes)
 	}
-	if first := slices.IndexFunc(events, func(e string) bool { return strings.HasPrefix(e, "read pull request 86") }); first < 0 ||
-		events[first] != "read pull request 86: clean" || !slices.Contains(events[:first], fmt.Sprintf("created run %d on code: success", run.ID)) {
+	var events []string
+	testwait.Eventually(t, "GitHub to answer a read of pull request 86's merge state", func() bool {
+		_, events = rig.github.recorded()
+		return slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "read pull request 86") })
+	})
+	if first := slices.IndexFunc(events, func(e string) bool { return strings.HasPrefix(e, "read pull request 86") }); events[first] != "read pull request 86: clean" ||
+		!slices.Contains(events[:first], fmt.Sprintf("created run %d on code: success", run.ID)) {
 		t.Fatalf("GitHub saw %v, want the run written before the first read of the merge state, which answers clean", events)
 	}
 	if recorded := verdictWrites(t, rig.pool, "code"); len(recorded) != 1 || recorded[0].GitHubID != run.ID ||
@@ -455,12 +712,30 @@ func TestLegionVerdictApproveWritesSuccessBeforeTheMergeStateRead(t *testing.T) 
 	}
 }
 
+// C2: on a legion/KEY head H, with each check of the task reading yes at H, the review steps'
+// approves at H write legion-verdict success on H with the verdict token, in the pass that
+// records the last of them and before the merge-state read; GitHub then answers a clean merge
+// state. The write is recorded in the store and in one legion_verdict_write line. With the
+// default steps the owner's acceptance is the last of them, and the merge-state read is the one
+// the writer asks for after a success. With a plan whose last review step is the reviewer's, the
+// reviewer's approve is the last, its round waits on GitHub's answer, and the round settles.
+func TestLegionVerdictApproveWritesSuccessBeforeTheMergeStateRead(t *testing.T) {
+	t.Run("the default steps, the owner's acceptance last", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+		successWrittenFirst(t, rig, rig.acceptedAndWritten(t))
+	})
+	t.Run("a plan whose last review step is the reviewer's: the round settles", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewerLastAtCode)
+		successWrittenFirst(t, rig, rig.approvedAndWritten(t))
+	})
+}
+
 // GitHub can answer the first read after the success run is written with `blocked`, as it does
 // while it has not yet counted a new run. That answer ends the climb, and no other fact asks
 // again: Envoy leaves the one App's runs out of the CI record, so the write brings no checks fact.
 // One more read of the issue after a write that produced success still settles the approve.
 func TestLegionVerdictAStaleBlockedAfterTheWriteStillSettlesTheApprove(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewerLastAtCode)
 	rig.github.mu.Lock()
 	rig.github.staleReads = 1
 	rig.github.mu.Unlock()
@@ -475,18 +750,18 @@ func TestLegionVerdictAStaleBlockedAfterTheWriteStillSettlesTheApprove(t *testin
 // verdict names the new one. The new head holds no verdict, so a write asked for there would write
 // nothing either: what the test holds is that the push asks for none.
 func TestLegionVerdictAPushWritesNothingOnTheNewHead(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	rig.approvedAndWritten(t)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	rig.acceptedAndWritten(t)
 	rig.apply(t, intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 86, Branch: "legion/CAPTURE-1", Before: "code", HeadSHA: "code-2"})
 	rig.written(t)
 	if runs := rig.github.legionRuns("code-2"); len(runs) != 0 {
 		t.Fatalf("legion-verdict runs on the pushed head = %+v, want none", runs)
 	}
 	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
-		t.Fatalf("the workflow asked for writes on %v, want only the approve's on code", asked)
+		t.Fatalf("the workflow asked for writes on %v, want only the acceptance's on code", asked)
 	}
 	if writes, _ := rig.github.recorded(); len(writes) != 1 {
-		t.Fatalf("writes = %+v, want only the approve's", writes)
+		t.Fatalf("writes = %+v, want only the acceptance's", writes)
 	}
 }
 
@@ -495,8 +770,23 @@ func TestLegionVerdictReviewerChangesWritesFailure(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	rig.apply(t, reviewerVerdict("changes", "code", 1))
 	rig.written(t)
-	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "failure" {
-		t.Fatalf("legion-verdict runs on code = %+v, want one concluding failure", runs)
+	if run := rig.soleRun(t, "code", "failure"); run.Title != "legion-verdict: failure" {
+		t.Fatalf("the run's title is %q, want legion-verdict: failure: a step failed, so no reason is named", run.Title)
+	}
+}
+
+// C2: a check that reads no at H writes failure on H: Dispatch's check state at the head asks for
+// the write (workflow's checkState), before any review step has a verdict there.
+func TestLegionVerdictACheckNoAtHWritesFailure(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.checkState(t, "code", "k1", verdict.StateYes)
+	rig.written(t)
+	rig.nothingWrittenOn(t, "code")
+	rig.checkState(t, "code", "k2", verdict.StateNo)
+	rig.written(t)
+	rig.soleRun(t, "code", "failure")
+	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code", "code"}) {
+		t.Fatalf("the workflow asked for writes on %v, want one on code for each check state there", asked)
 	}
 }
 
@@ -521,7 +811,7 @@ func TestLegionVerdictAFailedWriteIsLoggedForTheWritersSweep(t *testing.T) {
 // Review Focus 1: an approve at H1 after a push made H2 writes on H1 only, and H2 has no
 // legion-verdict: no write is asked for on H2, which holds no verdict.
 func TestLegionVerdictAtAnOldHeadWritesNothingOnTheNewHead(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewerLastAtCode)
 	rig.apply(t, intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 86, Branch: "legion/CAPTURE-1", Before: "code", HeadSHA: "code-2"})
 	rig.apply(t, reviewerVerdict("approve", "code", 1))
 	rig.written(t)
@@ -539,8 +829,8 @@ func TestLegionVerdictAtAnOldHeadWritesNothingOnTheNewHead(t *testing.T) {
 // Review Focus 2: a person's request for changes after the writer's success turns the writer's own
 // run to failure: the same run, updated, and no second run.
 func TestLegionVerdictPersonsLateRefusalTurnsSuccessToFailure(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	run := rig.approvedAndWritten(t)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
 	rig.review(t, personsReview(1, "changes_requested"))
 	rig.written(t)
 	runs := rig.github.legionRuns("code")
@@ -556,15 +846,12 @@ func TestLegionVerdictPersonsLateRefusalTurnsSuccessToFailure(t *testing.T) {
 // A success the writer wrote does not stand once the verdict at that head no longer does: when
 // the writer decides the head again and the record holds no verdict there, it writes failure over
 // its own run, so the head cannot merge on a success nothing backs (R4: a commit with no verdict
-// cannot merge). Here the tester's next run clears its pass at code (workflow's clearHandoff), and
-// a person's approval, which is no verdict on a Legion head, has the writer decide code again.
+// cannot merge). Here Dispatch's state of a check at code turns from yes to unknown, which asks
+// for the write on code (workflow's checkState).
 func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	run := rig.approvedAndWritten(t)
-	if _, err := rig.pool.Exec(context.Background(), `update phases set verdict = '', handoff_commit = '' where issue = 'CAPTURE-1' and role = 'tester'`); err != nil {
-		t.Fatalf("clear the tester's pass: %v", err)
-	}
-	rig.review(t, personsReview(1, "approved"))
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
+	rig.checkState(t, "code", "k2", verdict.StateUnknown)
 	rig.written(t)
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
 		t.Fatalf("legion-verdict runs on code = %+v, want run %d turned to failure", runs, run.ID)
@@ -574,12 +861,11 @@ func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testin
 	}
 }
 
-// C2: a person's request for changes at H refuses a Legion head the reviewer approved, and a
-// later approval of H by the same person lifts that refusal, so the reviewer's approve writes
-// success again.
+// C2: a person's request for changes at H refuses a Legion head every step passed at, and a later
+// approval of H by the same person lifts that refusal, so the steps' passes write success again.
 func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	run := rig.approvedAndWritten(t)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
 	rig.review(t, personsReview(1, "changes_requested"))
 	rig.written(t)
 	rig.review(t, personsReview(2, "approved"))
@@ -597,8 +883,8 @@ func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {
 // submitted last (record.ReviewOrder), not the one the daemon recorded last, and the run the
 // refusal turned to failure stays at failure.
 func TestLegionVerdictAnApprovalDeliveredLateLiftsNoLaterRefusal(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	run := rig.approvedAndWritten(t)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
 	rig.review(t, personsReview(2, "changes_requested"))
 	rig.written(t)
 	rig.review(t, personsReview(1, "approved"))
@@ -608,8 +894,8 @@ func TestLegionVerdictAnApprovalDeliveredLateLiftsNoLaterRefusal(t *testing.T) {
 	}
 }
 
-// C2: on a Legion head with the tester's pass and no reviewer verdict, a person's approval at H
-// writes nothing: only the reviewer's verdict approves a head a Legion issue owns.
+// C2: on a Legion head with no review step's approve, a person's approval at H writes nothing:
+// only the review steps' verdicts approve a head a Legion issue owns.
 func TestLegionVerdictPersonsApprovalWritesNothingOnALegionHead(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	rig.review(t, personsReview(1, "approved"))
@@ -952,32 +1238,187 @@ func TestLegionVerdictReadsAPullRequestNoRecordHoldsFromGitHub(t *testing.T) {
 	}
 }
 
-// C2's tester half: the tester's verdict changes a Legion head's verdict, so its completion asks
-// for a write at the commit it tested (workflow's askMergeState), and a fail there writes failure.
-func TestLegionVerdictTheTestersFailWritesFailureOnTheCommitItTested(t *testing.T) {
+// The output of a legion-verdict run that concludes failure because every testing and review step
+// passed and no review was independent, as the merger reads it to tell the owner: the title, and
+// the summary for a change the daemon read, and for one whose commits or sessions it could not.
+const (
+	noIndependentTitle   = "legion-verdict: failure (no independent review)"
+	noIndependentSummary = "Every testing and review step of the task's plan passed at this head, and no review step that approved it was run by an agent whose claim wrote none of the change: an independent review is missing."
+	unreadSummary        = "Every testing and review step of the task's plan passed at this head, but the daemon could not read the change's commits or the sessions of the review steps' claims, so it counts no review as independent: an independent review is missing."
+)
+
+// noIndependentReview fails the test unless the one legion-verdict run on code concludes failure
+// with the title and summary that name the missing independent review.
+func (rig *verdictRig) noIndependentReview(t *testing.T, summary string) {
+	t.Helper()
+	if run := rig.soleRun(t, "code", "failure"); run.Title != noIndependentTitle || run.Summary != summary {
+		t.Fatalf("the run's output reads %q / %q, want %q / %q: the merger's notice to the owner names the missing independent review",
+			run.Title, run.Summary, noIndependentTitle, summary)
+	}
+}
+
+// C2: the same holds on a task branch legion/KEY.slug: a pull request opened on legion/CAPTURE-1.d is
+// CAPTURE-1's (claim.BranchIssue), and every step passed at its head writes success there.
+func TestLegionVerdictOnATaskBranch(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		acceptingAtCode(t, pool)
+		if _, err := pool.Exec(context.Background(), `delete from pull_requests where issue = 'CAPTURE-1'`); err != nil {
+			t.Fatalf("leave CAPTURE-1 with no pull request: %v", err)
+		}
+	})
+	rig.apply(t, intake.PullRequestOpened{Repo: "acme/widgets", Number: 86, Branch: "legion/CAPTURE-1.d", Base: "main", HeadSHA: "code",
+		UpdatedAt: captureHeadUpdated})
+	if _, pr := capturePhase(t, rig.pool); pr == nil || pr.Branch != "legion/CAPTURE-1.d" {
+		t.Fatalf("CAPTURE-1's pull request is %+v, want #86 on the task branch", pr)
+	}
+	rig.acceptedAndWritten(t)
+}
+
+// C2: before every testing and review step has passed at H, and with none failed there, nothing
+// is written on H: the reviewer's approve with the owner's acceptance not given yet, and both review
+// steps' approves with a check that holds no state at H.
+func TestLegionVerdictWritesNothingBeforeEveryStepPassed(t *testing.T) {
+	t.Run("the reviewer's approve, the owner's acceptance not given", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			reviewingWithPass(t, pool)
+			seedAgents(t, pool, false)
+			seedChecks(t, pool, "code", bothYes)
+		})
+		rig.apply(t, reviewerVerdict("approve", "code", 1))
+		rig.written(t)
+		if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
+			t.Fatalf("the workflow asked for writes on %v, want the approve's on code", asked)
+		}
+		rig.nothingWrittenOn(t, "code")
+	})
+	t.Run("both approves, a check with no state at H", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAt(map[string]string{"k1": verdict.StateYes}))
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
+			t.Fatalf("the workflow asked for writes on %v, want the acceptance's on code", asked)
+		}
+		rig.nothingWrittenOn(t, "code")
+		if _, events := rig.github.recorded(); slices.Contains(events, "listed the commits of pull request 86") {
+			t.Fatalf("GitHub saw %v, want no read of the change's commits before every step passed", events)
+		}
+	})
+}
+
+// C2: a plan of the steps implementer reviewer has no testing step: there the reviewer's approve at
+// H, from a claim that ran no implementation step and whose session no commit of the change
+// carries, writes success on H, whatever a check reads there.
+func TestLegionVerdictAPlanWithNoTestingStep(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		reviewingOnPlan(2, "implementer", "reviewer")(t, pool)
+		seedChecks(t, pool, "code", map[string]string{"k1": verdict.StateNo})
+	})
+	rig.apply(t, reviewerVerdict("approve", "code", 1))
+	rig.written(t)
+	rig.soleRun(t, "code", "success")
+}
+
+// C2: a plan whose one review step's agent also ran its implementation step writes failure on H once
+// every step has passed there, and the merger's notice to the owner, the run's output, names the
+// missing independent review.
+func TestLegionVerdictAReviewAgentThatRanTheImplementationWritesFailure(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		reviewingOnPlan(2, "implementer", "reviewer")(t, pool)
+		seedStepStart(t, pool, "a", 1, captureReviewer, true)
+	})
+	rig.apply(t, reviewerVerdict("approve", "code", 1))
+	rig.written(t)
+	rig.noIndependentReview(t, noIndependentSummary)
+}
+
+// C2: a plan whose review step's claim has a session in the Omp-Session trailer of a commit of the
+// change writes failure on H once every step has passed there, naming the missing independent
+// review: the reviewer pushed a commit under its own session.
+func TestLegionVerdictAnOmpSessionTrailerTakesIndependenceAway(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
+	rig.github.mu.Lock()
+	rig.github.messages["code"] = "fix a typo\n\nOmp-Session: " + captureReviewerSession + "\nLegion-Role: reviewer\n"
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("approve", "code", 1))
+	rig.written(t)
+	rig.noIndependentReview(t, noIndependentSummary)
+}
+
+// C2: where the fake answers no list of the change's commits, the default steps write failure on H
+// once every step has passed there: the daemon counts no review as independent, and says why. So
+// does a list that does not reach H, which is the change of another head.
+func TestLegionVerdictUnreadCommitsCountNoReviewAsIndependent(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		github func(*verdictGitHub)
+	}{
+		{"GitHub answers no list", func(g *verdictGitHub) { g.noCommits = true }},
+		{"the list does not reach H", func(g *verdictGitHub) { g.history = []string{"code-0"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+			rig.github.mu.Lock()
+			tc.github(rig.github)
+			rig.github.mu.Unlock()
+			rig.apply(t, rig.signOff(t))
+			rig.written(t)
+			rig.noIndependentReview(t, unreadSummary)
+			if lines := loggedMessages(t, rig.logs.String(), changeUnreadLine); len(lines) != 1 || lines[0]["head"] != "code" {
+				t.Fatalf("%q lines = %v, want one naming code", changeUnreadLine, lines)
+			}
+		})
+	}
+}
+
+// changeUnreadLine is what the writer logs when it cannot read the change's commits.
+const changeUnreadLine = "verdict: the change's commits could not be read, so no review step counts as independent"
+
+// Every Omp-Session line of a commit's message names a session the Omp-Session test reads, in any
+// case of its key and wherever it stands, as a squash can carry it into the body of another: the
+// two `legion git` writes, one an amend gave a second line, one a squash's body kept. A line with
+// no session, or whose key only begins with Omp-Session, names none.
+func TestLegionVerdictReadsEveryOmpSessionLine(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		want    []string
+	}{
+		{"work\n\nOmp-Session: s1\nLegion-Role: implementer\n", []string{"s1"}},
+		{"seven\n\nOmp-Session: S1\nLegion-Role: tester\nOmp-Session: S2\r\n", []string{"S1", "S2"}},
+		{"squashed\n\n* fix\n\nomp-session: s3\n\nmore words\n", []string{"s3"}},
+		{"no trailer\n", nil},
+		{"work\n\nOmp-Session:\nOmp-Sessions: s4\nOmp-Session: two words\n", nil},
+	} {
+		if got := ompSessions(tc.message); !slices.Equal(got, tc.want) {
+			t.Errorf("ompSessions(%q) = %q, want %q", tc.message, got, tc.want)
+		}
+	}
+}
+
+// C2: a plan with no review step writes failure on H once its steps have passed: here a plan of
+// the steps implementer tester, whose checks read yes at H.
+func TestLegionVerdictAPlanWithNoReviewStepWritesFailure(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
 		seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
+		seedPlan(t, pool, 2, "implementer", "tester")
+		seedStepStart(t, pool, "a", 1, captureImplementer, true)
 	})
-	rig.apply(t, intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested",
-		Verdict: "fail", Commit: "code", HandoffRecord: "test-1", HandoffVersion: 1})
+	rig.checkState(t, "code", "k1", verdict.StateYes)
 	rig.written(t)
-	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
-		t.Fatalf("the workflow asked for writes on %v, want one on code, the commit the tester tested", asked)
-	}
-	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "failure" {
-		t.Fatalf("legion-verdict runs on code = %+v, want one concluding failure", runs)
-	}
+	rig.nothingWrittenOn(t, "code")
+	rig.checkState(t, "code", "k2", verdict.StateYes)
+	rig.written(t)
+	rig.noIndependentReview(t, noIndependentSummary)
 }
 
 // R19's status half, over a status the daemon holds: once the daemon's own status stands at a head,
 // a verdict that turns the head's conclusion sets a status of the daemon's own at the new state over
 // it, since GitHub reads the newest status of each context, with no foreign id.
 func TestLegionVerdictSetsItsOwnStatusAgainWhenTheConclusionTurns(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
 	rig.github.mu.Lock()
 	rig.github.statuses = append(rig.github.statuses, fakeStatus{ID: 600, Head: "code", Context: verdict.CheckName, State: "failure", Creator: verdictAppLogin})
 	rig.github.mu.Unlock()
-	rig.approvedAndWritten(t)
+	rig.acceptedAndWritten(t)
 	rig.review(t, personsReview(1, "changes_requested"))
 	rig.written(t)
 	rig.github.mu.Lock()

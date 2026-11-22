@@ -18,17 +18,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/verdict"
 )
 
 // pushedTo is a push that moves pull request 86 from one head to another: GitHub moves its head,
-// and its synchronize reaches the daemon.
+// which joins its commits, and its synchronize reaches the daemon.
 func (rig *verdictRig) pushedTo(t *testing.T, from, to string) {
 	t.Helper()
 	rig.github.mu.Lock()
 	rig.github.head86 = to
+	rig.github.history = append(rig.github.history, to)
 	rig.github.mu.Unlock()
 	rig.apply(t, intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 86, Branch: "legion/CAPTURE-1", Base: "main", Before: from, HeadSHA: to})
 }
@@ -55,7 +57,7 @@ func (rig *verdictRig) mergeState(t *testing.T) string {
 func (rig *verdictRig) noCompare(t *testing.T) {
 	t.Helper()
 	if _, events := rig.github.recorded(); slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "compared") }) {
-		t.Fatalf("GitHub saw %v, want no compare call: the carry reads the reviewer's tested commit, never a diff", events)
+		t.Fatalf("GitHub saw %v, want no compare call: a pass counts at the head it was given at alone, and the daemon reads no diff", events)
 	}
 }
 
@@ -71,98 +73,40 @@ func (rig *verdictRig) nothingWrittenOn(t *testing.T, head string) {
 	}
 }
 
-// approveCarrying is the reviewer's completion of reviewing approving commit; the tester's pass at
-// tested is no longer anything a completion carries.
-func approveCarrying(commit, tested string, n int) intake.HandoffComplete {
-	return reviewerVerdict("approve", commit, n)
-}
-
-// verdictPastReview is the recorded reviewer's verdict past review at commit, as the review-verdict
-// route queues it; the tester's pass at tested is no longer anything a verdict carries.
-func verdictPastReview(word, commit, tested string) intake.ReviewVerdict {
+// verdictPastReview is the reviewer's verdict past review at commit, as the review-verdict route
+// queues it.
+func verdictPastReview(word, commit string) intake.ReviewVerdict {
 	return intake.ReviewVerdict{Issue: "CAPTURE-1", Claim: captureReviewer, Verdict: word, Commit: commit, Summary: "read the push"}
 }
 
-// testerPassAt fails the test unless CAPTURE-1's tester row holds its pass at commit, or no pass at
-// all for "".
-func testerPassAt(t *testing.T, pool *store.Pool, commit string) {
-	t.Helper()
-	var verdict, tested string
-	if err := pool.QueryRow(context.Background(), "select verdict, handoff_commit from phases where issue = 'CAPTURE-1' and role = 'tester'").Scan(&verdict, &tested); err != nil {
-		t.Fatalf("read the tester's row: %v", err)
-	}
-	if want := map[bool]string{true: "pass", false: ""}[commit != ""]; verdict != want || tested != commit {
-		t.Fatalf("the tester's row holds %q at %q, want %q at %q", verdict, tested, want, commit)
-	}
+// ownersPastReview is the owner's verdict past review at commit, from the architect that ran its
+// acceptance, as the review-verdict route queues it.
+func ownersPastReview(word, commit string) intake.ReviewVerdict {
+	return intake.ReviewVerdict{Issue: "CAPTURE-1", Claim: captureArchitect, Verdict: word, Commit: commit, Summary: "read the push"}
 }
 
-// C2's carry, on CAPTURE-1's legion/ head with the tester's pass recorded at code (H1), in
-// reviewing. A push to code-2 (H2) and the reviewer's approve with commit H2 and tested commit H1
-// keep the tester's pass at H2 and write success there, and the fake GitHub records no compare
-// call. After a push to code-3 (H3), an approve with commit H3 and no tested commit, or with
-// tested commit code-0 (H0), a commit that is not the tester's, carries no pass: it moves the issue
-// back to testing and writes nothing on H3. H3's approve is past review when it follows H2's
-// settled round (the review-verdict call), and the reviewer's completion when the push to H3 came
-// in reviewing; both carry by the one rule.
-func TestLegionVerdictCarry(t *testing.T) {
-	carried := func(t *testing.T) *verdictRig {
-		t.Helper()
-		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-		rig.pushedTo(t, "code", "code-2")
-		rig.apply(t, approveCarrying("code-2", "code", 1))
-		testwait.Eventually(t, "the approve of code-2 carrying code to settle the round as approved", func() bool {
-			got, _ := capturePhase(t, rig.pool)
-			return got == phase.Accepting
-		})
-		rig.written(t)
-		return rig
+// C2's push case, on CAPTURE-1's legion/ head on the default steps: every step passed at code (H)
+// writes success there. After a push to code-2 (H2), the reviewer's approve and the owner's
+// acceptance at H2 write nothing while a check has no yes state at H2, though both read yes at H:
+// a step's pass at an earlier commit counts at no later head. Once each check reads yes at H2,
+// Dispatch's state there asks for the write, and success is written on H2. The fake GitHub records
+// no compare call.
+func TestLegionVerdictAStepsPassAtHCountsAtNoLaterHead(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	rig.acceptedAndWritten(t)
+	rig.pushedTo(t, "code", "code-2")
+	rig.apply(t, verdictPastReview("approve", "code-2"))
+	rig.apply(t, ownersPastReview("approve", "code-2"))
+	rig.checkState(t, "code-2", "k1", verdict.StateYes)
+	rig.written(t)
+	rig.nothingWrittenOn(t, "code-2")
+	rig.checkState(t, "code-2", "k2", verdict.StateYes)
+	rig.written(t)
+	rig.soleRun(t, "code-2", "success")
+	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code", "code-2", "code-2", "code-2", "code-2"}) {
+		t.Fatalf("the workflow asked for writes on %v, want the acceptance's on code, then one on code-2 for each verdict and each check state", asked)
 	}
-
-	t.Run("tested commit H1 carries the tester's pass to H2", func(t *testing.T) {
-		rig := carried(t)
-		if runs := rig.github.legionRuns("code-2"); len(runs) != 1 || runs[0].Conclusion != "success" {
-			t.Fatalf("legion-verdict runs on code-2 = %+v, want one concluding success", runs)
-		}
-		testerPassAt(t, rig.pool, "code")
-		rig.noCompare(t)
-	})
-
-	for _, tc := range []struct {
-		name   string
-		tested string
-	}{{"no tested commit", ""}, {"tested commit H0", "code-0"}} {
-		t.Run("past review, after a push to H3, an approve naming "+tc.name+" carries no pass", func(t *testing.T) {
-			rig := carried(t)
-			rig.pushedTo(t, "code-2", "code-3")
-			rig.apply(t, verdictPastReview("approve", "code-3", tc.tested))
-			rig.written(t)
-			rig.nothingWrittenOn(t, "code-3")
-			if got, _ := capturePhase(t, rig.pool); got != phase.Testing {
-				t.Fatalf("after the approve of code-3 naming %q the issue is in %s, want testing", tc.tested, got)
-			}
-			testerPassAt(t, rig.pool, "")
-			if writes, _ := rig.github.recorded(); len(writes) != 1 {
-				t.Fatalf("writes = %+v, want only code-2's success", writes)
-			}
-			rig.noCompare(t)
-		})
-
-		t.Run("in reviewing, after a push to H3, an approve naming "+tc.name+" carries no pass", func(t *testing.T) {
-			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-			rig.pushedTo(t, "code", "code-3")
-			rig.apply(t, approveCarrying("code-3", tc.tested, 1))
-			rig.written(t)
-			rig.nothingWrittenOn(t, "code-3")
-			if got, _ := capturePhase(t, rig.pool); got != phase.Testing {
-				t.Fatalf("after the approve of code-3 naming %q the issue is in %s, want testing", tc.tested, got)
-			}
-			testerPassAt(t, rig.pool, "")
-			if writes, _ := rig.github.recorded(); len(writes) != 0 {
-				t.Fatalf("writes = %+v, want none", writes)
-			}
-			rig.noCompare(t)
-		})
-	}
+	rig.noCompare(t)
 }
 
 // reviewerApprovedCode is CAPTURE-1's reviewer row as its approve of code, which ended the round,
@@ -203,19 +147,28 @@ func verdictAsks(t *testing.T, pool *store.Pool) []record.MergeForwardMessage {
 // C57: each time the head moves while the issue stands past its review, the daemon asks the
 // round's recorded reviewer for a verdict at the new head, with no merge forward asked: in retro,
 // in accepting and in merging. GitHub holds the new head, which has no legion-verdict, so the
-// merger does not merge it; the recorded reviewer's approve there, carrying the tester's pass,
-// writes success, GitHub then answers it clean and the merger merges it, and the issue keeps its
-// phase. A push in reviewing re-asks the round as on main and asks for no verdict past review. The
-// ask reaches the reviewer's own topic while the head it names stands, and a later push, which
-// asks again, ends it undelivered.
+// merger does not merge it. Every step passed at the new head then writes success there: each check
+// reading yes at code-2, the reviewer's approve, and the owner's (its verdict past review in retro
+// and in merging, its sign-off in accepting); GitHub then answers it clean, and the merger merges
+// it. A push in reviewing re-asks the round as on main and asks for no verdict past review. The ask
+// reaches the reviewer's own topic while the head it names stands, and a later push, which asks
+// again, ends it undelivered.
 func TestAHeadThatMovesPastReviewAsksTheRecordedReviewer(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
 		status string
-	}{{phase.Retro, "retro"}, {phase.Accepting, "needs_review"}, {phase.Merging, "retro"}} {
+		after  phase.Phase
+	}{{phase.Retro, "retro", phase.Retro}, {phase.Accepting, "needs_review", phase.Retro}, {phase.Merging, "retro", phase.Merging}} {
 		t.Run(string(tc.at), func(t *testing.T) {
+			accepted := tc.at != phase.Accepting
 			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
 				seedCapture(t, pool, tc.at, tc.status, testerPassAtCode, reviewerApprovedCode)
+				seedAgents(t, pool, accepted)
+				seedChecks(t, pool, "code", bothYes)
+				seedStepVerdict(t, pool, planwords.DefaultTask, reviewerStep, "code", verdict.ReviewerApprove, captureReviewer)
+				if accepted {
+					seedStepVerdict(t, pool, planwords.DefaultTask, acceptanceStep, "code", verdict.ReviewerApprove, captureArchitect)
+				}
 			})
 			rig.pushedTo(t, "code", "code-2")
 			want := []record.MergeForwardMessage{{Role: claim.RoleReviewer, Step: record.MergeForwardReview, Head: "code", Landed: "code-2",
@@ -227,19 +180,24 @@ func TestAHeadThatMovesPastReviewAsksTheRecordedReviewer(t *testing.T) {
 				t.Fatalf("the push asked for writes on %v, want none: no verdict names code-2", asked)
 			}
 			if state := rig.mergeState(t); state != "blocked" {
-				t.Fatalf("GitHub answers the merger %q for code-2 before the reviewer's verdict, want blocked: legion-verdict there is not success", state)
+				t.Fatalf("GitHub answers the merger %q for code-2 before the review steps' verdicts, want blocked: legion-verdict there is not success", state)
 			}
 
-			rig.apply(t, verdictPastReview("approve", "code-2", "code"))
+			rig.checkState(t, "code-2", "k1", verdict.StateYes)
+			rig.checkState(t, "code-2", "k2", verdict.StateYes)
+			rig.apply(t, verdictPastReview("approve", "code-2"))
+			if accepted {
+				rig.apply(t, ownersPastReview("approve", "code-2"))
+			} else {
+				rig.apply(t, rig.signOff(t))
+			}
 			rig.written(t)
-			if runs := rig.github.legionRuns("code-2"); len(runs) != 1 || runs[0].Conclusion != "success" {
-				t.Fatalf("legion-verdict runs on code-2 = %+v, want one concluding success", runs)
-			}
+			rig.soleRun(t, "code-2", "success")
 			if state := rig.mergeState(t); state != "clean" {
-				t.Fatalf("GitHub answers the merger %q for code-2 after the reviewer's approve, want clean", state)
+				t.Fatalf("GitHub answers the merger %q for code-2 after every step passed there, want clean", state)
 			}
-			if got, _ := capturePhase(t, rig.pool); got != tc.at {
-				t.Fatalf("after the reviewer's verdict the issue is in %s, want %s", got, tc.at)
+			if got, _ := capturePhase(t, rig.pool); got != tc.after {
+				t.Fatalf("after the review steps' verdicts the issue is in %s, want %s", got, tc.after)
 			}
 		})
 	}
