@@ -57,7 +57,7 @@ type HandshakeHold struct {
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
-// through a proxy and the hold's own relay, on loopback ports and addresses of their own
+// through a proxy and the hold's own relay, each on a loopback address and port of its own
 // (testport.LoopbackIP), until the test ends. URL is the same server through both.
 func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
 	t.Helper()
