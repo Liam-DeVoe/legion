@@ -490,6 +490,10 @@ type RequestRuleResume struct {
 	Reason string
 	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is.
 	Start StartWork
+	// FreshSession says the resume starts a new session rather than the one the claim records:
+	// the workflow's start of a step whose agent takes a claim another agent last ran a step on
+	// (record.SuperviseRequest.FreshSession), whose recorded session is that other agent's.
+	FreshSession bool
 }
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
@@ -2630,7 +2634,9 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // the operator resumes the claim. A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
-// resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
+// resumed by rule either (resumeRefusal): it stays suspended, and the line says why. A resume that
+// asks for a new session (RequestRuleResume.FreshSession) forgets the recorded one instead, once
+// its role no longer leads to the process under it (mayForget), so the launch spawns a fresh agent.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -2641,7 +2647,13 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, resume.Start); err != nil {
 		return err
 	}
-	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
+	if resume.FreshSession {
+		if err := m.mayForget(ctx, "resume by rule"); err != nil {
+			return err
+		}
+		m.log.Info("supervise: resuming by rule in a new session", "rule", rule, "session", m.claim.Session)
+		m.forgetSession("the step it resumes for is another agent's than the one whose session it recorded")
+	} else if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 		return nil
 	}

@@ -73,9 +73,8 @@ type givenVersion struct {
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
-// steps of each task it gives: so a key keeps its name, and a version in which a fresh agent would
-// need the name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed),
-// never by the write.
+// steps of each task it gives: so a key keeps its name, and a fresh agent that would need the name
+// a key holds gets a name of its own.
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -131,13 +130,6 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		return givenVersion{}, nil, err
 	}
 	given.steps = record.NameAgents(earlier, given.steps)
-	if unnamed := record.UnnamedAgents(given.steps); len(unnamed) > 0 {
-		reasons := make([]plan.Refusal, len(unnamed))
-		for i, step := range unnamed {
-			reasons[i] = intake.AgentUnnamed(step.Task, step.Position, string(record.RoleName(step.Role)))
-		}
-		return givenVersion{}, intake.PlanRefused(reasons), nil
-	}
 	return given, nil, nil
 }
 

@@ -2,6 +2,7 @@ package record
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -27,9 +28,10 @@ const maxAgentName = 32
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
 //     with no key, unless pass 2 or an earlier step of this pass gave that name.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
-//     step, cut to maxAgentName bytes, where no agent of steps has that name. An agent whose role's
-//     name another agent holds keeps no name: this release runs one agent of each role for an
-//     issue, and the caller refuses such a version before it writes anything.
+//     step, cut to maxAgentName bytes (RoleName), where no agent of steps has that name; and
+//     otherwise a name of its own, `<role>-2`, `<role>-3` and so on, the first that no agent of
+//     steps and no earlier row holds (agentNumberName), so two agents never share a name, and so
+//     a claim and a session.
 //
 // The steps of one key are one agent (plan.AgentOf), so they share one name in every task.
 func NameAgents(earlier, steps []PlanStep) []PlanStep {
@@ -69,15 +71,20 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 			give(agent, name)
 		}
 	}
+	held := map[claim.Agent]bool{}
+	for _, row := range earlier {
+		held[row.AgentName()] = true
+	}
 	for _, step := range named {
 		agent := agentOf(step)
 		if _, ok := names[agent]; ok {
 			continue
 		}
+		// The role's own name is taken where no agent of steps holds it (an earlier row's agent
+		// that the version no longer names frees it); a numbered name where neither holds it.
 		name := RoleName(step.Role)
-		if taken[name] {
-			give(agent, "")
-			continue
+		for n := 2; taken[name] || (n > 2 && held[name]); n++ {
+			name = agentNumberName(step.Role, n)
 		}
 		give(agent, name)
 	}
@@ -96,24 +103,14 @@ func RoleName(role string) claim.Agent {
 	return claim.Agent(role)
 }
 
-// UnnamedAgents is the first step of each agent of named, steps NameAgents gave, but the owner,
-// that has no name: an agent whose role's name (RoleName) another agent of the plan holds. This
-// release runs one agent of each role for an issue, so a version with one is refused before any
-// write.
-func UnnamedAgents(named []PlanStep) []PlanStep {
-	var unnamed []PlanStep
-	seen := map[plan.Agent]bool{}
-	for _, step := range named {
-		agent := plan.AgentOf(step.Task, step.Position, plan.Step{Role: step.Role, Key: step.AgentKey})
-		if seen[agent] || agent.Owner() {
-			continue
-		}
-		seen[agent] = true
-		if step.Agent == "" {
-			unnamed = append(unnamed, step)
-		}
+// agentNumberName is the name of the n-th agent of role (NameAgents' pass 4): the role, cut so that
+// the name holds at most maxAgentName bytes, a dash and n.
+func agentNumberName(role string, n int) claim.Agent {
+	suffix := "-" + strconv.Itoa(n)
+	if len(role)+len(suffix) > maxAgentName {
+		role = role[:maxAgentName-len(suffix)]
 	}
-	return unnamed
+	return claim.Agent(role + suffix)
 }
 
 // earlierPlaceName is the name of the latest row of earlier at step's task and place, on step's

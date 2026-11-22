@@ -65,18 +65,6 @@ func AgentOf(task string, place int, s Step) Agent {
 // Owner says whether a is the owner of its task.
 func (a Agent) Owner() bool { return a.Key == "owner" }
 
-// FirstRoles is the role each agent of t starts with (AgentOf): the role of its first step.
-func FirstRoles(t Task) map[Agent]string {
-	first := map[Agent]string{}
-	for i, step := range t.Steps {
-		agent := AgentOf(t.ID, i+1, step)
-		if _, seen := first[agent]; !seen {
-			first[agent] = step.Role
-		}
-	}
-	return first
-}
-
 // StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored
 // step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's

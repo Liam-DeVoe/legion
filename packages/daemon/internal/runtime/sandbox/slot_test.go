@@ -266,3 +266,52 @@ func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
 		})
 	}
 }
+
+// Two agents of one role run in one issue pod at one time, each in the slot of its own name: a
+// launch of `…-implementer` while `…-implementer-2` runs keeps the pod, starts in the slot
+// `implementer` with that slot's state home and address record, and sends no stop to the
+// launcher of `…-implementer-2`, whose generation goes on; each slot's Secret holds the implement
+// App's token. A slot picked by the role would put both agents in one slot, where the second's
+// start takes the first's state home and address record from under it.
+func TestTwoAgentsOfOneRoleRunAtOneTimeInTwoSlots(t *testing.T) {
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{
+		"implementer": claim.RoleImplementer, "implementer-2": claim.RoleImplementer,
+	}))
+	first := g.spawn(testSpec(t, secondImplementer, claim.RoleImplementer, testTree))
+	second := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	if second.Sandbox.PodUID != first.Sandbox.PodUID {
+		t.Fatalf("the launch of %s ran in pod %s, want the pod %s in which %s runs", deploymentImplementer, second.Sandbox.PodUID, first.Sandbox.PodUID, secondImplementer)
+	}
+	name := first.Sandbox.Name
+	for _, frame := range g.sent(secondImplementer) {
+		if stop, ok := frame.(shimwire.LauncherStop); ok {
+			t.Errorf("the launcher of %s was sent a stop of generation %d, want its generation left running", secondImplementer, stop.Generation)
+		}
+	}
+	s := g.sandbox(name)
+	if s == nil {
+		t.Fatalf("the Sandbox %s is gone", name)
+	}
+	for token, slot := range map[claim.Token]claim.Role{secondImplementer: "implementer-2", deploymentImplementer: claim.RoleImplementer} {
+		if got, want := startEnv(lastStart(t, g, token))["XDG_STATE_HOME"], roleStateHome(slot); got != want {
+			t.Errorf("the start of %s names the state home %q, want the slot %s's %q", token, got, slot, want)
+		}
+		if _, recorded := s.Annotations[addressesAnnotation(slot)]; !recorded {
+			t.Errorf("the Sandbox holds no address record of the slot %s for %s (annotations %v)", slot, token, s.Annotations)
+		}
+		secret := g.secret(roleSecretName(name, slot))
+		if secret == nil {
+			t.Errorf("the Sandbox has no Secret %s", roleSecretName(name, slot))
+			continue
+		}
+		owner := string(secret.Data[GitHubDefaultKey])
+		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != staticCredentialToken(claim.RoleImplementer) {
+			t.Errorf("the %s Secret's %s hosts.yml holds %q (%v), want the implement App's %q", slot, owner, token, err, staticCredentialToken(claim.RoleImplementer))
+		}
+	}
+	for _, loc := range []runtime.Locator{first, second} {
+		if obs, err := g.r.Probe(g.ctx, loc); err != nil || obs.Kind != runtime.Alive {
+			t.Errorf("%s after both launches: %s (%v), want it alive", loc.Claim, obs.Kind, err)
+		}
+	}
+}
