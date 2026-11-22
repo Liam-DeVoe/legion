@@ -266,8 +266,7 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	require.Contains(t, names.Streams, sessions)
 	succeeds(t, operator.Conn, "$JS.API.CONSUMER.LIST."+bus.Stream, nil)
 	succeeds(t, operator.Conn, "$JS.API.CONSUMER.DELETE."+bus.Stream+".retired-1", nil)
-	_, err = js.ConsumerInfo(bus.Stream, "retired-1")
-	require.ErrorIs(t, err, nats.ErrConsumerNotFound, "consumer-names cleanup left the retired consumer")
+	awaitConsumerGone(t, adminNC, bus.Stream, "retired-1")
 
 	operator.refused(t, "$JS.API.STREAM.CREATE.KV_other", map[string]any{"name": "KV_other", "subjects": []string{"$KV.other.>"}})
 	_, err = js.StreamInfo("KV_other")
@@ -294,6 +293,35 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	}
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, seen+1), natsgrant.OperatorPhaseReleased)
 	operator.refused(t, "$JS.API.STREAM.LIST", nil)
+}
+
+// consumerRead bounds one read of a stream's consumer listing in awaitConsumerGone. A read that
+// gets no answer within it is read again, so it bounds a try and not the wait.
+const consumerRead = 10 * time.Second
+
+// awaitConsumerGone waits for the server's own listing of stream's consumers to leave consumer
+// out, which is what a delete the server answered leads to. Its one bound is the test binary's
+// deadline (testwait.Until): on a loaded machine a single read of the consumer right after its
+// delete once waited past its request's deadline, "context deadline exceeded", with nothing
+// wrong but the wait.
+func awaitConsumerGone(t *testing.T, nc *nats.Conn, stream, consumer string) {
+	t.Helper()
+	testwait.Until(t, "the server's listing of "+stream+"'s consumers to leave out "+consumer, func() (string, bool) {
+		msg, err := nc.Request("$JS.API.CONSUMER.NAMES."+stream, nil, consumerRead)
+		if err != nil {
+			return "no answer: " + err.Error(), false
+		}
+		var names struct {
+			Consumers []string `json:"consumers"`
+			Error     *struct {
+				Description string `json:"description"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(msg.Data, &names); err != nil || names.Error != nil {
+			return fmt.Sprintf("the listing answered %q", msg.Data), false
+		}
+		return fmt.Sprint(names.Consumers), !slices.Contains(names.Consumers, consumer)
+	})
 }
 
 // restoreStall is how long nats-server waits for a restore's next chunk before it ends the restore
