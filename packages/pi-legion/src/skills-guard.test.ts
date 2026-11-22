@@ -678,15 +678,25 @@ function lacks(relative: string, duties: RegExp[]) {
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
   const missing = [
     ...lacks("legion-architect/references/acceptance.md", [
-      /`acceptance:owner` enters `accepting`/,
+      /Only a task whose steps name `acceptance:owner` enters `accepting`/,
       /tester step comes before your acceptance[^.;]*--phase test/,
-      /`dispatch results --issue <issue>`[^.;]*the last step's head/,
+      /`dispatch results --issue <issue>`[^.;]*the head the step before your acceptance passed/,
       /reviewer step comes before your acceptance[^.;]*approval/,
       /no tester step before your acceptance[^.;]*the implementer's evidence/,
       /steps after your acceptance in the task run, then retro/,
+      /the daemon acts once the issue moves into `accepting`, `retro` or `merging`/,
+      /In `accepting`, `retro` or `merging`, where the task has a reviewer step, the daemon asks the reviewer/,
+      // Each sentence a reader of the acceptance showed false is gone: the last step can come after
+      // the acceptance, and a reviewer step after it leaves `accepting` short of any review.
+      /^(?![\s\S]*each check at the last step's head)/,
+      /^(?![\s\S]*Past review)/,
+      /^(?![\s\S]*on entry to `accepting`, or `retro` without)/,
+      /^(?![\s\S]*`Steps:` line names `acceptance:owner`)/,
     ]),
     ...lacks("legion-architect/SKILL.md", [
       /your acceptance is the task's last step[^.;]*`sign_off` starts retro/,
+      /`before_merge` check at the head the step before your acceptance passed/,
+      /^(?![\s\S]*the last step's head)/,
     ]),
   ];
   expect(missing).toEqual([]);
