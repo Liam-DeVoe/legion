@@ -4098,11 +4098,16 @@ down past the lookback loses its series, and the consumers whose only copy is th
 which the deployment's alert on the hub's pods covers. Each server's series is taken once, as its
 max by `server_name`, since a leader election, a restart or a change of replicas starts a new series
 for the same copy and Cloud Monitoring keeps no staleness, so the old one answers until its
-lookback ends. The reference deployment's `envoy-cluster/hubalerts.go` declares the policy
-`hub-stream-consumers` on that sum: `sum by (stream_name) (max by (stream_name, server_name)
-(nats_stream_consumer_count{stream_name="ENVOY_NOTIFICATIONS"})) > 19200`, 80 % of the cap. It
-opens no later than 19200 consumers whatever their replicas, while every copy is scraped, and at
-about 6400 with every consumer at the stream's three copies.
+lookback ends. And only the hub's own exporters count, matched by project, cluster and namespace:
+another NATS deployment in the same metrics scope can serve a stream of the same name. The reference
+deployment's `envoy-cluster/hubalerts.go` declares the policy `hub-stream-consumers` on that sum,
+with its own GCP project's id in `<project>`: `sum by (stream_name) (max by (stream_name,
+server_name)
+(nats_stream_consumer_count{project_id="<project>",cluster="dispatch",namespace="envoy",stream_name="ENVOY_NOTIFICATIONS"}))
+> 19200`, 80 % of the cap. It opens no later than 19200 consumers whatever their replicas, while
+every copy is scraped, and at about 6400 with every consumer at the stream's three copies.
+Evaluated at 15:19:25Z on 2026-11-22, its sum was 3051, and the query with `> 19200` returned
+nothing.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
