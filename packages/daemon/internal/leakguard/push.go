@@ -111,9 +111,11 @@ func PushName(remote string) string {
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
 // lines on its standard input, the repository as its working directory — and then, for a
 // destination GitHub reports public, this repository's own rules read the push's records: each
-// ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line. Under a deployment
-// that runs no shared check (sharedCheck) the rules are the whole of it.
+// ref name; each annotated tag a ref the push moves holds, its tagger, its message and its other
+// header fields; and for each commit the destination does not already hold, the author, the
+// committer, the message, the other header fields (a signed tag a merge carries among them),
+// each added or renamed path, and each added line. Under a deployment that runs no shared check
+// (sharedCheck) the rules are the whole of it.
 //
 // The records are scanned one at a time as git writes them (pass), so the rule pass never holds
 // the push's whole diff.
@@ -152,16 +154,16 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 		return err
 	}
 	if err := g.pushRecords(ctx, req, pass.add); err != nil && pass.err == nil {
-		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
+		return &SetupFailure{What: what, Why: "the push's commits and tags could not be read", Err: err}
 	}
 	return pass.end(what)
 }
 
-// pushRecords hands emit everything a push would publish, as records: one per ref name, and for
-// each commit the push would add, one for the author identity, one for the committer identity,
-// one for the message, one for each added or renamed path and one for each added line. A commit
-// reached by two of the push's refs is read once. An error of emit stops the read and is the
-// answer.
+// pushRecords hands emit everything a push would publish, as records: one per ref name; for each
+// annotated tag a ref the push moves holds, the tag's records (tagRecords); and for each commit
+// the push would add, the records of its header and message (objectRecords), one for each added
+// or renamed path and one for each added line. A commit or a tag reached by two of the push's
+// refs is read once. An error of emit stops the read and is the answer.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	for _, update := range req.Updates {
@@ -169,6 +171,9 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			if err := emit(RefRecord(ref)); err != nil {
 				return err
 			}
+		}
+		if err := g.tagRecords(ctx, req.Dir, update, read, emit); err != nil {
+			return err
 		}
 		commits, err := g.commits(ctx, req, update)
 		if err != nil {
@@ -183,6 +188,46 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// tagRecords hands emit the annotated tags that update's local sha, the object a ref of the push
+// is moved to, begins: a ref can hold a tag object rather than a commit, and the push sends that
+// tag, its tagger and its message, with the commit it points to. Guard.commits' rev-list follows a
+// tag to its commit and reads nothing of the tag itself. A tag can point to a tag, which the push
+// sends too, so each is read in turn down to the first object that is not a tag, whose type git
+// is asked for rather than read from the tag that points to it. A lightweight tag is a ref that
+// holds a commit, and adds no record of its own; a deletion adds none either, and neither does a
+// ref the destination holds at that sha already, which the push does not move. A tag already in
+// read is not read again, and neither is what it points to. A tag that names no object it points
+// to is an error, as a commit git could not read is: what it points to would go unread.
+func (g *Guard) tagRecords(ctx context.Context, dir string, update Update, read map[string]bool, emit func(Record) error) error {
+	sha := update.LocalSHA
+	if sha == update.RemoteSHA {
+		return nil
+	}
+	for sha != "" && !zeroSHA(sha) && !read[sha] {
+		kind, err := g.git(ctx, dir, "cat-file", "-t", sha)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(kind) != "tag" {
+			return nil
+		}
+		read[sha] = true
+		raw, err := g.git(ctx, dir, "cat-file", "tag", sha)
+		if err != nil {
+			return err
+		}
+		links, err := objectRecords("tag "+short(sha), raw, true, emit)
+		if err != nil {
+			return err
+		}
+		if links.object == "" {
+			return fmt.Errorf("tag %s names no object it points to", short(sha))
+		}
+		sha = links.object
 	}
 	return nil
 }
@@ -240,42 +285,65 @@ func zeroSHA(sha string) bool {
 	return sha != "" && strings.Trim(sha, "0") == ""
 }
 
-// commitRecords hands emit one commit as records. The identities and the message come from the
-// commit itself; the added and renamed paths and the added lines come from its diff, read in the
-// shape its number of parents calls for (diffTree).
+// commitRecords hands emit one commit as records. The header and the message come from the commit
+// as git stores it (objectRecords), which is all of what the commit object carries: the identities,
+// a signed tag a merge carries (mergetag), an encoding and any field git does not know, besides
+// the message. A commit whose encoding field names another encoding than UTF-8 is read a second
+// time as git shows it (inUTF8). The added and renamed paths and the added lines come from its
+// diff, read in the shape its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
 func (g *Guard) commitRecords(ctx context.Context, dir, commit string, emit func(Record) error) error {
+	raw, err := g.git(ctx, dir, "cat-file", "commit", commit)
+	if err != nil {
+		return err
+	}
+	label := "commit " + short(commit)
+	links, err := objectRecords(label, raw, false, emit)
+	if err != nil {
+		return err
+	}
+	if links.encoding != "" && !utf8Name(links.encoding) {
+		if err := g.inUTF8(ctx, dir, commit, label, emit); err != nil {
+			return err
+		}
+	}
+	if err := g.addedPaths(ctx, dir, commit, links.parents, emit); err != nil {
+		return err
+	}
+	return g.addedLines(ctx, dir, commit, links.parents, emit)
+}
+
+// inUTF8 hands emit one commit's identities and message as git shows them, converted into UTF-8
+// from the encoding the commit's encoding field names, which is the text a reader of the
+// destination sees. The bytes the commit stores are read as well (objectRecords), but in another
+// encoding a character the rules know, such as a no-break space or a dash between two words, is
+// not the UTF-8 the rules match.
+func (g *Guard) inUTF8(ctx context.Context, dir, commit, label string, emit func(Record) error) error {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
-	// own holding a zero byte is a child that cannot be started at all. %P comes before the
-	// body, which is the one field that can hold a newline, so the parents are read without a
-	// second git.
+	// own holding a zero byte is a child that cannot be started at all.
 	const separator = "%x00"
-	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
-		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
+	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color", "--encoding=UTF-8",
+		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%B"+separator, commit)
 	if err != nil {
 		return err
 	}
 	parts := strings.Split(out, "\x00")
-	if len(parts) < 5 {
-		return fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
+	if len(parts) < 4 {
+		return fmt.Errorf("git show %s answered no identity and message", short(commit))
 	}
-	parents := len(strings.Fields(parts[3]))
 	for _, record := range []Record{
-		{Label: "commit " + short(commit) + " author", Text: parts[1]},
-		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
-		{Label: "commit " + short(commit) + " message", Text: parts[4]},
+		{Label: label + " author in UTF-8", Text: parts[1]},
+		{Label: label + " committer in UTF-8", Text: parts[2]},
+		{Label: label + " message in UTF-8", Text: parts[3]},
 	} {
 		if err := emit(record); err != nil {
 			return err
 		}
 	}
-	if err := g.addedPaths(ctx, dir, commit, parents, emit); err != nil {
-		return err
-	}
-	return g.addedLines(ctx, dir, commit, parents, emit)
+	return nil
 }
 
 // diffTree is a diff-tree of one commit, in the shape its parents call for: --root for a root

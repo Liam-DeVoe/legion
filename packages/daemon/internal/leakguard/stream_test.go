@@ -315,7 +315,7 @@ func TestWaitAnswersAnErrorWhereAProcessHoldsBothOfGitsOutputs(t *testing.T) {
 			name: "git exits 3",
 			then: "exit 3",
 			check: func(t *testing.T, _ aPush, err error, waitErr error) {
-				says(t, setupFailure(t, err), "the push's commits could not be read: git diff-tree exited 3")
+				says(t, setupFailure(t, err), "the push's commits and tags could not be read: git diff-tree exited 3")
 				var exitErr *exec.ExitError
 				if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 3 {
 					t.Errorf("the diff's Wait answered %v, want git's *exec.ExitError of status 3", waitErr)

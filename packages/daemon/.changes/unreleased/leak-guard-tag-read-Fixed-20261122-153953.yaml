@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  The leak guard's private-name pass over a push now reads each annotated tag the push sends:
+  its message, its tagger and the name it was made with, and a tag it points to in turn. Before,
+  it followed a pushed tag to its commit and read nothing of the tag, so a private name in a tag's
+  message reached a public repository unread. A lightweight tag adds nothing to read, and a tag
+  the destination holds at that ref already is not read.
+
+  It also reads each commit's whole header, as git stores it, where it read only the author, the
+  committer and the message: a signed tag that `git merge` copies into a merge commit (its tagger
+  and message), an encoding, and a field git does not know. A commit stored in another encoding
+  than UTF-8 is read as git shows it too. A signature's base64 is not read, in a commit or a tag,
+  since it can hold a short name by chance; a line of a signature block that is not base64 is.
+
+  A tag or a commit that could not be read refuses the push, as a diff that could not be read
+  does, and the setup failure now says "the push's commits and tags could not be read".
+time: 2026-11-22T15:39:53Z
+custom:
+    Issue: leak-guard-tag-read

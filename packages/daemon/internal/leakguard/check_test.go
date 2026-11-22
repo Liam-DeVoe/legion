@@ -621,6 +621,6 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 		})
 		answeredBefore(t, started, standInSleeps)
-		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", started))
+		says(t, setupFailure(t, err), "the push's commits and tags could not be read: "+stopSaid(t, ctx, err, "git", started))
 	})
 }
