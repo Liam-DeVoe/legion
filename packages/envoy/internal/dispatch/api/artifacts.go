@@ -1638,33 +1638,6 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
-// versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
-// one read; a number the document has no version of has no entry. The change set reads its two
-// versions' own text here (twoVersionsMarkdown).
-func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, numbers)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	markdown := make(map[int]string, len(numbers))
-	for rows.Next() {
-		var number int
-		var text string
-		if err := rows.Scan(&number, &text); err != nil {
-			return nil, err
-		}
-		markdown[number] = text
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return markdown, nil
-}
-
 // deref is the string a nullable column holds, or "".
 func deref(value *string) string {
 	if value == nil {

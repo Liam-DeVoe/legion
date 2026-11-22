@@ -111,7 +111,11 @@ func TestARequirementUnderACriterionInAListIsReachedAtOnce(t *testing.T) {
 // that stated the block (docs' versionEventID), so a membership it appended again would be a second
 // tuple the store keeps, and not a repeat of the same event graph_tuples_once drops. A room left
 // owed is that case already: its documents take later versions, edits and the settlement's, after
-// the writes that stated their blocks.
+// the writes that stated their blocks. The spec's next deferred version, which a room left owed
+// takes too, adds a paragraph and leaves the criterion and the requirements under it
+// (criterionChain) as the deferred write of the version before stated them: each keeps its
+// document_blocks row, its changed_version and its document_block_texts rows exactly as they stood
+// before that version's write.
 func TestTheDeferredWriteStatesEachBlocksTextRowAndMembershipOnce(t *testing.T) {
 	for _, deferral := range acceptedDeferrals {
 		t.Run(deferral.name, func(t *testing.T) {
@@ -131,19 +135,28 @@ func TestTheDeferredWriteStatesEachBlocksTextRowAndMembershipOnce(t *testing.T) 
 				}
 			}
 			check("right after its write", 0)
-			if t.Failed() {
-				return
-			}
 			if !deferral.leftOwed {
 				for _, name := range []string{"verification.md", "plan.md"} {
 					s.fixture.writeAgain(t, s.fixture.documentNamed(t, name))
 				}
-				s.fixture.writeAgain(t, s.fixture.issue.PrimaryArtifactID)
 				s.created.writeAgain(t, s.created.issue.PrimaryArtifactID)
-				check("right after the second deferred version of each document", 0)
-				if t.Failed() {
-					return
+			}
+			spec := s.fixture.issue.PrimaryArtifactID
+			kept := make([]blockRows, len(criterionChain))
+			for at, block := range criterionChain {
+				kept[at] = readBlockRows(t, s.database, s.specKey+"#"+block.id)
+			}
+			s.fixture.writeAgain(t, spec)
+			version := latestVersion(t, s.database, spec).Number
+			for at, block := range criterionChain {
+				if held := readBlockRows(t, s.database, s.specKey+"#"+block.id); held != kept[at] {
+					t.Errorf("the deferred version %d of the spec left the %s %s#%s as it stood but moved its rows: before it %s; after it %s",
+						version, block.typ, s.specKey, block.id, kept[at], held)
 				}
+			}
+			check("right after the next deferred versions", 0)
+			if t.Failed() {
+				return
 			}
 			s.reconcile(t)
 			check("after the reconciliation", 1)
