@@ -7,14 +7,16 @@ body: |-
   token. The record's title, directory, delivery, delivery epoch, client instance, capabilities,
   repository gap mark and display fields (host, tmux place, consumer start, plugin and plugin
   version) are all cleared, so a RePublish cannot bind another session's projects, pause a relay with
-  a non-consumer delivery, or name a machine or pane through a claim. A record an earlier build wrote
-  naming no key is not a RePublish at the session's key and is never cleared this way: the renewal
+  a non-consumer delivery, or name a machine or pane through a claim. A record the direct get reads
+  naming no key - one an earlier build wrote - is not a RePublish at the session's key: the renewal
   keeps its title and its other fields, and only its projects become the claim token's, as a
-  registration's do. Where the session's own writer's record stands when the renewal writes - a
-  registration, and a relay's gap mark or a consumer delivery on it, that landed between the
-  confirmation and the write, in either order - the renewal keeps that record's gap mark and delivery
-  mode rather than clearing a live session's own, so a relay's mark is not dropped and the session
-  does not miss the notice it owes.
+  registration's do; a record naming no key that only the leader holds, in a rolling-deploy race, is
+  cleared like any record no writer's stands for. Where the session's own writer's record stands when
+  the renewal writes - a registration, and a relay's gap mark or a consumer delivery on it, that
+  landed between the confirmation and the write, in either order - the renewal writes that record back
+  with only the machine, the self-subscription and the claim token's projects changed, keeping its gap
+  mark, its delivery set (delivery, delivery epoch and consumer start, read together) and the rest, so
+  a live session is not cleared by the race and does not miss the notice it owes.
 time: 2026-11-21T09:05:04Z
 custom:
     Issue: pr4858
