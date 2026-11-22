@@ -185,10 +185,11 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 }
 
 // secondWaitNow is the accepted take the claim's second wait is on, and false for none: a take of
-// the pending task accepted and its turn not started (Delivery.awaitsTurn), whose report's finish
-// the store did not refuse (takePhase: a take awaiting its turn whose finish is owed is
-// waitFinish, which the report that came decides), on a ready or idle claim no hold of its own
-// state stands over (claimHold), whose connection shows every frame of its turns (connview.go).
+// the pending task that awaits its turn as the one rule of where the take stands reads it
+// (takeAwaitsTurn: accepted, its turn not started, and its report's finish not refused, since a
+// take awaiting its turn whose finish is owed is waitFinish, which the report that came decides),
+// on a ready or idle claim no hold of its own state stands over (claimHold), whose connection
+// shows every frame of its turns (connview.go).
 // The time it answers, the take's acceptance (ConfirmedAt), names which take the wait is on and
 // nothing more: it is not the clock's start. The wait is disarmed at the end of every decision it
 // does not stand through — the take's turn started, a hold stands over it, the claim's own turn's
@@ -215,8 +216,7 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 // worker may never start, and the pause would never stop the claim.
 func (m *Machine) secondWaitNow() (time.Time, bool) {
 	p := m.claim.Pending
-	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || m.connSeen != viewWhole || p == nil || !p.awaitsTurn() ||
-		m.takePhase() == waitFinish {
+	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || m.connSeen != viewWhole || p == nil || !m.takeAwaitsTurn() {
 		return time.Time{}, false
 	}
 	if m.workHeld() && m.reportWaitNow() == waitTake {
@@ -306,7 +306,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 			WaitTurnStart, number, m.deps.Timeouts.TurnStart)); err != nil {
 			return err
 		}
-		if p := m.claim.Pending; p == nil || p.Number != number || !p.awaitsTurn() {
+		if p := m.claim.Pending; p == nil || p.Number != number || !m.takeAwaitsTurn() {
 			return nil
 		}
 		return m.takeBack(ctx, WaitTurnStart)

@@ -1520,17 +1520,11 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 			m.log.Info("supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed")
 			return
 		}
-		m.unansweredAsks++
-		level := slog.LevelInfo
-		if m.unansweredAsks >= unansweredAsksWarn {
-			level = slog.LevelWarn
-		}
-		m.log.Log(ctx, level, "supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn; its stale-plugin relaunch waits for that answer or for the reconnect deadline of its hello",
-			"unanswered", m.unansweredAsks, "askedAt", m.askedAt)
+		m.logUnansweredAsk(ctx, "supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn; its stale-plugin relaunch waits for that answer or for the reconnect deadline of its hello",
+			"askedAt", m.askedAt)
 	}
 	if _, armed := m.timers[TimerRegistration]; !armed {
-		bound := runtime.RegistrationDeadline(m.deps.Timeouts.Boot, m.deps.Timeouts.RegistrationIntervals, 0)
-		m.arm(TimerRegistration, max(m.askedAt.Add(bound).Sub(m.deps.Clock.Now()), 0), "")
+		m.arm(TimerRegistration, max(m.askedAt.Add(m.reconnectBound()).Sub(m.deps.Clock.Now()), 0), "")
 	}
 }
 
@@ -1635,13 +1629,25 @@ func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // unansweredAsksWarn is the count of unanswered asks in a row from which askTurnOver and
-// askRestoredTurn log each one at Warn: a restored working claim holding no pending task, whose
-// shim came back but whose agent never answers, stays working, asked again at every sweep, until
-// the stall backstop ends a turn that records no step (backstopStall), and an operator should see
-// that. One holding a pending task is asked once at its hello and relaunched, uncharged, at the
-// reconnect deadline that hello armed, and one whose shim never comes back at all is retired at
-// its reconnect deadline (reconnectDeadline).
+// askRestoredTurn log each one at Warn (logUnansweredAsk): a restored working claim holding no
+// pending task, whose shim came back but whose agent never answers, stays working, asked again at
+// every sweep, until the stall backstop ends a turn that records no step (backstopStall), and an
+// operator should see that. One holding a pending task is asked once at its hello and relaunched,
+// uncharged, at the reconnect deadline that hello armed, and one whose shim never comes back at all
+// is retired at its reconnect deadline (reconnectDeadline).
 const unansweredAsksWarn = 3
+
+// logUnansweredAsk counts an ask of whether the agent is in a turn that it did not answer
+// (Machine.unansweredAsks), and logs line with that count first and args after it: at Info, and at
+// Warn from the unansweredAsksWarn-th in a row (askRestoredTurn, askTurnOver).
+func (m *Machine) logUnansweredAsk(ctx context.Context, line string, args ...any) {
+	m.unansweredAsks++
+	level := slog.LevelInfo
+	if m.unansweredAsks >= unansweredAsksWarn {
+		level = slog.LevelWarn
+	}
+	m.log.Log(ctx, level, line, append([]any{"unanswered", m.unansweredAsks}, args...)...)
+}
 
 // askTurnOver asks a restored working claim's agent whether the turn an earlier daemon saw start
 // is still running, and ends it when the agent says it is not. An ask the agent does not answer
@@ -1669,13 +1675,8 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	}
 	state, answered := m.streaming(ctx, conn)
 	if !answered {
-		m.unansweredAsks++
-		level := slog.LevelInfo
-		if m.unansweredAsks >= unansweredAsksWarn {
-			level = slog.LevelWarn
-		}
-		m.log.Log(ctx, level, "supervise: the agent did not say whether the turn an earlier daemon saw start is over; the claim stays working",
-			"unanswered", m.unansweredAsks, "sweepAsksAgain", !m.helloAsked)
+		m.logUnansweredAsk(ctx, "supervise: the agent did not say whether the turn an earlier daemon saw start is over; the claim stays working",
+			"sweepAsksAgain", !m.helloAsked)
 		return nil
 	}
 	if !state.IsStreaming {
@@ -1758,7 +1759,7 @@ func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	switch {
 	case ahead.task != 0:
 		m.reportedAhead, task = aheadReport{}, ahead.task
-	case m.takeAwaitsTurn():
+	case p != nil && m.takeAwaitsTurn():
 		count.take = 0
 		switch {
 		case count.known:
@@ -2025,23 +2026,36 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // own turn again, is logged so, by the take's phase (waitsLine), once (Machine.staleForEnd); one
 // that waited for it already is not logged again.
 func (m *Machine) endNothingHeld(ctx context.Context, back ClaimState, armFinish func(id string)) error {
-	p := m.claim.Pending
-	finishes := m.takesTurnRan()
-	m.claim.State = back
+	id, finishes := m.backAtEnd(back)
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
 	if finishes {
-		armFinish(p.ID)
+		armFinish(id)
 	}
 	if phase := m.takePhase(); finishes || phase.reportToCome() {
 		if held := m.staleRelaunch; held != nil && phase.reportToCome() && m.staleForEnd {
 			m.staleForEnd = false
-			m.log.Info(phase.waitsLine(), "task", pendingNumber(p), "held", "relaunch", "trigger", *held)
+			m.log.Info(phase.waitsLine(), "task", pendingNumber(m.claim.Pending), "held", "relaunch", "trigger", *held)
 		}
 		return nil
 	}
 	return m.afterTurn(ctx)
+}
+
+// backAtEnd gives the claim back in back, in memory, at the end of the turn, or of the compaction,
+// it is still stored working for (runHeldAtEnd, endNothingHeld), and answers the pending take whose
+// turn ran (takesTurnRan), over which that end arms the end-frame bound through its armFinish: the
+// take's id, and false for none. The write and the arm stay each caller's, in its own order:
+// runHeldAtEnd, over a stop the runtime refused, arms the bound whether or not its write lands, and
+// endNothingHeld arms it only once its write has landed.
+func (m *Machine) backAtEnd(back ClaimState) (id string, ran bool) {
+	m.claim.State = back
+	p := m.claim.Pending
+	if p == nil || !m.takesTurnRan() {
+		return "", false
+	}
+	return p.ID, true
 }
 
 // afterTurn runs what the machine held for the agent's turn, once that turn is over for the task

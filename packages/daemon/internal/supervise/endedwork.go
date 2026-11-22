@@ -253,20 +253,21 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	state := m.endState()
 	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
-	// from its turn (interrupted, cutTurnOf), whatever the claim's state, and where the turn that
-	// was running was the turn of the task's accepted take (Delivery.turnStarted). A take that
-	// awaits its turn is in no turn cut off: the worker ran nothing of it, unless that turn may
-	// have run with no frame of it reaching the machine (turnMayHaveRunUnseen), which the take-back
-	// that follows reads as a turn cut off. Nor is a take of a plugin below TaskTakeContract whose
-	// turn ended with its report still to come, which a let-go finishes rather than take back
-	// (interrupted), the take of the turn whose end runs a held suspension (suspendHeldAtEnd) and
-	// that of an idle claim's let-go that takes nothing back (suspendNow) among them, whose task
-	// settle finishes. Such a take of a plugin that names its number is in no turn cut off either
-	// where the let-go records before its take-back (died, displaced); where the let-go's own
-	// decision takes it back first, as a held suspension's deadline and a stale-plugin relaunch's
-	// bound do, the mark says it was (cutTurnOf).
+	// from its turn (interrupted, cutTurnOf), whatever the claim's state, and where a turn was
+	// running over a take whose turn ran, as the one rule of where the take stands reads it
+	// (takesTurnRan). A take that awaits its turn is in no turn cut off: the worker ran nothing of
+	// it, unless that turn may have run with no frame of it reaching the machine
+	// (turnMayHaveRunUnseen), which the take-back that follows reads as a turn cut off. Nor is a
+	// take of a plugin below TaskTakeContract whose turn ended with its report still to come,
+	// which a let-go finishes rather than take back (interrupted), the take of the turn whose end
+	// runs a held suspension (suspendHeldAtEnd) and that of an idle claim's let-go that takes
+	// nothing back (suspendNow) among them, whose task settle finishes. Such a take of a plugin
+	// that names its number is in no turn cut off either where the let-go records before its
+	// take-back (died, displaced); where the let-go's own decision takes it back first, as a held
+	// suspension's deadline and a stale-plugin relaunch's bound do, the mark says it was
+	// (cutTurnOf).
 	if p := m.claim.Pending; p != nil {
-		ended.TaskTurn = (m.cutTurnOf != "" && p.ID == m.cutTurnOf) || (ended.Turn && p.turnStarted()) || m.turnUnseen
+		ended.TaskTurn = (m.cutTurnOf != "" && p.ID == m.cutTurnOf) || (ended.Turn && m.takesTurnRan()) || m.turnUnseen
 	}
 	// A claim idle or working has run a turn in this process: idle is reached only by a turn's
 	// end, and a relaunched process comes up through ready. A claim working for a compaction in

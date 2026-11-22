@@ -102,12 +102,13 @@ const heldPassedOverLine = "supervise: a turn started that the producer said ran
 // the store shows that daemon can have handled no turn start after the one it gave the take
 // (anchorRestored), and its connection is the one the first hello after the start opened, where
 // that hello shows the connection carries every frame its shim held meanwhile
-// (bindRestoredAnchor); a report that comes before that hello is kept, and read at it.
+// (bindRestoredAnchor); a report that comes before that hello is kept, and read at it. With no
+// task pending it puts nothing back.
 func (m *Machine) heldUnrun(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	a := &m.turns.anchor
 	unbound := a.restored && a.conn == 0
-	if r.Held == 0 || r.Held != p.Number || a.number != p.Number || r.Sequence <= a.reported ||
+	if p == nil || r.Held == 0 || r.Held != p.Number || a.number != p.Number || r.Sequence <= a.reported ||
 		(!unbound && !m.onAnchoredConn()) {
 		return nil
 	}

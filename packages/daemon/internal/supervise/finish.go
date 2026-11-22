@@ -32,26 +32,45 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // armed at once over a ready or idle claim, and over a working one at the end of what it works
 // for: the turn running — a report that came ahead of its own turn's end frame — or a compaction
 // with no turn under it (compactEnded). So it is armed wherever the report arrived, before a
-// bound or after one fired (armEndFrameBound). A refusal of the report's own finish leaves that
+// bound or after one fired (armEndFrameBoundUnlessArmed: the refusal leaves a finish that bound
+// makes, the report's owed or the end frame's). A refusal of the report's own finish leaves that
 // finish owed (Machine.finishOwed), so the bound that makes it again finishes by the report,
 // whatever the claim's plugin, and each refusal of the bound's own write arms it again, until one
 // lands (decision 8 of dispatch://INFRA-2811). A plugin that names its task's number is given no
-// other bound than this one (TakesNoTask).
+// other bound than this one (TakesNoTask). With no task pending it finishes nothing.
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending
+	if p == nil {
+		return nil
+	}
 	number, id := p.Number, p.ID
 	if err := m.retireTask(ctx, true); err != nil {
 		if by == finishedByReport {
 			m.finishOwed = true
 		}
-		if _, armed := m.timers[TimerFinish]; !armed && (m.claim.State == StateReady || m.claim.State == StateIdle) {
-			m.arm(TimerFinish, m.deps.Timeouts.RPC, id)
+		if m.claim.State == StateReady || m.claim.State == StateIdle {
+			m.armEndFrameBoundUnlessArmed(id)
 		}
 		return err
 	}
 	m.log.Info(taskFinishedLine, "task", number, "by", by)
 	m.deleteValue(ctx, number, valueDeletedFinished)
 	return nil
+}
+
+// makeOwedFinish makes the finish a report decided and the store refused (takePhase, waitFinish),
+// and answers whether the take was in that phase, with that finish's error: every take-back of a
+// take asks it first, and one in that phase is not taken back but finished by that report,
+// whichever turn the take awaits, since the report decides, and taken back under its number the
+// task would run again. The take-backs that ask it are a newer task's (retirePending), a let-go's
+// (interrupted, takeBackUnstarted), one that keeps the process (takeBack, which the compaction
+// asks through it too) and the ladder's (takeToLadder). A finish the store refuses again stays
+// owed (finishTask), for the end-frame bound or the next decision (settle) to make.
+func (m *Machine) makeOwedFinish(ctx context.Context) (owed bool, err error) {
+	if m.takePhase() != waitFinish {
+		return false, nil
+	}
+	return true, m.finishTask(ctx, finishedByReport)
 }
 
 // finishAtTurnsEnd is the end-frame bound over: the task's turn ended, and no turn-outcome
@@ -110,14 +129,14 @@ func (m *Machine) armEndFrameBoundUnlessArmed(id string) {
 // restarts R5's clocks from the same act). The act's own decision may have settled the task
 // already — a report that finished it — or have started a turn, whose end arms the bound in its
 // turn (turnEnded), so the bound is armed only over a claim still ready or idle holding that take
-// with its turn started.
+// with its turn run (takesTurnRan).
 func (m *Machine) armFinishAtAct() {
 	if !m.finishAtAct || m.awaitsAct {
 		return
 	}
 	m.finishAtAct = false
 	p := m.claim.Pending
-	if p == nil || !p.turnStarted() || (m.claim.State != StateReady && m.claim.State != StateIdle) {
+	if p == nil || !m.takesTurnRan() || (m.claim.State != StateReady && m.claim.State != StateIdle) {
 		return
 	}
 	m.armEndFrameBoundUnlessArmed(p.ID)

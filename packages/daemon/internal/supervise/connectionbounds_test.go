@@ -685,6 +685,29 @@ func owedFinishOfAwaitingItsTurn(t *testing.T, deliver RequestDeliver, refusing 
 	return h, number
 }
 
+// owedFinishOverATurnThatRan is a claim on the current plugin, ready, whose take of a task ran its
+// turn, started and ended, and whose finish the report naming its number decided and the store
+// refused (Machine.finishOwed): the state every live order reaches, which owedFinishAwaitingItsTurn
+// makes by hand over a take put back. refusing is whether the store still refuses the finish when
+// this returns.
+func owedFinishOverATurnThatRan(t *testing.T, refusing bool) (*harness, uint64) {
+	t.Helper()
+	h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
+	h.manualTakes()
+	h.reach(StateReady)
+	number := h.takeOf("the task whose report's finish the store refused")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.reportTurn(number, nil); err == nil {
+		t.Fatal("the report whose finish the store refused answered no failure")
+	}
+	if !refusing {
+		h.store.fail("RetireDelivery", nil)
+	}
+	return h, number
+}
+
 // wantOwedFinishMade holds that task number was finished once, by its report, and nothing of it
 // taken back: the store records it finished, and no value of it is left for a process to take.
 func (h *harness) wantOwedFinishMade(number uint64) {

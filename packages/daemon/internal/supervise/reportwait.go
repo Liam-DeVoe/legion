@@ -204,8 +204,9 @@ const (
 	// (Machine.finishOwed), which the end-frame bound makes again, whichever turn the take awaits:
 	// the report decides. No work begins to wait for it, work already waiting goes on waiting for
 	// that finish, no bound of the wait nor R5's second wait arms over it, and every take-back
-	// finishes the task by that report instead: interrupted, takeBackUnstarted, takeBack and
-	// takeToLadder each read this phase before they take anything back (this file's doc).
+	// finishes the task by that report instead: retirePending, interrupted, takeBackUnstarted,
+	// takeBack and takeToLadder each ask makeOwedFinish before they take anything back (this
+	// file's doc).
 	waitFinish
 	// waitTake is the third phase: the take awaits its turn — given back the turn the daemon gave a
 	// run that was not its own (putBack), or not given one yet. Work already waiting goes on

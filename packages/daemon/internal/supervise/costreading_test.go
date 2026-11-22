@@ -977,7 +977,17 @@ func TestTaskCostLogReadsTheTurnStartWaitAfterAHelloOverNoTaskFromTheTake(t *tes
 	h.advance(time.Minute)
 	h.helloOf(true, false)
 	h.advance(time.Minute)
-	number := h.takeOf("implement the plan")
+	wantTakeChargedPastBothBounds(t, h, log, "implement the plan")
+}
+
+// wantTakeChargedPastBothBounds is task taken with no turn started after it, over a connection
+// whose view the reading's clocks run on: the daemon charges the second wait one bound after the
+// take, and the reading passes the charge; the value written again is reported seen and left a
+// bound untaken, the daemon charges the first wait, and the reading lists the number from that
+// report.
+func wantTakeChargedPastBothBounds(t *testing.T, h *harness, log *testlog.Buffer, task string) {
+	t.Helper()
+	number := h.takeOf(task)
 	h.advance(turnStartBound)
 	h.wantCharges(WaitTurnStart)
 	h.seen()
@@ -1023,22 +1033,7 @@ func TestTaskCostLogRunsTheClocksFromTheAnswerToADaemonStartsOwnAskAfterItsTurn(
 		t.Fatalf("pending %+v after the turn's end, want the task finished by its report", p)
 	}
 	h.advance(time.Minute)
-	number := h.takeOf("carry on")
-	h.advance(turnStartBound)
-	h.wantCharges(WaitTurnStart)
-	h.seen()
-	seen := h.clock.Now()
-	h.advance(takeBound)
-	h.wantCharges(WaitTurnStart, WaitTake)
-
-	cost := readLogCost(t, h, log)
-	if len(cost.ChargedWithinBound) != 0 {
-		t.Errorf("the first verdict fails on %q, want the charge one bound after the take passed", cost.ChargedWithinBound)
-	}
-	if want := unreachedFrom(h, number, seen); !slices.Equal(cost.Unreached, want) {
-		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
-			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
-	}
+	wantTakeChargedPastBothBounds(t, h, log, "carry on")
 }
 
 // A daemon start restores a claim whose process was launching with no hello seen (viewNoHello),

@@ -499,7 +499,10 @@ func (m *Machine) answeredFromRecord(request RequestTake) bool {
 
 // takePending decides a take of the pending task, which no take has been accepted for: a hold or
 // a drop answers it here, an adoption sends it back to Machine.Take, and anything else accepts
-// it.
+// it. Its contract is that the caller holds such a task, which every caller has asked first
+// (answeredFromRecord answers a take of any other, no task pending among them): it answers the
+// take on every path, so a nil check returning nothing would leave the worker unanswered and hide
+// the caller's fault.
 func (m *Machine) takePending(ctx context.Context, request RequestTake) error {
 	m.claim.recordTake(request, TakeMade)
 	hold, dropped, err := m.takeable(ctx, false)
@@ -698,6 +701,10 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // fate is unknown (owes). The next decision writes both rows from memory over whatever it
 // committed, and the store's write of an unconfirmed delivery over a confirmed one holds again
 // the decisions that confirmation told (internal/store's putBackARetakenConfirmation).
+//
+// Its contract is that the caller holds a pending task no take has been accepted for, which every
+// caller has asked first (takePending, behind answeredFromRecord; adopted): it answers the take,
+// so a nil check returning nothing would leave the worker unanswered and hide the caller's fault.
 func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	p := m.claim.Pending
 	text, told := p.message(m.claim)
@@ -855,9 +862,12 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 // (offer), so that decision asks the record once; and an operator's task over a launch the pacing
 // parked above the claim's process (runParkedLaunchNow), which asks before the row's queue does,
 // so that the launch runs for the operator's task where queue would drop the task it arrived
-// behind. A read of the record that fails drops nothing.
+// behind. A read of the record that fails drops nothing. With no task pending it drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
+	if p == nil {
+		return false, nil
+	}
 	round, asks := updateRoundOf(p.ID)
 	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
 	if !asks && !spent {
@@ -952,11 +962,11 @@ func (m *Machine) stateHold() string {
 // operator's compaction can take it back while the view waits for the agent's answer to a hello.
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
-// finished, by that report: the report decides whichever turn the take awaits, and taken back
-// under its number the task would run again.
+// finished, by that report (makeOwedFinish): the report decides whichever turn the take awaits,
+// and taken back under its number the task would run again.
 func (m *Machine) takeBack(ctx context.Context, cause string) error {
-	if m.takePhase() == waitFinish {
-		return m.finishTask(ctx, finishedByReport)
+	if owed, err := m.makeOwedFinish(ctx); owed {
+		return err
 	}
 	if m.takeBackInMemory(cause) {
 		return m.putClaimAndPendingOwed(ctx)
@@ -967,10 +977,14 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 // takeBackInMemory is takeBack with no write: the take goes from the delivery and the claim in
 // memory, for a caller that writes them in a write of its own, together with what it decides
 // next — the ladder's step, which must land with the take-back or not at all (takeToLadder). It
-// answers whether the claim moved with it (giveBackTake).
+// answers whether the claim moved with it (giveBackTake). With no task pending it takes nothing
+// back.
 func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
-	m.disarm(TimerFinish)
 	p := m.claim.Pending
+	if p == nil {
+		return false
+	}
+	m.disarm(TimerFinish)
 	claimMoved = m.clearTake(p, cause)
 	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
 	return claimMoved

@@ -1987,9 +1987,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	// the end of the turn running over a working one (turnEnded, armEndFrameBound), with the
 	// serving credit a finished take's turn earns (retireTask); a claim let go settles the task by
 	// that report (settle). A provider error's take-back and ladder step (Machine.ladderOwed) are
-	// made at the claim's first decision, which can write them (settle).
-	if owed, ok := m.claim.owedReport(); ok {
-		if p := m.claim.Pending; p.awaitsTurn() {
+	// made at the claim's first decision, which can write them (settle). A claim with no task
+	// pending owes nothing.
+	p := m.claim.Pending
+	if owed, ok := m.claim.owedReport(); ok && p != nil {
+		if p.awaitsTurn() {
 			p.TurnStarted = true
 			m.resetPromptBudgets()
 			m.unsaved = true
@@ -1999,7 +2001,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		} else {
 			m.finishOwed = true
 			if c.State == StateReady || c.State == StateIdle {
-				m.armEndFrameBound(c.Pending.ID)
+				m.armEndFrameBound(p.ID)
 			}
 		}
 	}

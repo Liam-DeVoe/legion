@@ -100,16 +100,17 @@ func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) goes to no ladder: the
 // report that came first decides, so a later report naming its number with a provider error
-// finishes the task by that first report, for a status the ladder would wait out as for one that
-// holds the issue (takeBack). Taken to the ladder, the task would be given again and run twice.
+// finishes the task by that first report (makeOwedFinish), for a status the ladder would wait out
+// as for one that holds the issue (takeBack). Taken to the ladder, the task would be given again
+// and run twice.
 func (m *Machine) takeToLadder(ctx context.Context, status int) error {
 	cause := providerErrorCause(status)
 	if holdsTheIssue(status) {
 		err := m.takeBack(ctx, takenBackProviderError)
 		return errors.Join(err, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause))
 	}
-	if m.takePhase() == waitFinish {
-		return m.finishTask(ctx, finishedByReport)
+	if owed, err := m.makeOwedFinish(ctx); owed {
+		return err
 	}
 	m.takeBackInMemory(takenBackProviderError)
 	return m.providerErrorClears(ctx, cause)

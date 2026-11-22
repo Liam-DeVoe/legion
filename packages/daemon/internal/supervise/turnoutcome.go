@@ -279,8 +279,13 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 // after the ladder's wait, whose turn neither that report nor any before it is of. A report of
 // another generation is of a turn of another process than the one whose take this is, and a task
 // of no number (Delivery.Number) is named by no report (reportOfTake), so an entry stored before
-// the window kept a report's number (TurnOutcome.Task) owes nothing.
+// the window kept a report's number (TurnOutcome.Task) owes nothing. A claim with no task pending
+// owes no report.
 func (c Claim) owedReport() (TurnOutcome, bool) {
+	p := c.Pending
+	if p == nil {
+		return TurnOutcome{}, false
+	}
 	var errored TurnOutcome
 	found := false
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
@@ -291,7 +296,7 @@ func (c Claim) owedReport() (TurnOutcome, bool) {
 		if !o.ProviderError {
 			return o, true
 		}
-		if o.ProviderErrorRetries <= c.Pending.ProviderErrorRetries {
+		if o.ProviderErrorRetries <= p.ProviderErrorRetries {
 			break
 		}
 		if !found {
@@ -425,6 +430,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // A report can name the accepted take's number before this daemon saw that take's turn start:
 // the report comes over HTTP and the start over the worker stream, and nothing orders the two.
 // The turn ran all the same, so what its start does for the take is done first (startedUnseen),
+// where the take awaits its turn as the one rule of where it stands reads it (takeAwaitsTurn),
 // and the task is then finished, or taken back, as the turn's report says. A write of that start
 // the store refuses leaves the start standing in memory, owed (startTakesTurn), and the finish or
 // the take-back is made all the same: the report is applied already, so the worker's report sent
@@ -443,7 +449,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // turn's sequence, and the take's number places it among the turns the machine saw.
 func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
-	if !m.claim.reportOfTake(r.Generation, r.Task) {
+	if p == nil || !m.claim.reportOfTake(r.Generation, r.Task) {
 		if r.Task != 0 {
 			m.log.Info("supervise: a turn's report names a task that no take of this claim holds; it finishes nothing",
 				"task", r.Task, "generation", r.Generation, "pending", pendingNumber(p))
@@ -452,7 +458,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 	}
 	return m.settleThenAfterTurn(ctx, func() error {
 		var started error
-		if p.awaitsTurn() {
+		if m.takeAwaitsTurn() {
 			started = m.startedUnseen(ctx, r)
 		} else {
 			m.learnTurns(ctx, r)
@@ -596,12 +602,12 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 // (takePhase, waitFinish), whichever of its three callers asks: that report decides, the take
 // stays where it put it, and the end-frame bound makes its finish again. Put back, the take would
 // await a turn that has run, and the start of that turn, late, would be given it as a second run
-// of the task.
+// of the task. With no task pending it puts nothing back.
 func (m *Machine) putBack(ctx context.Context, by string) error {
-	if m.takePhase() == waitFinish {
+	p := m.claim.Pending
+	if p == nil || m.takePhase() == waitFinish {
 		return nil
 	}
-	p := m.claim.Pending
 	m.log.Info(notTheTakesTurnLine, "task", p.Number, "by", by)
 	p.TurnStarted, m.turns.take = false, 0
 	if m.workHeld() {
@@ -635,9 +641,13 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // no task. A busy claim marks nothing (busy): in a turn, its start frame has come already, and the
 // turn running is the report's; under a compaction with no turn started under it, a start is given
 // no take and reads no mark (turnStartedWhileBusy), so a mark left for a start that comes under
-// the compaction would outlive it and name this task in a later start.
+// the compaction would outlive it and name this task in a later start. With no task pending it
+// starts nothing.
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
+	if p == nil {
+		return nil
+	}
 	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
 		"task", p.Number)
 	m.resetPromptBudgets()

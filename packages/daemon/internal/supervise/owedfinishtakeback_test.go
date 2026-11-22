@@ -399,18 +399,7 @@ func TestTakeOfANumberWhoseFinishIsOwedIsRefusedNotOwed(t *testing.T) {
 func TestTakeWhoseFinishIsOwedIsFinishedByALaterReportWithAProviderError(t *testing.T) {
 	for _, status := range []int{429, 503} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
-			h.manualTakes()
-			h.reach(StateReady)
-			number := h.takeOf("the task whose report's finish the store refused")
-			h.must(StreamTurnStart{Claim: h.token})
-			h.mustQuiet(StreamTurnEnd{Claim: h.token})
-			h.store.fail("RetireDelivery", errBoom)
-			if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: 1, Task: number}); err == nil {
-				t.Fatal("the report whose finish the store refused answered no failure")
-			}
-			h.m.Wait()
-			h.store.fail("RetireDelivery", nil)
+			h, number := owedFinishOverATurnThatRan(t, false)
 
 			if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: 2, Task: number,
 				ProviderError: &ProviderError{Status: status, Retryable: true}}); err != nil {
@@ -450,16 +439,7 @@ func TestTakeWhoseFinishIsOwedAcrossARestartIsFinishedByItsCleanReportNotALaterP
 		{"three newer reports, then a restart", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
-			h.manualTakes()
-			h.reach(StateReady)
-			number := h.takeOf("the task whose report's finish the store refused")
-			h.must(StreamTurnStart{Claim: h.token})
-			h.mustQuiet(StreamTurnEnd{Claim: h.token})
-			h.store.fail("RetireDelivery", errBoom)
-			if err := h.reportTurn(number, nil); err == nil {
-				t.Fatal("the report whose finish the store refused answered no failure")
-			}
+			h, number := owedFinishOverATurnThatRan(t, true)
 			if err := h.reportTurn(number, &ProviderError{Status: 429, Retryable: true}); err == nil {
 				t.Fatal("the later report with a 429, whose finish the store refused too, answered no failure")
 			}
@@ -555,17 +535,7 @@ func TestTakeWhoseFinishIsOwedReadsAsATakeWhoseTurnRan(t *testing.T) {
 		}
 	})
 	t.Run("a newer task over the take whose turn ran", func(t *testing.T) {
-		h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
-		h.manualTakes()
-		h.reach(StateReady)
-		number := h.takeOf("the task whose report's finish the store refused")
-		h.must(StreamTurnStart{Claim: h.token})
-		h.mustQuiet(StreamTurnEnd{Claim: h.token})
-		h.store.fail("RetireDelivery", errBoom)
-		if err := h.reportTurn(number, nil); err == nil {
-			t.Fatal("the report whose finish the store refused answered no failure")
-		}
-		h.store.fail("RetireDelivery", nil)
+		h, number := owedFinishOverATurnThatRan(t, false)
 
 		h.must(RequestDeliver{Claim: h.token, Task: "the newer task"})
 

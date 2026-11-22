@@ -757,12 +757,12 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // delivery goes through).
 //
 // A task whose report's finish the store refused (takePhase, waitFinish) is finished by that
-// report instead (finishTask), whichever turn its take awaits: the report decided it, and dropped
-// unfinished the claim would record no finish of it. Its value goes with the finish, before the
-// newer task's is written.
+// report instead (makeOwedFinish), whichever turn its take awaits: the report decided it, and
+// dropped unfinished the claim would record no finish of it. Its value goes with the finish,
+// before the newer task's is written.
 func (m *Machine) retirePending(ctx context.Context) error {
-	if m.takePhase() == waitFinish {
-		return m.finishTask(ctx, finishedByReport)
+	if owed, err := m.makeOwedFinish(ctx); owed {
+		return err
 	}
 	return m.retireTask(ctx, false)
 }
@@ -850,13 +850,18 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // first claim write that lands, and the retirement keeps the store's fenced answers
 // (ErrNoSuchDelivery, ErrOtherDelivery) whole. A stop that fails again stops the retirement here,
 // with nothing retired, for the next decision's repair and settle to make in that same order.
+//
+// With no task pending it retires nothing.
 func (m *Machine) retireTask(ctx context.Context, finished bool) error {
+	p := m.claim.Pending
+	if p == nil {
+		return nil
+	}
 	if len(m.owedStops()) > 0 {
 		if err := m.putClaimAndPending(ctx); err != nil {
 			return m.owes("PauseStopped", err)
 		}
 	}
-	p := m.claim.Pending
 	retired := m.stored()
 	if m.takesTurnRan() {
 		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook =
@@ -1195,19 +1200,19 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 //
 // A take whose report named its number and whose finish the store refused (Machine.finishOwed) is
 // not taken back but finished, by that report, whichever turn it awaits and whether or not a turn
-// runs: the report decides (takePhase, waitFinish), and a finish the store refuses again is
-// retried as this let-go's own refusals are. A take whose turn has otherwise ended is settled by
-// its claim's contract. Where the end frame finishes a task — a plugin below TaskTakeContract,
-// whose reports name no number (TakesNoTask) — it is not taken back but finished: its turn
-// ran whole, and only the report of it is lost with the process (finishTask, by the end frame).
-// Where only a report naming the number finishes it, and none has, the end of a run says nothing
-// of whose run it was, so it is taken back with the note a cut turn gets, as though its turn were
-// still running: the next accepted take carries the sentence of its interruption, and the let-go
-// that follows records the task's turn as cut off (Machine.cutTurnOf). Whether a turn runs is the
-// one answer every let-go reads (cutsTurn, as recordEnd and the stall backstop read it): a claim
-// stored working for nothing that runs is in no turn, so a compaction Oh My Pi started after the
-// take's turn ended and before its report leaves that take to be settled here too, whichever
-// let-go comes.
+// runs: the report decides (makeOwedFinish), and a finish the store refuses again is retried as
+// this let-go's own refusals are. A take whose turn has otherwise ended (takesTurnRan) is settled
+// by its claim's contract. Where the end frame finishes a task — a plugin below
+// TaskTakeContract, whose reports name no number (TakesNoTask) — it is not taken back but
+// finished: its turn ran whole, and only the report of it is lost with the process (finishTask,
+// by the end frame). Where only a report naming the number finishes it, and none has, the end of
+// a run says nothing of whose run it was, so it is taken back with the note a cut turn gets, as
+// though its turn were still running: the next accepted take carries the sentence of its
+// interruption, and the let-go that follows records the task's turn as cut off
+// (Machine.cutTurnOf). Whether a turn runs is the one answer every let-go reads (cutsTurn, as
+// recordEnd and the stall backstop read it): a claim stored working for nothing that runs is in
+// no turn, so a compaction Oh My Pi started after the take's turn ended and before its report
+// leaves that take to be settled here too, whichever let-go comes.
 //
 // The taken-back task becomes the claim's only once its write has landed. A write that fails
 // leaves the task taken in memory as in the store, and the process is still recorded, so the
@@ -1240,10 +1245,10 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return nil
 	}
 	inTurn := m.cutsTurn()
-	if m.takePhase() == waitFinish {
-		return m.finishTask(ctx, finishedByReport)
+	if owed, err := m.makeOwedFinish(ctx); owed {
+		return err
 	}
-	if p.turnStarted() && !inTurn {
+	if m.takesTurnRan() && !inTurn {
 		if TakesNoTask(m.claim.PluginContract) {
 			return m.finishTask(ctx, finishedByEndFrame)
 		}
@@ -1253,7 +1258,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "task", p.Number, "delivery", p.ID)
 	next := *p
 	handshake := m.claim.Handshake
-	claimMoved := p.awaitsTurn() && m.giveBackTake(p)
+	claimMoved := m.takeAwaitsTurn() && m.giveBackTake(p)
 	next.ConfirmedAt, next.TakenText, next.TurnStarted, next.TakeTold = time.Time{}, "", false, Sentences{}
 	if inTurn {
 		next.Interrupted, next.OutOfMemory = true, outOfMemory
@@ -1383,15 +1388,15 @@ func (m *Machine) untellUnstarted() {
 // take-back reads that where every take-back of this kind does (clearTake).
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
-// finished, by that report, which writes the claim with the retirement; a finish the store
-// refuses again answers its error, and the next decision makes it (settle).
+// finished, by that report (makeOwedFinish), which writes the claim with the retirement; a finish
+// the store refuses again answers its error, and the next decision makes it (settle).
 func (m *Machine) takeBackUnstarted(ctx context.Context, cause string) (bool, error) {
 	p := m.claim.Pending
 	if p == nil || !p.awaitsTurn() {
 		return false, nil
 	}
-	if m.takePhase() == waitFinish {
-		return false, m.finishTask(ctx, finishedByReport)
+	if owed, err := m.makeOwedFinish(ctx); owed {
+		return false, err
 	}
 	m.clearTake(p, cause)
 	return true, nil
@@ -1411,8 +1416,12 @@ func (m *Machine) takeBackUnstarted(ctx context.Context, cause string) (bool, er
 // whose ask neither the agent's answer nor a turn frame followed — or the take is marked so. The
 // operator's compaction (compactStart) is one, which needs only a connection and so can run while
 // the view waits for its answer; a let-go's (takeBackUnstarted) reads the mark its record kept. The
-// next accepted take then tells the worker its turn on the task may have run.
+// next accepted take then tells the worker its turn on the task may have run. With no take given
+// it takes nothing back.
 func (m *Machine) clearTake(p *Delivery, cause string) (claimMoved bool) {
+	if p == nil {
+		return false
+	}
 	cut := m.turnMayHaveRunUnseen()
 	claimMoved = m.giveBackTake(p)
 	p.ConfirmedAt, p.TakenText, p.TurnStarted, p.TakeTold = time.Time{}, "", false, Sentences{}
