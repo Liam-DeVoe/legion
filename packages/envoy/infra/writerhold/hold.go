@@ -655,13 +655,15 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	}
 	// A rerun on a held row runs no probe outside the hold: each refusal of its probe counts as the
 	// hold's only through Probe's check against this hold's admitted-probe record, which the rerun
-	// makes first too, so it changes nothing without that record.
+	// makes first too, so it changes nothing without that record. A crashed set's rerun that the
+	// check refuses writes set's stop (every exit after an intent writes its stop), so `hold abort`
+	// is admitted.
 	if err := op.useProbeRecord(d); err != nil {
-		return nil, err
+		return nil, stop(err)
 	}
 	if row.Phase == natsgrant.OperatorPhaseHeld {
 		if err := op.probeProven(); err != nil {
-			return nil, err
+			return nil, stop(err)
 		}
 	}
 
@@ -1008,19 +1010,31 @@ func printReport(stdout io.Writer, holdID string, reading *ReportReading) {
 // steps 3 to 6 again on the restored servers, and writes its done entry with disk.<target> and
 // disk_id.<target> for each restored target. A restored target still on its step-1 disk is refused
 // (a restore that did not happen ends with hold abort), and a refusal after the intent writes a
-// stop entry, so a corrected prove is admitted.
+// stop entry, so a corrected prove is admitted. A prove killed after its intent left that intent
+// pending: its rerun's exits before its own admission, the probe check among them, write prove's
+// stop too (every exit after an intent writes its stop), so `hold abort` is admitted.
 func prove(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	d, _, err := records.Journal(ctx, o.holdID)
 	if err != nil {
 		return err
 	}
+	pending := latestIs(d, holdrecord.CommandProve, holdrecord.StateIntent)
+	stop := func(cause error) error {
+		if !pending {
+			return cause
+		}
+		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandProve, cause.Error()); err != nil {
+			return errors.Join(cause, err)
+		}
+		return cause
+	}
 	// Each restarted server's refusal of the probe counts only through Probe's check against this
 	// hold's admitted-probe record; the prove makes the same check before it writes anything.
 	if err := op.useProbeRecord(d); err != nil {
-		return err
+		return stop(err)
 	}
 	if err := op.probeProven(); err != nil {
-		return err
+		return stop(err)
 	}
 	restored := map[string]string{}
 	for _, pair := range o.restored {
@@ -1029,21 +1043,16 @@ func prove(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	}
 	read, bindings, err := readDisks(ctx, op)
 	if err != nil {
-		return err
+		return stop(err)
 	}
 	moved, err := holdrecord.Moved(d, read)
 	if err != nil {
-		return err
+		return stop(err)
 	}
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandProve, DisksMoved: moved}, restoreInputs(o)); err != nil {
-		return err
+		return stop(err)
 	}
-	stop := func(cause error) error {
-		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandProve, cause.Error()); err != nil {
-			return errors.Join(cause, err)
-		}
-		return cause
-	}
+	pending = true
 	step1, _ := holdrecord.Step1(d)
 	want := map[string]string{}
 	var findings []string
