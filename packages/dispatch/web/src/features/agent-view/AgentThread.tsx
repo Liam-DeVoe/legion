@@ -576,8 +576,12 @@ export function AgentThread({
             <SlashCommands commands={commands} />
           )}
           <div className="flex items-end gap-2">
+            {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
+                the textarea's autosize can leave it far taller than its text (a load at a
+                phone's width, then a desktop's, left it 636px tall), and the composer then lay
+                over the row under it, so a press at Send reached that row. */}
             <ComposerPrimitive.Input
-              className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               placeholder={placeholder}
               rows={1}
               submitMode="enter"

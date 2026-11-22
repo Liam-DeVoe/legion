@@ -17,7 +17,11 @@ import { type RefObject, useLayoutEffect } from "react";
  * counts. A new foot element picks its layer here by name and joins this list.
  *
  * - `page` (`--foot-page-inset`): the page's own foot controls. Each keeps its own place, and the
- *   page lays them out against each other.
+ *   page lays them out against each other. Each one's reach counts at most half the screen's
+ *   height (`publish`), so the floats above this layer always have the upper half of the screen
+ *   and never leave it: a refused change whose Retry and Discard nobody can reach is worse than a
+ *   float over part of a tall page element, and a page element taller than half the screen is a
+ *   page of its own, whose upper part a float may lie over.
  *   - The docked composer below `sm`, and a composer a host's frame fixes at the foot: a phone
  *     thread's and a phone reply's in the Conversation, and a phone margin thread's (`ThreadCard`'s
  *     composer frame), all through `MentionComposer`. From `sm` up the docked composer sticks to
@@ -73,8 +77,9 @@ function controlsOf(layer: FootLayer): Map<Element, FootControl> {
 
 /**
  * Publishes every layer's value, from the bottom up: each holds the highest reach published into
- * it or into a layer below it. When that changes any value the document element holds, it
- * measures every element the hook holds again, in every layer.
+ * it or into a layer below it, a page element's reach counted at most half the screen's height
+ * (`FOOT_LAYERS` says why). When that changes any value the document element holds, it measures
+ * every element the hook holds again, in every layer.
  *
  * These properties place elements, so a publish moves elements that never change size: the update
  * banner sits on the page layer, so a composer that grows pushes the banner up the screen with its
@@ -96,7 +101,10 @@ function publish(): void {
   let highest = 0;
   let changed = false;
   for (const { name, property } of FOOT_LAYERS) {
-    for (const control of controlsOf(name).values()) highest = Math.max(highest, control.reach);
+    const most = name === "page" ? window.innerHeight / 2 : Number.POSITIVE_INFINITY;
+    for (const control of controlsOf(name).values()) {
+      highest = Math.max(highest, Math.min(control.reach, most));
+    }
     const value = highest === 0 ? "" : `${highest}px`;
     if (style.getPropertyValue(property) === value) continue;
     changed = true;
