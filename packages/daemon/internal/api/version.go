@@ -3094,12 +3094,10 @@ package api
 // 191 and 200 before, from the forward merge of 2026-11-15 on, each the lowest number above
 // main's that no other open pull request declared at its own reading, and each left at a forward
 // merge whose base had reached or passed it, or at whose reading another open pull request
-// declared it too. It keeps 209 at the merge that brought in main's 205, although the reading of
-// every open head made between 2026-11-21T16:31:58Z and 16:38:17Z found #4540 and #4580 declaring
-// it as well: that reading found every number from 203 to 213 declared by another open pull
-// request, so no free number was nearer than 214, and of the pull requests that share 209 each one
-// that merges after another takes the next free number at its next forward merge. Read the base's
-// own number and every open head again at the next merge rather than from this entry, as
+// declared it too. It keeps 209 at the merges that brought in main's 205: the reading of every
+// open head made between 2026-11-22T00:20:54Z and 00:32:41Z found no other open pull request
+// declaring 209. Read the base's own number and every open head again at the next merge rather
+// than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves projectReleaseContract in shaping.go with it: it is the number the state's
 // `projectRelease` and the refusal's `heldPods` are served down below, the arrival of the six
