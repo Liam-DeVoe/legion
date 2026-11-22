@@ -553,15 +553,16 @@ export const NODE_WORDS = {
   constraint: "Tamarisk",
   /** The finding under her reserved lens. */
   finding: "Ocelot",
+  /** The risk under her reserved pre-mortem written with no visibility of its own, which is hers
+   *  as that pre-mortem is. */
+  inheritedRisk: "Sorrel",
   /** Her reserved lens on statement 2. */
   lens: "Halyard",
   /** Her reserved pre-mortem on statement 3. */
   preMortem: "Juniper",
   /** The project lens on statement 2, triggered by her reserved lens. */
   projectLens: "Bramble",
-  /** The project risk under her reserved pre-mortem. */
-  projectRisk: "Sorrel",
-  /** Her reserved risk under that pre-mortem, which check 3 prevents. */
+  /** Her reserved risk under her reserved pre-mortem, which check 3 prevents. */
   risk: "Kestrel",
 } as const;
 
@@ -569,8 +570,16 @@ export const NODE_WORDS = {
  *  draws for a reader who may not see it. */
 export const NOBODY_WROTE = "Quokka";
 
-/** The nodes reserved for their author, alice. */
-export const RESERVED_NODES = ["lens", "finding", "preMortem", "risk", "constraint"] as const;
+/** The nodes reserved for their author, alice: the risk under her reserved pre-mortem by that
+ *  pre-mortem's visibility, which it takes for want of its own, and every other by its own. */
+export const RESERVED_NODES = [
+  "lens",
+  "finding",
+  "preMortem",
+  "risk",
+  "inheritedRisk",
+  "constraint",
+] as const;
 
 /** One node `seedAuthorOnly` wrote: its address, as the write answered it, and its one word. */
 export interface WrittenNode {
@@ -597,10 +606,12 @@ function written(
 /**
  * Writes, on an issue `seedWholeIssue` makes, as alice: reserved for her (`visibility:
  * "author"`), a lens on statement 2 with a finding, a pre-mortem on statement 3 with a risk that
- * check 3 prevents, and a constraint; for the project, a lens on statement 2 triggered by her
- * reserved lens, and a risk under her reserved pre-mortem. Each node holds one word no other node
- * holds (`NODE_WORDS`), and is returned with the address its write answered. Each statement's and
- * the check's address is the server's own (the coverage read's and the results read's `ref`).
+ * check 3 prevents, and a constraint; under that pre-mortem, a risk with no visibility of its own,
+ * which the server answers as hers, since a child is never wider than its parent; and for the
+ * project, a lens on statement 2 triggered by her reserved lens. Each node holds one word no
+ * other node holds (`NODE_WORDS`), and is returned with the address its write answered. Each
+ * statement's and the check's address is the server's own (the coverage read's and the results
+ * read's `ref`).
  */
 export async function seedAuthorOnly(): Promise<AuthorOnlySeed> {
   const whole = await seedWholeIssue();
@@ -659,20 +670,20 @@ export async function seedAuthorOnly(): Promise<AuthorOnlySeed> {
     triggered_by: lens.address,
     verdict: `${W.projectLens} is the lens every reader of the project reads.`,
   });
-  const projectRisk = await writeRisk(key, {
+  const inheritedRisk = await writeRisk(key, {
     early_warning: "A reader who may not see the pre-mortem reads a risk with no lens above it.",
-    heading: `${W.projectRisk} is the risk every reader of the project reads.`,
+    heading: `${W.inheritedRisk} is the risk she keeps with the pre-mortem above it.`,
     lens: preMortem.address,
-    prevention: "The risk stands under the statement the pre-mortem examined.",
+    prevention: "The risk is no wider than the pre-mortem above it.",
   });
   return {
     nodes: {
       constraint: written(constraint, "constraint", "author"),
       finding: written(finding, "finding", "author"),
+      inheritedRisk: written(inheritedRisk, "inheritedRisk", "author"),
       lens: written(lens, "lens", "author"),
       preMortem: written(preMortem, "preMortem", "author"),
       projectLens: written(projectLens, "projectLens", "project"),
-      projectRisk: written(projectRisk, "projectRisk", "project"),
       risk: written(risk, "risk", "author"),
     },
     whole,

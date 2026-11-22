@@ -25,7 +25,6 @@ import {
   nodeRow,
   nodeRows,
   PHONE,
-  parentOfRow,
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
@@ -152,14 +151,6 @@ const SETTLE_ROUTE = "**/api/v1/issues/*/nodes/*/settle";
 
 /** The four views, by the filter each reads its view of the tree for. */
 const VIEWS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly TreeView[];
-
-/** The lines a risk draws under its words of its own, none of which is about a lens. */
-const RISK_LINES: readonly string[] = [
-  "early_warning",
-  "prevention",
-  "prevented_by",
-  "prevented_by_nothing",
-];
 
 /** The words the page's word list writes, as it writes them, which a text may be whole: a raw
  *  value of the tree read, or a word-list key, is none of them. */
@@ -1062,7 +1053,8 @@ async function statementTwoReferences(
 }
 
 /** Bob's readings of the issue alice reserved nodes on, on his page with `traffic`, its one
- *  watcher: none of them, nor any trace of them. */
+ *  watcher: none of them, nor any trace of them, the risk she wrote under her reserved pre-mortem
+ *  with no visibility of its own among them. */
 async function expectNothingReserved(
   page: Page,
   traffic: ApiRequests,
@@ -1112,32 +1104,6 @@ async function expectNothingReserved(
     "bob's project lens offers to show the whole chain"
   ).toHaveCount(0);
 
-  // The project risk under her reserved pre-mortem stands under statement 3, after its children,
-  // with no mark, no gap and no line about a pre-mortem.
-  await focusThePage(page);
-  const projectRisk = readIdHolding(his.answer, seeded.nodes.projectRisk.word, "project risk");
-  const riskId = await drawnRowId(page, projectRisk, "the project risk");
-  const statementThree = await drawnRowId(page, seeded.whole.requirements[2] ?? "", "statement 3");
-  expect(
-    await parentOfRow(page, riskId),
-    "bob's project risk does not stand under statement 3"
-  ).toBe(statementThree);
-  const items = await treeItemsDrawn(page);
-  const statementThreeItem = items.find((item) => item.id === statementThree);
-  expect(
-    childItems(items, statementThreeItem).at(-1)?.readId,
-    "bob's project risk does not stand after statement 3's other children"
-  ).toBe(projectRisk);
-  const riskRow = nodeRow(page, riskId).first();
-  expect(await ownMarks(riskRow), "bob's project risk carries a mark").toEqual([]);
-  await expect(rowGaps(riskRow), "bob's project risk draws a gap").toHaveCount(0);
-  expect(
-    (await lensLines(riskRow))
-      .map((line) => line.line)
-      .filter((line) => !RISK_LINES.includes(line)),
-    "bob's project risk draws a line about a pre-mortem"
-  ).toEqual([]);
-
   // `?node=` of the reserved lens and of the constraint draw what an unknown uuid draws.
   const unknown = await nodeAddressDraws(page, traffic, plain, crypto.randomUUID());
   for (const name of ["lens", "constraint"] as const) {
@@ -1173,7 +1139,7 @@ async function bobsReading(
 }
 
 // SLOW(>=2s): a whole seeded issue with seven lens nodes written, two readers each reading the
-// outline with every branch open and each of the four views, five words filters, a walk of every
+// outline with every branch open and each of the four views, seven words filters, a walk of every
 // row and three loads by `?node=`.
 test("a node reserved for its author is on its author's page and on nobody else's", async ({
   browser,
