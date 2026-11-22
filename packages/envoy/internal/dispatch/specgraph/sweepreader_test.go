@@ -109,11 +109,11 @@ func readerEnv() []string {
 // of the command env, which writes its environment, while the test's environment holds a variable of
 // the application, the variable that names the overlay of the reader's build, and each of the
 // runtime's settings: the process gets GOMAXPROCS as the test process runs with it, and GOMEMLIMIT,
-// GOGC and GODEBUG as the test's environment sets them, and no other variable. The test process runs
-// with GOMAXPROCS 2 while the environment's GOMAXPROCS is 8, so a process that got GOMAXPROCS from
-// the environment, or a fixed GOMAXPROCS of 8, fails it. It runs alone, as a test that sets the
-// environment does, so no other test runs under its GOMAXPROCS, and it gives the test process its
-// GOMAXPROCS back when it ends.
+// GOGC and GODEBUG as the test's environment sets them, and no other variable. The test process
+// starts it twice, once with GOMAXPROCS 2 and once with 3, while the environment's GOMAXPROCS is 8,
+// and wants each value, so a process that got GOMAXPROCS from the environment, or any fixed
+// GOMAXPROCS, fails it. It runs alone, as a test that sets the environment does, so no other test
+// runs under its GOMAXPROCS, and it gives the test process its GOMAXPROCS back when it ends.
 func TestTheReadersProcessGetsTheGoRuntimesSettingsAlone(t *testing.T) {
 	binary, err := exec.LookPath("env")
 	if err != nil {
@@ -125,17 +125,20 @@ func TestTheReadersProcessGetsTheGoRuntimesSettingsAlone(t *testing.T) {
 	t.Setenv("GOMEMLIMIT", "3GiB")
 	t.Setenv("GOGC", "150")
 	t.Setenv("GODEBUG", "gctrace=0")
-	procs := runtime.GOMAXPROCS(2)
+	procs := runtime.GOMAXPROCS(0)
 	t.Cleanup(func() { runtime.GOMAXPROCS(procs) })
-	p := sweepReader{binary}.start(t)
-	out, err := io.ReadAll(p.out)
-	if err != nil {
-		t.Fatalf("the process's environment: %v: %s", err, p.stderr.String())
-	}
-	got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
-	want := []string{"GOMAXPROCS=2", "GOMEMLIMIT=3GiB", "GOGC=150", "GODEBUG=gctrace=0"}
-	if !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want))) {
-		t.Errorf("the process started with the environment %q, and it should start with %q alone", got, want)
+	for _, n := range []int{2, 3} {
+		runtime.GOMAXPROCS(n)
+		p := sweepReader{binary}.start(t)
+		out, err := io.ReadAll(p.out)
+		if err != nil {
+			t.Fatalf("the process's environment at GOMAXPROCS %d: %v: %s", n, err, p.stderr.String())
+		}
+		got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+		want := []string{"GOMAXPROCS=" + strconv.Itoa(n), "GOMEMLIMIT=3GiB", "GOGC=150", "GODEBUG=gctrace=0"}
+		if !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want))) {
+			t.Errorf("the test process ran with GOMAXPROCS %d, and the process started with the environment %q, where it should start with %q alone", n, got, want)
+		}
 	}
 }
 
