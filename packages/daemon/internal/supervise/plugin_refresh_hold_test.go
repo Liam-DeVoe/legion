@@ -102,7 +102,7 @@ func TestAClaudeCodeRolesClaimInAPodIsSentItsTaskOnAnEarlierContract(t *testing.
 	sent := len(h.prompts())
 	h.m.deps.PluginContract = refreshContract
 	h.m.deps.PluginRelaunchable = true
-	h.m.deps.NoPluginInstall = func(context.Context, Claim) bool { return true }
+	h.m.deps.NoPluginInstall = func(context.Context, Claim) (bool, error) { return true, nil }
 
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
 

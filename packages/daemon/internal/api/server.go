@@ -126,8 +126,9 @@ type Options struct {
 	// daemon relaunches such a claim for its contract and its registration stands, so the routes
 	// serve it on the contract it speaks (staleClaim). Nil is a daemon whose every claim a
 	// relaunch can carry. ctx is the request's own: under Kubernetes the answer reads the plan of
-	// the claim's issue from the daemon's store.
-	NoPluginInstall func(ctx context.Context, c supervise.Claim) bool
+	// the claim's issue from the daemon's store, and a read that fails is the error, which says
+	// nothing of the claim (staleClaim logs it and refuses nothing on it).
+	NoPluginInstall func(ctx context.Context, c supervise.Claim) (bool, error)
 	// Backend is the harness a role's claim of an issue runs on (the daemon's roleBackends: a role
 	// the issue's plan defines runs on Oh My Pi, every other role on what `worker_backends` names
 	// against runtime.Backends). A role's harness is the daemon's configuration and the issue's
@@ -345,7 +346,7 @@ type server struct {
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
 	pluginRelaunchable bool
-	noPluginInstall    func(ctx context.Context, c supervise.Claim) bool
+	noPluginInstall    func(ctx context.Context, c supervise.Claim) (bool, error)
 	// backend is Options.Backend: the harness one role's claims run on.
 	backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
 	// controllerMu orders a capability mint against a registration and a controller grant, so a

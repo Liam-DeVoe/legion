@@ -1016,7 +1016,12 @@ type Deps struct {
 	// what carries it: it is asked the steps of UpdateTask like any other claim, on its own Envoy
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
-	NoPluginInstall func(ctx context.Context, c Claim) bool
+	//
+	// An error is a read that failed, and the answer beside it says nothing of the claim: a reader
+	// logs the error once and decides nothing on it — it refuses nothing, relaunches nothing,
+	// charges nothing and reports no fact of the claim's launch — and asks again at its next call
+	// (staleRegistration, staleRefusesClaim, internal/api's staleClaim).
+	NoPluginInstall func(ctx context.Context, c Claim) (bool, error)
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
 	// architect from that (admission's ReconcileAwaiting), so without it a root whose wait was

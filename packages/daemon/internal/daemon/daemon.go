@@ -1802,7 +1802,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall: func(ctx context.Context, c supervise.Claim) bool {
+		NoPluginInstall: func(ctx context.Context, c supervise.Claim) (bool, error) {
 			return noPluginInstall(ctx, cfg, backends, c)
 		},
 	}
@@ -2291,18 +2291,30 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // A claim in a turn is in none of that count: nothing refused it, and it is left to no later
 // sweep of this pass but to the end of its own turn.
 //
+// A claim whose read of whether its launch installs a plugin fails is decided nothing by this
+// pass: no relaunch is posted and no line says it is stale, since nothing established either.
+// One Warn line names the claim and the read's error, and the next sweep reads it again.
+//
 // The project controller's claim is posted whatever the gate holds, and takes no credit: its
 // relaunch is exempt from the pacing altogether (supervise's reserveWake, claim.IsController), so
 // it holds none of what the gate counts, and it is the one session an operator's own reading of a
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervise.Claim, trigger string) {
-	noInstall := func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, s.cfg, s.backends, c) }
+	noInstall := func(ctx context.Context, c supervise.Claim) (bool, error) {
+		return noPluginInstall(ctx, s.cfg, s.backends, c)
+	}
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
-		if !staleForTheLane(ctx, c, noInstall) {
+		stale, err := staleForTheLane(ctx, c, noInstall)
+		if err != nil {
+			s.log.Warn("supervise: the stale-plugin pass could not read whether this claim's launch installs a plugin, so it decides nothing for the claim; the next sweep reads it again",
+				"claim", c.Token, "trigger", trigger, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion, "error", err)
+			continue
+		}
+		if !stale {
 			continue
 		}
 		if !s.plan.pluginRelaunchable {
@@ -2366,11 +2378,22 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 // hand holds: serve gives the state's source the rule over this deployment's configuration and
 // the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
 // nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
-func staleForTheLane(ctx context.Context, c supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) bool) bool {
+//
+// A read of whether c's launch installs a plugin that fails is the error, and the claim is then
+// neither in the set nor out of it: each reader decides nothing of it and says why, the pass in a
+// line of its own and the count by ending the state's read with the error.
+func staleForTheLane(ctx context.Context, c supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) (bool, error)) (bool, error) {
 	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
-		return false
+		return false, nil
 	}
-	return noPluginInstall == nil || !noPluginInstall(ctx, c)
+	if noPluginInstall == nil {
+		return true, nil
+	}
+	none, err := noPluginInstall(ctx, c)
+	if err != nil {
+		return false, err
+	}
+	return !none, nil
 }
 
 // claimsToRefresh is how many of claims the stale-plugin lane still has to relaunch onto this
@@ -2394,14 +2417,23 @@ func staleForTheLane(ctx context.Context, c supervise.Claim, noPluginInstall fun
 // Error line per stale claim at boot, and this count is what that gap costs, standing at the
 // claims the lane cannot act on beside those lines. A count zeroed there would read as a lane
 // with nothing left, which is the one thing such a daemon is not.
-func claimsToRefresh(ctx context.Context, claims []supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) bool) int {
+//
+// A claim whose read of the plan fails is the error, and no count: State runs inside its
+// snapshot's transaction, which a failure of the server has already ended, so the read ends there
+// with the error that ended it rather than at the next read of the snapshot, which would fail on
+// the aborted transaction and hide the cause.
+func claimsToRefresh(ctx context.Context, claims []supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) (bool, error)) (int, error) {
 	left := 0
 	for _, c := range claims {
-		if staleForTheLane(ctx, c, noPluginInstall) {
+		stale, err := staleForTheLane(ctx, c, noPluginInstall)
+		if err != nil {
+			return 0, err
+		}
+		if stale {
 			left++
 		}
 	}
-	return left
+	return left, nil
 }
 
 // parkedWakes is every claim of this daemon whose machine holds a waiting wake of any kind,
@@ -2461,25 +2493,30 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // holds a transaction of the store hands in backends that read through it (stateNoPluginInstall):
 // the pool refuses such a caller a second connection (store.ErrNestedAcquire).
 //
-// A read of the issue's plan that fails is never taken as a claim an install moves: it answers
-// that no install moves the claim, so nothing refuses its calls, relaunches it or counts it on a
-// guess, and each reader asks again at its next call or pass.
-func noPluginInstall(ctx context.Context, cfg config.Config, backends roleBackend, c supervise.Claim) bool {
+// A read of the issue's plan that fails is the error, and the answer beside it says nothing of
+// the claim: no reader takes it as a claim an install moves or as one no install moves. Each logs
+// the error once, or returns it, and decides nothing on it — no call refused, no relaunch posted,
+// no registration charged, no count made — and asks again at its next call or pass
+// (staleForTheLane, supervise.StaleRefusesCalls, supervise's staleRegistration).
+func noPluginInstall(ctx context.Context, cfg config.Config, backends roleBackend, c supervise.Claim) (bool, error) {
 	if cfg.Runtime.Name != "kubernetes" {
-		return false
+		return false, nil
 	}
 	if backends == nil {
 		backends = roleBackends(cfg.BackendFor, nil)
 	}
 	backend, err := backends(ctx, c.Issue, c.Role)
-	return err != nil || runtime.Of(backend) == runtime.BackendClaude
+	if err != nil {
+		return false, err
+	}
+	return runtime.Of(backend) == runtime.BackendClaude, nil
 }
 
 // stateNoPluginInstall is noPluginInstall as the state's count asks it (source.noPluginInstall):
 // inside the state's snapshot, so the plan of a claim's issue is read through tx, the snapshot's
 // own transaction, and never on a connection of its own (planRoleIn).
-func stateNoPluginInstall(cfg config.Config) func(context.Context, pgx.Tx, supervise.Claim) bool {
-	return func(ctx context.Context, tx pgx.Tx, c supervise.Claim) bool {
+func stateNoPluginInstall(cfg config.Config) func(context.Context, pgx.Tx, supervise.Claim) (bool, error) {
+	return func(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
 		return noPluginInstall(ctx, cfg, roleBackends(cfg.BackendFor, planRoleIn(tx)), c)
 	}
 }
@@ -2839,7 +2876,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, cfg, s.backends, c) },
+		NoPluginInstall: func(ctx context.Context, c supervise.Claim) (bool, error) {
+			return noPluginInstall(ctx, cfg, s.backends, c)
+		},
 		Backend:            s.backends,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
@@ -3008,7 +3047,7 @@ type source struct {
 	// a source a test builds by hand reads as: serve sets this field over the daemon's own
 	// configuration, whatever the runtime. It reads the plan of a claim's issue through tx, the
 	// state's own snapshot (stateNoPluginInstall), since State runs inside that transaction.
-	noPluginInstall func(ctx context.Context, tx pgx.Tx, c supervise.Claim) bool
+	noPluginInstall func(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error)
 	// architectStalls is, by root key, every arm of the architect-stalled reading that holds for
 	// that root's architect (admit.Admission.ArchitectStallArms over the workflow's own admission),
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
@@ -3437,11 +3476,13 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			}
 		}
 	}
-	var noInstall func(context.Context, supervise.Claim) bool
+	var noInstall func(context.Context, supervise.Claim) (bool, error)
 	if s.noPluginInstall != nil {
-		noInstall = func(ctx context.Context, c supervise.Claim) bool { return s.noPluginInstall(ctx, tx, c) }
+		noInstall = func(ctx context.Context, c supervise.Claim) (bool, error) { return s.noPluginInstall(ctx, tx, c) }
 	}
-	state.ClaimsToRefresh = claimsToRefresh(ctx, claims, noInstall)
+	if state.ClaimsToRefresh, err = claimsToRefresh(ctx, claims, noInstall); err != nil {
+		return api.State{}, nil, fmt.Errorf("count the claims the stale-plugin lane has left to refresh: %w", err)
+	}
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
 	// `lastPause` while it runs after a pause has ended (decision 25 of dispatch://INFRA-3759).

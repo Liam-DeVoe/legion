@@ -253,8 +253,8 @@ func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testin
 		if spec.Backend != tc.want {
 			t.Errorf("the prober on %s launches on %q, want %q", tc.issue, spec.Backend, tc.want)
 		}
-		if got := noPluginInstall(context.Background(), cfg, backends, c); got != tc.noInstall {
-			t.Errorf("noPluginInstall of the prober on %s = %t, want %t", tc.issue, got, tc.noInstall)
+		if got, err := noPluginInstall(context.Background(), cfg, backends, c); err != nil || got != tc.noInstall {
+			t.Errorf("noPluginInstall of the prober on %s = %t, %v; want %t", tc.issue, got, err, tc.noInstall)
 		}
 	}
 }
@@ -279,7 +279,9 @@ func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *tes
 		return record.PlanRole{}, false, nil
 	}
 	backends := roleBackends(cfg.BackendFor, planRole)
-	noInstall := func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, cfg, backends, c) }
+	noInstall := func(ctx context.Context, c supervise.Claim) (bool, error) {
+		return noPluginInstall(ctx, cfg, backends, c)
+	}
 	older := api.DaemonAPIVersion - 1
 	prober := func(contract int, round string) supervise.Claim {
 		return supervise.Claim{Issue: "LEGION-43", Role: "prober", PluginContract: contract, UpdateRound: round}
@@ -297,8 +299,8 @@ func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *tes
 		{"on an older contract", prober(older, ""), true, true, 1},
 	} {
 		reads = nil
-		if got := supervise.StaleRefusesCalls(call, tc.claim, api.DaemonAPIVersion, tc.relaunchable, noInstall); got != tc.refused {
-			t.Errorf("the prober %s: refused = %t, want %t", tc.name, got, tc.refused)
+		if got, err := supervise.StaleRefusesCalls(call, tc.claim, api.DaemonAPIVersion, tc.relaunchable, noInstall); err != nil || got != tc.refused {
+			t.Errorf("the prober %s: refused = %t, %v; want %t", tc.name, got, err, tc.refused)
 		}
 		if len(reads) != tc.reads {
 			t.Errorf("the prober %s read the plan %d times, want %d", tc.name, len(reads), tc.reads)

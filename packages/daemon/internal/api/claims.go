@@ -741,10 +741,21 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // The turn term is asked first, and the shared rule asks the daemon whether the claim's launch
 // installs a plugin only of a claim its cheap terms find stale, under ctx, the request's own
 // context: that answer reads the plan of the claim's issue from the daemon's store under
-// Kubernetes, and every `legion` call of a claim reaches this.
+// Kubernetes, and every `legion` call of a claim reaches this. A read of it that fails refuses
+// nothing: the refusal's sentence says a relaunch is under way, which nothing established, so the
+// call is served, and one Warn line names the claim and the read's error. The next call is
+// judged again.
 func (s *server) staleClaim(ctx context.Context, c supervise.Claim) (int, bool) {
-	return c.PluginContract, c.State != supervise.StateWorking &&
-		supervise.StaleRefusesCalls(ctx, c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall)
+	if c.State == supervise.StateWorking {
+		return c.PluginContract, false
+	}
+	stale, err := supervise.StaleRefusesCalls(ctx, c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall)
+	if err != nil {
+		s.log.Warn("api: the read of whether this claim's launch installs a plugin failed, so the call is not refused as one from a stale plugin",
+			"claim", c.Token, "pluginContract", c.PluginContract, "daemonApiVersion", DaemonAPIVersion, "error", err)
+		return c.PluginContract, false
+	}
+	return c.PluginContract, stale
 }
 
 // logStaleRefusal is the one log line every stale-caller refusal writes: never the body,
