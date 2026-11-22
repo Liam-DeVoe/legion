@@ -23,19 +23,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The cases here hold to one rule, the whole way from the fact to the told row: a confirmation
-// raises what the prompt of the turn it confirms carried, never what the task holds when the turn
-// starts. A send renders a task's news again from the record, so a later send can carry an opening
-// an earlier prompt did not, and the turn that starts can be that earlier prompt's: after a
-// restart, after a resend Oh My Pi answers busy, or after the gate closed and opened again. A send
-// that never reached the agent carried nothing, and a task retired before its turn's result said
-// the turn ran gives its news back. Each case runs through the daemon's own parts, as the
+// The cases here hold to one rule, the whole way from the fact to the told row: under the take, a
+// copy is the news a take's answer carried, written at the accept, and it is credited only once
+// that take's turn has started and folded only when a report naming its number finishes it. A
+// take renders a task's news again from the record, so a retake can carry an opening an earlier
+// take did not. A take the second bound took back carries no credit, so a late turn of its text is
+// no take's turn and the news it read is told again, never missed; a report naming the number
+// after a retake was accepted finishes the retake and folds the retake's copy (plan.md v138). A
+// take that never reached the agent carried nothing, and a task retired before its turn's report
+// said the turn ran gives its news back. Each case runs through the daemon's own parts, as the
 // newsPathRig cases do.
 
 const (
-	// carriedBusy is Oh My Pi's answer to a prompt while another prompt's turn is being prepared
-	// or run.
-	carriedBusy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	// carriedOpened is the opening sentence of the rig's gate at version 4 of its spec.
 	carriedOpened = "The design gate of LEGION-800 opened: a person approved version 4 of its spec document (artifact-800)"
 	// pathChecks is the Verification document a rig's root registers beside its spec.
@@ -199,50 +198,125 @@ func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t
 	r.wantTold("after the restart's confirmation of a task sent without the opening", pathRoot, record.AudienceHolder, 4, true)
 }
 
-// The reviewer's news task, the change list of version 4 and no opening, is acknowledged, and its
-// turn does not start within the wait (noTurn): the task is taken back under a new id, and the
-// first prompt stays outstanding. The gate closes and opens again meanwhile, so the reviewer's row
-// owes the opening. The next trigger sends the task again, rendered with the opening, and Oh My Pi
-// answers that send busy, since it is preparing the first prompt's turn. That turn starts: it
-// confirms the task, and raises what the first prompt carried, which said nothing of the opening.
+// The reviewer's take of its news task X, the change list of version 4 and no opening, is
+// accepted over a connection whose view is whole, which arms R5's second bound
+// (Timeouts.TurnStart), and X's turn does not start within it while Oh My Pi prepares it: the
+// worker is charged and the task taken back untaken, under the same id and number. The gate
+// closes and opens again meanwhile, so the reviewer's row owes the opening. The worker, which
+// handed X's text to its host, takes nothing more (decision 9). X's turn then starts late, and
+// under the take it is no take's turn, since the take-back ended X's take and its credit: it
+// confirms nothing, and a take while it runs is refused in-turn with no text (the take's
+// counterpart of Oh My Pi's busy answer to a resend). The record says version 3 with the opening
+// owed: version 4 is under-credited and told twice, never missed, and the opening the task now
+// renders is raised by no turn that did not carry it. Once the host is idle the worker takes the
+// task again, and that retake leads with the opening. What follows depends on which reaches the
+// daemon first, the late turn's report, which names the task's number, or the retake:
+//
+//   - the late report first: no take holds the number, so it finishes nothing and the record
+//     stays at version 3 with the opening owed; the retake's turn and its report then leave
+//     version 4 taken and nothing owed;
+//   - the retake first: the late report names the number the retake holds, so it finishes the
+//     task and folds the retake's copy, the opening included, though the retake's text has not
+//     run; the record ends at version 4 with the opening cleared, and the worker still holds the
+//     retake's text.
 func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testing.T) {
-	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
-	clock := &heldClock{}
-	const wait = 7 * time.Second
-	r.sup.deps.Clock, r.sup.deps.Timeouts.RPC = clock, wait
-	r.told(pathRoot, record.AudienceHolder, 3)
-	r.told(pathRoot, record.AudienceArchitect, 4)
-	reviewer, conn, token := r.reviewerBetweenTurns(pathRoot)
-	r.queueNewsTask(pathRoot)
-	first := r.delivered(reviewer)
+	for _, tc := range []struct {
+		name        string
+		retakeFirst bool
+	}{
+		{name: "the late report lands before the retake"},
+		{name: "the retake is accepted before the late report lands", retakeFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
+			clock := &heldClock{}
+			const wait = 7 * time.Second
+			r.sup.deps.Clock, r.sup.deps.Timeouts.TurnStart = clock, wait
+			r.told(pathRoot, record.AudienceHolder, 3)
+			r.told(pathRoot, record.AudienceArchitect, 4)
+			reviewer, conn, token := r.reviewerBetweenTurns(pathRoot)
+			r.queueNewsTask(pathRoot)
+			first := r.delivered(reviewer)
+			if news := pendingNewsOf(t, reviewer); len(news.Items) != 1 || len(news.Openings) != 0 {
+				t.Fatalf("the reviewer's news task carries %+v, want the item of version 4 and no opening", news)
+			}
 
-	r.closeAndReopen()
-	r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
-	if fired := clock.fire(wait); fired != 1 {
-		t.Fatalf("timers fired at the wait for the first prompt's turn = %d, want that one wait", fired)
-	}
-	if held := reviewer.Claim().Pending; held == nil || held.ID == first.ID || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the reviewer holds %+v after the wait ran out, want the task taken back under a new id", held)
-	}
+			r.closeAndReopen()
+			r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
+			if fired := clock.fire(wait); fired != 1 {
+				t.Fatalf("timers fired at the second bound over the first take = %d, want that one wait", fired)
+			}
+			if held := reviewer.Claim().Pending; held == nil || held.ID != first.ID || held.Number != first.Number || !held.ConfirmedAt.IsZero() {
+				t.Fatalf("the reviewer holds %+v after the second bound passed, want the task taken back untaken, its id %s and number %d kept",
+					held, first.ID, first.Number)
+			}
 
-	conn.RefusePrompt(carriedBusy)
-	before := len(conn.Prompts())
-	r.hello(reviewer)
-	resent := promptsAfter(conn, before)
-	if len(resent) != 1 || !strings.Contains(resent[0].Message, carriedOpened) {
-		t.Fatalf("the resend = %+v, want one prompt rendered with the opening the reopening owes", resent)
-	}
-	if state := reviewer.Claim().State; state != supervise.StateWorking {
-		t.Fatalf("the reviewer is %s after the busy answer, want working for the first prompt's turn", state)
-	}
+			// Oh My Pi is still preparing X's turn, so the worker takes nothing until its host is idle.
+			conn.SetStreaming(true)
+			before := len(conn.Prompts())
+			if err := reviewer.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("the first take's late turn starts: %v", err)
+			}
+			if state := reviewer.Claim().State; state != supervise.StateWorking {
+				t.Fatalf("the reviewer is %s after the first take's late turn started, want working", state)
+			}
+			c := reviewer.Claim()
+			answer, err := reviewer.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: first.Number})
+			if err != nil || answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldInTurn || answer.Text != "" {
+				t.Fatalf("a take of task %d while the first take's late turn runs = %+v, %v; want it refused in-turn with no text", first.Number, answer, err)
+			}
+			reviewer.Wait()
+			if held := reviewer.Claim().Pending; held == nil || held.Number != first.Number || !held.ConfirmedAt.IsZero() {
+				t.Fatalf("the reviewer holds %+v in the first take's late turn, want the task untaken: the take-back ended that take", held)
+			}
+			r.wantTold("after the first take's late turn started", pathRoot, record.AudienceHolder, 3, true)
 
-	if err := reviewer.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-		t.Fatalf("the first prompt's turn starts: %v", err)
+			if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+				t.Fatalf("the first take's late turn ends: %v", err)
+			}
+			// lateReport is the worker's report of X's late turn, which names the task's number, as
+			// the worker ran X's text under it.
+			lateReport := func() {
+				t.Helper()
+				if err := reviewer.Handle(r.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: reviewer.Claim().Generation,
+					Sequence: turnSequence.Add(1), Task: first.Number}); err != nil {
+					t.Fatalf("the first take's late turn reports task %d: %v", first.Number, err)
+				}
+				reviewer.Wait()
+			}
+			if !tc.retakeFirst {
+				lateReport()
+				if held := reviewer.Claim().Pending; held == nil || held.Number != first.Number || !held.ConfirmedAt.IsZero() {
+					t.Fatalf("the reviewer holds %+v after the late turn's report, want the task still owed and untaken: no take holds that turn", held)
+				}
+				r.wantTold("after the first take's late turn and its report", pathRoot, record.AudienceHolder, 3, true)
+			}
+
+			conn.SetStreaming(false)
+			resent := promptsAfter(conn, before)
+			if len(resent) != 1 || resent[0].DeliveryID != first.ID || !strings.Contains(resent[0].Message, carriedOpened) {
+				t.Fatalf("the takes once the host is idle = %+v, want one take of %s rendered with the opening the reopening owes", resent, first.ID)
+			}
+			if tc.retakeFirst {
+				r.wantTold("after the retake was accepted", pathRoot, record.AudienceHolder, 3, true)
+				lateReport()
+				if held := reviewer.Claim().Pending; held != nil {
+					t.Fatalf("the reviewer holds %+v after the late report, want the task finished: the report names the number the retake holds", held)
+				}
+				if taken := conn.Prompts(); len(taken) != before+1 || taken[before].Message != resent[0].Message {
+					t.Fatalf("the worker's takes after the late report = %+v, want the retake's text, opening included, still the last it holds", taken[before:])
+				}
+				r.wantTold("after the late report finished the retake's task", pathRoot, record.AudienceHolder, 4, false)
+				return
+			}
+			r.startTurn(reviewer)
+			endTurn(r.ctx, t, reviewer, token)
+			if held := reviewer.Claim().Pending; held != nil {
+				t.Fatalf("the reviewer holds %+v after the retake's report, want the news task finished", held)
+			}
+			r.wantTold("after the retake's turn and its report", pathRoot, record.AudienceHolder, 4, false)
+		})
 	}
-	if held := reviewer.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() {
-		t.Fatalf("the reviewer holds %+v after the first prompt's turn started, want the task confirmed", held)
-	}
-	r.wantTold("after the first prompt's late turn", pathRoot, record.AudienceHolder, 4, true)
 }
 
 // The reviewer is in a turn of its own when the reconcile queues its news task, and the gate

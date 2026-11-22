@@ -381,6 +381,13 @@ func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
 	if got := taskOf(t, repaired); got != number {
 		t.Fatalf("the repair wrote task %d, want the record's %d", got, number)
 	}
+	// The bucket holds the repair before the daemon has logged it or recorded it: the machine logs
+	// a write once the bucket has taken it, and records the write's revision after that (supervise's
+	// putValue and writeValue). So the case waits for the record of the repair's revision, the last
+	// of the three, before it reads the log and the record.
+	testwait.Eventually(t, "the record holding the repair's revision", func() bool {
+		return storedClaim(t, r.cfg, w.token).TaskWrittenRevision.Revision == repaired.Revision()
+	})
 	// The watch hands over the bucket's changes in order, so the other projects' came before the
 	// claim's own, and the daemon has passed them.
 	if e := r.entry(other); e == nil || e.Revision() != otherRevision || taskOf(t, e) != 7 {

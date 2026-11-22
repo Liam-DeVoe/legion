@@ -432,8 +432,8 @@ func (r *newsPathRig) connect(issue string, role claim.Role) (*supervise.Machine
 // answers the daemon's asks (get_state), and Prompts is every take of the worker's the daemon
 // accepted, in order. The worker takes the task its claim holds where its plugin would — a task
 // pending and untaken, on a claim that is ready or idle, its host idle — whenever the test reads
-// what reached it. busy is the worker's host in a turn of its own (RefusePrompt, the push path's
-// busy answer): it takes nothing until the host is idle again (FailPrompt).
+// what reached it. busy is the worker's host in a turn of its own, as the agent answers that it
+// streams (SetStreaming): it takes nothing until the host is idle again.
 type newsConn struct {
 	*fake.Conn
 	t       *testing.T
@@ -478,17 +478,6 @@ func (c *newsConn) Prompts() []acceptedTake {
 		}
 	}
 	return slices.Clone(c.taken)
-}
-
-// RefusePrompt is the worker's host in a turn of its own, which the push path's busy answer stood
-// for: the worker takes nothing while it runs.
-func (c *newsConn) RefusePrompt(string) { c.busy = true }
-
-// FailPrompt with nil is the worker's host idle again, so it takes what its claim holds.
-func (c *newsConn) FailPrompt(err error) {
-	if err == nil {
-		c.busy = false
-	}
 }
 
 // SetStreaming is the agent in a turn, or out of one, as it answers the daemon's get_state; while
