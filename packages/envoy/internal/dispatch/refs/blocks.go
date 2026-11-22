@@ -2212,26 +2212,14 @@ func resolvePointerPairs(ctx context.Context, q Queryer, artifactID string, writ
 // where that is none, to the address the resolution's two steps name without asking for a row
 // (UnheldBlockSQL) where that address is one of written - a block the same pass writes - or one a
 // block_refs row of artifactID holds (resolvePointerPairs says why). An address of a document the
-// reading transaction creates and joins to an issue room it creates too (Pending.PendingRoomKey),
-// whose artifacts and document_rooms rows no read before its write phase sees, takes that room's
-// step from the transaction: its block in the room, where that is one of written. It answers each
+// reading transaction creates and joins to an issue room, whose artifacts and document_rooms rows
+// no read before its write phase sees, takes that room's step from the transaction
+// (pendingRoomFarEnds): its block in the room, where that is one of written. It answers each
 // address that resolves to another node than itself, by address.
 func resolvePassFarEnds(ctx context.Context, q Queryer, artifactID string, addresses, written []string) (map[string]string, error) {
-	resolved := make(map[string]string)
-	if pending := pendingOf(ctx); pending != nil {
-		var stored []string
-		for _, address := range addresses {
-			document, block, cut := strings.Cut(address, "#")
-			if room, joined := pending.PendingRoomKey(document); cut && joined && slices.Contains(written, room+"#"+block) {
-				resolved[address] = room + "#" + block
-				continue
-			}
-			stored = append(stored, address)
-		}
-		addresses = stored
-	}
-	if len(addresses) == 0 {
-		return resolved, nil
+	resolved, addresses, err := pendingRoomFarEnds(ctx, q, addresses, written)
+	if err != nil || len(addresses) == 0 {
+		return resolved, err
 	}
 	rows, err := q.Query(ctx, `
 		select p.address, resolved.node_id
@@ -2257,6 +2245,71 @@ func resolvePassFarEnds(ctx context.Context, q Queryer, artifactID string, addre
 		resolved[address] = node
 	}
 	return resolved, rows.Err()
+}
+
+// pendingRoomFarEnds resolves each of addresses whose document the reading transaction creates and
+// joins to an issue room (Pending.PendingRoom) to that room's block of the same id, `<room
+// ref_key>#<block id>`, where that is one of written: the room step the store takes once those
+// rows stand (UnheldBlockSQL), taken from the transaction, so a pointer of a document's first
+// version at a block the same pass writes in the room names the room's node, as the same pointer
+// of a later version does. The room's ref_key is the transaction's where it creates the room too
+// (an issue born converted's tree), else the stored row's (the tree of a converted issue that an
+// upload's Verification document or plan joins), read through q in one statement. It answers
+// those it resolved, by address, and every other address, which the store resolves.
+func pendingRoomFarEnds(ctx context.Context, q Queryer, addresses, written []string) (map[string]string, []string, error) {
+	resolved := make(map[string]string)
+	pending := pendingOf(ctx)
+	if pending == nil {
+		return resolved, addresses, nil
+	}
+	joined := make(map[string]string)
+	roomKeys := make(map[string]string)
+	var unread []string
+	for _, address := range addresses {
+		document, _, cut := strings.Cut(address, "#")
+		room, joins := pending.PendingRoom(document)
+		if !cut || !joins {
+			continue
+		}
+		joined[address] = room
+		if created, pendingRoom := pending.PendingDocument(room); pendingRoom {
+			roomKeys[room] = created.RefKey
+		} else if !slices.Contains(unread, room) {
+			unread = append(unread, room)
+		}
+	}
+	if len(joined) == 0 {
+		return resolved, addresses, nil
+	}
+	if len(unread) > 0 {
+		rows, err := q.Query(ctx, `select id::text, ref_key from artifacts where id = any($1::uuid[])`, unread)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the ref_keys of the issue rooms %v: %w", unread, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var room, key string
+			if err := rows.Scan(&room, &key); err != nil {
+				return nil, nil, fmt.Errorf("scan the ref_key of an issue room: %w", err)
+			}
+			roomKeys[room] = key
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, fmt.Errorf("read the ref_keys of the issue rooms %v: %w", unread, err)
+		}
+	}
+	stored := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if room, joins := joined[address]; joins {
+			_, block, _ := strings.Cut(address, "#")
+			if key := roomKeys[room]; key != "" && slices.Contains(written, key+"#"+block) {
+				resolved[address] = key + "#" + block
+				continue
+			}
+		}
+		stored = append(stored, address)
+	}
+	return resolved, stored, nil
 }
 
 // BlockLinks lists each link from a block of document fromArtifact to a block of document

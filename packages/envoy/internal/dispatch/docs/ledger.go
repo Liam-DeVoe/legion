@@ -949,23 +949,18 @@ func (l *Ledger) pendingQuery(id string) bool {
 	return query
 }
 
-// PendingRoomKey is the ref_key of the issue room the document of ref_key refKey is edited in,
-// where this transaction creates the document (RegisterPendingArtifact), joins it to the room
-// (RegisterPendingRoom) and creates the room too: an issue born converted's spec and its tree.
-func (l *Ledger) PendingRoomKey(refKey string) (string, bool) {
+// PendingRoom is the issue room the document of ref_key refKey is edited in, where this
+// transaction creates the document (RegisterPendingArtifact) and joins it to the room
+// (RegisterPendingRoom): an issue born converted's spec, whose tree the transaction creates too,
+// and an upload's Verification document or plan, which joins the stored tree of a converted issue.
+func (l *Ledger) PendingRoom(refKey string) (string, bool) {
 	if l == nil {
 		return "", false
 	}
 	for id, address := range l.artifacts {
-		if address.RefKey != refKey {
-			continue
+		if address.RefKey == refKey {
+			return l.roomOf(id)
 		}
-		room, joined := l.issueRooms[id]
-		if !joined {
-			return "", false
-		}
-		created, pending := l.artifacts[room]
-		return created.RefKey, pending
 	}
 	return "", false
 }
