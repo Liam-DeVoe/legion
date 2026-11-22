@@ -341,7 +341,10 @@ func TestTwoUploadsAtOnceStayWithinTheMemoryBound(t *testing.T) {
 				for index := range uploads {
 					group.Go(func() { uploads[index], failures[index] = server.tryUpload("json", memory.issue, pair.markdown) })
 				}
-				group.Wait()
+				// Each upload carries trySend's 20-minute client timeout, which can outlast the
+				// test binary's deadline, so the join goes through the shared wait, which is
+				// their bound.
+				testwait.Returns(t, "the two uploads at once to return", group.Wait)
 				if err := errors.Join(failures[:]...); err != nil {
 					t.Fatal(err)
 				}

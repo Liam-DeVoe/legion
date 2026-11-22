@@ -1400,23 +1400,28 @@ func writerFor(index, issues int, writers []*dispatchProcess) *dispatchProcess {
 }
 
 // writeAll writes count comments, round robin over the scene's issues, through writers in turn
-// (writerFor), sceneWritesAtOnce at a time, and fails the test for each write that failed.
+// (writerFor), sceneWritesAtOnce at a time, and fails the test for each write that failed. The
+// writes and the wait for a free slot among them run inside the shared wait (testwait.Returns): a
+// write that never returns holds its slot, so the one bound on the join bounds the slots too. Each
+// write's request also ends at the shared wait's end (sessionRig.writes).
 func (s *outboxScene) writeAll(t *testing.T, count int, writers ...*dispatchProcess) {
 	t.Helper()
 	failures := make(chan error, count)
-	slots := make(chan struct{}, sceneWritesAtOnce)
-	var writes sync.WaitGroup
-	for index := range count {
-		slots <- struct{}{}
-		writes.Go(func() {
-			defer func() { <-slots }()
-			issue := s.issues[index%len(s.issues)]
-			if err := s.write(writerFor(index, len(s.issues), writers), issue, fmt.Sprintf("Comment %d.", index)); err != nil {
-				failures <- err
-			}
-		})
-	}
-	writes.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d comment writes through the processes to return", count), func() {
+		slots := make(chan struct{}, sceneWritesAtOnce)
+		var writes sync.WaitGroup
+		for index := range count {
+			slots <- struct{}{}
+			writes.Go(func() {
+				defer func() { <-slots }()
+				issue := s.issues[index%len(s.issues)]
+				if err := s.write(writerFor(index, len(s.issues), writers), issue, fmt.Sprintf("Comment %d.", index)); err != nil {
+					failures <- err
+				}
+			})
+		}
+		writes.Wait()
+	})
 	close(failures)
 	for err := range failures {
 		t.Errorf("write a comment: %v", err)
@@ -4162,17 +4167,26 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	editor := pair.openSyncedEditor(t, pair.a, dispatchTestLogin, artifactID, "before\n")
 	marked := make(chan error, 1)
 	go func() { marked <- pair.markEditor(t.Name(), pair.a, dispatchTestLogin, artifactID, editor) }()
-	testwait.Until(t, "the marker's append to be waiting on the lock", func() (int, bool) {
+	// The tab's append is stored on the room-appends pool, whose connections name themselves
+	// dispatch-room-appends in pg_stat_activity (store's roomAppendsApplicationName). Every other
+	// insert into doc_updates - a settlement's, a server write's (docs' append_writes.go and
+	// persistence.go) - runs on another pool, so the name tells the marker's append from them.
+	testwait.Until(t, "the marker's append to be waiting on the lock", func() (string, bool) {
 		select {
 		case err := <-marked:
 			t.Fatalf("the marker's wait returned (%v) while its append was held", err)
 		default:
 		}
-		waiting, err := storetest.CountLockWaits(context.Background(), pair.database, "%insert into doc_updates%")
-		if err != nil {
+		var appends, others int
+		if err := pair.database.Pool.QueryRow(context.Background(), `
+			select count(*) filter (where application_name = 'dispatch-room-appends'),
+			       count(*) filter (where application_name <> 'dispatch-room-appends')
+			from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock' and query like '%insert into doc_updates%'
+		`).Scan(&appends, &others); err != nil {
 			t.Fatalf("count the waits on doc_updates' lock: %v", err)
 		}
-		return waiting, waiting > 0
+		return fmt.Sprintf("%d browser appends and %d other inserts wait on doc_updates' lock", appends, others), appends > 0
 	})
 	testwait.Quiet(t, "the marker's wait while its append is still held", marked, 100*time.Millisecond,
 		"what must not happen is a wait that answers before its own append committed: the append is parked in "+
@@ -4673,7 +4687,9 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 // whose first tick lands past a bucket boundary is entitled to sweep, and this row is about the
 // one that lands inside the bucket its peer has already served. Both processes run the sweep at
 // staggeredSweepPeriod, whose current bucket holds every tick the row makes, so which of the two
-// this run gets is neither luck nor a race of the two starts against the clock.
+// this run gets is neither luck nor a race of the two starts against the clock. The period each
+// tick's line names must be that bucket, which opens at 1970's start: a sweep that runs at another
+// interval than the one DISPATCH_TEST_REDELIVERY_INTERVAL gives serves another period.
 func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	pair := newPair(t)
 	fake := startGitHubFake(t)
@@ -4703,6 +4719,22 @@ func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	})
 
 	requireLeasedOnce(t, pair, "webhook-redelivery")
+	// The period each tick served, or found served, is read off its line, a record of the interval
+	// the sweep was given, and no clock: the bucket of staggeredSweepPeriod (duty.LeasePeriod of it)
+	// opens at 1970's start, and a sweep main.go starts at redeliver.Interval's two minutes, not at
+	// the interval the setting gives, serves the 108 s bucket its tick fell in. A skip that found the
+	// lease held names no period, so only the skips that found the period served are read.
+	firstBucket := time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
+	for name, process := range map[string]*dispatchProcess{"A": pair.a, "B": pair.b} {
+		ticks := slices.Concat(process.wholeLogLines(leaseRan, "lease=webhook-redelivery"),
+			process.wholeLogLines(leaseSkipped, "lease=webhook-redelivery", "period="))
+		for _, line := range ticks {
+			if period := leasePeriodOf(t, line); period != firstBucket {
+				t.Errorf("%s's webhook-redelivery tick was in the period starting %s, want %s, the first bucket of staggeredSweepPeriod: "+
+					"the sweep did not run at the interval DISPATCH_TEST_REDELIVERY_INTERVAL gave it: %s", name, period, firstBucket, line)
+			}
+		}
+	}
 	if listed := fake.deliveryListings(); listed != listedByA {
 		t.Errorf("the two processes listed the webhook's deliveries %d times for one sweep window; the first alone listed them %d times, and the lease is what keeps N processes from being N times those list calls",
 			listed, listedByA)
@@ -7418,7 +7450,13 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		gate := lockIssue(t, pair.database, issueKey)
 		throughA := pair.a.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
 		throughB := pair.b.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
-		storetest.WaitForLockWaiters(t, gate, 2)
+		// A settlement or the block-index pass waits on the issue's lock with the same statement;
+		// a rebuild alone has read pg_stat_activity in its transaction before it waits (which
+		// processes hold the document live), so that lock names the two rebuilds.
+		waitForOwnerLockWaiters(t, pair.database, gate, "both rebuilds to wait on the issue's lock",
+			"rebuilds, which hold a lock of pg_stat_activity", 2, func(w ownerLockWaiter) bool {
+				return w.query == store.OwnerLockStatement && w.holds("pg_stat_activity")
+			})
 		if err := gate.Rollback(context.Background()); err != nil {
 			t.Fatalf("release the issue's row: %v", err)
 		}
@@ -8291,21 +8329,26 @@ func TestASendWhoseRequestIsCancelledAfterItsCommitReachesItsRecipient(t *testin
 
 // takeOverDeliveries waits through the shared wait for the direct message and the mentioning
 // comment a row sent, by their bodies, to be stored, and answers each as the delivery it follows.
+// A try that finds no row of the body reads how many rows the table holds, which a give-up names.
 func takeOverDeliveries(t *testing.T, database *store.Store, messageBody, commentBody string) (direct, mention deliveryUnderTest) {
 	t.Helper()
 	storedID := func(table, body string) string {
-		return testwait.Until(t, fmt.Sprintf("%q to be stored in %s", body, table), func() (string, bool) {
-			var id string
-			err := database.Pool.QueryRow(context.Background(),
-				`select id::text from `+table+` where body = $1`, body).Scan(&id)
-			if err == nil {
-				return id, true
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
+		var id string
+		testwait.Until(t, fmt.Sprintf("%q to be stored in %s", body, table), func() (string, bool) {
+			var stored *string
+			var rows int
+			if err := database.Pool.QueryRow(context.Background(),
+				`select (select id::text from `+table+` where body = $1 limit 1), (select count(*) from `+table+`)`,
+				body).Scan(&stored, &rows); err != nil {
 				t.Fatalf("read the stored %s %q: %v", table, body, err)
 			}
-			return "", false
+			if stored == nil {
+				return fmt.Sprintf("none of the %d rows of %s holds the body", rows, table), false
+			}
+			id = *stored
+			return "stored as " + id, true
 		})
+		return id
 	}
 	direct = messageDelivery("the direct message", storedID("messages", messageBody)+":steer")
 	mention = mentionDelivery("the mention",
@@ -9417,7 +9460,9 @@ func TestDashboardServesABurstOfTheOtherBuildsFiles(t *testing.T) {
 		})
 	}
 	close(start)
-	wg.Wait()
+	// No request carries a bound of its own (the client sets no timeout and no context), so the
+	// join is their bound.
+	testwait.Returns(t, fmt.Sprintf("the %d concurrent requests for A's files to B to return", burst), wg.Wait)
 
 	failed := 0
 	for _, err := range failures {
@@ -9906,11 +9951,14 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 		}
 		// A failure while the next lock's request waits ends the lock it waits behind first and
 		// then waits for the request, so no two statements ever run on its connection at once.
+		// That request waits behind the batch in the dispatch process, whose kill cleanup was
+		// registered before this one and so runs after it, so the wait goes through the shared
+		// wait: a batch that never ends fails it by name.
 		prev, locked, asked := s.held, make(chan error, 1), false
 		t.Cleanup(func() {
 			if asked {
 				_ = prev.Rollback(context.Background())
-				<-locked
+				testwait.Receive(t, "the next lock of the keyword fill's cursor to answer once the lock it waited behind ended", locked)
 			}
 			_ = next.Rollback(context.Background())
 		})
@@ -9923,12 +9971,22 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 			_, err := next.Exec(ctx, `lock table search_text_versions_fill in exclusive mode`)
 			locked <- err
 		}()
-		testwait.Until(t, "the next lock of the keyword fill's cursor to queue behind the batch", func() (bool, bool) {
+		testwait.Until(t, "the next lock of the keyword fill's cursor to queue behind the batch", func() (string, bool) {
 			queued, err := storetest.QueuedBehind(ctx, s.held, pid)
 			if err != nil {
 				t.Fatalf("read the lock queue of the keyword fill's cursor: %v", err)
 			}
-			return queued, queued
+			if queued {
+				return "queued", true
+			}
+			var locks string
+			if err := s.held.QueryRow(ctx, `
+				select coalesce(string_agg(mode || case when granted then ' granted' else ' waiting' end, ', '), 'none')
+				  from pg_locks where pid = $1 and relation = 'search_text_versions_fill'::regclass`, pid).Scan(&locks); err != nil {
+				t.Fatalf("read the next lock's locks of the keyword fill's cursor table: %v", err)
+			}
+			return fmt.Sprintf("backend %d is not queued behind the batch: its locks of the cursor's table: %s; %d backends wait behind the held lock",
+				pid, locks, storetest.LockWaiters(t, s.held)), false
 		})
 		if err := s.held.Rollback(ctx); err != nil {
 			t.Fatalf("let a batch of the keyword fill through: %v", err)

@@ -1157,15 +1157,18 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		response, err := http.DefaultClient.Do(request)
 		answered <- probeAnswer{response, err}
 	}()
-	answer := testwait.Until(t, "the health probe's answer with every pooled connection held", func() (probeAnswer, bool) {
+	// A try that finds no answer reads that the shared pool was asked for nothing, which a give-up
+	// names; one that finds the pool asked fails the row at once.
+	var answer probeAnswer
+	testwait.Until(t, "the health probe's answer with every pooled connection held", func() (string, bool) {
 		if asked := acquires.started.Load() - held; asked != 0 {
 			t.Fatalf("the health probe asked the shared pool for %d connections while each of its connections was held: it queues behind writers, not on a pool of its own", asked)
 		}
 		select {
-		case answer := <-answered:
-			return answer, true
+		case answer = <-answered:
+			return "answered", true
 		default:
-			return probeAnswer{}, false
+			return fmt.Sprintf("no answer yet, and the shared pool was asked for no connection beyond the %d held", held), false
 		}
 	})
 	if answer.err != nil {
@@ -2298,13 +2301,13 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 	refused := time.Now()
 	// The test reads the database at each ask of the shared wait until the process exits, so it
 	// sees the wait's moments in which a fill could take the hold and write.
-	testwait.Until(t, "the refused process to exit", func() (string, bool) {
+	testwait.Until(t, "the refused process to exit", func() (fmt.Stringer, bool) {
 		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
 		select {
 		case <-process.Exited:
-			return "", true
+			return nil, true
 		default:
-			return process.Output.String(), false
+			return process.Output, false
 		}
 	})
 	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
@@ -2459,11 +2462,11 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 // admitted, the process serves, and a keyword fill it started takes its hold.
 func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
 	t.Helper()
-	testwait.Until(t, "the registry of live server processes to admit the process", func() (string, bool) {
+	testwait.Until(t, "the registry of live server processes to admit the process", func() (fmt.Stringer, bool) {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
 			t.Fatalf("read the registry of live server processes: %v", err)
 		}
-		return process.Output.String(), rows > 0
+		return process.Output, rows > 0
 	})
 }

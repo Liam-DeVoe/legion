@@ -253,6 +253,16 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		defer s.afterSettleTransaction(room)
 	}
 	defer tx.Rollback(ctx)
+	// Where the test hooks are on, the transaction names itself in pg_stat_activity for as long as
+	// it runs (set_config's is_local: the pooled connection's own name, none, comes back when it
+	// ends), so a test reading the database's sessions can tell a settlement from the other
+	// document writes that wait on the same owner lock with the same statement: the block-index
+	// pass, an edit, a rebuild. Production sends no such statement.
+	if s.hooks != nil {
+		if _, err := tx.Exec(ctx, `select set_config('application_name', $1, true)`, SettlementApplicationName); err != nil {
+			return settle.stoppedShort(fmt.Errorf("name the settlement transaction: %w", err))
+		}
+	}
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before
 	// the commit, so the transaction holds a transaction id only for those statements, not while
@@ -925,3 +935,8 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	return settleDone, settleOutcome{}
 }
+
+// SettlementApplicationName is the application_name a settlement's transaction shows in
+// pg_stat_activity while it runs, where the test hooks are on (Deps.TestHooks); the connection's own
+// name comes back when the transaction ends.
+const SettlementApplicationName = "dispatch-settlement"

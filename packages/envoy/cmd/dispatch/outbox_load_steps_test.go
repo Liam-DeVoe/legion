@@ -230,23 +230,29 @@ func (r *sessionRig) step(t *testing.T, writers []*dispatchProcess, rate int) lo
 	total := int(loadStepLength / interval)
 	writes := make([]commentWrite, total)
 	roleWrites := make([]bool, total)
-	slots := make(chan struct{}, writesInFlight)
-	var inFlight sync.WaitGroup
 	started := time.Now()
-	for index := range total {
-		if wait := time.Until(started.Add(time.Duration(index) * interval)); wait > 0 {
-			time.Sleep(wait)
+	// The writes, their pacing and the wait for a free slot among them run inside the shared wait
+	// (testwait.Returns): a write that never returns holds its slot, so the one bound on the join
+	// bounds the slots too. Each write's request also ends at the shared wait's end
+	// (sessionRig.writes).
+	testwait.Returns(t, what+": every comment write to return", func() {
+		slots := make(chan struct{}, writesInFlight)
+		var inFlight sync.WaitGroup
+		for index := range total {
+			if wait := time.Until(started.Add(time.Duration(index) * interval)); wait > 0 {
+				time.Sleep(wait)
+			}
+			issue := index % len(target.issues)
+			writer := writers[(index+index/len(target.issues))%len(writers)]
+			roleWrites[index] = issue == 0
+			slots <- struct{}{}
+			inFlight.Go(func() {
+				defer func() { <-slots }()
+				writes[index] = r.postComment(writer, target.issues[issue], fmt.Sprintf("Load step comment %d.", index))
+			})
 		}
-		issue := index % len(target.issues)
-		writer := writers[(index+index/len(target.issues))%len(writers)]
-		roleWrites[index] = issue == 0
-		slots <- struct{}{}
-		inFlight.Go(func() {
-			defer func() { <-slots }()
-			writes[index] = r.postComment(writer, target.issues[issue], fmt.Sprintf("Load step comment %d.", index))
-		})
-	}
-	inFlight.Wait()
+		inFlight.Wait()
+	})
 	finished := time.Now()
 
 	ids, failures := written(t, what, writes)

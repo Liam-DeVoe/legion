@@ -147,12 +147,15 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	waiting := storetest.WaitForLockWaiters(t, holder, 3)
+	// The title change waits on the lock already (waitForRenameBehind); the two settlements are
+	// named by their transaction's name, since a block-index pass waits on the same lock with the
+	// same statement and the same locks.
+	waiting := waitForSettlementsBehind(t, database, holder, 2)
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
-	t.Logf("released the issue lock with %d waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
+	t.Logf("released the issue lock with the title change and %d settlements waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
@@ -181,7 +184,9 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 		status, err := process.renameIssue(key, "Committed after the lock")
 		answered <- answer{status, err}
 	}()
-	storetest.WaitForLockWaiters(t, holder, 1)
+	// The block-index pass locks the issue too, so a count of the waiters could pass with the
+	// title change still on its way: watch the title change's own backend.
+	waitForRenameBehind(t, database, holder)
 
 	signalled := process.Terminate(t)
 	testwait.Quiet(t, "Dispatch's exit while the write still waits on the lock", process.Exited,
@@ -868,44 +873,163 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 }
 
 // waitForRenameBehind waits for the title change's backend to queue behind holder's lock on the
-// issue, and returns its process id. The title change runs in the Dispatch process, so its backend
-// is found by its statement, the owner-lock statement a PATCH sends first (lockIssueOwners in
-// internal/dispatch/api/issue_parent.go). A settlement sends the same statement for the same lock,
-// but only once it holds its document's lock, an advisory lock of its own; the title change holds
-// none of those while it waits. Both hold the owner lock's gate, which every write of this build
-// takes shared in that same statement before it waits on the owner (store.OwnerLockGateNamespace,
-// migration 20261115200014), so the gate is the one advisory lock that tells the two apart by
-// nothing and is left out of the exclusion. The wait has no bound of its own (testwait.Until).
+// issue, logs it, and returns its process id. The title change runs in the Dispatch process, so
+// its backend is named by what it waits for and what it has read. It waits, not granted, for the
+// issue's owner lock: the advisory lock holder holds other than the owner lock gate, which every
+// write of this build takes shared before it waits on an owner (store.OwnerLockGateNamespace,
+// migration 20261115200014). It runs the owner-lock statement a PATCH sends before it reads any
+// issue's document (lockIssueOwners in internal/dispatch/api/issue_parent.go), and it holds no
+// lock of artifacts. Every document write that waits on the same lock - the edit's settlement,
+// the block-index pass - reads its artifact's row in the same transaction before it takes the
+// owner lock (lockArtifactOwner in internal/dispatch/docs/service.go), so it holds a lock of
+// artifacts while it waits, and no lock fact other than that one tells it from the title change:
+// both run the same statement for the same key, and neither holds another advisory lock while it
+// waits. The wait has no bound of its own (testwait.Until), and a try that finds no such
+// backend reads every backend it found waiting on the issue's lock.
 func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) uint32 {
 	t.Helper()
+	renamer := waitForOwnerLockWaiters(t, database, holder, "the title change to queue behind the issue lock",
+		"the owner-lock statement with no lock of artifacts", 1, func(w ownerLockWaiter) bool {
+			return w.query == store.OwnerLockStatement && !w.holds("artifacts")
+		})[0]
+	t.Logf("the title change's backend %d runs %q and waits on the advisory lock %s, the issue's owner lock", renamer.pid, renamer.query, renamer.lock)
+	return renamer.pid
+}
+
+// waitForSettlementsBehind waits until want settlements of the issue's document wait on the
+// issue's lock that holder holds, and answers how many do then. In a process with the test hooks
+// on, as every process these rows start is, a settlement runs the owner-lock statement in a
+// transaction that names itself docs.SettlementApplicationName in pg_stat_activity; every other
+// document write that waits on the same lock - the block-index pass, an edit, a rebuild - runs the
+// same statement on the same key with the same locks, and only that name tells them apart.
+func waitForSettlementsBehind(t *testing.T, database *store.Store, holder pgx.Tx, want int) int {
+	t.Helper()
+	return len(waitForOwnerLockWaiters(t, database, holder, fmt.Sprintf("%d settlements of the document to queue behind the issue lock", want),
+		"settlements, named "+docs.SettlementApplicationName, want, func(w ownerLockWaiter) bool {
+			return w.query == store.OwnerLockStatement && w.app == docs.SettlementApplicationName
+		}))
+}
+
+// ownerLockWaiter is a backend that waits, not granted, on an advisory lock a holder holds other
+// than the owner lock gate: its pid, the lock it waits on (classid/objid/objsubid), its
+// application name and statement as pg_stat_activity shows them, and the relations it holds a lock
+// of, which are what its transaction has read.
+type ownerLockWaiter struct {
+	pid              uint32
+	lock, app, query string
+	relations        []string
+}
+
+// holds reports whether the waiter holds a lock of relation.
+func (w ownerLockWaiter) holds(relation string) bool {
+	for _, held := range w.relations {
+		if held == relation {
+			return true
+		}
+	}
+	return false
+}
+
+func (w ownerLockWaiter) String() string {
+	return fmt.Sprintf("backend %d (application %q, locks of %v) runs %q", w.pid, w.app, w.relations, w.query)
+}
+
+// waitForOwnerLockWaiters waits until want of the backends that wait on an advisory lock holder
+// holds, other than the owner lock gate (store.OwnerLockGateNamespace, which every write of this
+// build takes shared before it waits on an owner), are ones meant reports, and returns those. The
+// code under test runs in the Dispatch process, so a waiter is named by what pg_locks and
+// pg_stat_activity show of it, read through the pool, a fresh view on each try; named says what
+// meant takes, for a try that finds too few, which reads every other waiter.
+func waitForOwnerLockWaiters(t *testing.T, database *store.Store, holder pgx.Tx, what, named string, want int, meant func(ownerLockWaiter) bool) []ownerLockWaiter {
+	t.Helper()
 	ctx := context.Background()
-	return testwait.Until(t, "the title change to queue behind the issue lock", func() (uint32, bool) {
+	var holderPID uint32
+	if err := holder.QueryRow(ctx, `select pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatalf("read the lock holder's backend: %v", err)
+	}
+	var found []ownerLockWaiter
+	testwait.Until(t, what, func() (string, bool) {
 		rows, err := database.Pool.Query(ctx, `
-			select pid from pg_stat_activity
-			where datname = current_database() and query = $1
-			  and pid not in (
-			    select pid from pg_locks
-			    where locktype = 'advisory' and granted
+			select w.pid, w.classid::text || '/' || w.objid::text || '/' || w.objsubid::text,
+			       coalesce(a.application_name, ''), coalesce(a.query, ''),
+			       array(select r.relation::regclass::text from pg_locks r
+			             where r.pid = w.pid and r.locktype = 'relation' and r.granted order by 1)
+			from pg_locks w left join pg_stat_activity a on a.pid = w.pid
+			where w.locktype = 'advisory' and not w.granted
+			  and (w.classid, w.objid, w.objsubid) in (
+			    select classid, objid, objsubid from pg_locks
+			    where pid = $1 and locktype = 'advisory' and granted
 			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
-		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
+			order by w.pid
+		`, holderPID, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
 		if err != nil {
-			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+			t.Fatalf("read the backends waiting on the lock holder's owner locks: %v", err)
 		}
-		pids, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
+		waiters, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ownerLockWaiter, error) {
+			var w ownerLockWaiter
+			return w, row.Scan(&w.pid, &w.lock, &w.app, &w.query, &w.relations)
+		})
 		if err != nil {
-			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+			t.Fatalf("read the backends waiting on the lock holder's owner locks: %v", err)
 		}
-		for _, pid := range pids {
-			queued, err := storetest.QueuedBehind(ctx, holder, pid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if queued {
-				return pid, true
+		found = nil
+		var others []string
+		for _, w := range waiters {
+			if meant(w) {
+				found = append(found, w)
+			} else {
+				others = append(others, w.String())
 			}
 		}
-		return 0, false
+		return fmt.Sprintf("%d of the %d backends wanted (%s) wait on the owner locks backend %d holds; the others waiting on them: %v",
+			len(found), want, named, holderPID, others), len(found) >= want
 	})
+	return found
+}
+
+// waitForIssueCreateBehind waits for the issue create's backend to queue behind holder's lock of
+// the project's row, and answers its pid. The create's update of the project's next_number is
+// the statement that queues there, and an issue create is its one writer (api/issue_create.go:
+// "next_number is written by an issue create alone"), where every other writer of a projects row
+// - an event append, a mapping write, the default assignee's PUT, the gated steps' publish -
+// writes another column, so the statement names the create's backend. It reads pg_stat_activity
+// through the pool, a fresh view on each try.
+func waitForIssueCreateBehind(t *testing.T, database *store.Store, holder pgx.Tx) uint32 {
+	t.Helper()
+	ctx := context.Background()
+	var holderPID uint32
+	if err := holder.QueryRow(ctx, `select pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatalf("read the project lock holder's backend: %v", err)
+	}
+	var creator uint32
+	testwait.Until(t, "the issue create to queue behind the project's row", func() (string, bool) {
+		var blocked []string
+		rows, err := database.Pool.Query(ctx, `
+			select pid, coalesce(query, '') from pg_stat_activity where $1 = any(pg_blocking_pids(pid)) order by pid`, holderPID)
+		if err != nil {
+			t.Fatalf("read the backends blocked by the project lock holder: %v", err)
+		}
+		type session struct {
+			pid   uint32
+			query string
+		}
+		sessions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (session, error) {
+			var s session
+			return s, row.Scan(&s.pid, &s.query)
+		})
+		if err != nil {
+			t.Fatalf("read the backends blocked by the project lock holder: %v", err)
+		}
+		for _, s := range sessions {
+			if strings.Contains(s.query, "set next_number = next_number + 1") {
+				creator = s.pid
+				return fmt.Sprintf("backend %d", s.pid), true
+			}
+			blocked = append(blocked, fmt.Sprintf("backend %d runs %q", s.pid, s.query))
+		}
+		return fmt.Sprintf("no backend blocked by backend %d updates next_number; blocked by it: %v", holderPID, blocked), false
+	})
+	return creator
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
@@ -1012,7 +1136,7 @@ func exitAfterSIGTERMWithTheDatabaseUnanswering(t *testing.T) time.Duration {
 	go func() {
 		_, _ = process.trySend(http.MethodPost, "/api/v1/issues", `{"project":"STOP","title":"Never answered"}`, asUser(dispatchTestLogin))
 	}()
-	storetest.WaitForLockWaiters(t, holder, 1)
+	waitForIssueCreateBehind(t, database, holder)
 
 	relay.freeze()
 	signalled := process.Terminate(t)
@@ -1220,21 +1344,22 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	type step struct {
 		to       time.Time
 		returned bool
-		// armed is every deadline pending when the step was read, which a wait that gives up prints.
-		armed []time.Time
 	}
 	for {
-		next := testwait.Until(t, "closePool to arm its next wait, or to return", func() (step, bool) {
+		var next step
+		testwait.Until(t, "closePool to arm its next wait, or to return", func() (string, bool) {
 			select {
 			case <-returned:
-				return step{returned: true}, true
+				next = step{returned: true}
+				return "returned", true
 			default:
 			}
 			armed := fake.Armed()
 			if len(armed) == 0 {
-				return step{}, false
+				return fmt.Sprintf("closePool has not returned, and no wait is armed on its clock at %v", fake.Now()), false
 			}
-			return step{to: armed[0], armed: armed}, true
+			next = step{to: armed[0]}
+			return fmt.Sprintf("waits armed at %v", armed), true
 		})
 		if next.returned {
 			break

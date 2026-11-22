@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -914,7 +915,9 @@ func (h *memoryHarness) coldReads(t *testing.T, name, artifactID string) {
 }
 
 // coldTextReads reads a document's text readers times at once, failing unless every read answers
-// 200. Its caller measures the fresh server's peak around it.
+// 200. Its caller measures the fresh server's peak around it. Each read carries trySend's
+// 20-minute client timeout, which can outlast the test binary's deadline, so the join on them goes
+// through the shared wait (testwait.Returns), which is their bound.
 func (p *memoryServer) coldTextReads(t *testing.T, artifactID string, readers int) {
 	t.Helper()
 	failures := make([]error, readers)
@@ -928,7 +931,7 @@ func (p *memoryServer) coldTextReads(t *testing.T, artifactID string, readers in
 			failures[index] = err
 		})
 	}
-	group.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d cold text reads at once to return", readers), group.Wait)
 	if err := errors.Join(failures...); err != nil {
 		t.Fatal(err)
 	}

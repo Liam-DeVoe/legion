@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -349,6 +350,9 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 		t.Fatalf("authenticate the document socket: %v", err)
 	}
 	scopes := make(chan string, 1)
+	// read counts the messages the socket has read, which the wait for the answer names when it
+	// gives up: none, or messages of other kinds than the answer.
+	var read atomic.Int64
 	go func() {
 		defer close(socket.ended)
 		for {
@@ -357,6 +361,7 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 				socket.endErr = err
 				return
 			}
+			read.Add(1)
 			decoder := encoding.NewDecoder(message)
 			if _, err := decoder.ReadVarString(); err != nil {
 				continue
@@ -391,7 +396,7 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 			t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
 		default:
 		}
-		return "", false
+		return fmt.Sprintf("no answer to the authentication among the %d messages the socket has read, and the socket is open", read.Load()), false
 	})
 	socket.scope = strings.TrimPrefix(answer, "scope ")
 	return socket
