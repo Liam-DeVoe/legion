@@ -142,3 +142,64 @@ func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 		}
 	}
 }
+
+// contractsDeclaredAfterCheckStates is every contract declared on top of CheckStatesContract: a
+// contract whose plugin was built with the check states' change, so its tester sends no verdict.
+// None is yet. A change that declares its contract after this one names that contract's constant
+// here, which is how TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt tells it from a
+// contract a base declared before the check states' change.
+var contractsDeclaredAfterCheckStates = []int{}
+
+// A phase completion naming a verdict from a plugin at CheckStatesContract or above is refused
+// VERDICT_NOT_TAKEN; only a tester's plugin below it has its verdict ignored. A plugin built before
+// the check states' change still sends its tester's verdict, so every contract such a plugin can
+// state must be below CheckStatesContract: otherwise a merge of a base whose own contract has
+// passed it ships that refusal to the base's testers. So CheckStatesContract stands above every
+// contract this daemon declares but itself and those declared after it: each numbered entry of
+// version.go, each contract of SupportedContracts, and each named contract constant. They are read
+// from the declarations themselves and none is written here as a number, so a renumber on either
+// side of a merge moves what this test reads.
+func TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt(t *testing.T) {
+	after := map[int]bool{}
+	for _, contract := range contractsDeclaredAfterCheckStates {
+		if contract <= CheckStatesContract {
+			t.Errorf("contractsDeclaredAfterCheckStates names %d, at or below CheckStatesContract %d: a contract declared on top of the check states takes a number above them",
+				contract, CheckStatesContract)
+		}
+		after[contract] = true
+	}
+	var entries []int
+	for contract := range numberedEntries(t) {
+		entries = append(entries, contract)
+	}
+	slices.Sort(entries)
+	declared := []struct {
+		source    string
+		contracts []int
+	}{
+		{"version.go's numbered entries", entries},
+		{"SupportedContracts", SupportedContracts},
+		{"the named contract constants", []int{
+			supervise.PodUpdateContract, ServingFloor, memoryContract, treeContract, wakesWaitingContract, checkRoleContract,
+			gatedStepsContract, retiredStrandedContract, stallRecordContract, waitingLineContract, fixAttemptsContract,
+			backwardMovesContract, claimsToRefreshContract, recordFieldsContract, whyAndLineFieldsContract,
+			stateMachineContract, leakCheckCauseContract, phaseEntriesContract, heldContract, processReadContract,
+			quietTimeContract, waitingOnIssueContract, mergeWaitContract, assignmentsContract, entryTimesContract,
+			repositoryAppsContract, PlanRatingContract, pauseContract, shapedAnswersContract, repositoriesLiveContract,
+			childRouteRemovedContract, DaemonAPIVersion,
+		}},
+	}
+	for _, source := range declared {
+		if len(source.contracts) == 0 {
+			t.Errorf("%s hold no contract: this test read nothing from them", source.source)
+		}
+		for _, contract := range source.contracts {
+			if contract == CheckStatesContract || after[contract] || contract < CheckStatesContract {
+				continue
+			}
+			t.Errorf("%s declare contract %d, at or above CheckStatesContract %d: a tester's plugin at %d, built before the check states' change, sends a verdict and is refused VERDICT_NOT_TAKEN. "+
+				"Move the check states' entry to the lowest number above every contract its base declares that no open pull request declares, or, for a contract declared on top of the check states, name it in contractsDeclaredAfterCheckStates",
+				source.source, contract, CheckStatesContract, contract)
+		}
+	}
+}

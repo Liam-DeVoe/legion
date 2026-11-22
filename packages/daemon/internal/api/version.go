@@ -3066,5 +3066,7 @@ const DaemonAPIVersion = 221
 // entry of 221 above): a plugin at it or above has its completion naming one refused
 // VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
 // across the upgrade still completes and Dispatch's check states decide its phase. A later bump
-// of DaemonAPIVersion leaves it where it is.
+// of DaemonAPIVersion leaves it where it is. It stands above every contract declared before the
+// check states' change, which a plugin that still sends a verdict can state
+// (TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt).
 const CheckStatesContract = 221
