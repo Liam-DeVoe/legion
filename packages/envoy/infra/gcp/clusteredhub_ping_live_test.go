@@ -33,9 +33,11 @@ import (
 // The first such PING goes out no sooner than the burst begins, less the moment a PING sent just
 // before it takes to reach A. It goes out no later than the route's next tick: at most one
 // interval after the burst begins, and for a route made just before the burst, its first tick,
-// 1 to 1.2 s after the route is made (setFirstPingTimer). Nothing else closes the route. A logs a
-// slow consumer each time its 10 s write_deadline passes, but keeps the route, because a route's
-// write_timeout policy is retry (client.go:742-743, 2059). The proxy holds no timer of its own.
+// 1 to 1.2 s after the route is made (setFirstPingTimer). A logs a slow consumer each time its
+// 10 s write_deadline passes, and keeps the route, because a route's write_timeout policy is retry
+// (client.go:742-743, 2059), unless that write wrote nothing at all: then it closes the route
+// whatever the policy (client.go:2058-2061, "Slow Consumer (Write Deadline)"). The proxy holds no
+// timer of its own.
 //
 // Without the pin, A's route takes A's short top-level lines (routePingLines). A closes it as
 // stale 5 to 6.2 s after the burst began, a little later on a loaded machine (5.99 to 6.39 s read
@@ -45,11 +47,16 @@ import (
 // by construction on any machine. With the pin, the routes keep their own 30 s and ping_max 2, and
 // a route whose burst has not drained is closed no sooner than 60 s after the burst began.
 //
-// The one race the row keeps: the pinned row races that 60 s against the time the burst takes to
-// cross the proxy. The 60 s is a server timer that the chart's pin sets. The crossing runs at a
-// wall-clock rate that a loaded machine slows. No fact can stand in for this race, because the
-// ping timer is the behaviour under test. So routeBurst is sized from measurement: 60 s is at
-// least twice the slowest drain read (routeBurst has the readings).
+// The row keeps two races, both timers of a server against the proxy's wall-clock crossing, which
+// a loaded machine slows. No fact can stand in for either, because the server's timers are what
+// the configuration sets. First, the pinned row races its 60 s against the time the burst takes to
+// cross the proxy, so routeBurst is sized from measurement: 60 s is at least twice the slowest
+// drain read (routeBurst has the readings). Second, a write of A's to the route that the proxy
+// reads nothing of for A's whole 10 s write_deadline closes the route, and the pinned row fails on
+// that close. The proxy reads a chunk of A's every 0.16 s or so at routeRate (64 KiB a read), so
+// only a proxy the machine does not run for 10 s while A runs meets it. With the whole test, A with
+// it, stopped (SIGSTOP) for 30 s (routeBurst's readings) and for 45 s once each burst was queued
+// (the forcing this row's order of facts was checked with), no server closed a route that way.
 const (
 	// routeBurst is what the test publishes on A to a subscriber on B: 384 messages of 16 KiB,
 	// 6,291,456 bytes, which take at least 15.5 s to cross the proxy at routeRate. The pinned

@@ -122,14 +122,28 @@ jobs:
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
         # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
+        # Each go test's -timeout ends inside the job: what is left of JOB_TIMEOUT_MINUTES at the
+        # go test's start, read off the runner's per-job process (Runner.Worker, as gh-read.sh reads
+        # the job's start), less 60 s for go to print the test it stops and for the report step
+        # after this one (0 s in each of this job's seven green merge-group runs of 2026-11-22
+        # 15:41Z to 16:48Z). The tests' own waits end 30 s before that, so a server that never gets
+        # ready fails its test by name, where the job's limit would cancel the job naming none.
         # One call per package, never one union -run over the three: a name an untagged test of
         # one package shares with a natslive test of another would then run a second time with
         # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or
         # refused list fails the step instead of running -run "", which matches every test.
         run: |
+          worker=$$
+          until [ "$(ps -o comm= -p "$worker")" = Runner.Worker ]; do
+            worker=$(ps -o ppid= -p "$worker" | tr -d ' ')
+            if [ "${worker:-1}" -le 1 ]; then echo "::error::no Runner.Worker among this step's parents, so the job's start cannot be read"; exit 1; fi
+          done
           for pkg in ./core ./seed ./gcp; do
             pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+            ran=$(ps -o etimes= -p "$worker" | tr -d ' ')
+            left=$((JOB_TIMEOUT_MINUTES * 60 - ran - 60))
+            if [ "$left" -lt 60 ]; then echo "::error::$pkg: $left s of the job's limit are left, too few to run its live tests in"; exit 1; fi
+            go test -count=1 -timeout "${left}s" -tags natslive -run "$pattern" "$pkg"
           done
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run

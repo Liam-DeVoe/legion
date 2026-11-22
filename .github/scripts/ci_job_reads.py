@@ -1100,9 +1100,17 @@ go test -count=1 -timeout 5m -tags natslive -run "$edge" -v ./cmd/listener/"""
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
+worker=$$
+until [ "$(ps -o comm= -p "$worker")" = Runner.Worker ]; do
+  worker=$(ps -o ppid= -p "$worker" | tr -d ' ')
+  if [ "${{worker:-1}}" -le 1 ]; then echo "::error::no Runner.Worker among this step's parents, so the job's start cannot be read"; exit 1; fi
+done
 for pkg in {" ".join(INFRA_NATSLIVE_PACKAGES)}; do
   pattern=$(../../../{TAGGED_TESTS} natslive "$pkg")
-  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+  ran=$(ps -o etimes= -p "$worker" | tr -d ' ')
+  left=$((JOB_TIMEOUT_MINUTES * 60 - ran - 60))
+  if [ "$left" -lt 60 ]; then echo "::error::$pkg: $left s of the job's limit are left, too few to run its live tests in"; exit 1; fi
+  go test -count=1 -timeout "${{left}}s" -tags natslive -run "$pattern" "$pkg"
 done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
