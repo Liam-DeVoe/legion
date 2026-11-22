@@ -26,24 +26,28 @@ func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue)
 // that ancestor closes, because work entering the workflow beneath it now would let that ancestor
 // merge a head which does not carry the work. The two doors an agent uses refuse such an issue
 // outright (the API's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own
-// move, which the daemon records rather than undoes.
+// move, which the daemon records rather than undoes. The backward move it offers is refused once
+// the ancestor's pull request has merged (record.Accepted holds merging, and merged work never
+// moves back), so the notice says so.
 //
 // It is the child-status kind every other word about a child entering or leaving its tree is
 // told under, so it reaches the architect above the child by the route those already take.
 func ChildUnderAcceptedParentNotice(child, ancestor string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"%s is beneath %s, whose own reviewed head the daemon has already accepted, so %s is recorded at admitted and nothing starts it until %s closes. "+
-			"Take %s back with a backward move to run %s under it now, or leave %s where it is and it starts once %s has closed.",
-		child, ancestor, child, ancestor, ancestor, child, child, ancestor)}
+		"%[1]s is beneath %[2]s, whose own reviewed head the daemon has already accepted, so %[1]s is recorded at admitted and nothing starts it until %[2]s closes. "+
+			"Take %[2]s back with a backward move to run %[1]s under it now, unless the pull request of %[2]s has merged, or leave %[1]s where it is and it starts once %[2]s has closed.",
+		child, ancestor)}
 }
 
 // ChildUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
 // ancestor the daemon has already accepted (CHILD_UNDER_ACCEPTED_PARENT), naming the ancestor and
-// what undoes the refusal. Both calls say one sentence, because they refuse for one reason: the
-// ancestor was accepted on checks of its children's work as it stood, so nothing enters the
-// workflow beneath a head already accepted. operation is what the caller would do again once the
-// ancestor has closed.
+// what undoes the refusal. Both calls say one sentence, because they refuse for one reason: a
+// parent is accepted only once no issue beneath it is still in the workflow, so nothing enters the
+// workflow beneath an issue already accepted. operation is what the caller would do again once the
+// ancestor has closed. The backward move it names is refused once the ancestor's pull request has
+// merged (record.Accepted holds merging, and merged work never moves back), so the sentence says
+// so.
 func ChildUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
-		child, ancestor, ancestor, operation, ancestor, ancestor)
+	return fmt.Sprintf("%[1]s is beneath %[2]s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed, or take %[2]s back with a backward move first, unless the pull request of %[2]s has merged",
+		child, ancestor, operation)
 }

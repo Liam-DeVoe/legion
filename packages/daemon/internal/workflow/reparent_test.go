@@ -210,6 +210,74 @@ func TestAMoveUnderTheSameArchitectTellsItOnce(t *testing.T) {
 	}
 }
 
+// A change of parent that moves an issue's gate root forgets what its holder took of the approved
+// design, since those versions are of the documents of the gate it left, and queues the reconcile
+// of the new tree's news, so the holder is told the new gate's approved version again
+// (forgetToldAcrossGateRoots, as main's move into another tree cleared the issue's generation). A
+// move under the same gate root keeps the row and queues nothing. LEGION-500's holder took version
+// 1 of LEGION-208's spec; LEGION-300's spec stands approved at version 1 too, a version of another
+// document.
+func TestAReparentToAnotherGateRootTellsTheNewsAgain(t *testing.T) {
+	took := func(t *testing.T, pool *pgxpool.Pool) {
+		t.Helper()
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			return record.NewStore().RaiseTold(t.Context(), tx, reparentMoved, record.AudienceHolder,
+				[]record.NewsItem{{Step: record.DesignStepSpec, To: 1}}, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+		})
+	}
+	holderRow := func(t *testing.T, pool *pgxpool.Pool) []string {
+		t.Helper()
+		return outboxStrings(t, pool, "select versions::text from design_news_told where issue = $1 and audience = 'holder'", reparentMoved)
+	}
+	reconciles := func(t *testing.T, pool *pgxpool.Pool, root string) []string {
+		t.Helper()
+		return outboxStrings(t, pool, "select issue from outbox where kind = 'design_changes' and issue = $1", root)
+	}
+
+	t.Run("under another gate root", func(t *testing.T) {
+		pool := migratedPool(t)
+		seedReparentFixture(t, pool)
+		took(t, pool)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+
+		moveParent(t, pool, engine, "moved-under-300", reparentSecond, 5)
+		if got := holderRow(t, pool); len(got) != 0 {
+			t.Fatalf("the holder row of %s under %s = %v, want it forgotten: it named the versions of %s's documents", reparentMoved, reparentSecond, got, reparentFirst)
+		}
+		var news record.TreeNews
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			facts, _, err := record.ReadTreeNewsFacts(t.Context(), record.NewStore(), tx, config.DesignGateRootIssues.Steps(), "LEGION", reparentMoved)
+			news = record.OwedNews(facts)
+			return err
+		})
+		member, owes := news.Member(reparentMoved)
+		if !owes || len(member.Items) != 1 || member.Items[0].ArtifactID != "artifact-"+reparentSecond || member.Items[0].To != 1 || member.Items[0].From != nil {
+			t.Fatalf("%s is owed %+v under %s, want version 1 of %s's spec, from a version the record does not know", reparentMoved, member, reparentSecond, reparentSecond)
+		}
+		if got := reconciles(t, pool, reparentSecond); len(got) != 1 {
+			t.Fatalf("the reconciles of %s's news queued = %v, want one", reparentSecond, got)
+		}
+	})
+
+	t.Run("under the same gate root", func(t *testing.T) {
+		pool := migratedPool(t)
+		seedReparentFixture(t, pool)
+		seedIssue(t, pool, record.Issue{Key: "LEGION-501", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+			Tree: reparentFirst, Parent: new(reparentFirst), Project: "LEGION", Title: "LEGION-501", Phase: phase.Planning, Generation: 1,
+			Status: "in_progress", Rank: "Y"})
+		took(t, pool)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+
+		moveParent(t, pool, engine, "moved-under-501", "LEGION-501", 5)
+		if got := holderRow(t, pool); len(got) != 1 || got[0] != `{"spec": 1}` {
+			t.Fatalf("the holder row of %s under LEGION-501 = %v, want it kept at spec 1: its gate root is still %s", reparentMoved, got, reparentFirst)
+		}
+		if got := reconciles(t, pool, reparentFirst); len(got) != 0 {
+			t.Fatalf("the reconciles of %s's news queued = %v, want none", reparentFirst, got)
+		}
+	})
+}
+
 // A seed of INFRA-4728's shape, which a daemon of that release queued for a root that ran when a
 // person made it a child of a live tree and left at this release's first boot, names no run. Its
 // read is told as R18 says: its old parent is the record's where the record names another, and

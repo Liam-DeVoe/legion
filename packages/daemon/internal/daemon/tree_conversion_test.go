@@ -26,7 +26,7 @@ import (
 
 // conversionIssue is a record of the project CAPTURE as the release before left it: key stored in
 // tree, at phase and status, run generation, its Dispatch status the same, holding its own gate
-// where it is its own tree, as the migration of 20261120091044 marks every root of that release.
+// where it is its own tree, as the migration of 20261122154644 marks every root of that release.
 func conversionIssue(key, tree string, at phase.Phase, status string, generation uint64) record.Issue {
 	return record.Issue{Key: key, Tree: tree, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
 		Title: key, Phase: at, Generation: generation, Status: status, DispatchStatus: status, Rank: key, HoldsGate: key == tree, LastDispatchSeq: 1}
@@ -347,7 +347,7 @@ func TestTheFirstBootFencesEachRowTheReleaseBeforeQueued(t *testing.T) {
 // of its tree out of Legion's work and CAPTURE-22 one in it.
 func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 	ctx := context.Background()
-	st, _ := storeWithholding(t, "legion_carried_run", 20261120091044, 20261120095128)
+	st, _ := storeWithholding(t, "legion_carried_run", 20261122154644, 20261122154645)
 	deadline := time.Date(2031, 6, 1, 12, 0, 0, 0, time.UTC)
 	for _, seed := range []struct {
 		key, tree, at, status string
@@ -473,7 +473,7 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 // ready, working and idle read it set.
 func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 	ctx := context.Background()
-	st, _ := storeWithholding(t, "legion_claim_crossings", 20261120091044, 20261120095128)
+	st, _ := storeWithholding(t, "legion_claim_crossings", 20261122154644, 20261122154645)
 	states := []string{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
 		"suspended", "failed", "retired"}
 	board := &copyBoard{}

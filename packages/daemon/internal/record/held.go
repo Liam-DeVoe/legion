@@ -54,7 +54,9 @@ const (
 	HeldAwaitingTodo HeldReason = "awaiting_todo"
 	// HeldDesignGate is an issue a design gate it waits for holds where it stands: the gate of an
 	// issue at or above it in Legion's work that holds its own gate, or a gate step it holds
-	// itself, stands shut at a step the deployment gates (LineFacts.ShutGates).
+	// itself, stands shut at a step that holds it (LineFacts.ShutGates, whose TreeGate.Open reads
+	// TreeSteps): a step the deployment gates, or a criteria step the gate holder registered beside
+	// a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).

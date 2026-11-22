@@ -33,6 +33,10 @@ const reparentRan = "its run, its phase, its slot and its design-gate steps stay
 // it is a change, since "" is also the mark of an issue never told. Nothing is told of an issue
 // not in Legion's work (record.InLegionsWork): no architect acts on its run.
 //
+// Before any of that, a change of parent that moves the issue's gate root forgets what its holder
+// took of the approved design (forgetToldAcrossGateRoots), in or out of Legion's work, since that
+// record names the documents of the gate it left.
+//
 // The engine does no I/O, so the read of whether the new parent opens R1's path waits on the
 // seed's executor, whose fact queues the notices (reparentRead).
 func (e *Engine) tellParentChange(ctx context.Context, tx pgx.Tx, issue *record.Issue, fact intake.DispatchIssue) error {
@@ -40,7 +44,13 @@ func (e *Engine) tellParentChange(ctx context.Context, tx pgx.Tx, issue *record.
 	if issue.Parent != nil {
 		old = *issue.Parent
 	}
-	if fact.Parent == old || (fact.Parent != "" && fact.Parent == issue.ToldParent) || !record.InLegionsWork(*issue) {
+	if fact.Parent == old {
+		return nil
+	}
+	if err := e.forgetToldAcrossGateRoots(ctx, tx, *issue, old); err != nil {
+		return err
+	}
+	if (fact.Parent != "" && fact.Parent == issue.ToldParent) || !record.InLegionsWork(*issue) {
 		return nil
 	}
 	seed, err := e.reparentSeed(ctx, tx, *issue, old, fact.Parent)
@@ -54,6 +64,45 @@ func (e *Engine) tellParentChange(ctx context.Context, tx pgx.Tx, issue *record.
 	e.logOnCommit(ctx, "workflow: the Dispatch parent of an issue in Legion's work changed; the new parent is read before the architects are told",
 		"issue", issue.Key, "old_parent", old, "new_parent", fact.Parent, "gate_root", seed.Tree, "phase", issue.Phase)
 	return e.enqueue(ctx, tx, issue.Key, seed)
+}
+
+// forgetToldAcrossGateRoots forgets what issue's holder took of the approved design
+// (record.Store.ForgetTold) where the change of its Dispatch parent from oldParent, which the copy
+// already holds (the Mirror runs first), moves its gate root (record.Chains.GateRoot): the holder
+// row's versions are of the documents of the gate the issue stood under, so under another gate
+// root they name nothing of its documents, as main's move of an issue into another tree cleared
+// the issue's generation. The gate root before is the issue itself where it holds its own gate in
+// Legion's work, which no change of parent moves, else oldParent's gate root on the same reading,
+// else, with no old parent, the issue itself. Where it forgets, an issue in Legion's work whose
+// phase holder is now owed the new gate's approved versions has the reconcile of that tree's news
+// queued (queueMovedNews), so its holder is told them. A move under the same gate root forgets
+// nothing.
+func (e *Engine) forgetToldAcrossGateRoots(ctx context.Context, tx pgx.Tx, issue record.Issue, oldParent string) error {
+	keys := []string{issue.Key}
+	if oldParent != "" {
+		keys = append(keys, oldParent)
+	}
+	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, keys)
+	if err != nil {
+		return err
+	}
+	before := issue.Key
+	if !(chains.HoldsOwnGate(issue.Key) && record.InLegionsWork(issue)) && oldParent != "" {
+		before = chains.GateRoot(oldParent)
+	}
+	after := chains.GateRoot(issue.Key)
+	if before == after {
+		return nil
+	}
+	if err := e.store.ForgetTold(ctx, tx, issue.Key); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a change of parent moved an issue's gate root; what its holder took of the approved design is forgotten",
+		"issue", issue.Key, "old_parent", oldParent, "gate_root_before", before, "gate_root_after", after)
+	if !record.InLegionsWork(issue) {
+		return nil
+	}
+	return e.queueMovedNews(ctx, tx, issue)
 }
 
 // TellParentAtFirstBoot is the first boot's notice of a root under a parent at work (step 9 of

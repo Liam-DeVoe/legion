@@ -55,7 +55,7 @@ func decodedBeforeTheSequence(payload []byte) error {
 // and which waits on its backoff with its last error, a set-back an earlier release queued with no
 // sequence, a phase status write, a close with its reason and a message of LEGION, and another
 // project's set-back. Each is encoded with none of the run and entry fence keys (record.Fence) that
-// the later 20261120095128 of dispatch://INFRA-4730 adds, since a rollback runs the way back of each
+// the later 20261122154645 of dispatch://INFRA-4730 adds, since a rollback runs the way back of each
 // later migration before this one's, and this test holds this one alone. The block runs for LEGION
 // as the migration's header carries it, as one exec (the simple protocol a psql run uses). Then
 // LEGION's set-back is the same write without its sequence, every other row reads as it was

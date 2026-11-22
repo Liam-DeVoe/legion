@@ -852,7 +852,7 @@ func (h *harness) promptInTurn() string {
 	}
 	delivery, _ := reporter.TakePromptResult()
 	h.m.mu.Lock()
-	held := slices.Contains(h.m.outstanding, delivery)
+	held := h.m.outstandingPrompt(delivery)
 	h.m.mu.Unlock()
 	if !held {
 		return ""
@@ -866,7 +866,7 @@ func (h *harness) promptInTurn() string {
 func (h *harness) outstanding() []string {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
-	return slices.Clone(h.m.outstanding)
+	return h.m.outstanding.ids()
 }
 
 func (h *harness) must(ev Event) {

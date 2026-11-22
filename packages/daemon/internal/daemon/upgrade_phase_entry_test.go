@@ -342,7 +342,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		// That release had no issue lifecycles: the upgrade's own 20261120095128 opens one for each
+		// That release had no issue lifecycles: the upgrade's own 20261122154645 opens one for each
 		// issue a live claim names, so the tree's lifecycle alone is written here.
 		if _, err := records.OpenTreeLifecycle(ctx, tx, project, root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err

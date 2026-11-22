@@ -271,7 +271,7 @@ type ReservedIssue struct {
 // still apply once its write landed, and whether it carries on as a root of its own or waits for a
 // person is the conversion's step that reads the listing (the daemon's convertHandOvers), which
 // reserves it where it does not carry on (ReserveIssueOfTreeCleanup). Its lifecycle is opened
-// instead, under the tree's authority at epoch one, as the migration of 20261120095128 opens the
+// instead, under the tree's authority at epoch one, as the migration of 20261122154645 opens the
 // lifecycle of each issue of a tree whose cleanup is not reserved, and each claim of it bound to no
 // epoch binds that one; a lifecycle it already has is left as it stands.
 //

@@ -2068,6 +2068,10 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
 // names which of the guard's three readings failed. served is whether the table holds a backward
 // row of the issue's phase for the move's target.
+//
+// It is a function of the issue and the fact alone and reads no pull request, so the rule that a
+// merged change never moves back is none of its readings: backward, which holds the transaction,
+// reads the issue's pull request after this answers "" and refuses that move itself.
 func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
 	switch {
 	case fact.To == "":
@@ -2095,6 +2099,13 @@ func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (p
 	return moved.Phase, nil
 }
 
+// backward applies a backward move (request_backward_move): the role running the issue's phase
+// sends it back to an earlier phase, with its reason. It is refused BACKWARD_REFUSED, changing
+// nothing, where the table's guard refuses it (backwardRefusal), and where the issue's pull
+// request has merged, in whichever phase the issue stands: a merged change never moves back.
+// GitHub reopens no merged pull request and its change is already on the base branch, so an
+// earlier phase has no pull request left to carry new work; that work goes to an issue whose pull
+// request is still open, which the architect decides.
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -2124,6 +2135,17 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
+	// A merged pull request refuses the move in every phase: in merging, where a root's close can
+	// wait on the rest of its tree (closeMerged), and in an earlier phase whose pull request merged
+	// early, which the architect is told of (merged).
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("the %s's move of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
+			fact.Requester, issue.Key, fact.To)), nil
+	}
 	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
 	// here, before anything moves (backwardReasonRefusal).
 	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Reason); code != "" {
@@ -2134,10 +2156,6 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 			issue.Key, issue.Status, fact.Requester, fact.To)), nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Requester)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2205,7 +2223,7 @@ const (
 // refuses that act (acceptanceHold.refusal).
 var acceptanceRefusals = map[string]map[architectAct]string{
 	signOffChildInWorkflow: {
-		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. " + endChildrenFirst("acceptance"),
+		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted only once no issue beneath it is still in the workflow, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. " + endChildrenFirst("acceptance"),
 		actCloseRoot: "%[1]s is not closed while these issues beneath it are still in the workflow: %[2]s. Closing it would close their parent under them mid-turn. Close the tree again when each of them has left the workflow. " + endChildrenFirst("close"),
 	},
 	signOffRestingRoot: {
@@ -2291,19 +2309,20 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 // approval told it before acceptance existed. Outside accepting it changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
-// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent is accepted on a head that
-// need not carry its children's merges, once each check a role runs has a pass at that head whose
-// observed line names a base commit that carries every needed child's merge, and no base carries
-// that merge before the child merges: accepted first, the parent would reach retro and the merge
-// with no check of it run on its children's work, which is what dispatch://INFRA-980 forbids. The
-// acceptance was held this way once before (dispatch://INFRA-229) and the hold was taken off
-// because a parent's approved pull request then waited outside the merge queue and went stale
-// against its base. Now no phase of a parent starts while an open child stands under it, and the
-// admission pass that sees one moves a parent in accepting to awaiting_children, where it holds no
-// slot and from which it comes back as testing, whose round runs on its head merged with the base's
-// tip once that tip carries the children's merges (dispatch://INFRA-3320 R9, R12). So the refusal
-// is the backstop for a sign-off that comes before that pass, and the hold itself for a parent
-// whose pull request has merged, which the wait leaves where it stands.
+// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them, since a parent is accepted only once
+// no issue beneath it is still in the workflow (dispatch://INFRA-980). It is accepted on a head
+// that need not carry its children's merges, once each check a role runs has a pass at that head
+// whose observed line names a base commit that carries every needed child's merge, and no base
+// carries that merge before the child merges: accepted first, the parent would reach retro and the
+// merge with no check of it run on its children's work, which is what dispatch://INFRA-980
+// forbids. The acceptance was held this way once before (dispatch://INFRA-229) and the hold was
+// taken off because a parent's approved pull request then waited outside the merge queue and went
+// stale against its base. Now no phase of a parent starts while an open child stands under it, and
+// the admission pass that sees one moves a parent in accepting to awaiting_children, where it holds
+// no slot and from which it comes back as testing, whose round runs on its head merged with the
+// base's tip once that tip carries the children's merges (dispatch://INFRA-3320 R9, R12). So the
+// refusal is the backstop for a sign-off that comes before that pass, and the hold itself for a
+// parent whose pull request has merged, which the wait leaves where it stands.
 //
 // Past that, it is refused while a root whose step rests on the issue's approval is still in the
 // workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), and then while a Dispatch child of the issue is open
@@ -2499,6 +2518,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	} else if err := e.start(ctx, tx, issue, starting, work, from); err != nil {
 		return err
 	}
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
@@ -2514,6 +2536,26 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if row.To == phase.Done {
 		return e.leave(ctx, tx, issue, "done")
+	}
+	return nil
+}
+
+// queueMovedNews queues the reconcile of the news of the approved design of issue's tree, the tree
+// of its gate root on the Dispatch chain (record.ReadTreeNewsFacts, record.QueueDesignNews), when
+// the move just written leaves the holder of issue's phase owed news (record.OwedNews over the
+// record as the move leaves it). A phase worker's start carries what its holder is owed (the
+// daemon's start executor), but no start carries news into accepting, since the engine starts no
+// architect (start): the reconcile is what sends an owed member in accepting its news, as a task to
+// the architect that owns it, beside the phase-finished notice. A move into any other phase queues
+// it too, so news whose change set no start could carry yet is sent once the reconcile has
+// recorded it.
+func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	facts, _, err := record.ReadTreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, issue.Project, issue.Key)
+	if err != nil {
+		return err
+	}
+	if _, owes := record.OwedNews(facts).Member(issue.Key); owes {
+		return record.QueueDesignNews(ctx, e.store, tx, facts.Root, e.now())
 	}
 	return nil
 }

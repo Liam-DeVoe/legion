@@ -19,7 +19,7 @@ import (
 )
 
 // conversionRelease names the release whose way back the header of issueFactsVersion
-// (20261120095128_issue_facts) carries — the step an operator runs before a rollback to the
+// (20261122154645_issue_facts) carries — the step an operator runs before a rollback to the
 // release before (R22 of dispatch://INFRA-3320, decision 15 of dispatch://INFRA-4730) — as a
 // failure to read that block names it.
 const conversionRelease = "the release that stores no tree"

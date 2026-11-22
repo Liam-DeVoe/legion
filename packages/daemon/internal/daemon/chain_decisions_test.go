@@ -898,7 +898,7 @@ func newChainDaemonOver(t *testing.T, project string, rows []chainRow, wrong boo
 // architect claim on the tree its issue is stored in, and the marks today's daemon keeps by tree.
 // Each record whose stored tree is its own key holds its own gate (holds_gate), as the
 // migration that adds the column marks every root of the release before
-// (20261120091044_issue_holds_gate).
+// (20261122154644_issue_holds_gate).
 func (d *chainDaemon) seed(token string) {
 	t := d.t
 	t.Helper()

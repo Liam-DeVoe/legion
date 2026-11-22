@@ -373,7 +373,10 @@ func (e *Engine) NewRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact
 // (ParkedDecisionTask) tells it to request approval of the latest version. One approval is kept,
 // read from the first required step whose approved version sits below its latest, because
 // readmitted_approvals keeps one row for each issue; it carries that step, so the task names the
-// document the person reviewed rather than the spec of every deployment.
+// document the person reviewed rather than the spec of every deployment. The required steps are
+// the ones the issue's tree is gated on (record.TreeSteps), so a Verification document its
+// architect registered as criteria beside a deployment that gates spec and not criteria is read
+// after the spec, as every other rule of the gate reads it.
 //
 // The approval read is the person's own (record.DesignGate.ApprovedByPerson), never the version
 // an ancestor's approval opened the step at (dispatch://INFRA-3320, R2 and R3): a step that stands
@@ -397,7 +400,7 @@ func (e *Engine) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) e
 		return fmt.Errorf("read the gate of %s for its new run: %w", key, err)
 	}
 	unregistered := false
-	for _, step := range steps {
+	for _, step := range record.TreeSteps(steps, gates) {
 		gate, ok := gates[step]
 		if !ok {
 			unregistered = true

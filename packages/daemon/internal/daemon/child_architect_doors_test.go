@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -330,6 +333,36 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 		}
 		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})
+}
+
+// A start queued for news alone (record.SuperviseRequest.News) of a child's own architect has the
+// shape of that architect's first start: the architect's role on a child, with no phase and no
+// task. It carries news to a claim that already holds its role, and one that reaches no claim
+// finishes (newsOnlyRefusal), since the start that creates or revives the claim carries the news:
+// it neither creates the child's architect claim nor waits on its backoff for one, its tree
+// running or not.
+func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishes(t *testing.T) {
+	rig := newChildArchitectRig(t)
+	var logged testlog.Buffer
+	// The outbox reads the news under the design-gate steps the daemon gates, as the daemon wires
+	// it.
+	rig.runner.log, rig.runner.gatedSteps = slog.New(slog.NewTextHandler(&logged, nil)), config.DesignGateRootIssues.Steps()
+	rig.put(rig.member(doorChild, doorRoot, phase.Accepting, "needs_review", "V"))
+	row, err := record.NewOutboxRow(doorChild, record.SuperviseRequest{Op: "start", Tree: doorRoot, Role: claim.RoleArchitect,
+		Generation: 1, News: true}, time.Now())
+	if err != nil {
+		t.Fatalf("build the news-only start of %s's architect: %v", doorChild, err)
+	}
+
+	if err := rig.runner.execute(rig.ctx, row); err != nil {
+		t.Fatalf("the news-only start of %s's architect, with no claim, = %v, want it finished without acting", doorChild, err)
+	}
+	if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
+		t.Fatalf("the news-only start of %s's architect created its claim, want none created", doorChild)
+	}
+	if says := "outbox news-only start reaches no claim; finished without acting"; !strings.Contains(logged.String(), says) {
+		t.Fatalf("the outbox logged %q, want %q", logged.String(), says)
+	}
 }
 
 // childAt is the child as Dispatch shows it at status, at Dispatch's sequence seq: under the

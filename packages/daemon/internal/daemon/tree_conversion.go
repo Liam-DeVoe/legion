@@ -533,7 +533,7 @@ func (w *workflowRuntime) finishHandOver(ctx context.Context, tx pgx.Tx, issue r
 			return fmt.Errorf("carry the gate of %s: %w", issue.Key, err)
 		}
 	}
-	return record.PublishChangedGates(ctx, w.records, tx, issue.Key, held, now)
+	return record.PublishChangedGates(ctx, w.records, tx, w.gatedSteps, issue.Key, held, now)
 }
 
 // carriedGate is gate, a step of the old root's gate, as the release before's carry wrote it onto

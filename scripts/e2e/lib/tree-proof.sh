@@ -11,7 +11,7 @@
 #   - finds the release before: `git merge-base HEAD origin/main`, read now, so a branch that merged
 #     main forward compares itself with that main. A shallow checkout, CI's, fetches its history and
 #     origin/main from its own remote, the public repository, first. A merge base whose tree carries
-#     this release's conversion (packages/daemon/internal/store/migrations/20261120095128_issue_facts.up.sql)
+#     this release's conversion (packages/daemon/internal/store/migrations/20261122154645_issue_facts.up.sql)
 #     has no release before to convert from, and the run is refused with exit 2;
 #   - makes the root of the oldest plugin contract in the fleet (lib/old-plugin-root.sh, with
 #     TREE_PROOF_CONTRACT, default 144, the lowest the fleet's daemons served on 2026-11-20), with
@@ -63,7 +63,7 @@ tree_proof() {
   fi
   base=$(git -C "$root" merge-base HEAD refs/remotes/origin/main) || fail "HEAD and origin/main share no commit"
   base_sha=$(git -C "$root" rev-parse --short=12 "$base")
-  if git -C "$root" cat-file -e "$base:packages/daemon/internal/store/migrations/20261120095128_issue_facts.up.sql" 2>/dev/null; then
+  if git -C "$root" cat-file -e "$base:packages/daemon/internal/store/migrations/20261122154645_issue_facts.up.sql" 2>/dev/null; then
     refuse "the merge base $base_sha already stores no tree (it carries this release's conversion), so it is no release before to cut over from"
   fi
   note "the release before is the merge base with origin/main, $base_sha: $(git -C "$root" log -1 --format=%s "$base")"

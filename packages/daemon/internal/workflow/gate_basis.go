@@ -1115,7 +1115,7 @@ func (e *Engine) endOpenOn(ctx context.Context, tx pgx.Tx, gates []record.Design
 		if err := e.store.DeleteGate(ctx, tx, root.Key, step); err != nil {
 			return err
 		}
-		if err := record.PublishChangedGates(ctx, e.store, tx, root.Key, before, e.now()); err != nil {
+		if err := record.PublishChangedGates(ctx, e.store, tx, e.cfg.Steps, root.Key, before, e.now()); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a step standing open on an ancestor's approval ended with the ancestor's acceptance", "issue", root.Key,

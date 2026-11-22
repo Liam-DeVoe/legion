@@ -280,7 +280,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		// What the row was queued with: this release queues every effect with the fence of its
 		// issue's run and phase entry (record.Fenced), which the release that rates each plan
 		// names on none of these rows, so the rows here stand at the first fence, and this way
-		// back leaves it on them. The way back of the later 20261120095128 takes it off, before
+		// back leaves it on them. The way back of the later 20261122154645 takes it off, before
 		// this one runs, at a rollback across both; this test holds this one alone.
 		decoded, err := record.DecodeOutboxPayload(row)
 		if want := record.Fenced(q.payload, record.FirstFence); err != nil {

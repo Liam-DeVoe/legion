@@ -429,6 +429,16 @@ func acceptedEntry(row record.PhaseRow) bool {
 //     cleared, as a transition clears it (clearHandoff).
 //   - The held start goes with the phase (record.Issue.ChildrenWait), and the moment of the last
 //     wait stays (record.Issue.ChildrenWaitedAt), which leftItsPhase reads after the return.
+//   - News of the approved design reaches the return as it reaches every move into a phase. The
+//     start the return makes carries what its holder is owed when the start runs, as every
+//     entry's start does (the daemon's start executor), so the held task is sent with that news
+//     once and the merged children's sentence and the base-merge sentence once each: the held task
+//     carries none of the three (record.PhaseRow.Given). A task of news alone that the holder has
+//     not taken gives way to that start, since it raises an entry (supervise's queue). The return
+//     then queues the reconcile of the tree's news where the move leaves the holder owed news
+//     (queueMovedNews), as a transition does, so news whose change set no start could carry yet
+//     is sent once the reconcile has recorded it. While the parent waits it is owed nothing
+//     (record.UntoldHeld).
 //
 // It counts nothing — no pass, no pair, no round — and does not wait for the design gate, which
 // holds no phase already under way. The start goes through the one writer of a phase worker's
@@ -480,6 +490,9 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	if err := e.start(ctx, tx, back, role, work, phase.AwaitingChildren); err != nil {
+		return err
+	}
+	if err := e.queueMovedNews(ctx, tx, back); err != nil {
 		return err
 	}
 	if starts {

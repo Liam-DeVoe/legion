@@ -180,7 +180,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. An issue still running beneath it holds the acceptance, and an open child moves it to `awaiting_children`. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the planner, the implementer or the tester. An issue still running beneath it holds the acceptance, and an open child moves it to `awaiting_children`. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; an issue with a child that is not `done` records the merge and stays here until each child is `done`. | implement App |
 
@@ -357,16 +357,23 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
-nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
-answer is yours, in your name.
+again, naming what changed since your approval. Work already in flight carries on while the gate
+is closed, and of that work only the merge waits until you approve the new version. When you
+approve it, each worker that holds an affected issue gets a task that names the sections and
+checks that changed, and decides whether its work still matches. A worker whose work is stale
+moves its issue back, and a planner revises its plan instead and runs the plan review again. The
+daemon moves no issue and stops no turn itself, and an issue whose pull request has merged never
+moves back. The daemon only reads approvals; nothing in Legion approves a spec on a person's
+behalf, and the approval Dispatch records at your answer is yours, in your name.
 
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
 `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
 its primary document. The daemon keeps one gate record for each step listed, and the tree starts
 only once each of them is open on a person's approval, of its own document or of an ancestor's;
-each closes on its own document's next version. A deployment that does not want the gate sets
+each closes on its own document's next version. Under a list that names `spec` and not
+`criteria`, the default among them, the architect can also register the root's Verification
+document as `criteria`: that tree then waits for both documents, and one approval of a request
+made with `--include-verification` opens both. A deployment that does not want the gate sets
 `gates.design: []`, and the tree starts as soon as the architect has written its spec.
 
 A root under an approved ancestor can have a spec that is a view on the ancestor's spec: it

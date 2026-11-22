@@ -3,7 +3,7 @@ package textcheck
 import "testing"
 
 // The way back of the release that stores no tree (dispatch://INFRA-4730, R22 of
-// dispatch://INFRA-3320) is in the header of store migration 20261120095128_issue_facts, which
+// dispatch://INFRA-3320) is in the header of store migration 20261122154645_issue_facts, which
 // ships the block with the migration, and in a fenced block of docs/kubernetes.md, under "Rolling
 // back the release that stores no tree", where an operator reads it at a rollback, and which
 // scripts/e2e/tree-rollback.sh reads and runs. internal/store's
@@ -16,7 +16,7 @@ import "testing"
 // (set_back_sequence_way_back_doc_test.go).
 const (
 	// treeConversionVersion is the version of the migration whose header carries the block.
-	treeConversionVersion = 20261120095128
+	treeConversionVersion = 20261122154645
 	// treeConversionWayBackSection is the heading of the guide's section that gives the way back.
 	treeConversionWayBackSection = "Rolling back the release that stores no tree"
 	// treeConversionWayBackMark is the line that deletes the project's record of the conversion,
