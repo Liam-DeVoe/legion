@@ -106,6 +106,9 @@ which versions of their dependencies it links. That list is written here by hand
 command that prints it, to be run from packages/daemon whenever what the binary links moves:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
+packages/daemon/cmd/legion/release_list_test.go (TestTheReleaseListNamesEveryEnvoyPackageLegionLinks,
+in daemon-go) runs that command and fails naming each package the list misses or the binary no
+longer links.
 
 ## Why GOPROXY falls through to direct
 
