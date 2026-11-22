@@ -105,17 +105,17 @@
 -- that ran out or was taken over, about a lifecycle that ended, about heads or a base branch since
 -- moved, or about a candidate since replaced, applies nothing, and its candidates are read again.
 --
--- pull_request_former_heads_keep() records each insert of an open row, each update that moves a
--- row's key, head or state while it is or becomes open, and each delete, by an insert, an update
--- and a delete trigger, each record under the name of the row it is of: an update that keys the
--- row anew is the delete of the row under its old name and the insert of the row under its new
--- one. The update trigger fires only where the key, head_sha or state moved, since every writer of
--- the row names each column in its `do update set` on each write, a read-through included. So a
--- head is recorded whether or not a settle ran while the pull request was there, every writer is
--- recorded, a write of the release before this one too, and a writer a later change adds is
--- recorded with no code of its own. The records of one row are in the order of their places: a
--- writer holds the row's lock from its write to its commit, so the next writer of the row draws
--- its place after that commit.
+-- pull_request_former_heads_keep() records each insert of a row, open, closed or merged, each
+-- update that moves a row's key, head or state while it is or becomes open, and each delete, by an
+-- insert, an update and a delete trigger, each record under the name of the row it is of: an
+-- update that keys the row anew is the delete of the row under its old name and the insert of the
+-- row under its new one. The update trigger fires only where the key, head_sha or state moved,
+-- since every writer of the row names each column in its `do update set` on each write, a
+-- read-through included. So a head is recorded whether or not a settle ran while the pull request
+-- was there, every writer is recorded, a write of the release before this one too, and a writer a
+-- later change adds is recorded with no code of its own. The records of one row are in the order
+-- of their places: a writer holds the row's lock from its write to its commit, so the next writer
+-- of the row draws its place after that commit.
 --
 -- pull_request_former_heads_apply(pull request, issue) applies a pull request's records, the
 -- records of every name it goes by, under its lock, in the order of their places, before any read
@@ -125,13 +125,20 @@
 -- since the pull request it stood for is the one its other name stands for; a close or a merge
 -- under any name ends the pull request's lifecycle, so it raises the pull request's ended
 -- place, starts the next generation and drops every row of history reached before it,
--- candidates whose result was recorded before it included; and a head reached before the last
--- end is of a lifecycle that ended, so a move on from it keeps nothing. A row stored under an old
--- name can stay open, unread, while the row under the canonical name closes and reopens, and the
--- head it stands at is of the lifecycle the close ended. A record of another name can commit
--- after a record of a later place was applied; whatever the order, a row of history stays only
--- where its place is after the pull request's last end, so the settler answers as it would have,
--- had every record committed in the order of its places. An application that changes the
+-- candidates whose result was recorded before it included. A close is every way Dispatch can
+-- first see one: an open row that closes or merges, and as much a row written closed or merged
+-- by its insert or its re-key, such as the canonical-name writer's first write of a pull request
+-- it finds closed, which then deletes the open row of its old name (whose head that delete keeps
+-- only where it was reached after the close), and the install's record of each pull request that
+-- is closed when it runs (below); a close no update of an open row shows would otherwise leave the
+-- lifecycle open, and a reopen would bring back its heads and its results. And a head reached
+-- before the last end is of a lifecycle that ended, so a move on from it keeps nothing. A row
+-- stored under an old name can stay open, unread, while the row under the canonical name closes
+-- and reopens, and the head it stands at is of the lifecycle the close ended. A record of another
+-- name can commit after a record of a later place was applied; whatever the order, a row of
+-- history stays only where its place is after the pull request's last end, so the settler answers
+-- as it would have, had every record committed in the order of its places. An application that
+-- changes the
 -- history owes the issue that holds the pull request when it applies, in its own transaction,
 -- not only the issue a writer saw when it recorded the change: a record's own trigger marks the
 -- issue its writer saw, which may have given the pull request up, and settled, before the record
@@ -429,6 +436,10 @@ begin
     if tg_op = 'UPDATE' and new.state = 'open' then
       insert into pull_request_former_heads_moves (repo, number, op, new_head, new_open)
       values (lower(new.repo), new.number, 'INSERT', new.head_sha, true);
+    elsif tg_op = 'UPDATE' and old.state = 'open' then
+      -- An open row keyed anew closed or merged: the close, under the new name.
+      insert into pull_request_former_heads_moves (repo, number, op, old_open, new_head, new_open)
+      values (lower(new.repo), new.number, 'INSERT', true, new.head_sha, false);
     end if;
     return null;
   end if;
@@ -490,7 +501,13 @@ begin
           verified = true, since = greatest(pull_request_former_heads.since, excluded.since);
         changed := true;
       end if;
-    elsif fact.op = 'UPDATE' and fact.old_open and not fact.new_open then
+    elsif fact.op <> 'DELETE' and not fact.new_open and (fact.old_open or (fact.old_open is null and (last_end is null
+        or exists (select 1 from pull_request_former_heads_rows open_row where open_row.pull = $1)))) then
+      -- A close or a merge: an open row that closes, or a row written closed or merged where the
+      -- pull request is open under another name or no close of it is known, the install's record
+      -- of a pull request closed when it ran among them. A row written closed while every row
+      -- applied is closed and a close is known shows that close again, and ends nothing new, so
+      -- a result recorded while the pull request was closed stays of the next lifecycle.
       last_end := greatest(last_end, fact.seq);
       last_generation := last_generation + 1;
       delete from pull_request_former_heads former where former.pull = $1 and (former.since is null or former.since < last_end);
@@ -784,8 +801,7 @@ create trigger pull_request_former_heads_begin_update after update on pull_reque
     or (old.repo, old.number) is distinct from (new.repo, new.number) or old.issue_key is distinct from new.issue_key))
   execute function pull_request_former_heads_begin();
 create trigger pull_request_former_heads_keep_insert after insert on pull_request_heads
-  for each row when (new.state = 'open')
-  execute function pull_request_former_heads_keep();
+  for each row execute function pull_request_former_heads_keep();
 create trigger pull_request_former_heads_keep_update after update on pull_request_heads
   for each row when ((old.repo, old.number, old.head_sha, old.state) is distinct from (new.repo, new.number, new.head_sha, new.state))
   execute function pull_request_former_heads_keep();
@@ -810,3 +826,22 @@ from (
   join pull_request_former_heads former on former.pull = alias.pull
   where head.state = 'open' and not former.verified
 ) owed;
+
+-- The install's record of each pull request closed or merged when it runs: a close before the
+-- install is in no record, and without one, a pull request that reopens after it would take the
+-- results recorded before that close as its own (pull_request_former_heads_leave reads a result
+-- recorded before this release as of the lifecycle open now where no close is known). One record
+-- of a row written closed, at a place after every such result, which the settler applies as any
+-- other (pull_request_former_heads_apply): it ends the lifecycle there. A pull request is closed
+-- where the row of its canonical name is not open, or, with no row of that name, where no row of
+-- it is open: the canonical row is the one Dispatch reads, and an old name's row may be a stale
+-- copy, so an open pull request whose old name's row reads closed keeps the results it holds.
+insert into pull_request_former_heads_moves (repo, number, op, new_head, new_open)
+select lower(head.repo), head.number, 'INSERT', head.head_sha, false
+from pull_request_heads head
+where head.state <> 'open' and not exists (
+  select 1 from pull_request_heads other
+  where other.number = head.number and other.state = 'open'
+    and lower(pull_request_canonical_repo(other.repo)) = lower(pull_request_canonical_repo(head.repo))
+    and (lower(other.repo) = lower(pull_request_canonical_repo(other.repo))
+      or lower(head.repo) <> lower(pull_request_canonical_repo(head.repo))));

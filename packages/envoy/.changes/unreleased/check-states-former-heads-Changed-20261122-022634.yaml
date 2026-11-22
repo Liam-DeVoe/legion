@@ -75,7 +75,13 @@ body: |-
     generation, while a rename and a move to another issue keep it: applying the records drops
     each head the pull request reached before the last close (`pull_request_former_heads_pulls.ended`,
     `generation`, `pull_request_former_heads_rows`), so no history of a closed lifecycle reaches a
-    later one through a row's next move or its re-key, in whatever order the records commit; and
+    later one through a row's next move or its re-key, in whatever order the records commit; a
+    close no update of an open row shows ends it too: a row written closed or merged, by its insert
+    or its re-key, such as the canonical-name writer's first write of a pull request it finds
+    closed, which then deletes the open row of its old name, is recorded as a close where the pull
+    request is open under another name or no close of it is known, and the install records each
+    pull request closed or merged when it runs (by its canonical name's row, so an open pull request
+    whose old name's row reads closed keeps its results); and
     ended provenance stays ended: the drain keeps the place of each result
     (`pull_request_former_heads_results`), and a result's commit becomes a candidate only where a
     result there was recorded after the last close, or, recorded before the release, where no close
