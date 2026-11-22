@@ -37,8 +37,9 @@ import (
 // HoldStopGrace is how long after the work hold's close message reached a claim a turn still
 // running is cut: long enough for a worker to end its turn at its next step and for a merger to
 // take its pull request out of the merge queue. The outbox names each stop's deadline that far
-// after the message reached the claim (internal/daemon's postHoldStop), and the close message
-// names it to the worker (workHoldSentence).
+// after the message reached the claim (internal/daemon's postHoldStop), the close names the
+// deadline of the stop of a start under way that far after the close (workHoldClose), and the
+// close message names it to the worker (workHoldSentence).
 const HoldStopGrace = 2 * time.Minute
 
 // The sentences of the hold's texts beside today's gate messages (gateClosedSentence,
@@ -256,14 +257,20 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //   - a released merger the same message, marked to wake it (record.RoleMessage.Wake), so it can
 //     take its pull request out of the merge queue;
 //   - a released worker that is not a merger nothing: a wake would bring its pod back only to stop
-//     it, so its stop is written at once, and the hold takes its `released` source over with its
-//     bundle and its pending task kept;
+//     it, so its stop is written at once, with the deadline HoldStopGrace after this close and no
+//     turn, and the hold takes its `released` source over with its bundle and its pending task
+//     kept. A wake that passed the fence before this close may launch the claim after it: the
+//     stop then holds the launch until its ready, and cuts a turn at the deadline where a restart
+//     or a failed attempt of the stop lets the ready come first;
 //   - a phase worker that is neither live nor released, and whose run holds a start under way
-//     (StartUnderWay), nothing, and its stop is written at once: the start read the gate open
-//     before this close, and it may create, resume or retry the claim after it. The stop's row is
-//     newer than the start's, so it still acts on the claim that start launches (StopActs), and
-//     the outbox runs it once the start's lease ends: it stops the launching claim at its ready,
-//     before the claim takes any task (supervise's holdSuspendUntilReady). A stop that finds no
+//     (StartUnderWay), nothing, and its stop is written at once, with the deadline HoldStopGrace
+//     after this close and no turn: the start read the gate open before this close, and it may
+//     create, resume or retry the claim after it. The stop's row is newer than the start's, so it
+//     still acts on the claim that start launches (StopActs), and the outbox runs it once the
+//     start's lease ends: it stops the launching claim at its ready, before the claim takes any
+//     task (supervise's holdSuspendUntilReady). That hold lives in memory alone, so where a
+//     restart or a failed attempt of the stop lets the ready come first, the stop's next attempt
+//     stops a ready or idle claim at once and cuts a turn at the deadline. A stop that finds no
 //     launch makes nothing: a claim that runs nothing is not stopped again, and an operator's or
 //     the daemon's suspension stands;
 //   - and any other claim an operator or the daemon suspended, or a failed or retired one,
@@ -317,12 +324,12 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 			told++
 		case c.state().Released():
 			how = "held over its release at once"
-			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend()); err != nil {
+			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend(e.now().UTC().Add(HoldStopGrace), time.Time{})); err != nil {
 				return err
 			}
 		case underWay:
 			how = "held at the ready of a start under way"
-			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend()); err != nil {
+			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend(e.now().UTC().Add(HoldStopGrace), time.Time{})); err != nil {
 				return err
 			}
 		default:
@@ -571,24 +578,13 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 // tree that holds no work (openStoppedClaims). The log line of its start names the version the
 // record of the opening names, else the version the hold's stop named
 // (intake.WorkHoldOpened.Version). A claim an opening start covers is not started again, so an
-// opening that read the claim stopped and this fact never start it twice. A tree that holds work
-// again, one that lingers, and a root the record does not hold are left alone. Under `merge` no
-// tree holds work, so the gate is read under `work` alone.
+// opening that read the claim stopped and this fact never start it twice. A tree that lingers and
+// a root the record does not hold are left alone, and so is a tree whose record shows a hold that
+// stands again (openStoppedClaims), which reads that record in this transaction and no gate.
 func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.WorkHoldOpened) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Tree)
 	if err != nil || root == nil || !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() {
 		return intake.Result{}, err
-	}
-	if e.holdIsWork() {
-		gates, err := e.store.GatesOf(ctx, tx, root.Key)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if closed, holds := (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).Standing(); holds {
-			e.logOnCommit(ctx, "workflow: the work hold holds the tree again; a claim it stopped waits for the next opening", "tree", root.Key,
-				"step", closed.Step.OrSpec(), "version", closed.LatestVersion)
-			return intake.Result{}, nil
-		}
 	}
 	return intake.Result{}, e.openStoppedClaims(ctx, tx, *root, fact.Version)
 }

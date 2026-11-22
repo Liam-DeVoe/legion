@@ -116,11 +116,12 @@ func (w holdWords) unrecordedOpening() string {
 		"and the daemon keeps no record of the version that closed its gate. Check what your turn already did: a tool call may not have finished."
 }
 
-// stop is the row of the work hold's stop of role of issue at generation, closed at version: the
-// suspend the close writes at once for a claim no message reaches, naming the version that closed
-// the gate. It is the supervise row of messageStop (record.HoldStop.Suspend).
-func (w holdWords) stop(role claim.Role, generation uint64, version int) record.SuperviseRequest {
-	return w.messageStop(role, generation, version).Suspend()
+// stop is the row of the work hold's stop of role of issue at generation, closed at version at
+// closedAt: the suspend the close writes at once for a released worker, which no message reaches,
+// naming the version that closed the gate and the deadline HoldStopGrace after the close. It is
+// the supervise row of messageStop (record.HoldStop.Suspend).
+func (w holdWords) stop(role claim.Role, generation uint64, version int, closedAt time.Time) record.SuperviseRequest {
+	return w.messageStop(role, generation, version).Suspend(closedAt.UTC().Add(HoldStopGrace), time.Time{})
 }
 
 // messageStop is the same stop as a close message carries it (record.RoleMessage.Stop), for the
@@ -387,7 +388,7 @@ func wantLegionClose(t *testing.T, pool *pgxpool.Pool, version int) {
 	for issue, want := range legionCloseMessages(t, version) {
 		wantMessages(t, pool, issue, want)
 	}
-	wantSupervise(t, pool, "LEGION-209", "suspend", []record.SuperviseRequest{legionHold.stop(claim.RoleTester, 4, version)})
+	wantSupervise(t, pool, "LEGION-209", "suspend", []record.SuperviseRequest{legionHold.stop(claim.RoleTester, 4, version, holdNow)})
 	for _, issue := range []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212"} {
 		wantSupervise(t, pool, issue, "suspend", nil)
 	}
@@ -716,7 +717,7 @@ func TestWorkHoldHoldsAReleasedWorkerUntilTheOpening(t *testing.T) {
 
 	apply("version-4", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
 	wantMessages(t, pool, "LEGION-208", nil)
-	stop := legionHold.stop(claim.RoleImplementer, wakeIssueGeneration, 4)
+	stop := legionHold.stop(claim.RoleImplementer, wakeIssueGeneration, 4, wakeAt)
 	wantSupervise(t, pool, "LEGION-208", "suspend", []record.SuperviseRequest{stop})
 	if starts := wakeStarts(t, pool); len(starts) != 0 {
 		t.Fatalf("the close woke %+v, want the released worker left in its pod's bundle", starts)
@@ -861,7 +862,7 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 			t.Fatalf("the opening starts %s of %s, want nothing: the hold stopped no claim", asJSON(starts), issue)
 		}
 	}
-	wantSupervise(t, rig.pool, "LEGION-209", "suspend", []record.SuperviseRequest{legionHold.stop(claim.RoleTester, 4, 4)})
+	wantSupervise(t, rig.pool, "LEGION-209", "suspend", []record.SuperviseRequest{legionHold.stop(claim.RoleTester, 4, 4, holdNow)})
 	closeMessages := legionCloseMessages(t, 4)
 	opened := func(issue string, role claim.Role) record.RoleMessage {
 		return record.RoleMessage{Role: treeRoleToken(t, issue, role), Body: legionHold.opened(4)}
@@ -1487,7 +1488,7 @@ func TestWorkHoldOpeningStartStandsByOneRule(t *testing.T) {
 		return record.QueuedSupervise{ID: id, Request: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
 			Generation: 4, Phase: at, Task: legionHold.opening(4, 4) + "\n\n" + noPhaseTask, Opening: legionHold.opening(4, 4)}}
 	}
-	stop := record.QueuedSupervise{ID: 7, Request: legionHold.stop(claim.RoleImplementer, 4, 5)}
+	stop := record.QueuedSupervise{ID: 7, Request: legionHold.stop(claim.RoleImplementer, 4, 5, holdNow)}
 	plain := record.QueuedSupervise{ID: 9, Request: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
 		Generation: 4, Phase: phase.Implementing, Task: "Implement LEGION-208."}}
 	for _, tc := range []struct {

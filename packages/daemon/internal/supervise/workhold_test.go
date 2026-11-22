@@ -55,10 +55,11 @@ func directHoldStop(h *harness) RequestSuspend {
 }
 
 // openingStart is the start the opening writes for h's claim, as the outbox hands it to EndHold:
-// the opening's sentences, then the phase task the boot builds.
+// the opening's sentences, then the phase task the boot builds, with the opening's sentences
+// carried apart (RequestDeliver.Opening).
 func openingStart(h *harness) RequestDeliver {
 	return RequestDeliver{Claim: h.token, Task: holdOpening + "\n\n" + resumeTask, ID: "outbox:12", Row: 12,
-		Phase: phase.Implementing, Generation: 1}
+		Phase: phase.Implementing, Generation: 1, Opening: holdOpening}
 }
 
 // inPhaseTurn walks h's claim into the turn of its phase's task, an outbox row's.
@@ -508,7 +509,7 @@ func TestWorkHoldReleaseLeavesAnOperatorsSuspension(t *testing.T) {
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator suspended it"})
 		start := openingStart(h)
 
-		resumed, err := h.m.EndHold(h.ctx, holdOpening, &start)
+		resumed, err := h.m.EndHold(h.ctx, &start)
 
 		if resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want nothing started", resumed, err)
@@ -530,7 +531,7 @@ func TestWorkHoldReleaseLeavesAnOperatorsSuspension(t *testing.T) {
 			t.Fatalf("the operator's suspend answered %v, want it held", err)
 		}
 
-		if resumed, err := h.m.EndHold(h.ctx, holdOpening, nil); resumed || err != nil {
+		if resumed, err := h.m.EndHold(h.ctx, nil); resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want nothing started", resumed, err)
 		}
 		if c := h.claim(); c.SuspensionHeldBy != SuspendedByOperator {
@@ -606,7 +607,7 @@ func TestWorkHoldGivesWayToADaemonSuspension(t *testing.T) {
 		if p := c.Pending; p != nil {
 			t.Fatalf("the daemon's suspension left the claim holding %+v, want its phase task retired with the phase", p)
 		}
-		if resumed, err := h.m.EndHold(h.ctx, holdOpening, nil); resumed || err != nil {
+		if resumed, err := h.m.EndHold(h.ctx, nil); resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want nothing started", resumed, err)
 		}
 	}
@@ -763,7 +764,7 @@ func TestWorkHoldTakesAPauseHeldClaimOver(t *testing.T) {
 		flag.set(7)
 		start := openingStart(h)
 
-		if resumed, err := h.m.EndHold(h.ctx, holdOpening, &start); !resumed || err != nil {
+		if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
 		}
 		h.advance(0)
@@ -891,7 +892,7 @@ func TestWorkHoldStopsAPacedLaunchAtItsReady(t *testing.T) {
 func TestWorkHoldReleaseStartsTheClaimWithItsKeptTask(t *testing.T) {
 	started := func(t *testing.T, h *harness, start RequestDeliver, want string) {
 		t.Helper()
-		resumed, err := h.m.EndHold(h.ctx, holdOpening, &start)
+		resumed, err := h.m.EndHold(h.ctx, &start)
 		if !resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
 		}
@@ -966,7 +967,7 @@ func TestWorkHoldReleaseStartsTheClaimWithItsKeptTask(t *testing.T) {
 			t.Fatalf("the hold's stop answered %v, want it held", err)
 		}
 
-		if resumed, err := h.m.EndHold(h.ctx, holdOpening, nil); resumed || err != nil {
+		if resumed, err := h.m.EndHold(h.ctx, nil); resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want nothing started", resumed, err)
 		}
 
@@ -987,7 +988,7 @@ func TestWorkHoldReleaseStartsTheClaimWithItsKeptTask(t *testing.T) {
 		h.must(RequestDeliver{Claim: h.token, Task: laterTask, ID: "outbox:8", Row: 8, Phase: phase.Implementing, Generation: 1})
 		h.wantPrompts(1)
 
-		if resumed, err := h.m.EndHold(h.ctx, holdOpening, nil); resumed || err != nil {
+		if resumed, err := h.m.EndHold(h.ctx, nil); resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want nothing started", resumed, err)
 		}
 		h.m.Wait()
@@ -1012,7 +1013,7 @@ func TestWorkHoldStopsAndStartsAClaudeCodeWorker(t *testing.T) {
 	h.wantSession()
 	start := openingStart(h)
 
-	if resumed, err := h.m.EndHold(h.ctx, holdOpening, &start); !resumed || err != nil {
+	if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
 		t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
 	}
 
@@ -1046,7 +1047,7 @@ func TestWorkHoldEndRefusesAClaimRecordingASessionItDoesNotHold(t *testing.T) {
 	resumes := len(h.calls("Resume"))
 	start := openingStart(h)
 
-	resumed, err := h.m.EndHold(h.ctx, holdOpening, &start)
+	resumed, err := h.m.EndHold(h.ctx, &start)
 	var refused *RefusedError
 	if resumed || !errors.As(err, &refused) {
 		t.Fatalf("the hold's end of a claim recording %s, which %s holds = %v, %v; want a refusal", session, other, resumed, err)
@@ -1064,7 +1065,7 @@ func TestWorkHoldEndRefusesAClaimRecordingASessionItDoesNotHold(t *testing.T) {
 	h.wantPendingTask(laterTask)
 
 	h.store.setHold(sessionID(session), h.token)
-	if resumed, err := h.m.EndHold(h.ctx, holdOpening, &start); !resumed || err != nil {
+	if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
 		t.Fatalf("the hold's end of a claim holding its session = %v, %v; want the claim started", resumed, err)
 	}
 	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 {

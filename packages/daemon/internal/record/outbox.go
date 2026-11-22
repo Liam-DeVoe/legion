@@ -1247,12 +1247,15 @@ type SuperviseRequest struct {
 	// as it always was. Deadline is when a turn still running is cut
 	// (supervise.RequestSuspend.Deadline), and TurnAfter the moment the close message reached the
 	// claim, which holds the stop of a ready or idle claim for the turn the message starts
-	// (supervise.RequestSuspend.TurnAfter). The workflow writes neither of the two: the stop a
-	// close message carries (RoleMessage.Stop) is posted by the outbox once the message reached its
+	// (supervise.RequestSuspend.TurnAfter). The workflow writes no TurnAfter. The stop a close
+	// message carries (RoleMessage.Stop) is posted by the outbox once the message reached its
 	// claim, which names both from that moment and writes them on the row, so a restart posts the
-	// stop again with the deadline it stored; and the stop of a released worker that is not a
-	// merger, which no message reaches, names neither and stops the claim at once. A TurnAfter with
-	// no Deadline is refused, as supervise refuses it.
+	// stop again with the deadline it stored. The stop the close writes at once for a claim no
+	// message reaches, a released worker that is not a merger or a start under way, names its
+	// Deadline at the close, the hold's grace on (workflow's workHoldClose). A wake or a start may
+	// launch that claim after the close, so a restart or a failed attempt before the claim's ready
+	// still cuts the claim's turn then. A TurnAfter with no Deadline is refused, as supervise
+	// refuses it.
 	//
 	// The release before decodes strictly (DisallowUnknownFields), so the way back of
 	// migrations/20261121000254_work_holds.up.sql deletes the hold's stops and takes the hold's
@@ -1418,14 +1421,16 @@ type RoleMessage struct {
 	// message to a merger whose claim is live, or whose start a lane runs, since that start may have
 	// read the gate open before the close and may launch the merger after it (workflow's
 	// mergersToWake): the outbox wakes nothing of it and waits for the merger's session. Every
-	// other message carries none. A row marked Wake is a close message, and is marked Close too.
+	// other message carries none. A row marked Wake is a close message, and is marked Close too:
+	// the enqueue refuses any other (validateOutboxPayload).
 	Wake bool `json:"wake,omitempty"`
 	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:
 	// work`, workflow's workHoldClose). The outbox posts it once the message reached the claim, as
 	// the suspend the stop builds (HoldStop.Suspend) with a deadline and a turn named from that
 	// moment (SuperviseRequest.Deadline, TurnAfter), and posts nothing where the tree's standing
 	// gate no longer stands closed by then (TreeGate.Standing), so a stop not yet made when the
-	// gate opens again is not made. Every other message carries none. The release before decodes
+	// gate opens again is not made. Every other message carries none, and a message that carries
+	// one is a close message, marked Close (validateOutboxPayload). The release before decodes
 	// strictly, so the way back of migrations/20261121000254_work_holds.up.sql takes this key,
 	// Close and Wake off every role message.
 	Stop *HoldStop `json:"stop,omitempty"`
@@ -1445,13 +1450,16 @@ type HoldStop struct {
 	HoldVersion int        `json:"holdVersion,omitempty"`
 }
 
-// Suspend is the supervise row of the stop: a suspend of the source hold, with no deadline and no
-// turn. The close writes it as it is for a claim no message reaches (workflow's workHoldClose),
-// and the outbox posts it for a close message, with the deadline and the turn it names
+// Suspend is the supervise row of the stop: a suspend of the source hold that cuts a turn still
+// running at deadline, and holds the stop of a ready or idle claim for the turn of a message that
+// reached it at turnAfter (SuperviseRequest.Deadline, TurnAfter). A zero time names neither. The
+// close writes it for a claim no message reaches (workflow's workHoldClose), a released worker
+// or a start under way, with a deadline alone. The outbox posts it for a
+// close message once the message ended, with the deadline and the turn it names then
 // (internal/daemon's postHoldStop).
-func (s HoldStop) Suspend() SuperviseRequest {
+func (s HoldStop) Suspend(deadline, turnAfter time.Time) SuperviseRequest {
 	return SuperviseRequest{Op: "suspend", Tree: s.Tree, Role: s.Role, Generation: s.Generation,
-		SuspendedBy: supervise.SuspendedByHold, Reason: s.Reason, HoldVersion: s.HoldVersion}
+		SuspendedBy: supervise.SuspendedByHold, Reason: s.Reason, Deadline: deadline, TurnAfter: turnAfter, HoldVersion: s.HoldVersion}
 }
 
 // GatedStepsPublish is the design-gate steps the deployment gates, written onto the Dispatch
@@ -2455,11 +2463,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
 		}
+		if (value.Wake || value.Stop != nil) && !value.Close {
+			return fmt.Errorf("a role message marked to wake its role or carrying a stop is a design gate's close message, and is marked close too")
+		}
 		if stop := value.Stop; stop != nil {
 			if stop.Tree == "" || !claim.IsRole(stop.Role) {
 				return fmt.Errorf("a role message's stop is the work hold's stop of a role of a tree; it is %q of %q", stop.Role, stop.Tree)
 			}
-			if err := validateWorkHoldRequest(stop.Suspend()); err != nil {
+			if err := validateWorkHoldRequest(stop.Suspend(time.Time{}, time.Time{})); err != nil {
 				return fmt.Errorf("a role message's stop of the %s of %s: %w", stop.Role, stop.Tree, err)
 			}
 		}

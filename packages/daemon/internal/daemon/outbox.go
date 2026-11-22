@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -2052,28 +2051,35 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		return r.postHoldStop(ctx, row, payload, true)
 	case messageNotReached:
 		return r.postHoldStop(ctx, row, payload, false)
-	default:
+	case messageEnded:
 		return nil
+	default:
+		return fmt.Errorf("the delivery of %s's role message for %s answered no outcome", row.Issue, payload.Role)
 	}
 }
 
 // roleMessageOutcome is how a role message's row ended (deliverRoleMessage), which says what is
 // done with the stop a work hold's close message carries (roleMessage, postHoldStop). A row that
 // waits, or whose attempt failed, ends nothing and has no outcome: deliverRoleMessage answers it
-// an error.
+// messageNoOutcome and an error.
 type roleMessageOutcome int
 
 const (
+	// messageNoOutcome is the zero value: a row that did not end. deliverRoleMessage answers it with
+	// each wait and failure, and roleMessage posts no stop for it: with no error beside it, it is an
+	// error itself, and the row is asked again.
+	messageNoOutcome roleMessageOutcome = iota
 	// messageReached is a row that ended at its claim: the message was published, or met no session
 	// that holds the role, a holder that refuses the delivery mode or a denied forward. A stop it
 	// carries names its deadline from now.
-	messageReached roleMessageOutcome = iota
+	messageReached
 	// messageNotReached is a row that ended before its publish at a claim released since the close,
 	// which the message is not worth a wake to. A stop it carries takes the claim over at once.
 	messageNotReached
 	// messageEnded is a row that ended with no stop: a released merger whose issue can be woken no
-	// more, which is a close's to stop, and a close message that met its tree's gate open again
-	// before its publish (closeOutrun).
+	// more, which is a close's to stop, a merger that runs nothing and that no start can launch
+	// while the gate is closed (closeWaitsForAMerger), and a close message that met its tree's gate
+	// open again before its publish (closeOutrun).
 	messageEnded
 )
 
@@ -2081,7 +2087,7 @@ const (
 // wait or the failure of this attempt as an error.
 func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) (roleMessageOutcome, error) {
 	if r.notices == nil {
-		return 0, errors.New("role message executor has no Envoy publisher")
+		return messageNoOutcome, errors.New("role message executor has no Envoy publisher")
 	}
 	if payload.Close {
 		if outrun, err := r.closeOutrun(ctx, row, payload); err != nil || outrun {
@@ -2096,12 +2102,12 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 		held := r.supervisedClaim(token)
 		var err error
 		if stopped, err = r.heldMessageOwed(ctx, row, held); err != nil {
-			return 0, err
+			return messageNoOutcome, err
 		}
 		switch {
 		case stopped != 0:
 			if turn, parked := parkedLaunch(held); parked {
-				return 0, r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
+				return messageNoOutcome, r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
 					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339)))
 			}
 		case payload.Wake:
@@ -2115,12 +2121,22 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 		}
 	}
 	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrHolderUnresponsive) {
+	if errors.Is(err, notify.ErrHolderUnresponsive) && payload.Stop == nil {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
 		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
 		// executor's own unresponsive branch does (notice_exceptions.go).
-		return 0, wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
+		return messageNoOutcome, wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
 			row.Issue, payload.Role, notify.StateUnresponsive, err)
+	}
+	if errors.Is(err, notify.ErrHolderUnresponsive) {
+		// The listener has not heard from the holder inside its live window, but the session is
+		// not dead and can still be in a turn (notify.ErrHolderUnresponsive). The work hold's stop
+		// the message carries does not wait for that session: the row ends as at a role no session
+		// holds, and its stop names its deadline from now (roleMessage), so a turn still running is
+		// cut then.
+		r.log.Info("outbox role message finished undelivered: its role's holder is unresponsive, and the work hold's stop it carries is posted",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		return messageReached, nil
 	}
 	if stopped != 0 && errors.Is(err, notify.ErrNoHolder) {
 		// A wait as well: the role is coming back for the row, the listener reporting its wake
@@ -2129,14 +2145,14 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 		// (heldMessageOwed) does, so nobody has to act on it, and a return that outlasts the
 		// backoff's climb to its cap, about two minutes, would otherwise be logged as a warning at
 		// every attempt from the seventh (waitWarnAttempts).
-		return 0, routineWaiting{err: wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
+		return messageNoOutcome, routineWaiting{err: wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
 			row.Issue, payload.Role, stopped, err)}
 	}
 	if payload.Wake && errors.Is(err, notify.ErrNoHolder) && r.supervisor != nil && !r.supervisedClaim(token).Gone() {
 		// The merger woken for this message, or launching under `merge`, says it is ready before
 		// its plugin claims the role's topic: a routine wait, as for a row a pause owes its role,
 		// which the merger's session ends.
-		return 0, routineWaiting{err: wait.Errorf("%s's close message for its merger %s waits for the merger's session to hold its topic: %w",
+		return messageNoOutcome, routineWaiting{err: wait.Errorf("%s's close message for its merger %s waits for the merger's session to hold its topic: %w",
 			row.Issue, payload.Role, err)}
 	}
 	var refused notify.ErrRefusedByHolder
@@ -2152,36 +2168,58 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 		r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
 			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
 	case err != nil:
-		return 0, fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
+		return messageNoOutcome, fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
 	}
 	return messageReached, nil
 }
 
-// closeOutrun is whether a design gate's close message (record.RoleMessage.Close) meets its
-// tree's standing gate open again at the head of an attempt, before the attempt wakes a merger or
-// publishes (deliverRoleMessage): the gate of the tree of the row's issue, read in a transaction of
-// its own, no longer stands closed (record.TreeGate.Standing). Then the message is not published,
-// and one line names the row, the issue, the role and the tree. A close of either hold is read the
-// same way: the standing gate is what both holds close on.
+// closeOutrun is whether a design gate's close message (record.RoleMessage.Close) is outrun at the
+// head of an attempt, before the attempt wakes a merger or publishes (deliverRoleMessage). Then the
+// message is not published, and one line names the row, the issue, the role and the tree. A close
+// of either hold is read the same way: the standing gate is what both holds close on.
+//
+//   - The standing gate of its tree (treeGate) no longer stands closed (record.TreeGate.Standing).
+//     The tree is the one its stop names (record.HoldStop.Tree), the tree whose hold the close
+//     was, where it carries one, and otherwise the tree of the row's issue (outbox.issue). An
+//     issue the record does not hold is an error, and the row asks again on its backoff.
+//   - Its stop names a version older than the tree's hold that stands (record.Store.TreeWorkHold):
+//     a newer close told the role already, with a stop of its own.
 func (r *outbox) closeOutrun(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) (bool, error) {
 	var tree string
-	var gate record.TreeGate
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		issue, err := r.records.Issue(ctx, tx, row.Issue)
-		if err != nil || issue == nil {
-			return err
+	if payload.Stop != nil {
+		tree = payload.Stop.Tree
+	} else {
+		issue, err := r.issue(ctx, row.Issue)
+		if err != nil {
+			return false, fmt.Errorf("%s's close message: %w", row.Issue, err)
 		}
 		tree = issue.Tree
-		gate, err = r.treeGateTx(ctx, tx, tree)
-		return err
-	}); err != nil {
-		return false, fmt.Errorf("read the design gate of %s before its close message: %w", row.Issue, err)
 	}
-	if _, closed := gate.Standing(); closed {
+	gate, err := r.treeGate(ctx, tree)
+	if err != nil {
+		return false, fmt.Errorf("%s's close message: %w", row.Issue, err)
+	}
+	if _, closed := gate.Standing(); !closed {
+		r.log.Info("outbox role message finished unpublished: the design gate opened again before its close message was published",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "tree", tree)
+		return true, nil
+	}
+	if payload.Stop == nil {
 		return false, nil
 	}
-	r.log.Info("outbox role message finished unpublished: the design gate opened again before its close message was published",
-		"row", row.ID, "issue", row.Issue, "role", payload.Role, "tree", tree)
+	var hold *record.WorkHold
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		hold, err = r.records.TreeWorkHold(ctx, tx, tree)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read the work hold of %s before %s's close message: %w", tree, row.Issue, err)
+	}
+	if hold == nil || !hold.Standing() || hold.Version <= payload.Stop.HoldVersion {
+		return false, nil
+	}
+	r.log.Info("outbox role message finished unpublished: a newer close of the design gate told the role already",
+		"row", row.ID, "issue", row.Issue, "role", payload.Role, "tree", tree, "version", payload.Stop.HoldVersion, "standing", hold.Version)
 	return true, nil
 }
 
@@ -2192,16 +2230,15 @@ func (r *outbox) closeOutrun(ctx context.Context, row record.OutboxRow, payload 
 // backoff; a woken launch the wake pacing parked over no process is waited for until its turn
 // (parkedWait). A released claim whose issue can be woken no more — it left the workflow, or its
 // tree lingers — is told nothing, and the row ends with no stop (messageEnded): that claim is a
-// close's to stop. A claim this daemon does not hold goes on to the publish only while one may
-// still come (closeWaitsForAMerger), and otherwise the row ends with no stop. A claim not
+// close's to stop. A merger that runs nothing and is not released has no session a publish can
+// reach: this daemon holds no claim of it, or its claim is one the daemon or an operator
+// suspended, a failed or a retired one (supervise.Claim.Gone). The row waits for it while a start
+// may still launch it, and otherwise ends with no stop (closeWaitsForAMerger). A claim not
 // released, launching or ready, goes on to the publish.
 func (r *outbox) wakeForTheClose(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (bool, error) {
-	if held.State == "" {
-		waits, err := r.closeWaitsForAMerger(ctx, row, payload)
-		return !waits || err != nil, err
-	}
 	var turn time.Time
-	if held.Released() {
+	switch {
+	case held.Released():
 		waits, woken, err := r.wakeReleasedFor(ctx, claim.Token(payload.Role), "the design gate's close message for "+row.Issue, row.HeldByPause, true)
 		switch {
 		case err != nil:
@@ -2215,7 +2252,13 @@ func (r *outbox) wakeForTheClose(ctx context.Context, row record.OutboxRow, payl
 				"row", row.ID, "issue", row.Issue, "role", payload.Role)
 			return true, nil
 		}
-	} else {
+	case held.State == "" || held.Gone():
+		waits, err := r.closeWaitsForAMerger(ctx, row, payload, held)
+		if err == nil && waits {
+			err = routineWaiting{err: wait.Errorf("%s's close message waits for a start of its merger %s to launch the merger", row.Issue, payload.Role)}
+		}
+		return true, err
+	default:
 		parkedTurn, parked := parkedLaunch(held)
 		if !parked {
 			return false, nil
@@ -2227,49 +2270,45 @@ func (r *outbox) wakeForTheClose(ctx context.Context, row record.OutboxRow, payl
 }
 
 // closeWaitsForAMerger is whether a close message marked to wait for its merger's session
-// (record.RoleMessage.Wake), whose merger this daemon holds no claim of, may still meet one. The
-// close marks the message to a merger whose start a lane runs (workflow's mergersToWake), before
-// that start creates the claim. The issue, its tree root and the role's queued rows and claim are
-// read in one transaction. The outbox writes a claim before it deletes the start row, so the read
-// finds the start or the claim. The row waits while the record holds a claim of the role, or while
-// a start of it is under way (workflow.StartUnderWay) and its issue can be woken
-// (pods.InWorkflowNotLingering, as wakeableIssue reads it). Otherwise no start creates the claim
-// while the gate stays closed, so the row ends with one log line and no stop.
-func (r *outbox) closeWaitsForAMerger(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) (bool, error) {
+// (record.RoleMessage.Wake) still waits, where held, this daemon's view of the merger's claim,
+// runs nothing and is not released: no claim, or one the daemon or an operator suspended, a
+// failed or a retired one. The close marks the message to a merger whose start a lane runs
+// (workflow's mergersToWake), and that start may create, resume or retry the claim after the
+// close. The issue and its tree root are read as a wake reads them (wakeableIssue), and then the
+// role's queued rows and claim in one transaction. The outbox writes a claim before it deletes
+// the start row, so that read finds the start or the claim. The row waits while the issue can be
+// woken and a lane runs a start of the merger (workflow.StartUnderWay's running), or while the
+// record holds a claim of the merger that is not gone (supervise.IsGone), which a start launched
+// after held was read. A start that is only queued does not keep the row waiting: it reads the
+// closed gate at its next attempt and waits at the fence through the hold, as mergersToWake reads
+// it. Otherwise no start launches the merger while the gate stays closed, so the row ends with one
+// log line and no stop.
+func (r *outbox) closeWaitsForAMerger(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (bool, error) {
 	token := claim.Token(payload.Role)
 	role, ok := token.Role()
 	if !ok {
 		return false, fmt.Errorf("%s's close message names no role a token can carry: %s", row.Issue, payload.Role)
 	}
-	waits := false
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		issue, err := r.records.Issue(ctx, tx, row.Issue)
-		if err != nil {
-			return err
-		}
-		if issue == nil {
-			return fmt.Errorf("the issue %s is not recorded", row.Issue)
-		}
-		root, err := r.records.Issue(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-			return nil
-		}
-		run, err := r.records.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-		if err != nil {
-			return err
-		}
-		underWay, _ := workflow.StartUnderWay(run, *root)
-		waits = run.Claim != nil || underWay
-		return nil
-	}); err != nil {
+	issue, root, wakeable, err := r.wakeableIssue(ctx, row.Issue)
+	if err != nil {
 		return false, fmt.Errorf("read the merger %s of %s's close message: %w", payload.Role, row.Issue, err)
 	}
+	waits := false
+	if wakeable {
+		var run record.RoleRun
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			var err error
+			run, err = r.records.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+			return err
+		}); err != nil {
+			return false, fmt.Errorf("read the merger %s of %s's close message: %w", payload.Role, row.Issue, err)
+		}
+		_, running := workflow.StartUnderWay(run, root)
+		waits = running || (run.Claim != nil && !supervise.IsGone(run.Claim.State))
+	}
 	if !waits {
-		r.log.Info("outbox role message finished undelivered: its merger has no claim, and no start of it can create one while the gate is closed",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		r.log.Info("outbox role message finished undelivered: its merger runs nothing, and no start of it can launch it while the gate is closed",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "state", held.State)
 	}
 	return waits, nil
 }
@@ -2309,7 +2348,7 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 		return 0, err
 	}
 	if view.Released() {
-		if _, wakeable, err := r.wakeableIssue(ctx, view.Issue); err != nil || !wakeable {
+		if _, _, wakeable, err := r.wakeableIssue(ctx, view.Issue); err != nil || !wakeable {
 			return 0, err
 		}
 	}
@@ -2741,23 +2780,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		gate, err := r.startWaitsForTheHold(ctx, issue, payload.Role, payload.CheckLook)
-		if err != nil {
+		if err := r.startWaitsForTheHold(ctx, issue, payload.Role, payload.CheckLook); err != nil {
 			return err
 		}
-		// A start of the work hold's opening (record.SuperviseRequest.Opening) is the hold's end of a
-		// claim the hold stopped, and its task is that claim's one task (startOfAHeldClaim). Where the
-		// claim is not held by the hold, or this daemon holds no claim, another start ended the hold
-		// already, one that carried the opening's sentences, or an operator's resume, or another
-		// source took the claim over: its task would be a second task, so the row finishes without
-		// acting.
-		if payload.Opening != "" && (!found || !machine.Claim().WorkHeld()) {
-			var held supervise.Claim
-			if found {
-				held = machine.Claim()
-			}
-			r.log.Info("outbox start of the work hold's opening meets a claim the hold no longer holds; finished without acting",
-				"row", row.ID, "issue", issue.Key, "role", payload.Role, "found", found, "state", held.State, "suspendedBy", held.SuspendedBy)
+		// A start of the work hold's opening that meets no claim the hold holds would give a second
+		// task, so the row finishes without acting (openingStartFindsNoHold).
+		if r.openingStartFindsNoHold(row, payload, issue, machine, found) {
 			return nil
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -2846,10 +2874,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A claim the work hold holds (supervise.Claim.WorkHeld) — stopped by it, or with its stop
 		// held for the agent's turn — waits while its tree holds work, and once the tree no longer
-		// does the hold ends before this start goes on as an ordinary start (startOfAHeldClaim),
-		// which reads the gate the fence above read.
+		// does the hold ends before this start goes on as an ordinary start (startOfAHeldClaim).
 		if found && machine.Claim().WorkHeld() {
-			if done, err := r.startOfAHeldClaim(ctx, row, payload, issue, machine, task, gate); done || err != nil {
+			if done, err := r.startOfAHeldClaim(ctx, row, payload, issue, machine, task); done || err != nil {
 				return err
 			}
 		}
@@ -4016,7 +4043,7 @@ func (r *outbox) holdIsWork() bool { return r.hold == config.HoldWork }
 // configured order). A tree with no row for a step — nothing registered one, or the project's
 // design gate is off, which registers it approved — holds nothing on that step: nobody can be
 // waiting on a document the record does not know. It is the one predicate every fence of the
-// hold reads (startWaitsForTheHold, startOfAHeldClaim, holdStop, deliverHeld, wakeReleasedFor,
+// hold reads (startWaitsForTheHold, holdStop, deliverHeld, wakeReleasedFor,
 // closeOutrun), read just before the row acts, as every other fence of a row is, in a transaction
 // of its own; a row that writes what the gate decides reads it in its own transaction instead
 // (treeGateTx).
@@ -4033,7 +4060,7 @@ func (r *outbox) treeGate(ctx context.Context, tree string) (record.TreeGate, er
 }
 
 // treeGateTx is treeGate read through tx, for a row that writes in the same transaction what the
-// gate decides (postHoldStop), or that reads the tree in the same transaction (closeOutrun).
+// gate decides (postHoldStop).
 func (r *outbox) treeGateTx(ctx context.Context, tx pgx.Tx, tree string) (record.TreeGate, error) {
 	gates, err := r.records.GatesOf(ctx, tx, tree)
 	return record.TreeGate{Steps: r.gatedSteps, Rows: gates}, err
@@ -4056,47 +4083,66 @@ func (r *outbox) treeGateTx(ctx context.Context, tx pgx.Tx, tree string) (record
 // its wake for the close message, which is no start row (roleMessage, wakeForTheClose). The gate's
 // opening releases the row's next try, within the outbox's backoff (64 seconds at most), and
 // tells every phase worker of the tree and the root's architect as well (workflow's tellGateMoved).
-//
-// gate is the gate it read, nil where the role is none it holds, so a start that goes on asks
-// the same read again in the same attempt rather than reading the gate twice (startOfAHeldClaim).
-func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, role claim.Role, checkLook int) (*record.TreeGate, error) {
+func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, role claim.Role, checkLook int) error {
 	work := r.holdIsWork() && checkLook == 0
 	if !claim.IsPhaseWorker(role) || (role != claim.RoleMerger && !work) {
-		return nil, nil
+		return nil
 	}
 	gate, err := r.treeGate(ctx, issue.Tree)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	closed, stands := gate.Standing()
 	if stands && work {
-		return &gate, routineWaiting{err: wait.Errorf("the %s of %s waits for the work hold of its tree to end: version %d of the %s document (%s) of %s closed the design gate",
+		return routineWaiting{err: wait.Errorf("the %s of %s waits for the work hold of its tree to end: version %d of the %s document (%s) of %s closed the design gate",
 			role, issue.Key, closed.LatestVersion, closed.Step.OrSpec(), closed.ArtifactID, issue.Tree)}
 	}
 	if stands {
-		return &gate, wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+		return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
 	}
-	return &gate, nil
+	return nil
+}
+
+// openingStartFindsNoHold is whether a start of the work hold's opening
+// (record.SuperviseRequest.Opening) finishes without acting, past the fence
+// (startWaitsForTheHold) and before the start creates or re-points the claim. Such a start is the
+// hold's end of a claim the hold stopped, and its task is that claim's one task
+// (startOfAHeldClaim). Where this daemon holds no claim of the role (found is false), or the hold
+// no longer holds the claim (supervise.Claim.WorkHeld), another start ended the hold already, one
+// that carried the opening's sentences, or an operator's resume, or another source took the claim
+// over. The start's task would be a second task, so one line names the row, the issue, the role
+// and the claim, and the row finishes. Any other start goes on.
+func (r *outbox) openingStartFindsNoHold(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
+	machine *supervise.Machine, found bool) bool {
+	if payload.Opening == "" {
+		return false
+	}
+	var held supervise.Claim
+	if found {
+		held = machine.Claim()
+	}
+	if held.WorkHeld() {
+		return false
+	}
+	r.log.Info("outbox start of the work hold's opening meets a claim the hold no longer holds; finished without acting",
+		"row", row.ID, "issue", issue.Key, "role", payload.Role, "found", found, "state", held.State, "suspendedBy", held.SuspendedBy)
+	return true
 }
 
 // startOfAHeldClaim is a start that reached a claim the work hold holds (supervise.Claim.WorkHeld),
-// past the fence (startWaitsForTheHold, whose read of the gate in this attempt is gate, nil where
-// it read none), and answers whether the row is done without going on.
-//
-// Under `work`, while the claim's tree's standing gate stands closed (record.TreeGate.Standing)
-// the start waits: no start row lifts the hold. Under `merge` the hold holds no running work, and
-// the gate is not read. Once the tree's work is no longer held — the opening, a newer generation
-// of the tree whose gate rows are new, a deployment that moved to `merge` — the start reads the
-// role's queued rows, the tree root and the tree's record of its hold in one transaction
-// (heldStartRead), and then:
+// past the fence (startWaitsForTheHold), and answers whether the row is done without going on. It
+// reads the role's queued rows, the tree root and the tree's record of its hold in one
+// transaction (heldStartRead), and then:
 //
 //   - A start that a queued start of the hold's opening stands over gives way to it, the role's
 //     one task (workflow.OpeningStartStands, the rule the opening reads too): it finishes without
 //     acting, so the role is not started first without the opening's sentences and given the
 //     opening's task second. A start of the opening gives way only to a newer one, and an opening
 //     start that carries no phase work stands over no start that carries it.
-//   - A record that shows a hold that stands means the gate closed again after the read above: the
-//     start waits, as it waits on the gate.
+//   - A record that shows a hold that stands means the tree holds work: the start waits, as it
+//     waits at the fence, and no start row lifts the hold. The record says so, and no read of the
+//     gate: the close writes it and the opening deletes it (workflow's workHoldClose,
+//     tellAndEndWorkHold), and the boot ends it where the deployment moved to `merge`.
 //   - Any other start ends the hold for the claim (supervise.Machine.EndHold) and goes on as an
 //     ordinary start. EndHold drops a stop not yet made, and starts a claim the hold stopped with
 //     one task: the start's own work behind the opening's sentences, or the task the claim kept
@@ -4112,20 +4158,7 @@ func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, r
 //     dropped a stop not yet made, so the claim runs — the start goes on with its task as the row
 //     carries it.
 func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
-	machine *supervise.Machine, task *supervise.RequestDeliver, gate *record.TreeGate) (bool, error) {
-	if r.holdIsWork() {
-		if gate == nil {
-			read, err := r.treeGate(ctx, issue.Tree)
-			if err != nil {
-				return false, err
-			}
-			gate = &read
-		}
-		if closed, holds := gate.Standing(); holds {
-			return false, routineWaiting{err: wait.Errorf("start %s of %s waits for the work hold of its tree to end: version %d of the %s document (%s) of %s closed the design gate",
-				payload.Role, issue.Key, closed.LatestVersion, closed.Step.OrSpec(), closed.ArtifactID, issue.Tree)}
-		}
-	}
+	machine *supervise.Machine, task *supervise.RequestDeliver) (bool, error) {
 	token := machine.Claim().Token
 	read, err := r.heldStartRead(ctx, payload, issue, token)
 	if err != nil {
@@ -4152,7 +4185,7 @@ func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, pa
 		opened.Task, opened.Opening = supervise.OpeningTask(opening, work), opening
 		one = &opened
 	}
-	started, err := machine.EndHold(ctx, opening, one)
+	started, err := machine.EndHold(ctx, one)
 	if err != nil {
 		return false, fmt.Errorf("end the work hold of claim %s: %w", token, err)
 	}
@@ -4227,6 +4260,10 @@ func (r *outbox) heldStartRead(ctx context.Context, payload record.SuperviseRequ
 //     restart, which forgets a held stop, posts the same stored deadline again.
 //   - A claim with no process, or a released worker the stop takes over, is stopped at once, and
 //     the row finishes.
+//   - A queued claim, which a start created and did not launch, runs nothing, and the row
+//     finishes: that start reads the hold's fence again. A claim whose launch is uncertain after
+//     a restart is waited for as a pause's stop waits for it (pauseStopWait), so the stop meets
+//     its relaunch launching and holds it until the agent's ready.
 //   - A claim that another source holds, an operator's or the daemon's suspension, which outranks
 //     the hold's, is not stopped by the hold, and the row finishes.
 //
@@ -4249,15 +4286,23 @@ func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload rec
 	}
 	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByHold,
 		Deadline: payload.Deadline, TurnAfter: payload.TurnAfter, HoldVersion: payload.HoldVersion})
-	if errors.Is(err, supervise.ErrWorkHoldEnded) {
+	var refused *supervise.RefusedError
+	switch {
+	case errors.Is(err, supervise.ErrWorkHoldEnded):
 		if machine.Claim().WorkHeld() {
 			r.logHoldStopMadeAfterTheOpening(row, payload, issue)
 		} else {
 			r.logHoldStopUnmade(row, payload, issue)
 		}
 		return nil
-	}
-	if err != nil {
+	case errors.As(err, &refused) && refused.State == supervise.StateQueued:
+		r.log.Info("outbox: the work hold's stop meets a queued claim, which runs nothing; its start reads the hold's fence again; finished without acting",
+			"row", row.ID, "issue", issue.Key, "role", payload.Role, "version", payload.HoldVersion)
+		return nil
+	case errors.As(err, &refused) && refused.State == supervise.StateLaunchUncertain:
+		return wait.Until(r.now().UTC().Add(pauseStopWait),
+			fmt.Sprintf("the work hold's stop of %s waits for the relaunch of its uncertain launch, which it holds until the agent's ready", token))
+	case err != nil:
 		return fmt.Errorf("stop claim %s for the work hold: %w", token, err)
 	}
 	r.takeOverRelease(ctx, row.Issue, payload.Role)
@@ -4345,30 +4390,34 @@ func (r *outbox) postHoldStop(ctx context.Context, row record.OutboxRow, payload
 	if payload.Stop == nil {
 		return nil
 	}
-	stop := payload.Stop.Suspend()
+	var deadline, turn time.Time
 	if reached {
-		at := r.now().UTC()
-		stop.TurnAfter, stop.Deadline = at, at.Add(workflow.HoldStopGrace)
+		turn = r.now().UTC()
+		deadline = turn.Add(workflow.HoldStopGrace)
+	}
+	stop := payload.Stop.Suspend(deadline, turn)
+	if !r.holdIsWork() {
+		r.log.Info("outbox: the deployment's hold is no longer `work`, which holds no running work; the work hold's stop is not made",
+			"row", row.ID, "issue", row.Issue, "role", stop.Role)
+		return nil
 	}
 	queued := false
-	if r.holdIsWork() {
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			gate, err := r.treeGateTx(ctx, tx, stop.Tree)
-			if err != nil {
-				return err
-			}
-			if _, holds := gate.Standing(); !holds {
-				return nil
-			}
-			next, err := record.NewOutboxRow(row.Issue, stop, r.now().UTC())
-			if err != nil {
-				return err
-			}
-			queued = true
-			return r.records.Enqueue(ctx, tx, next)
-		}); err != nil {
-			return fmt.Errorf("queue the work hold's stop of %s's %s: %w", row.Issue, stop.Role, err)
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		gate, err := r.treeGateTx(ctx, tx, stop.Tree)
+		if err != nil {
+			return err
 		}
+		if _, holds := gate.Standing(); !holds {
+			return nil
+		}
+		next, err := record.NewOutboxRow(row.Issue, stop, r.now().UTC())
+		if err != nil {
+			return err
+		}
+		queued = true
+		return r.records.Enqueue(ctx, tx, next)
+	}); err != nil {
+		return fmt.Errorf("queue the work hold's stop of %s's %s: %w", row.Issue, stop.Role, err)
 	}
 	if !queued {
 		r.log.Info("outbox: the design gate opened again before the work hold's stop was queued; the stop is not made",

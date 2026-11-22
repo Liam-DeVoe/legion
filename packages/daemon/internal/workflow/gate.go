@@ -1139,17 +1139,18 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 //     before this close, or reads it now, and which may launch the merger with its task after it.
 //
 // The row waits while the claim is not gone, and the merger reads the close once its session
-// holds its topic. A merger with no claim yet is waited for only while a start of it is under way
-// (StartUnderWay) and its issue can be woken: a start that ends without the claim, because its
-// issue left the workflow or its tree lingers, ends the row (internal/daemon's
-// closeWaitsForAMerger). A merger whose start is only queued is not waited for: that start reads
-// the closed gate at its next attempt and waits at the fence through the whole hold, so it
-// launches nothing, and a message that waited for it would hold the issue's pod from its idle
-// release until the gate opens. Once the start passes the fence after the opening, the merger
-// takes its task as any start gives it. A merger an operator or the daemon suspended, or a failed
-// or retired one, with no start running, is not woken and is not waited for. root is the tree
-// root, which StopActs reads for a tree close, and members are the tree's members, whose
-// generations key the reads.
+// holds its topic. A merger with no claim yet, or whose claim runs nothing and is not released (an
+// operator or the daemon suspended it, or it failed or retired), is waited for only while a start
+// of it is under way (StartUnderWay) and its issue can be woken: that start creates, resumes or
+// retries the claim, and a start that ends without a running claim, because its issue left the
+// workflow or its tree lingers, ends the row (internal/daemon's closeWaitsForAMerger). A merger
+// whose start is only queued is not waited for: that start reads the closed gate at its next
+// attempt and waits at the fence through the whole hold, so it launches nothing, and a message
+// that waited for it would hold the issue's pod from its idle release until the gate opens. Once
+// the start passes the fence after the opening, the merger takes its task as any start gives it.
+// A merger an operator or the daemon suspended, or a failed or retired one, with no start running,
+// is not woken and is not waited for. root is the tree root, which StopActs reads for a tree
+// close, and members are the tree's members, whose generations key the reads.
 func (e *Engine) mergersToWake(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue,
 	told []addressedRole) (map[claim.Token]bool, error) {
 	generations := make(map[string]uint64, len(members))

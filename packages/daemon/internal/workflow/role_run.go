@@ -169,8 +169,9 @@ func OpeningStartStands(run record.RoleRun, root record.Issue, current phase.Pha
 // close stops the claim of any start under way, since a stop that finds no launch makes nothing
 // (workHoldClose). The merge hold's close waits for the session of a merger whose start runs
 // alone (tellGateMoved's mergersToWake), since a message that waits holds the issue's pod. The
-// outbox reads it too, for such a close message whose merger has no claim yet: the message waits
-// only while a start of the merger is under way (internal/daemon's closeWaitsForAMerger).
+// outbox reads it too, for such a close message whose merger has no claim yet, or a claim that
+// runs nothing and is not released: the message waits only while a start of the merger is under
+// way (internal/daemon's closeWaitsForAMerger).
 func StartUnderWay(run record.RoleRun, root record.Issue) (underWay, running bool) {
 	stop := actingStop(run, root)
 	for _, queued := range run.Queued {

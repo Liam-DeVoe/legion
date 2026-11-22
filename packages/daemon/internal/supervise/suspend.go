@@ -78,7 +78,8 @@ func (m *Machine) awaitsTurn(request RequestSuspend) bool {
 //     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
 //     the same hold, under one rule: a request can only move the deadline earlier, and the
 //     operator's also takes the hold over, from then on the operator's. The work hold's stop
-//     names its own deadline, 2 minutes after its close message reached the claim. It takes over
+//     names its own deadline, 2 minutes after its close message reached the claim, or 2 minutes
+//     after the close for a stop the close writes at once, which no message reaches. It takes over
 //     a held release's — the idle release's or a pause's, whose pause it drops, as the operator's
 //     does — and the daemon's takes the hold's over. Until the deadline the agent keeps its
 //     process and its capability.

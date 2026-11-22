@@ -8,8 +8,8 @@ body: |-
   every running phase goes on. `work` also holds the tree's running work. No phase of the tree
   starts, and each phase worker of the tree is told to end its turn and is stopped, with its session
   kept, when its turn ends or 2 minutes after the message reached it. A start that read the gate
-  open just before the close is stopped at its agent's ready, before the agent takes a task. The
-  architects go on. The stop
+  open just before the close is stopped at its agent's ready, before the agent takes a task, or 2
+  minutes after the close at the latest. The architects go on. The stop
   is a suspension source of its own, `hold`: no rule starts the claim, the daemon keeps its pod, and
   `legion claims list` shows it as `suspended:hold`. A pod update round passes over such a claim as
   it passes over a role the daemon suspended: it does not ask it or wait for it. Where a role

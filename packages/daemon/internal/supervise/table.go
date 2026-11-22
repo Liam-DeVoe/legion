@@ -424,9 +424,10 @@ type RequestReady struct {
 // suspension must name. For a daemon suspension or the work hold's (SuspendedByHold), Deadline,
 // when set, stops a hold at that moment when its turn has not ended (holdSuspension); without
 // one, the hold waits for the turn's end. The work hold sets one 2 minutes after its close message
-// reached the claim, a time stored in the outbox row that posts the stop, so the row posted again
-// after a restart names the same moment. An operator suspension always uses the stop timeout from
-// its arrival, whatever Deadline says.
+// reached the claim, or 2 minutes after the close for a stop the close writes at once, which no
+// message reaches. That time is stored in the outbox row that posts the stop, so the row posted
+// again after a restart names the same moment. An operator suspension always uses the stop timeout
+// from its arrival, whatever Deadline says.
 //
 // TurnAfter, when set, is when the message that asks the agent to end its turn reached the claim
 // (the work hold's close message), and it makes the stop of a claim with no turn and no launch in
