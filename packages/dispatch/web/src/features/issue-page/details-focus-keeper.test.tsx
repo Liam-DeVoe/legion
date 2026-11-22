@@ -650,16 +650,10 @@ test("a Retry whose read failed again is answered: a read that answers on its ow
   }
 });
 
-/** What the history's three turns draw: `drawing` keys the middle one, so a new drawing remounts
- *  it as new elements under the same `data-history-entry`, and `pin` draws that turn's Pin. */
-interface TurnsDrawn {
-  readonly drawing: number;
-  readonly pin: boolean;
-}
-
-/** Three turns of the history, each with Reply and Pin, but the middle one's Pin only while `pin`
- *  holds. */
-function turns({ drawing, pin }: TurnsDrawn): ReactNode {
+/** The history's three turns, each with its Reply and then what `pinOf` draws for it: `drawing`
+ *  keys the middle turn, so a new drawing remounts it as new elements under the same
+ *  `data-history-entry`. */
+function historyTurns(drawing: number, pinOf: (turn: number) => ReactNode): ReactNode {
   return (
     <ol data-height={180} data-top={60}>
       {[0, 1, 2].map((turn) => (
@@ -672,14 +666,34 @@ function turns({ drawing, pin }: TurnsDrawn): ReactNode {
           <button data-top={70 + turn * 60} type="button">
             Reply
           </button>
-          {turn === 1 && !pin ? null : (
-            <button data-top={94 + turn * 60} type="button">
-              Pin
-            </button>
-          )}
+          {pinOf(turn)}
         </li>
       ))}
     </ol>
+  );
+}
+
+/** The middle turn's control named Pin. */
+function middlePin(): HTMLElement {
+  return within(screen.getAllByRole("listitem")[1]).getByRole("button", { name: "Pin" });
+}
+
+/** What `turns` draws of the history's three turns: `drawing` keys the middle one
+ *  (`historyTurns`), and `pin` draws that turn's Pin. */
+interface TurnsDrawn {
+  readonly drawing: number;
+  readonly pin: boolean;
+}
+
+/** Three turns of the history, each with Reply and Pin, but the middle one's Pin only while `pin`
+ *  holds. */
+function turns({ drawing, pin }: TurnsDrawn): ReactNode {
+  return historyTurns(drawing, (turn) =>
+    turn === 1 && !pin ? null : (
+      <button data-top={94 + turn * 60} type="button">
+        Pin
+      </button>
+    )
   );
 }
 
@@ -688,10 +702,7 @@ function turns({ drawing, pin }: TurnsDrawn): ReactNode {
 async function entryRemounted(active: boolean, press: Press): Promise<readonly string[]> {
   const box = drawBox<TurnsDrawn>(active, { drawing: 0, pin: true }, turns);
   try {
-    await take(
-      within(screen.getAllByRole("listitem")[1]).getByRole("button", { name: "Pin" }),
-      press
-    );
+    await take(middlePin(), press);
     await box.change({ drawing: 1, pin: true });
     const remounted = focusName();
     await box.change({ drawing: 1, pin: false });
@@ -722,8 +733,8 @@ test("an entry remounted under a new key gives the same control in the new entry
   }
 });
 
-/** How the history's three turns stand in `pinTurns`: `drawing` keys the middle one, as in
- *  `turns`, and `pinned` says whether that turn is pinned. */
+/** How the history's three turns stand in `pinTurns`: `drawing` keys the middle one
+ *  (`historyTurns`), and `pinned` says whether that turn is pinned. */
 interface PinTurnsDrawn {
   readonly drawing: number;
   readonly pinned: boolean;
@@ -734,38 +745,25 @@ interface PinTurnsDrawn {
  *  Unpin while the turn is pinned. It shows no busy state, so the reader's press of it is answered
  *  two frames later (`watchPresses`). */
 function pinTurns(state: PinTurnsDrawn, set: (state: PinTurnsDrawn) => void): ReactNode {
-  return (
-    <ol data-height={180} data-top={60}>
-      {[0, 1, 2].map((turn) => (
-        <li
-          data-height={60}
-          data-history-entry={`turn:${turn}`}
-          data-top={60 + turn * 60}
-          key={turn === 1 ? `turn-1-${state.drawing}` : `turn-${turn}`}
-        >
-          <button data-top={70 + turn * 60} type="button">
-            Reply
-          </button>
-          <button
-            aria-label={turn === 1 && state.pinned ? "Unpin" : "Pin"}
-            data-top={94 + turn * 60}
-            onClick={turn === 1 ? () => set({ ...state, pinned: !state.pinned }) : undefined}
-            type="button"
-          />
-        </li>
-      ))}
-    </ol>
-  );
+  return historyTurns(state.drawing, (turn) => (
+    <button
+      aria-label={turn === 1 && state.pinned ? "Unpin" : "Pin"}
+      data-top={94 + turn * 60}
+      onClick={turn === 1 ? () => set({ ...state, pinned: !state.pinned }) : undefined}
+      type="button"
+    />
+  ));
 }
 
 /** The middle turn's Pin in `pinTurns`, given the focus, is relabelled Unpin in place: by the
  *  reader's Enter on it where `press` is "key", by another session's change where it is "none".
- *  Three frames later, by when a press of the reader's is answered, its entry is drawn anew under
- *  a new key: where the focus is then. */
+ *  The reader's press is answered two frames after it, as in `pinTurns`, and the Pin's entry is
+ *  drawn anew under a new key a frame after that, once the press stands answered: where the focus
+ *  is then. */
 async function pinRelabelledThenRemounted(press: "key" | "none"): Promise<string> {
   const box = drawBox<PinTurnsDrawn>(true, { drawing: 0, pinned: false }, pinTurns);
   try {
-    const pin = within(screen.getAllByRole("listitem")[1]).getByRole("button", { name: "Pin" });
+    const pin = middlePin();
     await take(pin, press);
     if (press === "none") await box.change({ drawing: 0, pinned: true });
     expect(pin, "the Pin was not relabelled Unpin in place").toHaveAttribute("aria-label", "Unpin");

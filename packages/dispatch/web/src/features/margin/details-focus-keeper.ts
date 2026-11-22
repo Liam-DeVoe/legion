@@ -97,11 +97,10 @@ type Loss = "disabled" | "hidden" | "removed";
  * forgets them once the focus moves to another control. A loss while no press stands - a live
  * update, another session's change that takes a row away, a read that answers on its own, a
  * control or a popover gone - leaves the focus on the page's body, where the page's keys work, and
- * the keeper moves nothing and scrolls nothing. A control drawn in the same change with the
- * identity the lost one had as it went (`ControlIdentity`), as when React draws an entry anew
- * under a new key, is the same control and no loss, even where it was renamed since it took the
- * focus, as a Pin that the reader's press or a live change relabelled Unpin is: it is given the
- * focus back whether or not the reader pressed it, and it keeps their press.
+ * the keeper moves nothing and scrolls nothing. A control drawn in the same change with the lost
+ * one's identity (`ControlIdentity`), as when React draws an entry anew under a new key, is the
+ * same control and no loss: it is given the focus back whether or not the reader pressed it, and
+ * it keeps their press.
  *
  * Where a press stands, the focus goes, in this order: to that control drawn anew; else to the
  * control nearest to where the lost one stood, among those that stay enabled, drawn and in sight
@@ -268,10 +267,10 @@ function busy(control: Element): boolean {
 
 /** Keeps the focus inside `root` (`useDetailsFocusKeeper`) until the returned function is called. */
 function keepFocusIn(root: HTMLElement): () => void {
-  // The watch of the reader's presses on the control inside the box that holds the focus, which
-  // names that control, with the history entry the control stood in when it last took the focus,
-  // which a control removed from its entry no longer finds around it (`identityOf`): its loss
-  // while a press stands is theirs, and the keeper hands the focus on.
+  // The control inside the box that holds the focus: the watch of the reader's presses on it,
+  // which names it, and the history entry it stood in when it last took the focus
+  // (`ControlIdentity`), which a removed control no longer finds around it (`entryOf`). Its loss
+  // while a press stands is the reader's, and the keeper hands the focus on.
   let held: { readonly entry: string | null; readonly press: PressWatch<HTMLElement> } | null =
     null;
   // The move the keeper makes a task after the held control was lost: every record heard since,
@@ -459,8 +458,7 @@ function removalOf(control: Node, records: readonly MutationRecord[]): MutationR
 }
 
 /** The identity of `control` (`ControlIdentity`) in the history entry `entry`: its own `id`, tag,
- *  role and name as they stand now. A removed control keeps the attributes and the text it had as
- *  it went, so the lost control's identity is the one it had as it was lost. */
+ *  role and name as they stand now. */
 function identityOf(control: HTMLElement, entry: string | null): ControlIdentity {
   return JSON.stringify([
     entry,
