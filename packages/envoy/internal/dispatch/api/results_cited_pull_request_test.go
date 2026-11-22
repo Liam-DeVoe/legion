@@ -33,16 +33,6 @@ const (
 	citedPRSHA  = "5353535353535353535353535353535353535353"
 )
 
-// citedAnswer is the results read, with the one member these cases read.
-type citedAnswer struct {
-	Checks []struct {
-		BlockID      string `json:"block_id"`
-		ComparedWith []struct {
-			Commit string `json:"commit"`
-		} `json:"compared_with"`
-	} `json:"checks"`
-}
-
 // citedWorld is a Dispatch whose GitHub names, for each head commit, one pull request of
 // acme/widgets: the issue's own #51 (branch legion/<issue>, base main, body ownBody), #52 stacked
 // on its branch (legion/<issue>-snippet-sentinels), and the other issue's #53 (legion/<other>).
@@ -114,16 +104,9 @@ func (w citedWorld) pass(key, commit string) {
 // comparedWith is the commits each check of key compared its results with, sorted, by check.
 func (w citedWorld) comparedWith(key string) map[string][]string {
 	w.t.Helper()
-	response := dispatchRequest(w.t, w.handler, http.MethodGet, "/api/v1/issues/"+key+"/results", nil, "alice")
-	if response.Code != http.StatusOK {
-		w.t.Fatalf("read the results of %s: status=%d body=%s", key, response.Code, response.Body.String())
-	}
-	var read citedAnswer
-	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
-		w.t.Fatalf("decode the results of %s: %v (body %s)", key, err, response.Body.String())
-	}
+	read := readResults(w.t, w.handler, key)
 	if len(read.Checks) != 2 {
-		w.t.Fatalf("the results of %s hold %d checks, want siblingChecks' two: %s", key, len(read.Checks), response.Body.String())
+		w.t.Fatalf("the results of %s hold %d checks, want siblingChecks' two: %+v", key, len(read.Checks), read)
 	}
 	by := map[string][]string{}
 	for _, check := range read.Checks {
