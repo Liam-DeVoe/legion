@@ -435,25 +435,27 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 	var outline Outline
 	// held adds each ATX heading node holds, at any depth, which the typed block at index within
 	// of outline.TypedBlocks holds, or none where within is -1, and which a list, a quote or a
-	// footnote definition that ends at ends holds. A block whose first child is no block holds
-	// text alone, so it is not read further.
-	var held func(node ast.Node, within, ends int)
-	held = func(node ast.Node, within, ends int) {
+	// footnote definition that ends at containerEnd holds. A block whose first child is no block
+	// holds text alone, so it is not read further.
+	var held func(node ast.Node, within, containerEnd int)
+	held = func(node ast.Node, within, containerEnd int) {
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
 			if _, heading := child.(*ast.Heading); heading {
 				if start := sourceStart(child); start >= 0 && opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + start, Within: within, ContainerEnd: rest + ends})
+					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + start, Within: within, ContainerEnd: rest + containerEnd})
 				}
 			} else if first := child.FirstChild(); first != nil && first.Type() == ast.TypeBlock {
-				held(child, within, ends)
+				held(child, within, containerEnd)
 			}
 		}
 	}
 	// walk reads parent's blocks, which the typed block at index within of outline.TypedBlocks
-	// holds, or none where within is -1, and which end by end. Parent's lines end where last
-	// starts: the line of its closing fence, or the source's end.
-	var walk func(parent ast.Node, within, end, last int)
-	walk = func(parent ast.Node, within, end, last int) {
+	// holds, or none where within is -1. Parent's lines end where last starts: the line of its
+	// closing fence, or the source's end. A typed block ends where its closing line ends: the line
+	// of its own closing fence or, where no line of its own closes it, the line at last, which
+	// closes both.
+	var walk func(parent ast.Node, within, last int)
+	walk = func(parent ast.Node, within, last int) {
 		for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
 			start := sourceStart(child)
 			if start < 0 {
@@ -465,31 +467,29 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Within: within, ContainerEnd: -1})
 				}
 			case *typedDirective:
-				closed, closer := end, last
+				closer := last
 				if block.Closed {
-					line, _, _ := bytes.Cut(source[block.closer:], []byte("\n"))
-					closed, closer = block.closer+len(line), block.closer
+					closer = block.closer
 				}
-				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closed, Within: within})
-				walk(block, len(outline.TypedBlocks)-1, closed, closer)
+				line, _, _ := bytes.Cut(source[closer:], []byte("\n"))
+				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closer + len(line), Within: within})
+				walk(block, len(outline.TypedBlocks)-1, closer)
 			case *ast.List, *ast.Blockquote, *extensionast.Footnote:
 				// Its lines run up to the line the next block starts on, or to the end of
 				// parent's lines, less the line feeds of the blank lines between.
-				ends := last
+				containerEnd := last
 				for next := child.NextSibling(); next != nil; next = next.NextSibling() {
 					if at := sourceStart(next); at >= 0 {
-						ends = lineStart(source, at)
+						containerEnd = lineStart(source, at)
 						break
 					}
 				}
-				for ends > start && source[ends-1] == '\n' {
-					ends--
-				}
-				held(child, within, ends)
+				containerEnd = start + len(bytes.TrimRight(source[start:containerEnd], "\n"))
+				held(child, within, containerEnd)
 			}
 		}
 	}
-	walk(root, -1, len(source), len(source))
+	walk(root, -1, len(source))
 	if strings.IndexByte(markdown, 0) < 0 {
 		return outline
 	}

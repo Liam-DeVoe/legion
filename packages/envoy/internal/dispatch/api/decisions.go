@@ -616,10 +616,10 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 		return open.start + len(strings.TrimRight(markdown[open.start:end], "\n"))
 	}
 	// closeAt closes the open decision at closing: the start of the line of the heading that
-	// closes it, or the markdown's end. held is where the outermost list, quote or footnote
-	// definition that holds that heading ends (pmdoc.OutlineHeading.ContainerEnd), or -1 where
-	// none does.
-	closeAt := func(closing, held int) {
+	// closes it, or the markdown's end. containerEnd is where the outermost list, quote or
+	// footnote definition that holds that heading ends (pmdoc.OutlineHeading.ContainerEnd), or -1
+	// where none does.
+	closeAt := func(closing, containerEnd int) {
 		if open == nil {
 			return
 		}
@@ -637,7 +637,7 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 		}
 		// A list, quote or footnote definition that holds the heading that closes the decision is
 		// a block of the section, held whole, and so is each typed block that opens inside the cut.
-		end = max(end, held)
+		end = max(end, containerEnd)
 		for next < len(typed) && typed[next].Start <= open.start {
 			next++
 		}

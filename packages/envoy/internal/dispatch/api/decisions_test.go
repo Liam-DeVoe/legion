@@ -980,10 +980,10 @@ func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T)
 // callout that a heading inside the callout ends. Inside two, Inner two, Outer after inner and
 // Sole stand inside a callout that a heading after it ends (Sole's is the fixture's `## Replaced`).
 // Runs past stands inside a callout and runs past its closing line to the paragraph after it.
-// Listed holds a list one of whose items holds a heading that ends it, Listed heading, with an
-// item after that heading and a deeper heading and its paragraph after the list, which are no
-// part of Listed. Quoted holds a list inside a quote. Each list is loose, so that another renderer
-// version can write it in another spelling (respellLooseLists).
+// Listed holds a list one of whose items holds a heading that ends it, Listed heading, and an item
+// after that heading, which Listed's text holds as the rest of that list; a deeper heading and its
+// paragraph after the list are no part of Listed. Quoted holds a list inside a quote. Each list is
+// loose, so that another renderer version can write it in another spelling (respellLooseLists).
 const typedBlockDecisions = `## Intro
 
 Intro text.
@@ -1116,20 +1116,26 @@ func typedBlockDecisionsWritten(t *testing.T) (decisionsFixture, model.Version, 
 	return fixture, version, view
 }
 
+// decisionCutShape is a document, by its name, that
+// TestAStoredVersionCutsEachDecisionAsTheViewShowsIt stores as the decisions document and cuts.
+type decisionCutShape struct {
+	name, markdown string
+	// decisions is each decision the view reads, written as decisionCutShapes writes it, or nil
+	// where the test names none.
+	decisions []string
+}
+
 // decisionCutShapes are documents of decisions whose headings stand in each place the view reads
 // one (TestAStoredVersionCutsEachDecisionAsTheViewShowsIt): typedBlockDecisions before a
 // `## Replaced`; headings in list items and quotes, a deeper heading, a `#` heading and `###`
 // decisions under `## Replaced`; a heading in a quote and one in a footnote definition, each with
 // more of the quote or of the definition after it; a heading in a list item in a quote; a heading
 // in a list item inside a callout, and one in a list after a callout whose heading the list's
-// heading ends; and a `## Replaced` in a list item, which makes the document-level `###` after it
+// heading ends; and a `## Replaced` in a list item, which makes each document-level `###` after it
 // a replaced decision, before a last decision at the markdown's end. Each names the decisions the
 // view reads in it: each one's heading, then "(replaced)" where it is replaced, and "(no cut)"
 // where a list item, a quote or a footnote definition holds its heading.
-var decisionCutShapes = []struct {
-	name, markdown string
-	decisions      []string
-}{
+var decisionCutShapes = []decisionCutShape{
 	{
 		name:     "typed blocks",
 		markdown: typedBlockDecisions + "\n\n## Replaced\n\n### Old choice\n\nReplaced by Intro.\n",
@@ -1220,36 +1226,24 @@ var decisionCutCorpusLeftOut = map[string]string{
 func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 	fixture := newDecisionsFixture(t)
 	ctx, id := context.Background(), fixture.decisions.ID
-	type document struct {
-		name, markdown string
-		// decisions is each decision the view reads, written as decisionCutShapes writes it, or
-		// nil where the test names none.
-		decisions []string
-	}
-	var documents []document
-	for _, shape := range decisionCutShapes {
-		documents = append(documents, document{shape.name, shape.markdown, shape.decisions})
-	}
+	documents := slices.Clone(decisionCutShapes)
 	for _, path := range markdownCorpus(t) {
 		markdown, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		documents = append(documents, document{name: filepath.Base(path), markdown: string(markdown)})
+		documents = append(documents, decisionCutShape{name: filepath.Base(path), markdown: string(markdown)})
 	}
 	leftOut := 0
 	for _, document := range documents {
+		code, left := decisionCutCorpusLeftOut[document.name]
+		if left {
+			leftOut++
+		}
 		t.Run(document.name, func(t *testing.T) {
-			if code, left := decisionCutCorpusLeftOut[document.name]; left {
-				leftOut++
-				owner := "/api/v1/issues/" + fixture.issue.Key + "/artifacts"
-				fields := map[string]string{"name": "decisions.md", "precondition": encodeUploadBase(t, uploadBaseNamed(t, fixture.handler, owner, "decisions.md"))}
-				response := multipartRequest(t, fixture.handler, owner, fields, "decisions.md", "text/markdown", []byte(document.markdown), "alice")
-				if refusal := decodeBody[struct {
-					Code string `json:"code"`
-				}](t, response); response.Code != http.StatusBadRequest || refusal.Code != code {
-					t.Fatalf("upload decisions.md: status=%d body=%s, want the refusal %s that leaves the document out", response.Code, response.Body.String(), code)
-				}
+			if left {
+				response := issueDocumentUpload(t, fixture.handler, fixture.issue.Key, "decisions.md", document.markdown)
+				expectRefusal(t, "upload "+document.name+" as decisions.md", response, http.StatusBadRequest, code)
 				return
 			}
 			uploadIssueDocument(t, fixture.handler, fixture.issue.Key, "decisions.md", document.markdown)
@@ -1274,7 +1268,7 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 			for _, block := range blocks {
 				byID[block.ID] = block
 			}
-			labels, cut := []string{}, 0
+			labels, withCut := []string{}, 0
 			for _, decision := range view.Decisions {
 				heading, ok := byID[decision.BlockID]
 				if !ok {
@@ -1308,16 +1302,16 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 					continue
 				}
 				labels = append(labels, label)
-				cut++
+				withCut++
 				got, alone := cuts[key], typed < 0 || heading.From+len(decision.Text) <= blocks[typed].To
 				if !found || key.heading != decision.Heading || got.text != decision.Text || got.sum != decision.TextSHA256 || got.alone != alone {
 					t.Errorf("the cut of %s = %#v under %+v (found %t), want the view's text %q, alone %t",
 						decision.Heading, got, key, found, decision.Text, alone)
 				}
 			}
-			if len(cuts) != cut {
+			if len(cuts) != withCut {
 				t.Errorf("decisionCuts(%q) = %#v, want one cut of each of the view's %d decisions whose heading no list item, quote or footnote definition holds",
-					markdown, cuts, cut)
+					markdown, cuts, withCut)
 			}
 			if document.decisions != nil && !slices.Equal(labels, document.decisions) {
 				t.Errorf("the view reads the decisions %q in %q, want %q", labels, markdown, document.decisions)
@@ -1329,50 +1323,72 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 	}
 }
 
-// respellLooseLists is markdown with two blank lines, not one, between each two items of a loose
-// list, and inside a quote two of the quote's `>` lines: the same tree in renderer version 1's
-// spelling, as a build of that renderer version stored it. An item is a line that starts with `- `
-// or `* `, after the quote's `> ` inside a quote, and two items are of one list where they start
-// with the same marker.
+// respellLooseLists is markdown as a build of renderer version 1 stored the same tree. That
+// version wrote each blank line between two items of a list as two lines: first the prefix the
+// next item's line opens with as it stands, its quotes' `> ` and its indentation, then the blank
+// line this build writes there, that prefix with its trailing spaces trimmed. A blank line stands
+// between two items of a list where the blank lines it stands among run to a line that opens an
+// item (itemOpening) whose prefix, trimmed, is that blank line, and the lines before them, back
+// past the previous item's own lines (blank, or that prefix and a space), reach a line that opens
+// an item with the same prefix and marker. Checked against version 1's pmdoc.Render of the tree
+// pmdoc.ParseRendering reads: for the decisions document a test respells, the output is byte for
+// byte what that renders, and for each of its decisions' texts, that rendering's slice of it.
 func respellLooseLists(markdown string) string {
 	lines := strings.Split(markdown, "\n")
 	respelled := make([]string, 0, len(lines))
 	for index, line := range lines {
+		if prefix, between := betweenItems(lines, index); between {
+			respelled = append(respelled, prefix)
+		}
 		respelled = append(respelled, line)
-		if index == 0 || index+1 == len(lines) || line != "" && line != ">" {
-			continue
-		}
-		prefix := ""
-		if line == ">" {
-			prefix = "> "
-		}
-		if marker := listMarker(lines[index-1], prefix); marker != 0 && marker == listMarker(lines[index+1], prefix) {
-			respelled = append(respelled, line)
-		}
 	}
 	return strings.Join(respelled, "\n")
 }
 
-// listMarker is the marker of the list item that line opens after prefix, `-` or `*`, or 0 where
-// line opens no such item.
-func listMarker(line, prefix string) byte {
-	item, ok := strings.CutPrefix(line, prefix)
-	if !ok || len(item) < 2 || item[1] != ' ' || item[0] != '-' && item[0] != '*' {
-		return 0
+// betweenItems is the prefix of the list item that the blank lines from lines[index] on run to,
+// and whether lines[index] is a blank line between that item and the one before it in its list
+// (respellLooseLists).
+func betweenItems(lines []string, index int) (string, bool) {
+	blank, next := lines[index], index+1
+	for next < len(lines) && lines[next] == blank {
+		next++
 	}
-	return item[0]
+	if next == len(lines) {
+		return "", false
+	}
+	prefix, marker, opens := itemOpening(lines[next])
+	if !opens || strings.TrimRight(prefix, " ") != blank {
+		return "", false
+	}
+	for _, line := range slices.Backward(lines[:index]) {
+		if line != blank && !strings.HasPrefix(line, prefix+" ") {
+			before, previous, opens := itemOpening(line)
+			return prefix, opens && before == prefix && previous == marker
+		}
+	}
+	return "", false
+}
+
+// itemOpening is the prefix and marker of the list item that line opens, a prefix of spaces and
+// `>` and then `-` or `*` and a space, and whether line opens one.
+func itemOpening(line string) (string, byte, bool) {
+	at := strings.IndexFunc(line, func(r rune) bool { return r != ' ' && r != '>' })
+	if at < 0 || line[at] != '-' && line[at] != '*' || !strings.HasPrefix(line[at+1:], " ") {
+		return "", 0, false
+	}
+	return line[:at], line[at], true
 }
 
 // A decision kept before a renderer change stays kept around and inside typed blocks wherever its
 // text stands alone. alice keeps each decision of typedBlockDecisions whose heading no list item
-// holds (typedBlockHeadings). Then a build of another renderer version stores the version that
-// wrote them with two blank lines between each two items of every loose list (respellLooseLists),
-// and each keep holds the sum of the view's text of its decision as that version spells it. Each
-// cut of that version is the text the view showed in that spelling, so it has the keep's sum,
-// Listed's too, which a heading inside one of its list items ends and whose text holds that whole
-// list. So every decision stays kept and waits for no review, except Runs past: its text holds
-// its callout's closing line without the opening line, so it does not stand alone, and it waits
-// for review.
+// holds (typedBlockHeadings). Then a build of renderer version 1 stores the version that wrote
+// them as that renderer version spells it, two lines for each blank line between two items of a
+// list (respellLooseLists), and each keep holds the sum of the view's text of its decision as that
+// version spells it. Each cut of that version is the text the view showed in that spelling, so it
+// has the keep's sum, Listed's too, which a heading inside one of its list items ends and whose
+// text holds that whole list. So every decision stays kept and waits for no review, except Runs
+// past: its text holds its callout's closing line without the opening line, so it does not stand
+// alone, and it waits for review.
 func TestEachDecisionAroundOrInsideATypedBlockStaysKeptAcrossARendererChangeUnlessItRunsPastIt(t *testing.T) {
 	fixture, version, written := typedBlockDecisionsWritten(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID

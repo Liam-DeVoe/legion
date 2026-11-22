@@ -581,20 +581,22 @@ func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
 	checkKeptAcrossRenderers(t, "other-marker-md", otherMarkerDocument, otherMarkerDocumentBlocks, map[int]string{3: "* ", 9: "1) "}, 12)
 }
 
-// typedDocument is version 1 of a document as another renderer version stored it: a bullet list;
-// a callout holding a bullet list and a second one that the renderer writes with the other marker,
-// `*`; a callout holding a bullet list whose item holds a bullet list; a bullet list whose item
-// holds a callout holding a bullet list; a quote holding a bullet list and a callout holding a
-// bullet list; and a closing paragraph. Each list of two items is loose in renderer version 1's
-// spelling, two blank lines between its items, a quote's two written as its marker alone, where
-// this build writes one, so this build spells every block but a paragraph otherwise.
+// typedDocument is version 1 of a document as another renderer version stored it, the text
+// renderer version 1 writes for its tree exactly: a bullet list; a callout holding a bullet list
+// and a second one that the renderer writes with the other marker, `*`; a callout holding a bullet
+// list whose item holds a bullet list; a bullet list whose item holds a callout holding a bullet
+// list; a quote holding a bullet list and a callout holding a bullet list; and a closing
+// paragraph. Each list of two items is loose, and version 1 wrote the blank line between its items
+// as two lines: first the list's prefix as it stands (`> ` in the quote, two spaces in each list a
+// list item holds, nothing elsewhere), then that prefix with its trailing spaces trimmed, the one
+// line this build writes there. So this build spells every block but a paragraph otherwise.
 // typedDocumentBlocks is each of its blocks in document order, with its type and its slice of the
 // document as that renderer's build indexed it.
 const typedDocument = "- top\n\n\n- level\n\n" +
 	":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::\n\n" +
-	":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n\n\n  - six\n:::\n\n" +
-	"- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n\n\n  - eight\n  :::\n\n" +
-	"> - alpha\n>\n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n>\n>\n> - delta\n> :::\n\n" +
+	":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n  \n\n  - six\n:::\n\n" +
+	"- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n  \n\n  - eight\n  :::\n\n" +
+	"> - alpha\n> \n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n> \n>\n> - delta\n> :::\n\n" +
 	"Closing paragraph.\n"
 
 var typedDocumentBlocks = []struct{ nodeType, text string }{
@@ -608,24 +610,24 @@ var typedDocumentBlocks = []struct{ nodeType, text string }{
 	{"bullet_list", "* three\n\n\n* four"},
 	{"paragraph", "three"},
 	{"paragraph", "four"},
-	{"callout", ":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n\n\n  - six\n:::"},
-	{"bullet_list", "- outer\n\n  - five\n\n\n  - six"},
+	{"callout", ":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n  \n\n  - six\n:::"},
+	{"bullet_list", "- outer\n\n  - five\n  \n\n  - six"},
 	{"paragraph", "outer"},
-	{"bullet_list", "- five\n\n\n  - six"},
+	{"bullet_list", "- five\n  \n\n  - six"},
 	{"paragraph", "five"},
 	{"paragraph", "six"},
-	{"bullet_list", "- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n\n\n  - eight\n  :::"},
+	{"bullet_list", "- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n  \n\n  - eight\n  :::"},
 	{"paragraph", "item"},
-	{"callout", ":::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n\n\n  - eight\n  :::"},
-	{"bullet_list", "- seven\n\n\n  - eight"},
+	{"callout", ":::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n  \n\n  - eight\n  :::"},
+	{"bullet_list", "- seven\n  \n\n  - eight"},
 	{"paragraph", "seven"},
 	{"paragraph", "eight"},
-	{"blockquote", "> - alpha\n>\n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n>\n>\n> - delta\n> :::"},
-	{"bullet_list", "- alpha\n>\n>\n> - bravo"},
+	{"blockquote", "> - alpha\n> \n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n> \n>\n> - delta\n> :::"},
+	{"bullet_list", "- alpha\n> \n>\n> - bravo"},
 	{"paragraph", "alpha"},
 	{"paragraph", "bravo"},
-	{"callout", ":::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n>\n>\n> - delta\n> :::"},
-	{"bullet_list", "- charlie\n>\n>\n> - delta"},
+	{"callout", ":::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n> \n>\n> - delta\n> :::"},
+	{"bullet_list", "- charlie\n> \n>\n> - delta"},
 	{"paragraph", "charlie"},
 	{"paragraph", "delta"},
 	{"paragraph", "Closing paragraph."},

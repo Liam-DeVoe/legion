@@ -745,8 +745,9 @@ func TestParseWithSourceStartsPlacesEveryTopLevelBlock(t *testing.T) {
 // document's. A typed block no line of its own closes ends where the typed block holding it ends,
 // and holds the heading after its opening line.
 func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.T) {
-	// heading is a heading as the test writes it: its line from its Start, the markdown from its
-	// Start to its ContainerEnd, "" where that is -1, and its Within.
+	// heading is a heading as the test writes it: its line from its Start, with `mid-line ` ahead
+	// of it where Start is not where a line starts, the markdown from its Start to its
+	// ContainerEnd, "" where that is -1, and its Within.
 	type heading struct {
 		line, container string
 		within          int

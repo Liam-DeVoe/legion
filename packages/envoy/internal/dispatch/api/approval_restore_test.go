@@ -206,13 +206,7 @@ const respellSpec = "# Plan\n\nThe service ships behind a flag.\n\n- first\n\n- 
 // again as the version held it (storeRespelled), and returns the text it stored.
 func respellVersion(t *testing.T, database *store.Store, artifactID string, number int, stamp *int) string {
 	t.Helper()
-	ctx := context.Background()
-	var written string
-	if err := database.Pool.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, number).Scan(&written); err != nil {
-		t.Fatalf("read version %d: %v", number, err)
-	}
+	written := versionText(t, database, artifactID, number)
 	first, second := strings.Index(written, "- first\n"), strings.Index(written, "- second\n")
 	if first < 0 || second < first {
 		t.Fatalf("version %d = %q, want a list whose first two items are first and second", number, written)

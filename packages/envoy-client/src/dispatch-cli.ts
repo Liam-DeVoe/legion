@@ -344,9 +344,9 @@ export async function runDispatchCli(
     // A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store: the
     // dry run and the call refuse them here alike, before either sends anything, with Dispatch's
     // own refusal and its exit code. A command that refuses them by a rule of its own declares it
-    // (`DispatchCommand.fileBytesRefusal`); any other is refused at their first U+0000 or byte
-    // that is not UTF-8 (`unstorableBytes`). Bytes that are not UTF-8 hold such a byte, so each
-    // finds a refusal.
+    // (`DispatchCommand.fileBytesRefusal`); for any other they are refused at their first U+0000
+    // or byte that is not UTF-8 (`unstorableBytes`). Bytes that are not UTF-8 hold such a byte, so
+    // each finds a refusal.
     const { tool, field, bytes } = parsed;
     const refusal = (
       dispatchCommands[tool as DispatchToolName]?.fileBytesRefusal ?? unstorableBytes
