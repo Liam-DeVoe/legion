@@ -292,7 +292,8 @@ func (r *writersRig) serve(method, target string, body any, login, key string) (
 }
 
 // uploadBase is the token an upload replacing the document artifact names, the one it carries
-// now: Dispatch refuses a replacement that names none (docs.ErrPreconditionRequired).
+// now, which Dispatch checks under the write's own lock (a replacement that names none is taken
+// unchecked and counted: api/unguarded_replacements.go).
 func (r *writersRig) uploadBase(t *testing.T, artifact string) map[string]string {
 	t.Helper()
 	document := decoded[struct {

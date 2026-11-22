@@ -142,6 +142,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 	if len(asks) == 0 && !markUnindexed {
 		return nil, nil
 	}
+	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -651,6 +652,8 @@ func answeredCopyWrite(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 // stays without a row, and a settlement after the issue reopens opens its ask. Once the fleet is
 // one build, the close's sweep and settlement write unindexedAskResolution instead, which takes
 // every attribute a version can store off the block.
+//
+// kept for one release: roll-window-attributes
 func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 	if node.Attrs["state"] == "resolved" {
 		return false
@@ -665,6 +668,8 @@ func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 // build none of the seven attributes a version can store (withoutStoredAskAttributes), since a
 // block that has no ask row and is no copy keeps none of them (R10); the text routes answer it
 // resolved in their asks (textAsks). It reports whether it changed the block.
+//
+// kept for one release: roll-window-attributes
 func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
 	if twoBuilds {
 		return resolveUnindexedAskBlock
@@ -722,7 +727,10 @@ type repeatedAskBlock struct {
 // document artifactID that readableAskBlocks read them from: into the ask block at the repeat's
 // place among live's ask blocks, while that block still carries the id the repeat names and does
 // not read resolved already. It returns a BlockRef, under the repeated id, for each block it
-// changed. repeats are in document order, as readableAskBlocks returns them.
+// changed. repeats are in document order, as readableAskBlocks returns them. Only the close's
+// sweep while another build serves hands it any (readIssueAskStateWrites).
+//
+// kept for one release: roll-window-attributes
 func markRepeatedAskBlocks(live *pmdoc.Node, artifactID string, repeats []repeatedAskBlock) []BlockRef {
 	if len(repeats) == 0 {
 		return nil

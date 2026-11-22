@@ -13,6 +13,7 @@ import { api, type WriteBounds } from "../../api/client";
 import type {
   Artifact,
   ArtifactBlock,
+  DecisionLink,
   DocumentRead,
   GraphReferences,
   IssueDecisions,
@@ -50,8 +51,9 @@ function version(number: number): Version {
 
 const spec: Artifact = { ...artifact, versions: [1, 2, 3, 4].map(version) };
 
-// One decision whose `shaped` tie to p-plan was written by event 10, and p-plan's text changed in
-// a version event 12 wrote, after the tie.
+// One decision whose `shaped` tie to p-plan was written by event 10, after p-plan's text last
+// changed (event 9), and whose own words changed after the tie (version 3): the link is stale, and
+// p-plan has not changed since the tie.
 const decisions: IssueDecisions = {
   decisions: [],
   document: null,
@@ -88,12 +90,13 @@ const decisions: IssueDecisions = {
       selected: null,
       shaped: [
         {
+          changed_since_tie: false,
           created_at: "2026-10-01T00:00:00Z",
           created_version: 1,
           event: 10,
           from_block: "d-1",
           stale: true,
-          text_changed_event: 12,
+          text_changed_event: 9,
           to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
         },
       ],
@@ -273,8 +276,9 @@ test("with no read version the Spec tab shows no line and marks no changed block
 
 // A server of the release before answers the Decisions read with no `entries`: its decisions are
 // the sections of the issue's decisions document, each with the links it shaped and the server's
-// own `stale`. A page of this build that reaches it during a roll still marks the block a
-// decision's link went out of date on, rather than marking nothing.
+// own `stale`, whose meaning this build keeps, and no `changed_since_tie`. A page of this build
+// that reaches it during a roll still marks the block a decision's link went out of date on,
+// rather than marking nothing.
 test("a Decisions read of the release before, with no entries, still marks the stale block", async () => {
   const before: DecisionsRead = {
     decisions: [
@@ -293,7 +297,7 @@ test("a Decisions read of the release before, with no entries, still marks the s
             from_block: "h-two-steps",
             stale: true,
             to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
-          },
+          } as DecisionLink,
         ],
         ref: "dispatch://CORE-1/artifact/decisions-md#b-h-two-steps",
         replaced: false,

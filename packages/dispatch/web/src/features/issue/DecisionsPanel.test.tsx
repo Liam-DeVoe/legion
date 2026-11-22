@@ -98,6 +98,7 @@ function entry(
 
 function shapedLink(blockId: string, stale: boolean): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-01T00:00:00Z",
     created_version: 1,
     from_block: "store",
@@ -679,6 +680,7 @@ test("a shaped block's link names the block by its id and draws no text of the b
   const view = waitingView({
     shaped: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-01T00:00:00Z",
         created_version: 1,
         from_block: "only",

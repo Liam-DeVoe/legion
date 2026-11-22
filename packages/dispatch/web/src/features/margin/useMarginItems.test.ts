@@ -1018,6 +1018,7 @@ test("an action the reader stopped says Retry makes it again, not that it failed
 
 function decisionLink(fromBlock: string, to: string, document = "CORE-1/spec"): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
     from_block: fromBlock,

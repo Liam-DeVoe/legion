@@ -363,8 +363,14 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
 // of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
 // re-recorded rather than raised.
+//
+// It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
+// `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
+// node's cause: the statement reads the same event id, only through events' primary key, so it
+// moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
+// text of LatestEventID the statements give the digest recorded before.
 var markingStatementDigests = map[int]string{
-	1: "e87bbdc7816050c1285eacf35c762de95b3fd58b6b8b93e0b427208609e988d1",
+	1: "646218ee6bbd08e2be3542bf8d02a30c9d934a0191338816fcbb043054ee3c2e",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

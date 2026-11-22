@@ -6,12 +6,12 @@ import { expect, test } from "./test";
 // The decision records end to end, against the real server: an agent writes a `decision` block
 // in the spec's `## Decisions` part that shaped two spec blocks, and a person reads it on the
 // Spec tab beside those blocks and on the Decisions tab, answers it with Keep and Change, and
-// sees a block marked out of date once its words change after the decision shaped it.
+// sees each block the decision has changed since marked out of date until that block changes too.
 //
 // Every block id comes from `GET /api/v1/artifacts/<id>/blocks` (`blockId`), never from a guess,
 // and every seed goes through the API the agent uses.
 
-const STALE_TITLE = "This block changed after a decision that shaped it.";
+const STALE_TITLE = "A decision that shaped this block changed after it.";
 const DECISION = "Store notices in a table";
 const REASON = "Chosen for the simplest storage.";
 /** The decision whose text is no plain paragraph: a list below its heading, with a reference in
@@ -81,21 +81,29 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   await composer.getByRole("button", { name: "Send" }).click();
   await expect(composer).toBeHidden();
 
-  // The agent changes one of the spec blocks the decision shaped: that block's words changed
-  // after the decision shaped it, so its link is out of date, on the Decisions tab and as a mark
-  // on the Spec tab, and the other link is not.
+  // The agent changes the decision's text: both blocks it shaped are out of date, on the
+  // Decisions tab and as a mark on the Spec tab.
+  await editArtifact(spec.id, {
+    ops: [{ find: REASON, op: "replace", with: `${REASON} Measured against the file store.` }],
+    summary: "measured",
+  });
+  await page.goto(`/issues/${issue.key}/decisions`);
+  await expect(page.getByText("out of date")).toHaveCount(2);
+  await page.goto(`/issues/${issue.key}/spec`);
+  await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(2);
+
+  // The agent changes one of those spec blocks: its mark goes and the other stays.
   await editArtifact(spec.id, {
     ops: [{ find: "Store each notice.", op: "replace", with: "Store each notice in a table." }],
     summary: "stored",
   });
-  await page.goto(`/issues/${issue.key}/decisions`);
-  await expect(page.getByText("out of date")).toHaveCount(1);
   await page.goto(`/issues/${issue.key}/spec`);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(1);
+  await page.goto(`/issues/${issue.key}/decisions`);
+  await expect(page.getByText("out of date")).toHaveCount(1);
 
   // Keep records the reader's agreement: the decision leaves the section that waits for it and
   // stands under the decisions that are theirs.
-  await page.goto(`/issues/${issue.key}/decisions`);
   await page
     .getByRole("region", { name: "Waiting for your review" })
     .getByRole("button", { name: "Keep" })
