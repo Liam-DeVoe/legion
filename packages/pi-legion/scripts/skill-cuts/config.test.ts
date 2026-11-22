@@ -44,15 +44,18 @@ test("a configuration with every required key loads", () => {
   expect(config.windowEnd).toBe("2026-11-20T00:00:00Z");
 });
 
+/** The keys a configuration may leave out. */
+const OPTIONAL_KEYS = ["devboxClaudeConfigDir", "sets", "dotfilesRepo"];
+
 test.each(
-  Object.keys(SkillCutsConfig.shape).filter((key) => key !== "devboxClaudeConfigDir")
+  Object.keys(SkillCutsConfig.shape).filter((key) => !OPTIONAL_KEYS.includes(key))
 )("a configuration without %s is refused by name", (key) => {
   const value = valid();
   delete value[key];
   expect(refusal(value)).toContain(`${key}: missing`);
 });
 
-test("devboxClaudeConfigDir is the one optional key, and an absolute path when given", () => {
+test("devboxClaudeConfigDir is optional, and an absolute path when given", () => {
   expect(parseConfig(valid()).devboxClaudeConfigDir).toBeUndefined();
   expect(
     parseConfig({ ...valid(), devboxClaudeConfigDir: "/srv/acme/dotfiles/.claude" })
@@ -61,6 +64,43 @@ test("devboxClaudeConfigDir is the one optional key, and an absolute path when g
   expect(refusal({ ...valid(), devboxClaudeConfigDir: "acme-dotfiles/.claude" })).toContain(
     "devboxClaudeConfigDir: an absolute path"
   );
+});
+
+/** Two made-up skill sets and the repository that pins them. */
+const SETS = {
+  sets: [
+    { id: "alpha-set", repo: "acme/alpha-set" },
+    { id: "beta-set", repo: "acme/beta-set-plugin" },
+  ],
+  dotfilesRepo: "acme/dotfiles",
+};
+
+test("sets are optional, and need dotfilesRepo", () => {
+  expect(parseConfig(valid()).sets).toBeUndefined();
+  expect(parseConfig({ ...valid(), ...SETS }).sets?.map((set) => set.id)).toEqual([
+    "alpha-set",
+    "beta-set",
+  ]);
+  expect(refusal({ ...valid(), sets: SETS.sets })).toContain(
+    "dotfilesRepo: required when sets is given"
+  );
+  expect(refusal({ ...valid(), ...SETS, dotfilesRepo: "dotfiles" })).toContain("dotfilesRepo");
+});
+
+test("a set id may not equal a cut id", () => {
+  expect(
+    refusal({ ...valid(), ...SETS, sets: [{ id: "skills-1", repo: "acme/alpha-set" }] })
+  ).toContain('sets[0].id: "skills-1" is the id of a cut; a set id may not equal a cut id');
+});
+
+test("a set id given twice, or one that cannot name a directory or a prefix, is refused", () => {
+  const twice = [...SETS.sets, { id: "alpha-set", repo: "acme/other" }];
+  expect(refusal({ ...valid(), ...SETS, sets: twice })).toContain(
+    'sets[2].id: "alpha-set" is given twice'
+  );
+  expect(
+    refusal({ ...valid(), ...SETS, sets: [{ id: "alpha:set", repo: "acme/alpha-set" }] })
+  ).toContain("sets[0].id");
 });
 
 test("an unknown key is refused by name", () => {

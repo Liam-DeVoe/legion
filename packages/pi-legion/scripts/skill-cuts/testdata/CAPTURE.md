@@ -1,8 +1,9 @@
 # How each fixture was captured
 
-Every fixture here came from a real system on 2026-11-20, with made-up skills (`alpha`, `beta`,
-`tool-loop-alpha`) and made-up prompts. A test that reads a fixture cites its section of this file
-in its header. The scan at the end says how each file was checked for keys and private names.
+Every fixture here came from a real system on 2026-11-20 (F10 on 2026-11-22), with made-up skills
+(`alpha`, `beta`, `tool-loop-alpha`) and made-up prompts, but for F14, made-up rows in F7's shape.
+A test that reads a fixture cites its section of this file in its header. The scan at the end says
+how each file was checked for keys and private names.
 
 Versions: Oh My Pi 18.18.6 (`/opt/omp/bin/omp`), Claude Code 2.1.311, Bun 1.4.4, gh 2.98.0. `jq` in
 the commands below is the pod's `jq`, which is jaq 3.1.1.
@@ -464,6 +465,168 @@ and with the scan below, which counts the opaque values the API made as known ki
 Responses item ids, `item_id`, the `call_id`s, the reasoning item's `encrypted_content` and the
 `llm_provider-x-request-id` header) and passes over the closing `data: [DONE]`, which is no JSON.
 It finds no piece of the key, no key or token shape and no private name in them.
+
+## F10: GitHub's answers for the pins of two skill sets (`F10-github.json`)
+
+From public repositories only, with read-only `gh api` calls: a dotfiles repository that pins two
+skill sets, the two sets' repositories, and, for a package that declares `omp.skills`, this
+repository. This repository is public, so the commands take the real names as shell variables and
+leave them out of this file, as F6 does with the people's names. Each variable is written below
+with the made-up name that replaces it in the fixture:
+
+| Variable | What it names | Made-up name |
+| --- | --- | --- |
+| `$DOTFILES` | the dotfiles repository | `acme/dotfiles` |
+| `$SET_A` | the first set's repository | `acme/alpha-set` |
+| `$PKG_A` | its package key in `omp/plugins/package.json` | `alpha-set` |
+| `$SET_B` | the second set's repository, a fork | `acme/beta-set-plugin` |
+| `$SET_B_UPSTREAM` | the repository it is a fork of | `acme-upstream/beta-set-plugin` |
+| `$DIR_B` | its `ensure_vendor` directory | `beta-set` |
+| `$DEP_1`, `$DEP_2` | two other dependencies of `omp/plugins/package.json` | `@acme/tools`, `knives` |
+| `$DEP_2_REPO` | the repository `$DEP_2` is pinned to | `acme/knives` |
+| `$STACK_REPO`, `$STACK` | an `ensure_vendor` line with no commit: its repository and directory | `acme/stack`, `stack` |
+| `$OWN_POOL`, `$DEEP_POOL` | two more pools of `skills-sources.json` | `plugins/acme`, `vendor/delta/plugins/delta` |
+| `$A1`, `$A2`, `$A3` | three skills of the first set | `alpha-skill-one`, `alpha-skill-two`, `alpha-skill-three` |
+| `$B1`, `$B2`, `$B3` | three skills of the second set | `beta-skill-one`, `beta-skill-two`, `beta-skill-three` |
+| `$B_GUIDE` | a skill of the second set's `.agents/skills/` | `beta-skill-work` |
+
+The fixture is one JSON object. Each key is the route that sets.ts gives `gh api` (it sends each read
+as `gh api [-H 'Accept: application/vnd.github.raw'] <route>`, the query in the route), and each
+value is GitHub's answer to it: a file's text for a contents read, the JSON otherwise. The tests'
+stand-in gh answers a route the object does not hold as GitHub answers a missing one (404). The
+capture, from this directory, in a shell where each variable above holds its real value:
+
+```sh
+set -o pipefail
+D=$(gh api "repos/$DOTFILES/commits/82e8f6dc" --jq .sha)
+SA=$(gh api "repos/$SET_A/commits/2ce8aa15" --jq .sha)
+SB=$(gh api "repos/$SET_B/commits/8a776c13" --jq .sha)
+OP=$(gh api repos/cybermonklabs/legion/commits/dc7e6687 --jq .sha)
+W1='since=2026-10-23T00:00:00Z&until=2026-11-20T00:00:00Z'
+W2='since=2026-11-20T00:00:00Z&until=2026-11-22T00:00:00Z'
+T=$(mktemp -d)
+names="s#$DOTFILES#acme/dotfiles#g; s#$SET_A#acme/alpha-set#g; s#$SET_B_UPSTREAM#acme-upstream/beta-set-plugin#g; s#$SET_B#acme/beta-set-plugin#g; s#$DEP_2_REPO#acme/knives#g; s#$STACK_REPO#acme/stack#g; s#$STACK#stack#g; s#$DIR_B#beta-set#g"
+skills="s#skills/$A1#skills/alpha-skill-one#g; s#skills/$A2#skills/alpha-skill-two#g; s#skills/$A3#skills/alpha-skill-three#g; s#skills/$B1#skills/beta-skill-one#g; s#skills/$B2#skills/beta-skill-two#g; s#skills/$B3#skills/beta-skill-three#g; s#skills/$B_GUIDE#skills/beta-skill-work#g; s#sample-plugin/skills/skill-one#sample-plugin/skills/beta-sample#g"
+# An older pin of the second set (any 40-hex pin but $SB) keeps its first 12 hex digits.
+short="/^ensure_vendor / { /$SB/! s#([0-9a-f]{12})[0-9a-f]{28}\$#\\1# }"
+raw() { gh api -H 'Accept: application/vnd.github.raw' "repos/$1/contents/$2?ref=$3"; }
+pkg() {
+  raw "$DOTFILES" omp/plugins/package.json "$1" \
+    | jq --arg a "$PKG_A" --arg d1 "$DEP_1" --arg d2 "$DEP_2" '.dependencies as $d | {name, private, dependencies: ({"@acme/tools": $d[$d1], knives: $d[$d2], "alpha-set": $d[$a]} | with_entries(select(.value != null)))}' \
+    | sed "$names"
+}
+installer() {
+  raw "$DOTFILES" installers/omp.sh "$1" \
+    | grep -E "^#!|^source |^# Vendor checkouts|^ensure_vendor https://github.com/($SET_B|$STACK_REPO)\\.git " \
+    | sed -E "$names; $short"
+}
+commits() {
+  gh api "repos/$DOTFILES/commits?path=$1&$2&per_page=100&page=1" \
+    | jq --arg keep "$3" '[.[] | select($keep == "" or (.sha[0:8] as $s | $keep | split(" ") | any(. == $s))) | {sha, commit: {committer: {date: .commit.committer.date}}, parents: [.parents[] | {sha}]}]'
+}
+text() { jq -n --arg k "$1" --rawfile v /dev/stdin '{($k): $v}'; }
+json() { jq -c --arg k "$1" '{($k): .}'; }
+tag=$(gh api "repos/$SET_A/git/ref/tags/v7.0.1" --jq .object.sha)
+{
+  pkg "$D" | text "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=$D"
+  installer "$D" | text "repos/acme/dotfiles/contents/installers/omp.sh?ref=$D"
+  raw "$DOTFILES" skills-sources.json "$D" \
+    | jq --arg own "$OWN_POOL" --arg stack "vendor/$STACK" --arg b "vendor/$DIR_B" --arg deep "$DEEP_POOL" '{sources: [.sources[] | select(.root | IN($own, $stack, $b, $deep)) | {root}]}' \
+    | sed "s#\"$OWN_POOL\"#\"plugins/acme\"#; s#\"$DEEP_POOL\"#\"vendor/delta/plugins/delta\"#; $names" \
+    | text "repos/acme/dotfiles/contents/skills-sources.json?ref=$D"
+  gh api "repos/$SET_A/git/ref/tags/v7.0.1" | jq '{ref, object: {sha: .object.sha, type: .object.type}}' \
+    | json repos/acme/alpha-set/git/ref/tags/v7.0.1
+  gh api "repos/$SET_A/git/tags/$tag" | jq '{sha, tag, object: {sha: .object.sha, type: .object.type}}' \
+    | json "repos/acme/alpha-set/git/tags/$tag"
+  gh api "repos/$SET_A/git/ref/tags/v4.1.1" | jq '{ref, object: {sha: .object.sha, type: .object.type}}' \
+    | json repos/acme/alpha-set/git/ref/tags/v4.1.1
+  raw "$SET_A" package.json "$SA" | jq '{name, version, pi: {skills: .pi.skills}}' | sed "s#\"$PKG_A\"#\"alpha-set\"#" \
+    | text "repos/acme/alpha-set/contents/package.json?ref=$SA"
+  raw cybermonklabs/legion packages/pi-legion/package.json "$OP" | jq '{name: "gamma-set", version, omp: {skills: .omp.skills}}' \
+    | text "repos/acme/gamma-set/contents/package.json?ref=$OP"
+  gh api "repos/$SET_A/git/trees/$SA?recursive=1" \
+    | jq --arg re "^(README.md|package.json|skills|skills/($A1|$A2|$A3)(/SKILL.md|/root-cause-tracing.md)?)\$" '{sha, tree: [.tree[] | select(.path | test($re)) | {path, mode, type, sha}], truncated}' \
+    | sed "$skills" | json "repos/acme/alpha-set/git/trees/$SA?recursive=1"
+  gh api "repos/$SET_B/git/trees/$SB?recursive=1" \
+    | jq --arg re "^(package.json|skills|skills/($B1|$B2|$B3)(/SKILL.md|/references|/references/fix.md)?|.agents/skills/$B_GUIDE/SKILL.md|tests/fixtures/sample-plugin/skills/skill-one/SKILL.md)\$" '{sha, tree: [.tree[] | select(.path | test($re)) | {path, mode, type, sha}], truncated}' \
+    | sed "$skills" | json "repos/acme/beta-set-plugin/git/trees/$SB?recursive=1"
+  gh api "repos/$SET_A" | jq '{full_name, fork}' | sed "$names" | json repos/acme/alpha-set
+  gh api "repos/$SET_B" | jq '{full_name, fork, parent: {full_name: .parent.full_name}, source: {full_name: .source.full_name}}' \
+    | sed "$names" | json repos/acme/beta-set-plugin
+  for w in "$W1" "$W2"; do
+    if [ "$w" = "$W1" ]; then kp="311f0b3b dc0a7398 8c3c6cac"; ki="5218006e 371649f5 76135b6e c5f48792 1e99dfa8"; else kp=""; ki=""; fi
+    commits omp/plugins/package.json "$w" "$kp" > "$T/pkg.json"
+    commits installers/omp.sh "$w" "$ki" > "$T/sh.json"
+    json "repos/acme/dotfiles/commits?path=omp/plugins/package.json&$w&per_page=100&page=1" < "$T/pkg.json"
+    json "repos/acme/dotfiles/commits?path=installers/omp.sh&$w&per_page=100&page=1" < "$T/sh.json"
+    for c in $(jq -r '.[] | .sha, .parents[0].sha' "$T/pkg.json"); do
+      pkg "$c" | text "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=$c"
+    done
+    for c in $(jq -r '.[] | .sha, .parents[0].sha' "$T/sh.json"); do
+      installer "$c" | text "repos/acme/dotfiles/contents/installers/omp.sh?ref=$c"
+    done
+  done
+} | jq -s 'add' > F10-github.json
+rm -r "$T"
+```
+
+What came back, and what each cut keeps:
+
+- At the dotfiles commit `82e8f6dc`, `omp/plugins/package.json` pins the first set by its tag
+  `v7.0.1`; the cut keeps its `name`, `private` and three dependencies (`$DEP_1`, `$DEP_2`, a
+  `github:` dependency of another repository, and `$PKG_A`). `installers/omp.sh` pins the second set
+  by an `ensure_vendor` line with the commit `8a776c13`; the cut keeps its first line, its `source`
+  line, one comment and two `ensure_vendor` lines, the second set's and `$STACK_REPO`'s, which names
+  no commit. `skills-sources.json` is cut to the roots of four pools: `vendor/$DIR_B`, one at
+  `vendor/$STACK`, one deeper in its vendor directory (`$DEEP_POOL`) and one outside `vendor/`.
+- `git/ref/tags/v7.0.1` of the first set is an annotated tag (its object is a `tag`), whose tag
+  object names the commit `2ce8aa15`; `git/ref/tags/v4.1.1` is a lightweight tag (its object is the
+  commit `469a6d81`), and that commit holds no `package.json` (its contents read answered 404, so
+  the object holds no answer for it: a package with no manifest). Each is cut to `ref`, `sha`, `tag`
+  and `object`; the tag object's tagger, message and verification are left out.
+- The first set's `package.json` at `2ce8aa15` declares `pi.skills` `./skills`; it is cut to its
+  name, version and `pi.skills`. This repository's `packages/pi-legion/package.json` at `dc7e6687`
+  declares `omp.skills` `dist/skills`; it is cut to its version and `omp.skills`, under the name
+  `gamma-set`.
+- The tree of the first set at `2ce8aa15` (300 entries) and of the second at `8a776c13` (2,061
+  entries), both `truncated: false`, are cut to three skills of each and a few other entries: a
+  skill's other files, and two `SKILL.md` files outside `skills/<name>/` (the second set's guide
+  skill under `.agents/skills/` and a test fixture's skill). Each entry keeps its path, mode, type
+  and sha.
+- `repos/$SET_A` is no fork; `repos/$SET_B` is a fork of `$SET_B_UPSTREAM`. Each is cut to its full
+  name, its fork flag and its parent's and source's full names.
+- The commits of each manifest's path from 2026-10-23 to 2026-11-20: 51 of
+  `omp/plugins/package.json`, cut to three (`dc0a7398`, which moved the first set from `v6.3.0` to
+  `v7.0.1`, and two that changed other dependencies), and 29 of `installers/omp.sh`, cut to five
+  (`1e99dfa8`, `c5f48792`, `76135b6e` and `371649f5`, which each moved the second set's pin, and
+  `5218006e`, which did not). From 2026-11-20 to 2026-11-22, F7's window: two and three, all kept,
+  none of which moves a pin. Each commit is cut to its sha, its committer's date and its parents'
+  shas, and both manifests at each commit and at its first parent are cut as above.
+
+The replacements are `names`, `skills` and the pools' roots in the script, each name by the made-up
+name of the table. One more: an older pin of the second set, `b4adb2f0…` and `a1c1209c…` (40 hex
+digits each), keeps its first 12 hex digits (`short`), since no answer here gives it as a `sha`
+(the scan below accounts for a 40-hex run only where one does). Each text is the cut jq or grep
+wrote, and every value in it is GitHub's but those names.
+
+## F14: planted count rows (`F14-count-planted.txt`)
+
+Made up, read from no system: count.sql's rows in `F7-count-first.txt`'s psql shape, of the store
+`store_a`, for the sets of F10. Its summary row is that of the query of 2026-11-22, the day after
+F7's window ends (`mtime_from` 1795305600000, `mtime_to` 1795392000000), as a count queries the
+days after its window's end for the files written then; each count row is a read on 2026-11-21,
+inside the window, of one file with a hash of its own. The rows: (a) `alpha-skill-one` by the
+Skill call `alpha-set:alpha-skill-one`, and in that file also at `/opt/acme/fork/skills/`; (b)
+`beta-skill-one` by `beta-set:beta-skill-one`; (c) `alpha-skill-two` under
+`/srv/acme/.dotfiles/omp/plugins/node_modules/alpha-set/skills/`; (d) `beta-skill-one` under
+`/srv/acme/.dotfiles/vendor/beta-set/skills/`, with a `reference` read of its `references/fix.md`
+in the same file; (e) `beta-skill-two` at `/opt/acme/plugin/dist/skills/`; (f) `no-such-skill` at
+`skill://no-such-skill`; a read of `alpha-skill-three` in Claude Code's plugin cache
+(`/srv/acme/.claude/plugins/cache/acme-plugins/alpha-set/5.0.7/skills/`); a read of
+`alpha-skill-two` at `skill://alpha-skill-two`, with no path; and a read of `beta-skill-two` at the
+upstream's raw GitHub URL. A scratch script wrote the file: each row as psql prints count.sql's
+JSON (`"key" : value`, in count.sql's key order), under a header `total` and a rule of dashes as
+wide as the widest row, and the footer `(12 rows)`.
 
 ## The scan
 

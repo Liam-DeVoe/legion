@@ -1,0 +1,402 @@
+{
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=82e8f6dcac42f7e9e6f80033755bcea084d18b0c": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"18.52.2\",\n    \"knives\": \"github:acme/knives#v5.1.0\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=82e8f6dcac42f7e9e6f80033755bcea084d18b0c": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/skills-sources.json?ref=82e8f6dcac42f7e9e6f80033755bcea084d18b0c": "{\n  \"sources\": [\n    {\n      \"root\": \"plugins/acme\"\n    },\n    {\n      \"root\": \"vendor/stack\"\n    },\n    {\n      \"root\": \"vendor/delta/plugins/delta\"\n    },\n    {\n      \"root\": \"vendor/beta-set\"\n    }\n  ]\n}\n",
+  "repos/acme/alpha-set/git/ref/tags/v7.0.1": {
+    "ref": "refs/tags/v7.0.1",
+    "object": {
+      "sha": "cfd50a286baea35041505ed068c878d389ca9f7f",
+      "type": "tag"
+    }
+  },
+  "repos/acme/alpha-set/git/tags/cfd50a286baea35041505ed068c878d389ca9f7f": {
+    "sha": "cfd50a286baea35041505ed068c878d389ca9f7f",
+    "tag": "v7.0.1",
+    "object": {
+      "sha": "2ce8aa15d05bd57213e6f746f953aafb7ded7a8b",
+      "type": "commit"
+    }
+  },
+  "repos/acme/alpha-set/git/ref/tags/v4.1.1": {
+    "ref": "refs/tags/v4.1.1",
+    "object": {
+      "sha": "469a6d81ebb8b827e284d4afb090c6c622d97747",
+      "type": "commit"
+    }
+  },
+  "repos/acme/alpha-set/contents/package.json?ref=2ce8aa15d05bd57213e6f746f953aafb7ded7a8b": "{\n  \"name\": \"alpha-set\",\n  \"version\": \"7.0.1\",\n  \"pi\": {\n    \"skills\": [\n      \"./skills\"\n    ]\n  }\n}\n",
+  "repos/acme/gamma-set/contents/package.json?ref=dc7e6687840aefce14c3af2977f00487fd736bcd": "{\n  \"name\": \"gamma-set\",\n  \"version\": \"18.14.1\",\n  \"omp\": {\n    \"skills\": [\n      \"dist/skills\"\n    ]\n  }\n}\n",
+  "repos/acme/alpha-set/git/trees/2ce8aa15d05bd57213e6f746f953aafb7ded7a8b?recursive=1": {
+    "sha": "2ce8aa15d05bd57213e6f746f953aafb7ded7a8b",
+    "tree": [
+      {
+        "path": "README.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "c5bb59fdaf17ba154e803c549cd71a73ef36c24b"
+      },
+      {
+        "path": "package.json",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "acc6562f5a83ab15b491c9432734060c5a6c6a82"
+      },
+      {
+        "path": "skills",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "cef5ac39cf85a3a00d80a5f5916d43d0aa333b99"
+      },
+      {
+        "path": "skills/alpha-skill-one",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "3d8a23691e919f5acfd31d45f76bdc168d24ca1b"
+      },
+      {
+        "path": "skills/alpha-skill-one/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7f5eef02f894c4f24cea313660c0465ce9c084ed"
+      },
+      {
+        "path": "skills/alpha-skill-two",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "108961c080a6837ad8a188a553e593cc5e6df62d"
+      },
+      {
+        "path": "skills/alpha-skill-two/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "62fc752aaef59a8bbed5d305f4cadc60f8ae07ed"
+      },
+      {
+        "path": "skills/alpha-skill-two/root-cause-tracing.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "0e72e8f9566b7ef85e814633d1feacad9d0c5868"
+      },
+      {
+        "path": "skills/alpha-skill-three",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "660ede63b84ce5d07ef28cccc2973165e2ca06e2"
+      },
+      {
+        "path": "skills/alpha-skill-three/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "09d76b79dd4080fe4dcc9bfb3c54d05dbff8a563"
+      }
+    ],
+    "truncated": false
+  },
+  "repos/acme/beta-set-plugin/git/trees/8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6?recursive=1": {
+    "sha": "8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6",
+    "tree": [
+      {
+        "path": ".agents/skills/beta-skill-work/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4ba588944b05c05afa713aff9bdd0cd3e8761453"
+      },
+      {
+        "path": "package.json",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9aa9328c3493095396ea4ab9953e34170e37ce67"
+      },
+      {
+        "path": "skills",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "7db23201ff8193a94d87726b55458605eb0c49a9"
+      },
+      {
+        "path": "skills/beta-skill-one",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "d7ceca8612695659dadbd1301720c7d50c45c532"
+      },
+      {
+        "path": "skills/beta-skill-one/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7dc5ef7cc5b1dae2f1885581495a4765a3ad3f05"
+      },
+      {
+        "path": "skills/beta-skill-one/references",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "830eea45c6c4cc244d3b00d620ff16d98c0a03fd"
+      },
+      {
+        "path": "skills/beta-skill-one/references/fix.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "d4215596544293fd20b414a3b5d2bccb798629c5"
+      },
+      {
+        "path": "skills/beta-skill-three",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "74bb9acab50740aaf1db01ec017b7d5d3f9bc9f4"
+      },
+      {
+        "path": "skills/beta-skill-three/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "643981e4ef827e0d595165cfab1bf081b77ae1c3"
+      },
+      {
+        "path": "skills/beta-skill-three/references",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "e7682d7fa487e74e17ff16e21e9c709b408f9f04"
+      },
+      {
+        "path": "skills/beta-skill-two",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "72432338e61cc24f753c11ef28460a5533356d9b"
+      },
+      {
+        "path": "skills/beta-skill-two/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "fc57944a04c82f6ced836a54d4187413ebcd50c8"
+      },
+      {
+        "path": "skills/beta-skill-two/references",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "8cc38fbe595722799e5bac2f6cd569666bb76842"
+      },
+      {
+        "path": "tests/fixtures/sample-plugin/skills/beta-sample/SKILL.md",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "523e25acb8382201f8adee19bcf9fb7029d8edd0"
+      }
+    ],
+    "truncated": false
+  },
+  "repos/acme/alpha-set": {
+    "full_name": "acme/alpha-set",
+    "fork": false
+  },
+  "repos/acme/beta-set-plugin": {
+    "full_name": "acme/beta-set-plugin",
+    "fork": true,
+    "parent": {
+      "full_name": "acme-upstream/beta-set-plugin"
+    },
+    "source": {
+      "full_name": "acme-upstream/beta-set-plugin"
+    }
+  },
+  "repos/acme/dotfiles/commits?path=omp/plugins/package.json&since=2026-10-23T00:00:00Z&until=2026-11-20T00:00:00Z&per_page=100&page=1": [
+    {
+      "sha": "311f0b3bd75e9eec3ea88020460f271200dfb6b7",
+      "commit": {
+        "committer": {
+          "date": "2026-10-27T23:12:34Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "4f893fb2af8e4273086518ca223e21e2091027a6"
+        }
+      ]
+    },
+    {
+      "sha": "dc0a7398282a43ba3b9a49b91927e4d44a28ddb9",
+      "commit": {
+        "committer": {
+          "date": "2026-10-27T04:29:04Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "0e57d4408765e23bbfe38cd975d3c2b5d5472be1"
+        }
+      ]
+    },
+    {
+      "sha": "8c3c6cac7c10dae8f44320c90ebf410427b6ace4",
+      "commit": {
+        "committer": {
+          "date": "2026-10-27T04:16:32Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "e537e0113b6a1cfcba4f782425c869ca0671cc9a"
+        }
+      ]
+    }
+  ],
+  "repos/acme/dotfiles/commits?path=installers/omp.sh&since=2026-10-23T00:00:00Z&until=2026-11-20T00:00:00Z&per_page=100&page=1": [
+    {
+      "sha": "5218006e660f18bbb38c643c127c4cc95f9e9e60",
+      "commit": {
+        "committer": {
+          "date": "2026-10-25T21:45:21Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "8b455c9d442ede399d1d4c407910d90b96d6000a"
+        }
+      ]
+    },
+    {
+      "sha": "371649f517018dd6d7a4cb235a557b8b98032115",
+      "commit": {
+        "committer": {
+          "date": "2026-10-25T00:31:32Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "d82926f0f38078351c85244bea09bd293557141f"
+        }
+      ]
+    },
+    {
+      "sha": "76135b6e9e25d5038aa39aa81f24eecef4ccc4cc",
+      "commit": {
+        "committer": {
+          "date": "2026-10-24T23:24:57Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "76f59242033817cf26be2c3d0f795dfceceaabaf"
+        }
+      ]
+    },
+    {
+      "sha": "c5f487920f96a5889db9273a48bc7aae6723b40f",
+      "commit": {
+        "committer": {
+          "date": "2026-10-24T22:47:21Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "39438f8af43ac00260b688faa554a88ed2eec676"
+        }
+      ]
+    },
+    {
+      "sha": "1e99dfa8eeefb6e7e7ae128cd17ed723cc7c616b",
+      "commit": {
+        "committer": {
+          "date": "2026-10-24T22:40:26Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "747903f230475cc2de4896ddccbe8af8eed23ae9"
+        }
+      ]
+    }
+  ],
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=311f0b3bd75e9eec3ea88020460f271200dfb6b7": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"10.11.1\",\n    \"knives\": \"github:acme/knives#v3.1.15\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=4f893fb2af8e4273086518ca223e21e2091027a6": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"10.11.1\",\n    \"knives\": \"github:acme/knives#v3.1.14\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=dc0a7398282a43ba3b9a49b91927e4d44a28ddb9": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"10.11.1\",\n    \"knives\": \"github:acme/knives#v3.1.14\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=0e57d4408765e23bbfe38cd975d3c2b5d5472be1": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"10.11.1\",\n    \"knives\": \"github:acme/knives#v3.1.14\",\n    \"alpha-set\": \"github:acme/alpha-set#v6.3.0\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=8c3c6cac7c10dae8f44320c90ebf410427b6ace4": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"10.11.1\",\n    \"knives\": \"github:acme/knives#v3.1.14\",\n    \"alpha-set\": \"github:acme/alpha-set#v6.3.0\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=e537e0113b6a1cfcba4f782425c869ca0671cc9a": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"10.11.1\",\n    \"knives\": \"github:acme/knives#v3.1.13\",\n    \"alpha-set\": \"github:acme/alpha-set#v6.3.0\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=5218006e660f18bbb38c643c127c4cc95f9e9e60": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=8b455c9d442ede399d1d4c407910d90b96d6000a": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=371649f517018dd6d7a4cb235a557b8b98032115": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=d82926f0f38078351c85244bea09bd293557141f": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set b4adb2f0312d\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=76135b6e9e25d5038aa39aa81f24eecef4ccc4cc": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set b4adb2f0312d\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=76f59242033817cf26be2c3d0f795dfceceaabaf": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=c5f487920f96a5889db9273a48bc7aae6723b40f": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=39438f8af43ac00260b688faa554a88ed2eec676": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set a1c1209cf1e9\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=1e99dfa8eeefb6e7e7ae128cd17ed723cc7c616b": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set a1c1209cf1e9\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=747903f230475cc2de4896ddccbe8af8eed23ae9": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set b4adb2f0312d\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/commits?path=omp/plugins/package.json&since=2026-11-20T00:00:00Z&until=2026-11-22T00:00:00Z&per_page=100&page=1": [
+    {
+      "sha": "faf4908b7824d2628a8010fa8dd48146252f7e77",
+      "commit": {
+        "committer": {
+          "date": "2026-11-21T01:11:28Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "408063ced855878e3605ce27a0465e2248ae55ec"
+        }
+      ]
+    },
+    {
+      "sha": "69f5e1ace006ca89c9c0d3a25f03e97806e9cd24",
+      "commit": {
+        "committer": {
+          "date": "2026-11-20T15:33:42Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "218ff3e2bcff654f0b2992f97c6a2ac6a3899fac"
+        }
+      ]
+    }
+  ],
+  "repos/acme/dotfiles/commits?path=installers/omp.sh&since=2026-11-20T00:00:00Z&until=2026-11-22T00:00:00Z&per_page=100&page=1": [
+    {
+      "sha": "bb466c35a166e884ecd5c3697d918132332e031a",
+      "commit": {
+        "committer": {
+          "date": "2026-11-21T23:34:54Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "439c50279b32df0d80e54a9e72b4778bc92cf3e6"
+        }
+      ]
+    },
+    {
+      "sha": "ac7884363623cda1c83cd519174ac7bb8eb91c61",
+      "commit": {
+        "committer": {
+          "date": "2026-11-21T04:03:28Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "d343ce39d75cd40c67642de589b59b549674f419"
+        }
+      ]
+    },
+    {
+      "sha": "b1d3d4d3c845f79ce0927ffc2b32d46563b33c0a",
+      "commit": {
+        "committer": {
+          "date": "2026-11-20T04:21:16Z"
+        }
+      },
+      "parents": [
+        {
+          "sha": "f99b0ca844366113274ce857f561530a76f6f283"
+        }
+      ]
+    }
+  ],
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=faf4908b7824d2628a8010fa8dd48146252f7e77": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"18.52.2\",\n    \"knives\": \"github:acme/knives#v5.1.0\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=408063ced855878e3605ce27a0465e2248ae55ec": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"18.52.2\",\n    \"knives\": \"github:acme/knives#v5.1.0\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=69f5e1ace006ca89c9c0d3a25f03e97806e9cd24": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"18.52.2\",\n    \"knives\": \"github:acme/knives#v5.1.0\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/omp/plugins/package.json?ref=218ff3e2bcff654f0b2992f97c6a2ac6a3899fac": "{\n  \"name\": \"omp-plugins\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@acme/tools\": \"18.52.2\",\n    \"knives\": \"github:acme/knives#v3.2.3\",\n    \"alpha-set\": \"github:acme/alpha-set#v7.0.1\"\n  }\n}\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=bb466c35a166e884ecd5c3697d918132332e031a": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=439c50279b32df0d80e54a9e72b4778bc92cf3e6": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=ac7884363623cda1c83cd519174ac7bb8eb91c61": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=d343ce39d75cd40c67642de589b59b549674f419": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=b1d3d4d3c845f79ce0927ffc2b32d46563b33c0a": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n",
+  "repos/acme/dotfiles/contents/installers/omp.sh?ref=f99b0ca844366113274ce857f561530a76f6f283": "#!/bin/bash\nsource \"$(dirname \"${BASH_SOURCE[0]}\")/lib.sh\"\n# Vendor checkouts behind the skills-sources.json pools.\nensure_vendor https://github.com/acme/beta-set-plugin.git beta-set 8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6\nensure_vendor https://github.com/acme/stack.git stack\n"
+}
