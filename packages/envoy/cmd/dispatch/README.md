@@ -5233,7 +5233,7 @@ What each node type weighs:
 | `table_header_row`, `table_row` | a row | 3 | block id |
 | `table_header`, `table_cell` | a cell and its paragraph | 4 | block id, alignment, spans |
 | `footnote_definition` | a footnote definition | 3, and 3 when empty | block id, label |
-| `callout`, `ask`, `requirement`, `plan_task`, `check` (typed blocks) | a `:::name{…}` block | 3, and 3 when empty | block id and the schema's attributes |
+| `callout`, `ask`, `requirement`, `plan_task`, `plan_role`, `check` (typed blocks) | a `:::name{…}` block | 3, and 3 when empty | block id and the schema's attributes |
 | `text` | a run of text; each mark a run carries is the inline syntax that opens it | 1 | none (marks) |
 | `hardbreak` | a hard line break | 3, beside its line's 1 | isInline |
 | `image` | an image; its alt text's nodes weigh 1 each | 3 | source, alt, title |
