@@ -510,15 +510,17 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 const suspendPoll = 250 * time.Millisecond
 
 // claimsSuspend suspends --claim. The daemon suspends at once (200) a ready or idle claim whose
-// last turn's end started no copy of the issue's workspace that is still being taken. It holds the
-// suspension of one in a turn (202; supervise's holdSuspension), of one
-// launching or shim_connected until its agent is ready (202; supervise's holdSuspendUntilReady),
-// and of one idle or ready while that copy is still being taken (202; supervise's suspend), which
-// the command then waits out (awaitSuspended) inside its --wait. It prints the claim as it ends,
-// suspended. A suspend of a worker whose start is still running is answered 200: the request
-// stops that start before it waits for the claim's decision (supervise's Handle), and the start
-// is charged nothing. A suspend of a launching claim whose paced wake waits over no process is
-// answered 200 as well, decided where it arrives.
+// last turn's end started no copy of the issue's workspace that is still being taken, or whose
+// copy is still being taken but 4 minutes have passed since that turn's end, the copy's
+// budget (supervise's turnCopyInBudget). It holds the suspension of one in a turn (202;
+// supervise's holdSuspension), of one launching or shim_connected until its agent is ready (202;
+// supervise's holdSuspendUntilReady), and of one idle or ready while that copy is still being
+// taken within those 4 minutes (202; supervise's suspend), which the command then waits out
+// (awaitSuspended) inside its --wait. It prints the claim as it ends, suspended. A suspend of a
+// worker whose start is still running is answered 200: the request stops that start before it
+// waits for the claim's decision (supervise's Handle), and the start is charged nothing. A suspend
+// of a launching claim whose paced wake waits over no process is answered 200 as well, decided
+// where it arrives.
 func claimsSuspend(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int { return c.suspend(ctx, *token) }

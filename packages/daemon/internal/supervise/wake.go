@@ -401,14 +401,13 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
-		// A stop held for a turn's copy: the wake waits for that copy too (the doc above). now is
-		// read before the hold's own read of the clock, so the park it answers is never negative.
-		if now := m.deps.Clock.Now(); m.turnCopyHolds() {
+		// A stop held for a turn's copy: the wake waits for that copy too (the doc above).
+		if m.turnCopyHolds() {
 			c := m.turnCopy
 			m.log.Info("supervise: this claim's wake came due while its held stop waits for the copy of its turn's end; the wake waits for that copy too",
 				"kind", waiting.kind, "copy", c.seq, "until", c.due, "reason", m.held.Reason, "by", m.held.By)
 			waiting.at = c.due
-			return m.parkWake(ctx, waiting, c.due.Sub(now))
+			return m.parkWake(ctx, waiting, max(0, c.due.Sub(m.deps.Clock.Now())))
 		}
 		return m.endHeld(ctx, true, stopOwed)
 	}

@@ -82,8 +82,7 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 	h, copies := copyingHarness(t)
 	task := turnEndedUnderAHold(t, h, copies, func() { holdStop(t, h, "LEGION-208 left implementing") })
 
-	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
-		Error: "prompt is too long", HTTPStatus: 400}); err != nil {
+	if err := h.handle(holdingProviderError(h, task)); err != nil {
 		t.Logf("the prompt's result answered %v", err)
 	}
 
@@ -100,12 +99,7 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 func TestARefusedTurnRunThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	h, copies, _ := copyWaiting(t)
 
-	for sequence := uint64(1); sequence <= uint64(h.deps.Limits.LaunchFailures); sequence++ {
-		if err := h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
-			Refused: true, Message: "the provider refused the request"}); err != nil {
-			t.Logf("the turn outcome %d answered %v", sequence, err)
-		}
-	}
+	refuseTurnsToTheLimit(t, h)
 
 	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByDaemon)
 }

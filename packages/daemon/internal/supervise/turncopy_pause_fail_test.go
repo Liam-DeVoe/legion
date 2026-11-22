@@ -65,8 +65,7 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyAPausesHeldStopIsOve
 	copies := &turnEndCopies{}
 	h, task := pauseHeldForTheResult(t, copies, nil)
 
-	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
-		Error: "prompt is too long", HTTPStatus: 400}); err != nil {
+	if err := h.handle(holdingProviderError(h, task)); err != nil {
 		t.Logf("the prompt's result answered %v", err)
 	}
 
@@ -84,12 +83,7 @@ func TestARefusedTurnRunThatFailsTheClaimWaitsForTheTurnsCopyAPausesHeldStopIsOv
 	copies := &turnEndCopies{}
 	h, task := pauseHeldForTheResult(t, copies, nil)
 
-	for sequence := uint64(1); sequence <= uint64(h.deps.Limits.LaunchFailures); sequence++ {
-		if err := h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
-			Refused: true, Message: "the provider refused the request"}); err != nil {
-			t.Logf("the turn outcome %d answered %v", sequence, err)
-		}
-	}
+	refuseTurnsToTheLimit(t, h)
 	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
 		Error: "overloaded_error", HTTPStatus: 529}); err != nil {
 		t.Logf("the prompt's result answered %v", err)

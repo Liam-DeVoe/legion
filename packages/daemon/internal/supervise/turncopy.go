@@ -80,10 +80,13 @@ func (m *Machine) copyTurnEnd() {
 // copy: its asker read the claim in no turn and is owed the stop at once. The machine never waits
 // on its own goroutine: the wait is this mark and a timer, and the copy's end is an event of its
 // own. No copy still being taken — the daemon started none, or its end has come back — waits
-// nothing, and the stop runs at once.
+// nothing, and the stop runs at once. Nor does a copy past its due (turnCopyInBudget): a held
+// stop's wait for the copy ends there (turnCopyHolds), so a stop whose wait would begin past it —
+// a pause's stop at the prompt's answer, a compaction's end, a turn's end — runs in that same
+// decision, as it runs where no copy is taken, rather than on a bound that has already passed.
 func (m *Machine) waitForTurnCopy() bool {
 	c := m.turnCopy
-	if c == nil {
+	if c == nil || !m.turnCopyInBudget() {
 		return false
 	}
 	c.stopWaits = true
@@ -132,17 +135,18 @@ func (m *Machine) turnCopyInBudget() bool {
 // copy's end or at the due (endTurnCopyWait). One whose wait has not begun begins it once what it
 // is held for is over — the end of the turn it was held for (turnEnded), which is where a busy
 // answer leaves it, or, for a pause's stop, the prompt's answer (stopAfterAnswer, which states
-// that rule) — and runs then the same way, at once where the due has passed (waitForTurnCopy).
-// Where code needs whether the wait has begun, it reads the mark itself: a new suspension, which
-// is held for the copy within its budget (turnCopyInBudget) and begins the wait where no held stop
-// has begun it, and is decided at once past the due (suspend); the held stop's deadline, whose
-// line says which bound ran out (suspendAtTimeout); and the copy's own start and end, which carry
-// the mark to a later copy and run the waiting stop (copyTurnEnd, endTurnCopyWait).
+// that rule) — and runs then the same way; past the due it waits for nothing and runs in that
+// decision (waitForTurnCopy). Where code needs whether the wait has begun, it reads the mark
+// itself: a new suspension, which begins the wait where no held stop has begun it (suspend); the
+// held stop's deadline, whose line says which bound ran out (suspendAtTimeout); and the copy's own
+// start and end, which carry the mark to a later copy and run the waiting stop (copyTurnEnd,
+// endTurnCopyWait).
 //
 // The turn-copy tests of this package (turncopy_*_test.go, pause_noturn_result_test.go) hold each
 // site in a daemon's stop that waits for the copy and in a pause's stop whose wait has not begun,
-// the stall backstop, the parked wake and a new suspension past the due as well, and k9's wait
-// control (dispatch://INFRA-1117) holds the wait.
+// and each site past the due as well: the seven guards of turncopy_past_due_test.go, the stall
+// backstop and the parked wake, besides a new suspension and a pause's stop at the prompt's answer
+// past the due. k9's wait control (dispatch://INFRA-1117) holds the wait.
 func (m *Machine) turnCopyHolds() bool {
 	return m.held != nil && m.turnCopyInBudget()
 }

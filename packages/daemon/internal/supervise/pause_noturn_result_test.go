@@ -23,6 +23,43 @@ func noTurnResult(h *harness, task string) StreamPromptResult {
 	return StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: false, Error: "the agent ran no turn"}
 }
 
+// holdingProviderError is the prompt's result for task saying the turn it ran ended in a provider
+// error that holds the issue: a 400, a request too long for the model (holdsTheIssue), which fails
+// the claim where no copy holds its stop. A 529 is retried instead, so the status is what decides
+// the path a test takes.
+func holdingProviderError(h *harness, task string) StreamPromptResult {
+	return StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
+		Error: "prompt is too long", HTTPStatus: 400}
+}
+
+// refuseTurnsToTheLimit reports refused turns of h's claim, one for each sequence up to the
+// launch-failure limit (RequestTurnOutcome), which fails the claim where no copy holds its stop
+// (turnOutcome). What each report was answered is logged rather than failed on.
+func refuseTurnsToTheLimit(t *testing.T, h *harness) {
+	t.Helper()
+	for sequence := uint64(1); sequence <= uint64(h.deps.Limits.LaunchFailures); sequence++ {
+		if err := h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
+			Refused: true, Message: "the provider refused the request"}); err != nil {
+			t.Logf("the turn outcome %d answered %v", sequence, err)
+		}
+	}
+}
+
+// registerOnTheOlderContract has the daemon speak a newer plugin contract than h's claim
+// (speaksAnOlderContract), marks the relaunch for that contract as already made
+// (Claim.PluginRelaunchFor), and registers the claim on the contract it speaks: a registration
+// staleRegistration charges and relaunches where no copy holds the claim's stop. It answers the
+// contract the registration named and what it was answered.
+func registerOnTheOlderContract(h *harness) (int, error) {
+	speaksAnOlderContract(h)
+	stale := h.claim().PluginContract
+	h.m.mu.Lock()
+	h.m.claim.PluginRelaunchFor = refreshContract
+	h.m.mu.Unlock()
+	return stale, h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+		CapabilityHash: []byte("capability"), PluginContract: stale})
+}
+
 // Below the prompt-failure limit, with no copy started at the turn's end, the result is charged
 // and the pause's stop then runs, once: the claim is suspended by the pause.
 //

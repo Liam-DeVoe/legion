@@ -543,9 +543,10 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 }
 
 // dropHeld ends the held suspension without running it, and with it a wait of that stop's for
-// the copy its turn's end started (waitForTurnCopy): the copy goes on and its end runs nothing,
-// and a suspension that reaches the claim while the copy is still being taken starts a wait of its
-// own, bounded again at the copy's budget (suspend).
+// the copy its turn's end started (waitForTurnCopy): the copy goes on and its end runs nothing.
+// A suspension that reaches the claim afterwards is decided as suspend decides any: held, with a
+// wait of its own for the rest of the copy's budget, while the copy is still being taken within
+// it, and decided at once where the copy's due has passed (turnCopyInBudget).
 func (m *Machine) dropHeld() {
 	m.held, m.heldLaunch = nil, false
 	m.disarm(TimerSuspend)

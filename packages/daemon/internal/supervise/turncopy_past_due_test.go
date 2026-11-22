@@ -61,8 +61,7 @@ func TestEachGuardActsPastTheTurnsCopysDueAsWhereNoCopyIsTaken(t *testing.T) {
 		// A provider error that holds the issue fails the claim (providerErrored).
 		{name: "AProviderErrorThatHoldsTheIssueFailsTheClaim", act: func(t *testing.T, h *harness, task string) {
 			failsOnceAt(t, h, "the provider error came", func() {
-				if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
-					Error: "prompt is too long", HTTPStatus: 400}); err != nil {
+				if err := h.handle(holdingProviderError(h, task)); err != nil {
 					t.Logf("the prompt's result answered %v", err)
 				}
 			})
@@ -70,12 +69,7 @@ func TestEachGuardActsPastTheTurnsCopysDueAsWhereNoCopyIsTaken(t *testing.T) {
 		// A run of refused turns at the launch-failure limit fails the claim (turnOutcome).
 		{name: "ARunOfRefusedTurnsAtTheLimitFailsTheClaim", act: func(t *testing.T, h *harness, _ string) {
 			failsOnceAt(t, h, "the run of refused turns reached the limit", func() {
-				for sequence := uint64(1); sequence <= uint64(h.deps.Limits.LaunchFailures); sequence++ {
-					if err := h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
-						Refused: true, Message: "the provider refused the request"}); err != nil {
-						t.Logf("the turn outcome %d answered %v", sequence, err)
-					}
-				}
+				refuseTurnsToTheLimit(t, h)
 			})
 		}},
 		// A stale-plugin relaunch replaces the process, which ends the held stop (refreshPlugin,
@@ -92,15 +86,9 @@ func TestEachGuardActsPastTheTurnsCopysDueAsWhereNoCopyIsTaken(t *testing.T) {
 		// is paused, so its gate holds that launch and stops the claim for the pause, as it does
 		// any launch of a paused project (reserveWake, pauseGate, pauseStopDue).
 		{name: "AStaleRegistrationIsChargedAndItsRelaunchRaised", act: func(t *testing.T, h *harness, _ string) {
-			speaksAnOlderContract(h)
-			stale := h.claim().PluginContract
-			h.m.mu.Lock()
-			h.m.claim.PluginRelaunchFor = refreshContract
-			h.m.mu.Unlock()
 			charged := h.claim().Budgets.LaunchFailures
 
-			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
-				CapabilityHash: []byte("capability"), PluginContract: stale})
+			stale, err := registerOnTheOlderContract(h)
 
 			want := claim.StalePluginContract(stale, refreshContract).Message
 			var refusal claim.Refusal
@@ -129,14 +117,43 @@ func TestEachGuardActsPastTheTurnsCopysDueAsWhereNoCopyIsTaken(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, task := pauseHeldForTheResult(t, &turnEndCopies{}, tc.tune)
-			h.advance(turnCopyDue(t, h).Sub(h.clock.Now()))
-			turnCopyDue(t, h)
-			if c := h.claim(); c.State != StateIdle || !c.SuspensionHeld {
-				t.Fatalf("the claim at the copy's due is %s holding a stop = %t, want it idle, holding the pause's stop", c.State, c.SuspensionHeld)
-			}
-
+			h, task := pauseHeldPastTheCopysDue(t, tc.tune)
 			tc.act(t, h, task)
 		})
+	}
+}
+
+// pauseHeldPastTheCopysDue is pauseHeldForTheResult's claim with the clock moved to the due of
+// the copy its turn's end started, that copy still unreported: idle, holding the pause's stop,
+// which still waits for the prompt's answer. It answers the delivery the answer names.
+func pauseHeldPastTheCopysDue(t *testing.T, tune func(*Deps)) (*harness, string) {
+	t.Helper()
+	h, task := pauseHeldForTheResult(t, &turnEndCopies{}, tune)
+	h.advance(turnCopyDue(t, h).Sub(h.clock.Now()))
+	turnCopyDue(t, h)
+	if c := h.claim(); c.State != StateIdle || !c.SuspensionHeld {
+		t.Fatalf("the claim at the copy's due is %s holding a stop = %t, want it idle, holding the pause's stop", c.State, c.SuspensionHeld)
+	}
+	return h, task
+}
+
+// A pause's stop begins its wait for the copy of its turn's end at the prompt's answer
+// (stopAfterAnswer, stopAtResult). Past that copy's due, with the copy still unreported, no wait
+// begins (waitForTurnCopy): the stop runs in the answer's own decision, as it does where no copy is
+// taken, and the claim is suspended by the pause. Nothing says the copy ran out of its budget,
+// since no wait for it was cut off.
+//
+// The control is waitForTurnCopy without the check of the copy's budget: the wait then begins
+// past the due on a bound armed for no time, the answer stops nothing, and the test fails there.
+func TestAPausesStopAtThePromptsAnswerPastTheCopysDueRunsInThatDecision(t *testing.T) {
+	h, task := pauseHeldPastTheCopysDue(t, nil)
+
+	stopsOnceAt(t, h, SuspendedByReleased, "the prompt's answer came", func() {
+		if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true}); err != nil {
+			t.Logf("the prompt's result answered %v", err)
+		}
+	})
+	if lines := h.logs.lines("did not end within its budget"); len(lines) != 0 {
+		t.Fatalf("the stop past the copy's due logged %q, want no line that the copy ran out of its budget", lines)
 	}
 }

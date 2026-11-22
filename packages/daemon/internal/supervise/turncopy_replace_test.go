@@ -349,16 +349,10 @@ func TestAStaleRegistrationUnderAHeldStopOverTheTurnsCopyIsNeitherRelaunchedNorC
 	for _, window := range copyWindows() {
 		t.Run(window.name, func(t *testing.T) {
 			h, _, _ := window.open(t)
-			speaksAnOlderContract(h)
 			loc := h.locator()
-			stale := h.claim().PluginContract
-			h.m.mu.Lock()
-			h.m.claim.PluginRelaunchFor = refreshContract
-			h.m.mu.Unlock()
 			charged := h.claim().Budgets.LaunchFailures
 
-			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
-				CapabilityHash: []byte("capability"), PluginContract: stale})
+			stale, err := registerOnTheOlderContract(h)
 
 			want := fmt.Sprintf("pi-legion speaks daemon API contract %d; this daemon requires %d: the daemon relaunches nothing: "+
 				"this process's exit on this refusal meets the stop held over this claim, which suspends it, and the claim's next launch is onto the current plugin",
