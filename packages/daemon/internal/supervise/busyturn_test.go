@@ -177,7 +177,9 @@ func TestABusyAnswerToAWaitedOutPromptHoldsTheTaskUntilTheTurnEnds(t *testing.T)
 			t.Fatalf("sends into the turn = %d (%+v), want the %d made before the busy answer", len(sent), sent, sends)
 		}
 		h.wantState(StateWorking)
-		h.wantBudgets(Budgets{PromptFailures: 1})
+		// The busy answer is the agent's answer, so it ends the run of silent charges the bound
+		// began: the agent is live.
+		h.wantBudgets(Budgets{})
 	}
 
 	for _, tc := range []struct {

@@ -36,13 +36,12 @@ var (
 // a shim's failed adoption, enrollment, token read, bundle or workspace read. The connection is
 // fine; the agent said no.
 //
-// A refused prompt is runtime.ErrPromptRefused, which is what the supervisor charges a prompt
-// budget on unless Reason is OMP's busy answer (runtime.RefusalReason); a refused adoption is
-// runtime.ErrAdoptRefused, charged to that same budget with no such exemption (the busy answer is
-// OMP's about a turn, not the shim's about a working copy); and a refused token request is
-// runtime.ErrTokenRefused. No other refusal is any of them — a refused negotiation ahead of the
-// prompt, a refused get_state — so the match is on the command rather than an unconditional
-// Unwrap.
+// A refused prompt is runtime.ErrPromptRefused, which the supervisor reads as the agent's answer,
+// busy or not by Reason (runtime.RefusalReason); a refused adoption is runtime.ErrAdoptRefused,
+// the shim's answer about the working copy, which has no busy form (the busy answer is OMP's about
+// a turn); and a refused token request is runtime.ErrTokenRefused. No other refusal is any of
+// them — a refused negotiation ahead of the prompt, a refused get_state — so the match is on the
+// command rather than an unconditional Unwrap.
 type RefusedError struct {
 	Claim   claim.Token
 	Command string

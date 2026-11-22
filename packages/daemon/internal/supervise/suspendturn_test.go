@@ -368,12 +368,11 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 	h.wantCalls("Suspend", 1)
 }
 
-// A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
-// so a stop the runtime refuses leaves the claim working and still holding the suspension, retried
-// at the probe interval, rather than marked suspended over a process that still runs. Nothing is
-// charged — here the retirement would be the claim's last, which would fail it. The prompt was on
-// its way when a turn began, and the agent refuses it at the prompt-failure limit.
-func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
+// A prompt the agent refuses while a suspension is held for its turn stops nothing: the refusal is
+// an answer, charged nothing even at a prompt-failure limit of one, so the process is kept and the
+// held suspension waits for the turn's end, which runs it. The prompt was on its way when a turn
+// began, and the agent refuses it.
+func TestARefusalWhileASuspensionIsHeldLeavesTheStopToTheTurnsEnd(t *testing.T) {
 	h := newBareHarness(t)
 	h.deps.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1}
 	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
@@ -394,20 +393,21 @@ func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
 	if err := h.m.Handle(h.ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
 		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
 	}
-	h.rt.FailSuspend(errBoom)
 
 	gated.release <- struct{}{}
 	h.m.Wait()
 
 	h.wantState(StateWorking)
 	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil {
-		t.Fatalf("after the refused stop the claim is %+v, want its process kept and the suspension still held", c)
+		t.Fatalf("after the refusal the claim is %+v, want its process kept and the suspension still held", c)
 	}
-	h.wantCalls("Suspend", 1)
-	h.rt.FailSuspend(nil)
-	h.advance(testProbe)
+	h.wantCalls("Suspend", 0)
+	h.wantBudgets(Budgets{})
+
+	h.must(StreamTurnEnd{Claim: testToken})
+
 	h.wantState(StateSuspended)
-	h.wantCalls("Suspend", 2)
+	h.wantCalls("Suspend", 1)
 	h.wantCalls("Resume", 0)
 	h.wantBudgets(Budgets{})
 }

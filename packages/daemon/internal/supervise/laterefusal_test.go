@@ -136,8 +136,8 @@ func TestAReplayedRefusalOnlyClearsTheMarkItsPromptSet(t *testing.T) {
 
 // Oh My Pi answers a delivery's prompt once, and the shim fans that answer out to every request
 // of the delivery: the re-send this connection is waiting on, and the earlier request whose send
-// was lost in transit, which the shim replays. The re-send's refusal charges the prompt; the
-// replayed copy of the same answer charges nothing more.
+// was lost in transit, which the shim replays. The re-send's refusal is the answer; the replayed
+// copy of the same answer changes nothing more.
 func TestAReplayedCopyOfAnAnsweredRefusalChargesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -149,13 +149,13 @@ func TestAReplayedCopyOfAnAnsweredRefusalChargesNothing(t *testing.T) {
 	if second := h.wantPrompts(2)[1]; second.DeliveryID != first.DeliveryID {
 		t.Fatalf("the re-send went under %s, want the lost send's %s", second.DeliveryID, first.DeliveryID)
 	}
-	charged := h.claim().Budgets
+	before := h.claim().Budgets
 
 	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: "the model provider refused the request", Replayed: true,
 		ConnSequence: h.conn.Sequence()})
 
-	if got := h.claim().Budgets; got != charged {
-		t.Fatalf("budgets after the replayed copy = %+v, want %+v: one refusal is one charge", got, charged)
+	if got := h.claim().Budgets; got != before {
+		t.Fatalf("budgets after the replayed copy = %+v, want %+v: one answer moves the budget once", got, before)
 	}
 }
 

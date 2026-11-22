@@ -1112,6 +1112,13 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// PromptAnswersReached is told of a pending task whose sends the far side has answered with a
+	// failure Limits.PromptFailures times in a row, once per task (answeredFailure), with the
+	// reason the issue's architect is given: the claim, the task and the last answer's text. The
+	// worker is not stopped for those answers, so this is the escalation a retirement and a
+	// failed claim once gave. nil tells nobody. It is called inside the machine's decision, so it
+	// returns at once.
+	PromptAnswersReached func(c Claim, reason string)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1423,6 +1430,11 @@ type Machine struct {
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst.
 	outstanding []string
+	// answeredFailures counts the sends of the pending task the far side answered with a failure
+	// (answeredFailure) since that task was queued, keyed by its QueuedAt (answeredTask), or since
+	// a turn took it (confirm). It is memory only: a daemon restart starts the count again.
+	answeredFailures int
+	answeredTask     time.Time
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of

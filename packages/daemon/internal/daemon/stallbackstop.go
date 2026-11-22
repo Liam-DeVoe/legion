@@ -223,6 +223,37 @@ func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim,
 // `worker-died`, which is what the architect hears of a claim that died rather than stalled.
 const stallBackstopNotice = "worker-stalled"
 
+// promptAnswersReached tells the architect that owns the claim's notices that its pending task
+// keeps failing with an answer while the worker is kept (supervise's Deps.PromptAnswersReached):
+// the machine counts the answers and decides when to tell, once per task, and this writes the
+// `worker-stalled` notice through the stall notice's own rows (enqueueStallNotice), so the same
+// architect reads it, and the controller too for a tree's own architect. The machine calls it
+// inside its decision, so the row is written on a goroutine of its own, bounded by
+// stallNoticeBudget. A row the store refuses is logged and not written again, as a provider-error
+// run's notice is not (providerErrorRunReached): the task is sent again at each sweep either way.
+func (s *supervision) promptAnswersReached(c supervise.Claim, reason string) {
+	if c.Issue == "" || s.enqueue == nil {
+		s.log.Warn("supervise: a pending task keeps failing with an answer, and there is no owner to tell",
+			"claim", c.Token, "issue", c.Issue, "reason", reason)
+		return
+	}
+	go func() {
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), stallNoticeBudget)
+		defer cancel()
+		written, err := s.enqueueStallNotice(ctx, c, reason)
+		switch {
+		case err != nil:
+			s.log.Error("supervise: tell the owner that a pending task keeps failing with an answer",
+				"claim", c.Token, "issue", c.Issue, "error", err)
+		case !written:
+			s.log.Warn("supervise: a pending task of a claim of another project's issue keeps failing with an answer; no owner is told",
+				"claim", c.Token, "issue", c.Issue, "reason", reason)
+		}
+	}()
+}
+
 // stallBackstopRecord is what the owner is told and what the log line carries: the record the
 // daemon read, in one sentence, and what it did about it. It is the same text either way, so a
 // deployment with no workflow leaves the same account in its log as the notice would have

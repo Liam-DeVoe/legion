@@ -1838,10 +1838,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}
-	// The machines' report of a stalled turn they ended goes to supervision, which is built
-	// after their deps: the one callback whose receiver is supervision itself, set here before
-	// any machine exists, as the workflow sets enqueue where it attaches.
+	// The machines' report of a stalled turn they ended, and of a task whose sends keep failing
+	// with an answer, goes to supervision, which is built after their deps: the two callbacks
+	// whose receiver is supervision itself, set here before any machine exists, as the workflow
+	// sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	sup.deps.PromptAnswersReached = supervisionOf.promptAnswersReached
 	return supervisionOf, nil
 }
 
