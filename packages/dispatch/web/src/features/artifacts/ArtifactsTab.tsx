@@ -152,18 +152,6 @@ function nameSource(node: ReferenceLink["node"]): TextSource | undefined {
     : undefined;
 }
 
-/** Whether a references row's name is the head of a record's text, which a reader is shown as
- *  its projection: a comment's, an ask's or a message's, or a block's excerpt, which the read
- *  gives a node of the block's document with the block's id (`refs.resolvedNode.name`). */
-function namesByText(node: ReferenceLink["node"]): boolean {
-  return (
-    node.kind === "comment" ||
-    node.kind === "ask" ||
-    node.kind === "message" ||
-    node.block_id !== undefined
-  );
-}
-
 /** A references row's name, as the link to its node, or as words where the node opens no page. */
 function NodeName({ href, name }: { href: string | undefined; name: string }): ReactNode {
   return href === undefined ? (
@@ -181,8 +169,8 @@ function NodeName({ href, name }: { href: string | undefined; name: string }): R
  *  (`to`). A document's row names its owner first, as a member's row does. A node with no
  *  reference (a session) has no page to open, so its row names it without a link.
  *
- *  A name that is the head of a record's text - a comment's, an ask's or a message's, or a
- *  block's excerpt (`namesByText`) - is drawn as its plain-text projection, the reading list's
+ *  A name that is the head of a record's text - a comment's, an ask's or a message's
+ *  (`nameSource`) - is drawn as its plain-text projection, the reading list's
  *  `artifacts-reference-name`: a link's words hold no markup, so the formatting goes and a
  *  reference in the name reads as its target's name, never its address. It is read from the tree
  *  the server sent of it, and from a parse of the name where a Dispatch from before `name_tree`
@@ -205,19 +193,20 @@ function ReferenceLinkRow({
   // The path the reference opens, through the dashboard's one gate (`referenceHref`); a node with
   // no reference, and a person, whom no page shows, open none.
   const href = route === undefined ? undefined : referenceHref(route);
+  const source = nameSource(node);
   return (
     <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
-      {namesByText(node) ? (
+      {source === undefined ? (
+        <NodeName href={href} name={row.name} />
+      ) : (
         <PlainText
           markdown={row.name}
-          source={nameSource(node)}
+          source={source}
           surface="artifacts-reference-name"
           tree={row.name_tree}
         >
           {(name) => <NodeName href={href} name={name ?? ""} />}
         </PlainText>
-      ) : (
-        <NodeName href={href} name={row.name} />
       )}
       <p className={textMutedOnSurface}>
         {node.kind === "artifact" ? (
