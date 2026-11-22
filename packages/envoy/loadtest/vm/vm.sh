@@ -494,20 +494,23 @@ positional() {
 
 # ---- the deployment file -------------------------------------------------------------------------
 
-# The deployment file is read once per subcommand, by cfg_load, which parse runs before anything
-# else reads it: one jq takes every value of the file into CFG_TYPE and CFG_VALUE, by its path,
-# with its type and what `jq -r` prints of it, and cfg_read answers a filter out of them. Before,
-# every value read ran a jq of its own over the same file: 297 of them in one up and 408 in a
-# step, each a process started and waited on in turn. So the file is the file as the subcommand
-# found it, and an edit while a series runs reaches the next subcommand, as an edit of .vms or
-# .containers always has (check_placement reads those once, in parse). What cfg_read cannot answer
-# exactly as jq would -- an object or an array, which jq prints whole, and a step jq refuses, such
-# as a name under a string -- still runs jq, and so does every read of a shell that never ran
-# cfg_load.
-CFG_LOADED=""
+# A value of the deployment file is answered out of a reading of the whole file: one jq takes
+# every value into CFG_TYPE and CFG_VALUE, by its path, with its type and what `jq -r` prints of
+# it, and cfg_read answers a filter out of them. Before, every value read ran a jq of its own over
+# the same file: 297 of them in one up and 408 in a step, each a process started and waited on in
+# turn. Every answer is still the file's as it is at that read: cfg_current reads the file's text
+# again first, with the shell's own mapfile, and takes a new reading when the text differs from
+# the one the reading was taken from, so an edit while a series runs reaches the next read, as it
+# did when each read ran jq. What cfg_read cannot answer exactly as jq would -- an object or an
+# array, which jq prints whole, and a step jq refuses, such as a name under a string -- still runs
+# jq, and so does every read of a shell that never ran cfg_load.
+#
+# CFG_FILE is the file the reading is of, CFG_TEXT the text it was taken from, and CFG_LOADED is 1
+# when that text gave a reading.
+CFG_FILE="" CFG_TEXT="" CFG_LOADED=""
 declare -A CFG_TYPE=() CFG_VALUE=()
 
-# CFG_DUMP: the program cfg_load runs. For each path of the file, three fields, each ended by a
+# CFG_DUMP: the program cfg_parse runs. For each path of the file, three fields, each ended by a
 # NUL: the path as a filter spells it (.name for a name of letters, digits and '_', ["key"] for
 # any other key, [N] for an index), the value's jq type, and what `jq -r` prints of it, empty for
 # null and false since `// empty` drops them. A string that holds a NUL is typed `nul`, which
@@ -531,21 +534,39 @@ CFG_DUMP='if length == 1 and (.[0] | type) == "object" then .[0] | (
   "end", "\u0000")
 else empty end'
 
-# cfg_load: the deployment file read, once, into CFG_TYPE and CFG_VALUE (above). A file this cannot
-# read leaves nothing loaded, and every read runs jq as it did before.
+# cfg_load: the first reading of $CONFIG, which parse takes before anything else reads the file.
+# A file this cannot read leaves no reading, and every read runs jq as it did before.
 cfg_load() {
+  CFG_FILE=$CONFIG CFG_TEXT="" CFG_LOADED=""
+  cfg_current || true
+}
+
+# cfg_current: 0 when CFG_TYPE and CFG_VALUE hold the file as it is now. It reads the file's text
+# and takes a new reading (cfg_parse) when that text is not the one the reading was taken from. A
+# file it cannot read, or one holding a NUL, which no shell variable holds, is jq's: 1.
+cfg_current() {
+  local parts=()
+  [ -n "$CFG_FILE" ] && [ "$CFG_FILE" = "$CONFIG" ] || return 1
+  mapfile -d '' parts 2>/dev/null <"$CONFIG" || return 1
+  ((${#parts[@]} == 1)) || return 1
+  [ "${parts[0]}" = "$CFG_TEXT" ] || cfg_parse "${parts[0]}"
+  [ -n "$CFG_LOADED" ]
+}
+
+# cfg_parse TEXT: the reading of TEXT, the file's whole text, into CFG_TYPE and CFG_VALUE.
+cfg_parse() {
   local fields=() i
-  CFG_LOADED="" CFG_TYPE=() CFG_VALUE=()
-  mapfile -d '' -t fields < <(jq -s -j "$CFG_DUMP" "$CONFIG" 2>/dev/null)
+  CFG_TEXT=$1 CFG_LOADED="" CFG_TYPE=() CFG_VALUE=()
+  mapfile -d '' -t fields < <(jq -s -j "$CFG_DUMP" <<<"$1" 2>/dev/null)
   ((${#fields[@]} % 3 == 1)) && [ "${fields[-1]}" = end ] || return 0
   for ((i = 0; i + 3 < ${#fields[@]}; i += 3)); do
     CFG_TYPE[${fields[i]}]=${fields[i + 1]}
     CFG_VALUE[${fields[i]}]=${fields[i + 2]}
   done
-  CFG_LOADED=$CONFIG
+  CFG_LOADED=1
 }
 
-# cfg_read FILTER: what `jq -r "FILTER // empty"` prints of the file cfg_load read, into CFG_READ,
+# cfg_read FILTER: what `jq -r "FILTER // empty"` prints of the file as it is now, into CFG_READ,
 # when FILTER is a path -- steps of .name, ["key"] with no quote or backslash in the key, and [N]
 # -- and the answer is a string, a number, true or nothing; 1 for every other case, which the
 # caller hands to jq. A step under null or under nothing is nothing, as jq has it; a name under
@@ -556,7 +577,7 @@ cfg_read() {
   local index_re='^\[(0|[1-9][0-9]*)\](.*)$' ident_re='^[A-Za-z_][A-Za-z0-9_]*$'
   CFG_READ=""
   # A filter that opens with [ is jq's array constructor, not a step: it is jq's to answer.
-  [ -n "$CFG_LOADED" ] && [ "$CFG_LOADED" = "$CONFIG" ] && [[ $rest == .* ]] || return 1
+  [[ $rest == .* ]] && cfg_current || return 1
   while [ -n "$rest" ]; do
     if [[ $rest =~ $name_re ]]; then
       step=.${BASH_REMATCH[1]} kind=name rest=${BASH_REMATCH[2]}

@@ -144,9 +144,10 @@
 # it -- is refused by the server with those sessions attached; and (cc) up tells a psql that did
 # not answer from an instance that answered it holds no database: a psql that fails refuses up
 # by name, with what psql said, and no create database of that database is run, while a psql
-# that answers with no row has up make it once; and (kk) a subcommand reads the deployment file
-# once: cfg answers each value out of that reading with what a jq of its own answers -- the value
-# or the default, the status and the refusal -- and an up runs no jq per value.
+# that answers with no row has up make it once; and (kk) cfg answers each value out of one reading
+# of the deployment file with what a jq of its own answers -- the value or the default, the status
+# and the refusal -- takes a new reading when the file's text changes, and an up runs no jq per
+# value.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -1033,8 +1034,8 @@ readonly fn_run_dir=$tmp/root/$fn_run
 
 # run_fn [NAME=VALUE...] FUNCTION ARGS...: one function of vm.sh, driven here rather than
 # through a subcommand, its output in $tmp/out and its status in RC. vm.sh is sourced (its last
-# line runs main only when it is the program), the deployment file this test writes is read once,
-# as parse reads it (cfg_load, check_placement), and the run, its directory, the OS Login user and
+# line runs main only when it is the program), the deployment file this test writes is read as
+# parse reads it (cfg_load, check_placement), and the run, its directory, the OS Login user and
 # the run's key are set as a subcommand sets them before its first ssh, so a function that reaches
 # a machine reaches the fakes. A leading NAME=VALUE sets one of the script's own variables before
 # the function runs: a bound, which is how a poll of /healthz is given ten seconds here rather than
@@ -2607,9 +2608,9 @@ while read -r secret; do
 done < <(jq -r '(.secrets[], .cloudsql.password)' "$example")
 pass "deployment.example.json is valid JSON and names no routable address, no real machine and no credential"
 
-# ---- (kk) the deployment file is read once per subcommand ----------------------------------
+# ---- (kk) a value of the deployment file is answered out of one reading of it -----------------
 
-# cfg answers out of the one reading parse makes (cfg_load), where it ran a jq of its own for each
+# cfg answers out of a reading of the whole file (cfg_load), where it ran a jq of its own for each
 # value before. What it answers is still what that jq answered: each filter below is put to cfg in
 # a shell that never loaded the file, which runs jq, and in one that did, and the two answers --
 # the value or the default, the status, and what a refusal says -- are the same. The filters are
@@ -2698,6 +2699,25 @@ IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
 [ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == 1:* ]] ||
   fail "cfg answered .s of a file of two documents with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
 
+# The file as it is at each read: an edit between two reads of one shell is the next read's
+# answer, as it was when each read ran jq, and a file the edit leaves unreadable is refused as jq
+# refuses it.
+edited=$tmp/edited.json
+printf '{"s": "old", "o": {"v": 1}}\n' >"$edited"
+edits=$(bash -c '
+  source "$1"
+  CONFIG=$2
+  cfg_load
+  first=$(cfg .s)
+  printf "{\"s\": \"new\", \"o\": {\"v\": 2}}\n" >"$CONFIG"
+  cfg_read .s && answered=$CFG_READ
+  printf "%s %s %s %s" "$first" "$(cfg .s)" "$(cfg .o.v)" "${answered:-none}"
+  printf "not json\n" >"$CONFIG"
+  from_reading=$(cfg .s 2>&1) && echo " accepted" || echo " refused: $from_reading"
+' _ "$vm" "$edited" 2>&1)
+[[ $edits == "old new 2 new refused: jq: parse error"* ]] ||
+  fail "cfg did not answer the deployment file as it was at each read: [$edits], where it must be [old new 2 new refused: jq: parse error ...]"
+
 # And an up and a step run no jq of their own for one value: such a jq is given the deployment file
 # last and a filter ending `// empty` (cfg's, container_vm_configured's, load_listener_port's), so
 # a jq on PATH ahead of the real one records every call given that file, and the calls of that
@@ -2727,7 +2747,7 @@ grep -q -- '-j if type == "object"' "$fake/config-jq" ||
 per_value=$(grep -c -- ' // empty$' "$fake/config-jq" || true)
 ((per_value == 0)) ||
   fail "an up and a step ran $per_value jq calls of the deployment file for one value each (the first: $(grep_first -- ' // empty$' "$fake/config-jq")), which the one reading answers"
-pass "cfg answers every value out of one reading of the deployment file, and answers each as a jq of its own did"
+pass "cfg answers every value out of a reading of the deployment file as a jq of its own answers it at that read, and an up and a step run no jq per value"
 
 # ---- (t) the eleven the deployment itself found --------------------------------------------
 
