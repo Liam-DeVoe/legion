@@ -56,7 +56,7 @@ type Walk struct {
 // and its places, and the ids of its records, stay where the release before put them. Each takes
 // the type of its role among Legion's own (plan.BuiltinRoles), whatever the deployment defines.
 // They are read once.
-var todaysSteps = planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "", 0, defaultTask, config.Project{}.RunsByDefault())
+var todaysSteps = planSteps(plan.BuiltinRoles(), "", 0, defaultTask, config.Project{}.RunsByDefault())
 
 // todaysWalk is the walk of a run with no plan rows: the task default walking todaysSteps on
 // today's line, phase.Order, with Stored false.
