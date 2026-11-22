@@ -223,14 +223,15 @@ describe.skipIf(!envoyStackEnabled)(
       }
       // A hang guard, not a bound on work: what can hang is a wait for the registration or a
       // message that never comes.
-      // Worst measured cost: 116 398.78 ms over 20 runs at the 96 rung in the Job
-      // infra-1580-krows-kc-g4zvc of the cluster's `builds` namespace, two CPUs and 8 GiB (120
-      // busy loops, at which row A's runs took 34.2 s against the calibration's 31.2 s),
-      // 2026-11-22T15:21Z to 17:53Z. Six times the worst is past the 700 s this step of the
-      // `envoy-session-stall` job leaves one hang, less the stack's slowest start (249 s, the
-      // `beforeAll` above) and the other row's worst (118 s), so that ceiling decides 330_000,
-      // 2.8 times the worst.
-    }, 330_000)
+      // Worst measured cost: 120 895.29 ms over 20 runs at the 96 rung in the Job
+      // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
+      // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),
+      // 2026-11-22T18:21Z to 20:50Z; 116 398.78 ms in the Job infra-1580-krows-kc-g4zvc (120
+      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is past
+      // the 700 s this step of the `envoy-session-stall` job leaves one hang, less the stack's
+      // slowest start (249 s, the `beforeAll` above) and the other row's worst (177 s), so
+      // that ceiling decides 270_000, 2.2 times the worst.
+    }, 270_000)
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
@@ -276,13 +277,14 @@ describe.skipIf(!envoyStackEnabled)(
       }
       // A hang guard, not a bound on work: what can hang is a wait for the registration or an
       // exit that never comes.
-      // Worst measured cost: 118 302.75 ms over 20 runs at the 96 rung in the Job
-      // infra-1580-krows-kc-g4zvc of the cluster's `builds` namespace, two CPUs and 8 GiB (120
-      // busy loops, at which row A's runs took 34.2 s against the calibration's 31.2 s),
-      // 2026-11-22T15:21Z to 17:53Z. Six times the worst is past the 700 s this step of the
-      // `envoy-session-stall` job leaves one hang, less the stack's slowest start (249 s, the
-      // `beforeAll` above) and the other row's worst (118 s), so that ceiling decides 330_000,
-      // 2.8 times the worst.
+      // Worst measured cost: 177 296.68 ms over 20 runs at the 96 rung in the Job
+      // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
+      // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),
+      // 2026-11-22T18:21Z to 20:50Z; 118 302.75 ms in the Job infra-1580-krows-kc-g4zvc (120
+      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is past
+      // the 700 s this step of the `envoy-session-stall` job leaves one hang, less the stack's
+      // slowest start (249 s, the `beforeAll` above) and the other row's worst (121 s), so
+      // that ceiling decides 330_000, 1.9 times the worst.
     }, 330_000)
   },
 )

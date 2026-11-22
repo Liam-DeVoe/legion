@@ -25756,14 +25756,15 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     // message that never comes. The row's cost is the freeze's own recovery, about 30 s of
     // nats.js's ping and dial timers: 30 192.92, 30 182.69, 30 213.03 and 30 247.69 ms in CI's
     // `envoy-session-stall` job at d92de35e, 688f9be7, 4410f2a3 and d7aa4f9b (runs 44935616558,
-    // 44962624014, 44966869218 and 44984499551). Worst measured cost: 55 599.76 ms over 20 runs
-    // at the 96 rung in the Job infra-1580-krows-kf2-9tp5g of the cluster's `builds` namespace,
-    // two CPUs and 8 GiB (152 busy loops, at which row A's runs took 37.7 s against the
-    // calibration's 31.2 s), 2026-11-22T11:58Z to 13:44Z, and 53 995.87 ms in the Job
-    // infra-1580-krows-kfh-tgvmp (218 busy loops, row A at 33.5 s), 2026-11-22T08:32Z to 09:41Z.
-    // 360_000 is 6.5 times the worst, and with the stack's slowest start, 249 s, it stays inside
-    // the 659 s that job leaves.
-  }, 360_000);
+    // 44962624014, 44966869218 and 44984499551). Worst measured cost: 62 899.22 ms over 20 runs
+    // at the 96 rung in the Job infra-1580-krows-kf3-s6lzm of the cluster's `builds` namespace,
+    // two CPUs and 8 GiB (155 busy loops, at which row A's runs took 38.2 s against the
+    // calibration's 31.2 s), 2026-11-22T18:18Z to 19:59Z; 55 599.76 ms in the Job
+    // infra-1580-krows-kf2-9tp5g (152 busy loops, row A at 37.7 s), 2026-11-22T11:58Z to 13:44Z,
+    // and 53 995.87 ms in the Job infra-1580-krows-kfh-tgvmp (218 busy loops, row A at 33.5 s),
+    // 2026-11-22T08:32Z to 09:41Z. 390_000 is 6.2 times the worst, and with the stack's slowest
+    // start, 249 s, it stays inside the 659 s that job leaves.
+  }, 390_000);
 });
 
 // What the envoy_send and envoy_publish tools tell the model about where a message went
