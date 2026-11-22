@@ -15,6 +15,7 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
+import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
 import {
@@ -265,9 +266,12 @@ function lineHolding(items: readonly TreeItem[], readId: string): TreeItem | und
   return undefined;
 }
 
-/** The node `readId` of `answer`'s words, as the read holds them. */
+/** The node `readId` of `answer`'s words, as the page reads them: the words of its reading
+ *  (`text_tree`) where it carries one, else its stored `text`. */
 function wordsOf(answer: IssueTreeRead, readId: string): string {
-  return answer.nodes?.find((node) => node.id === readId)?.text ?? "";
+  const node = answer.nodes?.find((held) => held.id === readId);
+  if (node === undefined) return "";
+  return node.text_tree === undefined ? node.text : readingWords(node.text_tree);
 }
 
 // ---------------------------------------------------------------------------------------------
