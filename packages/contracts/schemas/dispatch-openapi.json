@@ -22235,7 +22235,6 @@
               "artifact",
               "ask",
               "ask_block",
-              "attribute",
               "block",
               "comment",
               "comment_block",
@@ -22252,8 +22251,7 @@
               "person",
               "risk",
               "role",
-              "session",
-              "supertag"
+              "session"
             ],
             "type": "string"
           },
@@ -22393,7 +22391,6 @@
               "artifact",
               "ask",
               "ask_block",
-              "attribute",
               "block",
               "comment",
               "comment_block",
@@ -22410,8 +22407,7 @@
               "person",
               "risk",
               "role",
-              "session",
-              "supertag"
+              "session"
             ],
             "type": "string"
           },

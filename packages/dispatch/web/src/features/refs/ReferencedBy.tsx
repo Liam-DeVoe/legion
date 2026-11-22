@@ -19,7 +19,7 @@ import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
 import { Timestamp } from "./Timestamp";
 
-/** Every node kind the server's read registry holds, which `GraphNode.kind` names, each with the
+/** Every node kind a read of the graph answers, which `GraphNode.kind` names, each with the
  *  word the panel reads it under. A kind a newer build adds is skipped where it is met, since no
  *  read answers a node of a kind its own build does not resolve. */
 const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
@@ -28,9 +28,6 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   // A part of an ask, and a block of a comment or a message, read as the item that holds it, as
   // the `block` below does (`blockItem`); the server answers each as a node of kind `block`.
   ask_block: "Ask",
-  // A type's attribute and a type itself: nodes of the block schema, which no read of the graph
-  // answers today.
-  attribute: "Attribute",
   // A block of a document that cites a node shows as the document holding it, linked to the
   // block; a part of an ask, or a block of a comment or message, shows as its item
   // (`blockItem`).
@@ -57,7 +54,6 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
   role: "Agent",
   session: "Session",
-  supertag: "Type",
 };
 
 const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {

@@ -3647,10 +3647,13 @@ type ArtifactReferences struct {
 // the kinds beside it, which that doc names the id of). The edges into and out of a node are the
 // reads `?to=` and `?from=` of its Ref.
 //
-// Kind is one of the node kinds the read registry holds (refs.VisibilityKinds), and the OpenAPI
-// document closes it over them: a kind a later build registers is a member that build adds, and
-// api's TestTheGraphNodeKindEnumIsTheRegistrysKinds holds the tag to the registry. A reader that
-// meets a kind it does not know skips that node rather than failing on it.
+// Kind is one of the node kinds a read of the graph answers - the kinds the read registry holds a
+// loader for (refs.ResolvableKinds) - and the OpenAPI document closes it over them: a kind a later
+// build resolves is a member that build adds, and api's TestTheGraphNodeKindEnumIsTheRegistrysKinds
+// holds the tag to the registry. A kind the registry holds a predicate for and no loader, a
+// supertag or an attribute of the block schema, is the kind of no node an answer carries, so the
+// enum leaves it out. A reader that meets a kind it does not know skips that node rather than
+// failing on it.
 //
 // Every node carries eight facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
@@ -3677,7 +3680,7 @@ type ArtifactReferences struct {
 // whole current text, or a run's whole words, which an edge at the run shows only the head of as
 // its excerpt, and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`

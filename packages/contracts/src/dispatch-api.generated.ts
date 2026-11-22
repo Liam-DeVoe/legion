@@ -5368,7 +5368,6 @@ export interface components {
         | "artifact"
         | "ask"
         | "ask_block"
-        | "attribute"
         | "block"
         | "comment"
         | "comment_block"
@@ -5385,8 +5384,7 @@ export interface components {
         | "person"
         | "risk"
         | "role"
-        | "session"
-        | "supertag";
+        | "session";
       /** Format: date-time */
       made_at: null | string;
       made_by: components["schemas"]["Actor"][] | null;
@@ -5421,7 +5419,6 @@ export interface components {
         | "artifact"
         | "ask"
         | "ask_block"
-        | "attribute"
         | "block"
         | "comment"
         | "comment_block"
@@ -5438,8 +5435,7 @@ export interface components {
         | "person"
         | "risk"
         | "role"
-        | "session"
-        | "supertag";
+        | "session";
       /** Format: date-time */
       made_at: null | string;
       made_by: components["schemas"]["Actor"][] | null;

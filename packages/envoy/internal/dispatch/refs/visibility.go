@@ -366,6 +366,13 @@ func ResolvesNodeKind(kind string) bool {
 	return nodeRegistry[kind].load != nil
 }
 
+// ResolvableKinds is every node kind a read of the graph answers nodes of (ResolvesNodeKind),
+// sorted: the kinds of VisibilityKinds less those the registry holds a predicate for and no
+// loader, the block schema's supertag and attribute. model.GraphNode's kind enum is these.
+func ResolvableKinds() []string {
+	return slices.DeleteFunc(VisibilityKinds(), func(kind string) bool { return !ResolvesNodeKind(kind) })
+}
+
 // VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
 // the kinds that compare the whole credential read it, with the author it proved beside it, which
 // graphstore's one author rule reads (graphstore.ActingCredential). A read binds it once and names

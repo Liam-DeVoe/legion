@@ -3934,7 +3934,8 @@ and `state` and `visibility`, the node's state (`live`, `gone`, `proposed`, `set
 A reply that names a block is part of that block.
 A fact Dispatch never recorded is `[]` for an actor list and `null` for a time, a parent or a version, and `state` and `visibility` always hold a value:
 a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (each kind's loader in `nodeRegistry`, `refs/visibility.go`, reads its sources).
-A node's `kind` is one of the kinds the server's read registry holds (`nodeRegistry`), and the OpenAPI document closes `GraphNode.kind` over them, so a reader that meets a kind it does not know, a newer build's, skips that node.
+A node's `kind` is one of the kinds a read of the graph answers, the kinds the server's read registry holds a loader for (`refs.ResolvableKinds`), and the OpenAPI document closes `GraphNode.kind` over them, so a reader that meets a kind it does not know, a newer build's, skips that node.
+The registry's `supertag` and `attribute`, the block schema's nodes, have a predicate and no loader, so no answer carries a node of either kind and the enum leaves them out.
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.
 `dispatch read` prints the facts of the node it reads on a `Node:` line, before `Referenced by:`.
