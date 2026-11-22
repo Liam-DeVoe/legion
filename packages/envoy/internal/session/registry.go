@@ -120,10 +120,10 @@ type SessionEntry struct {
 	// GitHub event of the session while no fresh repository answer stood, and no frame carrying
 	// the mark has been sent since (cmd/listener's sessionRelays). It lives on the entry so the
 	// next listener to relay the session, after a move or a restart, sends the mark. Its value is
-	// the id the relay that set it gave it. Only SetRepositoryGap and ClearRepositoryGap write it:
-	// the relay that withholds such an event sets it before it acknowledges the event, and the
-	// relay that sends the mark clears it. Every other write of the entry carries over the mark of
-	// the entry it replaces (PutWithin). It is the registry's own record: no answer of the
+	// the id the relay that set it gave it. SetRepositoryGap and ClearRepositoryGap raise and clear
+	// it, and PutClearingGap writes it empty for a claim refresh over a record no writer's stands
+	// for; every other write of the entry carries over the mark of the entry it replaces
+	// (PutWithin). It is the registry's own record: no answer of the
 	// listener's API carries it.
 	RepositoryGap string `json:"repository_gap,omitempty"`
 }
@@ -906,18 +906,23 @@ func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry
 	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
 	entry.UpdatedAt = r.now().UnixMilli()
 	// The gap mark the session is owed (SessionEntry.RepositoryGap) is carried from the entry this
-	// write replaces, never from this registry's copy where that copy trails the bucket. The copy's
-	// entry is at the fence's revision whenever the copy holds one, since the copy stores an entry
-	// only at or past its fence and moves the fence with it (kvwatch.Copy.FenceFor). A fence of
-	// another epoch reads 0, and a key the copy holds no entry of is no entry to carry a mark from,
-	// so either is read from the bucket first, and the write is fenced on the revision it read.
+	// write replaces, never from this registry's copy where that copy trails the bucket. carried
+	// holds that mark through the write loop: the copy's entry where the copy holds one at the
+	// fence, else the bucket's read. The copy's entry is at the fence's revision whenever the copy
+	// holds one, since the copy stores an entry only at or past its fence and moves the fence with
+	// it (kvwatch.Copy.FenceFor). A fence of another epoch reads 0, and a key the copy holds no
+	// entry of is no entry to carry a mark from, so either is read from the bucket first, and the
+	// write is fenced on the revision it read. The mark is written back only where carryGap is set
+	// (PutWithin); PutClearingGap leaves the entry's own, so a claim refresh over a forged record
+	// drops a mark no writer's record stands for.
+	carried := entry.RepositoryGap
 	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
 	replaced, cached := r.cache.Get(sessionID)
 	revision := r.cache.FenceFor(epoch, sessionID)
 	known := cached && revision > 0
-	if known && carryGap {
-		entry.RepositoryGap = replaced.entry.RepositoryGap
+	if known {
+		carried = replaced.entry.RepositoryGap
 	}
 	r.mu.RUnlock()
 	for retry := false; ; retry = true {
@@ -930,17 +935,16 @@ func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry
 				// the sequence it is stored at, so the write replaces it there rather than fencing
 				// for good on the sequence a direct get read from another stream's header.
 				revision = at
-				if carryGap {
-					entry.RepositoryGap = ""
-				}
+				carried = ""
 			case err != nil:
 				return fmt.Errorf("read session %s from the bucket before writing it: %w", sessionID, err)
 			default:
 				revision = at
-				if carryGap {
-					entry.RepositoryGap = stored.RepositoryGap
-				}
+				carried = stored.RepositoryGap
 			}
+		}
+		if carryGap {
+			entry.RepositoryGap = carried
 		}
 		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
 		if err != nil {

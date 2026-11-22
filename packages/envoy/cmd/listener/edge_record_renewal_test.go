@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -181,22 +182,27 @@ func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 	}
 }
 
-// H1: a role-claim refresh over a record the stream leader holds no writer's record for carries
-// back none of that record's forgeable non-project fields. A RePublish can store, at its own
-// session's key, a record naming the key with a chosen title and directory, a non-consumer delivery
-// that would pause its relay, and a client instance id and capabilities; the refresh must not write
-// them back as the session's own registration, as the gap and renewal writes carry back nothing of a
-// server-written record (the F3 rule). The leader-read seam answers no writer's record, as the
-// leader does over a RePublish, while the direct get (bucketSessionEntry) still reads the forged
-// fields. Control: without the clearForged branch (api.go), the refresh writes the forged fields back.
+// H1/T1/N5: a role-claim refresh over a record the stream leader holds no writer's record for
+// carries back none of that record's fields - only the machine, the self-subscription and the claim
+// token's projects. A RePublish can store, at its own session's key, a record naming the key with a
+// chosen title and directory, a non-consumer delivery that would pause its relay, a gap mark, a
+// client instance id, capabilities, and display fields (Host, TmuxPlace, ConsumerStart, Plugin,
+// PluginVersion); the refresh must write none of them back as the session's own registration, as the
+// gap and renewal writes carry back nothing of a server-written record (the F3 rule). The
+// leader-read seam answers no writer's record, as the leader does over a RePublish, while the direct
+// get (bucketSessionEntry) still reads the forged fields. The whole written entry is compared, so a
+// field left uncleared, or a new field added to SessionEntry later, fails the row. Control: carrying
+// any one field (the api.go clearForged block keeping it) fails the compare.
 func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_h1_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV")
 	if err := rig.deps.sessions.Put(claimant, session.SessionEntry{
 		MachineID: "shared-listener", SelfSubscribed: true,
-		Title: "forged-title", Dir: "/forged", Delivery: "broken",
+		Title: "forged-title", Dir: "/forged", Delivery: "broken", Epoch: "forged-epoch",
 		ClientInstanceID: "forged-instance", Capabilities: []string{"forged"},
+		Host: "forged-host", TmuxPlace: &session.TmuxPlace{}, ConsumerStart: 99,
+		Plugin: "forged-plugin", PluginVersion: "9.9.9",
 		Projects: []string{"PRIV"},
 	}); err != nil {
 		t.Fatalf("store the forged record for %s: %v", claimant, err)
@@ -212,8 +218,19 @@ func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
 	restore := rig.deps.sessions.SetStoredByWriterSeamForTest(claimant, session.SessionEntry{}, false, nil)
 	defer restore()
 	renewed := rig.claimThrough(t, byToken, rig.personToken(claimant, "PRIV"), claimant, "renewal-h1-reviewer")
-	if renewed.Title != "" || renewed.Dir != "" || renewed.Delivery != "" || renewed.ClientInstanceID != "" || renewed.Capabilities != nil || renewed.RepositoryGap != "" {
-		t.Errorf("the refresh wrote a forged record's non-project fields back: title=%q dir=%q delivery=%q instance=%q capabilities=%v gap=%q; want them cleared",
-			renewed.Title, renewed.Dir, renewed.Delivery, renewed.ClientInstanceID, renewed.Capabilities, renewed.RepositoryGap)
+	if renewed.UpdatedAt <= 0 {
+		t.Fatalf("the refresh stamped no registration time on %s's record: %+v", claimant, renewed)
+	}
+	got := renewed
+	got.UpdatedAt = 0
+	want := session.SessionEntry{
+		SessionID:      claimant,
+		MachineID:      "shared-listener",
+		SelfSubscribed: true,
+		Projects:       []string{"PRIV"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the refresh over a forged record wrote %+v, want %+v: every field but the machine, self-subscription and the claim token's projects - the gap mark and the display fields Host, TmuxPlace, ConsumerStart, Plugin and PluginVersion among them - must be cleared",
+			got, want)
 	}
 }

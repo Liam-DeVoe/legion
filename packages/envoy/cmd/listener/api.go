@@ -2147,16 +2147,6 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			return
 		}
 		entry.Projects = projects
-		if clearForged {
-			// The stream leader holds no writer's record for the key the cached entry names, so its
-			// non-project fields may be a RePublish's; the refresh carries back none of them, as the
-			// gap and renewal writes carry back nothing of a server-written record (the F3 rule). A
-			// RePublish could otherwise set its own session's title or a non-consumer delivery that
-			// pauses its relay until the session's next registration writes a record the leader
-			// confirms.
-			entry.Title, entry.Dir, entry.Delivery, entry.Epoch, entry.ClientInstanceID, entry.RepositoryGap = "", "", "", "", "", ""
-			entry.Capabilities = nil
-		}
 		// The refresh names this machine as the session's relay, so a claim made through
 		// another edge replica than the one the session registered through moves the relay
 		// here. An edge relay holds the session's frames to the projects of the token this
@@ -2171,6 +2161,17 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		_, before := d.sessions.Lookup(body.SessionID)
 		put := d.sessions.PutWithin
 		if clearForged {
+			// The stream leader holds no writer's record for the key the cached entry names, so none
+			// of its fields but the machine, self-subscription and the claim token's projects may be
+			// the session's own: a RePublish could set its own session's title, a non-consumer
+			// delivery that pauses its relay until the next registration, a display field or a gap
+			// mark. The refresh carries back none of them, building the entry from the fields it
+			// keeps, as the gap and renewal writes carry back nothing of a server-written record (the
+			// F3 rule). PutClearingGap writes the entry's own gap mark - none - rather than carrying
+			// the replaced record's.
+			entry = session.SessionEntry{
+				MachineID: entry.MachineID, SelfSubscribed: entry.SelfSubscribed, Projects: entry.Projects,
+			}
 			put = d.sessions.PutClearingGap
 		}
 		if err := put(ctx, body.SessionID, entry); err != nil {
