@@ -437,13 +437,17 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 // (bus.Client.StartRequestStoredTo), so the wait's resends take the caller's mark of a lock it
 // holds and not its end (startRoleForward). The rig's forward seam ends the context it hands the
 // resend's forward once that forward is sent, before its wait reads the first refusal, and holds
-// the routes frozen past the pause that refusal starts (inProcessPause). The forward's wait then
-// answers the stream's duplicate once the routes thaw, and the resend makes no other forward.
+// the routes frozen until the leader is handed the wait's own send of the forward again: the proof
+// that the wait read the stream's in-process refusal and came through the pause that refusal starts
+// (inProcessPause) with its caller's context ended. The forward's wait then answers the stream's
+// duplicate once the routes thaw, and the resend makes no other forward.
 //
 // The control is startRoleForward's wait bound to the caller's context (context.WithDeadline(ctx,
-// deadline)): the pause after the first refusal ends with that context, and the forward fails as
-// one whose earlier forward was still in process (earlierAttemptInProcess), so the resend makes a
-// third forward.
+// deadline)): the pause after the first refusal ends with that context, so the wait sends nothing
+// again and fails as one whose earlier forward was still in process (earlierAttemptInProcess), and
+// the resend makes a third forward. Neither outcome waits on a clock: the row waits for the send
+// again or for the wait's end, whichever comes first, so a slow box cannot let the routes thaw
+// before the refusal and pass the control.
 func TestARoleForwardWhoseCallerEndsWhileItIsInProcessIsAnsweredWithinItsOwnWindow(t *testing.T) {
 	rig := newInProcessRig(t)
 	const holder = "ses_in_process_caller_holder"
@@ -486,14 +490,36 @@ func TestARoleForwardWhoseCallerEndsWhileItIsInProcessIsAnsweredWithinItsOwnWind
 	case <-time.After(10 * time.Second):
 		t.Fatal("the resend made no forward of its own")
 	}
-	// Past the first refusal and the pause it starts, inside the members' election timeout.
-	time.Sleep(4 * inProcessPause)
-	thaw()
+	// The leader is handed the resend's forward and then, after the stream refused it as in process
+	// and the pause it starts, the wait's own send of it again; a wait whose pause ended with its
+	// caller's context sends nothing again and ends instead.
+	sentAgain := make(chan error, 1)
+	go func() {
+		for range 2 {
+			if _, err := heard.NextMsg(10 * time.Second); err != nil {
+				sentAgain <- err
+				return
+			}
+		}
+		sentAgain <- nil
+	}()
 	var err error
+	ended := false
 	select {
+	case heardErr := <-sentAgain:
+		if heardErr != nil {
+			t.Fatalf("the leader was not handed the resend's forward and the wait's send of it again: %v", heardErr)
+		}
 	case err = <-waited:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the resend's forward did not end")
+		ended = true
+	}
+	thaw()
+	if !ended {
+		select {
+		case err = <-waited:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the resend's forward did not end")
+		}
 	}
 	for name, answer := range map[string]<-chan *httptest.ResponseRecorder{"the earlier send": earlier, "the resend": resend} {
 		if answer := <-answer; answer.Code != http.StatusOK {
