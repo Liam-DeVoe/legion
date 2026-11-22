@@ -157,7 +157,8 @@ func (s source) seed() (string, error) {
 
 // Connect dials urls as the nkey user seed is the seed of, a seed Seed answered; "" connects
 // without a credential. Every connection it opens pings as detectSilentCuts sets, because the
-// daemon dials NATS here and nowhere else: the pings are this package's, not a caller's to pass.
+// daemon dials NATS here and in ConnectService alone: the pings are this package's, not a caller's
+// to pass.
 //
 // Every connection it opens also keeps no reconnect buffer (nats.ReconnectBufSize(-1)): a publish
 // made while the connection is cut fails at once, where nats.go's default would hold it and send
@@ -215,7 +216,9 @@ func ServiceIdentity(tokenFile string) (string, error) {
 // ConnectService dials urls as the service the platform identity token in the file at tokenFile
 // names: user natscred.ServiceUser and that token, read afresh at each CONNECT (natscred.Service),
 // which the NATS auth service verifies and answers with the grant its BROKER_NATS_SERVICES entry
-// lists for the account (kind daemon). It pings and names itself as Connect does.
+// lists for the account (kind daemon). It pings, keeps no reconnect buffer and names itself as
+// Connect does: a token connection outlasts a refusal (below), so a create buffered while it is cut
+// would otherwise be sent after the release of a hold that refused it.
 //
 // Three things a seed's connection does not do:
 //   - It sets nats.go's IgnoreAuthErrorAbort (natscred.Service does): a hub refuses every client the
@@ -234,8 +237,9 @@ func ConnectService(urls []string, tokenFile, name string, options ...nats.Optio
 		return nil, err
 	}
 	credential, keeper := natscred.Service(natscred.ServiceFile(tokenFile))
-	// Last, as Connect's, so this credential, prefix, pings and name hold whatever a caller passed.
-	options = append(options, credential, nats.CustomInboxPrefix(natsgrant.InboxPrefix(identity)), detectSilentCuts, nats.Name(name))
+	// Last, as Connect's, so this credential, prefix, pings, buffer and name hold whatever a caller
+	// passed.
+	options = append(options, credential, nats.CustomInboxPrefix(natsgrant.InboxPrefix(identity)), detectSilentCuts, nats.ReconnectBufSize(-1), nats.Name(name))
 	conn, err := nats.Connect(strings.Join(urls, ","), options...)
 	if err != nil {
 		return nil, err
