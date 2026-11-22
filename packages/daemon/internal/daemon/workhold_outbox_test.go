@@ -1396,7 +1396,8 @@ func (s refusedHoldLock) LockWorkHold(ctx context.Context, tree string) (bool, f
 // the open gate and finds the implementer stopped by the hold: it logs that the stop was made
 // after the gate opened again, naming the implementer and the version that closed the gate, and
 // the fact of the hold's end (intake.WorkHoldOpened) starts the implementer once, with the
-// opening's task.
+// opening's task: the close message's sentences naming version 4, that the hold stopped the turn,
+// today's open message naming the person's approval of version 4, and the check of the turn.
 func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -1440,9 +1441,7 @@ func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 		t.Fatalf("the stop's row logged %v, want one line naming the implementer and version 4", made)
 	}
 	r.drain()
-	want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
-		" Check what your turn already did: a tool call may not have finished.\n\n" + workflow.ResumePhaseTask(r.issue())
-	r.wantStarted(claim.RoleImplementer, launched, want)
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
 	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 		t.Fatalf("after the drain the implementer's stops are %+v, want the row finished", stops)
 	}
@@ -1550,7 +1549,7 @@ func TestWorkHoldStartsAStopMadeNowWhoseLockTheDatabaseEnded(t *testing.T) {
 // daemon applies the fact of the hold's end at once (workflowRuntime.workHoldEndedUnderStop), so a
 // start of the implementer is queued before the stop's row has finished. The daemon's line names
 // the issue, the role and version 4, and the drain starts the implementer once, with the
-// opening's task.
+// opening's task, which names version 4 and carries today's open message.
 func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -1610,9 +1609,7 @@ func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
 		t.Fatalf("the daemon logged %v, want one line naming %s, the implementer and version 4", ended, r.tree.key)
 	}
 	r.drain()
-	want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
-		" Check what your turn already did: a tool call may not have finished.\n\n" + workflow.ResumePhaseTask(r.issue())
-	r.wantStarted(claim.RoleImplementer, launched, want)
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
 	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 		t.Fatalf("after the drain the implementer's stops are %+v, want the row finished", stops)
 	}

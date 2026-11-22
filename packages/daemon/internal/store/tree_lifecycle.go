@@ -111,9 +111,11 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 // LockWorkHold takes tree's work_holds row for share and answers whether the row exists
 // (supervise.Store.LockWorkHold): whether the work hold of tree stands. The workflow writes the
 // row at the hold's close, and the opening takes it for update and deletes it in its own
-// transaction (record.Store.PutWorkHold, LockWorkHold, DeleteWorkHold). The lock is held by a
-// transaction of its own, which writes nothing and lasts until release rolls it back, so a
-// decision of a claim holds it across its other store calls, each on a connection of its own.
+// transaction (record.Store.PutWorkHold, LockWorkHold, OpenWorkHold). The opening keeps the hold
+// as the record of the tree's last opening, in work_hold_openings, which this lock does not read:
+// a hold an opening ended does not stand. The lock is held by a transaction of its own, which
+// writes nothing and lasts until release rolls it back, so a decision of a claim holds it across
+// its other store calls, each on a connection of its own.
 // Each claim and delivery write of that decision waits at most the claim-write deadline, for its
 // connection and for its answer (supervise's Machine.write), so a pool with no connection left
 // holds such a write no longer than that bound. Two calls with no such deadline never run under

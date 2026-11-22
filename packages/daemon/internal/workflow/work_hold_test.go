@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -104,6 +105,15 @@ func (w holdWords) bootOpened() string {
 func (w holdWords) bootOpening(closedAt int) string {
 	return w.closed(closedAt) + " " + workHoldWords + " The work hold stopped your turn. " + w.bootOpened() +
 		" Check what your turn already did: a tool call may not have finished."
+}
+
+// unrecordedOpening is the opening sentences of a start of a claim the hold stopped where the
+// daemon keeps no record of the hold it can use: the hold's own sentence, and that the hold has
+// ended with no record of the version that closed the gate. It never says that the deployment no
+// longer holds the tree's work.
+func (w holdWords) unrecordedOpening() string {
+	return workHoldWords + " The work hold stopped your turn. The work hold of " + w.tree + "'s tree has ended, " +
+		"and the daemon keeps no record of the version that closed its gate. Check what your turn already did: a tool call may not have finished."
 }
 
 // stop is the work hold's stop of role of issue at generation, closed at version: the suspend a
@@ -1159,23 +1169,33 @@ func wantLines(t *testing.T, logged, msg string, claims []heldClaim) {
 	}
 }
 
-// H33, for the start the fact of the hold's end writes (intake.WorkHoldOpened). The outbox applies
-// that fact from a stop row that finds its claim stopped after the opening, when the opening has
-// deleted the hold's record already. The fact names the version that closed the gate, as the stop
-// named it. So the one start it writes for the claim the hold stopped begins with the opening's
-// sentences, and the start's log line names that version.
-func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfItsStop(t *testing.T) {
+// H33 and spec step 7, for the start the fact of the hold's end writes (intake.WorkHoldOpened).
+// The opening read the implementer live and started nothing of it, and the implementer's stop was
+// written after the opening. The daemon applies the fact once the read after that stop finds the
+// hold ended, and the outbox applies it from a stop row that finds its claim stopped after the
+// opening. The opening deleted the tree's work_holds row and kept the hold as the record of the
+// tree's last opening. So the one start the fact writes for the claim the hold stopped has the
+// opening's task: the close message's sentences naming version 4, that the hold stopped the turn,
+// today's open message naming the person's approval of version 4, and the check of the turn. The
+// fact here names no version (a stop that named none), so the record alone supplies the version 4
+// that the start's log line names.
+func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfTheOpening(t *testing.T) {
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
-	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
-	if hold := workHoldOf(t, rig.pool, "LEGION-208"); hold != nil {
-		t.Fatalf("the record holds %+v, want none: the opening deleted it", hold)
+	rig.close(engine, 4)
+	rig.open(engine, 4)
+	if starts := holdStartsOf(t, rig.pool, "LEGION-209"); len(starts) != 0 {
+		t.Fatalf("the opening started %s, want nothing: it read the implementer live", asJSON(starts))
 	}
+	if hold := workHoldOf(t, rig.pool, "LEGION-208"); hold != nil {
+		t.Fatalf("the record holds %+v, want no hold that stands: the opening ended it", hold)
+	}
+	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
+	rig.logged.Reset()
 
-	applyMirrored(t, rig.pool, engine, "work-hold-opened", intake.WorkHoldOpened{Tree: "LEGION-208", Version: 4})
+	applyMirrored(t, rig.pool, engine, "work-hold-opened", intake.WorkHoldOpened{Tree: "LEGION-208", Version: 0})
 
-	opening := workHoldWords + " The work hold stopped your turn. " + legionHold.bootOpened() +
-		" Check what your turn already did: a tool call may not have finished."
+	opening := legionHold.opening(4, 4)
 	want := phaseOpening(storedIssue(t, rig.pool, "LEGION-209"), claim.RoleImplementer, opening)
 	starts := holdStartsOf(t, rig.pool, "LEGION-209")
 	if len(starts) != 1 || !strings.HasPrefix(starts[0].Task, opening+"\n\n") || !reflect.DeepEqual(starts[0], want) {
@@ -1188,6 +1208,147 @@ func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfItsStop(t *testing.T) {
 	}
 	wantLines(t, rig.logged.String(), "workflow: the work hold's opening starts a claim it stopped",
 		[]heldClaim{{"LEGION-209", claim.RoleImplementer}})
+}
+
+// H33 and the architect's ruling of 2026-11-22, for the fact of the hold's end
+// (intake.WorkHoldOpened) where the daemon keeps no record of the tree's hold: no close or opening
+// was recorded, and the implementer stands stopped by the hold. The fact names version 4, as the
+// hold's stop named it. The one start it writes says that the hold has ended and that the daemon
+// keeps no record of the version that closed the gate, and the start's log line names version 4,
+// the fact's.
+func TestWorkHoldStartWithNoRecordNamesTheVersionOfItsStop(t *testing.T) {
+	rig := newHoldRig(t)
+	engine := rig.engine(config.HoldWork)
+	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
+
+	applyMirrored(t, rig.pool, engine, "work-hold-opened", intake.WorkHoldOpened{Tree: "LEGION-208", Version: 4})
+
+	want := phaseOpening(storedIssue(t, rig.pool, "LEGION-209"), claim.RoleImplementer, legionHold.unrecordedOpening())
+	if starts := holdStartsOf(t, rig.pool, "LEGION-209"); len(starts) != 1 || !reflect.DeepEqual(starts[0], want) {
+		t.Fatalf("the fact wrote the starts\n %s\nwant the implementer's one, its task behind the sentences of a hold no record keeps\n %s",
+			asJSON(starts), asJSON(want))
+	}
+	wantLines(t, rig.logged.String(), "workflow: the work hold's opening starts a claim it stopped",
+		[]heldClaim{{"LEGION-209", claim.RoleImplementer}})
+}
+
+// The architect's ruling of 2026-11-22 ("A path that truly cannot know a version ... says so in
+// its own words, never that the deployment holds the work"): a boot that finds a claim the hold
+// stopped in a tree that holds no work, where the daemon keeps no record of the tree's hold,
+// starts the claim with a task that says the hold has ended and that the daemon keeps no record
+// of the version that closed the gate. It never says that the deployment no longer holds the
+// tree's work: the deployment may still hold it under `work`. The start's log line names no
+// version.
+func TestWorkHoldStartWithNoRecordSaysTheDaemonKeepsNone(t *testing.T) {
+	rig := newHoldRig(t)
+	engine := rig.engine(config.HoldWork)
+	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
+
+	rig.boot(engine)
+
+	want := phaseOpening(storedIssue(t, rig.pool, "LEGION-209"), claim.RoleImplementer, legionHold.unrecordedOpening())
+	starts := holdStartsOf(t, rig.pool, "LEGION-209")
+	if len(starts) != 1 || !reflect.DeepEqual(starts[0], want) {
+		t.Fatalf("the boot wrote the starts\n %s\nwant the implementer's one, its task behind the sentences of a hold no record keeps\n %s",
+			asJSON(starts), asJSON(want))
+	}
+	if !strings.Contains(rig.logged.String(), `msg="workflow: the work hold's opening starts a claim it stopped" issue=LEGION-209 role=implementer version=0 `) {
+		t.Fatalf("the log holds no start of the implementer naming version 0:\n%s", rig.logged.String())
+	}
+}
+
+// H28 for the record of an opening: a record of the tree's last opening that names an older
+// generation of the root is the hold of a run that ended, and no start uses it. Here the record
+// keeps the opening of a hold of generation 3, closed at version 2, while the root stands at
+// generation 4, and the fact of the hold's end names version 4. The one start it writes says that
+// the daemon keeps no record of the version that closed the gate, never version 2 or that run's
+// open message, and the start's log line names version 4, the fact's.
+func TestWorkHoldStartUsesNoRecordOfAnOlderGeneration(t *testing.T) {
+	rig := newHoldRig(t)
+	engine := rig.engine(config.HoldWork)
+	older := record.WorkHold{Project: "LEGION", Tree: "LEGION-208", RootGeneration: 3, Step: record.DesignStepSpec,
+		ArtifactID: "artifact-208", Version: 2, ClosedAt: holdNow}
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		if err := record.NewStore().PutWorkHold(t.Context(), tx, older); err != nil {
+			return err
+		}
+		return record.NewStore().OpenWorkHold(t.Context(), tx, "LEGION-208", holdNow, legionHold.opened(2))
+	})
+	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
+
+	applyMirrored(t, rig.pool, engine, "work-hold-opened", intake.WorkHoldOpened{Tree: "LEGION-208", Version: 4})
+
+	want := phaseOpening(storedIssue(t, rig.pool, "LEGION-209"), claim.RoleImplementer, legionHold.unrecordedOpening())
+	if starts := holdStartsOf(t, rig.pool, "LEGION-209"); len(starts) != 1 || !reflect.DeepEqual(starts[0], want) {
+		t.Fatalf("the fact wrote the starts\n %s\nwant the implementer's one, its task behind the sentences of a hold no record keeps, "+
+			"not the opening of generation 3\n %s", asJSON(starts), asJSON(want))
+	}
+	wantLines(t, rig.logged.String(), "workflow: the work hold's opening starts a claim it stopped",
+		[]heldClaim{{"LEGION-209", claim.RoleImplementer}})
+}
+
+// R2 and spec step 7: a close after an opening makes the hold stand again. The opening ends the
+// hold, so the boot, the state and a claim's share lock read no hold. The next close, of version
+// 5, records the hold again and drops the record of the opening of version 4: the boot and the
+// state read the hold of version 5 (Store.WorkHolds), the share lock a claim's decision takes
+// answers that the hold stands (supervise.Store.LockWorkHold), and the tree's record is that hold.
+func TestWorkHoldStandsAgainAtACloseAfterAnOpening(t *testing.T) {
+	rig := newHoldRig(t)
+	engine := rig.engine(config.HoldWork)
+	st, err := store.Open(t.Context(), rig.pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store over the test pool: %v", err)
+	}
+	t.Cleanup(st.Close)
+	stands := func() bool {
+		t.Helper()
+		held, release, err := st.LockWorkHold(t.Context(), "LEGION-208")
+		if err != nil {
+			t.Fatalf("take the share lock of the work hold of LEGION-208: %v", err)
+		}
+		release()
+		return held
+	}
+	holds := func() []record.WorkHold {
+		t.Helper()
+		var holds []record.WorkHold
+		seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+			var err error
+			holds, err = record.NewStore().WorkHolds(t.Context(), tx, "LEGION")
+			return err
+		})
+		return holds
+	}
+	rig.close(engine, 4)
+	rig.open(engine, 4)
+	if got := holds(); len(got) != 0 || stands() {
+		t.Fatalf("after the opening the project's holds are %+v and the share lock stands %t, want no hold", got, stands())
+	}
+
+	rig.close(engine, 5)
+
+	if got, want := holds(), []record.WorkHold{legionRecord(5)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the second close the project's holds are %+v, want %+v", got, want)
+	}
+	if !stands() {
+		t.Fatal("after the second close the share lock answers that the hold does not stand, want it to stand")
+	}
+	var tree *record.WorkHold
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		var err error
+		tree, err = record.NewStore().TreeWorkHold(t.Context(), tx, "LEGION-208")
+		return err
+	})
+	if want := legionRecord(5); tree == nil || !tree.Standing() || !reflect.DeepEqual(*tree, want) {
+		t.Fatalf("after the second close the tree's record is %+v, want the hold that stands %+v", tree, want)
+	}
+	var openings int
+	if err := rig.pool.QueryRow(t.Context(), `select count(*) from work_hold_openings where tree = 'LEGION-208'`).Scan(&openings); err != nil {
+		t.Fatalf("read the records of the openings: %v", err)
+	}
+	if openings != 0 {
+		t.Fatalf("after the second close the tree keeps %d records of an opening, want none: the close drops the opening of version 4", openings)
+	}
 }
 
 // heldWhy is the answer the state gives an issue the work hold holds (H36).

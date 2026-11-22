@@ -1493,8 +1493,9 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string,
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last. The work
-// hold of the generation that ended goes with its gate rows (WorkHold), so it never holds the
-// newer one: the gate the next generation registers closes and opens a hold of its own.
+// hold of the generation that ended goes with its gate rows (WorkHold), and so does the record of
+// its last opening, so neither holds the newer one or names its version to the newer one: the gate
+// the next generation registers closes and opens a hold of its own.
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	if err := s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
 		fmt.Sprintf("clear the generation of tree %s", tree), now); err != nil {

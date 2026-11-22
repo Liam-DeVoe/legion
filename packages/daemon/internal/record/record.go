@@ -1731,11 +1731,15 @@ type ClearedSpecApproval struct {
 // Dispatch project key, as Issue.Project holds it), its root (Tree), the root's generation the
 // hold was applied at, and the gate row that closed it, by its step, its document and the version
 // that closed it, with the moment of the close (ClosedAt). The close writes it
-// (workflow's workHoldClose), and the opening deletes it, as does a new generation of the tree
-// (Store.ClearTreeGeneration). It is how the daemon's record holds the hold across a restart: the
-// boot tells a tree whose close has not been applied, which holds no record, from
-// one whose drain is under way, which does (workflow's workHoldBooted), and the opening's task and
-// the state's `why: held` name the version that closed the gate from it.
+// (workflow's workHoldClose). The opening deletes the tree's work_holds row and keeps what the row
+// named in work_hold_openings, with the moment of the opening (OpenedAt) and what ended the hold
+// (Opening) (Store.OpenWorkHold). The next close deletes that record of the opening, and a new
+// generation of the tree deletes both (Store.ClearTreeGeneration). It is how the daemon's record
+// holds the hold across a restart: the boot tells a tree whose close has not been applied, which
+// holds no record, from one whose drain is under way, which does (workflow's workHoldBooted), and
+// the opening's task and the state's `why: held` name the version that closed the gate from it.
+// Each later start of a claim the hold stopped reads the record of the opening, so that start
+// gives the task the opening gave (workflow's heldClaimOpening).
 type WorkHold struct {
 	Project        string
 	Tree           string
@@ -1744,7 +1748,15 @@ type WorkHold struct {
 	ArtifactID     string
 	Version        int
 	ClosedAt       time.Time
+	// OpenedAt is the moment an opening ended the hold, and Opening is what ended it: today's open
+	// message, or the boot's sentence where the deployment no longer holds the tree's work. Both
+	// are zero while the hold stands (Standing).
+	OpenedAt time.Time
+	Opening  string
 }
+
+// Standing is whether the hold stands: no opening has ended it.
+func (h WorkHold) Standing() bool { return h.OpenedAt.IsZero() }
 
 // DispatchIssueRow is one row of the daemon's copy of Dispatch's issues: what the readings of
 // Dispatch said about an issue of the project, whether or not the daemon records the issue itself.
@@ -2071,18 +2083,32 @@ type Store interface {
 	PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error
 	ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error)
 	DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error
-	// PutWorkHold records the work hold of a tree, in place of any it held; WorkHolds is every hold
-	// of project's trees, by tree; and DeleteWorkHold deletes tree's, if any.
+	// PutWorkHold records the work hold of a tree, in place of any it held, and deletes the record
+	// of the tree's last opening (OpenWorkHold): a close after an opening makes the hold stand
+	// again. WorkHolds is every hold of project's trees that stands, by tree: a hold an opening
+	// ended is no row of work_holds. DeleteWorkHold deletes tree's hold and the record of its last
+	// opening, if any.
 	PutWorkHold(ctx context.Context, tx pgx.Tx, hold WorkHold) error
 	WorkHolds(ctx context.Context, tx pgx.Tx, project string) ([]WorkHold, error)
 	DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) error
-	// LockWorkHold is the hold tree holds, nil for none, read with tree's row locked for update
-	// until tx ends: the hold's end takes it before it reads the tree's claims (workflow's
-	// tellAndEndWorkHold). A claim's decision that may make the hold's stop holds the row for share
-	// while it decides the stop (supervise.Store.LockWorkHold), so the end waits until that
-	// decision lets the row go, and a decision that asks while the end holds the row waits for the
-	// end's commit and then reads no row. Once the hold's stop is written, the claim's machine
-	// reads the row for share again, and that read too waits for an end in flight.
+	// OpenWorkHold ends tree's hold at the moment at: it deletes the tree's work_holds row and
+	// keeps what the row named in work_hold_openings, with at (WorkHold.OpenedAt) and opening, what
+	// ended the hold (WorkHold.Opening), in place of the record of an earlier opening. A tree with
+	// no work_holds row keeps no record of an opening. TreeWorkHold is tree's hold that stands,
+	// else the hold its last opening ended, nil for neither. The opening builds the task of each
+	// claim it starts from the row it moves into the record of the opening, and each later start of
+	// a claim the hold stopped reads that record (TreeWorkHold), so both give the same task
+	// (workflow's heldClaimOpening).
+	OpenWorkHold(ctx context.Context, tx pgx.Tx, tree string, at time.Time, opening string) error
+	TreeWorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
+	// LockWorkHold is the hold that stands for tree, nil for none, read with tree's work_holds row
+	// locked for update until tx ends: the hold's end takes it before it reads the tree's claims
+	// (workflow's tellAndEndWorkHold), and deletes the row (OpenWorkHold). A claim's decision that
+	// may make the hold's stop holds the row for share while it decides the stop
+	// (supervise.Store.LockWorkHold), so the end waits until that decision lets the row go, and a
+	// decision that asks while the end holds the row waits for the end's commit and then reads no
+	// row. Once the hold's stop is written, the claim's machine reads the row for share again, and
+	// that read too waits for an end in flight.
 	LockWorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	// WorkHeldTrees is every tree of project, by the tree its issue stands in, that holds a claim
 	// stored suspended by the work hold (supervise.SuspendedByHold), in one read whatever the number

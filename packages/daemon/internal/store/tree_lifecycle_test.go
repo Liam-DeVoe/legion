@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,54 @@ func TestWorkHoldLockStandsWhileTheTreesRowExists(t *testing.T) {
 	}
 	if stands(rootIssue) {
 		t.Fatalf("the work hold of %s stands after its opening, want none", rootIssue)
+	}
+}
+
+// The opening deletes the tree's work_holds row and keeps the hold, with what ended it, as the
+// record of the tree's last opening (record.Store.OpenWorkHold). The share lock a claim's
+// decision takes (supervise.Store.LockWorkHold) reads that hold as ended: it answers that the
+// hold does not stand, with a release that does nothing, as for a tree with no hold. The record
+// of the opening still names the hold. A close after the opening makes the hold stand again.
+func TestWorkHoldShareLockReadsAnOpenedHoldAsEnded(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	opened := closeWorkHold(t, store, records)
+	opened.OpenedAt, opened.Opening = time.Date(2026, 11, 22, 2, 34, 21, 0, time.UTC), "The design gate of LEGION-208 opened."
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := records.LockWorkHold(ctx, tx, rootIssue); err != nil {
+			return err
+		}
+		return records.OpenWorkHold(ctx, tx, rootIssue, opened.OpenedAt, opened.Opening)
+	}); err != nil {
+		t.Fatalf("open the work hold of %s: %v", rootIssue, err)
+	}
+
+	stands, release, err := store.LockWorkHold(ctx, rootIssue)
+	if release != nil {
+		t.Cleanup(release)
+	}
+	if err != nil || stands || release == nil {
+		t.Fatalf("the share lock of the opened hold = stands %t, release %t, %v; want a hold that does not stand and a release", stands, release != nil, err)
+	}
+	release()
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		read, err := records.TreeWorkHold(ctx, tx, rootIssue)
+		if err == nil && (read == nil || read.Standing() || !reflect.DeepEqual(*read, opened)) {
+			t.Fatalf("the tree's record after the opening is %+v, want the opened hold %+v", read, opened)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("read the record of the work hold of %s: %v", rootIssue, err)
+	}
+
+	closeWorkHold(t, store, records)
+	stands, release, err = store.LockWorkHold(ctx, rootIssue)
+	if release != nil {
+		t.Cleanup(release)
+	}
+	if err != nil || !stands {
+		t.Fatalf("the share lock after a close that follows the opening = stands %t, %v; want the hold to stand again", stands, err)
 	}
 }
 
