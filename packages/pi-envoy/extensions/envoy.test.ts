@@ -25655,9 +25655,20 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   let stack: EnvoyStack | undefined;
   beforeAll(async () => {
     stack = await startEnvoyStack({ work: stackDirectory });
-  }, 120_000);
+    // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
+    // `go build` and waits for each to serve. Worst measured cost: 249 197.32 ms over 20 runs at
+    // the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
+    // CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the calibration's
+    // 31.2 s), 2026-11-22T08:32Z to 09:41Z, where the base's 120_000 failed 10 starts in 20 in the
+    // Job infra-1580-krows-kf-6s8tw. Six times the worst is 1 495 s, past the 659 s one hang
+    // leaves the `envoy-session-stall` job (its `timeout-minutes: 20` less its other steps' 541 s
+    // at d7aa4f9b, run 44984499551, `.github/workflows/ci-job-envoy-session-stall.yaml`), so that
+    // ceiling decides 600_000, which is 2.4 times the worst.
+  }, 600_000);
   afterAll(async () => {
     await stack?.stop();
+    // A hang guard: what can hang is the stop of natsd or the listener. Worst measured cost:
+    // 4 703.96 ms over the same 20 runs, so 60_000 is 12.8 times the worst.
   }, 60_000);
 
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
@@ -25736,13 +25747,16 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
       await fixture.handlers.get("session_shutdown")?.({}, context);
       await proxy.close();
     }
-    // A hang guard, not a bound on work: what can hang is a wait for the stack, the registration
-    // or a message that never comes. The row's cost is the freeze's own recovery, about 30 s of
-    // nats.js's ping and dial timers: 30 192.92, 30 182.69 and 30 213.03 ms in CI's
-    // `envoy-session-stall` job at d92de35e, 688f9be7 and 4410f2a3 (runs 44935616558,
-    // 44962624014 and 44966869218), so 200_000 is 6.6 times the worst, inside that job's
-    // `timeout-minutes: 20`.
-  }, 200_000);
+    // A hang guard, not a bound on work: what can hang is a wait for the registration or a
+    // message that never comes. The row's cost is the freeze's own recovery, about 30 s of
+    // nats.js's ping and dial timers: 30 192.92, 30 182.69, 30 213.03 and 30 247.69 ms in CI's
+    // `envoy-session-stall` job at d92de35e, 688f9be7, 4410f2a3 and d7aa4f9b (runs 44935616558,
+    // 44962624014, 44966869218 and 44984499551). Worst measured cost: 53 995.87 ms over 20 runs
+    // at the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace,
+    // two CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the
+    // calibration's 31.2 s), 2026-11-22T08:32Z to 09:41Z. 330_000 is 6.1 times the worst, and
+    // with the stack's slowest start, 249 s, it stays inside the 659 s that job leaves.
+  }, 330_000);
 });
 
 // What the envoy_send and envoy_publish tools tell the model about where a message went
