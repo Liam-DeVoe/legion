@@ -6,9 +6,9 @@ import "testing"
 // under "Rolling back the release that names the variant on each step record", which is where an
 // operator reads it at a rollback and its one source. internal/store's
 // TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads runs the copy beside it,
-// step_variant_way_back_extract.txt, over queued rows; this test holds that copy to the guide's
-// block, so the block an operator runs is the block that test proves. The split keeps the guide out
-// of the daemon Go lane's filter, as the phase entry's way back does (way_back_doc_test.go).
+// step_variant_way_back_extract.txt, over queued rows and kept starts; this test holds that copy
+// to the guide's block, so the block an operator runs is the block that test proves. The split
+// keeps the guide out of the daemon Go lane's filter, as way_back_doc_test.go does.
 const (
 	// stepVariantWayBackExtract is the copy, read from the package whose test runs it.
 	stepVariantWayBackExtract = "../store/step_variant_way_back_extract.txt"

@@ -121,6 +121,22 @@ func stepVariantWayBackRows() []stepVariantQueued {
 	}
 }
 
+// stepVariantKeptStart is the start of a step as this release keeps it in step_starts.record
+// (record's keepStart): the start's whole write, the issue's variant in it. The roll forward of a
+// rollback of the release that records each step (store migration
+// 20261117064152_step_starts_roll_forward) copies it into a new step_record row, the record ended
+// stopped, for each run an earlier release ended while the record held it open.
+func stepVariantKeptStart() record.StepRecord {
+	started := time.Date(2026, 11, 17, 20, 0, 0, 0, time.UTC)
+	return record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b", Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-legion-legion-311-implementer", Generation: 1, StartedAt: &started,
+		StepExperiment: &record.StepExperiment{Experiment: "planning", Variant: "b"}}
+}
+
+// stepVariantStopped is the row the roll forward of a rollback of the release that records each
+// step queues from a kept start: the start, ended stopped at the moment of the rollback.
+const stepVariantStopped = `record || jsonb_build_object('ended_at', '2026-11-17T21:00:00Z'::timestamptz, 'result', 'stopped')`
+
 // The issue of the project that rolls back, and the issue of another project on the same database
 // whose daemon stays on this release.
 const (
@@ -129,12 +145,14 @@ const (
 )
 
 // stepVariantWayBackProblems runs block over stepVariantWayBackRows, queued once under each of the
-// two issues, on a store of its own, as one exec (the simple protocol a psql run uses), and
-// answers each way the rows it leaves fall short. Of the issue that rolls back: a row deleted, a
-// step record the release before still refuses, a row that this release's decoder reads other
-// than as it was queued with its variant taken out, and a waiting row whose retry state moved. Of
-// the issue that stays: a row deleted, or read other than as it was queued, its variant kept, or
-// whose retry state moved, since its daemon still owes Dispatch that variant.
+// two issues, and over stepVariantKeptStart, kept once for each, on a store of its own, as one exec
+// (the simple protocol a psql run uses), and answers each way the rows it leaves fall short. Of the
+// issue that rolls back: a row deleted, a step record the release before still refuses, a row
+// that this release's decoder reads other than as it was queued with its variant taken out, a
+// waiting row whose retry state moved, a kept start gone or read other than as it was kept with
+// its variant taken out, and a stopped end built from it that the release before refuses. Of the
+// issue that stays: a row or a kept start deleted, or read other than as it was queued or kept, its
+// variant kept, or a row whose retry state moved, since its daemon still owes Dispatch that variant.
 func stepVariantWayBackProblems(t *testing.T, block string) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -166,6 +184,17 @@ func stepVariantWayBackProblems(t *testing.T, block string) []string {
 				t.Fatalf("insert %s of %s: %v", q.name, issue, err)
 			}
 			ids[issue] = append(ids[issue], id)
+		}
+	}
+	kept, err := json.Marshal(stepVariantKeptStart())
+	if err != nil {
+		t.Fatalf("keep the start: %v", err)
+	}
+	for _, issue := range issues {
+		start := stepVariantKeptStart()
+		if _, err := store.Pool().Exec(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, started_at, run, record)
+			values ($1, $2, $3, $4, 1, $5, $6, 'open', $7)`, issue, start.Task, start.Kind, start.Step, start.Agent, start.StartedAt, kept); err != nil {
+			t.Fatalf("keep the start of %s: %v", issue, err)
 		}
 	}
 	if strings.TrimSpace(block) != "" {
@@ -214,23 +243,67 @@ func stepVariantWayBackProblems(t *testing.T, block string) []string {
 			}
 		}
 	}
+	for _, issue := range issues {
+		problems = append(problems, stepVariantKeptProblems(ctx, store.Pool(), issue, issue == stepVariantRollingBack)...)
+	}
+	return problems
+}
+
+// stepVariantKeptProblems is each way the kept start of issue falls short after the way back, as
+// this release reads it (record.Postgres.StepRuns) and as the release before decodes the stopped
+// end the roll forward of a rollback builds from it (stepVariantStopped). rollsBack says whether
+// issue is of the project that rolls back.
+func stepVariantKeptProblems(ctx context.Context, pool *Pool, issue string, rollsBack bool) []string {
+	var problems []string
+	var stopped []byte
+	if err := pool.QueryRow(ctx, `select `+stepVariantStopped+` from step_starts where issue = $1`, issue).Scan(&stopped); err != nil {
+		return []string{fmt.Sprintf("the kept start of %s is gone after the way back: %v", issue, err)}
+	}
+	want := stepVariantKeptStart()
+	if rollsBack {
+		if err := decodedBeforeTheVariant(stopped); err != nil {
+			problems = append(problems, fmt.Sprintf("the release before refuses the stopped end the roll forward of a rollback of the release that "+
+				"records each step builds from the kept start of %s after the way back, and retries it at every attempt: %v", issue, err))
+		}
+		want.StepExperiment = nil
+	}
+	var runs []record.IssueStepRun
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		runs, err = record.NewStore().StepRuns(ctx, tx, []string{issue})
+		return err
+	}); err != nil {
+		return append(problems, fmt.Sprintf("this release's read of the kept start of %s after the way back: %v", issue, err))
+	}
+	switch {
+	case len(runs) != 1:
+		problems = append(problems, fmt.Sprintf("this release reads %d kept starts of %s after the way back, want its one", len(runs), issue))
+	case !reflect.DeepEqual(runs[0].Kept, want) && rollsBack:
+		problems = append(problems, fmt.Sprintf("the kept start of %s reads %#v after the way back, want %#v: the start as it was kept, its variant taken out", issue, runs[0].Kept, want))
+	case !reflect.DeepEqual(runs[0].Kept, want):
+		problems = append(problems, fmt.Sprintf("the kept start of %s reads %#v after the way back, want %#v: the start as it was kept, its variant kept for its daemon, which stays on this release", issue, runs[0].Kept, want))
+	}
 	return problems
 }
 
 // The way back of the release that names the variant on each step record takes the experiment and
-// the variant out of each queued step_record row of the project that rolls back, and nothing else:
-// every row stays, with its retry state, each of that project's step records then takes the strict
-// decode of the release before, and this release reads each row as it was queued but for its
-// variant. Another project's daemon on the same database stays on this release and still owes its
-// variants to Dispatch, so its rows stand as they were queued, variant and all. The block is the
-// guide's, as the extract beside this file copies it, run for LEGION as an operator runs it.
+// the variant out of each queued step_record row of the project that rolls back, and out of each
+// start that project keeps in step_starts, and nothing else: every row stays, with its retry state,
+// each of that project's step records then takes the strict decode of the release before, and so
+// does the stopped end the roll forward of a rollback of the release that records each step builds
+// from a kept start (store migration 20261117064152_step_starts_roll_forward), and this release
+// reads each row and each kept start as it was but for its variant. Another project's daemon on
+// the same database stays on this release and still owes its variants to Dispatch, so its rows and
+// its kept starts stand as they were, variant and all. The block is the guide's, as the extract
+// beside this file copies it, run for LEGION as an operator runs it.
 //
 // The controls come first: the release before refuses each queued row that names the variant and
 // takes the one that names none, so this test sees the rows the way back exists for. Then the
 // block runs again once for each of its statements, with that statement taken out, and each such
-// run must leave a row short: a statement this test could drop without failing is one it does not
-// check. Last, the block runs with the project's predicate cut out, and must strip the other
-// project's rows: so the predicate is what keeps them.
+// run must leave a row or a kept start short: a statement this test could drop without failing is
+// one it does not check. Last, the block runs once for each statement with that statement's
+// project predicate cut out, and must strip the other project's rows or its kept start: so each
+// predicate is what keeps them.
 //
 // What this cannot show is the earlier daemon running: its binary is not here, so its decode is the
 // copy above (stepRecordBeforeTheVariant).
@@ -266,15 +339,19 @@ func TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		}
 	}
 
-	raw := stepVariantWayBack(t)
-	if scoped := strings.Count(raw, projectScope); scoped != 1 {
-		t.Fatalf("the way back scopes %d statements to the project that rolls back (%q), want its one:\n%s", scoped, projectScope, raw)
-	}
-	unscoped := strings.ReplaceAll(raw, projectScope, "")
-	if problems := stepVariantWayBackProblems(t, unscoped); !slices.ContainsFunc(problems, func(problem string) bool {
-		return strings.Contains(problem, "of "+stepVariantStaying+" reads")
-	}) {
-		t.Errorf("the control, the way back with no project predicate, leaves %s's rows as they were queued (problems %q); "+
-			"want them stripped, or this test cannot see a block that strips another project's rows", stepVariantStaying, problems)
+	raw := statementsOf(stepVariantWayBack(t))
+	for i, statement := range raw {
+		if scoped := strings.Count(statement, projectScope); scoped != 1 {
+			t.Fatalf("the way back's statement %d scopes itself %d times to the project that rolls back (%q), want once:\n%s",
+				i+1, scoped, projectScope, statement)
+		}
+		unscoped := slices.Clone(raw)
+		unscoped[i] = strings.ReplaceAll(statement, projectScope, "")
+		if problems := stepVariantWayBackProblems(t, strings.Join(unscoped, "\n")); !slices.ContainsFunc(problems, func(problem string) bool {
+			return strings.Contains(problem, "of "+stepVariantStaying+" reads")
+		}) {
+			t.Errorf("the control, the way back with no project predicate in its statement %d, leaves %s as it was (problems %q); "+
+				"want it stripped, or this test cannot see a statement that strips another project's rows:\n%s", i+1, stepVariantStaying, problems, statement)
+		}
 	}
 }
