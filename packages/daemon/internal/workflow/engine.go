@@ -2745,7 +2745,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// out is written (WritePlan): the run's plan node, the plan whose first step is the start below.
 	// The node, the move's write and the start each read w, the walk this transition read once.
 	if trigger == TriggerGateOpened {
-		if err := e.writePlanOn(ctx, tx, issue, w); err != nil {
+		if err := e.writePlanOn(ctx, tx, issue, []Walk{w}); err != nil {
 			return err
 		}
 	}
@@ -3039,9 +3039,10 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // linger dropped, or one admitted before the daemon queued such rows, gets its row here. The plan
 // the transition walks is settled first (planFirstStep). Its one caller, StartFirstPhase, runs for
 // an issue the waiting line offers at admitted (record.LineFirstPhase), so the issue always
-// stands there. A plan of several tasks has no one line to walk: each task whose needs are done
-// starts at its first step (startReady), and the architect is told the gate's opening once, as the
-// transition out of admitted tells it (noticeFor).
+// stands there. A plan of several tasks has no one line to walk: its plan node, which holds each
+// task, is written (WritePlan), each task whose needs are done starts at its first step
+// (startReady), and the architect is told the gate's opening once, as the transition out of
+// admitted tells it (noticeFor).
 //
 // A child's own architect starts between the branch row and the first worker's start
 // (StartFirstPhase says why here): the plain start (childArchitectStart), with no phase, task,
@@ -3064,6 +3065,11 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		}
 	}
 	if several {
+		// The node holds each task of the plan before any of them starts, so a step record or a
+		// need of any task names a task the node holds.
+		if err := e.WritePlan(ctx, tx, issue); err != nil {
+			return err
+		}
 		written, err := e.startReady(ctx, tx, issue)
 		if err != nil {
 			return err

@@ -219,7 +219,7 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		return err
 	}
 	if written.started && recordsSteps(issue) {
-		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, w)); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, []Walk{w})); err != nil {
 			return err
 		}
 	}
@@ -233,14 +233,20 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	return e.restartTask(ctx, tx, issue, w, reason)
 }
 
-// afterSeveral is afterVersion of a plan of several tasks. Each stopped task the version changes
-// ends its stop: once the work started it starts again where its needs are done, or waits for
-// them (restartTask on the copy of issue read for it), and then each task whose needs are done
-// starts (startReady), a task the version adds among them. Before the work starts each such task
-// waits for its first step (waitForFirstStep), and nothing starts: the gate's opening starts each
-// task whose needs are done (gateOpened). The run's plan node names one task, and is not written
-// for a plan of several.
+// afterSeveral is afterVersion of a plan of several tasks. A version taken after the work started
+// writes the run's plan node again, whole, with each task the version holds (WritePlan), before
+// any task of it starts. Each stopped task the version changes ends its stop: once the work
+// started it starts again where its needs are done, or waits for them (restartTask on the copy of
+// issue read for it), and then each task whose needs are done starts (startReady), a task the
+// version adds among them. Before the work starts each such task waits for its first step
+// (waitForFirstStep), and nothing starts and no node is written: the gate's opening writes the
+// node and starts each task whose needs are done (gateOpened).
 func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, issue record.Issue, written writtenVersion) error {
+	if written.started {
+		if err := e.WritePlan(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
 	for _, task := range written.stopped {
 		// A stopped task the version removes is deleted (writeVersion), and starts nothing.
 		if !slices.ContainsFunc(fact.Plan.Tasks, func(next plan.Task) bool { return next.ID == task }) {

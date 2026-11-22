@@ -1434,17 +1434,30 @@ test("a failed step's completion names the step its task returns to", () => {
 // Contract 219: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
-// No plugin code reads a field of the answer, so the reader takes each as optional and refuses
-// only a value of the wrong type.
-test("register_plan answers each task of the plan it took with its steps", () => {
+// Contract 224: each task is answered with the tasks it needs, by id, an empty list for none and
+// never null. No plugin code reads a field of the answer, so the reader takes each as optional
+// and refuses only a value of the wrong type.
+test("register_plan answers each task of the plan it took with its steps and its needs", () => {
   expect(LegionPlanRegisterResponse.parse(fixture("plan-register.json"))).toEqual({
-    plan: { version: 4, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] },
+    plan: { version: 4, tasks: [{ id: "a", steps: ["implementer", "reviewer"], needs: [] }] },
   });
-  const none = { plan: { version: 1, tasks: [{ id: "a", steps: [] }] } };
+  const none = { plan: { version: 1, tasks: [{ id: "a", steps: [], needs: [] }] } };
   expect(LegionPlanRegisterResponse.parse(none)).toEqual(none);
+  const needing = {
+    plan: {
+      version: 2,
+      tasks: [
+        { id: "a", steps: ["implementer"], needs: [] },
+        { id: "b", steps: ["tester"], needs: ["a"] },
+      ],
+    },
+  };
+  expect(LegionPlanRegisterResponse.parse(needing)).toEqual(needing);
   for (const task of [
     { id: "a", steps: null },
     { id: "", steps: [] },
+    { id: "a", steps: [], needs: null },
+    { id: "a", steps: [], needs: [""] },
   ]) {
     expect(
       LegionPlanRegisterResponse.safeParse({ plan: { version: 1, tasks: [task] } }).success

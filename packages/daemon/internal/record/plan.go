@@ -311,11 +311,12 @@ type StoredPlan struct {
 	Steps   map[string][]PlanStep
 }
 
-// Task is the plan's one task, the task its run is on whatever that task's state: this release's
-// plans hold one (plan.Supported). A plan that holds none, or more than one, is an error.
+// Task is the plan's one task, the task its run is on whatever that task's state, for a reader of
+// a plan of one task; a reader of a plan of several reads each of its Tasks. A plan that holds
+// none, or more than one, is an error.
 func (p *StoredPlan) Task() (PlanTask, error) {
 	if len(p.Tasks) != 1 {
-		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, and this release walks one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
+		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, not one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
 	}
 	return p.Tasks[0], nil
 }

@@ -34,13 +34,17 @@ type RegisteredPlan struct {
 	Tasks   []RegisteredTask `json:"tasks"`
 }
 
-// RegisteredTask is one task of a plan register_plan took: its id and the steps its block names,
-// each as the plan writes it (`role` or `role:key`). A task whose block names none has no step
+// RegisteredTask is one task of a plan register_plan took: its id, the steps its block names, each
+// as the plan writes it (`role` or `role:key`), and the tasks it needs, each by its id as
+// register_plan resolved it (plan.FromBlocks). A task whose block names no steps has no step
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
-// work starts, so the answer names none rather than guessing what the project will run then.
+// work starts, so the answer names none rather than guessing what the project will run then. A
+// task that needs none has [] here, never null; the answer to a caller below tasksContract, which
+// added the field, carries none (shaping.go's withoutNeeds).
 type RegisteredTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 // PlanRefusal is the answer to a plan Legion does not take, 409 PLAN_REFUSED: the code and the
@@ -273,7 +277,8 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 func registeredPlan(given plan.Plan) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
-		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps)}
+		needs := append([]string{}, task.Needs...)
+		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps), Needs: &needs}
 	}
 	return RegisteredPlan{Version: given.Version, Tasks: tasks}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,12 +16,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // planDoc is the plan document of the tree root LEGION-208 these tests give Legion, and childDoc
@@ -112,17 +116,16 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	refused(t, registerPlan(h, worker.grant(t), "LEGION-208", planDoc, 4), http.StatusForbidden, "ARCHITECT_REQUIRED")
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
-	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
 	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks, twoSinks)
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoSinks)
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."})
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks, twoSinks,
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoSinks,
 		PlanReason{Task: "b", Reason: "step 2 of task b names the role prober, which neither the deployment nor the plan defines."})
-	// A version that keeps the task of the default steps and adds a second is a plan of two tasks
-	// like any other: the route refuses it, so the workflow never takes it.
+	// A version that keeps the task of the default steps and adds a second that neither needs is a
+	// plan of two tasks whose work would each merge, like any other: the route refuses it, so the
+	// workflow never takes it.
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
-		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."},
 		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, default), and the work of each would merge by itself. This release of Legion does not carry it out yet."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
@@ -130,14 +133,14 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 
 	for range 2 {
 		taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4)
-		if taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}` {
+		if taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"],"needs":[]}]}}` {
 			t.Fatalf("register version 4 = %d %s, want 200 with its one task and two steps", taken.Code, taken.Body)
 		}
 	}
 	// A task that names no steps runs the project's default steps when its work starts, and the
 	// answer says it names none rather than guessing what the project will run then.
 	if bare := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 5); bare.Code != http.StatusOK ||
-		strings.TrimSpace(bare.Body.String()) != `{"plan":{"version":5,"tasks":[{"id":"a","steps":[]}]}}` {
+		strings.TrimSpace(bare.Body.String()) != `{"plan":{"version":5,"tasks":[{"id":"a","steps":[],"needs":[]}]}}` {
 		t.Fatalf("register version 5 = %d %s, want 200 with task a naming no step", bare.Code, bare.Body)
 	}
 	want := []intake.Fact{
@@ -192,19 +195,29 @@ func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
 // reads one (legion-api.ts's LEGION_ANSWER_READS: a field that set does not name is optional). So
 // the reader takes a task written without `steps`, and the daemon holds what it does not check:
 // every task of the answer, as shapeAnswer writes it to a caller at OwnerPlanContract, carries
-// `steps` as a list, never null and never absent, a task whose block names none included.
+// `steps` as a list, never null and never absent, a task whose block names none included. At
+// tasksContract each task carries `needs` the same way, a task that needs none included, and a
+// caller below it is served no `needs` (withoutNeeds).
 // TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one task through the route.
 func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 7,
-		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}}}})}
-	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, OwnerPlanContract, OwnerPlanContract)
-	encoded, err := json.Marshal(shaped)
-	if err != nil {
-		t.Fatalf("marshal the answer: %v", err)
-	}
-	const want = `{"plan":{"version":7,"tasks":[{"id":"a","steps":[]},{"id":"b","steps":["implementer"]}]}}`
-	if string(encoded) != want {
-		t.Errorf("register_plan answers %s, want %s: every task carries `steps`, a list and never null", encoded, want)
+		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}, Needs: []string{"a"}}}})}
+	for _, tc := range []struct {
+		contract int
+		want     string
+	}{
+		{OwnerPlanContract, `{"plan":{"version":7,"tasks":[{"id":"a","steps":[]},{"id":"b","steps":["implementer"]}]}}`},
+		{tasksContract, `{"plan":{"version":7,"tasks":[{"id":"a","steps":[],"needs":[]},{"id":"b","steps":["implementer"],"needs":["a"]}]}}`},
+	} {
+		shaped, _ := shapeAnswer(AnswerPlanRegister, answer, tc.contract, tc.contract)
+		encoded, err := json.Marshal(shaped)
+		if err != nil {
+			t.Fatalf("marshal the answer: %v", err)
+		}
+		if string(encoded) != tc.want {
+			t.Errorf("register_plan answers %s at %d, want %s: every task carries `steps`, and from tasksContract `needs`, each a list and never null",
+				encoded, tc.contract, tc.want)
+		}
 	}
 }
 
@@ -241,13 +254,13 @@ func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock 
 	return block
 }
 
-// register_plan reads each need as the task it names (plan.FromBlocks) before either check, so
-// the reasons name the task a reference names, a task a reference names is needed (b alone ends
-// the first plan), and a word that names no task gets the reason no release lifts rather than the reason of a
-// need this release does not carry out yet; the plan recorded is the one both checks read. The
-// fault is a route that checks, and records, the words as the blocks write them; the control is
-// a FromBlocks that keeps each word whole, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`
-// and `task b needs x.`, each as not carried out yet, and a and b as two tasks that no task needs.
+// register_plan reads each need as the task it names (plan.FromBlocks) before either check, so a
+// task a reference names is needed and the plan recorded names it by its id: the first plan, b
+// needing a by a reference, is taken, and its fact's b needs ["a"], b alone ending it. A word that
+// names no task gets the reason no release lifts, beside a and b as two tasks that no task needs,
+// and records nothing. The fault is a route that checks, and records, the words as the blocks
+// write them; the control is a FromBlocks that keeps each word whole, under which b's need is
+// recorded as the reference and the second plan is taken.
 func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -255,14 +268,62 @@ func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
 	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), needing(taskBlock("b", "implementer reviewer"), "x"))
 
-	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks,
-		PlanReason{Task: "b", Reason: "task b needs a. This release of Legion does not carry it out yet."})
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), twoTasks,
+	if taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1); taken.Code != http.StatusOK {
+		t.Fatalf("register version 1 = %d %s, want 200: b needs a, and b alone ends the plan", taken.Code, taken.Body)
+	}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
 		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("refused registrations recorded %#v, want nothing", got)
+	got := facts.recorded()
+	if len(got) != 1 {
+		t.Fatalf("facts = %#v, want the one fact of version 1", got)
+	}
+	given, ok := got[0].(intake.PlanGiven)
+	if !ok || len(given.Plan.Tasks) != 2 || !slices.Equal(given.Plan.Tasks[1].Needs, []string{"a"}) {
+		t.Fatalf("the fact of version 1 = %#v, want b needing [a], the id of the task its reference names", got[0])
+	}
+}
+
+// register_plan of the plan of tasks a to e, each need written as Dispatch writes a reference to a
+// block (c needs b, d needs a and c, e needs d), is taken: the workflow stores each need as the id
+// of the task it names, so plan_tasks.needs of d reads {a,c}, and the answer names each task's
+// needs by id, d's ["a","c"] and [] for a task that needs none. The steps of each task name one
+// implementer and one reviewer by their keys, i and r, the same two agents in each task: this
+// release runs one agent of each role for an issue, and an agent does the steps of several tasks.
+//
+// The fault it catches is a plan recorded with the words of its needs, which no reader of a task
+// id reads (its control: the fact's plan read with each word kept whole, plan.FromBlocks without
+// its resolution of needs, under which d's needs read the words).
+func TestARegisteredPlanStoresItsNeedsAsTaskIds(t *testing.T) {
+	h, _, statuses := planHarness(t)
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{engine}, Dispatch: statuses, Deployment: plan.Deployment{Roles: plan.BuiltinRoles()}}).Handler
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	ref := func(id string) string { return "dispatch://LEGION-208/artifact/plan-md#b-" + id }
+	const steps = "implementer:i reviewer:r"
+	statuses.givePlan(planDoc, 1, taskBlock("a", steps), taskBlock("b", steps),
+		needing(taskBlock("c", steps), ref("b")), needing(taskBlock("d", steps), ref("a")+" "+ref("c")),
+		needing(taskBlock("e", steps), ref("d")))
+
+	taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+	task := func(id, needs string) string {
+		return `{"id":"` + id + `","steps":["implementer:i","reviewer:r"],"needs":[` + needs + `]}`
+	}
+	want := `{"plan":{"version":1,"tasks":[` + strings.Join([]string{task("a", ""), task("b", ""), task("c", `"b"`), task("d", `"a","c"`),
+		task("e", `"d"`)}, ",") + `]}}`
+	if taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != want {
+		t.Fatalf("register the plan of tasks a to e = %d %s, want 200 with %s", taken.Code, taken.Body, want)
+	}
+	var needs []string
+	if err := h.store.Pool().QueryRow(context.Background(), `select needs from plan_tasks where issue = 'LEGION-208' and task = 'd'`).Scan(&needs); err != nil {
+		t.Fatalf("read the needs of task d: %v", err)
+	}
+	if !slices.Equal(needs, []string{"a", "c"}) {
+		t.Fatalf("plan_tasks.needs of d = %q, want {a,c}: each need stored as the id of the task it names", needs)
 	}
 }
 

@@ -39,10 +39,8 @@ type plannedTask struct {
 // newTaskBranchRig stores taskBranchIssue and its plan of tasks, starts each task in the order of
 // their ids as the start of tasks does — its branch given (record.Store.AssignTaskBranch), then
 // the task moved to running at its first step — and stands up the executor and the fake GitHub.
-// Any request the fake does not serve fails the test. Production writes no such plan at this
-// release: register_plan takes no plan of several tasks or with needs (plan.Supported), so no
-// start queues a task_branch row yet. Each rig is the store as the start of tasks leaves it once
-// such plans run.
+// Any request the fake does not serve fails the test. Each rig is the store as the start of tasks
+// leaves it with a plan of several tasks that register_plan took.
 func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 	t.Helper()
 	ctx := context.Background()

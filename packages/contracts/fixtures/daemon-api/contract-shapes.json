@@ -34247,6 +34247,7 @@
       "plan.tasks",
       "plan.tasks.*",
       "plan.tasks.*.id",
+      "plan.tasks.*.needs",
       "plan.tasks.*.steps",
       "plan.tasks.*.steps.*",
       "plan.version"
