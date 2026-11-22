@@ -223,6 +223,20 @@ func PointerKinds() []string {
 	return kinds
 }
 
+// PlacementKinds is the kind of each placement pointerRules holds, in the table's order: part_of,
+// a risk's place under a pre-mortem lens, which the table rules for a risk and lets through out of
+// any other node. A placement is a node's place, which no pointer route moves, so PointerKinds
+// lists none of them. Each call answers a slice of its own.
+func PlacementKinds() []string {
+	kinds := make([]string, 0, len(pointerRules))
+	for _, rule := range pointerRules {
+		if rule.placement {
+			kinds = append(kinds, rule.kind)
+		}
+	}
+	return kinds
+}
+
 // InvokedSeqSQL is where the lens whose id the SQL expression idExpr names stands in the order
 // lenses were invoked: the seq of its first part_of tuple (graph_tuples.seq, one order across
 // every node), asserted or since retracted, so neither a later write of its row nor a move to

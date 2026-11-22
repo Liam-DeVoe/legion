@@ -284,12 +284,12 @@ func keyedTupleArm(blockKind string) string {
 // that is not gone, as the view's join to graph_nodes keeps it. A finding is a block row of the
 // store whose id names its lens, and the view writes its kind as lens_block. The source's
 // visibility, and a standing kind's staleness, is the read's filter of a source, as for every
-// other arm (VisibleEnd over AnyKind).
+// other arm (VisibleEnd over AnyKind). The kinds it reads are storeArmPointers out of any node,
+// and storeArmPlacements and authored_by only out of a node of the store's own kinds or a finding.
 func keyedStoreArm(blockKind string) string {
 	finding := `t.from_kind = '` + BlockNodeKind + `' and t.from_id like '` + graphstore.KindLens + `/%'`
-	pointers := quotedKinds([]string{graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy})
-	placements := quotedKinds([]string{graphstore.TuplePartOf, graphstore.TupleAuthoredBy})
+	pointers := quotedKinds(storeArmPointers)
+	placements := quotedKinds(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy}))
 	sources := quotedKinds([]string{graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint})
 	return `select case when newest.from_kind = '` + BlockNodeKind + `' and newest.from_id like '` + graphstore.KindLens + `/%'
 					then '` + graphstore.KindLensBlock + `' else newest.from_kind end,
@@ -302,6 +302,22 @@ func keyedStoreArm(blockKind string) string {
 				where newest.asserted and exists (select 1 from graph_nodes live
 					where live.kind = newest.from_kind and live.id = newest.from_id and live.state <> '` + graphstore.StateGone + `')`
 }
+
+// storeArmPointers are the relations keyedStoreArm reads into a block out of a node of any kind:
+// each pointer graphstore.PointerKinds lists, read once, and changed_by_run. A write made for a run
+// appends a changed_by_run out of each node it created or changed (graphstore's changedByRunMarks
+// and queueChangedByRun, in the append QueueWrite and QueueCaused queue), and no pointer route
+// moves one, so graphstore's pointerRules holds no rule for it and PointerKinds does not list it.
+// Every kind pointerRules holds is here or in storeArmPlacements, which
+// TestTheStoreArmReadsEveryKindThePointerRulesHold holds the arm to.
+var storeArmPointers = append([]string{graphstore.TupleChangedByRun}, graphstore.PointerKinds()...)
+
+// storeArmPlacements are the kinds of graphstore's pointerRules that keyedStoreArm leaves out of
+// storeArmPointers: part_of, which the table holds as a placement (graphstore.PlacementKinds), a
+// risk's place under a pre-mortem lens, not as a pointer, so PointerKinds leaves it out. The arm
+// reads it, beside authored_by, only out of a node of the store's own kinds or out of a finding,
+// because a part_of out of any other node is another arm's of the view.
+var storeArmPlacements = []string{graphstore.TuplePartOf}
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
 // by the block's node id k.node_id through the replies' partial index on replies_to_block
