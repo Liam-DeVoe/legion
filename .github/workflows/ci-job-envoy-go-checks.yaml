@@ -234,7 +234,17 @@ jobs:
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
-        run: bash loadtest/cluster/cluster.test.sh
+        # The suite's own limit, which its waits end 30 s before (LEGION_PROOF_DEADLINE_MS, read by
+        # proof-wait.sh's proof_guard_from_env): over this job's 20 newest green merge-group runs to
+        # 2026-11-22 (45023796663 to 45039647589) this step took at most 378 s and the job's other
+        # steps at most 1,078 s, and 1,078 + 11 min = 1,738 s keeps the job inside its 30 min.
+        timeout-minutes: 11
+        env:
+          STEP_TIMEOUT_MINUTES: 11 # this step's timeout-minutes, which the suite's deadline is read from
+        run: |
+          now=${EPOCHREALTIME/./}
+          export LEGION_PROOF_DEADLINE_MS=$((10#$now / 1000 + (STEP_TIMEOUT_MINUTES * 60 - 30) * 1000))
+          bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: bash loadtest/vm/vm.test.sh
