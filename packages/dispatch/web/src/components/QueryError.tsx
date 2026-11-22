@@ -4,7 +4,8 @@ import { AGENT_LIST_REFILLING, isAgentListRefilling } from "../api/client";
 import { dangerText, textSecondaryOnSurface } from "../theme/classes";
 
 export interface QueryErrorProps {
-  /** The small type of a line under a control row: the Issues tab's alerts under its view tabs. */
+  /** The small line under a control row, as the Issues tab's alerts under its view tabs are
+   *  drawn: the message and a semibold Retry one space after it, in one line of text. */
   compact?: boolean;
   /** The failure itself. An agent list that is refilling (`isAgentListRefilling`) is not a
    *  failure to report: the shared refilling notice replaces `message`, as status, not alert. */
@@ -45,26 +46,37 @@ export function QueryError({
   retrying = false,
 }: QueryErrorProps): ReactNode {
   const refilling = isAgentListRefilling(error);
+  const retry =
+    onRetry === undefined ? null : (
+      <button
+        aria-label={retryLabel}
+        className={`${compact ? "font-semibold" : "font-medium"} underline disabled:cursor-not-allowed disabled:opacity-50`}
+        disabled={retrying}
+        onClick={onRetry}
+        type="button"
+      >
+        Retry
+      </button>
+    );
+  if (compact && !refilling)
+    return (
+      <p className={`min-w-0 break-words text-xs ${dangerText}`} role="alert">
+        {message}
+        {retry === null ? null : <> {retry}</>}
+      </p>
+    );
   return (
     <div
       className={`flex flex-wrap items-center gap-3 ${compact ? "text-xs" : "text-sm"} ${refilling ? textSecondaryOnSurface : dangerText}`}
       role={refilling ? undefined : "alert"}
     >
       {refilling ? <AgentListRefilling /> : <p className="min-w-0 break-words">{message}</p>}
-      {onRetry === undefined ? null : (
+      {retry === null ? null : (
         <>
           {/* The space between the message and Retry: a flex container does not render a
               white-space-only child, so this changes no pixel, and without it the alert's text
               reads the message's last word and Retry as one word. */}{" "}
-          <button
-            aria-label={retryLabel}
-            className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={retrying}
-            onClick={onRetry}
-            type="button"
-          >
-            Retry
-          </button>
+          {retry}
         </>
       )}
     </div>
