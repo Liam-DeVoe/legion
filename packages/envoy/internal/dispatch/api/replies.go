@@ -33,7 +33,9 @@ import (
 // session; its dismissal is a row of user_agent_thread_dismissed (20261105093505), since an Agent
 // row has no user_threads row to carry one.
 //
-// A thread stays in the Inbox, read or not, until the person dismisses it (api/inbox_dismiss.go):
+// A thread stays in the Inbox, read or not, until the person dismisses it (api/inbox_dismiss.go)
+// or answers or replies in it, which dismisses it in the write's own transaction (inboxwrite.Record,
+// dispatch://INFRA-4948 R1):
 // state=inbox answers what is in it, state=dismissed what has been taken out of it, and
 // state=unread, the default, answers the unread rows the Inbox's count reads.
 //

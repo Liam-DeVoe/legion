@@ -72,7 +72,7 @@ A band draws 50 rows. Where it holds more, **Show more** under it draws the next
   no headings. A band is drawn only when it holds a row, and a snoozed ask is in **Later**
   whatever you group by.
 - **Show**: **Inbox**, the default, or **Dismissed**, the threads you have taken out of the
-  Inbox. A thread stays in the Inbox, read or not, until you dismiss it.
+  Inbox. A thread stays in the Inbox, read or not, until you dismiss it or answer or reply in it.
 - **Thread order**: whether a thread's replies read **Oldest first**, the default, or **Newest
   first**. This choice is yours everywhere: it sets the order of every thread in Dispatch, not
   only the ones in the Inbox.
@@ -246,13 +246,17 @@ A reply you write here goes exactly where one written on the thread's own page g
 
 Reading a thread marks it read. The row stays where it is, drawn as read: a thread stays in your
 Inbox, read or not, until you dismiss it, the way an email stays in its inbox until it is
-archived. Where you would rather not read them one at a time, **Mark all read**, in the bar
+archived, or until you answer or reply in it yourself, which takes it out as **Dismiss** does,
+with no second press. Where you would rather not read them one at a time, **Mark all read**, in the bar
 between **Filter** and **View**, marks every thread the list is showing. It asks nothing first:
 every row is redrawn as read and every count drops at once, and if the server refuses the press
 the marks come back and the bar says `Nothing was marked read.` A filtered list marks only what
 it is showing, and a thread somebody wrote in after the list was read stays unread.
 
-**Dismiss** is what takes a thread out of the Inbox. It is on the row itself — while your pointer
+**Dismiss** is what takes a thread out of the Inbox without a write of yours. Your own answer to a
+question, and your own reply in a thread, take it out too: the row leaves the Inbox and stands in
+**Dismissed**, whether you wrote it in the Inbox, on the issue page, in a document's margin or on
+the Agents page. An answer or a reply an agent writes in your name takes nothing out. **Dismiss** is on the row itself — while your pointer
 is on the row, and always on the row you are reading — in the right column's head, and on the
 card where there is no second column. The key `e` dismisses the row you are on, and with rows
 selected the selection bar dismisses all of them at once. A question has no **Dismiss**: you

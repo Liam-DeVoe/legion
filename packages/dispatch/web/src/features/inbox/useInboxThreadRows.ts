@@ -26,10 +26,10 @@ export interface InboxThreadRows {
  * The reader's own threads as Inbox rows: the one read's `inbox` state, unpaged, its `dismissed`
  * state, paged, and the pointer hold over whichever is showing.
  *
- * A thread stays in the Inbox, read or not, until it is dismissed, so the `inbox` state answers
- * for every row the list draws and reading one takes nothing away. The `dismissed` state answers
- * newest dismissal first, `INBOX_DISMISSED_PAGE` entries at a time, and **Show more** follows its
- * cursor.
+ * A thread stays in the Inbox, read or not, until it is dismissed - by **Dismiss**, or by the
+ * reader's own answer or reply in it - so the `inbox` state answers for every row the list draws
+ * and reading one takes nothing away. The `dismissed` state answers newest dismissal first,
+ * `INBOX_DISMISSED_PAGE` entries at a time, and **Show more** follows its cursor.
  */
 export function useInboxThreadRows({
   asksOnly,

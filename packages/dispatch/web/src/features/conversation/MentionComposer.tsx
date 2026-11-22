@@ -28,6 +28,7 @@ import {
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -65,7 +66,7 @@ import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
 import { draftParties } from "../refs/party-references";
 import { textSourceOf } from "../refs/text-references";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
 import {
@@ -215,6 +216,17 @@ interface MentionComposerProps {
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
   readonly edit?: { readonly body: string; readonly id: string };
+  /** Holds Send by `aria-disabled` while a send is out, rather than disabling the composer's
+   *  controls: a control that disables itself under the focus drops the focus to the page, and a
+   *  held Send keeps it. After the send lands the hold goes on until the read the send changes has
+   *  come back - the promise `onSent` answers - and it ends at the latest at the write deadline
+   *  (`SEND_DEADLINE_MS`) from the press. A refusal ends it at once, and Send is given back with
+   *  the refusal shown. While it holds the field is read-only, and the hold is part of the
+   *  reader's press (`useHeldThroughAnswer`), so the page's rescue reads what the send takes away
+   *  as the reader's doing. The Inbox's reply boxes pass it: the reader's own reply takes its
+   *  thread out of their Inbox (dispatch://INFRA-4948 R1), so the box goes once the Inbox is read
+   *  again. */
+  readonly heldSend?: boolean;
   /** Where the host hands this composer a draft the reader carried from another one with that
    *  composer's own control: the phone thread composer's Cancel reply, whose draft goes to the
    *  docked composer at the issue's own address (`usePhoneThread`'s `cancelReply`). */
@@ -249,7 +261,9 @@ interface MentionComposerProps {
    *  when the thread opens again shows it, and the host decides where the reader goes. */
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
-  readonly onSent: () => void;
+  /** Told that a send landed. A host whose composer holds Send (`heldSend`) answers the read the
+   *  send changes, a promise the hold waits for; whatever else it answers is not read. */
+  readonly onSent: () => unknown;
   readonly owner: ComposerOwner;
   /** How many times the reader has moved this composer's address with a control its host draws
    *  for it - an Agents row's issue picker - counted by the host in the press that makes the
@@ -295,6 +309,7 @@ export function MentionComposer({
   finishing = false,
   frame,
   edit,
+  heldSend = false,
   seedMentions = [],
   inline = false,
   intake,
@@ -320,6 +335,25 @@ export function MentionComposer({
     landed: (sent) => landed(sent),
     refused: (held) => replaceDraft(held.draft.draft),
   });
+  // A held Send's hold (`heldSend`): when the newest press was made (0 before any) and the press
+  // whose deadline has passed, so the hold ends at the write deadline from the press at the latest;
+  // and, once the send has landed, the read `onSent` answered, which the hold waits for.
+  const [pressedAt, setPressedAt] = useState(0);
+  const [pastDeadline, setPastDeadline] = useState(0);
+  const [awaitedRead, setAwaitedRead] = useState<Promise<unknown> | null>(null);
+  useEffect(() => {
+    if (pressedAt === 0) return;
+    const bound = window.setTimeout(
+      () => setPastDeadline(pressedAt),
+      pressedAt + SEND_DEADLINE_MS - Date.now()
+    );
+    return () => window.clearTimeout(bound);
+  }, [pressedAt]);
+  useEffect(() => {
+    if (awaitedRead === null) return;
+    const end = () => setAwaitedRead((now) => (now === awaitedRead ? null : now));
+    awaitedRead.then(end, end);
+  }, [awaitedRead]);
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : composerNameOf(mutationKey);
@@ -522,13 +556,26 @@ export function MentionComposer({
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
-   *  seeds. */
+   *  seeds. A held Send waits for the read the host answers (`heldSend`). */
   const landed = ({ edit: sentEdit }: SentRequest) => {
     clearDraft();
-    onSent();
+    const read = onSent();
+    if (heldSend && read instanceof Promise) setAwaitedRead(read);
     if (!inline && sentEdit === undefined) onClose();
   };
   const { refusal, sending } = outgoing;
+  // A held Send (`heldSend`) is refused while its send is out and, once it lands, until the read it
+  // waits for has come back, within the write deadline from the press; the field takes no typing
+  // meanwhile. The hold is part of the reader's press while it is on (`useHeldThroughAnswer`).
+  const holding = heldSend && pressedAt !== pastDeadline && (sending || awaitedRead !== null);
+  useHeldThroughAnswer(holding);
+  const sendRefusal = !heldSend
+    ? undefined
+    : sending
+      ? "Your message is on its way."
+      : holding
+        ? "Your message is sent."
+        : undefined;
   // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
   // its own.
   const refusedKind = closed && kind !== "comment";
@@ -804,12 +851,14 @@ export function MentionComposer({
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
-   *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
-   *  unsent copy under the send name goes. */
+   *  control that could change or discard the draft - or, for a held Send (`heldSend`), Send is
+   *  refused and the field read-only; the held send covers that hold in this task before React
+   *  renders it. From here on the held send keeps the draft, so the unsent copy under the send
+   *  name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
+      setPressedAt(Date.now());
       field.current?.closePicker();
       forgetUnsent();
       return sentRequest(refused);
@@ -914,7 +963,7 @@ export function MentionComposer({
             ? "min-w-0 border-0 p-0"
             : "min-w-0 space-y-3 border-0 p-0"
       }
-      disabled={sending}
+      disabled={sending && !heldSend}
       onChangeCapture={stopHeldComposerInput}
       onClickCapture={stopHeldComposerInput}
       onInputCapture={stopHeldComposerInput}
@@ -1052,7 +1101,7 @@ export function MentionComposer({
         onPaste={homes.paste}
         onPickerOpenChange={setPickerOpen}
         project={pickerProject}
-        readOnly={changed !== undefined || offered !== undefined}
+        readOnly={changed !== undefined || offered !== undefined || sendRefusal !== undefined}
         writing={dispatchWritingBox(box, writes)}
       />
       {/* A kind the closed issue refuses can send nothing, and a margin compose of that kind ends
@@ -1253,17 +1302,19 @@ export function MentionComposer({
         </div>
       )}
       <RefusableButton
-        busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
-        refusal={submitReason ?? null}
+        busy={
+          sending && !heldSend ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined
+        }
+        refusal={sendRefusal ?? submitReason ?? null}
         refusalShownBy={footId}
         type="submit"
       >
-        {title}
+        {sending ? "Sending…" : title}
       </RefusableButton>
       {/* While Send refuses, the line under it says why - on screen, for a reader with no
           pointer to hover it - and once the draft can go, how to send it. */}
       <p className={`text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
-        {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
+        {sendRefusal ?? submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
       </p>
     </fieldset>
   );

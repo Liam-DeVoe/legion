@@ -18,6 +18,7 @@ import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import { useSessionSends } from "../conversation/useSessionSends";
+import { meInboxReadsBack } from "../inbox/one-read-cache";
 import { focusOnDocument } from "../shell/roving";
 import {
   AGENT_ROW_SELECTOR,
@@ -52,6 +53,7 @@ export function agentSendKey(sessionID: string): MutationKey {
  */
 export function AgentMessageComposer({
   agent,
+  heldSend = false,
   hold,
   listed,
   onCancelReply,
@@ -62,6 +64,12 @@ export function AgentMessageComposer({
   thread,
 }: {
   agent: Agent;
+  /** Holds Send until the Inbox is read again after the send lands (`MentionComposer`'s
+   *  `heldSend`): the Inbox's Agent row passes it, since the reader's own reply takes the thread
+   *  out of their Inbox (dispatch://INFRA-4948 R1). The read it waits for is the one the send's
+   *  landing already started (`held-sends.ts`' `refreshAfter`), waited on and not sent again
+   *  (`meInboxReadsBack`). */
+  heldSend?: boolean;
   /** The row's hold on that send (`useSending(sendKey)`): while it is out the message is
    *  addressed, so the picker holds until it lands, from Send's own task on. The send's request is
    *  frozen at Send either way. */
@@ -276,6 +284,7 @@ export function AgentMessageComposer({
             ? undefined
             : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }]
         }
+        heldSend={heldSend}
         listed={listed}
         mutationKey={sendKey}
         onCancelReply={onCancelReply}
@@ -292,8 +301,10 @@ export function AgentMessageComposer({
           void queryClient.invalidateQueries({
             queryKey: agentConversationQuery(agent.session_id).queryKey,
           });
-          // Focus went to the document when the field disabled itself; take it back.
+          // Focus went to the document when the field disabled itself; take it back. A held
+          // Send disables nothing, and its focus stays where it is.
           refocusComposer();
+          return heldSend ? meInboxReadsBack(queryClient) : undefined;
         }}
         owner={composerOwner}
         ownMoves={commits}

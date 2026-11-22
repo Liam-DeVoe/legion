@@ -459,6 +459,9 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		if state == "changes_requested" {
 			selected = docs.ApprovalOptionRequestChanges
 		}
+		// The review answers the request as its writer's own answer, so a person's review takes the
+		// request's thread out of their Inbox, as an answer from the ask's own route does
+		// (closeAskTx, dispatch://INFRA-4948 R1).
 		answered, answeredEvents, err := s.closeAskTx(documentCtx, tx, ledger, open.ID, actor, answerTransition(actor, []string{selected}, reason, answerOptions{}))
 		if err != nil {
 			s.writeHandlerError(w, err)

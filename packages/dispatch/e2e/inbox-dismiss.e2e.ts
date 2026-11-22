@@ -32,12 +32,14 @@ import { asUser } from "./users";
 
 /**
  * The Inbox's **Dismiss** (INFRA-450, A12): a thread stays in the Inbox, read or not, until the
- * reader dismisses it, as an email stays in its inbox until it is archived. Reading a thread only
- * changes how its row is drawn (`e2e/inbox-read-state.e2e.ts`), and so does **Mark all read**
- * (`e2e/inbox-mark-all.e2e.ts`); **Dismiss** is what takes a row out, by its own control, by the
+ * reader dismisses it, as an email stays in its inbox until it is archived, or until the reader's
+ * own answer or reply takes it out the same way (dispatch://INFRA-4948 R1,
+ * `e2e/inbox-answer-dismisses.e2e.ts`). Reading a thread only changes how its row is drawn
+ * (`e2e/inbox-read-state.e2e.ts`), and so does **Mark all read** (`e2e/inbox-mark-all.e2e.ts`);
+ * **Dismiss** is what takes a row out with no write of the reader's, by its own control, by the
  * key `e`, and over a selection from the bulk bar. The **Dismissed** view lists what was taken
  * out and **Move to Inbox** puts it back; a reply somebody else writes brings a dismissed thread
- * back unread, and the reader's own reply leaves it where it is.
+ * back unread.
  *
  * A press that names its rows carries what the page drew in each of them (`seen_replies`) - a
  * Reply row's own version, an Agent row's newest session reply and the ids it drew as unread -
@@ -678,8 +680,8 @@ test("a reply the reader sends from the Dismissed view leaves the thread there",
     await pane.getByRole("button", { name: "Send" }).click();
     await expect(pane.getByText("Then we widen the window.", { exact: true })).toBeVisible();
 
-    // Their own write is no reason to put it back: the thread stays dismissed, and the Inbox
-    // goes on holding the two rows it held.
+    // Their own reply dismisses the thread too (dispatch://INFRA-4948 R1), so it stays in the
+    // Dismissed view, and the Inbox goes on holding the two rows it held.
     await expect(rows).toHaveCount(1);
     await expect(page.locator(`[data-inbox-row="${replyId}"]`)).toBeVisible();
     await expect.poll(async () => dismissedThreads()).toBe(1);

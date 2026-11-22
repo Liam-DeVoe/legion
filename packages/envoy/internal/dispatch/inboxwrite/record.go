@@ -76,6 +76,12 @@ type Write struct {
 	// on no issue). The reply reaches them whether or not their participates_in stands. "" for
 	// any other write.
 	Starter string
+	// OwnWrite says the handler that took the write marks it as its writer's own: a person's answer
+	// or reply made at that moment (Own). Such a write takes its thread out of the writer's Inbox
+	// where PlanRecord's four conditions hold (dispatch://INFRA-4948 R1, D5). A write that is no
+	// person's act at that moment - the carried approval answer, the restore of a retracted ask, the
+	// seed's writes, the backfill's - leaves it false.
+	OwnWrite bool
 	// ask is the answered ask as its answer writer read it before the update that writes the
 	// answer (ReadAsk), whose catch-up Record appends first.
 	ask *Ask
@@ -117,6 +123,13 @@ func Opened(askID string, author model.Actor, at time.Time, issueKey, artifactID
 // the read to Record.
 func (w Write) WaitingOn(waiting string) Write {
 	w.waiting = &waiting
+	return w
+}
+
+// Own is w marked as its writer's own write (OwnWrite). The handlers of a person's answer and of
+// a comment or a message call it; PlanRecord still decides whether the write dismisses.
+func (w Write) Own() Write {
+	w.OwnWrite = true
 	return w
 }
 
@@ -278,7 +291,22 @@ func (w Write) keptLogin() (string, bool) {
 //     marked_seq at the log position of this moment (migration 20261116160000); then, where the
 //     upsert moved the mark, A's read_through to T at the moment that row's read mark stands at
 //     once the upsert ran, stated by the same statement (queueKeepRow, graphstore.MarkArm), as
-//     every writer of a read mark states it (dispatch://INFRA-1152 R6).
+//     every writer of a read mark states it (dispatch://INFRA-1152 R6). Where the write dismisses
+//     (PlanRecord), the same statement also sets the row's dismissed_at to the write's moment, on a
+//     row it begins and on one already there, whatever the row's read mark and version: the
+//     dismissal takes no version guard (dispatch://INFRA-4948 R1). Before that statement, A's
+//     dismissed tuple to T's root, at the write's moment and under its event
+//     (graphstore.QueueFromPerson), so the row and the tuple commit together;
+//  6. where the write dismisses and is a reply under an Agent thread - a message on no issue,
+//     which keeps no user_threads row - A's dismissed tuple to the root message, then A's
+//     user_agent_thread_dismissed row at that root, both at the write's moment, made or moved
+//     whatever the row held, so the row always matches the newest tuple; then, as a Dismiss press
+//     of the thread marks them, each session's reply under the root that A's read mark of its
+//     session does not cover and A has not read by id, marked read by id at the write's moment -
+//     its user_agent_reply_read row and its reply_read tuple, stated by the statement that
+//     inserts the row (agentRepliesRead, graphstore.MarkArm) - so the thread A no longer sees in
+//     their Inbox holds nothing unread. The writer took the root `for update` before its own row's
+//     insert (api's createStoredMessage, D6).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
 // dismissals: the root `for key share`, then the retraction of the dismissed tuple of each person
@@ -323,6 +351,9 @@ type Recording struct {
 	// them.
 	delivered, moved []string
 	starter          string
+	// dismisses is whether the write takes its thread out of A's Inbox (PlanRecord, R1), and
+	// agentDismiss whether it does so under an Agent thread, whose mark is a row of its own (step 6).
+	dismisses, agentDismiss bool
 	// failClear and failThreads are whether a test armed the failure between the retraction of the
 	// Agent dismissals and the delete of their rows (failpoint.AgentDismissalClear), and between
 	// the deliveries and the move of the rows they reach (failpoint.UserThreads), decided as the
@@ -334,6 +365,29 @@ type Recording struct {
 // (threadOf): what a mention's participation points at (MentionParticipation).
 func (r Recording) Root() (string, string) {
 	return r.thread.kind, r.thread.id
+}
+
+// AgentDismissal is the root message of the Agent thread the record takes out of its writer's
+// Inbox (step 6), and whether it does. The writer takes that root `for update` before its own
+// row's insert, as the dismiss route takes an Agent root before the person's rows (D6): taken
+// after the insert, whose foreign key holds its parent `for key share`, the lock would be an
+// upgrade that can deadlock against the dismiss route.
+func (r Recording) AgentDismissal() (string, bool) {
+	if !r.agentDismiss {
+		return "", false
+	}
+	return r.thread.id, true
+}
+
+// ownDismissal is D5's rule (dispatch://INFRA-4948 R1): whether w takes its thread, rooted at
+// root, out of its writer's Inbox, and whether it does so under an Agent thread. It does when its
+// handler marked it its writer's own (Write.OwnWrite), its writer is a person (person, the login
+// PlanRecord read, "" for anybody else), its tuples' writer acts as itself with no agent acting
+// for them (Who.Act), and it is an answer or a reply - not the write that starts the thread. An
+// Agent thread is a message thread on no project, which keeps no user_threads row.
+func ownDismissal(w Write, person string, root thread) (dismisses, agent bool) {
+	dismisses = w.OwnWrite && person != "" && w.Who.Act == nil && (w.ask != nil || w.NodeID != root.id)
+	return dismisses, dismisses && w.NodeKind == graphstore.KindMessage && w.Project == ""
 }
 
 // PlanRecord plans w's record in the write's read phase, in tx, under the owner lock every writer
@@ -356,6 +410,7 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	if r.named && r.authorKind == graphstore.KindPerson {
 		r.person = r.authorID
 	}
+	r.dismisses, r.agentDismiss = ownDismissal(w, r.person, thread)
 	if r.owed, err = owedBy(ctx, tx, w.ask); err != nil {
 		return Recording{}, err
 	}
@@ -523,13 +578,41 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		queueMoveRows(b, thread, w, r.moved)
 	}
 
-	// 5. A's own row, and the read mark it stands at where this write moved it.
+	// 5. A's own row, and the read mark it stands at where this write moved it; where the write
+	// dismisses, A's dismissed tuple and the row's dismissed_at with it.
 	if login, keeps := w.keptLogin(); keeps {
-		if err := queueKeepRow(b, thread, w, login, event); err != nil {
+		if err := queueKeepRow(b, thread, w, login, event, r.dismisses); err != nil {
 			return err
 		}
 	}
+
+	// 6. A reply under an Agent thread that dismisses: A's dismissed tuple to the root message, then
+	// A's row of it, which the root lock its writer took first orders against the dismiss route,
+	// then the replies under the root A has not read, each marked read by id with its reply_read,
+	// as a Dismiss press marks them.
+	if r.agentDismiss {
+		if err := graphstore.QueueFromPerson(b, w.At, []graphstore.Tuple{dismissalOf(r.person, thread, w, event)}); err != nil {
+			return fmt.Errorf("record %s's dismissal of message %s: %w", r.person, thread.id, err)
+		}
+		queueAgentDismissal(b, r.person, thread.id, w)
+		read, params, err := graphstore.MarkArm(4, "replies_read", graphstore.TupleReplyRead, graphstore.KindMessage, w.Who, event)
+		if err != nil {
+			return fmt.Errorf("record %s's reads of the replies under message %s: %w", r.person, thread.id, err)
+		}
+		b.Queue(fmt.Sprintf("mark the replies under agent thread %s read for %s", thread.id, r.person),
+			agentRepliesRead+"\n"+read+"\nselect 1", append([]any{r.person, thread.id, w.At}, params...)...)
+	}
 	return nil
+}
+
+// dismissalOf is the dismissed tuple from login to thread's root that w states as its writer's own
+// dismissal (steps 5 and 6), at w's moment and under its event.
+func dismissalOf(login string, thread thread, w Write, event int64) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: graphstore.KindPerson, FromID: login, Kind: graphstore.TupleDismissed,
+		ToKind: thread.kind, ToID: thread.id,
+		At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
+	}
 }
 
 // dismissalsEnded is the retraction of the dismissed tuple from each person of logins to thread's

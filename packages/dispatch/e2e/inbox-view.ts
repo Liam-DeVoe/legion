@@ -78,7 +78,8 @@ async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskR
  * Eleven rows covering every kind, every priority and none, every urgency and none, two
  * projects and none, and three holders - the last of them a thread the reader has already read,
  * which the Inbox lists like any other, drawn as read, since a thread stays until it is
- * dismissed. Every row is held by somebody: whom a question reaches is three steps resolved
+ * dismissed or the reader answers or replies in it. Every row is held by somebody: whom a
+ * question reaches is three steps resolved
  * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`) and every project names a default
  * assignee, so no row of a list this server answers is nobody's.
  */

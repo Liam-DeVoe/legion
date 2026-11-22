@@ -1206,7 +1206,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// holds. Its record names the node its head pointer names, whose tuple is queued and not
 	// written (commentRepliesTo), and reaches each person its text newly mentions. A comment whose
 	// pointers are no tuples is the trigger's, as an older build's is, and the backfill takes it.
-	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed), input.AskID, input.ReplyTo)
+	// The comment is its writer's own write: a reply by a person acting as themselves takes its
+	// thread out of their Inbox (inboxwrite.Write.Own, dispatch://INFRA-4948 R1), from the issue
+	// route and a document's margin alike, both of which reach this handler.
+	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed).Own(), input.AskID, input.ReplyTo)
 	logins := events.ThreadLoginsOf(commentThread(comment))
 	if stored.pointersStored {
 		logins = events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)

@@ -262,6 +262,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/heavy-streamed-turn.e2e.ts` | a long turn streaming over the live relay |
 | `e2e/held-sends.e2e.ts` | sends refused by the server and held across pages |
 | `e2e/hover-preview.e2e.ts` | the row it keeps is a phone gesture read in the iphone configuration, which no stub project repeats |
+| `e2e/inbox-answer-dismisses.e2e.ts` | the person's own answer or reply is a write whose dismissal the server records in the same transaction, and somebody else's write brings the row back, both of which only a live server does |
 | `e2e/inbox-approval-message.e2e.ts` | the reading pane draws the document under review from its live room |
 | `e2e/inbox-cli.e2e.ts` | runs `dispatch inbox` against the server and compares it with the page |
 | `e2e/inbox-decline.e2e.ts` | every decline is a write the server takes and the surfaces re-read; the kind it refuses to decline is the server's; the note's bound is the route's |

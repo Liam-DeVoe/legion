@@ -453,6 +453,17 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // root second would be the opposite order, and the two would meet each holding what the other
 // waits for.
 //
+// A person's own reply under an Agent thread takes steps 2 and 4 as well, as a dismissal of that
+// one thread (dispatch://INFRA-4948 R1, D6). Its writer (createStoredMessage, api/messages.go)
+// takes the thread's root `for update` before the reply's own insert: that insert's foreign key
+// holds its parent `for key share`, so a `for update` taken after it would be the upgrade
+// migration 20261105093507's header records as a deadlock. Only then, in the record's step 6
+// (inboxwrite.Record), does it write the person's own user_agent_thread_dismissed row, and then,
+// as this transaction's dismissal does, the thread's unread replies read by id, new
+// user_agent_reply_read rows in ascending reply_id order. So a dismiss of the same root and the
+// reply meet at the root, whichever reaches it first, and neither holds a row the other waits for
+// (TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther).
+//
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock
 // exclusively and then, before its own update, the project its event names (putThreadRead,
@@ -499,10 +510,12 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // still owes the store; then every user_threads row of the thread, `for no key update`, in
 // ascending login order, in one pass (queueThreadLock), which holds the row of every person the
 // write is about to deliver to; only then the delivered_to tuple of each of those people, through
-// graphstore.QueueToPerson; then the move of their rows; and last the writer's own row. The
-// backfill marks a row under that same lock, so no delivery falls on both sides of a row's mark
-// (D4). Two writes into one thread queue at their owner lock before either reaches this pass, so
-// the pass orders nothing between writers; it is what holds a mark to the deliveries around it.
+// graphstore.QueueToPerson; then the move of their rows; and last the writer's own row, which a
+// person's own answer or reply also marks dismissed (dispatch://INFRA-4948 R1), a row this pass
+// already holds where it was there before. The backfill marks a row under that same lock, so no
+// delivery falls on both sides of a row's mark (D4). Two writes into one thread queue at their
+// owner lock before either reaches this pass, so the pass orders nothing between writers; it is
+// what holds a mark to the deliveries around it.
 // The delivered_to an ask's create appends to the person the ask waits on, with its
 // participation, and the ones a move of that person appends (inboxwrite.QueueMoveWaiting) take
 // no user_threads row first: neither moves a row, and the mark counts only the deliveries a reply

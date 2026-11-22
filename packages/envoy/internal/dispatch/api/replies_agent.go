@@ -218,9 +218,10 @@ var (
 	// The Inbox's own two states leave a dismissed root out before they read anything of its
 	// thread: the mark alone says it is dismissed (myAgentDismissedRoot), so the test is one
 	// anti-join against the person's own marks rather than a walk of every thread they ever
-	// dismissed. The unread state leaves them out too, and may: a dismissal marks every reply in
-	// the thread read by id, and a reply written since cleared the mark in its own transaction, so
-	// a root that still carries one holds nothing unread.
+	// dismissed. The unread state leaves them out too, and may: a dismissal - a Dismiss press, or
+	// the person's own reply under the thread (inboxwrite.Record's step 6, dispatch://INFRA-4948
+	// R1) - marks every reply in the thread read by id, and a reply written since cleared the mark
+	// in its own transaction, so a root that still carries one holds nothing unread.
 	myAgentUnreadRoots = myAgentMarks + myAgentDismissedRootSet + `
 	roots as (
 		select m.id as root_id, null::timestamptz as dismissed_at

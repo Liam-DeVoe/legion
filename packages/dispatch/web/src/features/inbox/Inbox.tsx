@@ -1033,7 +1033,8 @@ function InboxBody({
   // those reads, so an answered row leaves every surface that reads them at once.
   const inboxAsks = useInboxAsks(selection, viewer);
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
-   *  it. A thread stays in the Inbox, read or not, until it is dismissed. */
+   *  it. A thread stays in the Inbox, read or not, until it is dismissed, by **Dismiss** or by
+   *  the reader's own answer or reply in it. */
   const show: InboxShow = filter.show ?? "inbox";
   const showDismissed = show === "dismissed";
   const listRef = useRef<HTMLElement>(null);

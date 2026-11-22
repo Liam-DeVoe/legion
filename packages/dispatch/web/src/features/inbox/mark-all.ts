@@ -11,7 +11,8 @@
  * stopped is no refusal - it may have marked the rows - so the list is read again instead.
  *
  * It takes no row out of the list. A thread stays in the Inbox, read or not, until it is
- * dismissed (`useInboxDismiss.ts`), as an email stays until it is archived.
+ * dismissed (`useInboxDismiss.ts`) or the reader answers or replies in it, as an email stays
+ * until it is archived.
  */
 
 import { useQueryClient } from "@tanstack/react-query";

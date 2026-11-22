@@ -120,11 +120,12 @@ interface ComposerOptions {
   box?: DispatchWritingBox;
   closed?: boolean;
   edit?: { body: string; id: string };
+  heldSend?: boolean;
   kind?: "ask" | "comment" | "suggestion";
   seedMentions?: readonly { target: string; title: string }[];
   onCancelReply?: () => void;
   onKindChange?: (kind: "ask" | "comment" | "suggestion") => string | undefined;
-  onSent?: () => void;
+  onSent?: () => unknown;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
 }
@@ -156,6 +157,7 @@ function renderComposer(options: ComposerOptions = {}) {
           box={props.box ?? boxFor(props)}
           closed={props.closed}
           edit={props.edit}
+          heldSend={props.heldSend}
           kind={props.kind}
           seedMentions={props.seedMentions}
           onCancelReply={props.onCancelReply}
@@ -4141,5 +4143,79 @@ test("a new composer's draft that comes to name a #id does not ask a failed spec
   } finally {
     realClock();
     view.unmount();
+  }
+});
+
+// ST1 row 3 (dispatch://INFRA-4948 R1): a held Send (`heldSend`, the Inbox's reply boxes) is
+// `aria-disabled` while its send is out, so the focus Enter put on it stays there, and nothing is
+// disabled under it. A refusal gives Send back at once, pressable, with its error shown and the
+// draft kept, and the focus is still on Send.
+test("a held Send comes back enabled with its error", async () => {
+  const refused = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
+  const user = userEvent.setup();
+  const { view } = renderComposer({ heldSend: true });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("keep me");
+    const send = screen.getByRole("button", { name: "Send" });
+    act(() => send.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBe("true"));
+    expect(send).toHaveFocus();
+    expect(send.hasAttribute("disabled")).toBe(false);
+    expect(holdControls().disabled).toBe(false);
+    expect(field.readOnly).toBe(true);
+
+    refused.reject(commentRefused);
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBeNull());
+    expect(send).toHaveFocus();
+    expect(send.textContent).toBe("Send");
+    expect(field.value).toBe("keep me");
+    expect(field.readOnly).toBe(false);
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// ST1 row 5: once a held Send's send has landed, the hold waits for the read the host answers
+// (`onSent`'s promise), and ends at the latest at the write deadline from the press
+// (`SEND_DEADLINE_MS`): the field takes typing again, and a new draft can be sent.
+test("the hold ends at the write deadline", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const neverRead = new Promise<void>(() => {});
+  const { view } = renderComposer({ heldSend: true, onSent: () => neverRead });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("sent once");
+    const send = screen.getByRole("button", { name: "Send" });
+    act(() => send.focus());
+    await user.keyboard("{Enter}");
+    await tick(20);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    // Landed, with the host's read still out: Send is held and the box takes no typing.
+    await waitFor(() => expect(field.value).toBe(""));
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    expect(field.readOnly).toBe(true);
+    expect(send).toHaveFocus();
+
+    await jump(SEND_DEADLINE_MS);
+    expect(field.readOnly).toBe(false);
+    await user.click(field);
+    await user.paste("a second message");
+    expect(send.getAttribute("aria-disabled")).toBeNull();
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
   }
 });

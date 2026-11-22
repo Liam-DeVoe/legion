@@ -27,9 +27,9 @@ import { asUser } from "./users";
  * unread threads, what it takes off the counts before the server answers, what it leaves in the
  * list, and what comes back when it refuses.
  *
- * A thread stays in the Inbox, read or not, until the reader dismisses it, so one click changes
- * how every row is drawn and takes none of them away (`e2e/inbox-dismiss.e2e.ts` is the Dismiss
- * that does).
+ * A thread stays in the Inbox, read or not, until the reader dismisses it or answers or replies
+ * in it, so one click changes how every row is drawn and takes none of them away
+ * (`e2e/inbox-dismiss.e2e.ts` is the Dismiss that does).
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.

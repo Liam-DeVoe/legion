@@ -1,7 +1,9 @@
 import { dispatchWritingBox } from "@legion/contracts";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -21,6 +23,7 @@ import type {
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { focusOnMount } from "../../components/focus-place";
+import { useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -69,7 +72,7 @@ import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -89,6 +92,8 @@ import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
+import { meInboxReadsBack } from "./one-read-cache";
+import { AskAnswerWritesContext } from "./outstanding-answers";
 import { clarificationRefusal, useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
@@ -240,20 +245,33 @@ function handOffFocus(form: HTMLElement): void {
  *  the compact variant the answer field is unmounted while its disclosure is closed, so the
  *  field's `.form` is not a reliable way to reach it. The callback must be stable across renders:
  *  React re-runs a changed callback ref's cleanup on every commit, and that cleanup can move
- *  focus. */
-function useFormRef(): [
+ *  focus.
+ *
+ *  Where the reader's own answer takes the form's row away - in an Inbox, whose rows of the ask
+ *  the answer takes out (dispatch://INFRA-4948 R1) - the form goes with no hand-off of its own
+ *  (`leaveToRescue`): the focus it held is the page's to place. The page's rescue reads that loss
+ *  as the reader's press while the answer's hold is on (`useHeldThroughAnswer`), and the reading
+ *  column hands a focus it lost to its own stop, the region named Question body, once it draws
+ *  the row the Inbox selects next (`Inbox.tsx`'s own hand-off; INFRA-3135's open items, "A
+ *  component's own hand-off"). */
+function useFormRef(leaveToRescue: {
+  readonly current: boolean;
+}): [
   { current: HTMLFormElement | null },
   (form: HTMLFormElement | null) => (() => void) | undefined,
 ] {
   const formRef = useRef<HTMLFormElement | null>(null);
-  const track = useCallback((form: HTMLFormElement | null) => {
-    formRef.current = form;
-    if (form === null) return undefined;
-    return () => {
-      formRef.current = null;
-      handOffFocus(form);
-    };
-  }, []);
+  const track = useCallback(
+    (form: HTMLFormElement | null) => {
+      formRef.current = form;
+      if (form === null) return undefined;
+      return () => {
+        formRef.current = null;
+        if (!leaveToRescue.current) handOffFocus(form);
+      };
+    },
+    [leaveToRescue]
+  );
   return [formRef, track];
 }
 
@@ -393,7 +411,10 @@ export function AskCard({
   // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
   // of the row, which then lets the row go) with nothing the card could act on afterwards; the
   // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
-  const [formRef, trackForm] = useFormRef();
+  // Whether the form's going is the reader's own answer taking its row away, which leaves the
+  // focus to the page's rescue (`useFormRef`); set below, once the card knows its answer's state.
+  const answerTakesRow = useRef(false);
+  const [formRef, trackForm] = useFormRef(answerTakesRow);
   useLayoutEffect(() => {
     const form = formRef.current;
     const active = document.activeElement;
@@ -423,7 +444,8 @@ export function AskCard({
   // one above as Ask back turns `disabled`; a focus the reader moved out of the form meanwhile
   // stays where they put it. Any other reason a control cannot be pressed - nothing typed before
   // the press, an upload still out - still disables it, on both sides. Outside `NoTooltips` each
-  // is `disabled` while the write is out and no longer, as on `main`.
+  // is `disabled` while the write is out and no longer, as on `main`, but the answer's own Send in
+  // an Inbox, which is held (`answerHeld`, below).
   const holdsFocus = !tooltips;
   // The newest write of the form that has landed, by when it was sent: 0 while none has.
   const landedWrite = Math.max(
@@ -453,7 +475,46 @@ export function AskCard({
   // The one flag every refusal of the form reads: outside `NoTooltips` it is `isSubmitting`.
   const refusing = isSubmitting || awaitingRead;
   const refusedWhileOut = (holdsFocus && refusing) || undefined;
+  // Outside `NoTooltips`, in an Inbox, the answer's Send is held by `aria-disabled` while its write
+  // is out, rather than `disabled`, so the focus stays on it: the answer takes the ask's rows away
+  // - its row as it lands, and the row of its thread once the Inbox is read again, since the
+  // reader's own answer dismisses that thread (dispatch://INFRA-4948 R1) - so the hold goes on
+  // past the landing until the reads of the Inbox out then have come back (`meInboxReadsBack`):
+  // the landing started that read (`onSettled`), and the hold waits on it and sends none. The hold
+  // ends at the latest at the write deadline from the press (`SEND_DEADLINE_MS`), and at once on a
+  // refusal, which gives Send back with its error. While it holds, the form refuses a submit, so a
+  // second press of Send sends nothing, before the landing and after it. It is part of the
+  // reader's press (`useHeldThroughAnswer`), so the page's rescue reads what the answer takes away
+  // as the reader's doing. Off an Inbox no row leaves, and Send is `disabled` while the write is
+  // out, as on `main`.
+  const queryClient = useQueryClient();
+  const inInbox = useContext(AskAnswerWritesContext) !== undefined;
   const disabledWhileOut = !holdsFocus && isSubmitting;
+  const answerPressedAt = mutation.submittedAt;
+  const answerLandedAt = mutation.isSuccess ? answerPressedAt : 0;
+  const [answerPastDeadline, setAnswerPastDeadline] = useState(0);
+  useEffect(() => {
+    if (!inInbox || answerPressedAt === 0) return;
+    const bound = window.setTimeout(
+      () => setAnswerPastDeadline(answerPressedAt),
+      answerPressedAt + SEND_DEADLINE_MS - Date.now()
+    );
+    return () => window.clearTimeout(bound);
+  }, [answerPressedAt, inInbox]);
+  // The landing whose reads of the Inbox have come back: the hold runs from the landing's own
+  // render until then, with no render between them that lets go.
+  const [readBackFor, setReadBackFor] = useState(0);
+  useEffect(() => {
+    if (!inInbox || answerLandedAt === 0) return;
+    void meInboxReadsBack(queryClient).then(() => setReadBackFor(answerLandedAt));
+  }, [answerLandedAt, inInbox, queryClient]);
+  const answerHeld =
+    !holdsFocus &&
+    inInbox &&
+    answerPressedAt !== answerPastDeadline &&
+    (mutation.isPending || (answerLandedAt !== 0 && readBackFor !== answerLandedAt));
+  useHeldThroughAnswer(answerHeld);
+  answerTakesRow.current = inInbox && (mutation.isPending || mutation.isSuccess);
   // What a refused control is drawn from, recorded while rendering as the landing is, in the
   // first render that refuses: the press, before the landing empties the box.
   const formNow = {
@@ -649,11 +710,16 @@ export function AskCard({
   const submitButton = (
     <button
       // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // card refuses, that is read from the form as the refusal found it (`held`).
-      aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
+      // card refuses, that is read from the form as the refusal found it (`held`). Outside it, in
+      // an Inbox, its own answer holds it (`answerHeld`), and a press of it then sends nothing,
+      // since the form refuses a submit while it holds, before the answer lands and after; off an
+      // Inbox it is `disabled` while its write is out, as on `main`.
+      aria-disabled={
+        cannotAnswer || uploading ? undefined : (refusedWhileOut ?? (answerHeld || undefined))
+      }
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-      disabled={cannotAnswer || disabledWhileOut || uploading}
+      disabled={cannotAnswer || (disabledWhileOut && !inInbox) || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
     >
@@ -960,9 +1026,10 @@ export function AskCard({
       <form
         className="mt-3 space-y-3"
         // While the card refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
-        // or Enter in an option, still reaches it then (`refusing`).
+        // or Enter in an option, still reaches it then (`refusing`), and outside it so does a
+        // press of the held Send (`answerHeld`).
         onSubmit={(event) => {
-          if (refusing) event.preventDefault();
+          if (refusing || answerHeld) event.preventDefault();
           else submit(event);
         }}
         ref={trackForm}

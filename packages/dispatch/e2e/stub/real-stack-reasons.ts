@@ -150,6 +150,8 @@ export const realStackReasons: Record<string, string> = {
   "held-sends.e2e.ts": "sends refused by the server and held across pages",
   "hover-preview.e2e.ts":
     "the row it keeps is a phone gesture read in the iphone configuration, which no stub project repeats",
+  "inbox-answer-dismisses.e2e.ts":
+    "the person's own answer or reply is a write whose dismissal the server records in the same transaction, and somebody else's write brings the row back, both of which only a live server does",
   "inbox-approval-message.e2e.ts":
     "the reading pane draws the document under review from its live room",
   "inbox-cli.e2e.ts": "runs `dispatch inbox` against the server and compares it with the page",

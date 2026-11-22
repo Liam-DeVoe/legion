@@ -4721,7 +4721,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/me/inbox/dismiss` (POST; cookie, trusted header, or bearer; needs the `person` scope)
 
   Take threads out of the caller's Inbox, or put them back.
-  A thread stays in the Inbox, read or not, until it is dismissed, as an email stays until it is archived: reading it and Mark all read leave it there.
+  A thread stays in the Inbox, read or not, until it is dismissed - by this route, or by the caller's own answer or reply in it, below - as an email stays until it is archived: reading it and Mark all read leave it there.
   The body names either `threads`, the Inbox's own row ids (`reply:<thread id>` for a Reply row, `agent:<root message id>` for an Agent row), or the narrowing Mark all read takes with `{dismiss_through}` (RFC3339, required there;
   missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), never both (`400 INVALID_QUERY`), and `restore`, which clears the marks instead of writing them.
   Under the narrowing it changes exactly the threads `GET /api/v1/me/replies` answers under it whose newest reply, or whose dismissal, is at or before that mark.
@@ -4733,7 +4733,8 @@ Each item below names a path with its method and identity, then its purpose.
   a row's version moves on every write by somebody else, and why no comparison of this request's mark with the row's own times can stand in for that check is written on migration `20261105093501`'s increment.
   Seven more `400 INVALID_QUERY`: a row `threads` names that `seen_replies` leaves out, a key naming a row `threads` does not, a `reply:` entry that is not that row's one `version` (of the wrong type, or missing it, as an Agent entry in its place does; a member this build does not declare is ignored there, as it is in a body), an `agent:` entry that is not the `newest_reply` and `unread_replies` the page drew (the same three), an id that is not a uuid, `seen_replies` on a `restore` (which draws the rows back and checks nothing), and `seen_replies` with the narrowing, where the server draws the rows itself.
   A dismissal marks the thread read as well, so a dismissed thread counts as unread nowhere;
-  a later write by somebody else brings it back unread, and the caller's own reply leaves it dismissed.
+  a later write by somebody else brings it back unread.
+  The caller's own answer or reply, written as themselves with no agent acting for them, takes its thread out of their Inbox as this route does, with no call to it and whatever version their row holds.
   An Ask row's id, a row id of neither shape and an id that is not a uuid are each `400 INVALID_QUERY`.
   Answers `{dismissed}`, how many threads it changed; a request that changes nothing answers 0 and appends no event.
 

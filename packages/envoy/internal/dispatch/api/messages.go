@@ -301,9 +301,23 @@ func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 // keeps no user_threads row. A message whose row names its node is passed by the triggers on
 // messages (migration 20261116160001), so its writer records it; one that names none is theirs.
 // The record is planned before the message's replies_to is written, so it names the message
-// this one answers (inboxwrite.Write.RepliesTo).
+// this one answers (inboxwrite.Write.RepliesTo). A broadcast's copy, which starts its thread, and
+// a session's reply record it as it is; ownInbox is the same write marked its writer's own.
 func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inboxwrite.Write {
-	write := inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project)
+	return inThread(inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project), message)
+}
+
+// ownInbox is inbox marked as its writer's own write (inboxwrite.Write.Own): the message
+// createStoredMessage stores for createMessage and createAgentMessage, which its writer makes at
+// that moment, so a reply by a person acting as themselves takes its thread out of their Inbox, an
+// issue message's from the issue route and a direct conversation's from the Agents route
+// (dispatch://INFRA-4948 R1).
+func (w messageStoreWrite) ownInbox(message model.Message, author model.Actor) inboxwrite.Write {
+	return inThread(inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project).Own(), message)
+}
+
+// inThread is write naming the message that message answers, where it answers one.
+func inThread(write inboxwrite.Write, message model.Message) inboxwrite.Write {
 	if message.InReplyTo != nil {
 		write = write.RepliesTo(graphstore.KindMessage, *message.InReplyTo)
 	}
@@ -510,7 +524,9 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	inbox := stored.inbox(message, actor)
+	// The message is its writer's own write (ownInbox): a reply by a person acting as themselves
+	// takes its thread out of their Inbox.
+	inbox := stored.ownInbox(message, actor)
 	// An issue message's thread_logins are read by its event's insert, after the message's insert
 	// and the user_threads trigger it fires, on the thread root found here; a message whose row
 	// names its node is passed by that trigger, so the event also names the row its writer's
@@ -574,13 +590,22 @@ func (s *server) createStoredMessage(
 	// The failure point between the message's node and its row (failpoint.Message), decided
 	// before the batch is sent and queued where it fails.
 	fails := failpoint.Planned(ctx, failpoint.Message)
-	// The parent's lock, the index its blocks owe, the message's node, the insert, the recovery
-	// point, this message's own index, the event, its stamp, what the node write and the index
-	// stated, its author, its record in its thread and a targeted message's first delivery
-	// attempt go in one batch (store.WriteBatch): the message is known before the insert runs,
-	// and the stamp and every cause name the event's id as the id sequence left it.
+	// The Agent root's lock where the reply dismisses its thread, the parent's lock, the index its
+	// blocks owe, the message's node, the insert, the recovery point, this message's own index, the
+	// event, its stamp, what the node write and the index stated, its author, its record in its
+	// thread and a targeted message's first delivery attempt go in one batch (store.WriteBatch): the
+	// message is known before the insert runs, and the stamp and every cause name the event's id as
+	// the id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		// A person's reply under an Agent thread dismisses it for them (inboxwrite's step 6), so its
+		// root is taken `for update` first, before this reply's insert, whose foreign key holds its
+		// parent `for key share`: taken after that, the lock would be an upgrade that can deadlock
+		// against the dismiss route, which takes the root before the person's rows (D6, the lock
+		// order on markInboxReadThreads, api/inbox_read.go).
+		if root, dismisses := recording.AgentDismissal(); dismisses {
+			b.Queue("", `select 1 from messages where id = $1::uuid for update`, root)
+		}
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			if err := parentRepair.Queue(b); err != nil {

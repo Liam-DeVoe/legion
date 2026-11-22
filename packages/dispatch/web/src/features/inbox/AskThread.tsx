@@ -1,7 +1,7 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useContext, useState } from "react";
+import { type FormEvent, type ReactNode, useContext, useEffect, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds, type WriteMethod } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
@@ -33,8 +33,10 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import type { AskPress } from "./ask-writes";
+import { meInboxReadsBack } from "./one-read-cache";
 import {
   AskReplyWritesContext,
   type OutstandingAnswerWrite,
@@ -208,12 +210,18 @@ export function replyRefusal(reply: {
  *
  * Reply and the box are held while the send is out and through the commit after its answer
  * (`useHeldThroughAnswer`): by `aria-disabled`, never `disabled`, so the one the reader pressed or
- * typed Ctrl+Enter in keeps their focus through the hold. The box is read-only then: Ctrl+Enter in
- * it submits nothing, and a paste or a drop into it uploads nothing. Reply is held the same way
- * while it has nothing to send - nothing typed, which is what a landing that clears the draft
- * leaves - and while an upload is still out, so a Reply the reader pressed keeps the focus as the
- * draft empties. A press of a held Reply still submits the form, and the form's submit sends
- * nothing while Reply is held, whatever holds it.
+ * typed Ctrl+Enter in keeps their focus through the hold. Inside an Inbox the hold goes on past
+ * the landing: the reader's own reply takes the ask's thread out of their Inbox
+ * (dispatch://INFRA-4948 R1), and this form with it, so Reply stays held until the reads of the
+ * Inbox out then have come back - the landing started that read (`outstanding-answers.ts`'
+ * `onSettled`), and the hold waits on it and sends none (`meInboxReadsBack`) - and at the latest
+ * until the write deadline from the press (`SEND_DEADLINE_MS`); a refusal lands nothing and ends
+ * the hold at once. The box is read-only then: Ctrl+Enter in it submits nothing, and a paste or a
+ * drop into it uploads nothing. Reply is held the same way while it has nothing to send - nothing
+ * typed, which is what a landing that clears the draft leaves - and while an upload is still out,
+ * so a Reply the reader pressed keeps the focus as the draft empties. A press of a held Reply
+ * still submits the form, and the form's submit sends nothing while Reply is held, whatever holds
+ * it.
  */
 export function AskReplyComposer({
   ask,
@@ -242,7 +250,9 @@ export function AskReplyComposer({
   // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
   // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
-  // host draws this composer for by then. A reply leaves the ask's row in the Inbox's read.
+  // host draws this composer for by then. A reply takes no row out of the Inbox's read as it
+  // goes: Dispatch takes the ask's thread out of the reader's Inbox once it has taken the reply
+  // (dispatch://INFRA-4948 R1), which the read after the landing shows.
   const options: OutstandingAnswerWriteOptions<Comment, ReplyPress> = {
     // The question goes in as its plain-text projection, the words the card draws: the reading
     // list's `write-label` (`DISPATCH_READING_SURFACES`) says why. Each press carries the line as
@@ -277,7 +287,24 @@ export function AskReplyComposer({
   const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
   const sending = inbox === undefined ? ownSending : inbox.isPending;
-  const held = useHeldThroughAnswer(sending);
+  // Inside an Inbox, the landing whose reads of the Inbox have come back, and the press whose
+  // write deadline has passed: Reply is held from the landing's own render until the first of the
+  // two.
+  const pressedAt = inbox?.submittedAt ?? 0;
+  const landedAt = inbox?.isSuccess === true ? pressedAt : 0;
+  const [readBackFor, setReadBackFor] = useState(0);
+  const [pastDeadline, setPastDeadline] = useState(0);
+  useEffect(() => {
+    if (landedAt === 0) return;
+    void meInboxReadsBack(queryClient).then(() => setReadBackFor(landedAt));
+    const bound = window.setTimeout(
+      () => setPastDeadline(landedAt),
+      landedAt + SEND_DEADLINE_MS - Date.now()
+    );
+    return () => window.clearTimeout(bound);
+  }, [landedAt, queryClient]);
+  const rowGoing = landedAt !== 0 && readBackFor !== landedAt && pastDeadline !== landedAt;
+  const held = useHeldThroughAnswer(sending || rowGoing);
   // Reply is held while the send is out, while nothing is typed, and while a picture is still
   // uploading: a reply sent then would go without it.
   const replyHeld = held || body.trim() === "" || uploading;

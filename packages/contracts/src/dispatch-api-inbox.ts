@@ -101,7 +101,8 @@ export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolea
  *  default and the Inbox count's own read, which answers the rows somebody else has written in
  *  since they read them; `inbox`, every row in their Inbox, read or not, less what they have
  *  dismissed; and `dismissed`, what they dismissed out of it, newest dismissal first. A thread
- *  stays in the Inbox, read or not, until it is dismissed (`InboxDismissRequest`). */
+ *  stays in the Inbox, read or not, until it is dismissed (`InboxDismissRequest`) or the caller
+ *  answers or replies in it themselves, which dismisses it the same way. */
 export const INBOX_LIST_STATES = ["unread", "inbox", "dismissed"] as const;
 export type InboxListState = (typeof INBOX_LIST_STATES)[number];
 
