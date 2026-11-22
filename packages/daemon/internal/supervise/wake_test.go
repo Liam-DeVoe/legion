@@ -613,7 +613,9 @@ func TestAStalePluginRelaunchTakesItsOneTokenAtTheLaunchGate(t *testing.T) {
 // The project controller's own claim is held for no turn and paced by nothing, whatever the
 // queue holds. It is relaunched where the lane finds it, mid-turn as well as idle: its pod holds
 // no issue workspace, so it has nothing to push and no turn to wait out — and the relaunch takes
-// no token, since the operator's own read of a running wave is this one session's.
+// no token, since the operator's own read of a running wave is this one session's. Mid-turn it
+// holds its start task, so its shim's hello and its agent's answer that the turn runs come first:
+// a relaunch over a pending task waits for a whole view (refreshPlugin), the controller's too.
 func TestTheControllersStalePluginIsRelaunchedWhereItIsFound(t *testing.T) {
 	for _, state := range []ClaimState{StateReady, StateWorking} {
 		t.Run(string(state), func(t *testing.T) {
@@ -628,6 +630,12 @@ func TestTheControllersStalePluginIsRelaunchedWhereItIsFound(t *testing.T) {
 			controller := h.machineFor(c)
 
 			h.must(RequestSpawn{Claim: h.token})
+			if state == StateWorking {
+				conn := fake.NewConn()
+				conn.SetStreaming(true)
+				h.conns.Register(c.Token, conn)
+				h.mustPostTo(controller, StreamHello{Claim: c.Token, Generation: c.Generation, BacklogWhole: true})
+			}
 			h.mustPostTo(controller, StalePlugin{Claim: c.Token, Trigger: "sweep"})
 
 			h.wantStarts(c.Token, 1)

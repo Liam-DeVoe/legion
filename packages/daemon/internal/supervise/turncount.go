@@ -102,12 +102,13 @@ const heldPassedOverLine = "supervise: a turn started that the producer said ran
 // the store shows that daemon can have handled no turn start after the one it gave the take
 // (anchorRestored), and its connection is the one the first hello after the start opened, where
 // that hello shows the connection carries every frame its shim held meanwhile
-// (bindRestoredAnchor); a report that comes before that hello is kept, and read at it.
+// (bindRestoredAnchor); a report that comes before that hello is kept, and read at it. With no
+// task pending it puts nothing back.
 func (m *Machine) heldUnrun(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	a := &m.turns.anchor
 	unbound := a.restored && a.conn == 0
-	if r.Held == 0 || r.Held != p.Number || a.number != p.Number || r.Sequence <= a.reported ||
+	if p == nil || r.Held == 0 || r.Held != p.Number || a.number != p.Number || r.Sequence <= a.reported ||
 		(!unbound && !m.onAnchoredConn()) {
 		return nil
 	}
@@ -186,7 +187,7 @@ func (m *Machine) onAnchoredConn() bool {
 // see either.
 func (m *Machine) anchorRestored() {
 	p := m.claim.Pending
-	if p == nil || !p.taken() || p.TakenText == "" || m.finishOwed || m.ladderOwed != nil {
+	if p == nil || !p.taken() || p.TakenText == "" || m.takePhase() == waitFinish || m.ladderOwed != nil {
 		return
 	}
 	count := m.counted()
@@ -266,7 +267,9 @@ const backlogCutLine = "supervise: the shim's hello does not say its backlog is 
 // backlog (StreamHello.BacklogWhole; reconnected, reconnectedMidTurn). A backlog that is not whole
 // dropped its oldest frames while no daemon was connected, or its shim cannot say it dropped none,
 // and a trim of it can drop a whole turn, start and end. What the machine read off the frames it
-// saw then stops standing for the turns that ran:
+// saw then stops standing for the turns that ran. This is the one list of what the supervisor does
+// with such a hello (shimwire.Hello2.BacklogWhole and contract 221 in api's version.go point
+// here):
 //
 //   - the count of the process's turns is lost (turnCount.lose), and the hello marks it as cut
 //     (turnCount.cut). Kept, it would be short by every turn the backlog dropped whole, so the turn
@@ -277,11 +280,14 @@ const backlogCutLine = "supervise: the shim's hello does not say its backlog is 
 //     start may be among the frames dropped, and kept, the mark would take the next start, the
 //     next task's own among them. While the count is not known after such a hello no report
 //     leaves one (startedUnseen), and a start of the reported turn that does come is read as any
-//     other start: given to a take that awaits its turn, or no task's.
-//
-// A take a daemon start restored has its anchor refused by the same word (bindRestoredAnchor), and
-// a stale-plugin relaunch decided behind such a replay takes a restored take whose turn no frame
-// showed back as a turn that may have run (turnAnswered).
+//     other start: given to a take that awaits its turn, or no task's;
+//   - a take a daemon start restored has its anchor refused by the same word
+//     (bindRestoredAnchor), so no producer's word that its text was held gives that take its turn
+//     back;
+//   - a stale-plugin relaunch decided behind such a replay, at the agent's answer of no turn
+//     (turnAnswered) or at the reconnect deadline with no answer (reconnectDeadline), takes a take
+//     whose turn no frame showed back as a turn that may have run (markRestoredTurnUnseen): any
+//     take awaiting its turn then, one the daemon start restored or one accepted since.
 func (m *Machine) readBacklog(hello StreamHello) {
 	if hello.BacklogWhole {
 		return

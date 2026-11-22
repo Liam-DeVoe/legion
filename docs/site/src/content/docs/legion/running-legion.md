@@ -163,7 +163,7 @@ out of the merge queue. Nothing else runs on a timer, and it reads one issue's o
 rather than a listing of every open one. A read that finds the head
 conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
 for the checks the base requires and whether it requires a current branch, since that decides
-whether the conflict needs the implementer's merge forward now. It reads no check run and no
+whether the conflict needs a merge forward now. It reads no check run and no
 commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
 that head's check runs and commit statuses, which is also where it reads whether a required check
 is green on a conflicting head. Dispatch's CI reconcile reads the
@@ -264,8 +264,8 @@ installations before it mints anything.
 All of that is true of a daemon that mints with its own App key (`private_key`,
 `private_key_command` or `private_key_secret`).
 A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
-for the accounts the secret's `github-owners` tag lists, so an install by any other account
-gives nothing there.
+for the accounts the profile its command names lists, each an account of the secret's
+`github-owners` tag, so an install by any other account gives nothing there.
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its
@@ -650,8 +650,10 @@ What each part is for:
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
   order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. The
-  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
+  merger merges until a person has approved the document of every step listed. A list that names
+  `spec` and not `criteria` lets a root's architect also register the root's Verification document
+  as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
+  the word `root-issues` also means; the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
@@ -821,12 +823,15 @@ What each part is for:
   to ask for it; the second is how long after an accepted take the task's turn has to start, which
   holds the harness's setup, an automatic compaction among it, and its default is twice the
   compaction timeout and the longest measured setup added, not a floor. Past the first the worker
-  is charged; past the second it is charged and the task taken back under its number. A value
-  nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
+  is charged; past the second it is charged and the task taken back under its number.
+  The second also bounds the wait for a take's report once the take's turn has ended, with work held for that report or none: past it the task is taken back with the note of a cut turn, and what waited for the report runs or, with nothing held, the value is written again.
+  A value below about 20 minutes cuts that wait below four of the producers' report attempts, each bounded at 5 minutes, so a report a daemon restart delays lands after that take-back, and the task runs again.
+  A value nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
   again once per first bound and `legion state` names the claim ([Observe](#observe)). A turn's
   start or end resets the count and a take does not, so a worker that takes and never starts a
-  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound,
-  and a seen report a started daemon read from its database charges nobody at the first bound: the
+  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound.
+  The first bound over a value the worker reported seeing, the second bound and the wait for a take's report run only while the worker's connection shows the daemon every frame of its turns: time with the connection cut counts toward none of them, and each starts again whole once the agent answers the daemon's ask after its shim's reconnect hello, or a turn starts or ends.
+  A seen report a started daemon read from its database charges nobody at the first bound: the
   daemon writes the value again, and charges the worker one bound after it reports the new
   revision seen. Each is a positive whole number of seconds, at most 2147483 (the largest whose
   milliseconds fit a signed 32-bit timer); any other value is refused by name.
@@ -1306,7 +1311,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 
-   **The first upgrade to a release where a worker takes its task** (daemon API contract 207)
+   **The first upgrade to a release where a worker takes its task** (daemon API contract 221)
    goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
    whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read,
    write and purge it, the listener's user may only read it, and no session user gets anything of
@@ -1349,9 +1354,8 @@ Closing the terminal leaves the project without one, and the daemon logs
    legion claims resume  --config legion.yaml --operator-token-file operator-token --claim <token>
    ```
 
-   An operator's suspension of an agent in a turn waits for that turn to land, at most
-   `worker_stop_timeout_seconds`, and the cut-off task is taken again after the resume. One that reaches
-   a claim whose start is still running stops that start — which is charged nothing — and suspends
+   An operator's suspension of an agent in a turn waits for that turn to land; one of a worker whose take's turn has ended waits for the worker's report of that turn too, and one over a take that was put back, because the worker reported the run it was given as no task's, waits for that take's own turn; each waits at most `worker_stop_timeout_seconds`, and the cut-off task is taken again after the resume.
+   One that reaches a claim whose start is still running stops that start — which is charged nothing — and suspends
    the claim at once, rather than waiting out a launch that can take minutes. Every `legion
    claims` subcommand takes a `--wait`, one minute by default, that bounds the whole call: a call
    that reaches it is refused with a line naming the bound, and the daemon goes on with what it

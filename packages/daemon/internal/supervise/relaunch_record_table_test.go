@@ -104,7 +104,7 @@ func claimInATurn(t *testing.T, kinds ...string) *letGoCell {
 
 // claimInATurnOfACurrentPlugin is claimInATurn on a plugin that names its task's number in its
 // reports (currentPlugin), whose task only the report of its take's turn finishes
-// (endFrameFinishes).
+// (TakesNoTask false).
 func claimInATurnOfACurrentPlugin(t *testing.T, kinds ...string) *letGoCell {
 	t.Helper()
 	return workingInATurn(t, kinds, currentPlugin)
@@ -280,7 +280,7 @@ func holdsTheSuspension(h *harness) {
 
 // suspendsAtTheTurnsEnd lands the held suspension at the end of the turn it was held for
 // (turnEnded, suspendHeldAtEnd), or, where the turn was a task's whose plugin names its number, at
-// the report right behind that end, which finishes the task first (reportedTask, afterTurn).
+// the report right behind that end, which finishes the task first (reportedTask, settleThenAfterTurn).
 func suspendsAtTheTurnsEnd(c *letGoCell) {
 	c.h.t.Helper()
 	holdsTheSuspension(c.h)

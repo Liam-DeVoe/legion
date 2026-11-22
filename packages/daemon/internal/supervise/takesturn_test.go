@@ -127,7 +127,7 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 // finishes the task. R2's start was seen, so none is left to come for it, and the next task's
 // turn is that task's: its start line names it, and its take's turn is started (startTakesTurn).
 // The second case is the first with a suspension held over R2: R2's end leaves the hold waiting
-// for R2's report (reportOwed), which finishes the task once before the stop. The third is R1's
+// for R2's report (takePhase), which finishes the task once before the stop. The third is R1's
 // report landing only after R2 ended: R2 ran the take whole, so the take's turn is R2's and over,
 // and a suspension then waits for R2's report. The fourth case is a run's report sent late, after
 // the take's own turn started: the take was accepted after R1 ended, R2 is its turn, and R1's
@@ -422,7 +422,7 @@ func TestTakeRepeatedAfterItsTurnStartedIsAnsweredTheSameAndRecordsNothing(t *te
 
 // A report the worker sends again to a daemon that restarted between the take's turn's end and
 // the report reaches its task. For a claim whose plugin names no number — the one claim an
-// end-frame bound watches (endFrameFinishes) — the bound a restored ready or idle claim waits on
+// end-frame bound watches (TakesNoTask) — the bound a restored ready or idle claim waits on
 // for that turn runs from the worker's first act after the start, not from the start, so the time
 // no daemon served the worker is no time its report had. A report of a provider error then takes
 // the task to the ladder, rather than finding it finished by a bound that ran first; and a worker

@@ -96,6 +96,74 @@ func TestARunOfRefusedTurnsAtTheLimitFailsTheClaimNamingTheProvidersRefusal(t *t
 	}
 }
 
+// A report whose write failed (TurnOutcome.Unapplied) stays in the window until it is sent again,
+// held beside the window's bound rather than in it, so the run of refused turns that follows it is
+// read whole: at the limit the claim fails, as a run with no such report before it fails it. In the
+// bound, that report would take the place of the run's oldest turn, and the run would stop one short
+// of the limit for as long as the report stayed unsent.
+//
+// The negative control is the commit under this change, whose bound counted the report never
+// applied: the third refused turn after it left a run of two, and the claim kept running.
+func TestARefusedRunAfterAReportWhoseWriteFailedIsTakenWholeAndFailsTheClaimAtTheLimit(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	limit := testLimits().LaunchFailures
+	unapplied := h.worker.sequence + 1
+	h.store.fail("PutClaim", errBoom)
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: unapplied}); !errors.Is(err, errBoom) {
+		t.Fatalf("the report whose write failed = %v, want %v", err, errBoom)
+	}
+	h.m.Wait()
+	h.store.fail("PutClaim", nil)
+	for turn := 1; turn < limit; turn++ {
+		h.report(unapplied+uint64(turn), true, "stopReason: error")
+		h.wantState(StateIdle)
+	}
+
+	h.report(unapplied+uint64(limit), true, "the provider refused the turn")
+
+	h.wantState(StateFailed)
+	if want := "the provider refused 3 turns in a row: the provider refused the turn"; h.claim().Failure != want {
+		t.Fatalf("failure %q, want %q", h.claim().Failure, want)
+	}
+	if kept := h.claim().TurnOutcomes; len(kept) != limit+1 || !kept[0].Unapplied {
+		t.Fatalf("the window keeps %+v, want the report whose write failed beside the %d newest", kept, limit)
+	}
+}
+
+// A report never applied of a generation earlier than the claim's is dropped by the window's trim
+// as an applied one is: no process sends it again, and it reaches no take (reportOfTake), so a
+// producer that died before its report was sent again leaves no entry stored for good. The newer
+// generation's reports fill the window to its bound, and the report the dead process never got
+// applied goes. The negative control is the commit under this change, whose trim kept every report
+// never applied, whatever its generation.
+func TestAReportNeverAppliedOfAnEarlierGenerationIsTakenOutOfTheWindow(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	lost := h.generation()
+	h.store.fail("PutClaim", errBoom)
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: lost, Sequence: h.worker.sequence + 1}); !errors.Is(err, errBoom) {
+		t.Fatalf("the report whose write failed = %v, want %v", err, errBoom)
+	}
+	h.m.Wait()
+	h.store.fail("PutClaim", nil)
+	h.observe(runtime.Gone)
+	h.relaunched()
+	if h.generation() == lost {
+		t.Fatalf("the relaunch left the claim at generation %d, want a later one", lost)
+	}
+	limit := testLimits().LaunchFailures
+
+	for sequence := 1; sequence <= limit; sequence++ {
+		h.report(uint64(sequence), false, "")
+	}
+
+	kept := h.claim().TurnOutcomes
+	if len(kept) != limit || slices.ContainsFunc(kept, func(o TurnOutcome) bool { return o.Generation == lost }) {
+		t.Fatalf("the window keeps %+v, want the %d reports of the generation after %d alone", kept, limit, lost)
+	}
+}
+
 // A refusal with no message still fails the claim at the limit, and says so rather than naming an
 // empty sentence.
 func TestARunOfSilentRefusalsFailsTheClaimSayingTheProviderSaidNothing(t *testing.T) {

@@ -260,12 +260,10 @@ type bucketWorker struct {
 	generation uint64
 	secret     string
 	sh         *shim
-	// mu guards what the test sets while the serve goroutine reads it: the plugin the state probe
-	// is answered from, and silent, whether the shim leaves the daemon's get_state unanswered, as
-	// one whose agent is busy compacting answers nothing the daemon can read as idle or in a turn.
+	// mu guards the plugin the state probe is answered from, which the test sets while the serve
+	// goroutine reads it.
 	mu     sync.Mutex
 	driver *takeDriver
-	silent bool
 }
 
 // spawn has the operator spawn an architect of issue with task, and connects its worker's shim and
@@ -308,8 +306,8 @@ func (w *bucketWorker) connect() {
 	go w.serve(w.sh)
 }
 
-// serve answers the protocol negotiation and, unless the shim is silent, the state probe — idle,
-// or streaming while a turn of the plugin's runs — for as long as the connection lasts.
+// serve answers the protocol negotiation and the state probe — idle, or streaming while a turn of
+// the plugin's runs — for as long as the connection lasts.
 func (w *bucketWorker) serve(sh *shim) {
 	_ = sh.conn.SetReadDeadline(time.Time{})
 	for {
@@ -326,11 +324,8 @@ func (w *bucketWorker) serve(sh *shim) {
 			_ = sh.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
 			w.mu.Lock()
-			silent, driver := w.silent, w.driver
+			driver := w.driver
 			w.mu.Unlock()
-			if silent {
-				continue
-			}
 			streaming := driver != nil && driver.inATurn()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			_ = sh.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
@@ -386,6 +381,13 @@ func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
 	if got := taskOf(t, repaired); got != number {
 		t.Fatalf("the repair wrote task %d, want the record's %d", got, number)
 	}
+	// The bucket holds the repair before the daemon has logged it or recorded it: the machine logs
+	// a write once the bucket has taken it, and records the write's revision after that (supervise's
+	// putValue and writeValue). So the case waits for the record of the repair's revision, the last
+	// of the three, before it reads the log and the record.
+	testwait.Eventually(t, "the record holding the repair's revision", func() bool {
+		return storedClaim(t, r.cfg, w.token).TaskWrittenRevision.Revision == repaired.Revision()
+	})
 	// The watch hands over the bucket's changes in order, so the other projects' came before the
 	// claim's own, and the daemon has passed them.
 	if e := r.entry(other); e == nil || e.Revision() != otherRevision || taskOf(t, e) != 7 {
@@ -698,10 +700,13 @@ func TestTaskValueARestartDuringAProviderErrorsWaitWritesOnceAndIsTakenOnce(t *t
 
 // A daemon restarted while a claim is stored working with its task taken back — the record a
 // compaction's start writes (supervise's compactStart), which a restart in the middle of the
-// compaction finds — writes the owed task once at the boot. The worker, whose shim answers the
-// restarted daemon nothing of a turn, asks at the boot's revision as the word that its host is
-// idle; the take is accepted, and the turn start is held up to the second bound
-// (worker_turn_start_timeout_seconds) with no charge and no second take.
+// compaction finds — writes the owed task once at the boot. The worker's agent, asked at its
+// shim's hello whether it is in a turn, answers that it is in no turn: that ends the turn the
+// store recorded, and the daemon's view of the worker's turns is whole again. The worker asks at
+// the boot's revision; the take is accepted, and the turn start is held up to the second bound
+// (worker_turn_start_timeout_seconds), armed once, with no charge and no second take. An agent
+// that answered nothing would arm no bound until a turn frame or the reconnect deadline
+// (supervise's connview.go).
 func TestTaskValueARestartDuringACompactionWritesOnceAndIsTakenOnce(t *testing.T) {
 	r := newBucketRig(t)
 	r.cfg.WorkerTakeTimeout, r.cfg.WorkerTurnStartTimeout = 5*time.Minute, 25*time.Minute
@@ -731,12 +736,13 @@ func TestTaskValueARestartDuringACompactionWritesOnceAndIsTakenOnce(t *testing.T
 	r.o.clock = clock
 	rebindHeldPorts(t, &r.cfg)
 	r.boot()
-	w.mu.Lock()
-	w.silent = true
-	w.mu.Unlock()
 	w.reattach()
 	r.awaitEntry("the owed task written at the boot", key, func(e jetstream.KeyValueEntry) bool {
 		return e != nil && e.Revision() > before.Revision()
+	})
+	// The worker runs no turn of its own, so its agent answers the hello's ask that it is in none.
+	testwait.Eventually(t, "the agent's answer that it is in no turn to end the turn the store recorded", func() bool {
+		return r.d.claim(w.token).State == string(supervise.StateIdle)
 	})
 	again := w.driver.mustTake(t, "the worker takes the task at the boot's revision")
 	if again.Number != taken.Number {

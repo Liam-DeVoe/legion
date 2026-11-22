@@ -5,7 +5,19 @@ body: |-
   worker's session, and the worker takes the task once it is idle. A worker is charged only when it
   saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), took it and
   started no turn within `worker_turn_start_timeout_seconds` (1500 by default), or asked to take it
-  and the shim refused to adopt the working copy, a refusal charged at the shim's answer. A daemon that
+  and the shim refused to adopt the working copy, a refusal charged at the shim's answer.
+  `worker_turn_start_timeout_seconds` also bounds the wait for the report of a take's turn once
+  that turn has ended: past it the task is taken back as a cut turn and its value written again,
+  and nobody is charged. These bounds run only while the worker's connection shows the daemon
+  every frame of its turns: time with the connection cut counts toward none of them, and each
+  starts again whole once the agent answers the daemon's ask after its shim's reconnect hello, or
+  a turn starts or ends. The daemon logs each change of that view at Info, with the task where one
+  is pending: `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on
+  the worker stand still until it does again` and `supervise: the daemon sees every frame of the
+  worker's turns again; the bounds on the worker run again, whole, from here`. Every boot's first
+  line is `legion daemon starting`, with the project, before the plugin gate. `legion task-cost`
+  reads these lines to start each wait where the daemon started it, and counts no time between two
+  daemons toward a bound. A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
   connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
   `legion config check` prints the refusal of a daemon that would connect as that user.
@@ -27,6 +39,11 @@ body: |-
   also after a daemon restart under a live worker: the worker's report of that run names the take
   as `held`. That holds for a take accepted before the restart too, except one whose given run the
   daemon before the restart saw end, whose own turn may have run there as well.
+  News of an approved design reaches the worker on the task it takes: the accepted take's text
+  carries the news, and its copy counts as the holder having taken that news once the take's turn
+  starts (store migration `20261122160000_design_news_credit_at_turn_start`, whose way back runs
+  before the task numbers' at a rollback). A task queued for news alone is written under the origin
+  `news`, which `legion task-cost` counts apart from the phase's work.
   Roll out in this order: the envoy-infra release with the bucket grants first, then the listener
   image, then each project's daemon and worker image together in one apply, then restart any
   controller an operator started and every worker of a daemon that knows no plugin pair to relaunch

@@ -67,15 +67,17 @@ func (h *harness) relaunchedTakes() {
 //     the new process runs it a second time.
 //   - A relaunch held for the old turn's end: the stale-plugin lane waits out the take's turn,
 //     the end frame finishes the task, and the relaunch that follows hands the new process
-//     nothing. Negative control: the end frame finishing no task (endFrameFinishes false) — the
+//     nothing. Negative control: the end frame finishing no task (TakesNoTask false) — the
 //     task then stands unfinished and the relaunch never runs.
 //   - A sweep's relaunch inside the end-frame bound: the take's turn ended and its bound runs when
 //     the relaunch lets the process go; the task is finished, not taken back. Negative control:
 //     a take whose turn is over taken back whatever the contract (interrupted's gate) — the new
 //     process runs it again.
 //   - A relaunch before any turn: the take is given back before the process is let go, and the
-//     new process's take is decided afresh. Negative control: no take-back at a launch that runs
-//     now (launchReplacing's takeBack) — the new process is answered the old take from the record.
+//     new process's take is decided afresh. The agent has not answered the ask its shim's hello
+//     made, so the turn may have run unseen, and the take goes back as a cut turn with its note
+//     (turnMayHaveRunUnseen). Negative control: no take-back at a launch that runs now
+//     (launchReplacing's takeBack) — the new process is answered the old take from the record.
 func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 	t.Run("a parked relaunch with the old turn in the wait", func(t *testing.T) {
 		h := restoreMigrated(t, true)
@@ -154,13 +156,15 @@ func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 		h.reportActivity()
 
 		h.observe(runtime.StaleAddress)
-		if p := h.pending(); p.taken() || p.Interrupted {
-			t.Fatalf("the task after the relaunch is %+v, want the take given back with no note: no turn of it ran", p)
+		if p := h.pending(); p.taken() || !p.Interrupted {
+			t.Fatalf("the task after the relaunch is %+v, want the take given back as a cut turn: no answer followed the hello, so its turn may have run unseen", p)
 		}
 		h.relaunchedTakes()
 
-		if again := h.wantPrompts(1)[0]; again.Message != "the task" {
-			t.Fatalf("the new process took %+v, want the task alone", again)
+		again := h.wantPrompts(1)[0]
+		wantSays(t, again.Message, saysTaskTurn)
+		if !strings.HasSuffix(again.Message, "the task") {
+			t.Fatalf("the new process took %+v, want the task behind the word of its cut turn", again)
 		}
 		answered := h.records.of(answeredLine)
 		wantAttr(t, answered[len(answered)-1], "repeat", "false")
@@ -258,8 +262,9 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 //     came on. That the first connection's answer, replayed on the next ahead of the take's
 //     agent_start, reaches the machine as no answer, since that connection never asked it, is the
 //     stream's to hold (Conn.stateAnswered), and stream's conn_test is what catches it.
-//   - An ask the agent does not answer: asked again at the next sweep, and relaunched at the
-//     reconnect deadline counted from the hello, by the lane, charged nothing.
+//   - An ask the agent does not answer: not asked again at the next sweep (row 31 of the plan's
+//     state table, v121), and relaunched at the reconnect deadline armed at the hello, by the lane,
+//     charged nothing.
 //   - A hello whose connection closed before the daemon asked on it, from a shim that cannot
 //     reach the daemon again: no ask is made, and the claim is relaunched at the same deadline,
 //     the same way. Negative control: askRestoredTurn arming no bound with no connection — the
@@ -324,8 +329,8 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		if unanswered := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(unanswered) != 1 {
 			t.Fatalf("the asks the agent left unanswered are %q, want the first connection's alone", unanswered)
 		}
-		if answered := h.logs.lines("supervise: the agent of a claim the daemon's start restored said whether it is in a turn"); len(answered) != 1 {
-			t.Fatalf("the asks the agent answered are %q, want the next connection's", answered)
+		if ask := h.conn.LastAsk(); ask != "ask-1" {
+			t.Fatalf("the next connection was asked up to %q, want its one ask", ask)
 		}
 		h.wantCalls("Resume", 0)
 		// The replay: the first connection's answer of no turn is no event of the next
@@ -348,8 +353,8 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		h.connect()
 		h.advance(deadline / 2)
 		h.observe(runtime.Alive)
-		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 2 {
-			t.Fatalf("the asks the agent left unanswered are %q, want the hello's and the sweep's", asks)
+		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 1 {
+			t.Fatalf("the asks the agent left unanswered are %q, want the hello's alone: no sweep asks its connection again", asks)
 		}
 		h.wantRelaunchedUnchargedAtTheDeadline()
 	})

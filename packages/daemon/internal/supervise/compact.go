@@ -345,9 +345,19 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
-		m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
-			"task", p.Number)
-		if err := m.takeBack(ctx, takenBackCompaction); err != nil {
+		// A take whose report's finish the store refused is finished by that report instead
+		// (makeOwedFinish): no turn of it is aborted. Any other take awaiting its turn is taken
+		// back, a migrated worker's (waitNone) among them, and the line says so; where the view
+		// does not show every frame of the claim's turns — the compaction needs only a connection,
+		// so it can run while a hello's ask waits for its answer — it goes back as a cut turn with
+		// its note (clearTake, turnMayHaveRunUnseen).
+		owed, err := m.makeOwedFinish(ctx)
+		if !owed {
+			m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
+				"task", p.Number)
+			err = m.takeBack(ctx, takenBackCompaction)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -368,7 +378,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // It is turnEnded's shape, for the same reason: the claim was working, nothing of it is working
 // now, and what was held for that is owed now — the suspension an operator asked for while the
 // compaction ran, and the task the claim owes, which goes again whether the compaction ran or was
-// refused (dispatch://INFRA-956 R3). A claim that owes none is sent nothing.
+// refused (dispatch://INFRA-956 R3). A claim that owes none is sent nothing. With nothing held,
+// the end is a turn's end's own (endNothingHeld): a stale-plugin relaunch held for the compaction,
+// or for the take's turn before it, runs here only where the task that turn was of is settled, and
+// otherwise at that task's finish by the end-frame bound or by the report of the take's turn, as
+// at the end of the turn.
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, so the
 // project's controller can be told a second time if the compacted session's turns go the same
@@ -396,16 +410,19 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // the turn's end runs it, and leaves the claim suspended with its process stopped; where a
 // turn is running it is left to that turn's end, and the claim is working for it; and where the
 // compaction began after a take's turn had ended with its report still to come, it waits for that
-// report as at the turn's end, behind the wait for the take's report (reportwait.go, reportOwed):
-// the claim goes back idle holding it, and the report's finish runs it (reportedTask, afterTurn),
-// or that wait's bound or its own deadline (reportBoundOver, suspendAtTimeout). Run here, its stop
-// would come before that report, which the suspended claim ignores, and settle would take back as
-// a cut turn a task whose turn ran whole. None of these is a claim back on the task it owes, and
-// that task is unsent each way, so an answer of nil — which its caller reads as the claim back and
-// its task gone again (Machine.Compact, api's CompactResponse) — would be false of each. The hold
-// that runs here stops a process in no turn, so what its let-go records reads the claim in the
-// state the compaction gives it back in (compacting.back, suspendHeldAtEnd), and the next process
-// is not told a turn was cut off.
+// report as at the turn's end, behind the wait for the take's report (reportwait.go, takePhase):
+// the claim goes back idle holding it, and the report's finish runs it (reportedTask,
+// settleThenAfterTurn), or that wait's bound or its own deadline (reportBoundOver,
+// suspendAtTimeout). Run here, its stop would come before that report, which the suspended claim
+// ignores, and settle would take back as a cut turn a task whose turn ran whole. None of these is
+// a claim back on the task it owes, and that task is unsent each way, so an answer of nil — which
+// its caller reads as the claim back and its task gone again (Machine.Compact, api's
+// CompactResponse) — would be false of each. The hold that runs here stops a process in no turn,
+// so what its let-go records reads the claim in the state the compaction gives it back in
+// (compacting.back, suspendHeldAtEnd), and the next process
+// is not told a turn was cut off. A stop the runtime refuses gives the claim back over a task whose
+// turn is over, with the end-frame bound armed for it where none stands, as the end with nothing
+// held arms it (runHeldAtEnd, endNothingHeld).
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	ended := ev.(CompactEnded)
 	// The fence let this end through, so the claim holds the compaction it names (ownsCompaction).
@@ -429,35 +446,13 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	if m.held != nil {
-		if m.reportOwed() {
-			m.claim.State = run.back
-			m.logSuspensionWaits()
-			if err := m.persist(ctx); err != nil {
-				return err
-			}
-			return ErrCompactSuspended
-		}
 		// A suspension that arrived while the compaction ran was held for it, as one that
-		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
-		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {
-			if m.held == nil {
-				return err
-			}
-			m.claim.State = run.back
-			return errors.Join(err, m.persist(ctx))
+		// arrives in a turn is (holdSuspension); it runs now, or waits for the take's report,
+		// exactly as the turn's end runs it.
+		if err := m.runHeldAtEnd(ctx, run.back, m.armEndFrameBoundUnlessArmed); err != nil {
+			return err
 		}
 		return ErrCompactSuspended
 	}
-	m.claim.State = run.back
-	if err := m.persist(ctx); err != nil {
-		return err
-	}
-	// A finish the store refused while the compaction ran (finishTask, Machine.finishOwed) is made
-	// again by the end-frame bound, which that refusal armed for no working claim: armed here, as
-	// the end of a turn arms it (turnEnded), and only where none stands, so a plugin's bound armed
-	// at its turn's end keeps its time.
-	if p := m.claim.Pending; p != nil && p.turnStarted() {
-		m.armEndFrameBoundUnlessArmed(p.ID)
-	}
-	return m.afterTurn(ctx, false)
+	return m.endNothingHeld(ctx, run.back, m.armEndFrameBoundUnlessArmed)
 }

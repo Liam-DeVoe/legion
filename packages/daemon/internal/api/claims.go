@@ -291,7 +291,7 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 // It does not refuse a stale plugin with the stale-contract 409 (refuseIfStaleClaim), under
 // either caller, as the task routes do not (take.go). A worker whose plugin names its task's
 // number has that task finished by this report and by nothing else (supervise's reportedTask,
-// endFrameFinishes), and a contract raise can find such a worker stale with that report still to
+// TakesNoTask), and a contract raise can find such a worker stale with that report still to
 // come: the end of its take's turn on the worker stream can arrive first, and the stale-plugin
 // lane then holds the claim's relaunch until the task is finished (supervise's turnEnded,
 // afterTurn). Refused, the report would be lost, since the plugin sends no refused report again,

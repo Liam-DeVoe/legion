@@ -31,6 +31,13 @@ import (
 // strict schema refuses and reads no state at all.
 const PodUpdateContract = 46
 
+// relaunchWaitsForViewLine is the line of a stale-plugin relaunch of a claim holding a take of its
+// pending task whose connection does not show the machine every frame of its turns (refreshPlugin,
+// connview.go), at Info, with the task, the claim's state and the pass that asked: the relaunch
+// waits for the agent's answer or a turn frame on a new connection, and the reconnect deadline
+// bounds the wait.
+const relaunchWaitsForViewLine = "supervise: the process speaks another plugin contract; its relaunch waits until the worker's connection shows its turns whole again"
+
 // refreshPlugin is the claim's process found to speak a plugin contract this daemon does not: at
 // boot, re-adopting a claim whose recorded contract is an earlier daemon's, or none at all (the
 // first boot on this release); or, uncharged, a registration that still differs from the daemon's
@@ -134,8 +141,8 @@ const PodUpdateContract = 46
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
 // endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
 // gave up nothing by it and the next sweep will decide this claim again: the contract already
-// current, a wake already held, no process to replace, and the turn this relaunch waits out,
-// whose own end runs the relaunch back through here.
+// current, a wake already held, no process to replace, a take over a view that is not whole, and
+// the turn this relaunch waits out, whose own end runs the relaunch back through here.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
 // credit straight back to the gate, keeping the flag for the wake the held one was taken for.
@@ -190,6 +197,20 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 			"trigger", trigger, "askedAt", m.askedAt)
 		return nil
 	}
+	// A claim holding a take of its pending task is relaunched only over a whole view of its turns
+	// (connview.go), in every order and not only behind its start's ask: the take may have had its
+	// turn start unseen, its start frame lost as the connection broke, and a relaunch now would
+	// take it back over a turn running, the task run twice behind row 26's note. The first post
+	// after the agent's answer or a turn frame decides it, and the reconnect deadline bounds the
+	// wait: that deadline's own relaunch is the bound, and passes (atReconnectDeadline). A claim
+	// holding no take is relaunched as before, an untaken pending task with it: only a take the
+	// daemon accepted can have a turn running unseen, and R10 asks for a relaunch onto the current
+	// plugin wherever one can be made.
+	if p := m.claim.Pending; p != nil && p.taken() && m.connSeen != viewWhole && !m.atReconnectDeadline {
+		m.log.Info(relaunchWaitsForViewLine, "task", p.Number, "state", m.claim.State, "trigger", trigger,
+			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
+		return nil
+	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
 	if m.busy() && !controller {
 		m.holdStaleRelaunch(trigger)
@@ -202,8 +223,8 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 	// worker would run again a task whose turn ran whole. The controller's claim is no exception,
 	// since what it is spared is the wait for its turn or its compaction, not the run of a task
 	// twice: over a compaction with no turn started under it, after the take's turn ended, it waits
-	// for the report as an idle claim does, and the compaction's end runs it (compactEnded,
-	// afterTurn).
+	// for the report as an idle claim does, the compaction's end leaves it waiting (compactEnded,
+	// endNothingHeld), and the report's finish runs it (afterTurn).
 	if m.reportHolds() {
 		m.relaunchWaitsForReport(trigger)
 		return nil
@@ -251,29 +272,47 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // call carrying a credit is exactly that window, and the end of this decision gives the credit
 // straight back, since it leaves no refresh wake waiting (endRefreshLane). The window costs the
 // claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
+//
+// A relaunch newly held here waits for the end of that turn or compaction, and the end that leaves
+// it waiting for the report of the take's turn writes the line of that wait (Machine.staleForEnd,
+// endNothingHeld). One held already keeps what it waits for: a pass that finds it again over a
+// turn of the host's own, while it waits for that report, starts no second wait.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
 			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
 			"daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
+		m.staleForEnd = true
 	}
 	m.staleRelaunch = &trigger
 }
 
 // relaunchWaitsForReport leaves the stale-plugin relaunch waiting behind the wait for the report
-// of the pending take's turn (reportwait.go; refreshPlugin, runWake): the report's finish runs it,
-// or its provider error's take-back (reportedTask, afterTurn), or the wait's bound — R5's second
-// bound, armed whole where the relaunch began to wait, at which the task is taken back with the
-// note of a cut turn first (reportBoundOver) — and runs it through refreshPlugin as the claim
-// stands then, as the relaunch held for a turn is run. So a report that never comes, lost by a
-// worker that gave up on it, leaves no claim on a stale plugin for ever, and a report that is only
-// slow lands inside the bound. A pass that posts the claim again meanwhile replaces the trigger
-// and moves the bound nothing. Like the relaunch held for a turn, it is memory only: a restart
-// forgets it, and the restarted daemon's own stale-plugin pass asks again.
+// of the pending take's turn (reportwait.go; refreshPlugin, runWake), in whichever phase of it
+// work waits (reportHolds). In the report's own phase, the take's turn over and its report not come
+// (waitReport), the report's finish runs it, or its provider error's take-back (reportedTask,
+// afterTurn), or the wait's bound, at which the task is taken back with the note of a cut turn
+// first (reportBoundOver). That bound is R5's second bound. Over a take it reaches with nothing
+// held (reportReaches), it was armed whole at the end of the take's turn, and the relaunch that
+// begins to wait keeps it as it was; over a take it reaches only with work held, a restored take it
+// leaves out with nothing held, it is armed whole where the relaunch began to wait. Behind a held
+// suspension that waits already, the relaunch joins two other phases, where no bound of the wait
+// is armed: a take awaiting its turn again (waitTake), whose own turn's start and then its report,
+// or else R5's second bound taking the task back, runs it (turnStartBoundOver); and a report that
+// came with its finish refused by the store (waitFinish), whose finish the end-frame bound makes
+// again until it lands and runs it then (finishAtTurnsEnd). Each runs the relaunch through
+// refreshPlugin as the claim stands then, as the relaunch held for a turn is run. So a report
+// that never comes, lost by a worker that gave up on it, leaves no claim on a stale plugin for
+// ever, and a report that is only slow lands inside the bound. A pass that posts the claim again
+// meanwhile replaces the trigger and moves the bound nothing. Like the relaunch held for a turn,
+// it is memory only: a restart forgets it, and the restarted daemon's own stale-plugin pass asks
+// again. A relaunch newly held here has its wait's line written here, by the take's phase
+// (waitsLine), so no end writes it again (Machine.staleForEnd).
 func (m *Machine) relaunchWaitsForReport(trigger string) {
 	if m.staleRelaunch == nil {
-		m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "relaunch", "trigger", trigger,
+		m.log.Info(m.takePhase().waitsLine(), "task", pendingNumber(m.claim.Pending), "held", "relaunch", "trigger", trigger,
 			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
+		m.staleForEnd = false
 	}
 	m.staleRelaunch = &trigger
 }

@@ -6,6 +6,7 @@ package supervise
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"os"
@@ -116,10 +117,7 @@ func TestTaskCostReadsTheMachinesOwnLog(t *testing.T) {
 		t.Fatalf("pending %+v, want both tasks finished", p)
 	}
 
-	cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
-	if err != nil {
-		t.Fatal(err)
-	}
+	cost := readLogCost(t, h, log)
 	if cost.TurnsStarted != (TurnCauses{Task: 2, None: 1}) || cost.TurnsEnded != (TurnCauses{Task: 2, None: 1}) {
 		t.Errorf("turns started %+v and ended %+v, want two by a task number and one with no cause each", cost.TurnsStarted, cost.TurnsEnded)
 	}
@@ -673,10 +671,7 @@ func TestTaskCostLogReadsTheMachinesOwnPutBack(t *testing.T) {
 				t.Fatalf("the log holds %d put-back lines, want one", n)
 			}
 
-			cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
-			if err != nil {
-				t.Fatal(err)
-			}
+			cost := readLogCost(t, h, log)
 			if cost.TurnsStarted != (TurnCauses{Task: 1, None: 1}) || cost.TurnsEnded != (TurnCauses{Task: 1, None: 1}) {
 				t.Errorf("turns started %+v and ended %+v, want one by a task number and the put-back run with no cause each", cost.TurnsStarted, cost.TurnsEnded)
 			}
@@ -758,6 +753,422 @@ func TestTaskCostLogFirstVerdictReadsTheSecondWaitFromWhereTheMachineBeginsIt(t 
 	}
 	if want := []TaskTurns{{"after-a-daemon-start", 1, 1}, {"in-turn-hold", 1, 1}, {"put-back", 1, 1}}; !slices.Equal(cost.TurnsOfTask, want) {
 		t.Errorf("turns of each number %+v, want %+v: each put-back run is a turn of no cause", cost.TurnsOfTask, want)
+	}
+}
+
+// readLogCost reads the machine's whole log, every line of the walk inside the window.
+func readLogCost(t *testing.T, h *harness, log *testlog.Buffer) TaskCost {
+	t.Helper()
+	cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cost
+}
+
+// logDaemonStarted writes the daemon's start line into the machine's log, as internal/daemon writes
+// it once its boot's steps are done: after it restored every claim (restart).
+func logDaemonStarted(h *harness) {
+	h.deps.Log.Info(DaemonStartedLine, "project", "INFRA")
+}
+
+// daemonRestart is a daemon stopped for d and started again (outage), its lines written as
+// internal/daemon writes them: its starting line first, then the restore of the claim (NewMachine).
+// The start line, which comes after the restore, is the test's to write (logDaemonStarted).
+func daemonRestart(h *harness, d time.Duration) {
+	h.t.Helper()
+	h.m.Wait()
+	h.clock.dropAll()
+	h.clock.Advance(d)
+	h.deps.Log.Info(DaemonStartingLine, "project", "INFRA")
+	h.start(h.store.load(h.token))
+}
+
+// unreachedFrom is the line the reading lists for the claim's task number whose first-wait clock
+// started at from, passed the first bound with no take, and was still owed at the window's end.
+func unreachedFrom(h *harness, number uint64, from time.Time) []string {
+	return []string{fmt.Sprintf("%s task %d: the clock started %s, the bound passed %s, still owed at the window's end",
+		h.token, number, lineTime(from), lineTime(from.Add(takeBound)))}
+}
+
+// After a daemon's start the machine arms R5's second wait over a take awaiting its turn no
+// earlier than its view of the worker's turns is whole again: here, at the agent's answer to the
+// ask the shim's first hello makes (connview.go). The reading begins verdict 1's window there too,
+// from the machine's two lines of that view (viewCutLine, viewWholeLine), and not at the worker's
+// next act it decodes: a take the worker sends again two minutes after the answer, answered from
+// the record. The daemon charges one bound after the answer and takes the task back; the worker
+// takes it again, and that turn starts thirty seconds after the charge, inside one bound of the
+// take sent again, so a window begun at that act would read a turn within the bound and fail a
+// charge the daemon made rightly. Both places of the daemon's start line are read so: after the
+// restore and before the hello, and after the answer, as a boot whose last steps outlast the
+// shim's hello and its agent's answer writes it.
+//
+// The negative controls are the reading before it read the two lines (the change's parent), whose
+// window began at the take sent again: the charge is listed against the retaken task's turn; and a
+// start line that stops every clock whatever began its start (daemonStarted), whose window, with
+// the start line written after the answer, began at the take sent again as well.
+func TestTaskCostLogReadsTheTurnStartWaitAfterADaemonStartFromTheAnswerNotTheWorkersNextAct(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		startedAfterTheAnswer bool
+	}{
+		{"the start line before the hello", false},
+		{"the start line after the answer", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, log := jsonHarness(t, currentPlugin)
+			h.manualTakes()
+			h.reach(StateReady)
+			h.takeOf("implement the plan")
+			value, _ := h.values.value(h.token)
+			h.advance(time.Minute)
+			daemonRestart(h, 0)
+			if !tc.startedAfterTheAnswer {
+				logDaemonStarted(h)
+			}
+			h.advance(time.Minute)
+			h.connect()
+			h.advance(time.Minute)
+			h.answerAsk(false)
+			h.wantArmedFromNow(TimerTurnStart, turnStartBound, "at the answer")
+			if tc.startedAfterTheAnswer {
+				logDaemonStarted(h)
+			}
+			h.advance(2 * time.Minute)
+			if again, err := h.takeValue(value); err != nil || again.Outcome != TakeOutcomeAccepted {
+				t.Fatalf("the take sent again = %+v, %v; want it answered accepted from the record", again, err)
+			}
+			h.advance(turnStartBound - 2*time.Minute)
+			h.wantCharges(WaitTurnStart)
+			h.mustTake()
+			h.advance(30 * time.Second)
+			h.must(StreamTurnStart{Claim: h.token})
+			h.advance(5 * time.Minute)
+			h.must(StreamTurnEnd{Claim: h.token})
+
+			cost := readLogCost(t, h, log)
+			if !maps.Equal(cost.ChargesByWait, map[string]int{WaitTurnStart: 1}) {
+				t.Fatalf("charges by wait %v, want the one charge of the second wait", cost.ChargesByWait)
+			}
+			if len(cost.ChargedWithinBound) != 0 {
+				t.Errorf("the first verdict fails on %q, want the charge one bound after the answer passed", cost.ChargedWithinBound)
+			}
+		})
+	}
+}
+
+// A take the worker makes after a daemon's start, before the ask its shim's hello makes is
+// answered, is under no second wait until the machine's view of the worker's turns is whole again
+// (connview.go): the wait begins at the agent's answer, and the reading's verdict 1 begins its
+// window there too (viewWholeLine), not at the take. Through the machine and its own log, the
+// daemon charges one bound after the answer, and the reading passes the charge. In a log of a
+// daemon that charged a worker whose turn began within one bound of that answer, though more than
+// a bound after its take, the reading lists the charge, its second wait begun again at the answer.
+//
+// The negative control is the reading before it read the two lines (the change's parent), whose
+// window began at the take and ended before that turn: the charge is not listed.
+func TestTaskCostLogReadsTheTurnStartWaitOfATakeMadeBeforeTheAnswerFromTheAnswer(t *testing.T) {
+	t.Run("the machine's own log", func(t *testing.T) {
+		h, log := jsonHarness(t, currentPlugin)
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+		daemonRestart(h, 0)
+		logDaemonStarted(h)
+		h.advance(time.Minute)
+		h.mustTake()
+		h.advance(time.Minute)
+		h.connect()
+		h.advance(time.Minute)
+		h.answerAsk(false)
+		h.wantArmedFromNow(TimerTurnStart, turnStartBound, "at the answer")
+		h.advance(turnStartBound)
+		h.wantCharges(WaitTurnStart)
+		h.mustTake()
+		h.advance(30 * time.Second)
+		h.must(StreamTurnStart{Claim: h.token})
+		h.advance(5 * time.Minute)
+		h.must(StreamTurnEnd{Claim: h.token})
+
+		cost := readLogCost(t, h, log)
+		if !maps.Equal(cost.ChargesByWait, map[string]int{WaitTurnStart: 1}) || len(cost.ChargedWithinBound) != 0 {
+			t.Errorf("charges by wait %v, and the first verdict fails on %q; want the one charge of the second wait, passed",
+				cost.ChargesByWait, cost.ChargedWithinBound)
+		}
+	})
+	t.Run("a turn within one bound of the answer", func(t *testing.T) {
+		const claim = "taken-before-the-answer"
+		b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+		cost := b.readCost([]string{
+			b.written(0, claim, 1, 1, TaskValueQueued),
+			b.seen(time.Second, claim, 1, 1),
+			b.line(10*time.Minute, DaemonStartingLine, "", "project", "INFRA"),
+			b.line(10*time.Minute, viewCutLine, claim, "task", 1),
+			b.line(10*time.Minute, DaemonStartedLine, "", "project", "INFRA"),
+			b.answered(11*time.Minute, claim, 1, TakeOutcomeAccepted, ""),
+			b.line(12*time.Minute, viewAskedLine, claim, "task", 1),
+			b.line(13*time.Minute, viewWholeLine, claim, "task", 1),
+			b.line(36*time.Minute+30*time.Second, turnStartedLine, claim, "generation", 1, "task", 1),
+			b.line(38*time.Minute, promptFailureLine, claim, "wait", WaitTurnStart, "bound", int64(turnStartBound)),
+		})
+		want := []string{claim + " task 1: taken 2026-11-14T09:11:00.000Z, its second wait begun again 2026-11-14T09:13:00.000Z, a turn started 2026-11-14T09:36:30.000Z, charged 2026-11-14T09:38:00.000Z (wait turn-start, bound 25m0s)"}
+		if !slices.Equal(cost.ChargedWithinBound, want) {
+			t.Fatalf("the first verdict fails on\n%s\nwant\n%s", strings.Join(cost.ChargedWithinBound, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+// A close stops R5's first wait over a value the worker reported seeing, and the agent's answer to
+// the ask the next hello makes arms it again, whole (connview.go); the reading stops and starts
+// the number's clock at the machine's two lines of that view (viewCutLine, viewWholeLine). The
+// value is seen a minute before the close, no connection stands for longer than the first bound,
+// and the value is left untaken for a bound after the answer: the daemon charges the first wait
+// one bound after the answer, and the reading lists the number from the answer, not from its seen
+// report.
+//
+// The negative control is the reading before it read the two lines (the change's parent), whose
+// clock ran through the close and passed the bound while no connection stood.
+func TestTaskCostLogStopsTheClockAtACloseAndStartsItWholeAtTheAnswerOfNoTurn(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin, longReconnect)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	number := h.pending().Number
+	h.seen()
+	h.advance(time.Minute)
+	h.reconnectLater()
+	h.advance(takeBound + time.Minute)
+	h.wantCharges()
+	h.helloOf(true, false)
+	h.advance(time.Minute)
+	h.answerAsk(false)
+	answered := h.clock.Now()
+	h.wantArmedFromNow(TimerTake, takeBound, "at the answer")
+	h.advance(takeBound)
+	h.wantCharges(WaitTake)
+
+	cost := readLogCost(t, h, log)
+	if want := unreachedFrom(h, number, answered); !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A close over no pending task, and the hello after it over none: that hello asks nothing, and the
+// view is whole at it (askView), which the machine logs (viewWholeLine), so the reading's clocks
+// run again from there. A task written after it is taken and no turn starts: the daemon charges
+// the second wait one bound after the take, takes the task back and writes it again, and the
+// reading passes the charge. The worker reports the value written again seen and leaves it a bound
+// untaken: the daemon charges the first wait, and the reading lists the number from that report.
+//
+// The negative control is that hello's view made whole with no line: the close's line holds the
+// reading's clock still, and the number is not listed.
+func TestTaskCostLogReadsTheTurnStartWaitAfterAHelloOverNoTaskFromTheTake(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.reconnectLater()
+	h.advance(time.Minute)
+	h.helloOf(true, false)
+	h.advance(time.Minute)
+	wantTakeChargedPastBothBounds(t, h, log, "implement the plan")
+}
+
+// wantTakeChargedPastBothBounds is task taken with no turn started after it, over a connection
+// whose view the reading's clocks run on: the daemon charges the second wait one bound after the
+// take, and the reading passes the charge; the value written again is reported seen and left a
+// bound untaken, the daemon charges the first wait, and the reading lists the number from that
+// report.
+func wantTakeChargedPastBothBounds(t *testing.T, h *harness, log *testlog.Buffer, task string) {
+	t.Helper()
+	number := h.takeOf(task)
+	h.advance(turnStartBound)
+	h.wantCharges(WaitTurnStart)
+	h.seen()
+	seen := h.clock.Now()
+	h.advance(takeBound)
+	h.wantCharges(WaitTurnStart, WaitTake)
+
+	cost := readLogCost(t, h, log)
+	if len(cost.ChargedWithinBound) != 0 {
+		t.Errorf("the first verdict fails on %q, want the charge one bound after the take passed", cost.ChargedWithinBound)
+	}
+	if want := unreachedFrom(h, number, seen); !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A daemon start's own ask of a claim it restored working (askFirst) serves the shim's first
+// hello since that start, and the agent's answer to it makes the view whole with nothing relaunched
+// (askTurnOver), which the machine logs (viewWholeLine), so the reading's clocks run again from
+// there. The agent answers that it is still in the take's turn, whose end then finishes the task
+// by its report. A second task is taken and no turn starts: the daemon charges the second wait one
+// bound after the take, and the reading passes the charge. The value written again is reported
+// seen and left a bound untaken: the daemon charges the first wait, and the reading lists the
+// number from that report.
+//
+// The negative control is that answer's view made whole with no line: the restore's line
+// (viewCutLine) holds the reading's clock still for good, since no later change of the view writes
+// one, and the number is not listed.
+func TestTaskCostLogRunsTheClocksFromTheAnswerToADaemonStartsOwnAskAfterItsTurn(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateWorking)
+	daemonRestart(h, 0)
+	logDaemonStarted(h)
+	h.advance(time.Minute)
+	h.conn.SetStreaming(true)
+	h.connect()
+	h.wantState(StateWorking)
+	h.advance(time.Minute)
+	h.must(StreamTurnEnd{Claim: h.token})
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the turn's end, want the task finished by its report", p)
+	}
+	h.advance(time.Minute)
+	wantTakeChargedPastBothBounds(t, h, log, "carry on")
+}
+
+// A daemon start restores a claim whose process was launching with no hello seen (viewNoHello),
+// which the machine logs (viewCutLine). That process's first hello makes the view whole (helloed),
+// which it logs too (viewWholeLine), and the reading's clocks run from there. The agent registers
+// and says it is ready, a task is written, and its value is reported seen and left a bound
+// untaken: the daemon charges the first wait, and the reading lists the number from that report.
+//
+// The negative control is that first hello's view made whole with no line: the restore's line
+// holds the reading's clock still, and the number is not listed.
+func TestTaskCostLogRunsTheTurnClocksFromTheFirstHelloOfAProcessRestoredLaunching(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateLaunching)
+	daemonRestart(h, 0)
+	logDaemonStarted(h)
+	h.advance(time.Minute)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	number := h.pending().Number
+	h.seen()
+	seen := h.clock.Now()
+	h.advance(takeBound)
+	h.wantCharges(WaitTake)
+
+	cost := readLogCost(t, h, log)
+	if want := unreachedFrom(h, number, seen); !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// No time between the last line of a daemon and the start of the next one counts toward the first
+// bound: the machine a daemon start builds runs none of its waits until the worker's first act and
+// its view's whole line, so the time no daemon ran is no time the worker had to take its task.
+// A daemon's first line is its starting line (DaemonStartingLine), so the reading stops every clock
+// there, as of the last line it decoded before, and no line of the new daemon after it — its boot's
+// lines, a line it decodes before its restore and start lines, such as a boot write of another
+// claim's value — counts as the daemon before's. A number seen a minute before its daemon's last
+// line, a gap of more than the first bound with no line, the new daemon's starting, boot, restore
+// and start lines, and a take a minute after the view's whole line: the number was owed no bound
+// with no take, and the third verdict passes, through the machine and its own log and in a log
+// written line by line.
+//
+// The negative controls: the same gap with the daemon before the start writing lines through it,
+// another claim's turn, lists the number from its seen report, since that daemon lived past the
+// bound; a log with no starting line, as an older daemon's, is read with its start line as the
+// start, and lists the number too; and so does the reading before this change (its parent), which
+// took the line it decoded before the restore for one of the daemon before.
+func TestTaskCostLogCountsNoGapBetweenTwoDaemonsTowardTheFirstBoundBeforeATakeOrTurn(t *testing.T) {
+	t.Run("the machine's own log, no line in the gap", func(t *testing.T) {
+		h, log := jsonHarness(t, currentPlugin)
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+		h.seen()
+		h.advance(time.Minute)
+		daemonRestart(h, takeBound+10*time.Minute)
+		logDaemonStarted(h)
+		h.advance(time.Minute)
+		h.connect()
+		h.advance(time.Minute)
+		h.answerAsk(false)
+		h.advance(time.Minute)
+		h.mustTake()
+
+		cost := readLogCost(t, h, log)
+		if len(cost.Unreached) != 0 || len(cost.TakenNotOncePerOwed) != 0 {
+			t.Errorf("%q were owed past the first bound, and the third verdict fails on %q; want neither", cost.Unreached, cost.TakenNotOncePerOwed)
+		}
+	})
+	const claim = "owed-across-a-gap"
+	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	starting := b.line(19*time.Minute, DaemonStartingLine, "", "project", "INFRA")
+	listed := []string{claim + " task 1: the clock started 2026-11-14T09:00:01.000Z, the bound passed 2026-11-14T09:05:01.000Z, taken 2026-11-14T09:22:00.000Z"}
+	for _, tc := range []struct {
+		name             string
+		gap, start, want []string
+	}{
+		{name: "no line in the gap", start: []string{starting}},
+		{name: "the daemon before the start writing lines through the gap", gap: []string{
+			b.turn(10*time.Minute, turnStartedLine, "another-claim"),
+			b.turn(11*time.Minute, turnEndedLine, "another-claim"),
+		}, start: []string{starting}, want: listed},
+		{name: "no starting line, as an older daemon's log", want: listed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := []string{
+				b.written(0, claim, 1, 1, TaskValueQueued),
+				b.seen(time.Second, claim, 1, 1),
+			}
+			lines = append(lines, tc.gap...)
+			lines = append(lines, tc.start...)
+			lines = append(lines,
+				b.line(19*time.Minute+time.Second, "daemon: opening the store; a connection error that the next attempt can clear is tried again", ""),
+				b.written(19*time.Minute+30*time.Second, "another-claim", 1, 1, TaskValueBoot),
+				b.line(20*time.Minute, viewCutLine, claim, "task", 1),
+				b.line(20*time.Minute, DaemonStartedLine, "", "project", "INFRA"),
+				b.line(21*time.Minute, viewWholeLine, claim, "task", 1),
+				b.answered(22*time.Minute, claim, 1, TakeOutcomeAccepted, ""),
+			)
+			if cost := b.readCost(lines); !slices.Equal(cost.Unreached, tc.want) {
+				t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+					strings.Join(cost.Unreached, "\n"), strings.Join(tc.want, "\n"))
+			}
+		})
+	}
+}
+
+// A view the started daemon made whole before its start line — the shim's hello and its agent's
+// answer decided while the boot's last steps ran — keeps the clocks that line started: the
+// machine's first wait runs from the answer, and the start line, which the daemon writes after
+// its restore, stops nothing of the daemon that wrote it. A task written after the restore and
+// reported seen before the hello, the answer, then the start line, and no take: the daemon charges
+// the first wait one bound after the answer, and the reading lists the number from the answer.
+//
+// The negative control is the reading before this change (its parent), whose start line stopped
+// that clock and left it standing: the number is not listed.
+func TestTaskCostLogKeepsTheTurnClocksAWholeLineBeforeTheStartLineStarted(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	daemonRestart(h, 0)
+	h.advance(time.Minute)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	number := h.pending().Number
+	h.seen()
+	h.advance(time.Minute)
+	h.connect()
+	h.advance(time.Minute)
+	h.answerAsk(false)
+	answered := h.clock.Now()
+	h.wantArmedFromNow(TimerTake, takeBound, "at the answer")
+	logDaemonStarted(h)
+	h.advance(takeBound)
+	h.wantCharges(WaitTake)
+
+	cost := readLogCost(t, h, log)
+	if want := unreachedFrom(h, number, answered); !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
 	}
 }
 

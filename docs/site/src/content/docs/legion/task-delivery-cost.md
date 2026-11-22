@@ -140,7 +140,9 @@ So each figure that names a task names its claim too.
     A take whose turn the daemon counted ended, and whose report naming its task never came, is taken back when no report of it comes within the second bound, `worker_turn_start_timeout_seconds`, from the end of the last turn that ran.
     That happens when the worker's host dropped the task's text, so the turn the daemon gave the take reported no task, and no report puts the take back.
     The daemon writes `supervise: the report of the take's turn did not come by its bound; the task is taken back with the note of a cut turn, and what waited for the report runs or its value is written again` and `supervise: a task was taken back`, writes the value again under the same number, and charges nothing.
-    After a daemon restart the bound starts no earlier than the worker's first act, and it leaves alone a take that the daemon accepted before the restart unless the daemon would put that take back by the rules above: frames lost in the restart could hide the take's own turn, and the bound would end that turn.
+    The bound runs only while the worker's connection shows the daemon every frame of its turns: a closed connection stops it, and it does not run while no connection stands.
+    After the shim's next hello, and after a daemon restart, it starts again whole at the agent's answer to the daemon's ask whether it is in a turn, or at a turn's start or end on the new connection, whichever comes first, and a take or a report that reaches the daemon before that hello starts none.
+    After a daemon restart it also leaves alone a take that the daemon accepted before the restart unless the daemon would put that take back by the rules above: frames lost in the restart could hide the take's own turn, and the bound would end that turn.
 
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
   A turn that the daemon put back does not count.
@@ -151,7 +153,8 @@ So each figure that names a task names its claim too.
 
 - `numbers written by origin` is the number of tasks that the daemon wrote as values, by the origin of each task.
 
-  - Each task has one origin: `phase-start`, `resume`, `silence`, `wake`, `notice`, `operator`, `check-look` or `controller-start`.
+  - Each task has one origin: `phase-start`, `resume`, `silence`, `wake`, `notice`, `news`, `operator`, `check-look` or `controller-start`.
+    `news` is a task queued for news of the approved design alone: it tells the worker what changed in the design its work stands on and gives it no work of its phase, so the command counts it apart from the phase's work.
 
   - The daemon can write the value of one task more than one time.
     The command counts each task one time.
@@ -214,7 +217,19 @@ So each figure that names a task names its claim too.
     The daemon does not charge a new process for a task that only the process before it saw.
     So after a registration, the clock starts again only at the report of the new process that it saw the task.
 
-  - A start of the daemon, `legion daemon started`, stops the clock as of the line before it, until the worker's next act in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
+  - The clock runs only while the daemon sees every frame of the worker's turns on the worker's connection.
+    The daemon writes `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again` when it stops seeing them: when the connection closes, when a start of the daemon restores a claim with a process, and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it.
+    That line stops the clock, and no act of the worker starts it again.
+    The daemon writes `supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here` when it sees them again: at the first hello of a new process, at a hello of a worker whose agent has not said it is ready yet, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, at a turn's start or end, and when the daemon lets the worker's process go.
+    That line starts the clock again, and the bound starts again from zero.
+
+  - A start of the daemon stops the clock as of the last line that the command read from the daemon before it.
+    No time between the two daemons counts, because the new daemon runs none of its waits until the worker acts and the daemon sees every frame again.
+    The first line of every daemon is `legion daemon starting`, with the `project`, so the command reads each line before it as a line of the daemon before, and each line after it as a line of the new daemon.
+    The new daemon then restores its claims and writes `legion daemon started`.
+    The clock of a claim that it restores with a process starts again at the line that starts it, before `legion daemon started` or after it.
+    The clock of every other claim starts again at the worker's next act that the command reads in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
+    In a log that holds no `legion daemon starting` line, the log of an older daemon, `legion daemon started` marks the start.
     A daemon that starts with a report of a seen task from its database writes the task again at the first bound, and charges nobody.
     So a clock whose bound ends at a new write of the task has not passed the bound.
 
@@ -229,6 +244,7 @@ So each figure that names a task names its claim too.
 
   - The figure can count too many tasks.
     The log has no line for the time that a new process of the worker needs to start after a release, a suspension or a relaunch, for the time of a compaction, or for a hold that stands while the worker asks for nothing.
+    When the daemon lets a process go, it writes the line that starts the clock for the next process, so a clock that a closed connection stopped runs during that time.
     A turn that started before the first line of the log has no start line in the log.
     The clock counts all of that time, so the figure can list a task that no worker could take in time.
 
@@ -236,14 +252,13 @@ So each figure that names a task names its claim too.
     When the daemon stops a process during a turn for a reason other than a death, and takes back no task, the log has no line for the end of that turn.
     The clock then starts again only at the end of the next turn of that claim, or at the first report of the claim's next process that it saw the task.
     A take-back of a task that the daemon last wrote before the first line of the log opens no time owed that the command can measure until a report of the task seen is in the log, because the command does not know which revision the worker must report seen.
-    The shim's hello has no line in the log, so after a start of the daemon the clock starts again only at the worker's next act that the log shows.
 
 - `numbers finished, by what finished each` is the number of tasks that finished.
 
   - `report` is a worker's report of the task's turn, which named the task.
 
   - `end-frame` is the end of the task's turn, when no report named the task in time.
-    Only a worker whose plugin takes no task, a contract below 207 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
+    Only a worker whose plugin takes no task, a contract below 221 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
     A current worker's task finishes only by the report that names it.
 
 - `charges by wait` is the number of charges against the workers' prompt budget, by wait.
@@ -299,11 +314,16 @@ So each figure that names a task names its claim too.
 
   1. `no charge of a worker whose turn began within the second bound after its take`.
      It fails for a charge made while an accepted take stood, if a turn of that claim started no earlier than the start of the second wait of that take, and no later than the charge's limit.
-     The second wait begins at the latest of these times: the daemon accepts the take; the daemon puts the take back; a turn that ran while the take waited for its turn ends; the worker acts for the first time after a start of the daemon.
+     The second wait begins at the latest of these times: the daemon accepts the take; the daemon puts the take back; a turn that ran while the take waited for its turn ends; the daemon sees every frame of the worker's turns again after a closed connection or a start of the daemon, `supervise: the daemon sees every frame of the worker's turns again; …`.
      So a turn that the daemon gave to the take and then put back is not a turn within the second bound.
      For a `turn-start` charge, the limit is the second bound after the second wait began.
      For every other charge, the limit is the charge itself.
      When the second wait began after the take, the line of the failure gives that time too.
+     A take that the worker makes while the daemon does not see every frame of its turns, for example before the agent answers the daemon's ask after the shim's hello, begins its second wait at that line.
+     After a start of the daemon, a claim with neither line about what the daemon sees has no process, and its second wait begins again at the worker's first act that the command reads too, as the daemon's waits do.
+     So the command's second wait never begins after the daemon's.
+     It can begin before the daemon's, when a hold that the command does not read kept the daemon's wait from running, for example while the worker's new process was not ready yet.
+     The verdict can then miss a turn that began late in the daemon's bound.
 
   2. `no write of origin resume to a claim that finished its last task in its session`.
      It fails for each task of origin `resume` written with `finished` set to `true`.
@@ -341,6 +361,7 @@ turns each number took:
 numbers written by origin: notice 1, operator 1, phase-start 2, silence 1, wake 1 (6 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1, wake 1 (3 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
+news of the approved design (origin news), counted apart from the phase's work: numbers written 0, to a claim whose phase waited 0
 numbers taken: 6
 numbers owed that no take reached within the first bound: 2
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
@@ -412,6 +433,7 @@ turns each number took:
 numbers written by origin: notice 1, phase-start 1, silence 1 (3 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1 (2 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
+news of the approved design (origin news), counted apart from the phase's work: numbers written 0, to a claim whose phase waited 0
 numbers taken: 2
 numbers owed that no take reached within the first bound: 1
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z

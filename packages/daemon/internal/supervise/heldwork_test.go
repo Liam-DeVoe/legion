@@ -89,6 +89,87 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 	})
 }
 
+// A claim a daemon start restored ready on a stale plugin, holding a take, whose relaunch waits for
+// its agent's word on whether it is in a turn (askTurn): the first hello's ask goes unanswered, the
+// replay shows the take's turn start, and the connection breaks with that turn's end frame lost, so
+// the claim is working on a turn whose end will not come. Every reconnect hello of a claim holding
+// a pending task asks once, bounded by the reconnect deadline (connview.go), so the relaunch is
+// decided by the next hello's answer or by that deadline, and never left to the stall backstop:
+//
+//   - the next hello asks again (askView), and an answer of no turn ends the turn the claim
+//     is read in (applyTurnAnswer): the relaunch waits for the take's report, which finishes the
+//     task once before the relaunch runs;
+//   - with no answer and no turn frame on that connection by the reconnect deadline, the process is
+//     relaunched, charged nothing, and the task taken back as a cut turn, as at the deadline of
+//     every hello no answer followed (reconnectDeadline);
+//   - with no hello again by that deadline, the process is retired and relaunched as one whose shim
+//     never reconnected, the task taken back as a cut turn.
+//
+// The negative control is the commit under this change: a hello over the working claim asked
+// nothing for the relaunch and disarmed the reconnect deadline (reconnectedMidTurn), and with no
+// hello the deadline held the relaunch for the turn's end (refreshPlugin, holdStaleRelaunch), so
+// the claim stayed working until the stall backstop.
+func TestTakeOfARestoredStaleClaimInATurnWhoseEndWasLostIsDecidedByTheNextAnswerOrTheDeadline(t *testing.T) {
+	inATurnWithItsEndLost := func(t *testing.T) (*harness, uint64) {
+		t.Helper()
+		h := restoreStaleTake(t)
+		number := h.pending().Number
+		h.conn.FailGetState(errBoom)
+		h.connect()
+		h.must(StreamTurnStart{Claim: h.token})
+		h.wantTakesTurnStanding(number, "once the replayed start came")
+		h.reconnectLater()
+		return h, number
+	}
+	t.Run("the next hello's ask answered no turn", func(t *testing.T) {
+		h, number := inATurnWithItsEndLost(t)
+		h.connect()
+		if h.conn.LastAsk() == "" {
+			t.Fatal("the hello over the working claim asked its agent nothing")
+		}
+
+		h.answerAsk(false)
+
+		h.wantState(StateIdle)
+		h.wantCalls("Resume", 0)
+		h.wantTakesTurnStanding(number, "after the answer")
+		h.mustReport(nil)
+		h.wantState(StateLaunching)
+		h.wantCalls("Resume", 1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, relaunchedToReady)
+	})
+	t.Run("the next hello's ask unanswered by the reconnect deadline", func(t *testing.T) {
+		h, number := inATurnWithItsEndLost(t)
+		h.conn.FailGetState(errBoom)
+		h.connect()
+
+		h.advance(deadline)
+
+		h.wantCalls("Resume", 1)
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{})
+		h.wantCharges()
+		if lines := h.logs.lines(viewUnansweredRelaunchLine); len(lines) != 1 {
+			t.Fatalf("logged %q, want the relaunch of a hello no answer followed once", lines)
+		}
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, relaunchedAndTaken)
+	})
+	t.Run("no hello again by the reconnect deadline", func(t *testing.T) {
+		h, number := inATurnWithItsEndLost(t)
+
+		h.advance(deadline)
+
+		h.wantCalls("Resume", 1)
+		if cause := h.claim().PendingCause; cause != CauseNeverReconnected {
+			t.Fatalf("the relaunch is pending cause %q, want %q", cause, CauseNeverReconnected)
+		}
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, relaunchedAndTaken)
+	})
+}
+
 // A report that gives a take its turn back while the project is paused, the pause's own stop held
 // behind the take (reportwait.go), leaves that stop to the take's own turn or to R5's second bound
 // armed from the put-back, as for any work held there (decision 8 of dispatch://INFRA-2811): the

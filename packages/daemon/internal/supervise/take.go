@@ -20,7 +20,7 @@ import (
 // in that answer, and the task's turn is the first turn that starts after it (turnStarted). The
 // task is finished by the turn-outcome report that names its number, or, for a worker whose
 // plugin names no number, by the end of that turn when no report comes (finishTask,
-// endFrameFinishes).
+// TakesNoTask).
 
 // TaskTakeContract is the plugin contract at which a worker takes its task rather than being
 // sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
@@ -35,7 +35,7 @@ import (
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 207
+const TaskTakeContract = 221
 
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
@@ -50,8 +50,13 @@ const TaskTakeContract = 207
 // release takes the pod of such a claim whose plugin no relaunch moves, a Claude Code role in a
 // pod, past the holds that would keep it (workflow's IdleRelease), since its pod's image is the
 // one thing that can bring it a plugin that takes. The third is the end-frame finish
-// (endFrameFinishes): such a worker's report names no task's number, so the end of its take's
-// turn is what finishes the task.
+// (overTurnFinish, takePhase, interrupted, NewMachine's finishAtAct): such a worker's report names
+// no task's number, so its report can finish nothing, and the end of its take's turn is what
+// finishes the task where no report named the number within the RPC timeout. A claim whose plugin
+// names its task's number has its task finished by the report that names it and by nothing else:
+// the end of a run says nothing of whose run it was, since the daemon gives a take the first run
+// that starts after it and the worker may run its text in the run after that (decision 8 of
+// dispatch://INFRA-2811; notTheTakesTurn).
 func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
@@ -59,25 +64,33 @@ func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 // silence repair's (workflow's repairSilence), whichever task it writes — the work of an owed
 // entry or the phase's resume task — so its writes are counted apart from a resume's: the repair
 // is the backstop of a worker whose own report does not explain its quiet, not a relaunch's
-// resume (dispatch://INFRA-2811).
+// resume (dispatch://INFRA-2811). OriginNews is a task queued for news of the approved design
+// alone (RequestDeliver.NewsOnly, the daemon's news-only start), whose writes are counted apart
+// too: it hands the worker no work of its phase, only what changed in the design it stands on, so
+// its writes are neither a phase start's nor a notice's.
 const (
 	OriginPhaseStart      = "phase-start"
 	OriginResume          = "resume"
 	OriginSilence         = "silence"
 	OriginWake            = "wake"
 	OriginNotice          = "notice"
+	OriginNews            = "news"
 	OriginOperator        = "operator"
 	OriginCheckLook       = "check-look"
 	OriginControllerStart = "controller-start"
 )
 
 // originOf is the origin a queued task is recorded under: the request's own, or, for a request
-// that names none, a phase start where it names a phase and the operator's otherwise — the
-// reading of a row written before the origin was recorded (dispatch://INFRA-2811).
+// that names none, the news origin where it is queued for news alone (RequestDeliver.NewsOnly, a
+// start row of main's #3995, which named no origin), a phase start where it names a phase and the
+// operator's otherwise — the reading of a row written before the origin was recorded
+// (dispatch://INFRA-2811).
 func originOf(request RequestDeliver) string {
 	switch {
 	case request.Origin != "":
 		return request.Origin
+	case request.NewsOnly:
+		return OriginNews
 	case request.Phase != "":
 		return OriginPhaseStart
 	default:
@@ -355,13 +368,15 @@ func (m *Machine) answerTake(ctx context.Context, t *taking) error {
 	return err
 }
 
-// answer records a take's answer on the take (taking) and logs it. Every take row ends here or in
-// answerAgain, so every answer is logged once.
+// answer is the answer this decision made to a take: an acceptance it applied, a refusal or a
+// drop. Its line says it is no repeat (repeat false), so a reading of the log counts an accepted
+// one as a take of its number (ReadTaskCost). Every take row ends here or in answerAgain, so
+// every answer is logged once.
 func (m *Machine) answer(take RequestTake, answer TakeAnswer) {
 	m.answerAs(take, answer, false)
 }
 
-// answerAgain is answer for a take of a number the record holds accepted and unfinished, before
+// answerAgain is the answer to a take of a number the record holds accepted and unfinished, before
 // its turn starts or after: a take sent again after its answer was lost, answered the text the
 // record kept and applying nothing (answeredFromRecord). Its line says it repeats (repeat), so a
 // reading of the log counts the number taken once for the take that applied it (ReadTaskCost).
@@ -369,6 +384,8 @@ func (m *Machine) answerAgain(take RequestTake, answer TakeAnswer) {
 	m.answerAs(take, answer, true)
 }
 
+// answerAs is answer and answerAgain's one body: it records the answer on the take (taking) and
+// writes the take's line (takeAnsweredLine), repeat saying which of the two it is.
 func (m *Machine) answerAs(take RequestTake, answer TakeAnswer, repeat bool) {
 	take.t.answer = answer
 	m.log.Info(takeAnsweredLine, "task", take.Number, "revision", take.Revision.Revision, "outcome", string(answer.Outcome),
@@ -450,9 +467,13 @@ func (c *Claim) recordTake(take RequestTake, state TakeState) bool {
 // adoption of the working copy, which goes back to Machine.Take to make; a take that adopts
 // nothing is accepted here.
 //
-// Three takes are answered before any of that, from the record alone. A number the claim's record
+// Four takes are answered before any of that, from the record alone. A number the claim's record
 // does not owe it — no task pending, another one pending — is refused not-owed and records
-// nothing. A number the claim holds as its accepted, unfinished take, before the take's turn
+// nothing. So is a number whose take's report came and whose finish the store refused (takePhase,
+// waitFinish): no run of the task is owed, and handed its text again — by the same process
+// sending its take again after a lost answer, or by a process relaunched after a let-go — the
+// worker would run the task again; it charges nobody, and the end-frame bound's finish deletes
+// the value. A number the claim holds as its accepted, unfinished take, before the take's turn
 // starts or after, is a take sent again after its answer was lost: it is answered the same text,
 // which the record kept (Delivery.TakenText), and applies nothing a second time — no adoption,
 // no write, no telling. A run that started meanwhile and was given to the take (turnStarted) may
@@ -469,12 +490,12 @@ func take(m *Machine, ctx context.Context, ev Event) error {
 	return m.undecided(ctx, request, m.takePending(ctx, request))
 }
 
-// answeredFromRecord answers the three takes the record alone decides (take), and reports whether
+// answeredFromRecord answers the four takes the record alone decides (take), and reports whether
 // it answered this one.
 func (m *Machine) answeredFromRecord(request RequestTake) bool {
 	p := m.claim.Pending
 	switch {
-	case request.Number == 0 || p == nil || p.Number != request.Number:
+	case request.Number == 0 || p == nil || p.Number != request.Number || m.takePhase() == waitFinish:
 		m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldNotOwed})
 	case p.taken() && p.TakenText != "":
 		m.answerAgain(request, TakeAnswer{Outcome: TakeOutcomeAccepted, Text: p.TakenText})
@@ -488,7 +509,10 @@ func (m *Machine) answeredFromRecord(request RequestTake) bool {
 
 // takePending decides a take of the pending task, which no take has been accepted for: a hold or
 // a drop answers it here, an adoption sends it back to Machine.Take, and anything else accepts
-// it.
+// it. Its contract is that the caller holds such a task, which every caller has asked first
+// (answeredFromRecord answers a take of any other, no task pending among them): it answers the
+// take on every path, so a nil check returning nothing would leave the worker unanswered and hide
+// the caller's fault.
 func (m *Machine) takePending(ctx context.Context, request RequestTake) error {
 	m.claim.recordTake(request, TakeMade)
 	hold, dropped, err := m.takeable(ctx, false)
@@ -664,6 +688,16 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // the delivery when its task is finished, and the handshake is what keeps when the worker took
 // that entry's work. The same write carries it, since the claim is half of it.
 //
+// News of the approved design is told the same way, by the copy this write makes the delivery's
+// credit (Delivery.Carried): the news the text answered here carries, which is the delivery's News
+// as the decision of this take rendered it from the record (currentNews, takeable), since the text
+// is composed from the task that render left beside it. The store reads a taken row's copy as what
+// its audiences took (design_news_told_in), and the finish of the take's turn makes it final
+// (Delivery.Ran, finishTask); a take-back ends it with the take (interrupted, clearTake). Only an
+// accepted take confirms a task, so no turn of the worker's own credits news its text never
+// carried, and a take sent again is answered the text the record kept and credits nothing anew
+// (answeredFromRecord).
+//
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
 // the start of this take's turn, as at any turn's start or end (turnStarted).
 //
@@ -687,12 +721,17 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // fate is unknown (owes). The next decision writes both rows from memory over whatever it
 // committed, and the store's write of an unconfirmed delivery over a confirmed one holds again
 // the decisions that confirmation told (internal/store's putBackARetakenConfirmation).
+//
+// Its contract is that the caller holds a pending task no take has been accepted for, which every
+// caller has asked first (takePending, behind answeredFromRecord; adopted): it answers the take,
+// so a nil check returning nothing would leave the worker unanswered and hide the caller's fault.
 func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	p := m.claim.Pending
 	text, told := p.message(m.claim)
 	taken := *p
 	taken.ConfirmedAt, taken.TakenText, taken.TurnStarted = m.deps.Clock.Now(), text, false
 	taken.SendFailures, taken.LastSendFailureAt, taken.LastSendError = 0, time.Time{}, ""
+	taken.credit(taken.News)
 	c := m.stored()
 	c.Handshake = c.Handshake.confirmed(taken)
 	toldAbandoned := told.Abandoned && c.Abandoned.Tells()
@@ -715,7 +754,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
 	m.anchorTake(first)
-	m.restoredTake = false
+	m.restoredTake, m.turnUnseen = false, false
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)
@@ -741,9 +780,12 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // delete its value (dropUnowed): an ask of an update round that an older daemon queued as a task,
 // whichever round it names; the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
 // queueRelaunch) whose record no longer tells, since its text is that record's sentence and
-// nothing else; and a task whose issue has left the phase it was queued for. Then the claim's
-// hold of the session it records (holdRecorded): a claim that does not hold it, or whose store
-// does not answer, has its task wait. Then a root architect's task of a run, held while its root
+// nothing else; and a task whose issue has left the phase it was queued for. Then, for a task that
+// carries news of the approved design, that news rendered again from the record, with a task
+// queued for its news alone dropped where nothing of it stands now (currentNews), whose drop
+// deletes its value too. Then the claim's hold of the session it records (holdRecorded): a claim
+// that does not hold it, or whose store does not answer, has its task wait. Then a root
+// architect's task of a run, held while its root
 // has no architect to hear it and narrowed to what it still names once the root hears
 // (currentRootTask), and retired when that leaves it naming nothing. Last, for a task that adopts
 // the working copy the issue's roles share, another role of the issue in a turn, or holding an
@@ -795,6 +837,17 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 		}
 	}
 	if dropped {
+		return "", true, m.queueRelaunch(ctx)
+	}
+	// A task that carries news of the approved design is rendered again from the record here,
+	// where the take is decided, and one queued for its news alone that has nothing left to say is
+	// dropped (currentNews): what the accepted take's text carries is what the record owes now, and
+	// that is what the accept credits.
+	says, err := m.currentNews(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if !says {
 		return "", true, m.queueRelaunch(ctx)
 	}
 	p := m.claim.Pending
@@ -859,9 +912,12 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 // (offer), so that decision asks the record once; and an operator's task over a launch the pacing
 // parked above the claim's process (runParkedLaunchNow), which asks before the row's queue does,
 // so that the launch runs for the operator's task where queue would drop the task it arrived
-// behind. A read of the record that fails drops nothing.
+// behind. A read of the record that fails drops nothing. With no task pending it drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
+	if p == nil {
+		return false, nil
+	}
 	round, asks := updateRoundOf(p.ID)
 	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
 	if !asks && !spent {
@@ -950,7 +1006,18 @@ func (m *Machine) stateHold() string {
 //
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
 // write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
+//
+// A take awaiting its turn while the claim's connection does not show every frame of its turns, or
+// one marked so, goes back as a cut turn with its note (clearTake, turnMayHaveRunUnseen): the
+// operator's compaction can take it back while the view waits for the agent's answer to a hello.
+//
+// A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
+// finished, by that report (makeOwedFinish): the report decides whichever turn the take awaits,
+// and taken back under its number the task would run again.
 func (m *Machine) takeBack(ctx context.Context, cause string) error {
+	if owed, err := m.makeOwedFinish(ctx); owed {
+		return err
+	}
 	if m.takeBackInMemory(cause) {
 		return m.putClaimAndPendingOwed(ctx)
 	}
@@ -960,10 +1027,14 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 // takeBackInMemory is takeBack with no write: the take goes from the delivery and the claim in
 // memory, for a caller that writes them in a write of its own, together with what it decides
 // next — the ladder's step, which must land with the take-back or not at all (takeToLadder). It
-// answers whether the claim moved with it (giveBackTake).
+// answers whether the claim moved with it (giveBackTake). With no task pending it takes nothing
+// back.
 func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
-	m.disarm(TimerFinish)
 	p := m.claim.Pending
+	if p == nil {
+		return false
+	}
+	m.disarm(TimerFinish)
 	claimMoved = m.clearTake(p, cause)
 	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
 	return claimMoved

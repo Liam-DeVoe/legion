@@ -66,7 +66,7 @@ legion config check --config legion.yaml
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
-| `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), and `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
+| `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason), and `repository-cache-room` when a repository cache's last health read carries a failure for lack of space, logged also at the first controller tick after the row opens (the detail names each such cache with its claim, its room and the step that failed, and says that room comes from growing the cache's claim in place and raising `runtime.kubernetes.repository_cache.volume`). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`, and `caches` on `repository-cache-room`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
 | `nats: nats_urls names no NATS, so this daemon has no task bucket (legion_tasks) to hand a worker its task through: it launches no worker, and refuses every spawn, retry and resume of one until nats_urls names Envoy's NATS` (after the `Config OK` line, exit 0) | A report, not a refusal: a daemon with no NATS boots and serves, and logs the same line at Warn, but a worker takes its task from the task bucket on Envoy's NATS, so it launches none. Name Envoy's NATS in `nats_urls` (a Kubernetes daemon requires it). |
 
 **At boot, after the check passes**, the daemon checks its GitHub Apps, the cluster and the image.
@@ -216,6 +216,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
+
+Every boot's first line is `legion daemon starting`, with the `project`, before the plugin gate and the store, and the boot logs `legion daemon started` once the daemon serves: a log that holds the first and not the second is a boot still under way, or one that stopped short, whose refusal follows it.
+[Task delivery cost](/legion/legion/task-delivery-cost/) reads the first line as where that daemon began, so no time between two daemons counts toward a worker's bounds there.
 
 ## The daemon stops
 
@@ -468,11 +471,13 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
-Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
-its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
-`approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
-`designGate` beside it is the `spec` step's record alone.
+earlier version does not count: the spec changed since. The gate holds the tree's start and its
+merger's start. `gatedSteps` carries one entry for each step that holds the tree, each with its own
+`artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
+`approved` or `changes_requested`): one per step `gates.design` lists, then `criteria` where the
+deployment's list names `spec` and not `criteria` and the root registered its Verification
+document. The tree waits until every entry reads `approved`, and `designGate` beside it is the
+`spec` step's record alone.
 
 ## A parked tree did not come back after a decision
 
@@ -897,7 +902,7 @@ whole of the refusal.
 Nothing the daemon keeps says that of one claim: the state carries no per-claim record of a
 refresh that is not finishing, and the `update-stalled` notice the project's controller gets is of
 a pod update round, never of a refresh.
-What is left is the count and three log lines.
+What is left is the count and four log lines.
 `claimsToRefresh` is the count for the class: it stands at what the lane has left to do, is 0 when
 it has nothing left, and names no claim.
 The lines name a claim, and each says less than the whole:
@@ -905,6 +910,10 @@ The lines name a claim, and each says less than the whole:
 - **`supervise: the process speaks another plugin contract; relaunching it onto the current
   plugin`** at Warn, with `claim=`, is written once for each relaunch the lane starts, so a claim
   whose relaunch is refused has no such line at all.
+
+- **`supervise: the process speaks another plugin contract; its relaunch waits until the worker's connection shows its turns whole again`** at Info, with `claim=`, `task=` and the pass under `trigger=`, is a claim holding a task its worker took, whose connection does not show the daemon every frame of its turns: the connection closed since its agent last said whether it is in a turn, or a daemon start restored the claim working and its shim has not said hello since, or the shim's hello asked the agent whether it is in a turn and no answer has come.
+  The turn of that task may be running unseen, so the relaunch waits for the agent's answer or a turn frame on the connection, and the first sweep after either decides it; a claim holding no taken task is relaunched at once.
+  With neither by the reconnect deadline, the deadline relaunches the process or retires it as one that never reconnected, and the task goes back as a cut turn.
 
 - **`api: refused a call from a process on another plugin contract`** at Warn, with `claim=` and
   `route=`, is what the stale process's own `legion` calls are answered with, so a process that is
@@ -1051,7 +1060,7 @@ The claim is up and the state shows the tree at work.
 The daemon finds such a worker by itself and writes one `worker-silent` notice to the architect that owns the issue.
 The project's controller reads the same issue in the `silent` list of its periodic tick.
 
-The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
+The rule is this: the claim's process is up and between turns, it holds no task it will still work (a task whose turn has already run counts as none), and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
 The daemon gives the worker its work again, a task the worker takes, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
@@ -1152,7 +1161,7 @@ It writes the task's value again when that turn ends, the role takes it then, an
 The worker of each claim whose turn holds the take is told, within a minute and two tool boundaries of the refusal.
 While its host is in a turn, its plugin reads `POST /legion/v1/claims/task` at a tool result, at most once a minute, and the answer's `holds` names each held take by its role and its task number.
 The next tool result carries one note for each held take, which asks the agent to stop at a safe point and end its turn.
-A plugin on a daemon API contract below 212 is served no `holds`, and its worker is told nothing.
+A plugin on a daemon API contract below 231 is served no `holds`, and its worker is told nothing.
 A turn that is in one long tool call reads no note until that call returns.
 
 **Five lines in the daemon's log show what each adoption did.**
@@ -1400,27 +1409,36 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing to do.
 - **`supervise: a turn this daemon never saw begin has ended`** at Info is the end of a turn of a claim the daemon holds ready or idle: the agent's own turn, whose start the daemon did not see, is over.
   A take that turn refused is offered again, and the end resets the prompt budgets as every turn's end does.
+  Over a task taken and awaiting its turn, the turn that ended may have been the task's own, its start lost as the worker's connection broke, so a process that stops or dies before that turn's report gives the task back with the note of a cut turn.
   Nothing to do.
 - **`supervise: a take reached a claim a restart restored working; the worker's take says its host is idle, so the turn the store recorded is over`** at Info, with the `task`, is a claim the store held working after a daemon restart, with its task owed and no take of it accepted, as when the restart cut off a compaction.
   A worker asks only once its host is idle, so the daemon takes the take as its word that the turn is over, records the claim idle and answers the take as an idle claim's.
   Nothing to do.
 - **`supervise: the agent of this claim the daemon's start restored has not said whether it is in a turn; its stale-plugin relaunch waits for that answer`** at Info is a claim a daemon start restored ready or idle, holding an accepted take, whose plugin is too old for this daemon.
   The daemon relaunches it onto the current plugin only once its agent has said whether it is in a turn, behind every frame its shim replayed from the time no daemon was attached, so a relaunch does not take back as unrun a take whose turn the replay shows running.
-  The shim's hello asks, and the answer is logged as `supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed`, or, for an agent in a turn the replay did not show begin, as `… is in a turn its shim's replay did not show begin; the claim is working`.
-  An ask with no answer is logged `… did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again`, at Info and at Warn from the third in a row (`unanswered=`), and is asked again at every sweep.
-  At the reconnect deadline counted from the hello, **`supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged`** at Warn relaunches it without the answer.
+  The shim's first hello after the daemon start asks, and the answer is logged as `supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed`, or, for an agent in a turn the replay did not show begin, as `… is in a turn its shim's replay did not show begin; the claim is working`.
+  A later hello, on a new connection, asks again, as every reconnect hello over a pending task does, and its answer decides the relaunch the same way.
+  An ask with no answer is logged `… did not say whether it is in a turn; its stale-plugin relaunch waits for that answer or for the reconnect deadline of its hello`, at Info and at Warn from the third in a row (`unanswered=`); whether that connection is asked again is decided at the hello: where the claim held its task at that hello, that connection is not asked again, and the reconnect deadline armed at that hello relaunches it, while a claim that held none at its hello is asked again at every sweep while it is in no turn.
+  At the reconnect deadline, counted from the first hello and armed again whole at each later one, **`supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged`** at Warn relaunches it without the answer.
   A suspension held over the claim's turn, or behind the report of its take's turn, is not stopped at that deadline: it waits for that turn's end and that report, and the relaunch waits with it.
-  Where the hello did not say that the shim's backlog is whole, the replay may have lost a whole turn of the take, so the relaunch of an agent that answers it is in no turn, or that answers nothing by that deadline, takes back a take whose turn no frame showed with the note of a cut turn: the next process runs the task again, told that its turn on it may have run.
+  A claim that a replayed start made working, whose connection then broke, may have lost that turn's end with the connection, so the next hello's ask decides it: an answer of no turn ends that turn, and the relaunch follows as it does after any turn of the take.
+  With no answer and no turn frame on that connection by the deadline, or no hello at all, the deadline does not wait for that turn's end: the process is relaunched uncharged, or retired as a shim that never reconnected, a held suspension stopping it instead, and the task is taken back as a cut turn.
+  Where the hello did not say that the shim's backlog is whole, the replay may have lost a whole turn of the take, so the relaunch of an agent that answers it is in no turn takes back a take whose turn no frame showed with the note of a cut turn: the next process runs the task again, told that its turn on it may have run.
+  The relaunch of an agent that answers nothing by that deadline takes such a take back the same way, whatever the hello said, since no answer and no turn frame came to show that its turn did not run.
 - **`supervise: the report of the take's turn is still to come; what is held for that turn waits for it`** at Info, with the `task` and what is `held`, is work held over a claim whose take's turn ended before the worker's report of it: a suspension (`held=suspension`, with its `by` and `deadline`), a stale-plugin relaunch (`held=relaunch`, with its `trigger`), or a wake whose turn came meanwhile, spent into the held suspension (`held=wake`, with its `kind`).
   Only that report finishes the task, so the daemon waits for it before it stops or relaunches the process; the claim is idle meanwhile, and a take of it is refused.
   The wait is bounded by `worker_turn_start_timeout_seconds` (25 minutes by default), from the turn's end where the bound reaches the take with nothing held, and from the arrival of the first held work over a restored take it leaves out (below); a turn that starts meanwhile stops the bound, and its end starts it again whole.
-  After a daemon restart the bound starts no earlier than the worker's first act, so a report the worker sends again across the outage has the whole bound.
+  The bound runs only while the worker's connection shows the daemon every frame of its turns: a closed connection stops it, and it does not run while no connection stands.
+  After the shim's next hello, whatever that hello says of its backlog, the daemon asks the agent whether it is in a turn, and the bound starts again whole at that answer, or at a turn's start or end frame on the new connection, whichever comes first.
+  So a report the worker sends again across a daemon's outage or a lost connection has the whole bound once the connection is back.
   The same bound runs with nothing held, for a take whose turn ended and whose report naming its task never came: the worker's host dropped the task's text (Claude Code never took it, or Oh My Pi refused it), and the turn the daemon counted as the take's reported no task.
   A take that a daemon start restored is bounded with nothing held only where the daemon sees every turn start since its turn: the daemon before the restart recorded no end of that turn, and the worker's first hello after the restart says its backlog dropped no frame and its agent answers on that connection.
   **`supervise: the report of the take's turn did not come by its bound; the task is taken back with the note of a cut turn, and what waited for the report runs or its value is written again`** at Warn is that wait reaching its bound, or a held suspension's own deadline (an operator's suspension has one at the stop timeout), whichever comes first (`by=`, with `held=` saying whether work waited): the task is taken back as a turn the stop cut off, and the held work runs; with nothing held, the task's value is written again under its number, nothing is charged, and the worker takes it again.
 - **`supervise: the take awaits its turn again; what is held for it waits for that turn to start, or for the second bound`** at Info, with the `task` and whether a held `suspension` or a stale-plugin `relaunch` waits, is held work over a take whose given run the worker reported as no task's.
+  The same line, with what is `held` as for the line above, is work that begins to wait on such a take later: a suspension or a relaunch that arrives while the take awaits its turn behind work already held, or a wake spent into the held suspension.
   The worker may already have started the take's own turn, so the held work waits for that turn and then for its report, or, if no turn starts, for the second bound (`worker_turn_start_timeout_seconds`), which charges the worker, takes the task back, and runs the held work.
   The project's pause does not hold that bound: a pause's stop held behind the take lands at it.
+  **`supervise: the report of the take's turn came and the store refused its finish; what is held for that turn waits for the finish`** at Info, with the `task` and what is `held` as for the line above, is work that begins to wait on a take whose report came while the database refused to record its finish: the daemon makes that finish again every `worker_rpc_timeout_seconds` until the database takes it, and the held work runs then.
 - **`supervise: the pending task's turn has run, so the newer task takes its place`** at Info, with the number `taken` and the newer `delivery`, is a task queued while the claim's last task was taken and its turn had started: the newer task replaces it.
   **`supervise: the root architect's untaken task of an earlier run or entry is superseded by the newer entry's task, which takes its place`** at Info is a root architect's task that no take holds, of an earlier run or phase entry, replaced by the task of the entry its phases row names now.
   Nothing to do.
@@ -1438,8 +1456,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   `hold` that refused it, or `dropped`); each take-back with its `cause`; and each finish with
   what finished it (`by=report` or `by=end-frame`). [Task delivery
   cost](/legion/legion/task-delivery-cost/) reads all of them for a window of the log, with the
-  warning below, `supervise: process died`, `supervise: an agent registered` and `legion daemon
-  started`.
+  warning below, `supervise: process died`, `supervise: an agent registered`, `legion daemon
+  starting`, `legion daemon started` and the two lines of what the daemon sees of the worker's
+  turns (below).
 - **`supervise: a take could not be decided or recorded; it is refused at its revision, and the
   value is written again under its number once the task is free to take`** at Warn, with the
   `task`, the `revision` the worker asked at and the `error`, is a take the daemon could not
@@ -1458,6 +1477,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   taken back`) or `adoption` (a refused adoption of the working copy) — and the `bound=` that wait
   waited.
   These three are the only charges.
+  The take and turn-start waits run only while the worker's connection shows the daemon every frame of its turns: a closed connection stops both, and after the shim's next hello each starts again whole at the agent's answer to whether it is in a turn, or at a turn frame on the new connection.
   A daemon of an earlier release, which pushed each task as a prompt, also charged a prompt that started no turn (`supervise: timer` with `timer=turn`), a prompt the agent refused (`supervise: prompt outcome`) and a late refusal (`supervise: an event failed` with `event=supervise.StreamLateRefusal`); this release sends no prompt and writes none of those lines.
 - **`supervise: the first bound passed while a hold stands over the task; the worker is not charged`** at Info, with the `task` and the `hold`, is a first bound that ended while the daemon itself refuses the take, for a reason a take's refusal names (the `hold` of `supervise: a take was answered`), such as another role of the issue in a turn (`issue-in-turn`) or a suspension held over the claim (`suspension`).
   A hold charges nobody, and its end arms the wait again.
@@ -1469,11 +1489,21 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   task value to its worker did not reach it: an Envoy listener stopped or older than the relay, or
   a session no listener relays to. `legion state` names the claim
   ([Observe](/legion/legion/running-legion/#observe)); look at the listener's log.
-- **`supervise: the shim never reconnected after the daemon started; retired its process`** at
-  Warn means a claim the daemon restored ready, idle or working kept a live process whose shim
-  never said hello within the registration deadline. The daemon takes its task back under its
-  number and relaunches it, charging a launch failure; a claim whose launches run out fails with
-  the cause word `never_reconnected`.
+- **`supervise: the shim never reconnected after the daemon started; retired its process`** and **`supervise: the shim never reconnected after its connection closed; retired its process`** at Warn mean a live process whose shim never said hello within the reconnect deadline, the registration deadline's bound: after a daemon start, for a claim the daemon restored ready, idle or working, or after its connection closed while its claim held a task.
+  The daemon takes its task back under its number, a take still awaiting its turn as a cut turn, and relaunches it, charging a launch failure; a claim whose launches run out fails with the cause word `never_reconnected`.
+- **`supervise: the shim reconnected over a pending task; the daemon asks its agent whether it is in a turn, and the bounds on the worker wait for that answer or a turn frame`** at Info is the hello of a worker whose connection closed, or which a daemon start restored, while its claim holds a task.
+  The take, turn-start and report waits judge the worker by the frames its connection carries, and a frame lost in the socket when the connection broke is not replayed, so none of them runs until the agent answers or a turn starts or ends on the new connection.
+  An answer that the agent is in a turn is that turn starting, the task's own over a take awaiting its turn, and an answer that it is in no turn ends the turn the daemon read it in.
+  **`supervise: the agent said whether it is in a turn after its shim reconnected; the bounds on the worker run again from here`** at Info is that answer, with `streaming=`.
+  **`supervise: the agent did not say whether it is in a turn after its shim reconnected; the bounds on the worker wait for a turn frame or the reconnect deadline`** at Warn is an ask the agent did not answer, which is not asked again.
+  **`supervise: the agent did not say whether it is in a turn within the reconnect deadline of its shim's hello; it is relaunched, uncharged, and its task taken back as a cut turn`** at Warn is that deadline passing with no answer and no turn frame: nothing is charged, and the relaunched worker takes the task again, told that its turn on it may have run.
+  A connection that closes again before a bound passes postpones that bound each time to a whole bound after its next hello, and the reconnect deadline bounds each gap.
+  Nothing to do unless it repeats: a worker that reconnects and never answers has a hung agent, or a shim that cannot reach its agent.
+- **`supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again`** and **`supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here`** at Info, with the `task` where the claim holds one, mark each change of what the daemon sees of the worker's turns on its connection.
+  The first comes when the connection closes, when a daemon start restores a claim with a process, and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it: the take, turn-start and report waits stand still from it.
+  The second comes at the first hello of a new process, at a hello of a shim that reconnected before its agent said it is ready, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, after a reconnect hello or a daemon start, at a turn's start or end, and when the daemon lets the process go: each wait that the first line stopped runs again, whole, from it.
+  [Task delivery cost](/legion/legion/task-delivery-cost/) reads these two lines to start each wait where the daemon started it.
+  Nothing to do.
 - **`supervise: the first bound passed over a revision whose seen report this daemon read from the
   store; it is written again under its number, and nobody is charged`** at Info follows a daemon
   start: the worker reported that revision seen to the daemon before, which may have failed to
@@ -1544,7 +1574,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 207 and names no task in its reports. A newer task replaces
+  is below contract 221 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root
@@ -1702,14 +1732,16 @@ These arrive as messages on the Dispatch issue:
   the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
-  GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
-  the base forward while the issue stays in `merging`, and the merger merges the new head once the
-  reviewer's approval of it is on the pull request. And it enqueues nothing on a merge-queue base whose
+  GitHub can neither merge nor start pull-request CI for: the merger merges the base forward itself
+  while the issue stays in `merging`, the daemon asks the reviewer to read that merge, and the
+  merger merges the new head once the reviewer's approval of it is on the pull request. And it
+  enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
   on, quoting GitHub's own answer: wait for what GitHub waits for, merge again at the head it
-  re-reads, send the issue back, or tell the architect what only a person can change. A pull
+  re-reads, fix in its merge of the base what the base's newer code breaks, send the issue back
+  only for a change to the change's own logic, or tell the architect what only a person can change. A pull
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
@@ -1767,16 +1799,17 @@ These arrive as messages on the Dispatch issue:
   none.
 
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
-conflicts with its base is waiting on the daemon's merge forward or on nothing at all. GitHub sends
+conflicts with its base is waiting on a merge forward or on nothing at all. GitHub sends
 no event when a head starts conflicting, so after each push onto the base the daemon reads GitHub's
 merge state for every open pull request on that base whose issue is in one of those phases, and
 reads it again while GitHub answers `unknown`. An issue in `merging` is read once for the push: its
 pull request sits in the merge queue, where GitHub answers `unknown` for the head, and that answer
 asks for no further read. The daemon reads the pull request's mergeability
 twice, at least a minute apart, and acts only on a conflict
-both reads report, and only when the next step needs a mergeable head: the issue stands past its
-review, a check the base requires has no green result on the head, the base requires a current
-branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
+both reads report, and only when the next step needs a mergeable head: the issue stands in
+`merging`, a check the base requires has no green result on the head, the base requires a current
+branch, or the daemon could not read the base's rules. In `accepting` and `retro` the conflict
+waits for the merger. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
 merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
@@ -1786,9 +1819,10 @@ read it rests on: GitHub's merge state for the head (`mergeState`) and when the 
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
-forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
-and no completion, the phase's worker is told to stop writing the workspace and not to complete
-its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
+forward keeps the phase: the role asked — the implementer, or in `merging` the merger — merges in
+the issue workspace and pushes with no handoff and no completion, the phase's worker, when that is
+the tester or the reviewer, is told to stop writing the workspace and not to complete its phase at
+the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
@@ -1964,9 +1998,10 @@ notice comes once per handoff commit, from whichever read finds it first.
   dropped settlements since: each remembers in memory what it logged.
   - The listener writes `checks held a head` for a head's record that it has
     not settled after 10 minutes with no event. The line names what holds the record: `running`
-    names each check run that has not finished, `suites` names each check suite that is not
-    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
-    name the other holds. It is a warning when every recorded check run has finished.
+    names each check run that has not finished, `suites` names each check suite that holds it,
+    with its App: a suite not completed that is GitHub Actions' or whose App the record does not
+    know. `overflowed`, `no_run_id`, `legacy` and `claimed` name the other holds. It is a warning
+    when every recorded check run has finished.
   - The listener writes `checks settlement published` for each settlement it publishes.
   - The daemon writes one line for each checks settlement it drops before it applies it:
     `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the

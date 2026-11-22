@@ -214,9 +214,12 @@ type valueRewrite struct {
 // writeValue writes the claim's value under the pending task's number and records the write as
 // the daemon's own last (Claim.TaskWrittenRevision). A write the bucket refuses fails nothing of
 // the decision: it is logged, and made again at the claim's next chance (valueUnwritten,
-// offerPending).
+// offerPending). With no task pending it writes nothing.
 func (m *Machine) writeValue(ctx context.Context, cause string) error {
 	p := m.claim.Pending
+	if p == nil {
+		return nil
+	}
 	revision, written := m.putValue(ctx, *p, cause)
 	if !written {
 		return nil

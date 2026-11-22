@@ -21,12 +21,12 @@ package supervise
 //     decision reads it (dropEndedPauseHold); the resume's event (ResumePause) is such a decision.
 //
 // A project pause's held suspension waits past the end of its take's turn for the report that
-// settles the task, as every held suspension does (reportwait.go, reportOwed): only
+// settles the task, as every held suspension does (reportwait.go, takePhase): only
 // that report says whether the turn finished its task or a provider refused it, and a stop made
 // first would leave a refused task taken and the role owed nothing at the resume (check k1 of
 // dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). The report's
-// finish, or its provider error's take-back, runs the hold (afterTurn), and the stop then reads
-// the task the report left (holdsTask).
+// finish, or its provider error's take-back, runs the hold (settleThenAfterTurn), and the stop
+// then reads the task the report left (holdsTask).
 
 import (
 	"context"
@@ -236,14 +236,14 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	if reserve == nil {
 		m.wake = nil
 		waiting.at, waiting.reserved = now, now
-		return m.runWake(ctx, waiting, false, false)
+		return m.runWake(ctx, waiting, false)
 	}
 	at := reserve(now)
 	m.wakeLetOut(at)
 	waiting.at, waiting.reserved = at, now
 	if !at.After(now) {
 		m.wake = nil
-		return m.runWake(ctx, waiting, true, false)
+		return m.runWake(ctx, waiting, true)
 	}
 	return m.parkWake(ctx, waiting, at.Sub(now))
 }

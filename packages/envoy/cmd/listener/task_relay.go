@@ -106,7 +106,14 @@ type taskRelayed struct {
 // how the listener learns its NATS user holds the session consumers' calls. Only the grants of the
 // listeners no session shares a user with hold those calls, and they hold the task bucket's reads
 // beside them (natsgrant.Listener and natsgrant.ListenerHost), so a listener connecting as a host
-// or Dispatch user never opens the bucket, and logs nothing of it.
+// or Dispatch user never opens the bucket, and logs nothing of it. The edge listener's grant holds
+// the session consumers' calls and none of the bucket's reads (natsgrant.Edge), so an edge listener
+// runs no task relay at all (startTaskRelay). So no task frame reaches an edge session's relay
+// socket (relay_socket.go): no listener publishes one on its relay subject, since the edge runs no
+// task relay and every other listener relays only the sessions whose consumer it relays
+// (sessionRelays.wanted), which an edge session's entry does not name; and the socket forwards only
+// a frame whose reply is a relay receipt naming its session (relayReceiptOf), which a task frame's
+// reply, under a shared listener's own reply inbox (taskFrameReplyToken), is not.
 //
 // It opens the bucket and never creates it (bus.OpenKeyValue): the Legion daemons create it. A
 // bucket that does not exist yet is waited for quietly, looked up again every interval, with one
@@ -176,8 +183,13 @@ type taskRelay struct {
 // once the watch is up, its watcher reads the bucket whole again readInterval after each whole
 // read that completed. It ties itself to client: a disconnect stops its copy following the bucket,
 // a reconnect watches the bucket again on the new connection in the background, and the
-// connection's drain ends its watcher (end).
+// connection's drain ends its watcher (end). An edge listener (relays' edge grant set) gets nil, a
+// relay that does not run, whose stop does nothing: its grant holds none of the bucket's reads
+// (natsgrant.Edge), so it asks the server for none of them.
 func startTaskRelay(client *bus.Client, relays *sessionRelays, registry *store.Registry, logger *logging.Logger, interval, readInterval, openWait time.Duration) *taskRelay {
+	if relays.cfg.edge != nil {
+		return nil
+	}
 	r := &taskRelay{
 		client:       client,
 		relays:       relays,

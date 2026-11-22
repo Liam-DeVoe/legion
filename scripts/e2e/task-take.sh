@@ -106,5 +106,7 @@ start_listener() {
   pass
 }
 
+# The run takes the default timeout and builds its own driver, so TIMEOUT and DRIVER are empty
+# and SERVICES comes seventh (lib/live-daemon-proof.sh).
 live_daemon_proof 'task take' task-take TestATaskIsTakenOnceOnARealNATSLive \
-  "${TASK_TAKE_EVIDENCE_DIR:-}" start_listener
+  "${TASK_TAKE_EVIDENCE_DIR:-}" '' '' start_listener

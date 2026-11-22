@@ -957,11 +957,19 @@ func populatedState(t *testing.T) State {
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
 		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// stale. Its one repository cache, acme/widgets' (Ready and read, as `repositories` below
+		// says), last answered its health with a repack that failed for lack of space, so the
+		// repository-cache-room row is open too, with the third source, `caches`, which a caller
+		// below cachesSourceContract is served without.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
+			Caches: []capabilities.Cache{{
+				Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
+				VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
+				RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
+			}},
 		}.Report()),
 		// Five repositories the live records name, of three owners, sorted by name, each showing
 		// an answer the block carries: acme/gadgets, the review App not installed on it, which
@@ -1130,18 +1138,18 @@ func TestStateGolden(t *testing.T) {
 }
 
 // The state route's body for a caller whose plugin is at the contract before
-// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
+// repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
-// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
-// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
-// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
-// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
-// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
-// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
-// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
-// schema of the block, so the narrowing is held to the reader it is written for, and its drift
-// gate holds every key of the file to that copy.
+// own state, asked through the route itself. The caller is served at the recorded contract at or
+// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
+// block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), and every other key as a caller at shapedAnswersContract is served
+// it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
+// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
+// view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
+// copy of contract 152's schema of the block, so the narrowing is held to the reader it is written
+// for, and its drift gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
@@ -1456,7 +1464,7 @@ func TestTaskResponseGolden(t *testing.T) {
 	golden(t, "task.json", claim.TaskResponse{Finished: 4})
 }
 
-// What `claims/task` answers a caller at contract 212 or later whose turn holds the take of
+// What `claims/task` answers a caller at contract 231 or later whose turn holds the take of
 // another claim of its issue: its own value and finished number beside `holds`, each held take's
 // role and its task's number. task.json above carries no `holds`, since the key is written only
 // where a take is held.

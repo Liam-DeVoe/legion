@@ -156,13 +156,9 @@ type AgentSecretsHello struct {
 // dropped nothing: one that dropped frames, and one built before the member, which tells no one.
 // That is the reading that costs nothing where it is wrong. A daemon reads the starts and ends of
 // the agent's turns off the replay, and nothing that needs every one of them is read off such a
-// connection (supervise's bindRestoredAnchor and readBacklog): no producer's word that its text
-// was held gives a take a daemon start restored its turn back (bindRestoredAnchor), the count of
-// the process's turns is lost until a report places it again, no report with that count lost
-// marks its turn's start as still to come, and a stale-plugin relaunch takes a restored take whose
-// turn no frame showed back as a turn that may have run. Read as whole instead, a replay that lost
-// a turn's start would have that turn read as one still to come while it runs, or as one that
-// never ran.
+// connection; what the supervisor does with such a hello is listed once, at supervise's
+// readBacklog. Read as whole instead, a replay that lost a turn's start would have that turn read
+// as one still to come while it runs, or as one that never ran.
 // A daemon built before the member ignores it, as it ignores every member it does not name.
 type Hello2 struct {
 	BootToken    string             `json:"bootToken"`

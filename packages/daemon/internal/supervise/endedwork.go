@@ -44,8 +44,12 @@ type EndedWork struct {
 	// turn was running and it was the turn of the task's accepted take (Delivery.turnStarted). So
 	// TaskTurn can stand without Turn, where the let-go reads the claim after the turn that
 	// decision took the task back from has ended: a relaunch the pacing parked lets the process go
-	// at a wake's turn (launchNow). A take that awaits its turn is in no turn cut off: the worker
-	// ran nothing of it, and it goes back with no note of an interruption. A take whose turn
+	// at a wake's turn (launchNow). A take that awaits its turn is in no turn cut off where the
+	// claim's connection showed every frame of its turns: the worker ran nothing of it, and it goes
+	// back with no note of an interruption. Where it did not, that turn may have run unseen, so
+	// TaskTurn says it was cut off and the take goes back as a cut turn (turnMayHaveRunUnseen,
+	// Machine.turnUnseen); and one whose report came with its finish refused by the store goes back
+	// at no let-go, which finishes it by that report (takePhase, waitFinish). A take whose turn
 	// ended with its report still to come, a compaction running after it or not, is settled by
 	// its claim's contract (interrupted). For a plugin below TaskTakeContract it is in no turn
 	// cut off: a let-go finishes it by its end frame rather than take it back (finishTask), as
@@ -137,7 +141,9 @@ type ActivityReport struct {
 // in its phase), the controller keeper's retry of a retired controller (daemon's
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
-// ended (dispatch://INFRA-3276 R3).
+// ended (dispatch://INFRA-3276 R3). endUnanswered is the relaunch at the reconnect deadline of a
+// shim that came back while its agent never said whether it was in a turn (reconnectDeadline,
+// connview.go).
 //
 // The cause is read into an agent's task text as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can
@@ -151,6 +157,7 @@ const (
 	endDisplaced   = "its pod was replaced"
 	endRepointed   = "its address changed"
 	endStopped     = "its claim was stopped"
+	endUnanswered  = "its agent did not say whether it was in a turn after its connection came back"
 )
 
 // endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.
@@ -221,14 +228,21 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // A record written here is new words, so only a take accepted from here on tells it (accept): a
 // take accepted before it carried none of this record's words.
 //
-// Before anything else it gives back what an accepted take that awaits its turn told
-// (untellUnstarted): the worker never ran that take's text, so the record that take had marked
-// told is untold again and the record written here joins it.
+// Before anything else it reads whether a take awaiting its turn may have had that turn run with
+// no frame of it reaching the machine (turnMayHaveRunUnseen: the claim's connection not showing
+// every frame of its turns), and keeps that as the take's mark (Machine.turnUnseen), so the
+// take-back of the let-go — made after this, by a death or a displacement (died, displaced), and
+// after letGo has made the view whole for the next process, by a retirement or a suspension
+// (takeBackUnstarted) — takes it back as a turn cut off, as the record here says it was. Then it
+// gives back what an accepted take that awaits its turn told (untellUnstarted): no turn the
+// daemon saw ran that take's text, and the let-go takes it back, so the record that take had
+// marked told is untold again and the record written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
 // it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
 func (m *Machine) recordEnd(ctx context.Context, cause string) {
+	m.turnUnseen = m.turnMayHaveRunUnseen()
 	m.untellUnstarted()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -239,19 +253,21 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	state := m.endState()
 	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
-	// from its turn (interrupted, cutTurnOf), whatever the claim's state, and where the turn that
-	// was running was the turn of the task's accepted take (Delivery.turnStarted). A take that
-	// awaits its turn is in no turn cut off: the worker ran nothing of it. Nor is a take of a
-	// plugin below TaskTakeContract whose turn ended with its report still to come, which a
-	// let-go finishes rather than take back (interrupted), the take of the turn whose end runs a
-	// held suspension (suspendHeldAtEnd) and that of an idle claim's let-go that takes nothing
-	// back (suspendNow) among them, whose task settle finishes. Such a take of a plugin that
-	// names its number is in no turn cut off either where the let-go records before its take-back
-	// (died, displaced); where the let-go's own decision takes it back first, as a held
+	// from its turn (interrupted, cutTurnOf), whatever the claim's state, and where a turn was
+	// running over a take whose turn ran, as the one rule of where the take stands reads it
+	// (takesTurnRan). A take that awaits its turn is in no turn cut off: the worker ran nothing of
+	// it, unless that turn may have run with no frame of it reaching the machine
+	// (turnMayHaveRunUnseen), which the take-back that follows reads as a turn cut off. Nor is a
+	// take of a plugin below TaskTakeContract whose turn ended with its report still to come,
+	// which a let-go finishes rather than take back (interrupted), the take of the turn whose end
+	// runs a held suspension (suspendHeldAtEnd) and that of an idle claim's let-go that takes
+	// nothing back (suspendNow) among them, whose task settle finishes. Such a take of a plugin
+	// that names its number is in no turn cut off either where the let-go records before its
+	// take-back (died, displaced); where the let-go's own decision takes it back first, as a held
 	// suspension's deadline and a stale-plugin relaunch's bound do, the mark says it was
 	// (cutTurnOf).
 	if p := m.claim.Pending; p != nil {
-		ended.TaskTurn = (m.cutTurnOf != "" && p.ID == m.cutTurnOf) || (ended.Turn && p.turnStarted())
+		ended.TaskTurn = (m.cutTurnOf != "" && p.ID == m.cutTurnOf) || (ended.Turn && m.takesTurnRan()) || m.turnUnseen
 	}
 	// A claim idle or working has run a turn in this process: idle is reached only by a turn's
 	// end, and a relaunched process comes up through ready. A claim working for a compaction in
@@ -297,7 +313,7 @@ func (m *Machine) endState() ClaimState {
 		return m.claim.State
 	case m.heldStopBack != "":
 		return m.heldStopBack
-	case !m.inTurn():
+	case m.compacting != nil && !m.compacting.inTurn:
 		return m.compacting.back
 	case m.compacting == nil && m.lostCompaction != nil && !m.lostCompaction.inTurn:
 		return m.lostCompaction.back

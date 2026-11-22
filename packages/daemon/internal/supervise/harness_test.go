@@ -147,8 +147,10 @@ type memStore struct {
 	claims     map[claim.Token]Claim
 	deliveries map[claim.Token]Delivery
 	puts       []Claim
-	// writes is each write and retirement of a pending delivery, in order (deliveryLog).
+	// writes is each write and retirement of a pending delivery, in order (deliveryLog), and
+	// written each delivery as each of those writes put it (lastWritten).
 	writes   []string
+	written  []Delivery
 	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
@@ -332,6 +334,7 @@ func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery)
 	}
 	s.deliveries[token] = d
 	s.writes = append(s.writes, "put "+d.ID)
+	s.written = append(s.written, d)
 	return nil
 }
 
@@ -496,6 +499,19 @@ func (s *memStore) deliveryLog() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.writes...)
+}
+
+// lastWritten is the delivery id as the last write of it put it, whether or not it has been
+// retired since, so a test reads what a write just before a retirement held.
+func (s *memStore) lastWritten(id string) (Delivery, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.written) - 1; i >= 0; i-- {
+		if s.written[i].ID == id {
+			return s.written[i], true
+		}
+	}
+	return Delivery{}, false
 }
 
 func (s *memStore) history() []Claim {

@@ -51,7 +51,8 @@ import (
 //     (valueWrittenLine); and of those, the numbers written to a claim that had finished the last
 //     task written to it in the session it ran (finished), which is a task written to a claim
 //     whose phase waited (R7 and R9's waited figure). The silence repair's writes (OriginSilence)
-//     are an origin of their own, read apart from a resume's;
+//     are an origin of their own, read apart from a resume's, and so are the writes of a task of
+//     news of the approved design alone (OriginNews), read apart from the phase's work;
 //   - the numbers taken, from the accepted answers to a take (takeAnsweredLine), less an answer
 //     that repeats one from the record (repeat), which applied nothing;
 //   - the numbers no take reached within the first bound of R5's first wait (TaskCostArgs.Take),
@@ -87,10 +88,23 @@ import (
 //     forgets the seen report and the take of the process before it (register, decision 6), so
 //     the reading ends every stop above and forgets the seen report too, and the clock starts
 //     again at the new process's own seen report;
-//   - a daemon's start (DaemonStartedLine) stops every clock as of the line before it, since
-//     nothing says the daemon before it lived any longer, until the claim's worker next acts in
-//     the log: a seen report, a take, a turn line, a report that put a take back, or a
-//     registration.
+//   - the machine's view of the claim's turns (connview.go) stops it and starts it again, as it
+//     stops and arms the first wait: the line where the view stops being whole (viewCutLine) — a
+//     close, a daemon's start that restored the claim with a process, a reconnect hello over a
+//     view it found whole — stops it, and the line where it is whole again (viewWholeLine) — the
+//     new process's first hello, a reconnect hello over no pending task, the agent's answer to a
+//     hello's ask or to a daemon start's own, a turn frame, a let-go — starts it again, the bound
+//     whole. No act of the worker starts it while the view is cut;
+//   - a daemon's start stops every clock as of the last line the reading decoded from the daemon
+//     before it, since nothing says that daemon lived any longer, and no daemon ran the waits in
+//     between. A daemon's first line is its starting line (DaemonStartingLine), so every line
+//     before it is the daemon before's and every line after it the new one's (daemonStarting); a
+//     log with no starting line, an older daemon's, is read with its start line
+//     (DaemonStartedLine) as the start. A claim the start restored with a process has its view cut
+//     there (viewCutLine), and its clock starts again at its view's whole line, before the start
+//     line or after it; every other claim's clock stands still until its worker next acts in the
+//     log, as the machine's waits wait for the worker's first act (Machine.awaitsAct): a seen
+//     report, a take, a turn line, a report that put a take back, or a registration.
 //
 // A clock that runs a whole bound has passed it, and that time owed is listed, however it ends
 // (a late take included). Only clock time inside the window counts: the bound is never judged
@@ -111,17 +125,17 @@ import (
 // taken back in it is owed again once its next seen report is read.
 //
 // What this figure cannot see can count a number too many or too few. Too many: no line marks
-// when a process the daemon started again after a release, a suspension or a relaunch is ready,
-// when a compaction holds a take off, or when a hold stands over a task its worker asked nothing
-// of, and a turn that began before the log's first line and is still running shows no start,
-// so a clock that runs through any of them can list a number no worker could have taken. Too
-// few: a let-go other than a death that cuts a turn off with no take-back writes no turn end, so a
-// clock stopped by that turn starts again only at the end of the claim's next turn or at the seen
-// report of the process the claim registers next; a take-back of a number whose last write fell
-// before the log's first line owes nothing the reading can time until a seen report of it is read,
-// since it knows no revision of that number to match one against; and the shim's reconnect hello
-// writes no line, so after a daemon's start a clock starts again only at the worker's next act the
-// log shows.
+// when a process the daemon started again after a release, a suspension or a relaunch is ready —
+// the let-go makes the claim's view whole for the next process (viewWholeLine), which starts a
+// clock the view held still — when a compaction holds a take off, or when a hold stands over a
+// task its worker asked nothing of; and a turn that began before the log's first line and is
+// still running shows no start. A clock that runs through any of them can list a number no worker
+// could have taken. Too few: a let-go other than a death that cuts a turn off with no
+// take-back writes no turn end, so a clock stopped by that turn starts again only at the end of
+// the claim's next turn or at the seen report of the process the claim registers next; and a
+// take-back of a number whose last write fell before the log's first line owes nothing the reading
+// can time until a seen report of it is read, since it knows no revision of that number to match
+// one against.
 //
 // And R9's three verdicts, each of which lists what fails it:
 //
@@ -129,10 +143,21 @@ import (
 //     while an accepted take of the claim stood, where a turn of the claim started no earlier than
 //     the take's second wait began and no later than the bound after that (the charge's own bound,
 //     for a charge of the second wait that names one) or, for every other charge, than the charge
-//     itself. The second wait begins where the machine's does (secondWaitNow): at the latest of
-//     the take's acceptance, its put-back, the end of a turn that ran while the take awaited its
-//     turn (the end of the in-turn hold over it), and the worker's first act after a daemon's
-//     start; so a run the daemon gave the take before a put-back is no turn within it;
+//     itself. The second wait begins at the latest of the take's acceptance, its put-back, the
+//     end of a turn that ran while the take awaited its turn (the end of the in-turn hold over
+//     it), and the point the machine's view of the claim's turns is whole again after a close or
+//     a daemon's start (viewWholeLine), as the machine's does (secondWaitNow, connview.go); so a
+//     run the daemon gave the take before a put-back is no turn within it, and a take the worker
+//     makes while the view is cut — before the agent's answer to the ask its shim's hello makes —
+//     begins its wait at that answer. After a daemon's start, a claim whose view no line of that
+//     start cut begins it again at its worker's first act too (stopEveryClock), as the machine's
+//     waits wait for one (Machine.awaitsAct): the start restored such a claim with no process, so
+//     the machine's waits wait for its next process's ready as well, which comes after that act. So
+//     the reading's wait never begins after the machine's, and a turn it reads within the bound
+//     began within the machine's. It can begin before it, where a hold the reading cannot see —
+//     a process not yet ready, a suspension — kept the machine's wait disarmed past the reading's
+//     start: its window then ends before the machine's bound did, a turn that began in the rest of
+//     that bound goes unseen, and the verdict can miss that fail;
 //   - no write of origin resume to a claim that had finished its last task in its session (a value
 //     write of origin resume whose finished is true); a silence repair's write is not one;
 //   - each number taken once for each time the record owed it: a number is owed once when it is
@@ -165,9 +190,9 @@ import (
 // Every figure is a lower bound but two, which can also count too many: the numbers no take
 // reached (above), and the turns each number took, since a run the daemon gave a take inside the
 // window whose put-back line falls at or after To stays counted as that number's turn — no line
-// from To on is read, so the put-back that would make it a turn of no cause is never seen. The
-// log reaches back only as far as the node kept the current container's log, and a take, a write
-// or a turn that fell before its first line is not seen.
+// from To on is read, so the put-back that would make it a turn of no cause is never seen.
+// The log reaches back only as far as the node kept the current container's log, and a take, a
+// write or a turn that fell before its first line is not seen.
 
 // TaskCostArgs is what `legion task-cost` is asked: the window of the daemon's log to count, From
 // included and To not (the lines before From are read for where each claim stands at From alone),
@@ -251,18 +276,23 @@ type costLine struct {
 	Bound    int64       `json:"bound"`
 }
 
-// costedLines are the messages of a claim the reading decodes whole. A daemon's start
-// (DaemonStartedLine) is read too, from its message alone, and it names no claim.
+// costedLines are the messages of a claim the reading decodes whole. A daemon's starting and start
+// lines (DaemonStartingLine, DaemonStartedLine) are read too, from their message alone: they name
+// no claim.
 var costedLines = map[string]bool{
 	turnStartedLine: true, turnEndedLine: true, notTheTakesTurnLine: true, valueWrittenLine: true,
 	taskSeenLine: true, valueDeletedLine: true, takeAnsweredLine: true, takeUndecidedLine: true,
 	takenBackLine: true, taskFinishedLine: true, processDiedLine: true, agentRegisteredLine: true,
-	promptFailureLine: true, promptRetiredLine: true,
+	promptFailureLine: true, promptRetiredLine: true, viewCutLine: true, viewWholeLine: true,
 }
 
-// workerActs are the messages of the worker's own acts the log shows, which start a clock again
-// after a daemon's start (claimClock.awaitsAct): its seen report, its take, its turn, its report
-// that put a take back, its registration.
+// workerActs are the messages of the worker's own acts the reading decodes, which a claim's clock
+// waits for after a daemon's start (claimClock.awaitsAct), as the machine's waits wait for the
+// worker's first act (Machine.awaitsAct): its seen report, its take, its turn, its report that put
+// a take back, its registration. Such an act starts the clock and begins a take's second wait again
+// only for a claim no view line shows cut, which the start restored with no process. Over a cut
+// view no act starts anything: the view's whole line does, and ends the wait for an act too, since
+// the shim's hello, the worker's first act there, came before it (viewWhole).
 var workerActs = map[string]bool{
 	taskSeenLine: true, takeAnsweredLine: true, takeUndecidedLine: true, turnStartedLine: true,
 	turnEndedLine: true, notTheTakesTurnLine: true, agentRegisteredLine: true,
@@ -276,9 +306,12 @@ type costKey struct {
 
 // openTake is a claim's accepted take whose time owed is running: the number, when it was
 // accepted, whether it awaits its turn — from its acceptance and its put-back until a turn naming
-// its number starts — and when its second wait began, as the machine's does (secondWaitNow): the
+// its number starts — and when its second wait began as the reading places it (secondWaitNow): the
 // latest of its acceptance, its put-back, the end of a turn that ended while it awaited its turn,
-// and the worker's first act after a daemon's start.
+// the point the machine's view of the claim's turns was whole again (viewWholeLine), and, for a
+// claim no view line shows cut, the worker's first act after a daemon's start. The machine's can
+// begin later, where a hold the reading cannot see stood over the take, and never earlier (the
+// first verdict's paragraph above).
 type openTake struct {
 	number   uint64
 	at, from time.Time
@@ -318,13 +351,15 @@ type costTurn struct {
 
 // claimClock is what the reading knows of one claim's first wait: whether its turn lines show a
 // turn in progress, whether a daemon's start waits on its worker's next act, whether a death
-// waits on its next registration; the claim's latest value write and whether a seen report since
+// waits on its next registration; whether the machine's view lines last showed its view of the
+// claim's turns cut (cut); the claim's latest value write and whether a seen report since
 // named it (sawLatest); the number it owes, nil for none; and whether the window has opened for
 // it (enter). It holds the claim's turns a put-back recounts too: its latest turn naming a task,
 // and the number whose put-back run's end line is still to come, 0 for none, which that line names
 // and which counts as no cause.
 type claimClock struct {
 	inTurn, awaitsAct, awaitsRegistration bool
+	cut                                   bool
 	written                               TaskValue
 	seen                                  bool
 	owed                                  *owedNumber
@@ -337,7 +372,7 @@ type claimClock struct {
 // reported seen and whose bound has not passed, and nothing stops the clock.
 func (k *claimClock) runs() bool {
 	o := k.owed
-	return o != nil && k.seen && !o.stopped && o.passed.IsZero() && !k.inTurn && !k.awaitsAct && !k.awaitsRegistration
+	return o != nil && k.seen && !o.stopped && o.passed.IsZero() && !k.inTurn && !k.awaitsAct && !k.awaitsRegistration && !k.cut
 }
 
 // sawLatest is whether the seen report l names the claim's latest value write: its number and
@@ -364,11 +399,16 @@ type costReading struct {
 	turnStarts map[string][]time.Time
 	charges    []costCharge
 	// clocks is each claim's first wait, unreached each time owed whose clock passed the bound,
-	// once that time owed ended, and alive the time of the last line of any claim read, which is
-	// the last the reading knows a daemon to have lived.
+	// once that time owed ended, and alive the time of the last line the reading decodes, of any
+	// claim, which is the last the reading knows a daemon to have lived: a line it does not decode
+	// can be the next daemon process's, written before its starting line (`legion start`'s
+	// configuration warnings).
 	clocks    map[string]*claimClock
 	unreached []owedNumber
 	alive     time.Time
+	// starting is whether a daemon's starting line has come since the last start line
+	// (daemonStarting).
+	starting bool
 	// counting is whether the line being read is inside the window, which every figure counts
 	// from.
 	counting bool
@@ -426,10 +466,16 @@ func (c *costReading) line(raw []byte) {
 		return
 	}
 	c.counting = !head.Time.Before(args.From)
-	if head.Msg == DaemonStartedLine {
+	switch head.Msg {
+	case DaemonStartingLine:
+		c.daemonStarting()
+	case DaemonStartedLine:
 		c.daemonStarted()
 	}
-	c.alive = head.Time
+	costed := costedLines[head.Msg]
+	if costed {
+		c.alive = head.Time
+	}
 	if args.Claim != "" && claim != args.Claim {
 		return
 	}
@@ -440,7 +486,7 @@ func (c *costReading) line(raw []byte) {
 		c.cost.Lines++
 		c.cost.LastLine = head.Time
 	}
-	if !costedLines[head.Msg] {
+	if !costed {
 		return
 	}
 	var l costLine
@@ -492,8 +538,10 @@ func (c *costReading) costed(l costLine, claim string) {
 	}
 	if k.awaitsAct && workerActs[l.Msg] {
 		k.awaitsAct = false
-		c.restart(k, l.Time)
-		c.secondWaitFrom(claim, l.Time)
+		if !k.cut {
+			c.restart(k, l.Time)
+			c.secondWaitFrom(claim, l.Time)
+		}
 	}
 	switch l.Msg {
 	case turnStartedLine:
@@ -654,6 +702,10 @@ func (c *costReading) costed(l costLine, claim string) {
 		}
 		c.charges = append(c.charges, costCharge{claim: claim, at: l.Time, wait: wait,
 			bound: time.Duration(l.Bound), take: c.open[claim]})
+	case viewCutLine:
+		c.viewCut(k)
+	case viewWholeLine:
+		c.viewWhole(k, claim, l.Time)
 	}
 }
 
@@ -797,8 +849,9 @@ func (c *costReading) putBack(k *claimClock, key costKey, at time.Time) {
 }
 
 // secondWaitFrom begins the second wait of the claim's accepted take again at at, where that take
-// awaits its turn: at the end of a turn that ran while it waited, and at the worker's first act
-// after a daemon's start (openTake).
+// awaits its turn: at the end of a turn that ran while it waited, where the machine's view of the
+// claim's turns is whole again (viewWhole), and at the worker's first act after a daemon's start
+// over a view no line shows cut (openTake).
 func (c *costReading) secondWaitFrom(claim string, at time.Time) {
 	if open, ok := c.open[claim]; ok && open.awaits {
 		open.from = at
@@ -806,10 +859,67 @@ func (c *costReading) secondWaitFrom(claim string, at time.Time) {
 	}
 }
 
-// daemonStarted is a daemon's start: every clock stops as of the last line before it, and stands
-// still until its claim's worker next acts in the log (workerActs). A start inside the window
-// opens it for every claim first, so the time a clock ran before From is not judged.
+// viewCut is the machine's view of the claim's turns ceasing to be whole (viewCutLine): a close, a
+// daemon's start that restored the claim with a process, or a reconnect hello over a view it found
+// whole. The machine's bounds that judge the worker by its frames stand still from here, so the
+// claim's clock stands still too, and no act of the worker starts it or begins a take's second
+// wait again until the view is whole (viewWhole). The line judged the bound at its own time first
+// (costed).
+func (c *costReading) viewCut(k *claimClock) {
+	k.cut = true
+	if o := k.owed; o != nil {
+		o.from = time.Time{}
+	}
+}
+
+// viewWhole is the machine's view of the claim's turns whole again (viewWholeLine) at at: the
+// machine arms each bound the view held still whole from here, so the claim's clock starts again
+// here, the bound whole, where nothing else stops it, and the second wait of a take awaiting its
+// turn begins again here (secondWaitNow). It ends a daemon start's wait for the worker's first act
+// too (Machine.awaitsAct): every change to whole but a let-go comes with or after a shim's hello,
+// which is that act and which no line the reading decodes names, but one — a sweep's ask of a
+// claim restored working, answered before the decision that reads the hello — where the machine's
+// waits start at the hello, after the reading's. A let-go makes the view whole too, for the next
+// process, whose clock its registration and seen report start again.
+func (c *costReading) viewWhole(k *claimClock, claim string, at time.Time) {
+	k.cut, k.awaitsAct = false, false
+	c.restart(k, at)
+	c.secondWaitFrom(claim, at)
+}
+
+// daemonStarting is a daemon's starting line, the first line it writes (internal/daemon's run),
+// before it reads its plugins or restores a claim: every line before it is the daemon before's, so
+// every clock stops as of the last one the reading decoded (stopEveryClock), and no time between
+// the two daemons counts. A daemon whose boot stopped short writes no start line, and the next
+// daemon's starting line is a start of its own.
+func (c *costReading) daemonStarting() {
+	c.starting = true
+	c.stopEveryClock()
+}
+
+// daemonStarted is a daemon's start line, which the daemon writes once its boot's steps are done,
+// after it restored every claim. Where its starting line began that start (daemonStarting), every
+// clock stopped there, and each line since is the started daemon's own, so this line changes
+// nothing: a view the started daemon made whole before it — its shim's hello and its agent's
+// answer decided while the boot's last steps ran — keeps the clock that line started. In a log
+// with no starting line before it, an older daemon's, every clock stops here (stopEveryClock).
 func (c *costReading) daemonStarted() {
+	if c.starting {
+		c.starting = false
+		return
+	}
+	c.stopEveryClock()
+}
+
+// stopEveryClock is a daemon's start, as of the last line the reading decoded before it (alive):
+// each clock's bound is judged there, since nothing says the daemon before the start lived any
+// longer, and the machine the start builds runs none of its waits until the worker's first act
+// and its view's whole line, so the time no daemon ran counts toward no bound. Each clock stands
+// still until its claim's worker next acts in the log (workerActs), as the machine's waits wait
+// for the worker's first act (Machine.awaitsAct), or, for a claim the start restored with a
+// process, until its view's whole line (viewWhole). A start inside the window opens it for every
+// claim first, so the time a clock ran before From is not judged.
+func (c *costReading) stopEveryClock() {
 	for _, k := range c.clocks {
 		if c.counting {
 			c.enter(k)

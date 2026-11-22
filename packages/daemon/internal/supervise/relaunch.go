@@ -206,13 +206,25 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // HoldsTask is whether pending, the delivery a claim holds (Claim.Pending, or the pending task a
 // role run reads, record.RoleClaim.Pending), is a task of the claim's: a delivery, and not the
 // daemon's own delivery of a relaunch's record (Delivery.Relaunch), which is no work of the
-// claim's. It is the one statement of that rule, and every reader that asks whether a claim still
-// owes work it was given asks it: a death's charge (chargeDeath), the workflow's owed and
-// readyWorkerTask, and api's freshSession and heldTaskNotCurrent, which then tells a nil from a
-// relaunch's delivery only to choose its reason text. It takes the pointer the claim holds, nil
-// for none, because those readers hold two types of claim and the delivery is the one field they
-// share.
+// claim's. It is the one statement of that rule, and every reader that asks whether a claim holds
+// a task to send or to take asks it: a death's charge (chargeDeath), the machine's refusal of a
+// task of news alone behind another task (queue), the daemon's reconcile, which queues no news
+// behind a task not yet taken, and api's heldTaskNotCurrent, which then tells a nil from a
+// relaunch's delivery only to choose its reason text. A reader that asks whether the claim holds
+// the work of its phase asks HoldsWork. It takes the pointer the claim holds, nil for none,
+// because those readers hold two types of claim and the delivery is the one field they share.
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
+
+// HoldsWork is whether pending is a task that hands the claim work: a task (HoldsTask) other than
+// one of news alone (Delivery.NewsOnly), which hands the worker only the news of the approved
+// design. Every reader that asks whether a claim still owes the work it was given asks it: the
+// workflow's owed and readyWorkerTask, and so the admission sweep's reading of a root architect's
+// start on its way (workflow.ArchitectStartPending), and api's freshSession. A claim that holds a
+// task of news alone is read as owing no work, so the phase's task is sent to it as well, and is
+// lost to neither: a task of an entry takes the news task's place while no turn has taken it,
+// carrying that news itself (supervise's queue, Machine.supersedes), and any other task waits
+// behind the news task until a turn has taken it.
+func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.NewsOnly }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
 // that carries the sentence of its untold record alone (RelaunchSentence), so the new process's
@@ -224,7 +236,7 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // The delivery is a numbered task like any other, of origin notice (OriginNotice): queue gives it
 // the claim's next number and writes the claim's value, the worker takes it, and the report that
 // names its number finishes it, or the end of its turn for a plugin below TaskTakeContract
-// (finishTask, endFrameFinishes). So it is queued only where the
+// (finishTask, TakesNoTask). So it is queued only where the
 // record shows the let-go ended work that was running — a turn, the task's turn, or background
 // work a report named (EndedWork.ranWork) — and never for a record that says only that the
 // daemon holds no report of the process (dispatch://INFRA-2811, departure D2): a value written

@@ -61,17 +61,24 @@ import (
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
 // testDSN is the one database this run's tests write in, made by TestMain on the devbox and CI
-// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). The daemon has no in-memory mode:
-// what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
-// whatever database it is given, so the run owns one rather than sharing the server's. A test
-// that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). A pool opened on it, the daemon's
+// under test among them, holds testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size
+// of its own, which it keeps (testdb.PoolBounded). The daemon has no in-memory mode: what it does
+// on a boot is what its store recorded, and a boot migrates Legion's schema into whatever database
+// it is given, so the run owns one rather than sharing the server's. A test that sets
+// LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set, under the same
+// rule for its pool size.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	return testdb.RunDatabaseFor(dsn)
+	bounded, err := testdb.PoolBounded(dsn, testdb.RunDatabaseFor(dsn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
 }
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket
@@ -84,7 +91,8 @@ func shortTempDir(t *testing.T) string {
 
 // testConfig is a daemon of its own: its project name is unique, so the boots and claims it
 // records are its own, its port is one nothing else holds, and its state directory is its alone.
-// Every limit and timeout is the shipped default.
+// Every limit and timeout is the shipped default, `review_round_cap` among them: a pane's `legion`
+// tool reads GET /legion/v1/state through the daemon API contract, which takes a positive cap alone.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	stateDir := shortTempDir(t)
@@ -107,6 +115,7 @@ func testConfig(t *testing.T) config.Config {
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
+		ReviewRoundCap:                          config.DefaultReviewRoundCap,
 		DaemonURL:                               "http://127.0.0.1:" + strconv.Itoa(port),
 		WorkerStreamPort:                        0,
 		WorkerBootTimeout:                       120 * time.Second,
@@ -775,6 +784,28 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 				t.Fatalf("the boot logged the configured line naming %s %d times, want %d; log:\n%s", named, got, tc.configured, logged.String())
 			}
 		})
+	}
+}
+
+// The first line every boot writes is the starting line with the project
+// (supervise.DaemonStartingLine): run writes it before anything else it does, so the cost reading
+// takes it for where this daemon began, and no other line of the boot for one of the daemon
+// before. A boot that then fails on its port has written it all the same.
+func TestRunLogsTheStartingLineFirstAtBoot(t *testing.T) {
+	cfg := testConfig(t)
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.listen = nil
+	var logged strings.Builder
+	if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+		t.Fatal("run returned no error although another listener held its port")
+	}
+	first, _, _ := strings.Cut(logged.String(), "\n")
+	var line struct {
+		Msg     string `json:"msg"`
+		Project string `json:"project"`
+	}
+	if json.Unmarshal([]byte(first), &line) != nil || line.Msg != supervise.DaemonStartingLine || line.Project != cfg.Project {
+		t.Fatalf("the boot's first line is %s, want %q naming project %q; log:\n%s", first, supervise.DaemonStartingLine, cfg.Project, logged.String())
 	}
 }
 

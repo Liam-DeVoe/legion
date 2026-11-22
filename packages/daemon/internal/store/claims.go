@@ -38,6 +38,12 @@ var _ supervise.Store = (*Store)(nil)
 // what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
+//
+// Whether the delivery is a task of news alone (supervise.Delivery.NewsOnly) is the delivery's own
+// column (news_only), written and read beside the news it carries, so no writer of that news can
+// drop the mark. What the accepted take's text carried of that news (supervise.Delivery.Carried),
+// and whether the finish of that take's turn said it ran (supervise.Delivery.Ran), are read beside
+// both (carried_news and carried_ran, design_news_told.go).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -59,7 +65,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.number, d.origin, d.taken_text, d.turn_started, d.take_told,
 	d.check_look, d.check_opened_at, d.queued_at, d.confirmed_at, d.interrupted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.round_named
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news, d.carried_news,
+	coalesce(d.carried_ran, false), coalesce(d.news_only, false), d.round_named
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -747,7 +754,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		endedWork                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
-		kept                        []byte
+		kept, news, carried         []byte
+		ran, newsOnly               bool
 		retries                     *int64
 		note                        *string
 		roundNamed                  *bool
@@ -778,7 +786,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry,
 		&deliveryNumber, &deliveryOrigin, &takenText, &turnStartedTake, &takeTold, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &confirmed, &interrupted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &roundNamed)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &carried, &ran, &newsOnly,
+		&roundNamed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -875,6 +884,10 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			LastSendFailureAt:    orZero(lastSendFailure),
 			LastSendError:        *lastSendError,
 			Kept:                 keptDecisions(kept),
+			News:                 designNews(news),
+			Carried:              designNews(carried),
+			Ran:                  ran,
+			NewsOnly:             newsOnly,
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,
 			// A delivery a release before this one wrote takes the column's default, false: its

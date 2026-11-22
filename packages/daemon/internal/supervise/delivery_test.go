@@ -365,48 +365,108 @@ func TestRepeatOutboxDeliveryDoesNotQueueTheTaskTwice(t *testing.T) {
 
 // A restored working claim asks its agent whether the turn an earlier daemon saw start is still
 // running. An ask that fails (a get_state the agent did not answer in time) says nothing about the
-// turn: the claim stays working and its task stays the turn's, and the next sweep asks again.
-// Taken as "not streaming", it ended a turn still running and set the claim idle.
+// turn: the claim stays working and its task stays the turn's. Taken as "not streaming", it ended
+// a turn still running and set the claim idle. What bounds the unanswered ask depends on the task
+// (dispatch://INFRA-2811, plan v121, rows 31 and 32):
+//
+//   - holding a pending task, the ask is the first hello's, which armed the reconnect deadline
+//     whole at itself, and no sweep asks that connection again. The turn's end frame on that
+//     connection makes the view whole and disarms the deadline: the claim goes idle, and the
+//     end-frame bound retires the task its report never named. With nothing on that connection
+//     by the deadline, the process is relaunched there, charged nothing, and the task its turn
+//     was running is taken back as a cut turn;
+//   - holding none, the hello's ask is asked again at every sweep, the third unanswered one warns
+//     naming the claim, and a later sweep's answer that the turn is over ends it.
+//
+// The first case changed under rows 31 and 32: before them the sweeps asked the claim holding its
+// task again, as the second case still does, and a later sweep's answer ended the turn.
 func TestAFailedGetStateLeavesARestoredTurnRunning(t *testing.T) {
-	restored := fixture(StateWorking)
-	h := newHarnessOf(t, restored)
-	if err := h.store.PutDelivery(h.ctx, testToken, *restored.Pending); err != nil {
-		t.Fatalf("seed the restored delivery: %v", err)
-	}
-	h.conns.Register(testToken, h.conn)
-	h.conn.FailGetState(context.DeadlineExceeded)
-	h.start(restored)
+	withTask := func(t *testing.T) (*harness, Claim) {
+		t.Helper()
+		restored := fixture(StateWorking)
+		// One machine over the claim and its delivery, as a restart builds it (restore): a second
+		// machine built over the first would leave the first's reconnect deadline armed.
+		h := newBareHarness(t)
+		h.restore(restored)
+		h.conns.Register(testToken, h.conn)
+		h.conn.FailGetState(context.DeadlineExceeded)
 
-	h.must(StreamHello{Claim: testToken, Generation: restored.Generation})
-	h.wantState(StateWorking)
-	if p := h.claim().Pending; p == nil || p.ID != restored.Pending.ID || !p.turnStarted() {
-		t.Fatalf("after the failed ask pending = %+v, want the turn's task kept", p)
+		h.must(StreamHello{Claim: testToken, Generation: restored.Generation})
+		h.wantState(StateWorking)
+		if p := h.claim().Pending; p == nil || p.ID != restored.Pending.ID || !p.turnStarted() {
+			t.Fatalf("after the failed ask pending = %+v, want the turn's task kept", p)
+		}
+		h.observe(runtime.Alive)
+		h.observe(runtime.Alive)
+		h.wantState(StateWorking)
+		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 1 {
+			t.Fatalf("the asks the agent left unanswered are %q, want the hello's alone: no sweep asks its connection again", asks)
+		}
+		if warned := h.logs.lines("level=WARN", "unanswered"); len(warned) != 0 {
+			t.Fatalf("warned %q after the one unanswered ask", warned)
+		}
+		h.wantPrompts(0)
+		return h, restored
 	}
-	h.observe(runtime.Alive)
-	h.wantState(StateWorking)
-	// The hello's ask and this sweep's went unanswered: still under the limit, so no warning yet.
-	if warned := h.logs.lines("level=WARN", "unanswered"); len(warned) != 0 {
-		t.Fatalf("warned after two unanswered asks: %q", warned)
-	}
-	// The third unanswered ask warns, naming the claim, so an operator sees a turn the daemon
-	// cannot read.
-	h.observe(runtime.Alive)
-	h.wantState(StateWorking)
-	if warned := h.logs.lines("level=WARN", "unanswered", string(testToken)); len(warned) != 1 {
-		t.Fatalf("after three unanswered asks warned %q, want one warning naming the claim", warned)
-	}
-	h.wantPrompts(0)
+	t.Run("holding a pending task, then its turn's end frame", func(t *testing.T) {
+		h, _ := withTask(t)
 
-	// The agent answers on a later sweep: the turn is over, and it ends now; the end frame's bound
-	// finishes the task no report named.
-	h.conn.FailGetState(nil)
-	h.conn.SetStreaming(false)
-	h.observe(runtime.Alive)
-	h.wantState(StateIdle)
-	h.advance(testRPC)
-	if p := h.claim().Pending; p != nil {
-		t.Fatalf("after the answered ask pending = %+v, want the turn's task retired", p)
-	}
+		h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+		h.wantState(StateIdle)
+		if h.armed(TimerRegistration) {
+			t.Fatal("the turn's end frame left the hello's reconnect deadline armed over a whole view")
+		}
+		h.advance(testRPC)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("after the end frame's bound pending = %+v, want the turn's task retired", p)
+		}
+		h.advance(deadline)
+		h.wantCalls("Resume", 0)
+	})
+	t.Run("holding a pending task, and nothing more on its connection", func(t *testing.T) {
+		h, restored := withTask(t)
+		h.advance(deadline - time.Second)
+		h.wantCalls("Resume", 0)
+
+		h.advance(time.Second)
+
+		h.wantCalls("Resume", 1)
+		h.wantBudgets(Budgets{})
+		if p := h.claim().Pending; p == nil || p.ID != restored.Pending.ID || p.taken() || !p.Interrupted {
+			t.Fatalf("at the reconnect deadline pending = %+v, want the turn's task taken back as a cut turn", p)
+		}
+	})
+	t.Run("holding no pending task", func(t *testing.T) {
+		restored := fixture(StateWorking)
+		restored.Pending, restored.TaskFinished = nil, 1
+		h := newHarnessOf(t, restored)
+		h.conns.Register(testToken, h.conn)
+		h.conn.FailGetState(context.DeadlineExceeded)
+
+		h.must(StreamHello{Claim: testToken, Generation: restored.Generation})
+		h.wantState(StateWorking)
+		h.observe(runtime.Alive)
+		h.wantState(StateWorking)
+		// The hello's ask and this sweep's went unanswered: still under the limit, so no warning yet.
+		if warned := h.logs.lines("level=WARN", "unanswered"); len(warned) != 0 {
+			t.Fatalf("warned after two unanswered asks: %q", warned)
+		}
+		// The third unanswered ask warns, naming the claim, so an operator sees a turn the daemon
+		// cannot read.
+		h.observe(runtime.Alive)
+		h.wantState(StateWorking)
+		if warned := h.logs.lines("level=WARN", "unanswered", string(testToken)); len(warned) != 1 {
+			t.Fatalf("after three unanswered asks warned %q, want one warning naming the claim", warned)
+		}
+		h.wantPrompts(0)
+
+		// The agent answers on a later sweep: the turn is over, and it ends now.
+		h.conn.FailGetState(nil)
+		h.conn.SetStreaming(false)
+		h.observe(runtime.Alive)
+		h.wantState(StateIdle)
+	})
 }
 
 // A sweep can reach a restored working claim before its shim dials back. With no connection it

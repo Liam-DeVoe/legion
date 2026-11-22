@@ -132,6 +132,32 @@ func (d *daemon) turnRead(token claim.Token) func() (bool, error) {
 	}
 }
 
+// pendingID is the id of the delivery token's claim holds on d, "" for none, as the operator's
+// listing of the claims answers it: what a driver names a take it was answered by. It reports a
+// failure rather than failing the test, so a driver may read it from a goroutine of its own.
+func (d *daemon) pendingID(token claim.Token) (string, error) {
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, d.base+"/legion/v1/operator/claims", nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+testOperatorToken)
+	response, err := d.client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	var list api.OperatorClaims
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&list); err != nil {
+		return "", fmt.Errorf("decode the claims: %w", err)
+	}
+	for _, c := range list.Claims {
+		if c.Token == token && c.Pending != nil {
+			return c.Pending.ID, nil
+		}
+	}
+	return "", nil
+}
+
 // post sends body to the route at path and decodes a 2xx answer into answer (nil reads none). It
 // reports a failure rather than failing the test, so a driver may post from a goroutine of its
 // own.
