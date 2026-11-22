@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/timewords"
@@ -61,12 +60,11 @@ var relaunchedByDaemon = "Envoy could not reach its session for " + timewords.Wo
 // starts are its only writers, and both write under mu, so neither writes over the other's
 // change. A write the store refuses is written again at the next sweep (dirty).
 //
-// Two facts of it are written with the act they record rather than after it, so no end of the
-// daemon and no refused write between the two can lose one or repeat the other. The architect's
-// notice is written with the record that marks it told (ArchitectTold) in one transaction
-// (reachMark, enqueue). A relaunch is written by the launch it makes, onto the claim's own row
-// (supervise.Claim.LastRelaunch), and the keeper takes it into its record from the claim at its
-// next read of it (relaunchTakenIn), whether this daemon or the next made it.
+// One fact of it is written with the act it records rather than after it, so no end of the daemon
+// and no refused write between the two can lose it or repeat the act: a relaunch is written by the
+// launch it makes, onto the claim's own row (supervise.Claim.LastRelaunch), and the keeper takes
+// it into its record from the claim at its next read of it (relaunchTakenIn), whether this daemon
+// or the next made it.
 type reachKeeper struct {
 	reachKeeperOptions
 
@@ -87,14 +85,6 @@ type reachKeeper struct {
 	relaunching map[claim.Token]bool
 }
 
-// reachMark is a claim's reach record its notice marks told, written in the notice's own
-// transaction: a daemon that ends after the notice commits never tells it again, and a notice that
-// does not commit has marked nothing.
-type reachMark struct {
-	token claim.Token
-	reach supervise.Reach
-}
-
 // reachKeeperOptions are what a keeper is built from, every field of it that is not its own state.
 // A daemon builds its keeper once, from all of them, and never sets one afterwards.
 type reachKeeperOptions struct {
@@ -105,11 +95,12 @@ type reachKeeperOptions struct {
 	now              func() time.Time
 	list             func(context.Context) ([]notify.ListedSession, error)
 	put              func(context.Context, claim.Token, supervise.Reach) (bool, error)
-	// reachNotify is the workflow's write the keeper tells through: an architect's notice of a
-	// claim of its tree out of reach, with its mark (enqueue), in one transaction. It is nil in a
-	// deployment with no workflow, which tells nobody.
-	reachNotify
-	alerts *fleetalert.Writer
+	// operatorHolds is whether an operator's suspension holds the claim (supervise.Claim.RuleHolds,
+	// as its machine last published it), which the store's copy of a claim never says; nil holds
+	// none. It is read before anything else of a relaunch, so such a claim gets no line on any
+	// path (relaunchMarked).
+	operatorHolds func(claim.Token) bool
+	alerts        *fleetalert.Writer
 	// relaunch is the daemon's own relaunch of a marked claim on its same session at a moment of
 	// the keeper's clock, which may replace the pod of the controller's claim alone, answering the
 	// claim as the relaunch left it; nil relaunches nothing.
@@ -235,15 +226,6 @@ func (k *reachKeeper) store(ctx context.Context, token claim.Token, next supervi
 func (k *reachKeeper) storeEach(ctx context.Context, token claim.Token, next supervise.Reach) {
 	if err := k.store(ctx, token, next); err != nil && ctx.Err() == nil {
 		k.log.Error("reach: the store would not write a claim's reach record; writing it again at the next sweep", "claim", token, "error", err)
-	}
-}
-
-// marked takes the records marks wrote with their notice as the store now holds them. The
-// caller holds mu.
-func (k *reachKeeper) marked(marks []reachMark) {
-	for _, mark := range marks {
-		k.records[mark.token] = mark.reach
-		delete(k.dirty, mark.token)
 	}
 }
 
@@ -422,10 +404,9 @@ const (
 )
 
 // judge is c's record once the daemon has acted on this minute's reading of it (rec, verdict): an
-// episode that is over closes the claim's lines, and a claim marked out of reach has its
-// architect told, where it has one to tell, and is relaunched (relaunchMarked). siblings is the
-// live claims of c's pod, c among them, and reaches whether Envoy reaches one of them this minute.
-// The caller holds mu.
+// episode that is over closes the claim's lines, and a claim marked out of reach is relaunched
+// (relaunchMarked). siblings is the live claims of c's pod, c among them, and reaches whether Envoy
+// reaches one of them this minute. The caller holds mu.
 func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervise.Reach, verdict reachVerdict, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) supervise.Reach {
 	switch verdict {
 	case reachNotDue:
@@ -437,9 +418,6 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervis
 			}
 			return k.episodeOver(c, rec, verdict)
 		}
-	}
-	if c.Role != claim.RoleController && !rec.ArchitectTold {
-		rec.ArchitectTold = k.tellArchitect(ctx, c, rec)
 	}
 	return k.relaunchMarked(ctx, c, rec, siblings, reaches, now)
 }
@@ -541,9 +519,13 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 //     within the 6 hours (the first of linesOf);
 //   - Envoy reaches no claim of c's pod, two or more; the runtime refuses the relaunch,
 //     because the role's launcher is not connected or because the launch would replace the pod;
-//     the process outlived the relaunch's stop; or the guard refuses it, at once for the
-//     controller, which nobody else can relaunch, and for 60 minutes for a workflow claim, whose
-//     process may still run a turn that ends (the second of linesOf).
+//     the process outlived the relaunch's stop; or the guard, or anything else of the relaunch,
+//     refuses it, at once for the controller, which nobody else can relaunch, and for 60 minutes
+//     for a workflow claim, whose process may still run a turn that ends (the second of linesOf).
+//
+// An operator's suspension held over c is read first, before all of these: it is a person's own
+// act on the claim, so c gets no line on any path while it holds, and it is logged once an episode
+// (operatorHolds, supervise.Reach.SuspensionHeldAt).
 //
 // A refused relaunch uses no part of the 6 hours, and the daemon asks again at each sweep, so a
 // claim the guard lets through later, or whose launcher is connected again, is relaunched then.
@@ -551,6 +533,14 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 // record has taken in by now (relaunchTakenIn), so a daemon that ended before its own write of
 // the record does not relaunch c a second time within the 6 hours. The caller holds mu.
 func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) supervise.Reach {
+	if k.operatorHolds != nil && k.operatorHolds(c.Token) {
+		if rec.SuspensionHeldAt.IsZero() {
+			rec.SuspensionHeldAt = now
+			k.log.Info("reach: an operator's suspension holds the daemon's relaunch of a claim Envoy cannot reach; no line is written for a person's own act",
+				"claim", c.Token)
+		}
+		return rec
+	}
 	lines, token := linesOf(c), string(c.Token)
 	if rec.Relaunched {
 		if now.Sub(rec.RelaunchedAt) >= notBackAfter {
@@ -714,35 +704,6 @@ func (k *reachKeeper) carriesItsEpisode(c supervise.Claim, rec supervise.Reach) 
 		c.LastRelaunch.Equal(rec.RelaunchedAt) &&
 		c.Generation == relaunchGeneration(c) &&
 		(holdsEpisode(c.State) || c.State == supervise.StateFailed)
-}
-
-// tellArchitect tells the architect of c's tree that c is out of reach, written with rec marked
-// told in the notice's own transaction, and answers whether it did: a notice of the claim on its
-// issue, which the owner walk takes to the architect that owns the issue, or for a child's own
-// architect on its tree's root. The tree architect's own claim is told to nobody here, since it
-// could not hear it. The notice asks nothing, since the daemon relaunches the claim. The caller
-// holds mu.
-func (k *reachKeeper) tellArchitect(ctx context.Context, c supervise.Claim, rec supervise.Reach) bool {
-	if k.enqueue == nil || c.Issue == "" || claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
-		return true
-	}
-	issue := c.Issue
-	if c.Role == claim.RoleArchitect {
-		issue = c.Tree
-	}
-	notice := record.Notice{Kind: record.ClaimOutOfReachNotice, Role: c.Role, Claim: string(c.Token), Reason: fmt.Sprintf(
-		"%s's session has not registered with Envoy since %s, more than %s, so it cannot hear its notices. Its claim keeps its state, and the daemon relaunches it on the same session; nothing is asked of you.",
-		c.Token, stamp(rec.Since), timewords.Words(supervise.UnreachableAfter))}
-	rec.ArchitectTold = true
-	marks := []reachMark{{token: c.Token, reach: rec}}
-	if err := k.enqueue(ctx, issue, notice, marks); err != nil {
-		if ctx.Err() == nil {
-			k.log.Error("reach: the architect's notice of an unreachable claim was not written; writing it again at the next sweep", "claim", c.Token, "error", err)
-		}
-		return false
-	}
-	k.marked(marks)
-	return true
 }
 
 // refusalOf is why a relaunch of c, whose reach record is rec, is refused before c's machine

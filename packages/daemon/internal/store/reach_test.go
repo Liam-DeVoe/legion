@@ -2,12 +2,9 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -25,9 +22,9 @@ func reopened(t *testing.T, st *Store) *Store {
 }
 
 // The daemon's record of whether Envoy can reach a claim's session survives a restart, because
-// three of its facts are needed exactly then (R5): a claim reported before a boot is not reported
-// again after it, a second relaunch within 6 hours is refused, and the daemon relaunches its own
-// controller at most once in 6 hours. No write a machine makes carries it, a launch's included,
+// two of its facts are needed exactly then (R5): a second relaunch within 6 hours is refused, and
+// the guard's 60 minutes count from the first refusal of the episode, whichever daemon made it.
+// No write a machine makes carries it, a launch's included,
 // since a relaunch keeps the session the record speaks of.
 func TestTheReachRecordSurvivesARestartAndNoClaimWriteCarriesIt(t *testing.T) {
 	ctx := context.Background()
@@ -39,7 +36,7 @@ func TestTheReachRecordSurvivesARestartAndNoClaimWriteCarriesIt(t *testing.T) {
 	at := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
 	want := supervise.Reach{
 		Session: "ses_implementer", FirstReady: at.Add(-time.Hour), Since: at, LastSeen: at,
-		ArchitectTold: true, GuardRefusedAt: at.Add(5 * time.Minute), RelaunchedAt: at.Add(25 * time.Minute), Relaunched: true,
+		GuardRefusedAt: at.Add(5 * time.Minute), RelaunchedAt: at.Add(25 * time.Minute), Relaunched: true,
 	}
 	if known, err := st.PutClaimReach(ctx, c.Token, want); err != nil || !known {
 		t.Fatalf("PutClaimReach = %t, %v", known, err)
@@ -168,41 +165,6 @@ func TestTheRelaunchGenerationGoesWithItsRelaunch(t *testing.T) {
 	write(second, 0)
 	if got := read(); !got.LastRelaunch.Equal(second) || got.LastRelaunchGeneration != 0 {
 		t.Fatalf("after a later relaunch's first write the row reads %v at generation %d, want %v not recorded", got.LastRelaunch, got.LastRelaunchGeneration, second)
-	}
-}
-
-// A reach record written in the transaction of a notice that does not commit is not written: a
-// notice and the mark that says it was told commit together or not at all.
-func TestAReachRecordWrittenInATransactionThatDoesNotCommitIsNotWritten(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	c := tmuxClaim("legion-LEGION-209-implementer")
-	if err := st.PutClaim(ctx, c); err != nil {
-		t.Fatalf("put claim: %v", err)
-	}
-	marked := supervise.Reach{Session: "ses_implementer", Since: time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC), ArchitectTold: true}
-	refused := errors.New("the notice's own write was refused")
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		if known, err := PutClaimReachTx(ctx, tx, c.Token, marked); err != nil || !known {
-			return fmt.Errorf("PutClaimReachTx = %t, %w", known, err)
-		}
-		return refused
-	}); !errors.Is(err, refused) {
-		t.Fatalf("the transaction = %v, want the notice's refusal", err)
-	}
-	read, _, err := st.ClaimByBootTokenHash(ctx, c.BootTokenHash)
-	if err != nil || read.Reach != (supervise.Reach{}) {
-		t.Fatalf("reach after a transaction that did not commit = %+v, %v, want none", read.Reach, err)
-	}
-
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		_, err := PutClaimReachTx(ctx, tx, c.Token, marked)
-		return err
-	}); err != nil {
-		t.Fatalf("the transaction that commits: %v", err)
-	}
-	if read, _, err := st.ClaimByBootTokenHash(ctx, c.BootTokenHash); err != nil || read.Reach != marked {
-		t.Fatalf("reach after a transaction that committed = %+v, %v, want %+v", read.Reach, err, marked)
 	}
 }
 

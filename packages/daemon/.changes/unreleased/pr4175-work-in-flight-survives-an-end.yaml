@@ -6,8 +6,7 @@ body: |-
     more than 20 minutes is marked unreachable. The daemon reads Envoy's session list once a
     minute, unresponsive sessions included. The mark is `unreachable`, `{since, lastSeen?}`, on
     every claim view of `GET /legion/v1/state`, on the controller's locator and on the operator's
-    claim routes, and the claim keeps its state. Each tree's architect is told of the claims of its
-    tree other than its own, and asked nothing.
+    claim routes, and the claim keeps its state.
     The daemon relaunches each claim it marked on its same session, at most once in 6 hours: it
     stops the claim's process through its launcher, starts it again on the same session, and
     charges the claim nothing. A guard holds the relaunch while the claim's worker stream has shown
@@ -23,8 +22,8 @@ body: |-
     starts, even when that launch waits for a retry, and at most until the round's bound, so the
     claim comes back where its unpushed work is. Reaching the bound ends that hold; an operator's
     suspension or a pause's hold still keeps the pod. A workflow role's relaunch waits while the
-    project is paused, and an operator's suspension held over a claim refuses its relaunch with no
-    line, since it is a person's own act. Under `controller: daemon` the daemon relaunches its own
+    project is paused, and an operator's suspension held over a claim holds its relaunch with no
+    line on any path, since it is a person's own act. Under `controller: daemon` the daemon relaunches its own
     controller the same way, and replaces the controller's pod where the launch needs that or the
     launcher is not connected.
     A role message or hook prompt to a claim that keeps the session it recorded is held in the
@@ -37,8 +36,8 @@ body: |-
     older connection that sends nothing for 2 minutes after its stop frame. Every accepted TCP
     connection of the worker stream carries keepalive (15 s idle, 9 probes 15 s apart) and a
     2-minute `TCP_USER_TIMEOUT`, so a connection whose sent data stays unacknowledged for 2 minutes
-    ends. The controller is told of no claim out of reach, no lock-out and no empty session list:
-    each is a case only a person can act on.
+    ends. No agent is told of a claim out of reach, a lock-out or an empty session list: the daemon
+    relaunches what it can, and each other case is one only a person can act on.
     For a case no agent can hear or act on, the daemon writes an error line that starts
     `LEGION FLEET ALERT`, with a `case` field: `claim_unreachable` (a claim its relaunch did not
     bring back within 20 minutes, or out of reach again within 6 hours of its relaunch),
@@ -59,10 +58,9 @@ body: |-
     where they ran on 2 hours, and the implementer and reviewer on 8 hours, as before.
     An Oh My Pi session whose previous process ended in a turn is told so when it is resumed, and
     a session whose Envoy heartbeat stopped registers again (`@sjawhar/pi-envoy`).
-    Six migrations add what this needs: the claims' reach record and the hash of every boot token
-    a launch replaced (`20261116012459_claim_reach_and_prior_boot_tokens`), the outbox kind of the
-    architect's reach notice (`20261116082000_reach_notice_kinds`), the records a restart must keep
-    of a held outbox row and of a relaunch's generation
+    Five migrations add what this needs: the claims' reach record and the hash of every boot token
+    a launch replaced (`20261116012459_claim_reach_and_prior_boot_tokens`), the records a restart
+    must keep of a held outbox row and of a relaunch's generation
     (`20261116092312_reach_records_kept_with_their_acts`), the session the listener stored a role
     message's or hook prompt's copy for (`20261116164153_outbox_copy_stored_for_its_session`), the
     open fleet alert lines (`20261118133133_fleet_alert_lines`), and the session's own time of an

@@ -267,8 +267,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindReachNotice, OutboxKindRoleHoldersPublish,
-		OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
+		OutboxKindMergeForward, OutboxKindPlanRecord}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -307,11 +307,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 // stop, a write to Dispatch, a controller's notice.
 func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	decided := map[OutboxKind]string{
-		OutboxKindSupervise: "op start",
-		OutboxKindNotice:    "every row",
-		// An architect's notice of a claim out of reach resumes a released architect as any
-		// architect's notice does.
-		OutboxKindReachNotice:       "every row",
+		OutboxKindSupervise:         "op start",
+		OutboxKindNotice:            "every row",
 		OutboxKindHookPrompt:        "every row",
 		OutboxKindRoleMessage:       "every row",
 		OutboxKindUpdateAsk:         "every row",
@@ -1102,8 +1099,6 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
-		{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Claim: "legion-LEGION-208-implementer",
-			Reason: "Envoy has not heard from this claim's session since 2026-11-08T08:00:00Z, more than 20 minutes ago; it keeps its state and the daemon relaunches it"},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

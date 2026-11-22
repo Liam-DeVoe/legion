@@ -30,7 +30,8 @@ func TestTheStreamsCloseCarriesItsGenerationToTheMachine(t *testing.T) {
 
 // relaunchRig is the daemon's relaunch of a claim it has marked out of reach (relaunchByDaemon)
 // over a bare supervisor on the fake runtime and the reach rig's keeper, as openSupervision wires
-// it: the keeper's relaunch posts RequestRelaunch to the claim's machine.
+// it: the keeper's relaunch posts RequestRelaunch to the claim's machine, and its read of an
+// operator's suspension asks that machine (operatorHolds).
 func relaunchRig(t *testing.T) (*reachRig, *supervisor) {
 	t.Helper()
 	sup, _ := newPluginSupervisor(t, api.DaemonAPIVersion, true)
@@ -48,6 +49,7 @@ func relaunchRig(t *testing.T) (*reachRig, *supervisor) {
 	r := newReachRig(t, false)
 	s := &supervision{log: quietLogger(), supervisor: sup, reach: r.k}
 	r.k.relaunch = s.relaunchByDaemon
+	r.k.operatorHolds = s.operatorHolds
 	return r, sup
 }
 
@@ -190,6 +192,42 @@ func TestTheDaemonsRelaunchOfAClaimAnOperatorSuspendsIsRefusedWithNoLine(t *test
 	}
 	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.HeldAt.IsZero() || !got.GuardRefusedAt.IsZero() {
 		t.Fatalf("the keeper's record = %+v, want the operator's suspension recorded and no other refusal", got)
+	}
+}
+
+// An operator's suspension held over a claim whose relaunch the keeper's own guard would refuse,
+// background work running in it, writes no line however long it holds: the keeper reads the
+// suspension from the claim's machine before the guard, so the guard's 60 minutes never start.
+// The sweep reads the claim as the store holds it, which never carries a suspension held for a
+// turn, so only the machine can say it.
+func TestAnOperatorsSuspensionHeldOverABusyClaimWritesNoGuardLine(t *testing.T) {
+	r, sup := relaunchRig(t)
+	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	worker.ActivityBackground, worker.ActivityKinds = true, []string{"async-job"}
+	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := sup.Machine(worker.Token)
+	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: worker.Token, By: supervise.SuspendedByOperator,
+		Reason: "the operator suspends it"}); !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("the operator's suspension of the claim in its turn = %v, want it held for the turn", err)
+	}
+	stored := func() supervise.Claim {
+		c := r.with(m.Claim())
+		c.SuspensionHeld, c.SuspensionHeldBy = false, ""
+		return c
+	}
+	generation := m.Claim().Generation
+	for minute := 21; minute <= 90; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(stored())
+	}
+	if got := m.Claim().Generation; got != generation {
+		t.Fatalf("the relaunch moved the claim an operator suspends to generation %d, want %d", got, generation)
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d lines over 70 minutes for a busy claim an operator suspends, want none", lines)
 	}
 }
 

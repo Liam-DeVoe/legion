@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -41,10 +40,11 @@ type reachRig struct {
 	now      time.Time
 	sessions []notify.ListedSession
 	// roles is the Envoy roles each session holds in the list listing writes.
-	roles      map[string][]string
-	listErr    error
-	puts       map[claim.Token]supervise.Reach
-	rows       map[string][]record.OutboxPayload
+	roles   map[string][]string
+	listErr error
+	puts    map[claim.Token]supervise.Reach
+	// held is each claim an operator's suspension holds (operatorHolds).
+	held       map[claim.Token]bool
 	relaunched []supervise.Claim
 	relaunch   error
 }
@@ -52,7 +52,7 @@ type reachRig struct {
 func newReachRig(t *testing.T, daemonController bool) *reachRig {
 	t.Helper()
 	r := &reachRig{t: t, logged: &bytes.Buffer{}, now: reachBoot, puts: map[claim.Token]supervise.Reach{},
-		roles: map[string][]string{}, rows: map[string][]record.OutboxPayload{}}
+		roles: map[string][]string{}, held: map[claim.Token]bool{}}
 	log := slog.New(slog.NewTextHandler(r.logged, nil))
 	r.k = newReachKeeper(reachKeeperOptions{
 		log: log, project: "LEGION", boot: reachBoot, daemonController: daemonController,
@@ -68,16 +68,10 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 			r.puts[token] = reach
 			return true, nil
 		},
-		reachNotify: reachNotify{
-			enqueue: func(_ context.Context, issue string, notice record.Notice, marks []reachMark) error {
-				r.mu.Lock()
-				defer r.mu.Unlock()
-				r.rows[issue] = append(r.rows[issue], notice)
-				for _, mark := range marks {
-					r.puts[mark.token] = mark.reach
-				}
-				return nil
-			},
+		operatorHolds: func(token claim.Token) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.held[token]
 		},
 		alerts: fleetalert.New(log, "legion"),
 		relaunch: func(_ context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
@@ -123,18 +117,6 @@ func (r *reachRig) sweep(claims ...supervise.Claim) {
 	r.t.Helper()
 	r.k.sweep(context.Background(), claims)
 	r.k.wait()
-}
-
-func (r *reachRig) architectNotices(issue string) []record.Notice {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var of []record.Notice
-	for _, payload := range r.rows[issue] {
-		if notice, ok := payload.(record.Notice); ok {
-			of = append(of, notice)
-		}
-	}
-	return of
 }
 
 func (r *reachRig) lines(word string) int {
@@ -285,8 +267,8 @@ func TestAFailedReadChangesNothingAndTwentyMinutesOfThemWriteTheLine(t *testing.
 
 // A failed read, or a read whose list holds no live session, holds back a mark that is not made
 // yet: the 20 minutes count from it. A mark already made it leaves as it is — its moment and its
-// last registration — and it sends nothing, the minute it happens and the minute after, when the
-// list answers again with the claim's session still unregistered.
+// last registration — the minute it happens and the minute after, when the list answers again
+// with the claim's session still unregistered.
 func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 	for name, interrupt := range map[string]func(r *reachRig, minute time.Duration){
 		"a failed read": func(r *reachRig, _ time.Duration) {
@@ -308,7 +290,6 @@ func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 			if !marked.Unreachable() {
 				t.Fatalf("at 25 minutes the claim reads %+v, want it marked", marked)
 			}
-			rows := len(r.architectNotices("LEGION-209"))
 
 			r.at(26 * time.Minute)
 			interrupt(r, 26*time.Minute)
@@ -324,9 +305,6 @@ func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 				if !got.Unreachable() || !got.Since.Equal(marked.Since) || !got.LastSeen.Equal(marked.LastSeen) {
 					t.Fatalf("at %d minutes, after %s at 26, the claim reads %+v, want its mark %+v as it was", minute, name, got, marked)
 				}
-			}
-			if got := len(r.architectNotices("LEGION-209")); got != rows {
-				t.Errorf("after %s the architect was sent %d more notices, want none", name, got-rows)
 			}
 		})
 	}
@@ -471,22 +449,6 @@ func TestAListWithNoLiveSessionMarksNoneAndIsToldOnce(t *testing.T) {
 	}
 }
 
-// An architect told of a claim before a daemon boot is not told again after it: its record says so.
-func TestAnArchitectToldBeforeABootIsNotToldAgainAfterIt(t *testing.T) {
-	r := newReachRig(t, false)
-	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-	worker.Reach = supervise.Reach{Session: "ses_implementer", FirstReady: worker.LastReady, ArchitectTold: true}
-	r.at(21 * time.Minute)
-	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-	r.sweep(worker)
-	if !r.reach(worker.Token).Unreachable() {
-		t.Fatal("the claim was not marked 21 minutes after the boot")
-	}
-	if notices := r.architectNotices("LEGION-209"); len(notices) != 0 {
-		t.Fatalf("its architect was told again: %+v", notices)
-	}
-}
-
 // A boot restores a claim the last daemon left mid-launch as launch_uncertain, and the claim
 // stays queued until a launch starts. Neither state ends the episode: the relaunch made before
 // the boot is still the episode's, and R6's line still comes 20 minutes after it (R5).
@@ -538,26 +500,33 @@ func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
 	}
 }
 
-// The tree's architect is told of each claim of its tree but its own, once an episode, and asked
-// nothing.
-func TestTheArchitectIsToldOfItsTreesClaimsButItsOwn(t *testing.T) {
+// An operator's suspension held over a claim is read before anything else of its relaunch, so it
+// writes no line on any path: not the guard's after 60 minutes, which a claim with background work
+// running would reach, nor a refusal's. It is logged once an episode, and the daemon asks the
+// runtime nothing.
+func TestAnOperatorsSuspensionWritesNoLineOnAnyPath(t *testing.T) {
 	r := newReachRig(t, false)
-	architect := reachClaim(t, "LEGION-208", "LEGION-208", claim.RoleArchitect, "ses_architect")
-	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-	r.at(22 * time.Minute)
-	r.listing(map[string]time.Duration{"ses_other": 22 * time.Minute})
-	r.sweep(architect, worker)
-	if notices := r.architectNotices("LEGION-209"); len(notices) != 1 || notices[0].Kind != record.ClaimOutOfReachNotice ||
-		notices[0].Claim != string(worker.Token) {
-		t.Fatalf("the architect's notices on LEGION-209 = %+v, want one naming the implementer's claim", notices)
+	worker := settledWorker(t)
+	worker.ActivityBackground, worker.ActivityKinds = true, []string{"async-job"}
+	r.mu.Lock()
+	r.held[worker.Token] = true
+	r.mu.Unlock()
+	for minute := 21; minute <= 100; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(worker))
 	}
-	if notices := r.architectNotices("LEGION-208"); len(notices) != 0 {
-		t.Fatalf("the architect was told of its own claim: %+v", notices)
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d lines for a claim an operator's suspension holds, want none", lines)
 	}
-	r.at(23 * time.Minute)
-	r.sweep(r.with(architect), r.with(worker))
-	if notices := r.architectNotices("LEGION-209"); len(notices) != 1 {
-		t.Fatalf("the architect was told %d times of one episode, want once", len(notices))
+	if len(r.relaunched) != 0 {
+		t.Fatalf("the daemon asked to relaunch %+v while an operator's suspension holds it, want nothing", r.relaunched)
+	}
+	if logged := strings.Count(r.logged.String(), "an operator's suspension holds the daemon's relaunch"); logged != 1 {
+		t.Fatalf("the operator's suspension was logged %d times over 80 sweeps, want once", logged)
+	}
+	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.GuardRefusedAt.IsZero() {
+		t.Fatalf("the record = %+v, want the operator's suspension recorded and no guard refusal", got)
 	}
 }
 

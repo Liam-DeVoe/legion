@@ -51,9 +51,6 @@ type Reach struct {
 	// LastSeen is the last registration of Session the daemon had read from Envoy's list when it
 	// marked the claim, and the zero time where it had read none since its boot.
 	LastSeen time.Time `json:"lastSeen,omitzero"`
-	// ArchitectTold is whether the tree's architect has been told of this episode
-	// (record.ClaimOutOfReachNotice).
-	ArchitectTold bool `json:"architectTold,omitempty"`
 	// GuardRefusedAt is when the relaunch guard first refused the daemon's relaunch of the claim in
 	// this episode (RelaunchGuard), which R6's line for a guard held 60 minutes counts from.
 	GuardRefusedAt time.Time `json:"guardRefusedAt,omitzero"`

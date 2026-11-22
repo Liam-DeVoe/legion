@@ -23,7 +23,7 @@ func TestAClaimViewShowsTheUnreachableMarkAndKeepsItsState(t *testing.T) {
 	if view.Unreachable == nil || !view.Unreachable.Since.Equal(since) || view.Unreachable.LastSeen == nil || !view.Unreachable.LastSeen.Equal(since) {
 		t.Fatalf("the marked claim's view = %+v, want unreachable since %s with its last registration", view.Unreachable, since)
 	}
-	if reached := ClaimViewOf(supervise.Claim{State: supervise.StateIdle, Reach: supervise.Reach{Session: "ses", ArchitectTold: true}}); reached.Unreachable != nil {
+	if reached := ClaimViewOf(supervise.Claim{State: supervise.StateIdle, Reach: supervise.Reach{Session: "ses", FirstReady: since}}); reached.Unreachable != nil {
 		t.Fatalf("a claim not marked shows %+v, want no unreachable key", reached.Unreachable)
 	}
 	encoded, err := json.Marshal(ClaimViewOf(supervise.Claim{State: supervise.StateIdle}))

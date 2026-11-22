@@ -287,7 +287,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			StartedAt: projectedAt.Add(-time.Minute), EndedAt: projectedAt.Add(-30 * time.Second),
 		},
 		Reach: supervise.Reach{Session: "ses_implementer_500", FirstReady: projectedAt.Add(-50 * time.Minute),
-			Since: projectedAt.Add(-25 * time.Minute), LastSeen: projectedAt.Add(-25 * time.Minute), ArchitectTold: true},
+			Since: projectedAt.Add(-25 * time.Minute), LastSeen: projectedAt.Add(-25 * time.Minute)},
 	}
 
 	store := projectionStore{

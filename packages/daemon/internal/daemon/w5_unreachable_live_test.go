@@ -102,7 +102,6 @@ const (
 	// base block matches its start.
 	w5NoHolderFinish = "outbox role message finished undelivered: its role has no live holder"
 	w5PhaseChanged   = "workflow: phase changed"
-	w5NoticeReheld   = "outbox notice re-held: the listener could not forward it to its architect's session"
 	w5R2Note         = "Your previous turn was interrupted."
 	// The cause the daemon's cut-turn note names for its own relaunch of a claim Envoy could not
 	// reach (internal/daemon's relaunchedByDaemon), as the resumed session's transcript shows it:
@@ -722,7 +721,7 @@ func (r *w5Run) firstBlock() {
 		r.checkMarked(name, before, t0)
 	}
 	r.checkNoControllerNotice(w5FirstBlock, t0, "first-block")
-	r.checkArchitectRows(t0)
+	r.checkNoArchitectNotice(t0)
 	r.checkRelaunchedAtTheMark(before, t0)
 
 	sleepUntil(t0.Add(w5GuardRead))
@@ -783,80 +782,43 @@ func (r *w5Run) checkNoControllerNotice(names []string, from time.Time, label st
 	r.check(label+"-no-controller-notice-names-a-claim-out-of-reach", len(naming) == 0, "controller notices from %s that name one of %v: %v", clockAt(from), names, naming)
 }
 
-// checkArchitectRows reads the architect's notice rows the outbox wrote from from, and what the
-// architect's role topic stored: the architect is told of the implementer's claim once, and never
-// of its own. One telling may take more than one row: the daemon relaunches the architect at its
-// own mark, and a notice the listener could not hand to the relaunching session in time is
-// re-held as a copy (the outbox's "re-held" line, reason receipt_timeout), whose row's payload
-// names the row it copies (resend_of) and which goes out under that row's key. So exactly one row
-// naming the implementer copies no other; every other such row copies an earlier row of the same
-// claim and kind, after a re-held line for that row's key with reason receipt_timeout; and the
-// architect's role topic stored that notice exactly once.
-func (r *w5Run) checkArchitectRows(from time.Time) {
-	arch, impl := r.c("architect").token, r.c("implementer").token
-	type implRow struct {
-		id, resendOf int64
-		written      time.Time
+// checkNoArchitectNotice reads the architect's notice rows the outbox wrote from from, and the
+// forwards the stream stored for the architect's session: no notice of a claim out of reach is
+// written for it or reaches it, since the daemon relaunches the claim and a person reads what a
+// relaunch cannot fix in R6's line. A notice is of a claim out of reach by its kind, or by a reason
+// that says a session has not registered with Envoy. The reader of the forwards must have seen the
+// architect's other notices over the run, so that none of this kind is no blind read.
+func (r *w5Run) checkNoArchitectNotice(from time.Time) {
+	arch := r.c("architect").token
+	ofReach := func(kind, reason string) bool {
+		return kind == w5NoticeClaimOutOfReach || strings.Contains(reason, "registered with Envoy")
 	}
-	var names []string
-	var rows []implRow
-	namesOwn := 0
-	for _, life := range r.rowLives("reach_notice") {
+	var rows []string
+	for _, life := range r.rowLives("notice") {
 		var payload struct {
-			Kind     string `json:"kind"`
-			Claim    string `json:"claim"`
-			ResendOf int64  `json:"resend_of"`
+			Kind   string `json:"kind"`
+			Reason string `json:"reason"`
 		}
 		_ = json.Unmarshal([]byte(life.payload), &payload)
-		if payload.Kind != w5NoticeClaimOutOfReach || life.written.Before(from) {
-			continue
-		}
-		names = append(names, fmt.Sprintf("row %d %s written %s finished %s resend_of %d", life.id, payload.Claim, clockAt(life.written), clockAt(life.finished), payload.ResendOf))
-		if payload.Claim == string(impl) {
-			rows = append(rows, implRow{id: life.id, resendOf: payload.ResendOf, written: life.written})
-		}
-		if payload.Claim == string(arch) {
-			namesOwn++
+		if !life.written.Before(from) && ofReach(payload.Kind, payload.Reason) {
+			rows = append(rows, fmt.Sprintf("row %d on %s written %s: %s", life.id, life.issue, clockAt(life.written), truncate(life.payload, 200)))
 		}
 	}
-	sort.Strings(names)
-	r.record("first block: the architect's claim-out-of-reach notice rows: %v", names)
-	tellings := map[int64]time.Time{}
-	for _, row := range rows {
-		if row.resendOf == 0 {
-			tellings[row.id] = row.written
-		}
-	}
-	var strays []string
-	for _, row := range rows {
-		if row.resendOf == 0 {
-			continue
-		}
-		told, copied := tellings[row.resendOf]
-		// The daemon writes the copy's row and logs its re-held line in the same pass, in either
-		// order, so the line is read within 2 seconds of the row on either side.
-		reheld := r.logs(func(rec loggedRecord) bool {
-			return strings.HasPrefix(rec.Message, w5NoticeReheld) && fmt.Sprint(rec.Attrs["key"]) == fmt.Sprintf("legion-outbox:%d", row.resendOf) &&
-				fmt.Sprint(rec.Attrs["reason"]) == "receipt_timeout" && absDuration(rec.at.Sub(row.written)) <= 2*time.Second
-		})
-		if !copied || !told.Before(row.written) || len(reheld) == 0 {
-			strays = append(strays, fmt.Sprintf("row %d resend_of %d (a telling of the implementer: %t; re-held lines with receipt_timeout within 2 s of it: %d)", row.id, row.resendOf, copied, len(reheld)))
-		}
-	}
-	// A copy the architect's session received is the listener's forward of the role message,
-	// which the stream stores on the session's own subject with the role topic in its envelope.
+	sort.Strings(rows)
 	session := r.session(arch)
-	var delivered []string
-	for _, n := range r.forwardedTo(session, notify.RoleTopicPrefix+string(arch)) {
-		if n.kind == w5NoticeClaimOutOfReach && n.claim == string(impl) && !n.at.Before(from) {
-			delivered = append(delivered, n.String())
+	all := r.forwardedTo(session, notify.RoleTopicPrefix+string(arch))
+	var reached []string
+	for _, n := range all {
+		reason, _ := n.raw["reason"].(string)
+		if !n.at.Before(from) && ofReach(n.kind, reason) {
+			reached = append(reached, n.String())
 		}
 	}
-	r.check("architect-row-names-the-implementer", len(tellings) == 1 && len(strays) == 0,
-		"%d rows tell the architect of %s and copy no other; %d rows are copies; copies that do not copy an earlier telling after its receipt timeout: %v", len(tellings), impl, len(rows)-len(tellings), strays)
-	r.check("architect-receives-the-implementers-notice-once", len(delivered) == 1,
-		"the stream stored %d forwards to the architect's session %s of a notice naming %s: %v", len(delivered), session, impl, delivered)
-	r.check("no-architect-row-names-its-own-claim", namesOwn == 0, "%d architect rows name the architect's own claim %s", namesOwn, arch)
+	r.record("first block: the architect's session %s was forwarded %d notices over the run", session, len(all))
+	r.check("no-notice-of-a-claim-out-of-reach-reaches-the-architect", len(rows) == 0 && len(reached) == 0,
+		"notice rows of a claim out of reach from %s: %v; forwards of one to the architect's session: %v", clockAt(from), rows, reached)
+	r.check("the-architects-forwards-are-read", len(all) > 0,
+		"the stream holds %d forwards to the architect's session %s on its role topic over the run, want some, or the read above saw nothing", len(all), session)
 }
 
 // checkRelaunchedAtTheMark reads the daemon's own relaunch of the implementer, the architect and

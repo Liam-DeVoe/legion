@@ -1,16 +1,16 @@
 //go:build e2e
 
-// The rollback proof of this change's notices: a daemon of the release before this change starts on
-// a database this change migrated and wrote to, runs its outbox, and leaves every notice it cannot
-// decode as it stands, and this change's daemon then delivers each of them.
+// The rollback proof of this change's database: a daemon of the release before this change starts
+// on a database this change migrated and wrote to, runs its outbox with no decode failure and keeps
+// what its launches replaced, and this change's daemon then starts on it again.
 // scripts/e2e/rollback-notices.sh drives it, over four runs of this package's `-tags e2e` test
 // binary on one database and one nats-server: the release before records the fixture
 // (TestARollbackFixtureIsRecordedByTheReleaseBeforeLive), this change migrates and seeds it
 // (rollback_forward_live_test.go), the release before runs on it again (the rollback step), and
 // this change rolls forward (rollback_forward_live_test.go). The release before's two runs are
 // built from its own tree with this file copied in, so everything here uses what that release's
-// harness already has, and nothing this change adds: the notice kinds are written out as text,
-// and the rows are read with SQL.
+// harness already has, and nothing this change adds: the canary's kind is written out as text, and
+// the rows are read with SQL.
 package daemon
 
 import (
@@ -50,14 +50,9 @@ const (
 	rollbackProjectEnv = "LEGION_E2E_ROLLBACK_PROJECT"
 )
 
-// rollbackNoticeKinds are the notice kinds this change adds, which the release before it cannot
-// decode: it knows none of them, and its strict decoder refuses their claim field. Text, since that
-// release has no names for them.
-var rollbackNoticeKinds = []string{"claim-out-of-reach"}
-
-// rollbackCanaryKind is the ordinary controller notice the seed queues beside them, which every
-// release delivers: the rollback step reads its delivery as the proof that the older daemon's
-// outbox ran over the rows.
+// rollbackCanaryKind is the ordinary controller notice the seed queues, which every release
+// delivers: the rollback step reads its delivery as the proof that the older daemon's outbox ran
+// over the rows this change's daemon wrote.
 const rollbackCanaryKind = "tick"
 
 // rollbackClaim is one claim of the fixture: its issue (the tree's root, or the child under it),
@@ -330,24 +325,12 @@ func TestARollbackFixtureIsRecordedByTheReleaseBeforeLive(t *testing.T) {
 }
 
 // The rollback step: a daemon of this tree, which for the proof is the release before this change,
-// starts on the database a daemon of that change migrated and wrote one of each of its notices
-// into, runs its outbox — the canary tick the seed queued beside them reaches the controller's
-// topic and its row finishes — and leaves each of those notices as it stands: no attempt, no error
-// and no line of its log names a row it could not decode, and its state answers. Against a seed of
-// that change before it gave these notices kinds of their own, the older daemon's board lane takes
-// each such row, fails to decode it and retries it for ever, which is what this step catches: its
-// log names the decode failure and the rows carry it.
+// starts on the database a daemon of that change migrated and wrote to, runs its outbox — the
+// canary tick the seed queued reaches the controller's topic and its row finishes — with no line of
+// its log naming a row it could not decode, and its state answers.
 func TestARollbackDaemonLeavesTheNoticesItCannotDecodeLive(t *testing.T) {
 	p := newRollbackProof(t)
-	var seeded []rollbackRow
-	p.step("the seed left one of each notice of this change and a canary tick", func() {
-		seeded = p.rows(rollbackNoticeKinds)
-		for _, row := range seeded {
-			p.note("row %d: kind %s, notice %s, %d attempts", row.id, row.kind, row.noticeKind, row.attempts)
-		}
-		if len(seeded) != len(rollbackNoticeKinds) {
-			t.Fatalf("the outbox holds %d of the %d notices the seed queued", len(seeded), len(rollbackNoticeKinds))
-		}
+	p.step("the seed left a canary tick", func() {
 		if canary := p.rows([]string{rollbackCanaryKind}); len(canary) != 1 {
 			t.Fatalf("the outbox holds %d canary ticks, want the one the seed queued", len(canary))
 		}
@@ -366,23 +349,11 @@ func TestARollbackDaemonLeavesTheNoticesItCannotDecodeLive(t *testing.T) {
 			t.Fatalf("no tick reached the controller's topic; it took %+v", published)
 		}
 	})
-	p.step("it leaves each notice it cannot decode as it stands, and its log names no decode failure", func() {
+	p.step("its log names no decode failure", func() {
 		// Every lane of the project ran its due rows by the time the canary finished; this is
 		// how long a lane takes to come back to a row its first attempt failed, a backoff of one
-		// second doubling, so a row the daemon took is seen taken.
+		// second doubling, so a row the daemon failed on is seen failed.
 		time.Sleep(3 * liveSettle)
-		left := p.rows(rollbackNoticeKinds)
-		for _, row := range left {
-			p.note("row %d: kind %s, notice %s, %d attempts, last error %q", row.id, row.kind, row.noticeKind, row.attempts, row.lastError)
-		}
-		if len(left) != len(seeded) {
-			t.Errorf("%d of the %d notices are left in the outbox; the daemon finished one it cannot decode", len(left), len(seeded))
-		}
-		for _, row := range left {
-			if row.attempts != 0 || row.lastError != "" {
-				t.Errorf("row %d (%s, notice %s) was run: %d attempts, last error %q", row.id, row.kind, row.noticeKind, row.attempts, row.lastError)
-			}
-		}
 		failures := p.logLines("decode outbox row")
 		for _, line := range failures {
 			p.note("log: %s", line)

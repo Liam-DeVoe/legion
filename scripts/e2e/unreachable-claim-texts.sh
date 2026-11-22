@@ -121,7 +121,8 @@ removed=skills/legion-controller/references/unreachable-claims.md
 w7() {
   check=w7
   local found
-  clause new-line-architect-prompt "$(holds "$architect" "the daemon relaunches it on the session it already runs" "more than 20 minutes old")" "$architect"
+  clause new-line-architect-prompt "$(holds "$architect" "past that the daemon relaunches your claim on that same session" "20 minutes old or less")" "$architect"
+  clause architect-prompt-names-no-unreachable-notice "$(lacks "$architect" "claim-out-of-reach")" "$architect"
   clause new-line-envoy-publish "$(holds "$contract" "the Legion daemon starts that claim's process again on the same session" "20 minutes old or less")" "$contract"
   clause new-line-site-envoy-page "$(holds "$site" "the Legion daemon relaunches a claim that session holds on that same session" "20 minutes old or less")" "$site"
   clause new-line-envoy-architecture "$(holds "$architecture" "the Legion daemon relaunches a claim that session holds on that same session" "20 minutes old or less")" "$architecture"

@@ -18,19 +18,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // anyTreeStore is the store with the tree lifecycle's launch check answered yes: the claims these
@@ -198,67 +193,6 @@ func (d *durableReach) refuseReachWrites(field string) func() {
 	}
 }
 
-// failAfter is the store's write of a reach record, refused once the record carries what ended
-// says it carries: the write of a daemon that ended before it made it.
-func (d *durableReach) failAfter(ended func(supervise.Reach) bool) func(context.Context, claim.Token, supervise.Reach) (bool, error) {
-	return func(ctx context.Context, token claim.Token, reach supervise.Reach) (bool, error) {
-		if ended(reach) {
-			return false, errors.New("the daemon ended before it made this write")
-		}
-		return d.st.PutClaimReach(ctx, token, reach)
-	}
-}
-
-// workflow is the workflow's half the keeper's notices are written through, over the database: a
-// registered controller and the admission that queues its notices.
-func (d *durableReach) workflow() *workflowRuntime {
-	d.t.Helper()
-	ctx := context.Background()
-	token, err := claim.ProjectToken("LEGION")
-	if err != nil {
-		d.t.Fatal(err)
-	}
-	generation, err := d.st.MintController(ctx, token, []byte("capability"))
-	if err != nil {
-		d.t.Fatalf("mint the controller capability: %v", err)
-	}
-	if ok, err := d.st.RegisterController(ctx, token, generation, "ses-controller", []byte("secret"), time.Now(), 0); err != nil || !ok {
-		d.t.Fatalf("register the controller = %t, %v", ok, err)
-	}
-	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
-	return &workflowRuntime{pool: d.pool, records: records, admission: admission, engine: engine,
-		handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", log: quietLogger()}
-}
-
-// architectToldOf is the notice the tests count, queued under the outbox kind its notice kind
-// takes (record.Notice.OutboxKind).
-var architectToldOf = record.Notice{Kind: record.ClaimOutOfReachNotice}
-
-// delivered is how many rows of notice's kind the outbox holds, under the outbox kind that notice
-// kind is queued in, which it then finishes, as their delivery does: a controller notice of the
-// same kind waiting unsent holds back the next one (admit's wakeController), and a delivered one
-// does not.
-func (d *durableReach) delivered(notice record.OutboxPayload) int {
-	d.t.Helper()
-	var kind record.NoticeKind
-	switch n := notice.(type) {
-	case record.ControllerNotice:
-		kind = n.Kind
-	case record.Notice:
-		kind = n.Kind
-	default:
-		d.t.Fatalf("count %T rows: not a notice", notice)
-	}
-	tag, err := d.pool.Exec(context.Background(), `delete from outbox where kind = $1 and payload->>'kind' = $2`,
-		string(notice.OutboxKind()), string(kind))
-	if err != nil {
-		d.t.Fatalf("finish the %s notices: %v", kind, err)
-	}
-	return int(tag.RowsAffected())
-}
-
 // relaunching is a keeper over the database built from o whose relaunch is the daemon's own
 // (relaunchByDaemon), through the supervision of claims it is booted with.
 func (d *durableReach) relaunching(o reachKeeperOptions, claims ...supervise.Claim) *reachKeeper {
@@ -408,66 +342,6 @@ func TestTheDaemonRelaunchesItsControllerOnceAcrossARefusedReachWriteAndARestart
 	second.wait()
 	if got := d.claim(token).Generation; got != 2 {
 		t.Fatalf("the controller is at generation %d after the next daemon's sweep, want no second relaunch within 6 hours", got)
-	}
-}
-
-// sweeps runs one sweep a minute from minute on each keeper in turn, a restart between each two,
-// and counts the notices of notice's kind each left in the outbox.
-func (d *durableReach) sweeps(minute int, notice record.OutboxPayload, keepers ...*reachKeeper) int {
-	d.t.Helper()
-	told := 0
-	for _, k := range keepers {
-		for range 2 {
-			d.at(time.Duration(minute) * time.Minute)
-			k.sweep(context.Background(), d.stored())
-			told += d.delivered(notice)
-			minute++
-		}
-	}
-	return told
-}
-
-// architectNotified is a keeper whose architects' notices are written through w, and whose reach
-// record is written by put.
-func (d *durableReach) architectNotified(w *workflowRuntime, put func(context.Context, claim.Token, supervise.Reach) (bool, error)) *reachKeeper {
-	o := d.options(false, put)
-	o.enqueue = w.enqueueReachNotice
-	return newReachKeeper(o)
-}
-
-// The tree architect's notice of a claim out of reach is told once across a write of its mark the
-// store refused and a restart.
-func TestTheArchitectIsToldOfAnUnreachableClaimOnceAcrossARefusedMarkWriteAndARestart(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	d.put(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-
-	lift := d.refuseReachWrites("architectTold")
-	refused := d.sweeps(21, architectToldOf, d.architectNotified(w, d.st.PutClaimReach))
-	lift()
-	if refused != 0 {
-		t.Fatalf("the architect was told %d times while the store refused the notice's mark, want none", refused)
-	}
-	told := d.sweeps(23, architectToldOf,
-		d.architectNotified(w, d.st.PutClaimReach), d.architectNotified(w, d.st.PutClaimReach))
-	if told != 1 {
-		t.Fatalf("the architect was told %d times of the implementer across two restarts once the mark could be written, want 1", told)
-	}
-}
-
-// A daemon that ends between the architect's notice and its mark leaves the next daemon nothing
-// to tell it again.
-func TestTheArchitectIsToldOfAnUnreachableClaimOnceAcrossADaemonThatEndsBeforeItsMarkWrite(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	d.put(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-
-	ended := d.failAfter(func(reach supervise.Reach) bool { return reach.ArchitectTold })
-	if told := d.sweeps(21, architectToldOf, d.architectNotified(w, ended)); told != 1 {
-		t.Fatalf("the first daemon told the architect %d times, want the once it told it before it ended", told)
-	}
-	if told := d.sweeps(23, architectToldOf, d.architectNotified(w, d.st.PutClaimReach)); told != 0 {
-		t.Fatalf("the next daemon told the architect %d times of a claim the first had told it of before it ended, want none", told)
 	}
 }
 

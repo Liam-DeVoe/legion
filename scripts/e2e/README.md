@@ -239,10 +239,9 @@ Each item below names a script, then what it proves.
 
 - `rollback-notices.sh`
 
-  a daemon of the release before, rolled back onto a database this change migrated and queued its claim-reach notices in, leaves each of those notices as it stands and decodes no row it cannot read, and the roll forward delivers each once, through two real daemons against one loopback PostgreSQL the caller names (`LEGION_TEST_PG_DSN`) — the build of the commit `--base-commit` names and the build of `--new-commit`, this checkout's head by default:
-  the release before records one claim in each state, this build migrates the database, reads each claim back, launches each twice and queues a tick and the eight new notices, the release before boots, launches its claims again, delivers the tick and leaves all eight rows with no attempt, the database holds the boot token each of those launches replaced, and this build boots again and delivers each of the eight once.
-  Run with `--new-commit` at a build that queues those notices under the release before's own outbox kinds, it is the change's negative control: every such row fails to decode there, is retried for ever, and the state route answers 500.
-  Run with `--new-commit` at a build that has those kinds and no trigger on `claims.boot_token_hash`, it is the control of the kept tokens: the roll forward names each claim the release before launched whose replaced boot token is not kept
+  a daemon of the release before, rolled back onto a database this change migrated and wrote to, runs its outbox with no decode failure and keeps the boot token each of its launches replaces, and the roll forward starts again with no decode failure, through two real daemons against one loopback PostgreSQL the caller names (`LEGION_TEST_PG_DSN`) — the build of the commit `--base-commit` names and the build of `--new-commit`, this checkout's head by default:
+  the release before records one claim in each state, this build migrates the database, reads each claim back, launches each twice and queues a tick, the release before boots, launches its claims again and delivers the tick, the database holds the boot token each of those launches replaced, and this build boots again.
+  Run with `--new-commit` at a build that has no trigger on `claims.boot_token_hash`, it is the control of the kept tokens: the roll forward names each claim the release before launched whose replaced boot token is not kept
 
 - `live-rig-smoke.sh`
 

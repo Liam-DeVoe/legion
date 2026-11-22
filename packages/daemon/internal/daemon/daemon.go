@@ -545,7 +545,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, workflow.reachNotify(), pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1733,7 +1733,7 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
 // (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
 // it reads the machines this supervisor holds for its catch-up and its resume.
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, notices reachNotify, pauses *projectPause) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1866,7 +1866,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		daemonController: cfg.ControllerLaunch == config.ControllerLaunchDaemon,
 		list:             listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		put:              st.PutClaimReach,
-		reachNotify:      notices,
+		operatorHolds:    supervisionOf.operatorHolds,
 		alerts:           alerts,
 		relaunch:         supervisionOf.relaunchByDaemon,
 		step:             st.ClaimStep,

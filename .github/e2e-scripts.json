@@ -279,7 +279,7 @@
     },
     {
       "script": "rollback-notices.sh",
-      "needs": "a commit of this repository's own history to build the release before from, which it builds from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is the release a deployment would roll back to is a caller's choice no job can make. The property is covered in CI by the record and store tests that hold each new notice to an outbox kind no earlier lane selects (`record/reach_notice_kind_test.go`, `store/migration_20261116082000_test.go`); the script is the live proof through two real daemons on one database, run by hand from a full checkout with go and psql and a loopback PostgreSQL (LEGION_TEST_PG_DSN); it installs its own nats-server with `go install`"
+      "needs": "a commit of this repository's own history to build the release before from, which it builds from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is the release a deployment would roll back to is a caller's choice no job can make. The kept boot tokens are covered in CI by the store tests of the trigger (`store/reach_test.go`); the script is the live proof through two real daemons on one database, run by hand from a full checkout with go and psql and a loopback PostgreSQL (LEGION_TEST_PG_DSN); it installs its own nats-server with `go install`"
     },
     {
       "script": "session-reconnect.sh",

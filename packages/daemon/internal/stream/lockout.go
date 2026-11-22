@@ -85,7 +85,7 @@ type lockOut struct {
 	// told is the bound connection having been sent its stop frame, so the 314 hellos of one
 	// 2026-11-12 lock-out would send one.
 	told bool
-	// reported is the controller and the alert having been told, which happens once per lock-out.
+	// reported is R6's line having been written, which happens once per lock-out.
 	reported bool
 	timer    Timer
 	// silence is the wait that ends the older connection if it sends nothing for

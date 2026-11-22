@@ -8,17 +8,14 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // rollbackLaunches is how many launches the seed writes of each claim after its first, each of
@@ -33,10 +30,8 @@ const rollbackSeededGeneration = 1 + rollbackLaunches
 // The seed: a daemon of this change's release migrates the database the release before recorded the
 // fixture in (TestARollbackFixtureIsRecordedByTheReleaseBeforeLive), so its migrations run over a
 // claims table holding one claim in each state, reads each of those claims back, launches each
-// twice more, and queues one of each notice that release adds beside a canary tick, through the
-// outbox's own row constructor (record.NewOutboxRow) and enqueue, as every writer of those notices
-// queues them. The tick is queued first, so a lane that stops at a row it cannot decode has run it
-// already.
+// twice more, and queues a canary tick through the outbox's own row constructor
+// (record.NewOutboxRow) and enqueue, for the release before to deliver.
 func TestARollbackSeedIsWrittenByTheNewerReleaseLive(t *testing.T) {
 	p := newRollbackProof(t)
 	ctx := context.Background()
@@ -93,58 +88,29 @@ func TestARollbackSeedIsWrittenByTheNewerReleaseLive(t *testing.T) {
 			t.Fatalf("the database keeps %d boot tokens of earlier launches, want the %d the launches left", len(history), rollbackLaunches*len(rollbackClaims))
 		}
 	})
-	p.step("a canary tick, then the notice of this change", func() {
-		root, implementer := p.root(), p.token(rollbackClaim{role: claim.RoleImplementer})
-		now := time.Now().UTC()
-		queued := []struct {
-			issue   string
-			payload record.OutboxPayload
-		}{
-			{p.cfg.Project, record.ControllerNotice{Kind: record.TickNotice}},
-			{root, record.Notice{Kind: record.ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: string(implementer),
-				Reason: "its session has not registered with Envoy for more than 20 minutes; nothing is asked of you"}},
+	p.step("a canary tick", func() {
+		row, err := record.NewOutboxRow(p.cfg.Project, record.ControllerNotice{Kind: record.TickNotice}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("build the canary tick: %v", err)
 		}
-		if err := p.st.Tx(ctx, func(tx pgx.Tx) error {
-			for _, q := range queued {
-				row, err := record.NewOutboxRow(q.issue, q.payload, now)
-				if err != nil {
-					return err
-				}
-				if err := p.records.Enqueue(ctx, tx, row); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("queue the notices: %v", err)
+		if err := p.st.Tx(ctx, func(tx pgx.Tx) error { return p.records.Enqueue(ctx, tx, row) }); err != nil {
+			t.Fatalf("queue the canary tick: %v", err)
 		}
-		for _, row := range p.rows(append([]string{rollbackCanaryKind}, rollbackNoticeKinds...)) {
+		for _, row := range p.rows([]string{rollbackCanaryKind}) {
 			p.note("row %d: kind %s, notice %s", row.id, row.kind, row.noticeKind)
 		}
 	})
 }
 
 // The roll-forward: once the release before has run on the database and stopped, a daemon of this
-// change's release starts on it and delivers each notice the rollback left, once: the controller's
-// on the controller's topic and the architect's on the architect's, each under its own row's key,
-// and each row finishes. Before it boots, it holds that each launch the release before made during
-// the rollback kept the boot token of the launch it replaced, the seed's last
-// (rollbackSeededGeneration): that release names claim_boot_tokens in no statement, so only the
-// database's own trigger can have kept it, and without it a shim of that generation is a token no
-// launch minted. It prints the claims of each state and the boot tokens of earlier launches as the
-// database holds them after the release before ran its launches.
+// change's release starts on it with no decode failure. Before it boots, it holds that each launch
+// the release before made during the rollback kept the boot token of the launch it replaced, the
+// seed's last (rollbackSeededGeneration): that release names claim_boot_tokens in no statement, so
+// only the database's own trigger can have kept it, and without it a shim of that generation is a
+// token no launch minted. It prints the claims of each state and the boot tokens of earlier
+// launches as the database holds them after the release before ran its launches.
 func TestARolledForwardDaemonDeliversTheNoticesTheRollbackLeftLive(t *testing.T) {
 	p := newRollbackProof(t)
-	var left []rollbackRow
-	p.step("the rollback left each notice of this change in the outbox", func() {
-		left = p.rows(rollbackNoticeKinds)
-		for _, row := range left {
-			p.note("row %d: kind %s, notice %s, %d attempts, last error %q", row.id, row.kind, row.noticeKind, row.attempts, row.lastError)
-		}
-		if len(left) != len(rollbackNoticeKinds) {
-			t.Fatalf("the outbox holds %d of the %d notices the seed queued", len(left), len(rollbackNoticeKinds))
-		}
-	})
 	p.step("each launch the release before made kept the boot token of the launch it replaced", func() {
 		ctx := context.Background()
 		moved := 0
@@ -179,36 +145,6 @@ func TestARolledForwardDaemonDeliversTheNoticesTheRollbackLeftLive(t *testing.T)
 	p.step("this release's daemon starts on the same database", func() {
 		p.boot()
 		p.note("version %d of the schema", p.d.state().Daemon.SchemaVersion)
-	})
-	p.step("it delivers each of them once and finishes its row", func() {
-		if !testwait.Holds(120*time.Second, 200*time.Millisecond, func() bool { return len(p.rows(rollbackNoticeKinds)) == 0 }) {
-			t.Fatalf("notices still in the outbox: %+v", p.rows(rollbackNoticeKinds))
-		}
-		architect := notify.RoleTopicPrefix + string(p.token(rollbackClaim{role: claim.RoleArchitect}))
-		implementer := string(p.token(rollbackClaim{role: claim.RoleImplementer}))
-		controller, toArchitect := p.published(notify.ControllerTopic(p.project)), p.published(architect)
-		for _, row := range left {
-			topic, published := notify.ControllerTopic(p.project), controller
-			if row.noticeKind == string(record.ClaimOutOfReachNotice) {
-				topic, published = architect, toArchitect
-			}
-			var delivered []publishedNotice
-			for _, n := range published {
-				if n.Key == record.OutboxKey(row.id) {
-					delivered = append(delivered, n)
-				}
-			}
-			if len(delivered) != 1 || delivered[0].Kind != row.noticeKind {
-				t.Errorf("row %d (notice %s) reached %s as %+v, want its notice once", row.id, row.noticeKind, topic, delivered)
-				continue
-			}
-			p.note("row %d: %s delivered on %s, naming claim %q", row.id, delivered[0].Kind, topic, delivered[0].Claim)
-		}
-		if !slices.ContainsFunc(toArchitect, func(n publishedNotice) bool {
-			return n.Kind == string(record.ClaimOutOfReachNotice) && n.Claim == implementer
-		}) {
-			t.Errorf("the architect was told %+v, want the notice naming %s", toArchitect, implementer)
-		}
 	})
 	p.step("its log names no decode failure", func() {
 		failures := p.logLines("decode outbox row")

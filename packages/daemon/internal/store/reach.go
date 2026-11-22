@@ -45,22 +45,11 @@ func (s *Store) ClaimReach(ctx context.Context, token claim.Token) (supervise.Re
 // (supervise.Claim.LastRelaunch), which this write never touches. It answers whether the store
 // holds the claim.
 func (s *Store) PutClaimReach(ctx context.Context, token claim.Token, reach supervise.Reach) (bool, error) {
-	return putClaimReach(ctx, s.pool, token, reach)
-}
-
-// PutClaimReachTx is PutClaimReach through the caller's transaction: the transaction of a notice
-// the record marks told, so the notice and the mark commit together or not at all, and a daemon
-// that ends after the commit never tells it again (internal/daemon's reach keeper).
-func PutClaimReachTx(ctx context.Context, tx pgx.Tx, token claim.Token, reach supervise.Reach) (bool, error) {
-	return putClaimReach(ctx, tx, token, reach)
-}
-
-func putClaimReach(ctx context.Context, db execer, token claim.Token, reach supervise.Reach) (bool, error) {
 	encoded, err := json.Marshal(reach)
 	if err != nil {
 		return false, fmt.Errorf("put the reach record of claim %s: encode it: %w", token, err)
 	}
-	tag, err := db.Exec(ctx, `update claims set reach = $2, updated_at = now() where token = $1`, string(token), encoded)
+	tag, err := s.pool.Exec(ctx, `update claims set reach = $2, updated_at = now() where token = $1`, string(token), encoded)
 	if err != nil {
 		return false, fmt.Errorf("put the reach record of claim %s: %w", token, err)
 	}

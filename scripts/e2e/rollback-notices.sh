@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
-# The live proof that a rollback leaves no daemon with notices it cannot decode (the review's
-# finding 4). Four runs of the daemon package's `-tags e2e` driver, over one PostgreSQL database of
-# the run's own and one nats-server of the run's own; the third and the fourth boot the whole daemon
-# by the function `legion start` calls:
+# The live proof that a rollback onto the release before runs over this change's database with no
+# decode failure and keeps the boot token each of its launches replaces. Four runs of the daemon
+# package's `-tags e2e` driver, over one PostgreSQL database of the run's own and one nats-server
+# of the run's own; the third and the fourth boot the whole daemon by the function `legion start`
+# calls:
 #
 #   fixture      the build of --base-commit, the release before, migrates the empty database and
 #                records a tree with one claim in each state (rollback_live_test.go, copied into
 #                that commit's tree, since the commit has no such file);
 #   seed         this change's build migrates that database forward over those rows, reads each
 #                claim back, launches each twice more, which keeps the boot tokens of the launches
-#                it left, and queues one of each notice this change adds beside a canary tick
-#                (rollback_forward_live_test.go);
+#                it left, and queues a canary tick (rollback_forward_live_test.go);
 #   rollback     the release before's daemon starts on that database, runs its outbox — the canary
-#                tick is delivered — and leaves each of those notices as it stands, with no
-#                attempt, no error and no decode failure in its log, and its state answers;
+#                tick is delivered — with no decode failure in its log, and its state answers;
 #   roll forward before this change's daemon starts, the database holds the boot token of each
 #                launch the release before replaced during the rollback, which only the database's
-#                own trigger keeps; then the daemon starts on the database again and delivers each
-#                notice once, and prints the claims and the boot tokens of earlier launches.
+#                own trigger keeps; then the daemon starts on the database again with no decode
+#                failure, and prints the claims and the boot tokens of earlier launches.
 #
 # --new-commit builds the seed and the roll-forward from that commit's tree instead of this
-# checkout, with this checkout's two driver files copied into it. Run with the commit of this
-# change before its notices had kinds of their own, it is the negative control of the notices: the
-# rollback run fails, naming the decode failures the older daemon logged and the rows that carry
-# them. Run with a commit of this change that has the notices' kinds and not the trigger, it is the
-# negative control of the kept tokens: the roll-forward run fails, naming each claim the release
-# before launched whose replaced boot token is not kept.
+# checkout, with this checkout's two driver files copied into it. Run with a commit of this change
+# that has no trigger on `claims.boot_token_hash`, it is the negative control of the kept tokens:
+# the roll-forward run fails, naming each claim the release before launched whose replaced boot
+# token is not kept.
 #
 # Run it from a checkout on a Linux host with go, git, tar, psql, awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
