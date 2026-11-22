@@ -85,12 +85,19 @@ async function startChannelServer(
   })
   const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
   if (socketPath === undefined) throw new Error("the session names no mod socket")
+  // Read before the probe below, so a server that writes while it starts never blocks on a full
+  // pipe.
+  let stderr = ""
+  void (async () => {
+    for await (const chunk of server.stderr.pipeThrough(new TextDecoderStream())) stderr += chunk
+  })()
   // Every delivery reaches the model as the mod's own write - the row of a turn running, or the
   // prompt of a new turn while the session is idle, which this one is throughout (`show` in
   // `../src/mod-session`) - so the mod is this test's view of what the session was shown.
   const channel: string[] = []
   const mod = await startFakeMod(socketPath, {
     sessionId: sessionID,
+    exited: server.exited,
     answers: {
       "session.message": (args) => {
         channel.push(shownText(args))
@@ -100,10 +107,6 @@ async function startChannelServer(
       },
     },
   })
-  let stderr = ""
-  void (async () => {
-    for await (const chunk of server.stderr.pipeThrough(new TextDecoderStream())) stderr += chunk
-  })()
   server.stdin.write(
     `${JSON.stringify({
       jsonrpc: "2.0",

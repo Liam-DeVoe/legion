@@ -75,6 +75,9 @@ export async function startFakeMod(
     readonly answers?: ModAnswers
     /** Sent as the first event, as a real mod's `session.start` does; true by default. */
     readonly hello?: boolean
+    /** The server's exit, where the caller started it: the probe for its socket stops, naming
+     *  that, once the server has exited. With none, the probe runs until the socket answers. */
+    readonly exited?: Promise<unknown>
   },
 ): Promise<FakeMod> {
   const calls: ModCall[] = []
@@ -162,8 +165,14 @@ export async function startFakeMod(
   }
 
   // The server binds its socket while its MCP transport starts, so a mod started beside it
-  // probes until the socket answers, as the real mod does.
-  const deadline = Date.now() + 20_000
+  // probes until the socket answers, as the real mod does. The probe has no deadline of its
+  // own: how long the bind takes is the host's speed, and a socket that never answers is the
+  // row's limit to end, which names the row. A server that exits first ends the probe at once.
+  let exited = false
+  const ended = () => {
+    exited = true
+  }
+  void options.exited?.then(ended, ended)
   for (;;) {
     try {
       if (options.hello !== false) {
@@ -176,7 +185,9 @@ export async function startFakeMod(
       }
       break
     } catch (error) {
-      if (Date.now() > deadline) throw error
+      if (exited) {
+        throw new Error("the server exited before its mod socket answered", { cause: error })
+      }
       await Bun.sleep(50)
     }
   }
