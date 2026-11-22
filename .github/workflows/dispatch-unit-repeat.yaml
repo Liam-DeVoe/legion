@@ -156,12 +156,13 @@ jobs:
     # over every completed leg of the runs the test step's comment names, took at most 34 s in a
     # web leg (run 44500465080, round 1), 29 s in a web-cold leg (run 44622961898, round 2) and
     # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1 and 1
-    # minutes: 14 + 1 = 15 minutes for a web leg and 4 + 1 = 5 for a web-cold leg. A harness leg's
+    # minutes: 17 + 1 = 18 minutes for a web leg and 4 + 1 = 5 for a web-cold leg. A harness leg's
     # step and job are the open #4629's numbers (the test step's comment says why): 132 and 140
     # minutes, the job's margin over the step covering other steps that #4629 read at 28 to 229 s,
     # most of it the zsh install. The slowest whole jobs took 707 s for a web leg
-    # (run 44749684592, round 3, shard 1/2), 192 s for a web-cold leg (run 44749684592, round 3)
-    # and 1,575 s for a harness leg (run 44389203951, round 1).
+    # (run 44749684592, round 3, shard 1/2) before the web step's derivation of 2026-11-22, 192 s
+    # for a web-cold leg (run 44749684592, round 3) and 1,575 s for a harness leg
+    # (run 44389203951, round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -187,8 +188,8 @@ jobs:
           - lane: web
             shards: 2
             reruns: 20
-            step_minutes: 14
-            job_minutes: 15
+            step_minutes: 17
+            job_minutes: 18
           - lane: web-cold
             shards: 1
             reruns: 1
@@ -258,12 +259,13 @@ jobs:
       # request's run tests GitHub's merge of its head with main, so it grows with main's suite: a
       # web run read 4,885 rows in run 44023917835 and 6,916 in run 44622961898.
       #
-      # Web: the six sharded legs of run 44749684592 at 132a1ed654 (the first run of the two
-      # shards with useIssueDrafts.test.ts's sweep computed once a process) took 480 to 684 s, the
-      # most in round 3, shard 1/2 (job 136334011228), so 684 x 1.15 = 787 s, 14 minutes. The run
-      # before it, at e81649ec3d (44738093077), had each shard 1/2 leg stopped at the unsharded
-      # 19-minute limit, 961 s of its 1,148 s the sweep's 20 reruns; its shard 2/2 legs took 469 to
-      # 633 s.
+      # Web: the 151 sharded legs that passed, of this workflow's newest 100 runs on any branch
+      # (created 2026-11-20T20:48Z to 2026-11-22T12:49Z), took 390 to 819 s, the most in run
+      # 44988184740, round 1, shard 1/2. Run 45021055013 at 735305cc85 then had its round 1, shard
+      # 1/2 leg (job 137203908128) stopped at the 14-minute step after 852 s, with no row failing
+      # and 93,463 of the 93,820 rows its round 3, shard 1/2 leg passed, which projects to 855 s. So
+      # 855 x 1.15 = 984 s, 17 minutes. The derivation before this one took the six legs of run
+      # 44749684592, 480 to 684 s, so 787 s and 14 minutes; main's suite has grown since.
       #
       # Harness: the open #4629's numbers, which it reads from CI and which replace these lines when
       # it lands, at the harness maximum since main's #4659. 66 legs took 967 to 1,529 s up to
@@ -282,9 +284,9 @@ jobs:
       # the most in run 44749684592, round 3, so 161 x 1.15 = 186 s, 4 minutes. The 78 legs before
       # them took 66 to 133 s.
       #
-      # The web and web-cold limits are derived from the suite's size on 2026-11-20 and the harness
-      # limit from its size on 2026-11-21: a step that is stopped on a leg whose rows were passing
-      # is the signal to derive them again.
+      # The web limit is derived from the suite's size on 2026-11-22, the web-cold limit from its
+      # size on 2026-11-20 and the harness limit from its size on 2026-11-21: a step that is stopped
+      # on a leg whose rows were passing is the signal to derive them again.
       #
       # The seed. A leg's seed is the first 32 bits of the SHA-256 of the run's id and the lane,
       # plus the round, modulo 2^32: a number Bun's `--seed` takes (0 to 2^32 - 1). So the two
