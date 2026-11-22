@@ -581,10 +581,11 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 		cancel()
 		ended := make(chan struct{})
 		go func() { reaping.Wait(); close(ended) }()
+		began := time.Now()
 		select {
 		case <-ended:
 		case <-time.After(reaperBound(t)):
-			t.Errorf("the reaper's pass never ended after its stop, to 30 s before the test binary's deadline")
+			t.Errorf("the reaper's goroutines had not ended %s after its stop, to 30 s before the test binary's deadline: a pass of it never ended", time.Since(began).Round(time.Millisecond))
 			return
 		}
 		if err := orphan.Wait(); !reapedByAnother(err) {
@@ -615,28 +616,42 @@ func reaperBound(t *testing.T) time.Duration {
 // did (TestPutBacksUnderThePodsReaperKeepTheirExitStatus in CI's daemon-go, 2026-11-21: "none of 5
 // put-backs with no guard lost an exit to the reaper"). A command that never exits, or a reaper
 // that never finishes a pass, fails t by name at 30 s before the test binary's deadline
-// (reaperBound). Once that moment has passed, a start waits for nothing and says nothing more: the
-// failure is the first wait's, and every later one would only repeat it.
+// (reaperBound), naming how long the wait took. A start that begins once that moment has passed
+// waits for nothing: the first such start in t says so, once (deadlinePassed), since the row then
+// ran out of time, whatever the reaper did.
 func metTheReaper(t *testing.T, start procgroup.Starter, passed func() bool) procgroup.Starter {
 	return func(cmd *exec.Cmd) (func(), error) {
 		done, err := start(cmd)
-		if err != nil || reaperBound(t) <= 0 {
+		if err != nil {
 			return done, err
 		}
 		pid := cmd.Process.Pid
+		if reaperBound(t) <= 0 {
+			if _, said := deadlinePassed.LoadOrStore(t, true); !said {
+				t.Errorf("the test binary's deadline less 30 s had passed before the command %d (%s) started, so it and every later command met the reaper unwaited", pid, strings.Join(cmd.Args, " "))
+			}
+			return done, nil
+		}
 		ended := func() bool {
 			_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
 			return errors.Is(err, os.ErrNotExist) || zombie(pid)
 		}
-		switch {
-		case !testwait.Holds(reaperBound(t), time.Millisecond, ended):
-			t.Errorf("the command %d (%s) never exited, to 30 s before the test binary's deadline", pid, strings.Join(cmd.Args, " "))
-		case !passed():
-			t.Errorf("the reaper finished no pass after the command %d exited, to 30 s before the test binary's deadline", pid)
+		began := time.Now()
+		if !testwait.Holds(reaperBound(t), time.Millisecond, ended) {
+			t.Errorf("the command %d (%s) had not exited %s after it started, to 30 s before the test binary's deadline", pid, strings.Join(cmd.Args, " "), time.Since(began).Round(time.Millisecond))
+			return done, nil
+		}
+		exited := time.Now()
+		if !passed() {
+			t.Errorf("the reaper finished no pass in the %s after the command %d exited, to 30 s before the test binary's deadline", time.Since(exited).Round(time.Millisecond), pid)
 		}
 		return done, nil
 	}
 }
+
+// deadlinePassed holds, for each test, whether metTheReaper has said that the test binary's
+// deadline less 30 s passed before a command started.
+var deadlinePassed sync.Map
 
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
 // which is its pod's PID 1 — the guard holds its pid, so no pass of the pod's reaper can take its
@@ -752,15 +767,18 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	stop, passed := relentlessReaper(t, managers, guard)
 	// Each install runs in a goroutine of its own and is waited for until 15 s before the test
 	// binary's deadline, after reaperBound's 30 s: a pass that never ends while it holds the
-	// guard's lock holds every guarded start with it, and the row then fails here, by name.
+	// guard's lock holds every guarded start with it, and the row then fails here, by name, with
+	// how long it waited. A message of metTheReaper's before it says whether the reaper finished
+	// its passes; without one, the install itself was slow.
 	install := func(what string, run func() error) error {
 		got := make(chan error, 1)
 		go func() { got <- run() }()
+		began := time.Now()
 		select {
 		case err := <-got:
 			return err
 		case <-time.After(testwait.Bounded(t, 3*365*24*time.Hour, 15*time.Second)):
-			t.Fatalf("%s never returned, to 15 s before the test binary's deadline: a pass of the reaper that never ends holds its start", what)
+			t.Fatalf("%s had not returned %s after it began, to 15 s before the test binary's deadline: its start waits on the guard's lock, which a reaper pass that never ends holds, or the install is slow", what, time.Since(began).Round(time.Millisecond))
 			return nil
 		}
 	}
