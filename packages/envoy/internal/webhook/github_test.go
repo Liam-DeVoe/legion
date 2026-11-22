@@ -1245,7 +1245,8 @@ func TestLegionVerdictRunsNeverReachTheListenersRecord(t *testing.T) {
 
 // A check suite the verdict App created is recorded in no action: GitHub makes one, queued, on
 // each push, and it would hold the head from settling until the daemon wrote a run in it. Each
-// suite left out is logged. Another App's suite is recorded as before.
+// suite left out is logged, a requested one's too. Another App's suite is recorded once it
+// completes; a request to run it is no CI result and is recorded in no action.
 func TestVerdictAppSuitesNeverReachTheListenersRecord(t *testing.T) {
 	for _, action := range []string{"requested", "rerequested", "completed"} {
 		t.Run(action, func(t *testing.T) {
@@ -1265,8 +1266,12 @@ func TestVerdictAppSuitesNeverReachTheListenersRecord(t *testing.T) {
 				t.Fatalf("log %q does not hold %q", ci.logged.String(), want)
 			}
 			ci.post("check_suite", action, suite(actionsAppID))
-			if len(ci.rec.suiteCalls) != 1 || ci.rec.suiteCalls[0].AppID != actionsAppID {
-				t.Fatalf("recorded %+v, want another App's suite", ci.rec.suiteCalls)
+			wantOther := 0
+			if action == "completed" {
+				wantOther = 1
+			}
+			if len(ci.rec.suiteCalls) != wantOther || wantOther == 1 && ci.rec.suiteCalls[0].AppID != actionsAppID {
+				t.Fatalf("recorded %+v, want %d of another App's suite", ci.rec.suiteCalls, wantOther)
 			}
 		})
 	}

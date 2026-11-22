@@ -92,7 +92,8 @@ func TestLegionVerdictRunsCountOnlyFromTheVerdictApp(t *testing.T) {
 // A check suite the verdict App created is no part of a head's CI record, in every action GitHub
 // sends one in: GitHub makes one, queued, on each push for an App that holds Checks at write, and
 // it stays queued until the App writes a run in it, so a record that kept it would never settle.
-// Each suite left out is logged. Another App's suite is recorded as before.
+// Each suite left out is logged, a requested one's too. Another App's suite is recorded once it
+// completes; a request to run it maps to nothing, since it is no CI result.
 func TestVerdictAppSuitesAreLeftOutOfTheCIRecord(t *testing.T) {
 	for _, c := range []struct{ action, status string }{
 		{action: "requested", status: "queued"},
@@ -116,8 +117,12 @@ func TestVerdictAppSuitesAreLeftOutOfTheCIRecord(t *testing.T) {
 					t.Errorf("the log %q does not hold %q", lines, want)
 				}
 			}
-			if observations := GithubCIObservations("check_suite", suite(actionsApp), verdictApp); len(observations) != 1 || observations[0].AppID != actionsApp {
-				t.Fatalf("another App's %s suite maps to %+v, want one observation of it", c.action, observations)
+			wantOther := 0
+			if c.action == "completed" {
+				wantOther = 1
+			}
+			if observations := GithubCIObservations("check_suite", suite(actionsApp), verdictApp); len(observations) != wantOther || wantOther == 1 && observations[0].AppID != actionsApp {
+				t.Fatalf("another App's %s suite maps to %+v, want %d observations of it", c.action, observations, wantOther)
 			}
 		})
 	}
