@@ -96,20 +96,13 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 
 // A copy the stream deleted while it still remembers the copy's id keeps a repeat's answer the
 // stored-copy 503, and once the stream forgets the id, a repeat stores a new copy and answers its
-// own envelope with no duplicate. The listener's own server, whose stream's duplicate window is cut
-// to three seconds for the test, stands in for the 72 hours of the deployed one.
+// own envelope with no duplicate. The 503 row runs under the stream's own duplicate window, so the
+// stream remembers the id however long the publish, the read and the delete take. Only then is
+// the window cut to three seconds, standing in for the 72 hours of the deployed one, so the stream
+// forgets the id.
 func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 	rig, _ := newSenderLimitRigOnServer(t)
 	js := rig.harness.client.JS()
-	info, err := js.StreamInfo(bus.Stream)
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
-	}
-	config := info.Config
-	config.Duplicates = 3 * time.Second
-	if _, err := js.UpdateStream(&config); err != nil {
-		t.Fatalf("cut the stream's duplicate window: %v", err)
-	}
 	const sender = "ses_forgotten_id"
 	subject := "notifications.team.forgotten-" + id.New()
 	key := map[string]any{"idempotency_key": uuid.NewString()}
@@ -130,6 +123,15 @@ func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 	remembered.requireStatus(t, "the repeat while the stream remembers the id", http.StatusServiceUnavailable)
 	remembered.requireOutcome(t, "the repeat while the stream remembers the id", "stored_copy_unreadable")
 
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	config := info.Config
+	config.Duplicates = 3 * time.Second
+	if _, err := js.UpdateStream(&config); err != nil {
+		t.Fatalf("cut the stream's duplicate window: %v", err)
+	}
 	var fresh heldAnswer
 	waitFor(t, 30*time.Second, "a repeat to be stored once the stream forgets the id", func() bool {
 		fresh = held(t, rig.publishFrom(t, sender, subject, key))

@@ -306,29 +306,32 @@ const storedAck = `{"stream":"ENVOY_NOTIFICATIONS","seq":1}`
 // a role send answers the stored forward by. A stream's duplicate that names no sequence is no
 // stored forward: Wait says so at once, as ErrForwardNotStored wrapping
 // ErrDuplicateWithoutSequence, rather than wait out the forward's window for an answer that does
-// not come. A reply that names no stream is no acknowledgement, whatever else it says, and Wait
-// passes it over for the stream's acknowledgement after it.
+// not come; the check is that Wait returned before the forward's own deadline, which a wait for
+// the window's end cannot. A reply that names no stream is no acknowledgement, whatever else it
+// says, and Wait passes it over for the stream's acknowledgement after it.
 func TestAForwardsWaitReturnsTheStreamsVerdict(t *testing.T) {
-	forward := func(t *testing.T, ack string) (StoredAck, time.Duration, error) {
+	// window is long beside any answer's time on a loaded runner, so only a wait that does not end
+	// on the answer reaches it.
+	const window = 30 * time.Second
+	forward := func(t *testing.T, ack string) (StoredAck, bool, error) {
 		t.Helper()
 		client := &Client{Conn: answeringServer(t, "", ack)}
-		pending, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
+		pending, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), window)
 		if err != nil {
 			t.Fatalf("the forward was refused outright: %v", err)
 		}
-		started := time.Now()
 		got, err := pending.Wait()
-		return got, time.Since(started), err
+		return got, time.Now().Before(pending.deadline), err
 	}
 	if got, _, err := forward(t, `{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`); err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
 		t.Fatalf("a duplicate forward's wait = %+v (%v), want sequence 7 and Duplicate", got, err)
 	}
-	got, took, err := forward(t, `{"stream":"ENVOY_NOTIFICATIONS","seq":0,"duplicate":true}`)
+	got, beforeDeadline, err := forward(t, `{"stream":"ENVOY_NOTIFICATIONS","seq":0,"duplicate":true}`)
 	if !errors.Is(err, ErrForwardNotStored) || !errors.Is(err, ErrDuplicateWithoutSequence) || got != (StoredAck{}) {
 		t.Fatalf("a duplicate with no sequence = %+v (%v), want ErrForwardNotStored wrapping ErrDuplicateWithoutSequence", got, err)
 	}
-	if took >= time.Second {
-		t.Fatalf("the wait for a duplicate with no sequence took %s, want it to end on that answer", took)
+	if !beforeDeadline {
+		t.Fatalf("the wait for a duplicate with no sequence ended at its %s window's deadline, want it to end on that answer", window)
 	}
 	got, _, err = forward(t, `{"stream":"","seq":7,"duplicate":true}`+"\n"+`{"seq":0,"duplicate":true}`+"\n"+`{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`)
 	if err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
