@@ -96,10 +96,11 @@ type BlockIndexTick struct {
 	Comments     int
 	AnotherBuild bool
 	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
-	// tick wrote the node of, OrphansGone how many document nodes whose row another build removed
-	// it stated gone, and InboxRows how many comment_deliveries and user_threads rows another
-	// build left unmarked it marked, while this build owed the object pass
-	// (writeObjectNodesAnotherBuildWrote).
+	// tick wrote the node of and OrphansGone how many document nodes whose row another build removed
+	// it stated gone, while this build owed the object pass (writeObjectNodesAnotherBuildWrote), and
+	// InboxRows how many rows of the inbox's caches another build left unmarked it marked then, with
+	// the declines and the sessions the events it read are or name whose write it gave
+	// (readEventsAfterCursor).
 	ObjectNodes int
 	OrphansGone int
 	InboxRows   int

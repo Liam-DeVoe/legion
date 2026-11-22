@@ -134,9 +134,11 @@ var markVersionedDocuments = `
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
 // that this build's store has not stated at its version (markVersionedDocuments), gives every
 // comment they name whose row names no node its node and its tuples (refs.CommentWrite) and then
-// the rest of the backfill's write for those comments (graphcensus.CatchUpComments), records
-// in the cursor's row whether this build owes the object pass, and counts in tick what it read,
-// marked and wrote, and whether another build serves.
+// the rest of the backfill's write for those comments (graphcensus.CatchUpComments), gives each
+// decline among the events and each session they name what the backfill gives one, a decline and
+// such a session holding no row of their own (graphcensus.CatchUpEvents), records in the cursor's
+// row whether this build owes the object pass, and counts in tick what it read, marked and wrote,
+// and whether another build serves.
 //
 // The release before this one indexes a version it writes, and a document it creates, the spec of
 // an issue it creates included, with no node, writes a comment's row with no node, states nothing
@@ -366,11 +368,19 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 			return false, nil, fmt.Errorf("catch up the comments the events after the cursor name: %w", err)
 		}
 	}
+	// What the backfill gives the declines and the sessions the events read are or name, which
+	// hold no row of their own, so their write is the event read's.
+	var caught int
+	if safe > *cursor {
+		if caught, err = graphcensus.CatchUpEvents(ctx, tx, *cursor, next); err != nil {
+			return false, nil, fmt.Errorf("catch up the declines and sessions the events after the cursor name: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, nil, fmt.Errorf("commit what the events after the cursor name: %w", err)
 	}
 	// What the tick counts is what it committed: a read that fails counts nothing.
-	tick.Events, tick.Marked, tick.Comments = read, int(marked), written
+	tick.Events, tick.Marked, tick.Comments, tick.InboxRows = read, int(marked), written, caught
 	return full, debt, nil
 }
 
@@ -394,12 +404,13 @@ const orphanedNodesSwept = 20
 // long has passed since the process's last pass finished (Service.objectPassFinished). A
 // conversation's file that a build before this one uploads appends no event, so no event a tick
 // reads names it: while that build serves, every tick owes the pass, and once none does, the file
-// waits for its node this long and one tick at most; an attempt row such a build's claim moved
-// waits as long. A pass with nothing to write reads the four tables whole, 97 to 190 ms at
-// production's row counts, and, once a backfill has run, user_threads whole too, since no index
-// holds marked_seq (graphcensus.CatchUpOwedRows; the attempt rows it owes it reads through their
-// node pair index), so each process spends that once in this interval while this build serves
-// alone, and on every tick while another build serves.
+// waits for its node this long and one tick at most; an attempt row such a build's claim moved,
+// and a session only its outbox's fallback copy reached, wait as long. A pass with nothing to write
+// reads the four tables whole, 97 to 190 ms at production's row counts, and, once a backfill has
+// run, the rows the inbox's passes still owe, each table's through the index that holds those rows
+// alone but the asks, which that pass reads whole as the object pass does, and the published
+// fallback copies (graphcensus.CatchUpOwedRows), so each process spends that once in this interval
+// while this build serves alone, and on every tick while another build serves.
 const objectPassInterval = 10 * time.Minute
 
 // rollNow is the debt a tick answers while another build serves before any horizon is proven
@@ -412,7 +423,7 @@ var rollNow time.Time
 // and message whose row names none, through the backfill's object pass (graphcensus's
 // WriteOwedObjectNodes), and states gone the node of every document a build before this one
 // removed (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then marks one batch of
-// each of the two inbox caches whose rows that build leaves unmarked with no event naming the row
+// each kind of the inbox's caches whose rows that build leaves unmarked
 // (graphcensus.CatchUpOwedRows). It counts all three in tick, and answers whether it stopped with
 // work left.
 //
@@ -432,16 +443,17 @@ var rollNow time.Time
 // removal; a node whose row a create of this build commits meanwhile is left, since the sweep
 // reads under its lock of the node whether a row stands.
 //
-// That build also leaves unmarked, after the backfill, rows of two of the inbox's caches, and not
-// always with an event that names the row: each comment_deliveries attempt row its delivery sender
-// inserts or updates (a claim appends no event), and each user_threads row its Inbox routes and its
-// triggers move (a read mark's user_thread_state.updated names a person and no thread). R9 holds
+// That build also leaves unmarked, after the backfill, rows of every cache of the inbox, and not
+// always with an event that names the row: each message, attempt, item block, link and citation,
+// each ask's tuples, each read-state row it writes, and each user_threads row its Inbox routes and
+// its triggers move, a claim of an attempt with no event and a read mark with one that names a
+// person and no thread; and a session its outbox's fallback copy reached holds no node. R9 holds
 // the unmarked class to zero once the backfill ends, and no class may stand for good, so each tick
-// that owes this pass marks one batch of each as the backfill marks them, through the backfill's
-// own passes, after the object pass has given the asks and messages their nodes; a thread's rows
-// are marked only once every item of it the catch-up states holds its node. The debt stands while
-// a batch was full, so the class reaches zero a batch a tick once that build has stopped writing,
-// and a tick that owes no pass reads nothing of either table.
+// that owes this pass marks one batch of each kind as the backfill marks them, through the
+// backfill's own passes, after the object pass has given the asks and messages their nodes; a
+// thread's rows are marked only once every item of it the catch-up states holds its node. The debt
+// stands while a batch was full, so each class reaches zero a batch a tick once that build has
+// stopped writing, and a tick that owes no pass reads nothing of those tables.
 //
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
@@ -478,7 +490,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 		}
 	}
 	caught, err := graphcensus.CatchUpOwedRows(ctx, s.store)
-	tick.InboxRows = int(caught.Rows)
+	tick.InboxRows += int(caught.Rows)
 	more = more || caught.More
 	failed = append(failed, err)
 	switch err := errors.Join(failed...); {

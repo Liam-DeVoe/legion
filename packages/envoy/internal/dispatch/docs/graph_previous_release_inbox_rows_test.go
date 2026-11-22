@@ -33,10 +33,12 @@ import (
 // attempts to reach two sessions, and runs the backfill. Then a process of that release takes every
 // period of the lease, so no tick of this build runs while it serves: it moves alice's read mark on
 // the thread as its read route does, and settles the first attempt as its sender does, each with
-// its event; it leaves, and this build's next tick must mark both rows again. Then a process of that
-// release serves beside this build and claims the second attempt, which appends no event; this
-// build's tick while it serves must mark that row again. Its control is the catch-up taken out of
-// writeObjectNodesAnotherBuildWrote: the rows stay unmarked after each tick.
+// its event; it leaves, and this build's next tick must mark both rows again and give the session
+// the settled attempt reached its node, which the backfill gave none while the attempt was pending
+// (graphcensus.CatchUpEvents). Then a process of that release serves beside this build and claims
+// the second attempt, which appends no event; this build's tick while it serves must mark that row
+// again. Its control is the catch-up taken out of writeObjectNodesAnotherBuildWrote: the rows stay
+// unmarked after each tick.
 func TestAThreadMarkAndAnAttemptThePreviousReleaseMoveAfterTheBackfillAreMarkedAgainByTheTick(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
@@ -90,8 +92,8 @@ func TestAThreadMarkAndAnAttemptThePreviousReleaseMoveAfterTheBackfillAreMarkedA
 	alone := awaitedBlockIndexTick(t, service)
 	t.Logf("the first tick after the previous release left read %d event(s), marked %d inbox row(s), another build %t",
 		alone.Events, alone.InboxRows, alone.AnotherBuild)
-	if alone.InboxRows != 2 {
-		t.Errorf("the first tick after the previous release left marked %d inbox row(s), want alice's thread row and the settled attempt", alone.InboxRows)
+	if alone.InboxRows != 3 {
+		t.Errorf("the first tick after the previous release left marked %d inbox row(s), want alice's thread row, the settled attempt and the session it reached", alone.InboxRows)
 	}
 	requireInboxRowsMarked(t, database, 0, 0, "after the first tick after the previous release left, with no second backfill")
 	requireCensusReadsZero(t, database, "after the previous release moved a thread row and settled an attempt, with no second backfill")

@@ -3,8 +3,12 @@ package graphcensus
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -88,44 +92,115 @@ func readSessionRows(ctx context.Context, database *store.Store) ([]sessionRow, 
 	return missing, rows.Err()
 }
 
-// attemptSessions reads, of the comment_deliveries rows keys names (the attempt pass's keys,
-// commentAttempts), each session one the listener took reached - recordedSessions's arm over
-// comment_deliveries - whose node the store does not hold and whose id fits its bound, with the
-// first comment.delivery receipt under the comment's owner that says the listener took an attempt
-// to it, the cause backfillSessions gives such a session, which recordedSessions reads too, or the
-// sentinel where none does, and the time of that receipt or of the earliest of those rows. The
+// reachedSessions reads, of the attempt rows of table keys names (the attempt pass's keys), each
+// session one the listener took reached - recordedSessions's arm over the table - whose node the
+// store does not hold and whose id fits its bound, with the cause backfillSessions gives such a
+// session: the first receipt that names it (table.receipt), which recordedSessions reads too, or
+// the sentinel where none does, and the time of that receipt or of the earliest of those rows. The
 // block-index tick's catch-up of an attempt row a build before this one left (CatchUpComments,
 // CatchUpOwedRows) writes those nodes before the attempts, as the backfill runs its session pass
 // before its attempt pass: a row an older build settled after the backfill names a session no
 // pass of it gave a node.
-func attemptSessions(ctx context.Context, q graphstore.Queryer, keys [][]string) ([]sessionRow, error) {
+func (table attemptTable) reachedSessions(ctx context.Context, q graphstore.Queryer, keys [][]string) ([]sessionRow, error) {
+	named, args := table.named(keys)
 	rows, err := q.Query(ctx, `
-		select d.session_id, coalesce(min(receipt.id), $4), min(coalesce(receipt.created_at, d.created_at))
-		from comment_deliveries d
-		join comments c on c.id = d.comment_id
-		left join lateral (
-			select e.id, e.created_at from events e
-			where coalesce(e.issue_key, e.artifact_id::text, e.project_key) = coalesce(c.issue_key, c.artifact_id::text)
-			  and e.type = 'comment.delivery' and e.payload->>'comment_id' = d.comment_id::text
-			  and e.payload->>'session_id' = d.session_id and e.payload->>'state' in `+model.DeliveryTakenStatesSQL+`
-			order by e.id limit 1
-		) receipt on true
-		where (d.comment_id, d.target, d.attempt) in (select * from unnest($1::uuid[], $2::text[], $3::text[]::int[]))
+		select d.session_id, coalesce(min(receipt.id), `+noEvent+`), min(coalesce(receipt.created_at, d.created_at))
+		from `+table.table+` d`+table.receipt+`
+		where `+named+`
 		  and coalesce(d.session_id, '') <> '' and d.state in `+model.DeliveryTakenStatesSQL+`
-		  and octet_length(d.session_id) <= $5
-		  and not exists (select 1 from graph_nodes n where n.kind = $6 and n.id = d.session_id)
+		  and octet_length(d.session_id) <= `+addressBound+`
+		  and not exists (select 1 from graph_nodes n where n.kind = '`+graphstore.KindSession+`' and n.id = d.session_id)
 		group by d.session_id
 		order by d.session_id
-	`, column(keys, 0), column(keys, 1), column(keys, 2), graphstore.NoEvent, graphstore.MaxAddressBytes, graphstore.KindSession)
+	`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read the sessions a batch of attempts reached that hold no node: %w", err)
+		return nil, fmt.Errorf("read the sessions a batch of %s reached that hold no node: %w", table.table, err)
 	}
+	return scanSessionRows(rows)
+}
+
+// eventSessions reads each session an event in (after, through] names - recordedSessions's arm over
+// the log: a follower an ask.follower_added names, a session an ask.opened names as the ask's
+// author, and a session a comment.delivery receipt says the listener took an attempt to - whose
+// node the store does not hold and whose id fits its bound, with the first of those events that
+// names it, the cause backfillSessions gives it, and that event's time (CatchUpEvents).
+func eventSessions(ctx context.Context, q graphstore.Queryer, after, through int64) ([]sessionRow, error) {
+	rows, err := q.Query(ctx, `
+		select named.id, min(named.event), min(named.at)
+		from (
+			select case when e.type in ('ask.follower_added', 'comment.delivery') then e.payload->>'session_id'
+			            when e.payload->'author'->>'kind' = 'session' then e.payload->'author'->>'id' end as id,
+			       e.id as event, e.created_at as at
+			from events e
+			where e.id > $1 and e.id <= $2
+			  and (e.type in ('ask.follower_added', 'ask.opened')
+			       or (e.type = 'comment.delivery' and e.payload->>'state' in `+model.DeliveryTakenStatesSQL+`))
+		) named
+		where coalesce(named.id, '') <> '' and octet_length(named.id) <= `+addressBound+`
+		  and not exists (select 1 from graph_nodes n where n.kind = '`+graphstore.KindSession+`' and n.id = named.id)
+		group by named.id
+		order by named.id
+	`, after, through)
+	if err != nil {
+		return nil, fmt.Errorf("read the sessions the events after %d name that hold no node: %w", after, err)
+	}
+	return scanSessionRows(rows)
+}
+
+// fallbackSessionsOwed is the sessions a published fallback copy reached - recordedSessions's arm
+// over comment_fallback_copies - whose id fits the store's bound and that the store holds no node
+// of, each with the earliest copy that reached it, as (id, at) over s.
+var fallbackSessionsOwed = `
+	from (
+		select substring(f.destination from ` + strconv.Itoa(len(contracts.AgentTopicPrefix)+1) + `) as id, min(f.created_at) as at
+		from comment_fallback_copies f
+		where f.published and f.destination like '` + contracts.AgentTopicPrefix + `%'
+		group by 1
+	) s
+	where s.id <> '' and octet_length(s.id) <= ` + addressBound + `
+	  and not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindSession + `' and n.id = s.id)`
+
+// fallbackSessionsPass is the session pass's arm over the sessions a published fallback copy
+// reached, for the block-index tick (rollPasses): a build before this one's outbox publishes a copy
+// with no event and states nothing, so no event the tick reads names such a session. Each takes
+// its node as backfillSessions gives one only a row names: at the sentinel, at the earliest copy.
+func fallbackSessionsPass() inboxPass {
+	return inboxPass{
+		kind:      "fallback_sessions",
+		batch:     `select s.id ` + fallbackSessionsOwed + ` and s.id > $1 order by s.id limit $2`,
+		start:     []string{""},
+		write:     writeFallbackSessions,
+		remaining: fallbackSessionsOwed,
+	}
+}
+
+// writeFallbackSessions writes the node of each session of keys a published fallback copy reached
+// that still holds none (writeSessionBatch).
+func writeFallbackSessions(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
+	rows, err := tx.Query(ctx, `
+		select s.id, `+noEvent+`::bigint, s.at `+fallbackSessionsOwed+` and s.id = any($1::text[])
+		order by s.id
+	`, column(keys, 0))
+	if err != nil {
+		return inboxWrote{}, fmt.Errorf("read the sessions a fallback copy reached that hold no node: %w", err)
+	}
+	missing, err := scanSessionRows(rows)
+	if err != nil || len(missing) == 0 {
+		return inboxWrote{}, err
+	}
+	nodes, tuples, err := writeSessionBatch(ctx, tx, missing)
+	return inboxWrote{rows: int64(len(missing)), nodes: nodes, tuples: tuples}, err
+}
+
+// scanSessionRows reads every row of rows, a read of sessionRow's columns in its order, and closes
+// it.
+func scanSessionRows(rows pgx.Rows) ([]sessionRow, error) {
 	defer rows.Close()
 	var missing []sessionRow
 	for rows.Next() {
 		var row sessionRow
 		if err := rows.Scan(&row.id, &row.event, &row.at); err != nil {
-			return nil, fmt.Errorf("read a session a batch of attempts reached that holds no node: %w", err)
+			return nil, fmt.Errorf("read a session that holds no node: %w", err)
 		}
 		missing = append(missing, row)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -28,14 +29,18 @@ import (
 // artifact and its address. A conversation's file is created with no event, so only a pass started
 // for another reason reaches it: the pass reads the four tables whole.
 //
-// The tick's pass also catches up the rows of two of the inbox's caches that build leaves unmarked
+// The tick's pass also catches up the rows of the inbox's caches that build leaves unmarked
 // (CatchUpOwedRows), so once a run of the backfill has recorded its horizon (backfillRan) the read
-// answers true too for an event that leaves one of those rows owed: a user_thread_state.updated,
-// which that build's read mark, dismissal and restore append naming the person whose rows they
-// moved, where a user_threads row of that person is owed; an ask.answered, whose answer's trigger
-// moved the rows of the ask's thread, where a row of that thread is owed; and a comment.delivery,
-// the receipt of an attempt its sender settled, where an attempt row of that comment is owed. Its
-// claims append no event, so only a pass started for another reason reaches an attempt one moved.
+// answers true too for an event that leaves such a row owed (rollOwedByEvents): a person's
+// user_thread_state.updated, user_state.updated or user_agent_state.updated, which that build's
+// read marks, dismissals, clears and snoozes append naming the person, where a user_threads row or
+// a row of the five other read-state tables of that person is owed; an ask's ask.opened, ask.edited
+// or ask.answered, a comment's comment.created, comment.answered or comment.edited and a message's
+// message.created or message.answered, where that item's row, its blocks, their links, its
+// citations or its attempts are owed, or, for an answer, a user_threads row of the ask's thread; and
+// a comment.delivery, a message.delivery or a message.accepted, the receipt of an attempt its
+// sender settled or its session accepted, where an attempt row of that item is owed. Its claims
+// append no event, so only a pass started for another reason reaches an attempt one moved.
 //
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that
@@ -53,7 +58,7 @@ func EventsOweObjectPass(ctx context.Context, q graphstore.Queryer, after, throu
 // as one row of arrays, so each kind's rows are read by `= any` on their key, and of those the
 // rows the marker does not mark, a document past the store's bound left out as the backfill leaves
 // it (objectKinds), the removed documents' nodes that stand orphaned, and the inbox cache rows the
-// catch-up owes (rollPasses). Read per event instead, the planner hashes each kind's rows and
+// catch-up owes (rollOwedByEvents). Read per event instead, the planner hashes each kind's rows and
 // nodes whole.
 var eventsOweObjectPass = `
 	with named as (
@@ -62,13 +67,20 @@ var eventsOweObjectPass = `
 		       coalesce(array_agg(e.payload->>'id') filter (where e.type = 'ask.opened'), '{}') as asks,
 		       coalesce(array_agg(e.payload->>'id') filter (where e.type in ('message.created', 'message.answered')), '{}') as messages,
 		       coalesce(array_agg(e.payload->'artifact'->>'ref_key') filter (where e.type = 'artifact.removed'), '{}') as removed,
-		       coalesce(array_agg(e.payload->>'login') filter (where e.type = 'user_thread_state.updated'), '{}') as logins,
+		       coalesce(array_agg(e.payload->>'login') filter (where e.type in ('user_thread_state.updated', 'user_state.updated',
+		                                                                         'user_agent_state.updated')), '{}') as logins,
 		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'id'`) + `) filter (where e.type = 'ask.answered'), '{}') as answered,
-		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'comment_id'`) + `) filter (where e.type = 'comment.delivery'), '{}') as attempted
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'id'`) + `) filter (where e.type in ('ask.opened', 'ask.edited', 'ask.answered')), '{}') as asked,
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'id'`) + `) filter (where e.type in ('comment.created', 'comment.answered',
+		                                                                                          'comment.edited')), '{}') as commented,
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'id'`) + `) filter (where e.type in ('message.created', 'message.answered')), '{}') as messaged,
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'comment_id'`) + `) filter (where e.type = 'comment.delivery'), '{}') as attempted,
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'message_id'`) + `) filter (where e.type in ('message.delivery', 'message.accepted')), '{}') as delivered
 		from events e
 		where e.id > $1 and e.id <= $2
 		  and e.type in ('issue.created', 'artifact.created', 'ask.opened', 'message.created', 'message.answered', 'artifact.removed',
-		                 'user_thread_state.updated', 'ask.answered', 'comment.delivery')
+		                 'user_thread_state.updated', 'user_state.updated', 'user_agent_state.updated', 'ask.edited', 'ask.answered',
+		                 'comment.created', 'comment.answered', 'comment.edited', 'comment.delivery', 'message.delivery', 'message.accepted')
 	)
 	select exists (select 1 from named c join issues i on i.key = any(c.issues) where ` + unmarked(graphstore.KindIssue, "i.key") + `)
 	    or exists (select 1 from named c join artifacts a on a.issue_key = any(c.issues)
@@ -80,6 +92,33 @@ var eventsOweObjectPass = `
 	    or exists (select 1 from named c join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = any(c.removed)
 		where ` + orphanedDocumentNode("n") + `)
 	    or (` + backfillRan + ` and (
-		exists (select 1 ` + userThreadsOwed + ` and ` + threadItemsStored + `
-		  and (u.login = any((select named.logins from named)::text[]) or u.thread_id = any((select named.answered from named)::uuid[])))
-		or exists (select 1 ` + commentAttempts.owed() + ` and d.comment_id = any((select named.attempted from named)::uuid[]))))`
+		` + rollOwedByEvents() + `))`
+
+// rollOwedByEvents is eventsOweObjectPass's test of the inbox cache rows the events name that the
+// block-index tick's catch-up owes (rollPasses), each kind read by its own owed test, the pass's,
+// narrowed to the rows the arrays of named name, through the key or the index each kind's rows are
+// read by.
+func rollOwedByEvents() string {
+	named := func(array, as string) string { return `any((select named.` + array + ` from named)::` + as + `[])` }
+	terms := []string{
+		`exists (select 1 ` + userThreadsOwed + ` and ` + threadItemsStored + `
+		  and (u.login = ` + named("logins", "text") + ` or u.thread_id = ` + named("answered", "uuid") + `))`,
+		`exists (select 1 ` + asksOwed + ` and k.id = ` + named("asked", "uuid") + `)`,
+		`exists (select 1 ` + messagesOwed + ` and m.id = ` + named("messaged", "uuid") + `)`,
+		`exists (select 1 ` + pastBoundMessages.owed + ` and m.id = ` + named("messaged", "uuid") + `)`,
+		`exists (select 1 ` + commentAttempts.owed() + ` and d.comment_id = ` + named("attempted", "uuid") + `)`,
+		`exists (select 1 ` + messageAttempts.owed() + ` and (d.message_id = ` + named("delivered", "uuid") +
+			` or d.message_id = ` + named("messaged", "uuid") + `))`,
+	}
+	for _, table := range readStateTables {
+		terms = append(terms, `exists (select 1 `+table.owed()+` and user_threads_login(r.login) = `+named("logins", "text")+`)`)
+	}
+	items := map[string]string{graphstore.KindComment: "commented", graphstore.KindMessage: "messaged", graphstore.KindAsk: "asked"}
+	for _, kind := range inboxItemKinds {
+		terms = append(terms,
+			`exists (select 1 `+kind.blocksOwed()+` and b.`+kind.column+` = `+named(items[kind.kind], "uuid")+`)`,
+			`exists (select 1 `+kind.linksOwed()+` and r.`+kind.column+` = `+named(items[kind.kind], "uuid")+`)`,
+			`exists (select 1 `+kind.citationsOwed()+` and r.from_id = `+named(items[kind.kind], "text")+`)`)
+	}
+	return strings.Join(terms, "\n\t\tor ")
+}

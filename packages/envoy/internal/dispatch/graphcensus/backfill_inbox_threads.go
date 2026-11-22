@@ -195,12 +195,16 @@ var declinesOwed = `
 	      where t.to_kind = '` + graphstore.KindAsk + `' and t.to_id = e.payload->>'id'
 	        and t.kind = '` + graphstore.TupleParticipatesIn + `' and t.source_event = e.id)`
 
+// declinesKind is the decline pass's kind, the one pass of the inbox the block-index tick runs over
+// the events it reads rather than over rows (rollPasses, CatchUpEvents).
+const declinesKind = "ask_declines"
+
 // declinesPass gives the decliner of each decline an older build wrote their participates_in into
 // the ask, under that decline's ask.resolved and at the resolution's own moment, read from the
 // event and never from asks.resolution (inboxwrite.RecordOlder of inboxwrite.Declined).
 func declinesPass() inboxPass {
 	return inboxPass{
-		kind:      "ask_declines",
+		kind:      declinesKind,
 		batch:     `select e.id::text ` + declinesOwed + ` and e.id > $1::text::bigint order by e.id limit $2`,
 		start:     []string{"0"},
 		write:     writeDeclines,
@@ -290,10 +294,17 @@ var userThreadsOwed = `
 // is made for the rows the marker test passes alone - an older build's write, under the row's lock
 // - and never for a marked row, so it restates what such a row says and mends nothing this
 // release's writer stated.
+//
+// It takes a row only once every item of its thread its catch-up states holds its node
+// (threadItemsStored): a comment an older build writes while the run is under way, after the
+// comment pass read the table, holds none until a later run or the block-index tick gives it one,
+// and a row of its thread marked meanwhile would stand at a version counting that comment's write
+// while the comment's deliveries, stated with its node, land above the mark. Such a row stays owed
+// (remaining counts it) until its thread's items all hold their nodes.
 func userThreadsPass() inboxPass {
 	return inboxPass{
 		kind: "user_threads",
-		batch: `select u.thread_id::text, u.login ` + userThreadsOwed + `
+		batch: `select u.thread_id::text, u.login ` + userThreadsOwed + ` and ` + threadItemsStored + `
 			and (u.thread_id, u.login) > ($1::uuid, $2) order by u.thread_id, u.login limit $3`,
 		start:     []string{zeroUUID, ""},
 		write:     writeUserThreads,
@@ -329,8 +340,9 @@ var threadCommentsOwed = `select c.id::text ` + commentPointersOwed + `
 // writeAsksOwed). It then locks the batch's rows `for no key update`, in ascending login within
 // each thread, and states and marks them. The store's tuples it reads of a row's person - whether
 // their participates_in and their dismissed into the thread stand - it reads of the rows the
-// marker test passes alone (userThreadsOwed, read again under the lock), to state what each such
-// row says, a dismissal it no longer holds retracted; it reads none of a marked row.
+// marker test passes alone (userThreadsOwed, read again under the lock, with threadItemsStored), to
+// state what each such row says, a dismissal it no longer holds retracted; it reads none of a
+// marked row.
 func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
 	threads, logins := column(keys, 0), column(keys, 1)
 	if err := lockOwnersOf(ctx, tx, threadOwners, threads); err != nil {
@@ -386,7 +398,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		`t.from_kind = '`+graphstore.KindPerson+`' and t.from_id = u.login and t.kind = '`+graphstore.TupleDismissed+`'
 		                and t.to_kind = u.kind and t.to_id = u.thread_id::text`)+`) dismissal
 		           where dismissal.asserted)
-		`+userThreadsOwed+`
+		`+userThreadsOwed+` and `+threadItemsStored+`
 		  and (u.thread_id, u.login) in (select * from unnest($1::uuid[], $2::text[]))
 		order by u.thread_id, u.login
 		for no key update of u
