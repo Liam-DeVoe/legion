@@ -81,6 +81,66 @@ func TestADropLeftAtTheBoundIsNamedAndTheServerFinishesIt(t *testing.T) {
 	})
 }
 
+// storetest's own teardown, held at its bound: a drop of storetest's (dropDatabase) that every
+// drop on the server waits behind is still running when teardown's deadline passes. teardown then
+// fails the run, writes the line naming that drop's backend, its wait and its statement, and a FAIL
+// line, and reports that the drops did not all return; and once the hold ends, the drop it left
+// running finishes.
+func TestStoretestsOwnDropAtTheBoundFailsTheRunAndIsNamed(t *testing.T) {
+	Open(t) // opens the admin pool and claims this binary's run, or skips the test
+	ctx := context.Background()
+	name := randomName(t, "dispatch_test_")
+	if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		t.Fatalf("create the database: %v", err)
+	}
+	t.Cleanup(func() { _, _ = shared.admin.Exec(context.Background(), "drop database if exists "+name) })
+
+	_, release := holdBarriers(t)
+	dropDatabase(name)
+	eventually(t, "storetest's drop of "+name+" waits on IPC/ProcSignalBarrier", func() string {
+		read, err := readActivity([]string{name})
+		if err != nil {
+			return err.Error()
+		}
+		if read.gone[name] {
+			t.Fatalf("storetest's drop of %s finished while holdBarriers held every drop on the server", name)
+		}
+		if drop := read.drops[name]; drop.wait != "IPC/ProcSignalBarrier" {
+			return fmt.Sprintf("the drop's backend: %s", drop)
+		}
+		return ""
+	})
+
+	var out strings.Builder
+	started := time.Now()
+	code, done := teardown(&out, 0, started, started.Add(time.Second))
+	if code != 1 || done {
+		t.Errorf("teardown at its bound with storetest's drop of %s still running answered exit code %d and every drop returned %v, want 1 and false", name, code, done)
+	}
+	for _, want := range []string{
+		"storetest: drop database " + name + ": still running at the teardown's bound",
+		"waiting on IPC/ProcSignalBarrier",
+		strconv.Quote("drop database " + name),
+		"storetest: FAIL: ",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("teardown's report does not say %q:\n%s", want, out.String())
+		}
+	}
+
+	release()
+	eventually(t, "storetest's drop of "+name+" finishes once the hold ends", func() string {
+		read, err := readActivity([]string{name})
+		if err != nil {
+			return err.Error()
+		}
+		if read.gone[name] {
+			return ""
+		}
+		return fmt.Sprintf("%s is still on the server; its drop: %s", name, read.drops[name])
+	})
+}
+
 // A database a storetest binary leaves on the server is dropped by the next binary's sweep once
 // the binary that made it is gone, and never while it runs: the sweep drops the database of a run
 // whose lock no session holds, and keeps one whose run's lock is held.
@@ -167,7 +227,12 @@ func holdBarriers(t *testing.T) (int, func()) {
 				t.Fatalf("create the probe database: %v", err)
 			}
 			name := probe
-			t.Cleanup(func() { _, _ = shared.admin.Exec(context.Background(), "drop database if exists "+name) })
+			// The hold ends first: a drop while it stands would wait on it, and this cleanup can
+			// run before holdBarriers returns, when it fails.
+			t.Cleanup(func() {
+				release()
+				_, _ = shared.admin.Exec(context.Background(), "drop database if exists "+name)
+			})
 			// Sent and never read, like the row's own drop.
 			connect(t).PgConn().Exec(context.Background(), "drop database "+probe)
 			held = 0

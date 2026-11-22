@@ -39,6 +39,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"regexp"
@@ -77,6 +78,8 @@ var shared struct {
 	dropFails []string
 	// pending are the databases whose drop has started and not returned, under dropMu.
 	pending map[string]bool
+	// sweepFails are what the sweep could not do, under dropMu; teardown reports them.
+	sweepFails []string
 }
 
 // openKey is the key of the template Open clones, which this tree's runner migrates
@@ -244,13 +247,15 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // and the server finishes it once the barrier is accepted. So no drop here has a deadline: each
 // runs on context.Background(), and the bound is Run's alone.
 //
-// At the bound Run stops waiting. It writes a line for each database still being dropped
-// (leftLine) and one naming the server's other client backends, among them what the drops wait
-// on (othersLine), and returns the tests' exit code, since every test has reported by then and
-// the wait is another backend's. The process then ends without a cancel request: a drop the
-// server is running is finished by the server, and a database whose drop never reached it (the
-// drop waited for one of the admin pool's connections) stays until the next storetest binary on
-// the server drops it (sweepOrphans). A drop that fails is reported, and fails the run.
+// At the bound Run stops waiting, and the run fails. It writes a line for each database still
+// being dropped (leftLine) and one naming the server's other client backends, among them what the
+// drops wait on (othersLine), then a FAIL line, and returns 1: go test prints a package's output
+// only when it fails, so a run that passed would hide the lines from every CI job. The process
+// then ends without a cancel request: a drop the server is running is finished by the server, and
+// a database whose drop never reached it (the drop waited for one of the admin pool's connections)
+// stays until the next storetest binary on the server drops it (sweepOrphans). A drop that fails,
+// and a database the sweep could not drop, is reported and fails the run too, bound or not
+// (teardown).
 func Run(run func() int) int {
 	shared.main = true
 	started := time.Now()
@@ -263,31 +268,53 @@ func Run(run func() int) int {
 	for _, name := range templateNames() {
 		dropDatabase(name)
 	}
+	code, done := teardown(os.Stderr, code, started, teardownDeadline(started))
+	if done {
+		// Not at the bound: the admin pool's Close waits for every connection it lent, and a
+		// drop still running holds one. Then the process ends with the pool, and with the owner
+		// connection, which frees this binary's run for the next sweep.
+		shared.admin.Close()
+		_ = shared.owner.Close(context.Background())
+	}
+	return code
+}
+
+// teardown waits until deadline for every drop, the tests' own and the templates', and returns
+// the binary's exit code from the tests' code, and whether every drop returned. A drop still
+// running at the deadline is written to w with what becomes of it (reportLeftDrops) and fails the
+// run, with a FAIL line; so does each drop that failed and each database the sweep could not drop.
+func teardown(w io.Writer, code int, started, deadline time.Time) (int, bool) {
 	dropped := make(chan struct{})
 	go func() {
 		shared.drops.Wait()
 		close(dropped)
 	}()
-	bound := time.NewTimer(time.Until(teardownDeadline(started)))
+	bound := time.NewTimer(time.Until(deadline))
 	defer bound.Stop()
+	done := true
 	select {
 	case <-dropped:
 	case <-bound.C:
-		// The admin pool is not closed: Close waits for every connection it lent, and the drops
-		// still running hold theirs. The process ends with it, and with the owner connection,
-		// which frees this binary's run for the next sweep.
-		reportLeftDrops(time.Since(started))
-		return code
+		done = false
 	}
-	shared.admin.Close()
-	_ = shared.owner.Close(context.Background())
-	for _, failure := range shared.dropFails {
-		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
+	shared.dropMu.Lock()
+	failures := append(append([]string(nil), shared.dropFails...), shared.sweepFails...)
+	shared.dropMu.Unlock()
+	for _, failure := range failures {
+		fmt.Fprintf(w, "storetest: %s\n", failure)
+	}
+	if len(failures) > 0 && code == 0 {
+		code = 1
+	}
+	if !done {
+		left := reportLeftDrops(w, time.Since(started))
+		fmt.Fprintf(w, "storetest: FAIL: %d databases were still being dropped at the teardown's bound, %s after the tests began; the lines above say what becomes of each\n",
+			left, time.Since(started).Round(time.Second))
 		if code == 0 {
 			code = 1
 		}
 	}
-	return code
+	return code, done
 }
 
 // templateNames are the databases of the templates this test binary made.
@@ -324,21 +351,23 @@ func teardownDeadline(started time.Time) time.Time {
 	return time.Now().Add(teardownUnbounded)
 }
 
-// reportLeftDrops writes Run's lines for the databases still being dropped at the teardown's
+// reportLeftDrops writes to w Run's lines for the databases still being dropped at the teardown's
 // bound, elapsed after the tests began: one for each (leftLine) and one for the server's other
-// client backends (othersLine), from one read of the server (readActivity).
-func reportLeftDrops(elapsed time.Duration) {
+// client backends (othersLine), from one read of the server (readActivity). It returns how many
+// databases it wrote of.
+func reportLeftDrops(w io.Writer, elapsed time.Duration) int {
 	names := pendingDrops()
 	read, err := readActivity(names)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: drop database %s: still running at the teardown's bound, %s after the tests began; the server could not be read: %v\n",
+		fmt.Fprintf(w, "storetest: drop database %s: still running at the teardown's bound, %s after the tests began; the server could not be read: %v\n",
 			strings.Join(names, ", "), elapsed.Round(time.Second), err)
-		return
+		return len(names)
 	}
 	for _, name := range names {
-		fmt.Fprintln(os.Stderr, leftLine(name, elapsed, read))
+		fmt.Fprintln(w, leftLine(name, elapsed, read))
 	}
-	fmt.Fprintln(os.Stderr, othersLine(read))
+	fmt.Fprintln(w, othersLine(read))
+	return len(names)
 }
 
 // pendingDrops are the databases whose drop has started and not returned, by name.
@@ -361,13 +390,14 @@ func leftLine(name string, elapsed time.Duration, read activity) string {
 		return head + ", and the database is gone: its drop ended as the bound passed"
 	}
 	if drop, running := read.drops[name]; running {
-		return head + ", so the drop is left to the server, which finishes it once what it waits on lets it, since this process ends without a cancel request: the drop: " + drop.String()
+		return head + ", so the drop is left to the server, which finishes it once what it waits on lets it, since this process ends without a cancel request: the drop: " + drop.drop()
 	}
 	return head + ", and its drop is not on the server (it waits for one of the admin pool's connections, or between its tries), so the database stays until the next storetest binary on this server drops it"
 }
 
-// othersLine is Run's line naming the server's other client backends at the teardown's bound.
-// What the drops wait on is among them: a backend the machine does not run (it shows the state it
+// othersLine is Run's line naming the server's other client backends at the teardown's bound, by
+// pid, database, state and wait, and not by their statements, which are other sessions' text. What
+// the drops wait on is among them: a backend the machine does not run (it shows the state it
 // stopped in), or one waiting on Client/ClientWrite for a client that does not read.
 func othersLine(read activity) string {
 	return "storetest: the server's other client backends at the teardown's bound, among them what the drops wait on: " + listOrNone(read.others)
@@ -379,8 +409,14 @@ type backend struct {
 	database, state, wait, query string
 }
 
+// String names b by its pid, database, state and wait, without its statement.
 func (b backend) String() string {
-	return fmt.Sprintf("pid %d in %q, %s, waiting on %s, %q", b.pid, b.database, b.state, b.wait, b.query)
+	return fmt.Sprintf("pid %d in %q, %s, waiting on %s", b.pid, b.database, b.state, b.wait)
+}
+
+// drop names b, a backend running one of this binary's drops, with its statement too.
+func (b backend) drop() string {
+	return fmt.Sprintf("%s, %q", b, b.query)
 }
 
 // activity is what the server shows of the drops of some databases: the backend running each
@@ -555,8 +591,12 @@ func openAdmin(raw string) error {
 
 // claimRun opens the owner connection and takes on it the session advisory lock of a new run, a
 // random name every database of this binary carries (randomName): the lock is held for as long as
-// the connection is open, which is as long as the binary runs, so a sweep never takes a database
-// of a binary that runs (sweepOrphans). A run whose lock is already held is drawn again.
+// the connection is open, so a sweep never takes a database of a binary that runs (sweepOrphans).
+// A run whose lock is already held is drawn again. The guarantee rests on the owner session alone:
+// if the server ends it while the binary runs (a restart, an idle_session_timeout, a lost
+// network), the lock goes with it, and another binary's sweep may then drop this binary's
+// templates and databases. Nothing here takes the lock again; on such a server the tests fail on
+// their next statement anyway.
 func claimRun(ctx context.Context) (*pgx.Conn, string, error) {
 	owner, err := pgx.Connect(ctx, databaseURL(shared.server, "postgres"))
 	if err != nil {
@@ -594,18 +634,23 @@ func runKey(run string) int64 {
 }
 
 // sweepInBackground runs sweepOrphans on a connection of its own, so a drop that waits holds no
-// admin connection and no test, and reports what it could not drop. Nothing waits for it: a
-// database it leaves is the next sweep's.
+// admin connection and no test. What it could not do goes to shared.sweepFails, which teardown
+// reports and counts. Nothing waits for it: a database it leaves is the next sweep's.
 func sweepInBackground() {
 	ctx := context.Background()
+	fail := func(err error) {
+		shared.dropMu.Lock()
+		shared.sweepFails = append(shared.sweepFails, fmt.Sprintf("sweep the databases gone binaries left: %v", err))
+		shared.dropMu.Unlock()
+	}
 	conn, err := pgx.Connect(ctx, databaseURL(shared.server, "postgres"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: sweep the databases gone binaries left: %v\n", err)
+		fail(err)
 		return
 	}
 	defer func() { _ = conn.Close(ctx) }()
 	if _, err := sweepOrphans(ctx, conn); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: sweep the databases gone binaries left: %v\n", err)
+		fail(err)
 	}
 }
 
