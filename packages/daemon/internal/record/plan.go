@@ -167,6 +167,20 @@ func (s PlanStep) AgentName() claim.Agent {
 	return claim.Agent(s.Role)
 }
 
+// RetroAgentOf is who does the retro of task, whose plan rows are steps, and the role of that run
+// (plan.RetroAgent), read from the type each row records: the agent and the role of its last step
+// of the type implementation, else the owner as the implementer. It is the one reading of the
+// retro's agent from plan rows, which the workflow's walk, the route complete_step and the sentence
+// of OWNER_STEP_NOT_RUNNING all take.
+func RetroAgentOf(task string, steps []PlanStep) (plan.Agent, string) {
+	named := make([]plan.Step, len(steps))
+	types := make([]plan.Type, len(steps))
+	for i, step := range steps {
+		named[i], types[i] = plan.Step{Role: step.Role, Key: step.AgentKey}, step.Type
+	}
+	return plan.RetroAgent(task, named, types)
+}
+
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
 // its id, and the steps of each task by its id, ordered by place. Steps is never nil.
 type StoredPlan struct {

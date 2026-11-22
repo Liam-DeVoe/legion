@@ -161,16 +161,12 @@ func (w Walk) agentOfStep(place int) plan.Agent {
 	return plan.AgentOf(w.Task, place, plan.Step{Role: step.Role, Key: step.AgentKey})
 }
 
-// retroAgent is who does the retro of w's task, and the role of that run (plan.RetroAgent), read
-// from the types its rows record (record.PlanStep.Type): the agent and the role of its last step of
-// the type implementation, else the owner as the implementer. A walk with no plan rows walks
-// todaysSteps, whose last step of that type is the implementer's.
+// retroAgent is who does the retro of w's task, and the role of that run (record.RetroAgentOf, read
+// from the types its rows record): the agent and the role of its last step of the type
+// implementation, else the owner as the implementer. A walk with no plan rows walks todaysSteps,
+// whose last step of that type is the implementer's.
 func (w Walk) retroAgent() (plan.Agent, string) {
-	types := make([]plan.Type, len(w.Steps))
-	for i, step := range w.Steps {
-		types[i] = step.Type
-	}
-	return plan.RetroAgent(w.Task, namedSteps(w.Steps), types)
+	return record.RetroAgentOf(w.Task, w.Steps)
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where

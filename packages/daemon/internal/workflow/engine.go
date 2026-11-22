@@ -1061,8 +1061,8 @@ func judgedReport(issue record.Issue, w Walk, fact intake.HandoffComplete) (phas
 // ownerStepRefusal is the refusal of the owner's report of step (from 1, and 0 for the retro) of
 // issue's task on w, nil where that step runs now and its agent is the owner: the task runs at
 // that place, the issue stands in the phase the place derives, and the claim that works the place
-// is the owner's (Walk.PlaceRole is the architect). Its sentence names where the task stands and
-// who does that place, so the owner reads which report, if any, is its own now.
+// is the owner's (Walk.PlaceRole is the architect). Its sentence is the one the route complete_step
+// writes too (record.OwnerStepNotRunning), naming where the task stands and who works that place.
 func ownerStepRefusal(issue record.Issue, w Walk, step int) *intake.Refusal {
 	named := record.TaskPlace{Kind: record.PlaceStep, Position: step}
 	if step == 0 {
@@ -1072,38 +1072,7 @@ func ownerStepRefusal(issue record.Issue, w Walk, step int) *intake.Refusal {
 		w.PlaceRole(w.Place) == claim.RoleArchitect {
 		return nil
 	}
-	reported := fmt.Sprintf("%s of task %s of %s", placeWords(named), w.Task, issue.Key)
-	if !w.Stored {
-		return refused("OWNER_STEP_NOT_RUNNING", fmt.Sprintf("%s is not a step of yours that runs now: %s runs with no plan rows, so no step of it is the owner's. This report changed nothing.",
-			reported, issue.Key)).Refusal
-	}
-	role, agent := w.RoleAt(w.Place), "the owner"
-	if at, ok := w.planStepAt(w.Place); ok {
-		role = claim.Role(at.Role)
-	}
-	if !w.OwnerAt(w.Place) {
-		agent = string(w.AgentAt(w.Place))
-	}
-	if role == "" || agent == "" {
-		return refused("OWNER_STEP_NOT_RUNNING", fmt.Sprintf("%s is not a step of yours that runs now: %s stands at %s, which no agent works. This report changed nothing.",
-			reported, issue.Key, placeWords(w.Place))).Refusal
-	}
-	return refused("OWNER_STEP_NOT_RUNNING", fmt.Sprintf("%s is not a step of yours that runs now: %s stands at %s (%s), whose agent is %s. This report changed nothing.",
-		reported, issue.Key, placeWords(w.Place), role, agent)).Refusal
-}
-
-// placeWords is place as a sentence names it: step <n>, the retro, the merge, or no step for a
-// task at no act.
-func placeWords(place record.TaskPlace) string {
-	switch place.Kind {
-	case record.PlaceStep:
-		return fmt.Sprintf("step %d", place.Position)
-	case record.PlaceRetro:
-		return "the retro"
-	case record.PlaceMerge:
-		return "the merge"
-	}
-	return "no step"
+	return refused("OWNER_STEP_NOT_RUNNING", record.OwnerStepNotRunning(issue, w.Task, w.Stored, w.State, step, w.Place, w.Steps)).Refusal
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {

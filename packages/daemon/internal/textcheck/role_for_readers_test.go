@@ -57,8 +57,7 @@ type roleForReader struct {
 // the issue stands at the retro), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, completionOf, which reads the role of a place
 // only while the task runs there and so never at admitted, whose task is at no act,
-// Engine.startOwnersStep, which reads the place of a step or a retro the owner does,
-// ownerStepRefusal, which names the role of the place an owner's report finds its task at, and
+// Engine.startOwnersStep, which reads the place of a step or a retro the owner does, and
 // Engine.restartTask, which reads its task's first step, a place no plan runs as admitted), or
 // reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only for a
 // parent held before its retro for the issues beneath it), or answers RoleFor's role for every
@@ -123,10 +122,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "completionOf"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestTheRetroRunsAsTheRoleOfItsAgent",
 		"TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop"}},
-	// The role of the place an owner's report of another place finds its task at, named in the
-	// refusal only where an agent works it.
-	{file: "internal/workflow/engine.go", fn: "ownerStepRefusal"}: {calls: 1, tests: []string{
-		"TestTheEngineTakesTheOwnersReportOnlyForTheStepThatRuns"}},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}: {calls: 1, tests: []string{
 		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	// The merge's role and the role a step's role runs as; the retro's is its agent's

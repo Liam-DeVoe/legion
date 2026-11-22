@@ -108,8 +108,9 @@ type agentRoute struct {
 // Every route of the table is in this test's table, and each request of an agent whose fact names
 // an issue where the record names that agent the agent of a run that is not ended waits for the
 // agent's stream before its fact applies: the tester's completion, a phase worker's and the
-// architect's moves back, the architect's sign-off and its park of a child in accepting, each
-// ending its own step, the architect's retry of an issue its own failure held in accepting, and
+// architect's moves back, the architect's sign-off, the owner's report of a step of its own and the
+// architect's park of a child in accepting, each ending its own step, the architect's retry of an
+// issue its own failure held in accepting, and
 // its gate registration, its plan registration and its stop of a task on a root in accepting, the
 // stop ending its own step. So the record of a step an agent's request ends names the model whose
 // answer its stream read ahead of the request. The routes are read from the server's own table
@@ -172,6 +173,18 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
 			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
 				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
+			}}}
+		}},
+		"POST /legion/v1/steps/complete": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// The owner's report of its own tester step ends the step whose run it is the agent of.
+			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
+			seedOwnerPlan(t, r.h, "LEGION-208", "tester:owner", stepAt(1))
+			owner := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
+			r.runs(t, "LEGION-208", record.StepPlace{Task: "a", Kind: "step", Place: 1}, owner.token)
+			written := owner.writeHandoff("test", 1)
+			return []agentRequest{{owner.token, func() *httptest.ResponseRecorder {
+				return completeStep(r.h, map[string]any{"grantId": owner.grant(t), "issue": "LEGION-208", "step": 1, "summary": "tests pass",
+					"verdict": "pass", "handoffId": written, "handoffVersion": 1})
 			}}}
 		}},
 		"POST /legion/v1/children/park": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
