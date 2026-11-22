@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
 // TestTwoWritersAndTheSettlerEndWithThePublishedStateDispatchComputes: two settlers, A and B, as
@@ -261,8 +262,8 @@ func TestEveryTableAStateReadsHasItsTrigger(t *testing.T) {
 }
 
 // TestTheLeasePoolCountsTheCheckStatesLoop: the lease pool's callers are complete with the
-// reservations cmd/dispatch's main makes, read from its source, beside the intakes' own, and
-// incomplete with the check states settler's taken out.
+// reservations cmd/dispatch's main makes, read from its source, beside the intakes' own and the
+// keyword fill's own, and incomplete with the check states settler's taken out.
 func TestTheLeasePoolCountsTheCheckStatesLoop(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "..", "..", "cmd", "dispatch", "main.go"), nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -305,6 +306,9 @@ func TestTheLeasePoolCountsTheCheckStatesLoop(t *testing.T) {
 		}
 		if _, err := delivery.ReserveIntakeLeases(callers); err != nil {
 			t.Fatalf("reserve the intakes' callers: %v", err)
+		}
+		if _, err := textversions.ReserveLeases(callers); err != nil {
+			t.Fatalf("reserve the keyword fill's callers: %v", err)
 		}
 		return callers.Complete()
 	}
