@@ -16,7 +16,7 @@ import {
   userStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { IssueSummary, UserState } from "../../api/types";
+import type { UserState } from "../../api/types";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import {
   DataTable,
@@ -367,10 +367,6 @@ function tabCounts(reads: TabReads): TabCounts {
   );
   return { built, saved };
 }
-
-/** How many issues a listing holds: Done's tab's count by the read of every done issue. A module
- *  function, so the read's `select` keeps one identity and runs again only when the read does. */
-const issueCount = (issues: readonly IssueSummary[]): number => issues.length;
 
 /** The table's grouping on the Board, whose Group by picks the Board's columns instead: its rows
  *  are then the view's rows in the view's sort alone. */
@@ -1235,13 +1231,12 @@ function IssueTableBody({
   });
   const doneAllCount = useQuery({
     ...projectDoneIssuesQuery(project ?? "", undefined),
-    select: issueCount,
     refetchOnMount: false,
     enabled: tab !== undefined && heldDone?.kind === "all" && !onDone,
   });
   let doneKept: number | undefined;
   if (heldDone?.kind === "page") doneKept = donePageCount.data;
-  else if (heldDone?.kind === "all") doneKept = doneAllCount.data;
+  else if (heldDone?.kind === "all") doneKept = doneAllCount.data?.length;
   const openTotal = readsOpen ? undefined : openCount.data;
   const openIn = readsOpen && issues.data !== undefined;
   const boardIn = !hasLegion || board.data !== undefined;
