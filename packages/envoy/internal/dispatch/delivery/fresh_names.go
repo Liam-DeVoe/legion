@@ -290,6 +290,7 @@ func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string
 		},
 		Owner:    d.holder.String(),
 		Reserved: d.reserved,
+		Adopt:    d.adopt,
 		Observe: func(op consumernames.Operation, outcome consumernames.Outcome) {
 			steps.Inc([2]string{"durable", d.name}, [2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})
 		},
@@ -450,15 +451,101 @@ func (d *heldDurable) grantedFor(ctx context.Context, name string, del bool) (*b
 // toJetStreamInfo is info as nats.go's jetstream package reads the same answer, which
 // consumernames takes: both decode the server's one JSON shape.
 func toJetStreamInfo(info *natsgo.ConsumerInfo) (*jetstream.ConsumerInfo, error) {
-	raw, err := json.Marshal(info)
+	return converted[jetstream.ConsumerInfo](info)
+}
+
+// converted is from as To decodes its JSON: nats.go's nats and jetstream packages both read the
+// server's one shape of a consumer's info and of its config.
+func converted[To any](from any) (*To, error) {
+	raw, err := json.Marshal(from)
 	if err != nil {
 		return nil, err
 	}
-	var converted jetstream.ConsumerInfo
-	if err := json.Unmarshal(raw, &converted); err != nil {
+	var to To
+	if err := json.Unmarshal(raw, &to); err != nil {
 		return nil, err
 	}
-	return &converted, nil
+	return &to, nil
+}
+
+// createConfig is the config createFresh sends candidate name, its start aside: this build's, or
+// deployed's own where that consumer carries a higher configuration generation (newestConfig, as
+// takeOverConfig keeps a newer build's), named name and marked with the durable's logical name.
+func (d *heldDurable) createConfig(name string, deployed *natsgo.ConsumerInfo) natsgo.ConsumerConfig {
+	config := d.config()
+	if deployed != nil {
+		config = newestConfig(deployed, config)
+	}
+	config.Durable = name
+	config.Metadata = maps.Clone(config.Metadata)
+	if config.Metadata == nil {
+		config.Metadata = map[string]string{}
+	}
+	config.Metadata[consumernames.LogicalMetadataKey] = d.fresh.logical
+	return config
+}
+
+// adoptionCreate is createConfig for held, a consumer of this durable as the server answers it,
+// read as the listener's adoption check and its correction read a family's create: this build's
+// config, or held's own where a newer build made it.
+func (d *heldDurable) adoptionCreate(held *jetstream.ConsumerInfo) (jetstream.ConsumerConfig, error) {
+	deployed, err := converted[natsgo.ConsumerInfo](held)
+	if err != nil {
+		return jetstream.ConsumerConfig{}, fmt.Errorf("read %s as the nats package types it: %w", held.Name, err)
+	}
+	create, err := converted[jetstream.ConsumerConfig](d.createConfig(held.Name, deployed))
+	if err != nil {
+		return jetstream.ConsumerConfig{}, fmt.Errorf("%s's create as the jetstream package types it: %w", held.Name, err)
+	}
+	return *create, nil
+}
+
+// adopt is consumernames.Config.Adopt, the listener's check (bus.Client.ConsumerAdoptable): a
+// candidate this take-over did not see created -- one an interrupted take-over left, of this
+// process or another -- is published only when every setting no update changes is as createFresh
+// would have created it, its explicit acks and its deliver subject's kind among them, and it holds
+// no setting this build does not know. A refusal leaves the operation open, so the intake delivers
+// nothing until an operator acts. The settings an update changes, its filter among them, are
+// corrected in place before the intake delivers from it (correctAdopted).
+func (d *heldDurable) adopt(ctx context.Context, _ string, candidate *jetstream.ConsumerInfo) error {
+	create, err := d.adoptionCreate(candidate)
+	if err != nil {
+		return err
+	}
+	client, release, err := d.grantedFor(ctx, candidate.Name, false)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return client.ConsumerAdoptable(ctx, candidate.Name, create)
+}
+
+// correctAdopted brings current, a candidate Step 0 adopted, to its durable's create in every
+// setting an update changes (bus.CorrectedConfig) -- its filter, ack wait and pending bound among
+// them -- on client, the connection its generation is granted its create on, before the intake
+// binds it. The update goes out as the create does, with the filter after the name, which the
+// generation's grant holds.
+func (d *heldDurable) correctAdopted(ctx context.Context, client *bus.Client, current string) error {
+	held, err := client.ConsumerInfo(ctx, current)
+	if err != nil {
+		return err
+	}
+	create, err := d.adoptionCreate(held)
+	if err != nil {
+		return err
+	}
+	next, changed := bus.CorrectedConfig(held.Config, create)
+	if !changed {
+		return nil
+	}
+	update, err := converted[natsgo.ConsumerConfig](next)
+	if err != nil {
+		return fmt.Errorf("%s's correction as the nats package types it: %w", current, err)
+	}
+	if _, err := client.JS().UpdateConsumer(bus.Stream, update, natsgo.Context(ctx)); err != nil {
+		return fmt.Errorf("correct %s: %w", current, err)
+	}
+	return nil
 }
 
 // errCreateRefused marks a create the connection's grant refused, which the server answered: the
@@ -481,16 +568,7 @@ func (d *heldDurable) createFresh(ctx context.Context, name string, start consum
 	if !d.holds() {
 		return nil, notSent(errHoldNotHeld)
 	}
-	config := d.config()
-	if deployed := d.fresh.read[candidate.old]; deployed != nil {
-		config = newestConfig(deployed, config)
-	}
-	config.Durable = name
-	config.Metadata = maps.Clone(config.Metadata)
-	if config.Metadata == nil {
-		config.Metadata = map[string]string{}
-	}
-	config.Metadata[consumernames.LogicalMetadataKey] = d.fresh.logical
+	config := d.createConfig(name, d.fresh.read[candidate.old])
 	switch start.Native {
 	case consumernames.NativeNew:
 		config.DeliverPolicy, config.OptStartSeq = natsgo.DeliverNewPolicy, 0
@@ -637,7 +715,8 @@ func (d *heldDurable) takeOverFresh(context.Context) {
 	candidate := f.candidates[current]
 	if candidate == nil {
 		// A candidate another process reserved and created, which Step 0 adopted: its own
-		// generation's connection is granted its acknowledgements.
+		// generation's connection is granted its acknowledgements, and its create, on which what an
+		// update changes is brought to this durable's create before it delivers anything.
 		generation, ok := f.generationOf(current)
 		if !ok {
 			slog.Error("dispatch delivery: the take-over's current is no generation of the durable", "name", d.name, "physical", current)
@@ -650,6 +729,11 @@ func (d *heldDurable) takeOverFresh(context.Context) {
 		}
 		candidate = &candidateConn{client: client}
 		f.candidates[current] = candidate
+		if err := d.correctAdopted(ctx, client, current); err != nil {
+			slog.Error("dispatch delivery: correct the adopted generation", "name", d.name, "physical", current, "error", err)
+			d.dropCandidates("")
+			return
+		}
 	}
 	if candidate.delivery == nil || candidate.delivery.subject != subject {
 		// An adopted candidate delivers at its own deliver subject: bind that one.

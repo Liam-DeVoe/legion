@@ -649,6 +649,98 @@ func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, to
 	}
 }
 
+// An adopted candidate is held to its durable's own create, by the listener's check
+// (bus.Client.ConsumerAdoptable). A take-over killed after its create answered leaves its candidate
+// for the next holder's Step 0 to adopt; here that candidate is made again under its name, at its
+// start, with one setting changed, before the next holder starts. One with another ack policy,
+// which no update changes, is refused: the take-over says why at ERROR, nothing is published, and
+// the record keeps the operation open on that candidate. One with the other durable's filter, which
+// an update changes, is adopted and brought back to the durable's own filter before the next
+// holder binds it, which then delivers the messages published since. Control: at the build before
+// this check, the first is adopted and the second delivers on the other filter.
+func TestAnAdoptedCandidateIsHeldToItsDurablesCreate(t *testing.T) {
+	for i, kind := range durableKinds {
+		other := durableKinds[len(durableKinds)-1-i].config().FilterSubject
+		for name, row := range map[string]struct {
+			change  func(*natsgo.ConsumerConfig)
+			adopted bool
+		}{
+			"another ack policy": {func(c *natsgo.ConsumerConfig) { c.AckPolicy = natsgo.AckAllPolicy }, false},
+			"another filter":     {func(c *natsgo.ConsumerConfig) { c.FilterSubject = other }, true},
+		} {
+			t.Run(kind.logical+"/"+name, func(t *testing.T) {
+				records := captureLogs(t)
+				hub, pool := freshRig(t, 0)
+				holder := startDurableProcess(t, hub, pool, kind, freshNames)
+				awaitDelivering(t, hub, pool, kind.logical)
+				killed := startDurableProcess(t, hub, pool, kind, freshNames, killAt(stepCreated))
+				holder.stop()
+				waitFor(t, 30*time.Second, killed.leases.cut.Load, func() string {
+					return "the standby's take-over never reached " + stepCreated
+				})
+				reserved := selectionRecord(t, pool, kind.logical)
+				if reserved.Op == nil || reserved.Op.Candidate == "" {
+					t.Fatalf("the killed take-over left no candidate: %+v", reserved)
+				}
+				candidate := reserved.Op.Candidate
+				_, js := hub.admin(t)
+				made, err := js.ConsumerInfo(bus.Stream, candidate)
+				if err != nil {
+					t.Fatalf("read the killed process's candidate: %v", err)
+				}
+				config := made.Config
+				config.DeliverSubject = natsgo.NewInbox()
+				config.Metadata = bus.OwnMetadata(config.Metadata, 0)
+				row.change(&config)
+				if err := js.DeleteConsumer(bus.Stream, candidate); err != nil {
+					t.Fatalf("delete the candidate to make it again: %v", err)
+				}
+				if _, err := js.AddConsumer(bus.Stream, &config); err != nil {
+					t.Fatalf("make the candidate again with %s: %v", name, err)
+				}
+				sent := hub.publish(t, kind, 2)
+				next := startDurableProcess(t, hub, pool, kind, freshNames)
+
+				if !row.adopted {
+					refused := func() bool {
+						for _, record := range records() {
+							message, _ := record["msg"].(string)
+							if record["level"] == "ERROR" && record["name"] == kind.logical &&
+								strings.Contains(message, candidate) && strings.Contains(message, "never gives") {
+								return true
+							}
+						}
+						return false
+					}
+					waitFor(t, 60*time.Second, refused, func() string {
+						return fmt.Sprintf("no ERROR naming %s's refused candidate %s; record %+v", kind.logical, candidate, selectionRecord(t, pool, kind.logical))
+					})
+					// Two more attempts' worth.
+					time.Sleep(2 * durableBindInterval)
+					if record := selectionRecord(t, pool, kind.logical); record.Current == candidate || record.Op == nil || record.Op.Candidate != candidate {
+						t.Fatalf("the refused candidate %s was published, or its operation closed: %+v", candidate, record)
+					}
+					if subject := next.deliverySubject(); subject != "" {
+						t.Fatalf("the next holder delivers at %s from a refused candidate", subject)
+					}
+					return
+				}
+				if current := awaitDelivering(t, hub, pool, kind.logical); current != candidate {
+					t.Fatalf("the current is %s, want the adopted candidate %s", current, candidate)
+				}
+				info, err := js.ConsumerInfo(bus.Stream, candidate)
+				if err != nil {
+					t.Fatalf("read the adopted candidate: %v", err)
+				}
+				if want := kind.config().FilterSubject; info.Config.FilterSubject != want {
+					t.Fatalf("the adopted candidate filters %s, want its durable's own %s", info.Config.FilterSubject, want)
+				}
+				awaitHandled(t, sent, next)
+			})
+		}
+	}
+}
+
 // A fresh process whose first take-over fails after its create stops cleanly. The take-over
 // subscribes its candidate, creates it, and is handed every message while its handler runs the
 // first; then its selection store stops answering, as in a database incident, so the publish of
