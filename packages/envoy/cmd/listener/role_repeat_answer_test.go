@@ -197,8 +197,9 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 // forward of its own (another sender's to the same role, or the same sender's to another role the
 // same holder holds), is a request of its own too: once its sender takes that role and repeats,
 // the echo answers the same stored forward, short for another sender and whole with duplicate for
-// the forward's own. The controls clear the route's record of K before the second request, which
-// is then forwarded again and recorded through the stream's confirmation, as a forward always was.
+// the forward's own. Two more cases clear the route's record of K before the second request,
+// which is then forwarded again, not answered from the record, and recorded through the stream's
+// confirmation, as a forward always was: the echo answers the same stored forward.
 func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testing.T) {
 	rig := newSenderLimitRig(t)
 
@@ -259,8 +260,8 @@ func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testi
 	}{
 		{"case: another sender's repeat the record answered, repeated after it took the role, learns only that the key is taken", true, false},
 		{"case: the sender's request to a second role the record answered, repeated after it took that role, answers the stored forward with duplicate", false, false},
-		{"control: another sender's repeat forwarded again, repeated after it took the role, learns only that the key is taken", true, true},
-		{"control: the sender's request to a second role forwarded again, repeated after it took that role, answers the stored forward with duplicate", false, true},
+		{"case: another sender's repeat forwarded again, not answered from the record, repeated after it took the role, learns only that the key is taken", true, true},
+		{"case: the sender's request to a second role forwarded again, not answered from the record, repeated after it took that role, answers the stored forward with duplicate", false, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			roleA, roleB := "role-echo-recorded-a-"+id.New(), "role-echo-recorded-b-"+id.New()
