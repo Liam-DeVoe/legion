@@ -492,7 +492,7 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 			"tester.md",
 			append(slices.Clone(planRead),
 				"each step after yours reads what you wrote, and so does the retro",
-				"Read the implementation handoff at the version your task's `Step <j> (implementer) reported:` line names"),
+				"Read the implementation handoff at the version that the `Step <j> (implementer) reported:` line of your task names"),
 			append(slices.Clone(planRetired),
 				"the reviewer where your task has a reviewer step",
 				"Read the implementation handoff at the version your task's `Handoff:` line names"),
