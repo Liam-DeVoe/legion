@@ -5934,8 +5934,9 @@ PYTHON
 # symbol_file <repo root> <commit> <name> <path>...; prints the file a part of a symbol
 # names, read against the paths the citation names: a path among them that is the name or
 # ends with it after a slash, then the name beside one of them, in its directory or in a
-# directory it is, then the name as a path of the tree. It prints nothing and returns 1
-# when none of those is a file at the commit.
+# directory it is, then, for a name that holds a `/`, a full path, the name as a path from
+# the root of the tree; a bare name is never looked for anywhere else in the tree. It prints
+# nothing and returns 1 when none of those is a file at the commit.
 symbol_file() {
     local root="$1" commit="$2" name="$3" path dir
     shift 3
@@ -5960,8 +5961,24 @@ symbol_file() {
             return 0
         }
     done
-    [ "$(git -C "$root" cat-file -t "$commit:$name" 2>/dev/null)" = blob ] || return 1
+    [[ "$name" == */* ]] && [ "$(git -C "$root" cat-file -t "$commit:$name" 2>/dev/null)" = blob ] || return 1
     printf '%s' "$name"
+}
+
+# paths_below <repo root> <commit> <path>...; prints each path the commit tracks that is one of
+# the paths a citation names, as resolve_symbol holds them, or stands below one, a glob, written
+# :(glob)<glob>, read as paths_at reads one, its `*` within one path element, so that a file's
+# name is looked for where the citation points and nowhere else in the tree. It prints nothing
+# and returns 1 when no path does.
+paths_below() {
+    local root="$1" commit="$2" path regex=""
+    shift 2
+    for path in "$@"; do
+        path="${path#':(glob)'}"
+        regex="$regex${regex:+|}$(printf '%s' "$path" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g')"
+    done
+    [ -n "$regex" ] || return 1
+    git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null | grep -E "^($regex)(/|$)"
 }
 
 # module_file <repo root> <commit> <prefix> <path>...; reads a symbol part's prefix as a
@@ -6208,11 +6225,12 @@ symbol_refused() {
 # follows none of those, and its last, where it is one, is followed by none, so
 # `TesterVerdictRequire` does not stand in `TesterVerdictRequired`. A file beside the paths
 # is one symbol_file finds: a path among them that is the name or ends with it after a slash,
-# then the name in the directory of one of them or in one of them that is a directory, then
-# the name as a path of the tree. Below, a name is letters, digits, `_` and `-`, its first
-# character no `-`; a key is a name, a name followed by `[]` or by digits in brackets, or a
-# string in double quotes; and a key path is keys joined by dots, or a key path in square
-# brackets, as TOML heads a table.
+# then the name in the directory of one of them or in one of them that is a directory, then,
+# for a name holding `/`, a full path, the name as a path from the root of the tree; a bare
+# name is never looked for elsewhere in the tree (case 203). Below, a name is letters,
+# digits, `_` and `-`, its first character no `-`; a key is a name, a name followed by `[]`
+# or by digits in brackets, or a string in double quotes; and a key path is keys joined by
+# dots, or a key path in square brackets, as TOML heads a table.
 #
 #  1. A line or a line range: digits, or two runs of digits joined by `-`, written alone,
 #     after a colon, or after a name and a colon, with any of `)`, `]`, `.`, `,`, `;` and `:`
@@ -6241,8 +6259,9 @@ symbol_refused() {
 #     a. holding a dot before a letter, as a file's name: a file beside the paths, which
 #        becomes here (case 195);
 #     b. as text here holds;
-#     c. holding a dot before a letter, as a file's name: a path of the tree at the commit
-#        that is the name or ends with it after a slash (case 196);
+#     c. holding a dot before a letter, as a file's name: a path at or below the paths the
+#        citation names, at the commit, that is the name or ends with it after a slash, and
+#        no path elsewhere in the tree (cases 196, 201);
 #     d. holding a dot, as a qualified name, by its prefix, the text before its last dot, and
 #        its local part, the text after it:
 #        - `file.ext.Symbol`, `a.go.Alpha`: a prefix that is a file beside the paths is that
@@ -6283,10 +6302,11 @@ symbol_refused() {
 #       5d (case 197);
 #     else the part fails.
 #  7. A path, holding `/`, of letters, digits, `_`, `.`, `-`, `@`, `+`, `~` and `*`:
-#     `protocols/accord`, `skills/`, `src/mas/library/*` (case 198). It is read in turn as a
-#     file beside the paths, which becomes here; as text here holds; as a file's name, as in
-#     5c; as a path, a directory or a glob the commit holds (paths_at); and, holding `*`, as a
-#     pattern (8); else the part fails.
+#     `protocols/accord`, `skills/`, `src/mas/library/*` (cases 198, 202). It is read in turn
+#     as a file beside the paths, which becomes here; as text here holds; as a file's name, as
+#     in 5c; and as a path, a directory or a glob the commit holds (paths_at), from the root or
+#     below a directory or a glob the citation names, a glob's `*` within one path element, and
+#     never as a pattern over text; else the part fails.
 #  8. A pattern, any other part holding `|` or `*`: `GEN_AI_*`, `consensus|majority|quorum`
 #     (case 199). It holds as text here holds, or as an extended regular expression a line of
 #     here matches, read as its author wrote it, since it says itself what it matches; else
@@ -6412,14 +6432,13 @@ resolve_symbol() {
                 ;;
             esac
         fi
-        # 5c, 7: a file's name that a path of the tree is, or ends with after a slash.
+        # 5c, 7: a file's name that a path at or below the paths the citation names ends with
+        # after a slash, and no path elsewhere in the tree.
         case "$form" in
         key | path)
             case "$part" in
             *.[A-Za-z]*)
-                # ls-tree does not read the glob magic git grep takes, so the whole listing
-                # is filtered here, as paths_at filters it.
-                git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null |
+                paths_below "$root" "$commit" "${pathspec[@]}" |
                     grep -qE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
                 ;;
             esac
@@ -6452,14 +6471,26 @@ resolve_symbol() {
             esac
             ;;
         esac
-        # 7: a path, a directory or a glob the commit holds.
+        # 7: a path, a directory or a glob the commit holds, read from the root or below a
+        # directory or a glob the citation names, and never as text.
         case "$form" in
-        path) paths_at "$root" "$commit" "$part" && continue ;;
+        path)
+            paths_at "$root" "$commit" "$part" && continue
+            held=1
+            for path in "${pathspec[@]}"; do
+                case "$path" in
+                ':(glob)'*) path="${path#':(glob)'}" ;;
+                *) [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] || continue ;;
+                esac
+                paths_at "$root" "$commit" "$path/$part" && held=0 && break
+            done
+            [ "$held" -eq 0 ] && continue
+            ;;
         esac
-        # 8, and 2 and 7 where they hold `|` or `*`: an extended regular expression a line of
-        # here matches.
+        # 8, and 2 where it holds `|` or `*`: an extended regular expression a line of here
+        # matches.
         case "$form" in
-        pattern | path | words)
+        pattern | words)
             case "$part" in
             *'|'* | *'*'*)
                 git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue

@@ -6101,9 +6101,10 @@ for form in honest past-end; do
     esac
 done
 
-# 196. A part that is a file's name is read as a path of the tree that is the name or ends
-# with it after a slash (the architect's class of round 49). Twelve live parts pass only so,
-# as `engine.py` of t-cp-drop-packages, cited in the directory packages/ioc-concord/, and no
+# 196. A part that is a file's name is read as a path at or below the paths the citation names
+# that is the name or ends with it after a slash (the architect's class of round 49; case 201
+# holds that no path elsewhere in the tree is read). Twelve live parts pass only so, as
+# `engine.py` of t-cp-drop-packages, cited in the directory packages/ioc-concord/, and no
 # case held the reading. The case writes the fixture's row f-our-1 as citing the directory
 # packages/daemon with the symbol 'handoff.go', the name of
 # packages/daemon/internal/api/handoff.go, which no file of the directory writes, then
@@ -6264,6 +6265,105 @@ for form in honest call scope; do
             "citation-our-code: f-our-1 cites the symbol part 'Engine::match', which is not a symbol form the gate reads \\(check\\.sh's header, the symbol grammar\\)" "$out"
         ;;
     honest) honest_result "symbol parts $symbol, a name and two key paths written with brackets, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 201. A file's name is read at or below the paths the citation names, and never anywhere else
+# in the tree (the architect's ruling of round 49 on the readings the grammar kept: a part
+# stands where the row cites it, not anywhere in the repository). At 1a24ac7d a part that is a
+# file's name passed when any path of the tree ended with it, so 'handoff.go' cited in the
+# directory skills passed citation-our-code on packages/daemon/internal/api/handoff.go, a file
+# below no path the citation names. The case writes the fixture's row f-our-1 as citing the
+# directories skills and packages/daemon with the symbol 'handoff.go', then the directory
+# skills alone with the same symbol, running --citations over each: the first must pass
+# citation-our-code; the second must fail it, naming the part and skills.
+for form in honest elsewhere; do
+    case "$form" in
+    honest) cited='skills, packages/daemon' ;;
+    elsewhere) cited='skills' ;;
+    esac
+    dir="$(symbol_plant "symbol-name-below-$form" "$cited" handoff.go)" &&
+        [ -f "$dir/repo/packages/daemon/internal/api/handoff.go" ] &&
+        [ -z "$(find "$dir/repo/skills" -name handoff.go)" ] &&
+        ! grep -rqwE 'handoff|go' "$dir/repo/skills" || {
+        printf 'FAIL the symbol handoff.go cited in %s could not be planted in the fixture row f-our-1\n' "$cited"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    elsewhere)
+        case_result "a symbol part handoff.go cited in skills, a name only a file below packages/daemon holds, fails --citations, naming the part and skills" \
+            "citation-our-code: f-our-1 cites the symbol handoff\\.go, which skills does not hold" "$out"
+        ;;
+    honest) honest_result "a symbol part handoff.go cited in skills and packages/daemon, a name a file below packages/daemon holds, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 202. A path's glob is read as paths the commit holds, from the root or below a directory the
+# citation names, and never as a pattern over a file's text (the architect's ruling of round
+# 49). At 1a24ac7d a path holding `*` that named no path was read as an extended regular
+# expression over its file, so 'thermonuclear-deep-review/*', which names no path of the
+# fixture, passed citation-our-code in skills/legion-worker/references/pr-body.md, whose text
+# writes thermonuclear-deep-review, as the live row t-ml-drop-libraries's `src/mas/library/*`
+# passed on the text of its files while it names paths below the directories it cites. The
+# case writes the fixture's row f-our-1 as citing the directory skills with the symbol
+# 'legion-worker/*, skills/*/references', a glob below skills and one from the root, then
+# pr-body.md with the symbol 'thermonuclear-deep-review/*', running --citations over each: the
+# first must pass citation-our-code; the second must fail it, naming the part.
+for form in honest text; do
+    case "$form" in
+    honest) cited='skills' symbol='legion-worker/*, skills/*/references' ;;
+    text) cited='skills/legion-worker/references/pr-body.md' symbol='thermonuclear-deep-review/*' ;;
+    esac
+    dir="$(symbol_plant "symbol-path-glob-$form" "$cited" "$symbol")" &&
+        grep -qF 'thermonuclear-deep-review' "$dir/repo/skills/legion-worker/references/pr-body.md" &&
+        [ -z "$(find "$dir/repo" -path '*thermonuclear-deep-review*')" ] || {
+        printf 'FAIL the symbol %s cited in %s could not be planted in the fixture row f-our-1\n' "$symbol" "$cited"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    text)
+        case_result "a symbol part thermonuclear-deep-review/*, a glob no path matches whose text pr-body.md writes, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol thermonuclear-deep-review/\\*, which skills/legion-worker/references/pr-body\\.md does not hold" "$out"
+        ;;
+    honest) honest_result "symbol parts $symbol, a glob below the directory skills and one from the root, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 203. A bare file's name is a file beside the paths the citation names or none, and only a
+# full path, holding `/`, is read from the root of the tree (the architect's ruling of round
+# 49: a part stands where the row cites it). At 1a24ac7d symbol_file read any name, last, as
+# a path from the root, so 'NOTES.md:1' cited in skills/legion-worker/references/pr-body.md
+# read line 1 of the root's NOTES.md, a file beside no path the citation names, and passed
+# citation-our-code, as 'NOTES.md' did. The case commits NOTES.md and guide/NOTES.md, a line
+# each, and writes the fixture's row f-our-1 as citing pr-body.md and the directory guide with
+# the symbol 'guide/NOTES.md:1, NOTES.md', a full path from the root and a name in a cited
+# directory, then as citing pr-body.md alone with 'NOTES.md:1', then 'NOTES.md', running
+# --citations over each: the first must pass citation-our-code; each other must fail it,
+# naming the part.
+for form in honest line name; do
+    case "$form" in
+    honest) cited='skills/legion-worker/references/pr-body.md, guide' symbol='guide/NOTES.md:1, NOTES.md' ;;
+    line) cited='skills/legion-worker/references/pr-body.md' symbol='NOTES.md:1' ;;
+    name) cited='skills/legion-worker/references/pr-body.md' symbol='NOTES.md' ;;
+    esac
+    dir="$(symbol_plant "symbol-root-name-$form" "$cited" "$symbol" NOTES.md $'one note\n' guide/NOTES.md $'one guide note\n')" &&
+        ! grep -qwE 'NOTES|md' "$dir/repo/skills/legion-worker/references/pr-body.md" || {
+        printf 'FAIL the symbol %s cited in %s could not be planted in the fixture row f-our-1\n' "$symbol" "$cited"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    line)
+        case_result "a symbol part NOTES.md:1 cited in pr-body.md, a name only the root and guide hold, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites NOTES\\.md:1, and NOTES\\.md is neither a file beside the paths the citation names nor text the file before it" "$out"
+        ;;
+    name)
+        case_result "a symbol part NOTES.md cited in pr-body.md, a name only the root and guide hold, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol NOTES\\.md, which skills/legion-worker/references/pr-body\\.md does not hold" "$out"
+        ;;
+    honest) honest_result "symbol parts $symbol, a full path from the root and a name in the cited directory guide, pass citation-our-code" citation-our-code "$out" ;;
     esac
 done
 
