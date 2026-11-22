@@ -31,7 +31,6 @@ import {
   diedFiles,
   junitAt,
   type LaneRun,
-  laneFiles,
   markdown,
   parseArguments,
   type Report,
@@ -118,7 +117,6 @@ async function laneRun(
     target: "e2e/__tests__",
     seed: SEED,
     reruns,
-    runsPerChunk: reruns,
     wallMs: performance.now() - started,
     exitCode: code,
     signal: null,
@@ -166,7 +164,6 @@ test(
         fails: 2,
         runs: 3,
         firstFailedRun: 2,
-        firstFailedChunk: 1,
         message: expect.stringContaining("Received: 2"),
         reproduce,
       },
@@ -212,7 +209,6 @@ test(
         fails: 3,
         runs: 3,
         firstFailedRun: 1,
-        firstFailedChunk: 1,
         message: "always",
         reproduce: `bun run test:harness broken.test.ts --seed=${SEED}`,
       },
@@ -342,7 +338,6 @@ test(
         fails: 1,
         runs: 1,
         firstFailedRun: 1,
-        firstFailedChunk: 1,
         message: expect.stringMatching(/^Error\n\s+at no-message\.test\.ts:4:\d+$/),
         reproduce: `bun run test:harness no-message.test.ts --seed=${SEED}`,
       },
@@ -390,7 +385,6 @@ test(
         fails: 1,
         runs: 1,
         firstFailedRun: 1,
-        firstFailedChunk: 1,
         message: "broken",
         reproduce: `bun run test:harness broken.test.ts --seed=${SEED}`,
       })),
@@ -457,9 +451,7 @@ test(
     // The lie: the tool draws a seed Bun refuses, so the weekly run stops before any test.
     const options = (seed: string) =>
       parseArguments(["--lane", "web", "--out", "out", "--seed", seed], () => 0);
-    expect(options("0")).toEqual({
-      options: { lane: "web", out: "out", reruns: 20, runsPerChunk: 20, seed: 0 },
-    });
+    expect(options("0")).toEqual({ options: { lane: "web", out: "out", reruns: 20, seed: 0 } });
     expect(options("4294967295")).toMatchObject({ options: { seed: 4294967295 } });
     for (const refused of ["4294967296", "-1", "1.5", "0x10", ""]) {
       expect(options(refused)).toHaveProperty("problem");
@@ -467,19 +459,6 @@ test(
     expect(parseArguments(["--lane", "web", "--out", "out"], () => 7)).toMatchObject({
       options: { seed: 7 },
     });
-    // Chunks: a number that divides the reruns, or one at least as large, which is one chunk.
-    const chunked = (perChunk: string) =>
-      parseArguments(
-        ["--lane", "harness", "--out", "out", "--reruns", "20", "--runs-per-chunk", perChunk],
-        () => 0
-      );
-    expect(chunked("5")).toMatchObject({ options: { reruns: 20, runsPerChunk: 5 } });
-    expect(chunked("1")).toMatchObject({ options: { reruns: 20, runsPerChunk: 1 } });
-    expect(chunked("20")).toMatchObject({ options: { reruns: 20, runsPerChunk: 20 } });
-    expect(chunked("50")).toMatchObject({ options: { reruns: 20, runsPerChunk: 20 } });
-    for (const refused of ["3", "0", "-5", "2.5", ""]) {
-      expect(chunked(refused)).toHaveProperty("problem");
-    }
 
     const directory = scratch();
     await Bun.write(join(directory, "steady.test.ts"), passes);
@@ -608,12 +587,11 @@ test(
       bunEnd: null,
       namesRuns: {},
     };
-    const lane = { runsPerChunk: 2, seed: SEED, script: "test:harness" };
+    const lane = { reruns: 2, seed: SEED, script: "test:harness" };
     expect(runningFiles(stop, lane)).toEqual([
       {
         file: "a.test.ts",
         run: 2,
-        chunk: 1,
         place: "row",
         rowsBegun: 2,
         rowsRunning: 0,
@@ -625,7 +603,6 @@ test(
       {
         file: "g.test.ts",
         run: 1,
-        chunk: 1,
         place: "after-row",
         rowsBegun: 2,
         rowsRunning: 0,
@@ -637,7 +614,6 @@ test(
       {
         file: "c.test.ts",
         run: 1,
-        chunk: 1,
         place: "after-row",
         rowsBegun: 1,
         rowsRunning: 0,
@@ -649,7 +625,6 @@ test(
       {
         file: "h.test.ts",
         run: 1,
-        chunk: 1,
         place: "rows-at-once",
         rowsBegun: 2,
         rowsRunning: 1,
@@ -661,7 +636,6 @@ test(
       {
         file: "e.test.ts",
         run: 1,
-        chunk: 1,
         place: "loading",
         rowsBegun: 0,
         rowsRunning: 0,
@@ -675,7 +649,6 @@ test(
       {
         file: "f.test.ts",
         run: 1,
-        chunk: 1,
         place: "row",
         rowsBegun: 1,
         rowsRunning: 0,
@@ -694,7 +667,6 @@ test(
       target: "e2e/__tests__",
       seed: SEED,
       reruns: 2,
-      runsPerChunk: 2,
       wallMs: 9_600,
       exitCode: 143,
       signal: null,
@@ -747,7 +719,6 @@ test(
       target: "e2e/__tests__",
       seed: SEED,
       reruns: 2,
-      runsPerChunk: 2,
       wallMs: 9_600,
       exitCode: 143,
       signal: null,
@@ -778,7 +749,6 @@ test(
       target: "e2e/__tests__",
       seed: SEED,
       reruns: 2,
-      runsPerChunk: 2,
       wallMs: 9_600,
       exitCode: null,
       signal: "SIGKILL",
@@ -940,27 +910,6 @@ const shdPnd = (() => {
 const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
 
 /** Copies the tool and its preload into `directory` as a package of `files` under
- *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. */
-async function toolPackage(
-  directory: string,
-  files: Readonly<Record<string, string>>
-): Promise<{ readonly tools: string }> {
-  const tools = join(directory, "e2e", "tools");
-  const rows = join(directory, "e2e", "__tests__");
-  mkdirSync(tools, { recursive: true });
-  mkdirSync(rows, { recursive: true });
-  for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
-    copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
-  }
-  await Bun.write(
-    join(directory, "package.json"),
-    `${JSON.stringify({ name: "stopped-leg", private: true, scripts: { "test:harness": "bun test --parallel=2 --timeout 60000" } })}\n`
-  );
-  for (const [name, text] of Object.entries(files)) await Bun.write(join(rows, name), text);
-  return { tools };
-}
-
-/** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
  *  tool there as the harness lane with two reruns, and sends the tool alone the SIGTERM the
  *  step's `timeout` sends, once every one of `marks` exists, or once the tool has ended first.
@@ -983,7 +932,18 @@ async function stoppedLeg(
   } = {}
 ): Promise<StoppedLeg> {
   const { hold, killFrom } = how;
-  const { tools } = await toolPackage(directory, files);
+  const tools = join(directory, "e2e", "tools");
+  const rows = join(directory, "e2e", "__tests__");
+  mkdirSync(tools, { recursive: true });
+  mkdirSync(rows, { recursive: true });
+  for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
+    copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
+  }
+  await Bun.write(
+    join(directory, "package.json"),
+    `${JSON.stringify({ name: "stopped-leg", private: true, scripts: { "test:harness": "bun test --parallel=2 --timeout 60000" } })}\n`
+  );
+  for (const [name, text] of Object.entries(files)) await Bun.write(join(rows, name), text);
   const out = join(directory, "out");
   const driver =
     leftBehind +
@@ -1539,247 +1499,3 @@ test(
   },
   rowLimit("short", "short", "short")
 );
-
-test(
-  "the tool lists a lane's test files as Bun itself finds them",
-  async () => {
-    // The lie: a lane run in chunks names its files itself, so a test file Bun would run from the
-    // directory but the tool's list misses is never run, and nothing says so. Here Bun runs a
-    // directory of every kind of name, and its junit file names the files it ran.
-    const directory = scratch();
-    const row = 'import { test } from "bun:test";\ntest("row", () => {});\n';
-    const required = 'const { test } = require("bun:test");\ntest("row", () => {});\n';
-    const files: Record<string, string> = {
-      "a.test.ts": row,
-      "b_test.ts": row,
-      "c.spec.tsx": row,
-      "d_spec.js": row,
-      "e.test.mts": row,
-      "f.test.cjs": required,
-      "g.test.mjs": row,
-      "h.test.cts": required,
-      "i.test.jsx": row,
-      "n.Test.ts": row,
-      "sub/l.test.ts": row,
-      // Files Bun runs none of: no test name, a name past `.test`, another extension, and a test
-      // under node_modules.
-      "helper.ts": "export const one = 1;\n",
-      "j.tests.ts": row,
-      "k.test.md": "not a test\n",
-      "node_modules/x/m.test.ts": row,
-    };
-    for (const [name, text] of Object.entries(files)) await Bun.write(join(directory, name), text);
-    const junit = join(directory, "junit.xml");
-    const { code } = await spawnBun(directory, [
-      "test",
-      "--reporter=junit",
-      `--reporter-outfile=${junit}`,
-    ]);
-    expect(code).toBe(0);
-    const ran = [...readFileSync(junit, "utf8").matchAll(/^ {2}<testsuite [^>]*\bfile="([^"]+)"/gm)]
-      .map((suite) => `./${suite[1]}`)
-      .sort();
-    expect(ran).toHaveLength(11);
-    expect(laneFiles(directory, ".")).toEqual(ran);
-  },
-  // The one run of Bun, a bounded child under the short bound.
-  rowLimit("short")
-);
-
-/** Runs the copied tool in `directory` to its end, as the harness lane with `reruns` reruns in
- *  chunks of `perChunk`, and answers its report. */
-async function chunkedLeg(
-  directory: string,
-  tools: string,
-  reruns: number,
-  perChunk: number,
-  environment: Readonly<Record<string, string>> = {}
-): Promise<Report> {
-  const out = join(directory, `out-${reruns}-${perChunk}`);
-  await runBounded({
-    argv: [
-      process.execPath,
-      join(tools, "unit-repeat.ts"),
-      "--lane",
-      "harness",
-      "--reruns",
-      String(reruns),
-      "--runs-per-chunk",
-      String(perChunk),
-      "--seed",
-      String(SEED),
-      "--out",
-      out,
-    ],
-    bound: "stoppedLeg",
-    cwd: directory,
-    env: { HOME: directory, PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), ...environment },
-    from: import.meta.url,
-  });
-  return JSON.parse(readFileSync(join(out, "report.json"), "utf8"));
-}
-
-test(
-  "a row whose module keeps its state across reruns still fails from run 2 of each chunk",
-  async () => {
-    // The lie: a chunk is one run of its file, so a row that holds a module's state from one run
-    // to the next, as #4603's two rows did, passes every run. Bun keeps an imported module's
-    // state across `--rerun-each` and gives each named copy of a file fresh modules (measured on
-    // 2026-11-22). Here a helper's counter is 1 only on a chunk's first run.
-    const directory = scratch();
-    const { tools } = await toolPackage(directory, {
-      "counter.ts":
-        "let count = 0;\nexport function bump(): number {\n  count += 1;\n  return count;\n}\n",
-      "kept.test.ts":
-        'import { expect, test } from "bun:test";\nimport { bump } from "./counter";\n\n' +
-        'test("starts from a fresh count", () => {\n  expect(bump()).toBe(1);\n});\n',
-    });
-    // Two chunks of two runs: run 2 of each fails, and the command runs the file to run 2.
-    const chunked = await chunkedLeg(directory, tools, 4, 2);
-    expect(chunked.runsPerChunk).toBe(2);
-    expect(chunked.failingRows).toEqual([
-      expect.objectContaining({
-        file: "e2e/__tests__/kept.test.ts",
-        name: "starts from a fresh count",
-        fails: 2,
-        runs: 4,
-        firstFailedRun: 2,
-        reproduce: `bun run test:harness e2e/__tests__/kept.test.ts --seed=${SEED} --rerun-each=2`,
-      }),
-    ]);
-    expect(markdown(chunked)).toContain("- Reruns: 4, in 2 chunks of 2 a file");
-    // The control of the chunk's size: chunks of one run each start afresh every time, so the
-    // same defect passes every run. That is why a lane's chunks hold more than one run.
-    const single = await chunkedLeg(directory, tools, 4, 1);
-    expect(single.failingRows).toEqual([]);
-    expect(single.testcases).toEqual({ passed: 4, failed: 0, skipped: 0 });
-  },
-  // The two runs of the tool, one after another, each a bounded child under its bound.
-  rowLimit("stoppedLeg", "stoppedLeg")
-);
-
-/** A test file whose one row writes a mark into `TOGETHER_MARKS` and waits for a second, which
- *  only another run of the file in flight at the same time can write. A run alone waits out its
- *  own 30 s and fails. */
-const together =
-  'import { expect, test } from "bun:test";\n' +
-  'import { readdirSync, writeFileSync } from "node:fs";\nimport { join } from "node:path";\n\n' +
-  'const marks = process.env.TOGETHER_MARKS ?? "";\n\n' +
-  'test("runs beside another run of its file", async () => {\n' +
-  "  writeFileSync(join(marks, crypto.randomUUID()), String(process.pid));\n" +
-  "  // Waits for the fact, a second mark, which a run in flight at the same time writes.\n" +
-  "  while (readdirSync(marks).length < 2) await Bun.sleep(20);\n" +
-  "  expect(readdirSync(marks).length).toBeGreaterThanOrEqual(2);\n" +
-  "}, 30_000);\n";
-
-test(
-  "a file's chunks run at once, in two workers, where its runs in one chunk run one after another",
-  async () => {
-    // The lie: the chunks are named, but Bun still runs them one after another in one worker, so
-    // a lane whose slowest file is most of its time takes as long as before. Two chunks of one
-    // run each must both be in flight at once, in two worker processes.
-    const directory = scratch();
-    const { tools } = await toolPackage(directory, { "together.test.ts": together });
-    const atOnce = join(directory, "marks-at-once");
-    mkdirSync(atOnce);
-    const chunked = await chunkedLeg(directory, tools, 2, 1, { TOGETHER_MARKS: atOnce });
-    expect(chunked.failingRows).toEqual([]);
-    expect(chunked.testcases).toEqual({ passed: 2, failed: 0, skipped: 0 });
-    const pids = new Set(
-      (await Array.fromAsync(new Bun.Glob("*").scan({ cwd: atOnce }))).map((name) =>
-        readFileSync(join(atOnce, name), "utf8")
-      )
-    );
-    expect(pids.size).toBe(2);
-    // The control: the same two runs in one chunk run one after another in one worker, so the
-    // first waits out its 30 s alone and fails, and the second finds its mark and passes.
-    const serial = join(directory, "marks-serial");
-    mkdirSync(serial);
-    const oneChunk = await chunkedLeg(directory, tools, 2, 2, { TOGETHER_MARKS: serial });
-    expect(oneChunk.failingRows).toEqual([
-      expect.objectContaining({ name: "runs beside another run of its file", fails: 1, runs: 2 }),
-    ]);
-  },
-  // The two runs of the tool, one after another, each a bounded child under its bound.
-  rowLimit("stoppedLeg", "stoppedLeg")
-);
-
-test("a row is named by its run in its chunk, from the junit file's suites and the progress file's loads", () => {
-  // The lie: the reader counts a file's runs straight through its suites, so a row that first
-  // failed on run 1 of chunk 2 reads as run 3, and its command replays two runs that passed.
-  const testcase = (outcome: "pass" | "fail") =>
-    outcome === "pass"
-      ? '    <testcase name="row" classname="" time="0.1" file="a.test.ts" line="3" assertions="1" />\n'
-      : '    <testcase name="row" classname="" time="0.1" file="a.test.ts" line="3" assertions="1">\n' +
-        '      <failure message="boom" type="AssertionError" />\n    </testcase>\n';
-  const suite = (...outcomes: ("pass" | "fail")[]) =>
-    '  <testsuite name="a.test.ts" file="a.test.ts" tests="2" assertions="2" failures="0" skipped="0" time="0.2">\n' +
-    outcomes.map(testcase).join("") +
-    "  </testsuite>\n";
-  const junit =
-    '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="bun test" tests="4">\n' +
-    `${suite("pass", "pass")}${suite("fail", "fail")}</testsuites>\n`;
-  const run = {
-    lane: "harness" as const,
-    target: "e2e/__tests__",
-    seed: SEED,
-    reruns: 4,
-    runsPerChunk: 2,
-    wallMs: 1_000,
-    exitCode: 1,
-    signal: null,
-    junit: { text: junit },
-    log: "",
-    environment: {},
-    memory: [],
-    stop: null,
-    early: null,
-  };
-  const report = summarise(run);
-  expect(report.failingRows).toEqual([
-    expect.objectContaining({
-      file: "a.test.ts",
-      fails: 2,
-      runs: 4,
-      firstFailedRun: 1,
-      firstFailedChunk: 2,
-      reproduce: `bun run test:harness a.test.ts --seed=${SEED}`,
-    }),
-  ]);
-  expect(markdown(report)).toContain("Failed 2/4 runs, first on run 1 of chunk 2.");
-
-  // A stop in the second load of a file: chunk 2, run 1 of 2, its first row.
-  const lines = [
-    progressLine({ event: "load", load: "one", at: 1_000, file: "a.test.ts", pid: 11 }),
-    progressLine({ event: "run", load: "one", at: 1_001 }),
-    progressLine({ event: "done", load: "one", at: 1_002 }),
-    progressLine({ event: "run", load: "one", at: 1_003 }),
-    progressLine({ event: "done", load: "one", at: 1_004 }),
-    progressLine({ event: "load", load: "two", at: 2_000, file: "a.test.ts", pid: 12 }),
-    progressLine({ event: "run", load: "two", at: 2_001 }),
-    progressLine({ event: "start", load: "two", at: 2_002 }),
-  ];
-  const stop: Stop = {
-    signal: "SIGTERM",
-    at: 5_002,
-    afterMs: 5_000,
-    afterBun: false,
-    progress: { text: lines.join("\n") },
-    alive: [11, 12],
-    names: { "a.test.ts": { names: ["row"] } },
-    bunEnd: null,
-    namesRuns: {},
-  };
-  expect(runningFiles(stop, { runsPerChunk: 2, seed: SEED, script: "test:harness" })).toEqual([
-    expect.objectContaining({ file: "a.test.ts", run: 1, chunk: 2, place: "row", rowName: "row" }),
-  ]);
-  const stopped = summarise({
-    ...run,
-    junit: { unreadable: "no junit file" },
-    exitCode: 143,
-    stop,
-  });
-  expect(markdown(stopped)).toContain(
-    'In row 1, "row", or a hook after it, of run 1 of 2 in chunk 2 of 2'
-  );
-});

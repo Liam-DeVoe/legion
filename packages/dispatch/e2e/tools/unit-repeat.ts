@@ -1,10 +1,10 @@
-/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--runs-per-chunk <m>]
- *  [--seed <n>] --out <dir>`: runs one lane of the Dispatch unit suite with every test run `k`
- *  times, and reports each row that failed (INFRA-1511).
+/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>`:
+ *  runs one lane of the Dispatch unit suite with every test run `k` times, and reports each row
+ *  that failed (INFRA-1511).
  *
  *    bun run test:repeat --lane web --out /tmp/repeat-web
  *    bun run test:repeat --lane web-cold --reruns 1 --out /tmp/repeat-web-cold
- *    bun run test:repeat --lane harness --reruns 20 --runs-per-chunk 5 --out /tmp/repeat-harness
+ *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness
  *
  *  The web lane is `bun run test:web web/src`. The web-cold lane is
  *  `bun run test:web:cold web/src`: the web lane with each module the web app loads lazily held
@@ -15,19 +15,6 @@
  *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter. It
  *  prints the seed before the run starts, so a run killed midway still names its seed. During the
  *  run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
- *
- *  Chunks. Bun runs all of one file's reruns one after another in one worker, so a lane whose
- *  slowest file takes as long as its other files together leaves its other workers idle while that
- *  file runs on. `--runs-per-chunk <m>`, where `m` divides `k`, splits each file's `k` runs into
- *  `k / m` chunks of `m`: the tool lists the lane's test files itself, as Bun finds them, and
- *  names each one `k / m` times with `--rerun-each=<m>`. Bun 1.4.4 runs a file named more than
- *  once as that many units, each in whichever worker is free, and starts each with fresh modules
- *  (both measured on 2026-11-22): a counter in a module a file imports read 1, 2, 3, 4 over
- *  `--rerun-each=4`, and 1, 1, 1, 1 over the file named four times. So state a row's module keeps
- *  from one run to the next still shows from run 2 of each chunk, and the chunks run at once. A
- *  run of a row is then named as run `n` of chunk `c`, and its command runs the file alone with
- *  `--rerun-each=<n>`, as a chunk starts afresh. Without the option, or with `m` at least `k`, the
- *  lane runs as one chunk: its directory with `--rerun-each=<k>`.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
@@ -44,14 +31,12 @@
  *  The reader reads the junit file Bun 1.4.4 writes, and only that grammar. It was measured on
  *  real runs:
  *
- *  - one top-level `<testsuite>` per file and chunk: a file named `c` times has `c` of them
- *    (measured on 2026-11-22). Its `file` is the path from the directory Bun ran in, which is
- *    packages/dispatch for every lane;
+ *  - one top-level `<testsuite>` per file. Its `file` is the path from the directory Bun ran in,
+ *    which is packages/dispatch for every lane;
  *  - one nested `<testsuite>` per `describe`. A rerun may open it again or add to the one before,
  *    so the reader knows a row by its describe names, not by the element;
- *  - every rerun of a chunk in that chunk's top-level suite, after the run before it, so the runs
- *    of a row in a chunk are its `<testcase>`s there in document order. The reader numbers a
- *    file's suites 1, 2, … as its chunks;
+ *  - every rerun of a file in that file's one top-level suite, after the run before it, so the
+ *    runs of a row are its `<testcase>`s in document order;
  *  - `<failure>` or `<skipped/>` in a `<testcase>` (a todo row is skipped too). A failure's
  *    message is its `message`. Bun writes none for an error with no message, such as
  *    `new Error("")` or a thrown string, and writes the error's text and stack only as the
@@ -109,7 +94,6 @@ import {
   openSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -144,31 +128,6 @@ const packageDirectory = fileURLToPath(new URL("../..", import.meta.url));
 
 /** The preload that writes where each test file is, which a stop reads. */
 const progressPreload = fileURLToPath(new URL("./unit-repeat-progress.ts", import.meta.url));
-
-/** The names of the files Bun 1.4.4's `bun test <directory>` runs: `*.test.*`, `*_test.*`,
- *  `*.spec.*` and `*_spec.*`, in any case (it ran `n.Test.ts`), each with an extension it runs
- *  (it ran `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, `.cts`, `.mjs` and `.cjs`, and not `j.tests.ts`
- *  or `k.test.md`; measured on 2026-11-22). `unit-repeat.test.ts` holds this list to the files Bun
- *  itself runs from a directory of each kind of name. */
-const testFileName = /[._](test|spec)\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/i;
-
-/** Every file under a directory, which `laneFiles` reads the test files of. */
-const everyFile = new Bun.Glob("**/*");
-
-/** The test files `bun test <target>` runs from `directory`, in a fixed order, each as a path
- *  from `directory` with `./` before it, which Bun reads as that one file and not as a filter that
- *  could match others: `target` itself where it is a file, else each test file under it outside
- *  `node_modules`. */
-export function laneFiles(directory: string, target: string): string[] {
-  const at = join(directory, target);
-  if (statSync(at).isFile()) return [`./${target}`];
-  const files: string[] = [];
-  for (const path of everyFile.scanSync({ cwd: at })) {
-    if (path.split("/").includes("node_modules") || !testFileName.test(path)) continue;
-    files.push(`./${join(target, path)}`);
-  }
-  return files.sort();
-}
 
 /** The largest seed Bun 1.4.4 accepts. Its `--seed` takes a decimal number from 0 to 2^32 - 1. */
 const MAX_SEED = 2 ** 32 - 1;
@@ -217,16 +176,13 @@ const laneChoice = `<${laneNames.join("|")}>`;
 const laneList = `${laneNames.slice(0, -1).join(", ")} or ${laneNames.at(-1)}`;
 
 const usage =
-  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--runs-per-chunk <m>] [--seed <n>] --out <dir>\n` +
+  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] --out <dir>\n` +
   `  --lane ${laneChoice}\n                        ` +
   Object.entries(lanes)
     .map(([lane, { script, target }]) => `${lane} runs \`bun run ${script} ${target}\``)
     .join(";\n                        ") +
   "\n" +
   `  --reruns <k>          how many times Bun runs each test, at least 1 (default ${DEFAULT_RERUNS})\n` +
-  "  --runs-per-chunk <m>  split each file's k runs into chunks of m, which Bun runs at once,\n" +
-  "                        each with fresh modules; m divides k, or is at least k for one\n" +
-  "                        chunk (default: one chunk)\n" +
   `  --seed <n>            the seed of Bun's random order, from 0 to ${MAX_SEED}\n` +
   "                        (default: a random one)\n" +
   "  --out <dir>           where junit.xml, bun.log, report.json and report.md go;\n" +
@@ -236,9 +192,6 @@ const usage =
 export interface RepeatOptions {
   readonly lane: Lane;
   readonly reruns: number;
-  /** The runs of each chunk of a file: `reruns` where the lane runs as one chunk, else a number
-   *  that divides it. */
-  readonly runsPerChunk: number;
   readonly seed: number;
   readonly out: string;
 }
@@ -264,13 +217,7 @@ function errorText(error: unknown): string {
 
 /** Reads the command line. `seed` gives the seed when the command line names none. */
 export function parseArguments(argv: readonly string[], seed: () => number = randomSeed): Parsed {
-  let values: {
-    lane?: string;
-    reruns?: string;
-    "runs-per-chunk"?: string;
-    seed?: string;
-    out?: string;
-  };
+  let values: { lane?: string; reruns?: string; seed?: string; out?: string };
   try {
     ({ values } = parseArgs({
       args: [...argv],
@@ -278,7 +225,6 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
         lane: { type: "string" },
         out: { type: "string" },
         reruns: { type: "string" },
-        "runs-per-chunk": { type: "string" },
         seed: { type: "string" },
       },
       strict: true,
@@ -296,20 +242,11 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
   if (reruns === undefined || reruns < 1) {
     return { problem: `--reruns is a whole number of at least 1, not ${values.reruns}` };
   }
-  const perChunk =
-    values["runs-per-chunk"] === undefined ? reruns : wholeNumber(values["runs-per-chunk"]);
-  if (perChunk === undefined || perChunk < 1 || (perChunk < reruns && reruns % perChunk !== 0)) {
-    return {
-      problem: `--runs-per-chunk is a whole number of at least 1 that divides --reruns (${reruns}), or is at least it, not ${values["runs-per-chunk"]}`,
-    };
-  }
   const chosen = values.seed === undefined ? seed() : wholeNumber(values.seed);
   if (chosen === undefined || chosen > MAX_SEED) {
     return { problem: `--seed is a whole number from 0 to ${MAX_SEED}, not ${values.seed}` };
   }
-  return {
-    options: { lane, out, reruns, runsPerChunk: Math.min(perChunk, reruns), seed: chosen },
-  };
+  return { options: { lane, out, reruns, seed: chosen } };
 }
 
 export type Outcome = "passed" | "failed" | "skipped";
@@ -324,9 +261,6 @@ export interface Testcase {
   /** The failure's message or, where Bun wrote none, the failure's body: the error's text and
    *  stack. It is empty unless the testcase failed. */
   readonly message: string;
-  /** The chunk of its file it ran in: the file's top-level suite it is in, counted from 1 in
-   *  document order. A lane run as one chunk has one suite a file, so every testcase reads 1. */
-  readonly chunk: number;
 }
 
 export interface Junit {
@@ -437,10 +371,7 @@ function readJunit(xml: string): Junit {
   const testcases: Testcase[] = [];
   const open: string[] = [];
   const describe: string[] = [];
-  /** How many top-level suites of each file the reader has opened. */
-  const suites = new Map<string, number>();
   let file: string | undefined;
-  let chunk = 0;
   let testcase: OpenTestcase | undefined;
   let rooted = false;
 
@@ -456,8 +387,6 @@ function readJunit(xml: string): Junit {
         if (parent === "testsuites") {
           file = attributeOf(tag, "file");
           files.add(file);
-          chunk = (suites.get(file) ?? 0) + 1;
-          suites.set(file, chunk);
         } else if (parent === "testsuite") {
           describe.push(attributeOf(tag, "name"));
         } else {
@@ -472,7 +401,6 @@ function readJunit(xml: string): Junit {
           name: attributeOf(tag, "name"),
           outcome: "passed",
           message: "",
-          chunk,
         };
         break;
       case "failure":
@@ -553,8 +481,6 @@ export interface LaneRun {
   readonly target: string;
   readonly seed: number;
   readonly reruns: number;
-  /** The runs of each chunk of a file, `reruns` where the lane ran as one chunk. */
-  readonly runsPerChunk: number;
   readonly wallMs: number;
   /** Bun's exit code. It is null when a signal ended Bun. */
   readonly exitCode: number | null;
@@ -678,10 +604,8 @@ export interface FailingRow {
   readonly name: string;
   readonly fails: number;
   readonly runs: number;
-  /** The run the row first failed on, counted from 1 in its chunk. */
+  /** The run the row first failed on, counted from 1. */
   readonly firstFailedRun: number;
-  /** The chunk of its file that run was in, counted from 1: 1 where the lane ran as one chunk. */
-  readonly firstFailedChunk: number;
   /** The first failure's message, cut to MESSAGE_LIMIT characters. */
   readonly message: string;
   /** The command, run from packages/dispatch, that runs the row's file again in the same order. */
@@ -701,11 +625,8 @@ export type RowlessKind =
  *  test process died with a run of the file not ended, as the progress file says. */
 export interface RunningFile {
   readonly file: string;
-  /** The run of the file it was in, counted from 1 in its chunk. */
+  /** The run of the file it was in, counted from 1. */
   readonly run: number;
-  /** Its chunk of the file: which of the file's loads in the progress file it is, counted from 1
-   *  in the order the loads began. 1 where the lane ran as one chunk. */
-  readonly chunk: number;
   /** Where in that run it was:
    *  - `loading`: the run had not begun, so the file's own code ran, which Bun runs again for
    *    each run of it;
@@ -778,8 +699,6 @@ export interface Report {
   readonly lane: Lane;
   readonly seed: number;
   readonly reruns: number;
-  /** The runs of each chunk of a file, `reruns` where the lane ran as one chunk. */
-  readonly runsPerChunk: number;
   /** The lane's command, without the reporter flags. */
   readonly command: string;
   /** Bun's exit code, or the signal that ended it. */
@@ -906,8 +825,6 @@ interface LoadState {
   readonly file: string;
   /** Whether the file runs its rows at once. */
   readonly atOnce: boolean;
-  /** Which load of its file it is, counted from 1 in the order the loads began: its chunk. */
-  readonly chunk: number;
   runs: number;
   done: number;
   /** The rows begun and ended in its latest run. */
@@ -926,17 +843,13 @@ interface LoadState {
 function latestLoads(text: string): Map<number, LoadState> {
   const loads = new Map<string, LoadState>();
   const latest = new Map<number, LoadState>();
-  const loadsOfFile = new Map<string, number>();
   for (const line of text.split("\n")) {
     const read = progressLine(line);
     if (read === undefined) continue;
     if (read.event === "load") {
-      const chunk = (loadsOfFile.get(read.file) ?? 0) + 1;
-      loadsOfFile.set(read.file, chunk);
       const state = {
         file: read.file,
         atOnce: read.atOnce,
-        chunk,
         runs: 0,
         done: 0,
         begun: 0,
@@ -979,11 +892,7 @@ function liveWorkers(text: string): number[] {
   return alive;
 }
 
-type LaneOf = {
-  readonly runsPerChunk: number;
-  readonly seed: number;
-  readonly script: string;
-};
+type LaneOf = { readonly reruns: number; readonly seed: number; readonly script: string };
 
 /** The test file each worker alive at the stop was in, from the progress file the stop read:
  *  that worker's latest load, unless every run of that file had ended. Each row it names takes
@@ -1026,7 +935,7 @@ function filesAt(
 ): RunningFile[] {
   const running: RunningFile[] = [];
   for (const [pid, state] of latestLoads(text)) {
-    if (!taken(pid) || state.done >= lane.runsPerChunk) continue;
+    if (!taken(pid) || state.done >= lane.reruns) continue;
     const inRun = state.runs > state.done;
     const number = inRun ? state.runs : state.done + 1;
     const rowsBegun = inRun ? state.begun : 0;
@@ -1054,7 +963,6 @@ function filesAt(
     running.push({
       file: state.file,
       run: number,
-      chunk: state.chunk,
       place,
       rowsBegun,
       rowsRunning: place === "rows-at-once" ? state.begun - state.ended : 0,
@@ -1062,7 +970,7 @@ function filesAt(
       nameUnread: place === "rows-at-once" ? null : nameUnread,
       quietSeconds: Math.round((at - state.lastAt) / 100) / 10,
       // As a failing row's command: the file alone with the seed and `--rerun-each=n` runs as it
-      // did up to run n of its chunk, since each chunk starts the file afresh.
+      // did up to run n.
       reproduce: `bun run ${lane.script} ${state.file} --seed=${lane.seed}${number > 1 ? ` --rerun-each=${number}` : ""}`,
     });
   }
@@ -1079,13 +987,9 @@ const followsFromStop: ReadonlySet<RowlessKind> = new Set([
 ]);
 
 /** Where a running file was, in words:
- *  `row 3, "a > b", or a hook after it, of run 2 of 20, 61.2 s since it began`, or, where the
- *  lane ran in chunks, `… of run 2 of 5 in chunk 3 of 4, …`. */
-function placeText(file: RunningFile, of: Pick<Report, "reruns" | "runsPerChunk">): string {
-  const run =
-    of.runsPerChunk === of.reruns
-      ? `run ${file.run} of ${of.reruns}`
-      : `run ${file.run} of ${of.runsPerChunk} in chunk ${file.chunk} of ${of.reruns / of.runsPerChunk}`;
+ *  `row 3, "a > b", or a hook after it, of run 2 of 20, 61.2 s since it began`. */
+function placeText(file: RunningFile, reruns: number): string {
+  const run = `run ${file.run} of ${reruns}`;
   const quiet = `${file.quietSeconds.toFixed(1)} s`;
   const row = `row ${file.rowsBegun}, ${
     file.rowName === null
@@ -1115,7 +1019,7 @@ export function summarise(run: LaneRun): Report {
   // A stop that came while Bun ran. One that came after Bun had ended by itself leaves Bun's
   // results as they are: no file was running, and its junit file and exit are its own.
   const during = run.stop === null || run.stop.afterBun ? null : run.stop;
-  const lane = { runsPerChunk: run.runsPerChunk, seed: run.seed, script };
+  const lane = { reruns: run.reruns, seed: run.seed, script };
   const running = during === null ? [] : runningFiles(during, lane);
   // Each file a worker died in with a run of it not ended, before a stop or in an early end of
   // Bun: Bun's `(worker crashed)` testcase of such a file is named by the place and the row the
@@ -1184,17 +1088,13 @@ export function summarise(run: LaneRun): Report {
   for (const runs of rows.values()) {
     const failed = runs.filter((each) => each.outcome === "failed");
     if (failed.length === 0) continue;
-    const at = runs.findIndex((each) => each.outcome === "failed");
-    const chunk = runs[at].chunk;
-    // The run in its chunk: the row's runs before it in the same chunk, and that one.
-    const first = runs.slice(0, at + 1).filter((each) => each.chunk === chunk).length;
+    const first = runs.findIndex((each) => each.outcome === "failed") + 1;
     const { file, describe, name } = runs[0];
     // The message of a failed `expect` ends with a newline. The report would show an empty line.
     const message = failed[0].message.trimEnd();
     // Bun runs a file's rows in an order that depends only on the seed and the file, and it
     // keeps that order on every rerun (measured on Bun 1.4.4). So the file alone with the seed
-    // and `--rerun-each=n` runs as it did up to run n of the chunk this row first failed in, as
-    // each chunk starts the file afresh.
+    // and `--rerun-each=n` runs as it did up to run n, the run this row first failed on.
     const rerun = first > 1 ? ` --rerun-each=${first}` : "";
     failingRows.push({
       file,
@@ -1202,7 +1102,6 @@ export function summarise(run: LaneRun): Report {
       fails: failed.length,
       runs: runs.length,
       firstFailedRun: first,
-      firstFailedChunk: chunk,
       message: message.length <= MESSAGE_LIMIT ? message : `${message.slice(0, MESSAGE_LIMIT)}…`,
       reproduce: `bun run ${script} ${file} --seed=${run.seed}${rerun}`,
     });
@@ -1308,11 +1207,7 @@ export function summarise(run: LaneRun): Report {
     lane: run.lane,
     seed: run.seed,
     reruns: run.reruns,
-    runsPerChunk: run.runsPerChunk,
-    command:
-      run.runsPerChunk === run.reruns
-        ? `bun run ${script} ${run.target} --seed=${run.seed} --rerun-each=${run.reruns}`
-        : `bun run ${script} <each test file of ${run.target}, named ${run.reruns / run.runsPerChunk} times> --seed=${run.seed} --rerun-each=${run.runsPerChunk}`,
+    command: `bun run ${script} ${run.target} --seed=${run.seed} --rerun-each=${run.reruns}`,
     bunExit,
     wallSeconds: Math.round(run.wallMs / 100) / 10,
     oneRun: {
@@ -1421,9 +1316,7 @@ export function markdown(report: Report): string {
   lines.push(
     `- Lane: ${code(report.lane)}, run as ${code(report.command)}`,
     `- Seed: ${code(String(report.seed))}`,
-    report.runsPerChunk === report.reruns
-      ? `- Reruns: ${report.reruns}`
-      : `- Reruns: ${report.reruns}, in ${report.reruns / report.runsPerChunk} chunks of ${report.runsPerChunk} a file, each with fresh modules`,
+    `- Reruns: ${report.reruns}`,
     `- Bun's exit status: ${report.bunExit}`,
     `- Wall time: ${report.wallSeconds.toFixed(1)} s`,
     ...(report.stop === null ? [] : stopLines(report.stop)),
@@ -1437,7 +1330,7 @@ export function markdown(report: Report): string {
   const placed = (file: RunningFile) => [
     `#### ${code(file.file)}`,
     "",
-    `In ${placeText(file, report)}. The row is counted in the order Bun ran the`,
+    `In ${placeText(file, report.reruns)}. The row is counted in the order Bun ran the`,
     "file's rows under the seed. To run the file again in that order up to that run, run this",
     "from `packages/dispatch`:",
     "",
@@ -1477,12 +1370,7 @@ export function markdown(report: Report): string {
     ""
   );
   for (const row of failing) {
-    const first =
-      report.runsPerChunk !== report.reruns
-        ? `, first on run ${row.firstFailedRun} of chunk ${row.firstFailedChunk}`
-        : row.firstFailedRun > 1
-          ? `, first on run ${row.firstFailedRun}`
-          : "";
+    const first = row.firstFailedRun > 1 ? `, first on run ${row.firstFailedRun}` : "";
     lines.push(
       `#### ${code(row.file)}: ${code(row.name)}`,
       "",
@@ -1557,7 +1445,7 @@ export function annotations(report: Report): string[] {
           workflowCommand(
             "error",
             { file: `packages/dispatch/${file.file}`, title: "Running when the leg was stopped" },
-            `${file.file}: in ${placeText(file, report)}, when ${stop.signal} stopped the ` +
+            `${file.file}: in ${placeText(file, report.reruns)}, when ${stop.signal} stopped the ` +
               `leg after ${stop.afterSeconds.toFixed(1)} s (seed ${report.seed}). Run it again ` +
               `from packages/dispatch: ${file.reproduce}`
           )
@@ -1566,7 +1454,7 @@ export function annotations(report: Report): string[] {
     workflowCommand(
       "error",
       { file: `packages/dispatch/${file.file}`, title: "Running when its worker died" },
-      `${file.file}: in ${placeText(file, report)}, when its worker or Bun's test process ` +
+      `${file.file}: in ${placeText(file, report.reruns)}, when its worker or Bun's test process ` +
         `died (seed ${report.seed}). Run it again from packages/dispatch: ${file.reproduce}`
     )
   );
@@ -1622,7 +1510,7 @@ export function annotations(report: Report): string[] {
     workflowCommand(
       "notice",
       { title: `Repeated unit tests: ${report.lane} lane` },
-      `Seed ${report.seed}, ${report.reruns} reruns${report.runsPerChunk === report.reruns ? "" : ` in chunks of ${report.runsPerChunk}`}, ${report.wallSeconds.toFixed(1)} s. ` +
+      `Seed ${report.seed}, ${report.reruns} reruns, ${report.wallSeconds.toFixed(1)} s. ` +
         `One run: ${oneRunText(report)}. All runs: ${testcasesText(report)}. ` +
         `${failuresText(report)} Machine memory, which counts every process and not Bun's ` +
         `alone: ${memoryText(report.machineMemory)}.`
@@ -1811,7 +1699,7 @@ export async function runLane(
   options: RepeatOptions,
   target: string = lanes[options.lane].target
 ): Promise<0 | 1 | 2> {
-  const { lane, reruns, runsPerChunk, seed } = options;
+  const { lane, reruns, seed } = options;
   const { script } = lanes[lane];
   const graceMs = boundMs(stopBounds.grace);
   const namesBoundMs = boundMs(stopBounds.names);
@@ -1833,29 +1721,8 @@ export async function runLane(
   } catch (error) {
     return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
   }
-  const chunks = reruns / runsPerChunk;
-  // One chunk: the lane's own path, as Bun finds its files. Chunks: each test file named once a
-  // chunk, which Bun runs as a unit of its own, in whichever worker is free.
-  let paths: string[];
-  try {
-    paths =
-      chunks === 1
-        ? [target]
-        : laneFiles(packageDirectory, target).flatMap((file) =>
-            Array.from({ length: chunks }, () => file)
-          );
-  } catch (error) {
-    closeSync(log);
-    return refuse(`the lane's test files under ${target} cannot be listed: ${errorText(error)}`);
-  }
-  console.log(
-    `seed=${seed} lane=${lane} reruns=${reruns}${chunks === 1 ? "" : ` in ${chunks} chunks of ${runsPerChunk}`}`
-  );
-  console.log(
-    chunks === 1
-      ? `running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`
-      : `running bun run ${script} with each of the ${paths.length / chunks} test files of ${target} named ${chunks} times, in ${packageDirectory}; its output: ${logPath}`
-  );
+  console.log(`seed=${seed} lane=${lane} reruns=${reruns}`);
+  console.log(`running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`);
 
   const started = performance.now();
   // `detached` makes Bun's `bun run` the leader of a process group of its own, which Bun's test
@@ -1866,9 +1733,9 @@ export async function runLane(
       process.execPath,
       "run",
       script,
-      ...paths,
+      target,
       `--seed=${seed}`,
-      `--rerun-each=${runsPerChunk}`,
+      `--rerun-each=${reruns}`,
       "--reporter=junit",
       `--reporter-outfile=${junitPath}`,
       "--preload",
@@ -1999,7 +1866,7 @@ export async function runLane(
         : null;
     // Bun has ended, so a run of each file a worker was in alone, the run that reads its rows'
     // names, races nothing of the leg's: each file running at the stop, and each a worker died in.
-    const laneOf = { runsPerChunk, seed, script };
+    const laneOf = { reruns, seed, script };
     const begun = [
       ...(stop === null ? [] : runningFiles(stop, laneOf)),
       ...diedFiles({ stop, early }, laneOf),
@@ -2030,7 +1897,6 @@ export async function runLane(
         target,
         seed,
         reruns,
-        runsPerChunk,
         wallMs,
         exitCode: child.exitCode,
         signal: child.signalCode,

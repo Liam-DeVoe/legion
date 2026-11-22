@@ -6,9 +6,8 @@ name: Dispatch unit suite repeated
 # `bun run test:web:cold web/src` and the harness lane is `bun run test:harness e2e/__tests__`.
 # Each leg runs one lane under one seed through `bun run test:repeat`
 # (packages/dispatch/e2e/tools/unit-repeat.ts, whose head says what it reads and writes): a web or
-# harness leg with 20 runs of each file, in 4 chunks of 5 that Bun runs at once, each with fresh
-# modules; a web-cold leg with one run. Each leg draws its own seed. Three legs a lane make nine
-# legs a run.
+# harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`. Each leg draws its own
+# seed. Three legs a lane make nine legs a run.
 #
 # What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
 # annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
@@ -232,13 +231,6 @@ jobs:
       # to a child it waits for. `timeout` passes it on to `bun run`, and so to the tool.
       # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
       #
-      # `--runs-per-chunk 5` splits each file's 20 runs into 4 chunks, one for each of the
-      # runner's 4 CPUs, which Bun runs at once: before it, the slowest file's 20 runs ran one
-      # after another in one worker and set the leg's time. A chunk of 5 still shows a row that
-      # keeps a module's state from one run to the next, from its run 2. A web-cold leg's one run
-      # is one chunk.
-      # why: .github/ci-notes/dispatch-unit-repeat.md#chunks
-      #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
       # new snapshot (Bun's snapshot documentation).
@@ -247,7 +239,7 @@ jobs:
         run: >-
           exec timeout --foreground --signal=TERM --kill-after=60 ${{ matrix.deadline_seconds }}
           bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }}
-          --runs-per-chunk 5 --out "$RUNNER_TEMP/unit-repeat"
+          --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
         env:
           CI: "true"
