@@ -17,9 +17,10 @@ import type {
 } from "../../api/types";
 import { TextAskBlockCard } from "../doc/AskBlockCard";
 import { MarkdownBody } from "./MarkdownBody";
-import { TextAskCard } from "./markdown-cards";
+import { TextAskCard, TextIssueList } from "./markdown-cards";
 import { setParseDeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
+import type { IssueListQuery } from "./routes";
 import {
   flushTasks,
   type InstalledParseWorker,
@@ -2049,4 +2050,47 @@ describe("A long body parsed in the worker", () => {
       later.unmount();
     }
   });
+});
+
+// A list of issues a body writes on a line of its own is drawn in place of the line, each under
+// `list<N>`, its place among the body's lists from 1, and one written inside a sentence stays the
+// sentence's text (dispatch://INFRA-4935/spec#b-r-exact-query,
+// dispatch://INFRA-4935/spec#b-r-view-address). The list itself is the app's (`TextIssueList`);
+// this one draws what it was handed.
+test("a list of issues on a line of its own is drawn in place of the line, and one in a sentence stays text", async () => {
+  const drawn: { query: IssueListQuery; stateKey: string }[] = [];
+  function DrawnList({ query, stateKey }: { query: IssueListQuery; stateKey: string }): ReactNode {
+    drawn.push({ query, stateKey });
+    return <output data-list={stateKey}>{query.labels.join(" ")}</output>;
+  }
+  const markdown = [
+    "dispatch://issues?label=overnight",
+    "See dispatch://issues?label=inline in a sentence.",
+    "dispatch://issues?status=done&label=overnight",
+  ].join("\n\n");
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <TextIssueList.Provider value={DrawnList}>
+        <MarkdownBody markdown={markdown} />
+      </TextIssueList.Provider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => expect(view.container.querySelectorAll("output[data-list]")).toHaveLength(2));
+    expect(
+      Array.from(view.container.querySelectorAll("output[data-list]"), (list) =>
+        list.getAttribute("data-list")
+      )
+    ).toEqual(["list1", "list2"]);
+    expect(drawn.at(-1)?.query).toEqual({
+      labels: ["overnight"],
+      priorities: [],
+      projects: [],
+      statuses: ["done"],
+    });
+    expect(view.container.textContent).toContain("See dispatch://issues?label=inline in a sentence.");
+    expect(view.container.textContent).not.toContain("dispatch://issues?label=overnight");
+  } finally {
+    view.unmount();
+  }
 });

@@ -14,7 +14,7 @@ import type { DisplayTree } from "../../api/types";
 import { StatusGlyph } from "../../components/StatusGlyph";
 import { issueReferenceName } from "../refs/issue-reference-name";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { TextAskCard } from "../refs/markdown-cards";
+import { TextAskCard, TextIssueList } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
 import { WordedLinksMarked } from "../refs/RefLink";
@@ -537,6 +537,8 @@ function DrawnText({
     <div className="min-w-0 break-words" onClick={follow} ref={box} {...authorText}>
       {reads}
       <TextAskCard.Provider value={undefined}>
+        {/* A row is one line of a tree: it draws a list of issues as the words it writes. */}
+        <TextIssueList.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`).
             A link whose words its author wrote keeps those words alone, with no status mark. */}
@@ -550,6 +552,7 @@ function DrawnText({
             tree={tree}
           />
         </WordedLinksMarked.Provider>
+        </TextIssueList.Provider>
       </TextAskCard.Provider>
     </div>
   );
