@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -49,7 +50,7 @@ import (
 // judged by ghRepoGitConfigRefusal, which every call runs first.
 var ghStackGitConfigKeys = regexp.MustCompile(`^(` + strings.Join([]string{
 	`core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|autocrlf|safecrlf|eol|sparsecheckout|sparsecheckoutcone|untrackedcache|commitgraph|multipackindex|abbrev|quotepath|checkstat|trustctime|preloadindex|splitindex|packedgitwindowsize|packedgitlimit|deltabasecachelimit|bigfilethreshold|compression|loosecompression|warnambiguousrefs)`,
-	`extensions\.(objectformat|partialclone|refstorage|preciousobjects|noop|worktreeconfig)`,
+	`extensions\.(objectformat|refstorage|preciousobjects|noop|worktreeconfig)`,
 	`remote\..+\.(url|pushurl|fetch|promisor|partialclonefilter|tagopt|prune|prunetags|skipdefaultupdate|skipfetchall|gh-resolved)`,
 	`remote\.pushdefault`,
 	`branch\..+\.(remote|pushremote|merge|rebase|description)`,
@@ -77,6 +78,20 @@ func ghStackPushSetting(key string) bool {
 		strings.HasPrefix(key, "branch.") && (strings.HasSuffix(key, ".pushremote") || strings.HasSuffix(key, ".remote"))
 }
 
+// ghStackGitHubURLPattern is an https github.com repository URL as `git remote -v` prints one,
+// read as the raw string git reads: the scheme https alone (not git+https, which git hands to a
+// git-remote-git+https helper, nor http, git, ftp or file), no user, no port, and a path of
+// OWNER/REPO, `.git` and a trailing slash allowed.
+var ghStackGitHubURLPattern = regexp.MustCompile(`^https://(www\.)?github\.com/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/([A-Za-z0-9._-]+?)(\.git)?/?$`)
+
+// ghStackGitHubURL says whether url is a github.com repository URL git fetches from and pushes to
+// over https with nothing else it would read (ghStackGitHubURLPattern), naming a repository whose
+// owner is a GitHub login.
+func ghStackGitHubURL(url string) bool {
+	match := ghStackGitHubURLPattern.FindStringSubmatch(url)
+	return match != nil && ghconfig.IsOwner(strings.ToLower(match[2])) && match[3] != "." && match[3] != ".."
+}
+
 // ghStackRemotes refuses a remote line that is no plain github.com OWNER/REPO URL, a remote whose
 // name starts with `-`, and a --remote value that names no listed remote, and answers the names
 // of the remotes `git remote -v` lists.
@@ -89,7 +104,7 @@ func ghStackRemotes(call ghStackCall, lines []ghRemote) ([]string, error) {
 		if strings.HasPrefix(line.name, "-") {
 			return nil, fmt.Errorf("the working directory's remote %q starts with `-`, which gh-stack would hand to git, where it is an option of git's own, so `gh stack` sends nothing; rename the remote", line.name)
 		}
-		if !line.isPlainGitHubURL() {
+		if !ghStackGitHubURL(line.url) {
 			kind := "fetch"
 			if line.push {
 				kind = "push"

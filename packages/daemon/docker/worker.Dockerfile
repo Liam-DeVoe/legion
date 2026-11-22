@@ -1217,6 +1217,13 @@ COPY --from=tools /opt/tools/gh /usr/local/bin/gh
 # its own data directory, which in a pod is under the issue's scratch, so the shim links each one
 # there before Oh My Pi starts (podsafety.EnsureGhExtensions, from podsafety.GhExtensionsDir).
 COPY --from=tools /opt/tools/gh-extensions /opt/legion/gh-extensions
+# gh-stack's git: `legion gh stack` runs gh-stack with PATH set to /opt/legion/gh-stack-bin,
+# /opt/legion/bin and /usr/bin alone (cmd/legion's ghStackPath), and this directory's git runs
+# `legion gh-stack-git`, which refuses an argument that starts with `-` and is no option gh-stack
+# passes to git, then runs /opt/legion/bin/git. Root's, like the rest of /opt/legion.
+RUN install -d -m 0755 /opt/legion/gh-stack-bin \
+ && printf '#!/bin/sh\nexec /opt/legion/bin/legion gh-stack-git "$@"\n' > /opt/legion/gh-stack-bin/git \
+ && chmod 0755 /opt/legion/gh-stack-bin/git
 # mise, the binary the tools stage installed and checked against MISE_SHA256, so there is no pin of
 # its own here, for the two scripts a role runs that resolve the Oh My Pi pin with `mise where` and
 # `mise x`: scripts/e2e/lib/install-plugin-profile.sh and the skill-scenario rig
@@ -1681,7 +1688,7 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     done; \
     testpg_log="$(stat -c '%u:%g %a %s' /var/run/legion/testpg.log)"; echo "/var/run/legion/testpg.log: $testpg_log"; \
     test "$testpg_log" = "0:0 444 0"; \
-    plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy /opt/legion/gh-extensions \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
+    plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy /opt/legion/gh-extensions /opt/legion/gh-stack-bin \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
     echo "plugin and gh extension files not root's alone: ${plugins:-none}"; test -z "$plugins"; \
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
@@ -1706,6 +1713,8 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     stack="$(XDG_DATA_HOME="$ghdata" XDG_CONFIG_HOME="$ghdata/config" XDG_STATE_HOME="$ghdata/state" XDG_CACHE_HOME="$ghdata/cache" \
       GH_CONFIG_DIR="$ghdata/gh-config" GH_NO_UPDATE_NOTIFIER=1 GH_STACK_NO_UPDATE_NOTIFIER=1 GH_TELEMETRY=0 /usr/local/bin/gh stack --version)"; \
     rm -rf "$ghdata"; echo "gh stack: $stack"; test "$stack" = "gh stack version ${GH_STACK_TOOL##*@}"; \
+    shimmed="$(PATH=/opt/legion/gh-stack-bin:/opt/legion/bin:/usr/bin git --exec=x 2>&1 || true)"; echo "gh-stack's git: $shimmed"; \
+    case "$shimmed" in *"is no option gh-stack"*) ;; *) exit 1 ;; esac; \
     npm="$(command -v npm)"; echo "npm: $npm"; test "$npm" = /usr/local/bin/npm; \
     DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-check HOME=/tmp \
       /opt/legion/pi-envoy/bin/dispatch --help > /tmp/dispatch-help; \

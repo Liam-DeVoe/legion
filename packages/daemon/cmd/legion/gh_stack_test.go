@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,6 +25,13 @@ import (
 // testGhStackEnv names a stand-in gh-stack for this test binary run as `legion`, in place of the
 // image's root-owned copy (TestMain).
 const testGhStackEnv = "LEGION_TEST_GH_STACK"
+
+// testGhStackPathEnv and testGhStackGitEnv name a stand-in for gh-stack's PATH and for the git its
+// shim runs (TestMain).
+const (
+	testGhStackPathEnv = "LEGION_TEST_GH_STACK_PATH"
+	testGhStackGitEnv  = "LEGION_TEST_GH_STACK_GIT"
+)
 
 // remotesAre is a working directory whose git remotes are lines, each a fetch and a push line of
 // one remote named and URL'd as given, then markers, each a `git config --get-regexp` line of a
@@ -583,13 +591,19 @@ func TestGhStackCommandsAreThePinnedReleases(t *testing.T) {
 	}
 }
 
-// `legion gh stack …` runs the image's gh-stack itself, not gh: with the arguments after `stack`,
-// GH_EXTENSION=1 as gh would set, and GH_CONFIG_DIR at the directory of the owner of the
-// repository the working directory's remotes name. A call it refuses runs nothing, and with no
-// image copy at all every call is refused.
-func TestLegionGhRunsTheImagesGhStackWithTheOwnersDirectory(t *testing.T) {
+// ghStackRig is what an end-to-end `legion gh stack` run of these tests needs: the gh bundle, a
+// stand-in real gh, a clone of sjawhar/legion-smoke with two commits, the environment that runs
+// this test binary as `legion gh`, and gh-stack's PATH as test-owned directories, the first
+// holding the git shim, which runs this test binary as `legion gh-stack-git`, and the second a
+// directory for nothing else.
+type ghStackRig struct {
+	root, clone, base, branch, shim string
+	env                             map[string]string
+}
+
+func newGhStackRig(t *testing.T) ghStackRig {
+	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
-	wrappers := ghWrapperDir(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
 		t.Fatal(err)
@@ -598,27 +612,175 @@ func TestLegionGhRunsTheImagesGhStackWithTheOwnersDirectory(t *testing.T) {
 	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"echo gh ran \"$*\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	stack := ghStackAt(t, t.TempDir(), "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$GH_EXTENSION\" \"$*\"\n")
 	clone := t.TempDir()
 	fixture := fixturegit.Isolated(t, t.TempDir())
 	fixture.Run(clone, append([]string{"git"}, fixturegit.InitWorkTree("", "")[1:]...)...)
 	fixture.Run(clone, "git", "remote", "add", "origin", "https://github.com/sjawhar/legion-smoke.git")
-	env := map[string]string{
-		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
-		testGhStackEnv: stack,
+	fixture.Run(clone, "git", "commit", "--allow-empty", "-m", "a")
+	base := fixture.Run(clone, "git", "rev-parse", "HEAD")
+	branch := fixture.Run(clone, "git", "symbolic-ref", "--short", "HEAD")
+	fixture.Run(clone, "git", "commit", "--allow-empty", "-m", "b")
+	shim, other := t.TempDir(), t.TempDir()
+	for _, dir := range []string{shim, other} {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	code, stdout, stderr := legionGhIn(t, clone, env, "", "stack", "view", "--json")
-	if want := stack + "|" + filepath.Join(root, "sjawhar") + "|1|view --json\n"; code != 0 || stdout != want {
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nexec '"+os.Args[0]+"' gh-stack-git \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on this machine")
+	}
+	return ghStackRig{root: root, clone: clone, base: base, branch: branch, shim: shim, env: map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PATH": ghWrapperDir(t) + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		testGhStackPathEnv: shim + string(filepath.ListSeparator) + other, testGhStackGitEnv: git,
+	}}
+}
+
+// `legion gh stack …` runs the image's gh-stack itself, not gh: with the arguments after `stack`,
+// GH_EXTENSION=1 as gh would set, GH_CONFIG_DIR at the directory of the owner of the repository
+// the working directory's remotes name, and PATH at ghStackPath alone. A call it refuses runs
+// nothing; with no image copy, or a directory of that PATH writable by others, every call is
+// refused.
+func TestLegionGhRunsTheImagesGhStackWithTheOwnersDirectory(t *testing.T) {
+	rig := newGhStackRig(t)
+	stack := ghStackAt(t, t.TempDir(), "#!/bin/sh\nprintf '%s|%s|%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$GH_EXTENSION\" \"$PATH\" \"$*\"\n")
+	rig.env[testGhStackEnv] = stack
+	code, stdout, stderr := legionGhIn(t, rig.clone, rig.env, "", "stack", "view", "--json")
+	if want := stack + "|" + filepath.Join(rig.root, "sjawhar") + "|1|" + rig.env[testGhStackPathEnv] + "|view --json\n"; code != 0 || stdout != want {
 		t.Errorf("legion gh stack view --json = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
 	}
-	code, stdout, stderr = legionGhIn(t, clone, env, "", "stack", "push", "--remote=--upload-pack=touch PWNED")
+	code, stdout, stderr = legionGhIn(t, rig.clone, rig.env, "", "stack", "push", "--remote=--upload-pack=touch PWNED")
 	if code != 2 || stdout != "" || !strings.Contains(stderr, "an option of git's own") {
 		t.Errorf("legion gh stack push --remote=--upload-pack=… = exit %d, stdout %q, stderr %q; want exit 2, nothing run", code, stdout, stderr)
 	}
-	delete(env, testGhStackEnv)
-	code, stdout, stderr = legionGhIn(t, clone, env, "", "stack", "view", "--json")
+	if err := os.Chmod(rig.shim, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = legionGhIn(t, rig.clone, rig.env, "", "stack", "view", "--json")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "is writable by others than its owner") {
+		t.Errorf("with gh-stack's PATH writable by others, legion gh stack view --json = exit %d, stdout %q, stderr %q; want exit 2, nothing run", code, stdout, stderr)
+	}
+	if err := os.Chmod(rig.shim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	delete(rig.env, testGhStackEnv)
+	code, stdout, stderr = legionGhIn(t, rig.clone, rig.env, "", "stack", "view", "--json")
 	if code != 2 || stdout != "" || !strings.Contains(stderr, "runs the image's gh-stack") {
 		t.Errorf("with no image copy, legion gh stack view --json = exit %d, stdout %q, stderr %q; want exit 2, nothing run", code, stdout, stderr)
+	}
+}
+
+// Three ways a repository's own state could make gh-stack's git run a program, each run first
+// with gh-stack's git as it is (the stand-in's commands run directly, where the program runs,
+// which shows the case is one), then through `legion gh stack`, which refuses it and runs
+// nothing: a branch name gh-stack would read from a file the wrapper does not read, passed to
+// git as gh-stack passes branch names (refused by the git shim); an extensions.partialclone that
+// git's own fetch reads (refused by the configuration allowlist); and a git+https remote, which
+// git hands to a git-remote-git+https helper on PATH (refused by the remote check, and the PATH
+// gh-stack runs with holds no such helper).
+func TestLegionGhStackRefusesWhatWouldRunAProgram(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(t *testing.T, rig ghStackRig, marker string) (helperDir string)
+		script func(rig ghStackRig) string
+		refuse string
+	}{
+		{
+			name: "a branch name that starts with -",
+			setup: func(t *testing.T, rig ghStackRig, marker string) string {
+				dir := filepath.Join(rig.clone, ".git", "worktrees", "x")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "name"), []byte("--exec=/usr/bin/touch${IFS}"+marker), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return ""
+			},
+			script: func(rig ghStackRig) string {
+				return "git rebase --onto " + rig.base + " " + rig.base + " \"$(/usr/bin/cat .git/worktrees/x/name)\"\n"
+			},
+			refuse: "is no option gh-stack 0.3.0 passes to git",
+		},
+		{
+			name: "an extensions.partialclone setting",
+			setup: func(t *testing.T, rig ghStackRig, marker string) string {
+				appendTo(t, filepath.Join(rig.clone, ".git", "config"), "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tpartialclone = --upload-pack=/usr/bin/touch "+marker+"\n[branch \""+rig.branch+"\"]\n\tremote = .\n")
+				return ""
+			},
+			script: func(ghStackRig) string {
+				return "git rev-parse --verify " + strings.Repeat("e", 40) + "^{commit}\n"
+			},
+			refuse: "sets extensions.partialclone, which is no setting `gh stack` lets its git read",
+		},
+		{
+			name: "a git+https remote",
+			setup: func(t *testing.T, rig ghStackRig, marker string) string {
+				fixturegit.Isolated(t, t.TempDir()).Run(rig.clone, "git", "remote", "set-url", "--push", "origin", "git+https://github.com/sjawhar/legion-smoke.git")
+				helpers := t.TempDir()
+				if err := os.WriteFile(filepath.Join(helpers, "git-remote-git+https"), []byte("#!/bin/sh\n/usr/bin/touch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return helpers
+			},
+			script: func(ghStackRig) string { return "git push origin HEAD:refs/heads/x\n" },
+			refuse: "no https github.com OWNER/REPO URL",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newGhStackRig(t)
+			direct := filepath.Join(t.TempDir(), "ran")
+			helpers := tc.setup(t, rig, direct)
+			run := exec.Command("/bin/sh", "-c", tc.script(rig))
+			// The tests' own environment allows git no transport; the run directly allows the two
+			// these cases use, file (a local fetch) and git+https, and still no network one.
+			environ := slices.DeleteFunc(os.Environ(), func(pair string) bool { return strings.HasPrefix(pair, "GIT_ALLOW_PROTOCOL=") })
+			run.Dir, run.Env = rig.clone, append(environ, "PATH="+helpers+string(filepath.ListSeparator)+os.Getenv("PATH"), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_ALLOW_PROTOCOL=file:git+https")
+			out, _ := run.CombinedOutput()
+			if _, err := os.Stat(direct); err != nil {
+				t.Fatalf("run directly, the case ran no program (%v; it printed %q); it shows nothing about what the wrapper refuses", err, out)
+			}
+
+			rig = newGhStackRig(t)
+			marker := filepath.Join(t.TempDir(), "ran")
+			helpers = tc.setup(t, rig, marker)
+			rig.env[testGhStackEnv] = ghStackAt(t, t.TempDir(), "#!/bin/sh\n"+tc.script(rig))
+			if helpers != "" {
+				rig.env["PATH"] = helpers + string(filepath.ListSeparator) + rig.env["PATH"]
+			}
+			_, _, stderr := legionGhIn(t, rig.clone, rig.env, "", "stack", "rebase")
+			if _, err := os.Stat(marker); err == nil {
+				t.Errorf("through legion gh stack, the program ran; stderr %q", stderr)
+			}
+			if !strings.Contains(stderr, tc.refuse) {
+				t.Errorf("legion gh stack printed %q, want a refusal containing %q", stderr, tc.refuse)
+			}
+		})
+	}
+}
+
+// legion gh-stack-git takes an argument that starts with `-` only where it is an option word of
+// ghStackGitOptions or starts with one of its `--option=` prefixes; every other word passes.
+func TestGhStackGitTakesOnlyTheOptionsGhStackPasses(t *testing.T) {
+	for arg, want := range map[string]bool{
+		"rebase": true, "refs/heads/feature": true, "--onto": true, "--is-ancestor": true, "-c": true,
+		"--force-with-lease=refs/heads/x:" + strings.Repeat("a", 40): true, "--format=%(refname)": true, "--": true,
+		"--exec=touch x": false, "--upload-pack=x": false, "-x": false, "--receive-pack": false, "--config-env=x": false,
+	} {
+		if got := ghStackGitWord(arg); got != want {
+			t.Errorf("ghStackGitWord(%q) = %v, want %v", arg, got, want)
+		}
+	}
+}
+
+// ghStackGitOptions is generated from the sources of the gh-stack release the worker image pins
+// (gh_stack_git_options.sh), so a bump of the pin fails here until the script has been run again.
+func TestGhStackGitOptionsAreThePinnedReleases(t *testing.T) {
+	if ghStackGitOptionsVersion != ghStackVersion {
+		t.Errorf("ghStackGitOptions is gh-stack %s's and ghStackCommands gh-stack %s's; run gh_stack_git_options.sh", ghStackGitOptionsVersion, ghStackVersion)
 	}
 }
