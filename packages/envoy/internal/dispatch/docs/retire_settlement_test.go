@@ -109,3 +109,104 @@ func TestALiveWriteIntoARetiredDocumentIsRefusedUnderItsOwnersLock(t *testing.T)
 		t.Fatalf("the refusal logged %q, want its line naming the retired document", line)
 	}
 }
+
+// A live write into a retired document of an issue room is refused as a write into a retired
+// document that is its own room is: the room reloads without the retired document's fragment
+// (roomLayoutSQL), so text written into that fragment would be stored where no version and no
+// index reads it. The room's write reads the document's own retirement under the room's owner
+// lock (joinLiveWrite), the issue's, which the retirement takes too, and refuses the write with a
+// RetiredDocumentError naming the document, not the room: a replacement of its text, a comment's
+// mark on a quote of it, and a mark on it in a transaction that holds the room's write already,
+// from a write into the spec, which the refusal rolls back with it. None of them writes a version
+// of the document or text into its fragment, and each is logged naming it. A live write into the
+// spec, a document of the same room that stands, lands.
+func TestALiveWriteIntoARetiredDocumentOfAnIssueRoomIsRefusedAndTheRoomsOthersLand(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if _, err := joinedReplaceText(service, room.verification, "The check the retirement keeps.\n", alice); err != nil {
+		t.Fatalf("write the Verification document before its retirement: %v", err)
+	}
+	before := latestVersionNumber(t, service, room.verification)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the retirement: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
+		t.Fatalf("retire the Verification document: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the retirement: %v", err)
+	}
+
+	refused := func(write string, err error) {
+		t.Helper()
+		var retired *RetiredDocumentError
+		if !errors.As(err, &retired) || retired.ID != room.verification || retired.Slug != "verification-md" {
+			t.Errorf("%s into the retired Verification document %s of the issue room %s answered %v, want a RetiredDocumentError naming the document",
+				write, room.verification, room.tree, err)
+		}
+	}
+	_, err = joinedReplaceText(service, room.verification, "The check the retirement keeps.\n\nWritten after the retirement.\n", alice)
+	refused("a replacement", err)
+	comment := func(id string) MarkSpec { return MarkSpec{Kind: MarkComment, ID: id, By: alice} }
+	_, err = joinedMarkQuote(service, room.verification, comment("comment-retired"), "check", nil)
+	refused("a comment's mark", err)
+	err = joinedWrite(service, func(ctx context.Context) error {
+		if _, err := service.ReplaceText(ctx, room.spec, "Written beside the refused mark.\n", alice, nil); err != nil {
+			t.Fatalf("write the spec in the transaction that then marks the retired document: %v", err)
+		}
+		_, err := service.MarkQuote(ctx, room.verification, comment("comment-after-the-spec"), "check", nil)
+		return err
+	})
+	refused("a comment's mark after a write into the spec in one transaction", err)
+
+	if after := latestVersionNumber(t, service, room.verification); after != before {
+		t.Errorf("the refused writes into the retired Verification document wrote version %d of it, past its version %d", after, before)
+	}
+	// stored is document's fragment of the room as the room's stored history holds it, empty for a
+	// fragment that holds nothing, which reads as no tree.
+	stored := func(document string) string {
+		t.Helper()
+		target, err := service.targetOf(ctx, document)
+		if err != nil {
+			t.Fatalf("resolve the room of %s: %v", document, err)
+		}
+		tree, err := service.storedTree(ctx, target)
+		if err != nil {
+			t.Fatalf("read the stored fragment of %s: %v", document, err)
+		}
+		if tree == nil {
+			return ""
+		}
+		markdown, err := renderTree(tree)
+		if err != nil {
+			t.Fatalf("render the stored fragment of %s: %v", document, err)
+		}
+		return markdown
+	}
+	if markdown := stored(room.verification); markdown != "The check the retirement keeps.\n" {
+		t.Errorf("the retired Verification document's fragment of the room reads %q after the refused writes, want the text it held at its retirement", markdown)
+	}
+	if markdown := stored(room.spec); strings.Contains(markdown, "Written beside the refused mark.") {
+		t.Errorf("the spec's fragment reads %q, want nothing of the transaction the refused mark rolled back", markdown)
+	}
+	if line := logs.Lines(room.verification); !strings.Contains(line, "refuse a write into a retired document") {
+		t.Errorf("the refusals logged %q, want their line naming the retired Verification document", line)
+	}
+
+	if _, err := joinedReplaceText(service, room.spec, "The spec's own words.\n", alice); err != nil {
+		t.Fatalf("a write into the spec, which stands in the same room: %v", err)
+	}
+	if _, err := joinedMarkQuote(service, room.spec, comment("comment-spec"), "own words", nil); err != nil {
+		t.Fatalf("a comment's mark on the spec, which stands in the same room: %v", err)
+	}
+	if markdown := stored(room.spec); !strings.Contains(markdown, "The spec's own words.") {
+		t.Errorf("the spec's fragment reads %q after the write into it, want its words", markdown)
+	}
+}

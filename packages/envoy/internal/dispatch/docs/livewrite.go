@@ -8,6 +8,7 @@ import (
 	"slices"
 	"weak"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
@@ -333,7 +334,7 @@ func (d liveDoc) rewrite(edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) 
 	return rewriteFragment(d.Doc, d.fragment, nil, edit)
 }
 
-// joinLiveWrite returns the transaction's write to room, a room's own id, which a caller holding a
+// joinLiveWrite returns the transaction's write to target's room, which a caller holding a
 // document's id resolves first (targetOf). When the transaction has no write to it yet, it first
 // has every other process holding the room make its updates durable (flushOtherRooms), then takes
 // the room's owner lock, refuses a failed room, and then takes the writer slot (see liveWrite). The
@@ -345,8 +346,17 @@ func (d liveDoc) rewrite(edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) 
 // (ErrDocumentRetired), and logged naming the document, before it takes the writer slot. The
 // retirement takes the same lock, so it committed before this read or waits for the write's
 // transaction.
-func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string) (*liveWrite, error) {
+//
+// A document of an issue room is a fragment of the room, whose own artifact is the issue's tree,
+// so the document's retirement is read apart (refuseRetiredFragment): before the writer slot for
+// the transaction's first write to the room, and again for each later one, since the
+// transaction's one write to the room serves every document of it.
+func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target liveTarget) (*liveWrite, error) {
+	room := target.room
 	if write := ledger.liveWriteFor(room); write != nil {
+		if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
+			return nil, err
+		}
 		return write, nil
 	}
 	// The flush runs before any lock of the document's: a per-document gate that orders this
@@ -362,6 +372,9 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string
 		slog.Warn("dispatch: refuse a write into a retired document", "document", room)
 		return nil, &RetiredDocumentError{ID: room, Name: owner.Name, Slug: owner.Slug}
 	}
+	if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
+		return nil, err
+	}
 	if err := s.awaitRoomRecovery(ctx, room); err != nil {
 		return nil, err
 	}
@@ -371,6 +384,39 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string
 	}
 	write.ownerClosed = !open
 	return write, nil
+}
+
+// refuseRetiredFragment refuses a live write into target's document where that document is a
+// fragment of an issue room and is retired (RetireDocument): a RetiredDocumentError naming the
+// document, not the room, logged as joinLiveWrite logs a retired room's. The issue's room reloads
+// without a retired document's fragment (roomLayoutSQL), so text written into it would be stored
+// where no version and no index reads it.
+//
+// It reads the document's own artifacts.retired_at under the owner lock joinLiveWrite took for the
+// transaction's write to the room (lockArtifactOwner on the room), which is the lock
+// RetireDocument takes for the document (lockArtifactOwner on the document): an issue's room is
+// its tree artifact, whose owner is the issue, and only the issue's own documents join its room
+// (api's issue create and upload, each under the issue's owner lock), so both are
+// store.IssueOwner of that issue. The lock is held to the end of the transaction, so a retirement
+// committed before this read, which reads it, or waits for the write's transaction to end.
+//
+// A document that is its own room is the room, whose retirement joinLiveWrite reads beside the
+// room's owner lock, so it reads nothing here. A document the transaction creates, whose row no
+// read sees before the transaction's write phase, is read as standing, as it is.
+func refuseRetiredFragment(ctx context.Context, tx pgx.Tx, target liveTarget) error {
+	if target.ownRoom() {
+		return nil
+	}
+	var name, slug string
+	err := tx.QueryRow(ctx, `select name, slug from artifacts where id = $1 and retired_at is not null`, target.document).Scan(&name, &slug)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read whether the document is retired: %w", err)
+	}
+	slog.Warn("dispatch: refuse a write into a retired document", "document", target.document, "room", target.room)
+	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug}
 }
 
 // openLiveWrite takes artifactID's writer slot for the transaction, first waiting for the

@@ -137,7 +137,7 @@ func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liv
 		return liveOperation{}, ErrServiceUnavailable
 	}
 	ledger := ledgerFrom(ctx)
-	write, err := s.joinLiveWrite(ctx, ledger, target.room)
+	write, err := s.joinLiveWrite(ctx, ledger, target)
 	if err != nil {
 		return liveOperation{}, err
 	}
@@ -1815,7 +1815,7 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.joinLiveWrite(ctx, ledgerFrom(ctx), target.room)
+	_, err = s.joinLiveWrite(ctx, ledgerFrom(ctx), target)
 	return err
 }
 
@@ -2064,7 +2064,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 	if err != nil {
 		return EditOutcome{}, err
 	}
-	if _, err := s.joinLiveWrite(ctx, ledgerFrom(ctx), target.room); err != nil {
+	if _, err := s.joinLiveWrite(ctx, ledgerFrom(ctx), target); err != nil {
 		return EditOutcome{}, err
 	}
 	if err := lockDocumentRoom(ctx, tx, target.room); err != nil {
