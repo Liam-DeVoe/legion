@@ -296,8 +296,8 @@ func TestATokenOfADeploymentRole(t *testing.T) {
 		}
 	}
 	for _, token := range []Token{"legion-acme-acme-1-controller", "legion-acme-acme-1-Checker", "legion-acme-acme-1", "legion-acme-acme-1-"} {
-		if issue, role, ok := token.Cut(); ok {
-			t.Errorf("%s.Cut() = %q, %q; want no role", token, issue, role)
+		if issue, agent, ok := token.Cut(); ok {
+			t.Errorf("%s.Cut() = %q, %q; want no agent", token, issue, agent)
 		}
 	}
 	if !Token("legion-acme-controller").IsController() {

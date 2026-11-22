@@ -15,7 +15,8 @@ type Token string
 // role's work is named for the role, so Agent(role) names it; a name can also be none of Roles.
 type Agent string
 
-// Role names the agent that holds a claim on an issue.
+// Role names a role a claim can be on: the role of the step its agent runs now, one of Legion's
+// six or a role the deployment defines. A claim takes the role of each step its agent runs.
 type Role string
 
 const (
