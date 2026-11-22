@@ -18,7 +18,12 @@ body: |-
     read started longest ago first (`check_states.ci_read_at`, migration `20261122042853`); a
     former head whose read had not started when that bound ended keeps its published state, with no
     `read_failed`, and the next settle, a second on, reads it first, so each of N former heads is
-    read within ceil(N/8) settles however slow GitHub is for the others.
+    read within ceil(N/8) settles however slow GitHub is for the others. A mark whose change came
+    after the last read of such a head stays until each former head has been read since that
+    change (`check_states_owed.reads_from`, migration `20261122063706`), and a `test` handoff
+    waits for it as for a due mark, so the handoff records no serial over a state at a former head
+    that may be from before the change, a pass of a run that has since failed among them; the
+    failure backoff of a `read_failed` state follows once every head has been read.
     The result a former head's run derives counts at that former head alone, never among the
     check's results, so the state published at an open head is computed from the results
     `GET /api/v1/issues/{key}/results` computes it from, and a former head's run never changes it.

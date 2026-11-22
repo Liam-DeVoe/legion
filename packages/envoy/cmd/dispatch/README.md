@@ -1497,11 +1497,13 @@ Each loop that runs passes through `duty.RunWoken` starts two passes no closer t
   A close, a merge or a delete of the row drops that pull request's former heads, and a head's rows in `check_states` go, with no event, once no open pull request is or was at it.
   The open pull requests that are or were at one commit are one head with one state, computed once, and its events name each of them, whichever is at it now.
   A check CI proves is read at the open heads first, as the results route reads them, and then at the former heads in a batch of their own under its own 10 s bound, at most eight reads at a time, the head whose read started longest ago first (`check_states.ci_read_at`, `20261122042853`).
-  A former head whose read had not started when that bound ended keeps the state published there, with no event and no `read_failed`, and the issue keeps one mark due 1 s on, so the next settle reads that head before every head read in this one: of N former heads, each is read within ceil(N/8) settles, whatever GitHub answers for the others.
+  A former head whose read had not started when that bound ended keeps the state published there, with no event and no `read_failed`, and the next settle reads that head before every head read in this one: of N former heads, each is read within ceil(N/8) settles, whatever GitHub answers for the others.
+  Until each former head has a read that started after a mark's change committed, the state published at a head this settle did not read may be from before that change, so the settle keeps that mark, due 1 s on, from the time it first kept it (`check_states_owed.reads_from`, `20261122063706`), and deletes it in the settle that reads the last such head.
   The result a former head's run derives counts at that former head alone and never among the check's results, so the state the settler publishes at an open head is computed from the results `GET /api/v1/issues/{key}/results` computes it from, whatever commit that head shares with a former head of another repository.
-  A state that reads `read_failed` keeps one mark due 30 s on, doubling with each failure to 10 minutes, with no notification.
+  A state that reads `read_failed` keeps one mark due 30 s on, doubling with each failure to 10 minutes, with no notification; while the settle keeps a mark for a head it did not read, that mark carries the failure instead and is due 1 s on, so each of N heads is read within ceil(N/8) settles, and the backoff follows once every head has been read.
   Passes start at least 1 s apart, and one comes at most a minute after the one before it, so a mark whose notification no process received is settled within a minute; a pass that failed is retried 30 s later.
-  A `test` handoff waits up to 30 s, before its transaction opens, until every mark of its issue due when it began is settled, and stores the issue's serial (`handoffs.check_states_serial`); past that it answers `503 CHECK_STATES_UNSETTLED` and records nothing.
+  A `test` handoff waits up to 30 s, before its transaction opens, until every mark of its issue due when it began, and every mark a settle kept for a head it did not read, is settled, and stores the issue's serial (`handoffs.check_states_serial`); past that it answers `503 CHECK_STATES_UNSETTLED` and records nothing.
+  So a handoff records no serial over a state at a former head whose run, result or check may have changed after its last read, whether that state reads a pass or a failure.
 
 - The suggestion outcome sweep (`api.RunSuggestionOutcomeSweep`) is woken by `dispatch_events` (`0107`), which every event commit notifies whichever process made it.
   Passes start at least 60 s apart.
@@ -2633,6 +2635,9 @@ It touches no row; its census answers `0`.
 
 Migration `20261122042853_check_states_ci_read_at` adds `check_states.ci_read_at`, nullable `timestamptz` with no default: on a head's set row, when the check states settler last started a read of GitHub's check runs there as a former head, which orders the former heads it reads in a settle (Background loops, above).
 The ALTER holds ACCESS EXCLUSIVE on `check_states` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
+
+Migration `20261122063706_check_states_owed_reads_from` adds `check_states_owed.reads_from`, nullable `timestamptz` with no default: on a mark the check states settler kept because a settle that held it did not read a former head, the time it first kept it; the mark goes once each former head has a read that started at or after it, and a `test` handoff waits for it as for a due mark (Background loops, above).
+The ALTER holds ACCESS EXCLUSIVE on `check_states_owed` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
@@ -4946,8 +4951,8 @@ Each item below names a path with its method and identity, then its purpose.
   `body` is one JSON object as a string of at most `contracts.DispatchHandoffBodyMax` (262,144) bytes, stored exactly as sent, and the record is the phase's next version from 1, numbered under the issue's owner lock.
   A cookie caller is `403 HANDOFF_FORBIDDEN`, an actor that is not a session `400 ACTOR_KIND`, a phase that is not a lowercase slug or a body that is not one JSON object `400 HANDOFF_INPUT`, an over-cap body `413 CAP_EXCEEDED` naming the cap, and a closed issue `409 ISSUE_CLOSED`.
   Answers `201 {id, issue_key, phase, version, author, created_at}` and appends `handoff.recorded` `{handoff_id, phase, version}` in the same transaction, which never carries the body and notifies no one.
-  A `test` handoff first waits, for at most 30 s, until every check state mark of its issue due when it began is settled (Background loops, the check states settler), and stores and answers the issue's serial then as `check_states_serial`: each `check.state_changed` event the tester's results caused carries a serial at or below it.
-  Past the 30 s it answers `503 CHECK_STATES_UNSETTLED` and records nothing, and the session writes the handoff again; a mark that waits for a later read of GitHub is not due and does not hold it.
+  A `test` handoff first waits, for at most 30 s, until every check state mark of its issue due when it began, and every mark the settler kept for a former head it has not read since the mark's change, is settled (Background loops, the check states settler), and stores and answers the issue's serial then as `check_states_serial`: each `check.state_changed` event the tester's results caused carries a serial at or below it, and each state it covers at a former head comes from a read of GitHub made after those changes.
+  Past the 30 s it answers `503 CHECK_STATES_UNSETTLED` and records nothing, and the session writes the handoff again; a mark that waits to read GitHub again after a failed read is not due and does not hold it, since its state reads `read_failed`.
   Every other phase stores and answers no serial, and the handoff reads (below) answer `check_states_serial` where the handoff holds one.
   A keyed write: a retry under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
 

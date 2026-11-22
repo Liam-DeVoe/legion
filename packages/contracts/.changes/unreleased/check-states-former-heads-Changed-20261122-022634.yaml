@@ -6,7 +6,10 @@ body: |-
     requests at the head or that were at it. The schema itself does not change. New fixture
     `fixtures/dispatch-events/check-states-after-a-move.json` holds the events Dispatch published
     in two cases of a pull request's head moving while its tester tested the head before, as
-    Envoy's test writes them, for the Legion daemon's test of the testing move.
+    Envoy's test writes them, for the Legion daemon's test of the testing move. The description of
+    `POST /api/v1/issues/{key}/handoffs/{phase}` says a `test` handoff also waits until each former
+    head not read since its issue's last change has been read; regenerated in
+    `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`.
 time: 2026-11-22T02:26:34Z
 custom:
     Issue: check-states-former-heads

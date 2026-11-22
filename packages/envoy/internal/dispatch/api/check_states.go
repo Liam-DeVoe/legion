@@ -57,8 +57,9 @@ const CheckStatesOwedChannel = "dispatch_check_states_owed"
 const checkStatesLeasePrefix = "check-states:"
 
 // checkStatesSchedule is the settler's timing, a value so a test shortens it. minGap is the least
-// time between the starts of two passes, and the wait before a pass that skipped an issue, read a
-// full batch or left a due mark tries again; sweep the longest time between two passes, so a mark
+// time between the starts of two passes, the wait before a pass that skipped an issue, read a
+// full batch or left a due mark tries again, and the wait of a mark a settle keeps for a former
+// head it did not read (publish); sweep the longest time between two passes, so a mark
 // whose notification no process received is settled within it; retry the wait after a pass that
 // failed, and the first wait of a mark kept after a failed read of GitHub, which doubles with each
 // failure up to retryMax; fenceWait and fencePoll the fence of a test handoff
@@ -362,8 +363,9 @@ func formerHeadsApart(former, heads []delivery.AttributedHead) []delivery.Attrib
 // order, the block ids of the issue's `before_merge` checks in document order, which is the head's
 // set of checks, and the state of each of them there, in the same order. At a former head, kept is
 // each check CI proves whose read of GitHub's check runs had not started when its batch's bound
-// ended (ciCaseNotStarted), which has no state in states and keeps the one published; ciRead is
-// whether a read of that head's check runs started.
+// ended (ciCaseNotStarted), which has no state in states and keeps the one published, and whose
+// head holds the marks of its settle until a later settle reads it (publish); ciRead is whether a
+// read of that head's check runs started.
 type headStates struct {
 	repo, head   string
 	pullRequests []int
@@ -533,14 +535,23 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // carry it, in one transaction under the issue's owner lock: it raises the issue's serial by one
 // for each event, stores what each event published, deletes the rows of heads neither open nor
 // former (checkStatesAtHeads computed no state there) and of checks no longer in a head's set,
-// with no event, and deletes the marks the round read. The row of a check a former head kept
+// with no event, and settles the marks the round read. The row of a check a former head kept
 // (headStates.kept) stays as published, and each former head whose read of GitHub's check runs
-// started takes the time of this settle (check_states.ci_read_at). Where a former head kept a
-// check it inserts one mark due a minimum gap on, and else where a state reads read_failed one mark
-// due later, each with no notification, so the issue is read again: a head this settle did not
-// read comes first in the next, and a failed read is tried again once GitHub may answer. Only the
-// settler writes check_states, under the issue's lease, so the rows it reads here are the newest
-// published. It answers the events, which the caller publishes once the transaction has committed.
+// started takes the time of this settle (check_states.ci_read_at).
+//
+// A mark is settled, and deleted, once each former head has a read of its check runs that started
+// after the mark's change committed: a read in this settle, which read the mark after that commit,
+// or in a settle at or after the one that first kept the mark (check_states_owed.reads_from). A
+// head this settle did not read may have none, and then the state published there may be from
+// before that change: the mark stays, due a minimum gap on, and the fence of a test handoff
+// (awaitCheckStatesSettled) waits for it. The next settle reads those heads before the heads read
+// in this one, so each of N former heads is read within ceil(N/ciHeadReadConcurrency) settles, and
+// the mark goes then. A mark kept so carries the failure of a state that reads read_failed; with
+// no mark kept, such a state leaves one new mark, due later as retryAfter answers and with no
+// notification, which the fence does not wait for, since read_failed is what that state
+// publishes. Only the settler writes check_states, under the issue's lease, so the rows it reads
+// here are the newest published. It answers the events, which the caller publishes once the
+// transaction has committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
 ) ([]model.Event, error) {
@@ -574,12 +585,13 @@ func (c *checkStatesSettler) publish(
 		return int64(event.Seq), nil
 	}
 	kept := map[checkStateKey]bool{}
-	var readRepos, readHeads []string
-	readsLeft := false
+	var readRepos, readHeads, unreadRepos, unreadHeads []string
 	for _, head := range computed {
+		if len(head.kept) > 0 {
+			unreadRepos, unreadHeads = append(unreadRepos, head.repo), append(unreadHeads, head.head)
+		}
 		for _, check := range head.kept {
 			kept[checkStateKey{head.repo, head.head, check}] = true
-			readsLeft = true
 		}
 		if head.ciRead {
 			readRepos, readHeads = append(readRepos, head.repo), append(readHeads, head.head)
@@ -651,22 +663,42 @@ func (c *checkStatesSettler) publish(
 			return nil, fmt.Errorf("store the check states serial of %s: %w", issue, err)
 		}
 	}
-	if _, err := tx.Exec(ctx, `delete from check_states_owed where id = any($1)`, marks); err != nil {
+	// The marks a former head this settle did not read still holds: that head's last read started
+	// before the mark's change committed, or never. Empty, not nil, so the delete below compares
+	// with an empty array rather than with null.
+	unsettled := []int64{}
+	if len(unreadRepos) > 0 {
+		if err := tx.QueryRow(ctx, `
+			select coalesce(array_agg(owed.id), '{}') from check_states_owed owed
+			where owed.id = any($2) and exists (
+				select 1 from check_states published
+				join unnest($3::text[], $4::text[]) as unread (repo, head_sha)
+					on unread.repo = published.repo and unread.head_sha = published.head_sha
+				where published.issue_key = $1 and published.check_block_id = ''
+					and (published.ci_read_at is null or published.ci_read_at < coalesce(owed.reads_from, now())))`,
+			issue, marks, unreadRepos, unreadHeads).Scan(&unsettled); err != nil {
+			return nil, fmt.Errorf("read the marks of %s a head this settle did not read holds: %w", issue, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `delete from check_states_owed where id = any($1) and not id = any($2)`, marks, unsettled); err != nil {
 		return nil, fmt.Errorf("delete the settled marks of %s: %w", issue, err)
 	}
-	if readsLeft || readFailed {
-		// A former head whose read had not started is read in a settle a gap on, before the heads
-		// read in this one; a failed read alone waits its retry. A failed read counts either way.
-		wait, counted := c.schedule.minGap, failures
-		if readFailed {
-			counted = failures + 1
-			if !readsLeft {
-				wait = c.retryAfter(failures)
-			}
+	counted := failures
+	if readFailed {
+		counted++
+	}
+	switch {
+	case len(unsettled) > 0:
+		if _, err := tx.Exec(ctx, `
+			update check_states_owed set reads_from = coalesce(reads_from, now()),
+				due_at = now() + make_interval(secs => $2), failures = $3
+			where id = any($1)`, unsettled, c.schedule.minGap.Seconds(), counted); err != nil {
+			return nil, fmt.Errorf("keep the marks of %s a head this settle did not read holds: %w", issue, err)
 		}
+	case readFailed:
 		if _, err := tx.Exec(ctx, `
 			insert into check_states_owed (issue_key, due_at, failures) values ($1, now() + make_interval(secs => $2), $3)`,
-			issue, wait.Seconds(), counted); err != nil {
+			issue, c.retryAfter(failures).Seconds(), counted); err != nil {
 			return nil, fmt.Errorf("keep a mark of %s to read GitHub again: %w", issue, err)
 		}
 	}
