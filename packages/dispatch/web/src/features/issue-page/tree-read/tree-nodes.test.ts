@@ -297,6 +297,33 @@ function linkTo(ref: string): DecisionLink {
   };
 }
 
+/** A decision of a decisions read of the release before: a section of `decisions.md` under
+ *  `heading`, with `words` as its body, which no node of the answer holds. */
+function decisionsSection(
+  id: string,
+  heading: string,
+  words: string,
+  extra: Partial<Decision> = {}
+): Decision {
+  return {
+    asks: [],
+    block_id: id,
+    changed_at: "2026-11-05T00:00:00Z",
+    changed_version: 1,
+    heading,
+    kept: null,
+    kind: "agent",
+    links: [],
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-${id}`,
+    replaced: false,
+    text: `## ${heading}\n\n${words}`,
+    text_sha256: "sum",
+    unsure: false,
+    waiting_review: true,
+    ...extra,
+  };
+}
+
 /** A person's comment the read hangs under `parent`, made at `madeAt`. */
 function personsComment(id: string, parent: string, madeAt: string): TreeAnswerNode {
   return node(id, "comment", parent, { author: [{ id: "alice", kind: "user" }], made_at: madeAt });
@@ -796,22 +823,6 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
 // requested; a comment quoting words no decision holds is no change and stays where the read
 // hangs it.
 test("a decisions.md section finds its Change by its words", () => {
-  const section = (id: string, heading: string, words: string): Decision => ({
-    asks: [],
-    block_id: id,
-    changed_at: "2026-11-05T00:00:00Z",
-    changed_version: 1,
-    heading,
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: `dispatch://${KEY}/artifact/decisions-md#b-${id}`,
-    replaced: false,
-    text: `## ${heading}\n\n${words}`,
-    text_sha256: "sum",
-    unsure: false,
-    waiting_review: true,
-  });
   const anchored = (id: string, quote: string): Comment => ({
     anchor: {
       artifact_id: DECISIONS.id,
@@ -840,8 +851,8 @@ test("a decisions.md section finds its Change by its words", () => {
     suggestion: null,
     turn: null,
   });
-  const keep = section("d1", "Keep it", "Keep the model pure.");
-  const draw = section("d2", "Draw it", "Draw it once.");
+  const keep = decisionsSection("d1", "Keep it", "Keep the model pure.");
+  const draw = decisionsSection("d2", "Draw it", "Draw it once.");
   const comments = [
     anchored("c-change", "Draw it once."),
     anchored("c-stray", "Words no decision holds."),
@@ -878,23 +889,9 @@ test("a decisions.md section finds its Change by its words", () => {
 // and a re-read of the same reads hands its row the words and the source it handed it before, as
 // a node of the tree read's does.
 test("drawing the same decisions read twice hands a section's row the same words and source", () => {
-  const section: Decision = {
-    asks: [],
-    block_id: "d1",
-    changed_at: "2026-11-05T00:00:00Z",
-    changed_version: 1,
-    heading: "Keep it",
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: `dispatch://${KEY}/artifact/decisions-md#b-d1`,
-    replaced: false,
-    text: "## Keep it\n\nKeep the model pure.",
-    text_sha256: "sum",
+  const section = decisionsSection("d1", "Keep it", "Keep the model pure.", {
     text_tree: typedReading("decision", { blockId: "d1" }, "Keep the model pure."),
-    unsure: false,
-    waiting_review: true,
-  };
+  });
   const reads = {
     decisions: withEntries(
       {
@@ -1636,7 +1633,8 @@ test("an ask block's row draws the asks read's question, not the options its blo
 test("a requirement whose From line cites a document carries its chip from the tree read's text", () => {
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const cites = `dispatch://${KEY}/artifact/notes-md`;
-  const issue = { ...issueDetails(), artifacts: [...(issueDetails().artifacts ?? []), notes] };
+  const details = issueDetails();
+  const issue = { ...details, artifacts: [...(details.artifacts ?? []), notes] };
   const words = "The measurements behind it are kept.";
   const { root } = drawn(
     answer([

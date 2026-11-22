@@ -46,7 +46,8 @@ const STATEMENTS: readonly TreeAnswerNode[] = [
   specBlock("r2", "requirement", 1),
 ];
 
-/** The address of the spec's step (`STEP_NODE`), which the names read names it by. */
+/** The address of the spec's step (`STEP_NODE`). The names read is not given it, as it is given
+ *  no node's own address: it names the issue's own key, which the root's words write. */
 const STEP = buildDispatchReference({
   block: { id: "t1" },
   key: KEY,
@@ -249,7 +250,8 @@ test("the view row draws no count while the reader's login is out, and the real 
 // until that read answered Plan matched none of the issue's steps and drew 0 as its count, which a
 // names read that failed left for good. Under one the row draws no count, unit word or flag until
 // the names are held, and the real counts once they are. The tree read now answers the step with
-// its words, and the names read names it by them too.
+// its words; the names read is not given its address, and names the issue's own key, which the
+// root's words write.
 test("under a words filter the view row draws no count while the names read is out, and the real counts once it has answered", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();

@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { type Browser, expect, type Page } from "@playwright/test";
 
 import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
@@ -7,7 +7,7 @@ import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/p
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { getIssue, listIssueAsks } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
-import { gotoIssue, presetCount, presetToggle } from "./issue-page";
+import { gotoIssue, phase, presetCount, presetToggle } from "./issue-page";
 import { expectIssuePageDrawn, unfoldEveryBranch } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import {
@@ -26,16 +26,21 @@ import {
   steadily,
 } from "./issue-page-t";
 import {
+  convertedGate,
   type DecisionsRead,
   type DrawnNode,
+  decisionNodesGate,
+  decisionsAreNodes,
   decisionsReadOf,
   decisionTimes,
   drawnNodes,
   heldAnswer,
+  owedUnless,
   R2_ROW_KINDS,
   seedEventsLanded,
   type TreeView,
   treeAnswerOf,
+  treeReadGate,
 } from "./issue-page-t-tree";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -173,7 +178,7 @@ interface OutlineRead {
 /** Opens the seeded issue and reads it as the recorder did: the rows as the page opens, once two
  *  readings agree, then every row once every branch is open, with its body where `bodies`; and
  *  what the page received of the tree read and the decisions read. */
-export async function readOutline(
+async function readOutline(
   page: Page,
   seeded: SeededIssue,
   { bodies = true }: { readonly bodies?: boolean } = {}
@@ -286,7 +291,7 @@ function homesOf(
 /** The first row of `readings` the answer holds that does not stand under the node the answer
  *  places it under, at the level that gives, or stands before a sibling the answer orders before
  *  it; undefined where none. */
-export function firstRowOutOfPlace(
+function firstRowOutOfPlace(
   where: string,
   readings: readonly RowReading[],
   outline: OutlineRead
@@ -366,7 +371,7 @@ function rowName(row: KeyedRow): string {
  * differences the check names are allowed: the section that restates a person's answer is no
  * row, and the answered question's row carries its `shaped` ties as chips beside the fixture's.
  */
-export function differences(
+function differences(
   where: string,
   readings: readonly RowReading[],
   recorded: readonly KeyedRow[],
@@ -460,7 +465,7 @@ function answeredReviewState(node: IssueTreeNode, changed: boolean): string | nu
  *  decision row's review state is the answer's, each Change stands under its decision's row, the
  *  section that restates a person's answer is no row, and the answered question's row carries a
  *  chip for each node its `shaped` ties name. */
-export function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
+function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
   const held = heldNodes(answer, idOf);
@@ -521,6 +526,50 @@ export function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFix
     );
   });
   expect(unnamed, "the answered question's row carries a chip for each node it shaped").toEqual([]);
+}
+
+/** Row 1 on the seed `name`, which `seed` seeds: each row stands under the parent the tree read
+ *  answers, as the page opens and with every branch open, and reads as the reads drew it. */
+export async function expectSameRows(
+  browser: Browser,
+  name: string,
+  seed: NamedSeed[1]
+): Promise<void> {
+  await phase(browser, seed, async (page, seeded) => {
+    owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await convertedGate(page, seeded.key));
+    const outline = await readOutline(page, seeded);
+    expect(
+      firstRowOutOfPlace("as the page opens", outline.opened, outline) ??
+        firstRowOutOfPlace("with every branch open", outline.rows, outline),
+      "each row stands under the parent the tree read answers"
+    ).toBeUndefined();
+    const recorded = fixtureSeed(name);
+    const nodes = decisionsAreNodes(outline.answer, outline.decisions);
+    expect(
+      [
+        ...differences("as the page opens", outline.opened, recorded.opened, outline, nodes),
+        ...differences("with every branch open", outline.rows, recorded.rows, outline, nodes),
+      ],
+      "each row reads as the reads drew it"
+    ).toEqual([]);
+  });
+}
+
+/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `decisionNodesGate`
+ *  and asserted once it is met (`expectDecisionsFromNodes`). */
+export async function expectSameRowsDecisions(
+  browser: Browser,
+  name: string,
+  seed: NamedSeed[1]
+): Promise<void> {
+  await phase(browser, seed, async (page, seeded) => {
+    owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await convertedGate(page, seeded.key));
+    const outline = await readOutline(page, seeded, { bodies: false });
+    owedUnless(decisionNodesGate(outline.answer, outline.decisions));
+    expectDecisionsFromNodes(outline, fixtureSeed(name));
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

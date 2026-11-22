@@ -1,22 +1,11 @@
-import { phase } from "./issue-page";
-import { fixtureSeed } from "./issue-page-t";
 import {
   DECISION_SEEDS,
-  differences,
-  expectDecisionsFromNodes,
-  firstRowOutOfPlace,
-  readOutline,
+  expectSameRows,
+  expectSameRowsDecisions,
   SAME_ROWS_B_SEEDS,
   SAME_ROWS_MS,
 } from "./issue-page-t-rows";
-import {
-  convertedGate,
-  decisionNodesGate,
-  decisionsAreNodes,
-  owedUnless,
-  treeReadGate,
-} from "./issue-page-t-tree";
-import { expect, test } from "./test";
+import { test } from "./test";
 
 /**
  * Row 1 of the rows that draw the new issue page from the tree read, "the outline drawn from the
@@ -33,25 +22,7 @@ for (const [name, seed] of SAME_ROWS_B_SEEDS) {
   // every row's body read in turn, each reading taken twice until it holds still.
   test(title, async ({ browser }) => {
     test.setTimeout(SAME_ROWS_MS);
-    await phase(browser, seed, async (page, seeded) => {
-      owedUnless(await treeReadGate(page, seeded.key));
-      owedUnless(await convertedGate(page, seeded.key));
-      const outline = await readOutline(page, seeded);
-      expect(
-        firstRowOutOfPlace("as the page opens", outline.opened, outline) ??
-          firstRowOutOfPlace("with every branch open", outline.rows, outline),
-        "each row stands under the parent the tree read answers"
-      ).toBeUndefined();
-      const recorded = fixtureSeed(name);
-      const nodes = decisionsAreNodes(outline.answer, outline.decisions);
-      expect(
-        [
-          ...differences("as the page opens", outline.opened, recorded.opened, outline, nodes),
-          ...differences("with every branch open", outline.rows, recorded.rows, outline, nodes),
-        ],
-        "each row reads as the reads drew it"
-      ).toEqual([]);
-    });
+    await expectSameRows(browser, name, seed);
   });
 
   if (DECISION_SEEDS.has(name)) {
@@ -60,13 +31,7 @@ for (const [name, seed] of SAME_ROWS_B_SEEDS) {
     // each reading taken twice until it holds still.
     test(`${title}, its decisions as nodes of the tree read @owed`, async ({ browser }) => {
       test.setTimeout(SAME_ROWS_MS);
-      await phase(browser, seed, async (page, seeded) => {
-        owedUnless(await treeReadGate(page, seeded.key));
-        owedUnless(await convertedGate(page, seeded.key));
-        const outline = await readOutline(page, seeded, { bodies: false });
-        owedUnless(decisionNodesGate(outline.answer, outline.decisions));
-        expectDecisionsFromNodes(outline, fixtureSeed(name));
-      });
+      await expectSameRowsDecisions(browser, name, seed);
     });
   }
 }

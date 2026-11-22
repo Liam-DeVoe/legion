@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
 import { treeAnswer, treeNode } from "../features/issue-page/tree-read/tree-fixtures";
+import { viewKey } from "../features/issue-page/tree-read/tree-read";
 import { eventRefreshTargets } from "./event-refresh";
 import { issueTreeKey } from "./queries";
 import { refreshQueries } from "./query-refresh";
@@ -74,7 +75,7 @@ test("an event of an issue marks its tree and each view stale, and no other issu
 test("an event of a parent's spec marks stale a child's view that holds a node of the parent, and no tree that holds none", () => {
   const client = new QueryClient();
   // The child's Verification view carries the parent's requirement as context, read-only.
-  const childView = [...issueTreeKey("CORE-2"), "verification"];
+  const childView = viewKey("CORE-2", "verification");
   const requirement = treeNode("r1", "requirement", null, {
     in: "spec",
     issue: "CORE-1",
@@ -119,4 +120,22 @@ test("an event of a parent's spec marks stale a child's view that holds a node o
     "the child's tree, which holds no node of the parent"
   ).toBe(false);
   expect(client.getQueryState(other)?.isInvalidated, "another issue's tree").toBe(false);
+});
+
+// A write of a child names each ancestor's tree (`ancestors`): a new child, or one moved under
+// the ancestor, is a node the ancestor's answer does not hold yet, so no answer that holds a node
+// of the child reaches it.
+test("an issue write marks stale each ancestor's tree it names, whose answer holds no node of the issue", () => {
+  const client = new QueryClient();
+  const parent = issueTreeKey("CORE-1");
+  client.setQueryData(
+    parent,
+    treeAnswer([treeNode("CORE-1", "issue", null)], [], { issue: "CORE-1" })
+  );
+  const moved = eventOf("issue.updated", { ancestors: ["CORE-1"], changes: ["parent"] }, "CORE-2");
+  refreshQueries(client, eventRefreshTargets(moved, "alice"));
+  expect(
+    client.getQueryState(parent)?.isInvalidated,
+    "the parent's tree, which holds no node of the child"
+  ).toBe(true);
 });
