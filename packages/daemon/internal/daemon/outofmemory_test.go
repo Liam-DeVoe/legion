@@ -74,7 +74,7 @@ func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) 
 		t.Errorf("the re-sent prompt does not end with the task %q: %q", task, sent)
 	case !strings.HasPrefix(sent, "kind: relaunch-note\n") || !strings.Contains(sent, "task_turn: true"):
 		t.Errorf("the re-sent prompt does not begin with the note of its turn cut off: %q", sent)
-	case !strings.Contains(sent, "\n\nkind: out-of-memory-note\nissue: "+podUpdateIssue+"\nreason: OOMKilled\n\n"):
+	case !strings.Contains(sent, "\n\nkind: out-of-memory-note\nissue: "+podUpdateIssue+"\nreason: OOMKilled\nread_before_heavy_work: \"skill://legion-worker/references/tools.md\"\n\n"):
 		t.Errorf("the re-sent prompt does not carry the out-of-memory note: %q", sent)
 	}
 	if sent := next.workers[idle].Prompts(); len(sent) != 0 {

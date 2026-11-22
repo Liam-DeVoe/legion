@@ -607,7 +607,7 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
 	// holding no task dies uncounted — which the record says in as many words.
 	died := record.Notice{Kind: "worker-died", Issue: "LEGION-208", Role: claim.RolePlanner, Phase: phase.Implementing,
-		Working: phase.Implementing,
+		Working: phase.Implementing, NothingHeld: true,
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
 			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},
