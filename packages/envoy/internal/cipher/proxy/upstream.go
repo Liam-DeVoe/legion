@@ -1,8 +1,9 @@
 // packages/envoy/internal/cipher/proxy/upstream.go
 // How a failed call to a service is written down and answered, and the lines net/http writes
 // through either server's ErrorLog: the one rule for the error of a call the proxy made to a
-// service (upstreamReason), the line and the 502 of a call it could not carry (badGateway, and
-// destinationUnreachable for the private destination), and net/http's own line (slogWriter).
+// service (upstreamReason), the line and the 502 of a call it could not carry (badGateway;
+// destination.go's destinationUnreachable for the private destination), and net/http's own line
+// (slogWriter).
 package proxy
 
 import (
@@ -53,18 +54,6 @@ func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.R
 		reason := upstreamReason(err)
 		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", reason})...)
 		fail(w, http.StatusBadGateway, codeUpstream, host+": "+reason)
-	}
-}
-
-// destinationUnreachable is badGateway for a call to the private destination's bound host
-// (serveBound): the same line, with the transport's error whole, and the same 502, whose words
-// say the destination could not be reached and leave the error out. A transport error names the
-// address it dialled or read from, which is the destination's in-cluster address; the command's
-// answer reaches a CI step's public log, and the broker's line keeps the detail.
-func (s *Server) destinationUnreachable(host, path string) func(http.ResponseWriter, *http.Request, error) {
-	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", upstreamReason(err)})...)
-		fail(w, http.StatusBadGateway, codeUpstream, host+": the private destination did not answer (BROKER_AIRLOCK_PRIVATE_UPSTREAM); the broker's log names the destination and the error")
 	}
 }
 

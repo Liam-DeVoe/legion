@@ -36,7 +36,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -206,19 +205,6 @@ type Options struct {
 	// in this process alone, and the key every results token this pod mints is bound to. Nil
 	// refuses every request to such a host, since no proof can be made for it.
 	DPoPKey *ecdsa.PrivateKey
-}
-
-// PrivateUpstream is one bound host and the URL its requests are sent to in place of the host's own
-// address: in production Dispatch's public host and its address inside the cluster
-// (BROKER_AIRLOCK_PRIVATE_UPSTREAM). The broker's start holds it to the one host the rules entry
-// DISPATCH_RESULTS_TOKEN binds, exactly and alone, of kind dpop with an allow list
-// (config.AirlockResultRules), and the URL to a scheme and a host with no user, path or query.
-type PrivateUpstream struct {
-	// Host is the bound host, in lower case with no port, as a CONNECT's host is compared.
-	Host string
-	// URL is where that host's requests go: its scheme, which says whether they go in TLS, and its
-	// host and port, which upstreamAddresses resolves and checks.
-	URL *url.URL
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -423,22 +409,8 @@ func New(o Options) *Server {
 		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
 		Protocols:         &forwardProtocols,
 	}
-	// The private destination's own transport, for a proxy given one: every request to its bound
-	// host goes out on this and on nothing else (serveBound), and nothing else goes out on it. Its
-	// dial resolves and checks the destination's host itself (dialUpstream, upstreamAddresses) and
-	// dials those addresses. Each request it carries is sent to the URL's scheme and host, so it
-	// speaks TLS exactly when the URL is https, then verified against the roots upstream trusts
-	// and the URL's host name; it keeps idle connections as upstream does.
-	if o.PrivateUpstream.Host != "" && o.PrivateUpstream.URL != nil {
-		s.privateUpstream = o.PrivateUpstream
-		s.private = &http.Transport{
-			DialContext:         s.dialUpstream,
-			TLSClientConfig:     s.upstream.TLSClientConfig.Clone(),
-			ForceAttemptHTTP2:   true,
-			MaxIdleConnsPerHost: upstreamIdleConns,
-			IdleConnTimeout:     upstreamIdleTimeout,
-		}
-	}
+	// The private destination's own transport, for a proxy given one (setPrivateUpstream).
+	s.setPrivateUpstream(o.PrivateUpstream)
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
