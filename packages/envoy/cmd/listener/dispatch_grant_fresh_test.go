@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -94,6 +96,52 @@ func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testin
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the fresh generation %s delivered nothing", record.Current)
+	}
+}
+
+// The window's dependency on this grant, run whole: the listener beside Dispatch, in the fixed mode,
+// on exactly Dispatch's grant as the hub's auth service decides it (natsgrant.Dispatch), over a
+// selection bucket whose sentinel says the cutover is done, as the convert leaves it. Its start
+// reads that sentinel through the bucket's leader read, which Dispatch's grant holds, and refuses
+// (bus.ErrConvertedStore, naming ENVOY_CONSUMER_NAMES); its durable is then never created,
+// corrected or bound (bus.ErrMarkerUnread), so listener-<machine id> stays absent. The control, an
+// -overlay that takes the bucket's leader read out of Dispatch's grant (natsgrant's
+// listenerSelection), fails the row: the refused read counts as no marker, the fixed start goes on,
+// and the start recreates listener-<machine id> over the converted bucket.
+func TestTheListenerBesideDispatchRefusesAConvertedBucketInTheFixedMode(t *testing.T) {
+	hub := startDispatchGrantHub(t)
+	client, err := bus.ConnectOwningStream([]string{hub.url},
+		bus.WithReplicas(1),
+		bus.WithName("envoy-listener"),
+		bus.WithEnvironment(hub.environment))
+	if err != nil {
+		t.Fatalf("connect the listener as Dispatch: %v", err)
+	}
+	t.Cleanup(client.Close)
+	if mode := client.ConsumerNames(); mode != consumernames.ModeFixed {
+		t.Fatalf("the listener runs %s names, want the default fixed mode", mode)
+	}
+	durable := bus.ListenerDurable(hub.machine)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	logger := logging.NewWithWriter("test", io.Discard)
+	started := guardFixedNaming(ctx, false, []gatedConnection{{name: "durable", connection: client}}, logger, 100*time.Millisecond, nil)
+	if !errors.Is(started, bus.ErrConvertedStore) {
+		sub, err := startListenerSubscription(client, durable, func(*natsgo.Msg) {})
+		if err == nil {
+			_ = sub.Unsubscribe()
+		}
+		t.Fatalf("the fixed start over a converted bucket on Dispatch's grant = %v, want bus.ErrConvertedStore; its durable's start then answered %v", started, err)
+	}
+	if _, err := startListenerSubscription(client, durable, func(*natsgo.Msg) {}); !errors.Is(err, bus.ErrMarkerUnread) {
+		t.Fatalf("the durable's start after the refused start = %v, want bus.ErrMarkerUnread", err)
+	}
+	js, err := hub.admin.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := js.ConsumerInfo(bus.Stream, durable); !errors.Is(err, natsgo.ErrConsumerNotFound) {
+		t.Fatalf("%s after the refused start: %v, want no such consumer", durable, err)
 	}
 }
 
