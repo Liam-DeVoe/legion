@@ -50,7 +50,7 @@ import {
   putAgentState,
   putArchitectureSource,
   putIssueState,
-  putRepoProject,
+  putProjectDefaultRepository,
   replyToMessageDelivery,
   resolveAsk,
   resolveComment,
@@ -3522,13 +3522,13 @@ test("the control in the row carries what the banner carried, and narrows the In
   ).toEqual(PILL_CLASSES_AT_THE_BASE);
 });
 
-// SLOW(>=2s): ten tables across three pages, each seeded and read.
+// SLOW(>=2s): nine tables across three pages, each seeded and read.
 test("every table with no controls draws its rows in the shared markup and offers no search, filter or sort", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1600 });
   await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("owner/repo", { project: "CORE" });
+  await putProjectDefaultRepository("CORE", "owner/repo");
   await mintAgentToken("table-controls", "alice");
   await seedFakeGithub({
     "legion/arch": {
@@ -3596,7 +3596,6 @@ test("every table with no controls draws its rows in the shared markup and offer
   await page.goto("/settings");
   for (const name of [
     "Projects",
-    "Repository mappings",
     "Agent tokens",
     "Architecture sources",
     "Sign-ins",
@@ -4205,11 +4204,11 @@ test.describe("R8's rows and cards", () => {
       ]
     );
 
-    // The issue header's two controls, read once CORE maps a repository, so its rail draws one:
-    // the Assignee's wrapper, the control's parent at the base as now and the badge's own item in
-    // the wrapping row, and the `Repository:` line, the control's grandparent, around the shared
-    // trigger's wrapper.
-    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+    // The issue header's two controls, read once CORE has a default repository, so its rail
+    // names one: the Assignee's wrapper, the control's parent at the base as now and the badge's
+    // own item in the wrapping row, and the `Repository:` line, the control's grandparent, around
+    // the shared trigger's wrapper.
+    await putProjectDefaultRepository("CORE", "acme/widgets");
     await page.goto(`/issues/${issue}`);
     const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
     const repositoryControl = page.getByLabel(`Repository of ${issue}`);
@@ -5911,12 +5910,12 @@ interface PickListSeed {
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
- *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's, the Create
- *  issue dialog's and the Settings page's Project lists hold more than one project, OPS names
- *  carol as its default assignee, and the people a question can be handed to, an issue assigned
- *  to, or a project named by, are alice, bob and carol; three epics, the first with a member; a
- *  spec and a second document of one issue, each in two versions; a question for each width; two
- *  repositories mapped to CORE, acme/widgets its default; three priorities; an issue of CORE
+ *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's and the Create
+ *  issue dialog's Project lists and the Settings page's Source project list hold more than one
+ *  project, OPS names carol as its default assignee, and the people a question can be handed to,
+ *  an issue assigned to, or a project named by, are alice, bob and carol; three epics, the first
+ *  with a member; a spec and a second document of one issue, each in two versions; a question for
+ *  each width; CORE's default repository, acme/widgets; three priorities; an issue of CORE
  *  assigned to alice, which names no repository of its own and advances no priority; the
  *  Delivery page's fixture (`seedDeliveryFixture`), which adds project ACME; and, last, so the
  *  Inbox lists them first, three questions for each width that the Snoozes defer. */
@@ -5958,8 +5957,7 @@ async function seedPickLists(): Promise<PickListSeed> {
     );
     asks.push(ask.id);
   }
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
     await createPriority({ owner: "alice", title });
   }
@@ -5987,7 +5985,7 @@ async function seedPickLists(): Promise<PickListSeed> {
   };
 }
 
-/** The twenty-four lists, in the order the row reads them at one width; `step` is the width's
+/** The twenty-three lists, in the order the row reads them at one width; `step` is the width's
  *  place, which picks the question it hands on, the issue it addresses, and the person and the
  *  repository the issue header's lists and the Settings page's people lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
@@ -6038,16 +6036,14 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   // does not go on with " of <KEY>".
   const opsDefault = listTrigger(page, "Default assignee of OPS");
   const newProjectDefault = listTrigger(page, /^Default assignee(?! of )/);
-  const mappingProject = listTrigger(page, "Project");
   const sourceProject = listTrigger(page, "Source project");
   // Each width's pick is a change: the first hands the issue from alice to bob, the second from
   // bob to carol, and OPS's default from carol to bob and back; the first gives the issue
-  // acme/gadgets of its own, the second takes it back to the default it inherits.
+  // acme/gadgets of its own, typed, since the list suggests the project's default alone and the
+  // word leaves no option it holds, and the second takes it back to the default it inherits.
   const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
-  const [repositoryWord, repositoryOption, repositoryPicked] =
-    step === 0
-      ? ["gadg", "acme/gadgets", /^acme\/gadgets$/]
-      : ["inh", "Inherit", /^acme\/widgets$/];
+  const [repositoryWord, repositoryLeft, repositoryPicked] =
+    step === 0 ? ["acme/gadgets", [], /^acme\/gadgets$/] : ["inh", ["Inherit"], /^acme\/widgets$/];
   const reviewQueue = /^P\d+ Cut the review queue$/;
   // The Inbox's two Snoozes. With the reading column a row's Snooze is in the column's head, for
   // the row the column shows; without it, in the row itself.
@@ -6299,7 +6295,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       value: async () =>
         (await repository.locator('[aria-hidden="true"]:not(svg)').innerText()).trim(),
       word: repositoryWord,
-      left: [repositoryOption],
+      left: repositoryLeft,
       picked: repositoryPicked,
     },
     {
@@ -6357,15 +6353,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: new RegExp(`^${person}$`),
     },
     {
-      // The repository mapping form's, which starts on no project at each load of the page.
-      name: "the Settings page's Project",
-      trigger: mappingProject,
-      value: shown(mappingProject),
-      word: "op",
-      left: ["OPS · Ops"],
-      picked: /^OPS · Ops$/,
-    },
-    {
       name: "the Settings page's Source project",
       trigger: sourceProject,
       value: shown(sourceProject),
@@ -6399,9 +6386,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   ];
 }
 
-// SLOW(>=2s): twenty-four lists on nine pages, each list opened three times at each of two widths.
+// SLOW(>=2s): twenty-three lists on nine pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// The row covers the twenty-four single picks of the shared list (`components/MultiSelect.tsx`),
+// The row covers the twenty-three single picks of the shared list (`components/MultiSelect.tsx`),
 // the lists whose options grow with the project among them: the search bar's Project and Status,
 // the List's Move to epic and Rows per page (`Pager`), an epic's Merge into another epic, the
 // Inbox's Hand this question to (`AskHandOn`), a row's Snooze (`SnoozeControl`) and the selection
@@ -6410,8 +6397,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
 // (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
-// of a project and the New project form's Default assignee (`ProjectsSection`), and its Project
-// and Source project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
+// of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
+// project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
 // Color merges by (`DeliveryPage`). Two short fixed lists stay native selects, and the row opens
 // neither: Priority (`PriorityControl`) and the issue header's Status. At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel - at 390 an `input` of
