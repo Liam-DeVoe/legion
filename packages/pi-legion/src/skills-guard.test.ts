@@ -678,12 +678,32 @@ function lacks(relative: string, duties: RegExp[]) {
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
   const missing = lacks("legion-architect/references/acceptance.md", [
     /`acceptance:owner` enters `accepting`/,
-    /has a tester step[^.;]*--phase test/,
-    /`dispatch results --issue <issue>`[^.;]*the last step's head/,
-    /has a reviewer step[^.;]*approval/,
-    /no tester step[^.;]*the implementer's evidence/,
+    /has a tester step before yours[^.;]*--phase test/,
+    /`dispatch results --issue <issue>`[^.;]*the head the steps before yours passed/,
+    /has a reviewer step before yours[^.;]*approval/,
+    /no tester step[^.;]*the implementation step's evidence/,
   ]);
   expect(missing).toEqual([]);
+});
+
+// A step whose key is owner, and the retro of a task with no step of the type implementation, are
+// the architect's own: the skill routes them to the reference that says how Legion gives one
+// (owner-step) and how the owner reports it (complete_step), and that a task with no pull request
+// closes at its retro.
+test("the architect's skill routes its own steps to the reference that names owner-step and complete_step", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [/key is `owner` is yours[^.;]*references\/own-steps\.md`/]),
+    ...lacks("legion-architect/references/own-steps.md", [
+      /no such step, or that step's key is `owner`, it is yours/,
+      /one `owner-step` notice/,
+      /op: "complete_step", issue: "<KEY>", step: <n>/,
+      /1 for the first step, and 0 for the retro/,
+      /\(`NOT_THE_OWNER`\)/,
+      /\(`OWNER_STEP_NOT_RUNNING`/,
+      /No review on GitHub decides it, yours included/,
+      /retro's end closes the issue/,
+    ]),
+  ]).toEqual([]);
 });
 
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {

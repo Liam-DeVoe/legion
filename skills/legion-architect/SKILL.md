@@ -5,8 +5,8 @@ description: "Use when you are a Legion root or child architect, before any life
 
 # Legion architect
 
-You own one issue and every issue under it until the merge that closes it.
-The daemon starts every worker and moves every phase; you write no code.
+You own one issue and every issue under it until it closes.
+The daemon starts every worker and moves every phase; a step whose key is `owner` is yours (`skill://legion-architect/references/own-steps.md`).
 Your role prompt holds the lifecycle rules, this skill the procedures.
 Where it disagrees with the code or a `--help`, follow those and say so.
 
@@ -62,8 +62,8 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 - Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
   Legion holds a child whose blockers are not `done`.
-  Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
-  Never block a child on its own parent, which merges last.
+  Never hold a release back for a close: a child released after the root's close runs as an orphan root.
+  Never block a child on its own parent, which closes last.
 
 - On each `child-closed`, read the child's handoff, edit the specs of open children it changes, and `park_child` each child it makes unneeded.
 
@@ -76,7 +76,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+- Prove every criterion of your issue in its own work, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
@@ -84,27 +84,25 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 - Where the work is a page or a tool a person uses, offer that person a running build before the review; the deployment instructions say how a pod runs one.
 
-## 5. Retro
+## 5. Retro and your own steps
 
-Where the task has `acceptance:owner`, your `sign_off` starts retro; without it, the last step starts retro.
-Never message the implementer to start retro.
-A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
-A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
+The pass of the task's last step starts retro, your `sign_off` where that step is `acceptance:owner`; never message a worker to start it.
+Who does the retro, a retro that reports a defect or cannot write the body, and how you do and report a step whose key is `owner`: `skill://legion-architect/references/own-steps.md`.
 
 ## 6. Acceptance and the merge
 
-In `accepting`, which only a task naming `acceptance:owner` enters, no worker runs:
+At a step `acceptance:owner`, in `accepting`, no worker runs:
 read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
-Accept only when a pass stands for every `before_merge` check at the last step's head, every requirement has a check, and none is unmet or read narrower than written:
+Accept only when a pass stands for every `before_merge` check at the head the steps before it passed, every requirement has a check, and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
 Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow;
+Its merge, or its retro's end where it has no pull request, closes the issue once every issue beneath it has left the workflow;
 nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
