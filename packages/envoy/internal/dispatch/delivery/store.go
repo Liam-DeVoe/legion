@@ -491,7 +491,7 @@ func shippingRunJoin(repo, jobNames, applyStep string) string {
 // the statement says: the read of delivery_runs_kind_created newest first starts at at rather than
 // at the newest run, whose jobs every later run would make it probe. repo, jobNames and applyStep
 // are shippingJobs', and at the placeholder of the moment. ListPullRequestsWaitingAt and
-// readLatestShipBefore both embed it.
+// ReadLatestShipBefore both embed it.
 func latestShipBefore(repo, jobNames, applyStep, at string) string {
 	return `select ` + runCreatedAt + `
 			` + shippingJobs(repo, jobNames, applyStep) + `
@@ -500,11 +500,13 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 			limit 1`
 }
 
-// readLatestShipBefore is latestShipBefore's creation for deployRepo and production, the zero time
+// ReadLatestShipBefore is latestShipBefore's creation for deployRepo and production, the zero time
 // when no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
 // deploy completing at or after at ships one: it is the earliest merge the shipped set of such a
-// deploy reaches back to (ReadDeploys reads a window's shipped sets from it).
-func readLatestShipBefore(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) (time.Time, error) {
+// deploy reaches back to (ReadDeploys reads a window's shipped sets from it; the day-row refresher
+// asks it whether a deploy can have been the first of its repository to complete, evals'
+// shippedNeighbours).
+func ReadLatestShipBefore(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) (time.Time, error) {
 	var created time.Time
 	err := pool.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -877,3 +877,137 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 	t.Logf("%s: no row and no data on %s, data_since %s, a zero row on %s reading %s 0", evalID, first.Format(time.DateOnly),
 		second.Format(time.DateOnly), last.Format(time.DateOnly), headline)
 }
+
+// legionValues is every stored row of a Legion eval, by rowKey, without the moment and the build
+// of its last write: what two databases' Legion rows compare by.
+func (r *refresherRig) legionValues(t *testing.T) map[string]DayRow {
+	t.Helper()
+	values := map[string]DayRow{}
+	for key, row := range r.dayRows(t) {
+		if familyOf(row) == walkLegion {
+			row.UpdatedAt, row.BuiltBy = time.Time{}, ""
+			values[key] = row
+		}
+	}
+	return values
+}
+
+// legionFigureValues is the fold key and figures of each stored figures row of a Legion eval, by
+// its line.
+func legionFigureValues(stored map[string]figureRow) map[string]string {
+	values := map[string]string{}
+	for line, row := range stored {
+		evalID := line[strings.LastIndex(line, " ")+1:]
+		if _, slug, _ := strings.Cut(evalID, "/"); slices.Contains(legionDaySlugs, slug) {
+			values[line] = fmt.Sprintf("%d %x", row.foldKey, row.figures)
+		}
+	}
+	return values
+}
+
+// expectSameLegionAsWalk checks that r holds the Legion day rows, the members and the stored
+// figures walk holds, and that r's stored figures are the fold of its rows.
+func (r *refresherRig) expectSameLegionAsWalk(t *testing.T, what string, walk *refresherRig) {
+	t.Helper()
+	if differ := sameValues(r.legionValues(t), walk.legionValues(t), rowFacts); len(differ) > 0 {
+		t.Errorf("%s: the Legion day rows differ from the whole walk's, first ones:\n\t%s", what, strings.Join(differ, "\n\t"))
+	}
+	if differ := sameValues(r.memberLines(t), walk.memberLines(t), func(at string) string { return at }); len(differ) > 0 {
+		t.Errorf("%s: the members differ from the whole walk's, first ones:\n\t%s", what, strings.Join(differ, "\n\t"))
+	}
+	stored := r.storedFigures(t)
+	expectTruth(t, what, stored, r.truthFigures(t))
+	if differ := sameValues(legionFigureValues(stored), legionFigureValues(walk.storedFigures(t)), func(figures string) string { return figures }); len(differ) > 0 {
+		t.Errorf("%s: the stored figures differ from the whole walk's, first ones:\n\t%s", what, strings.Join(differ, "\n\t"))
+	}
+}
+
+// TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt: over the hand-written
+// Legion history of EVAL, walked two days a pass, EVAL-3, closed on the history's third day, is
+// closed again on the day the history begins, two days before the project's first close: the first
+// input day of the series a close has input of moves earlier, and the day between the new first day
+// and the old one needs their zero rows (B). Then it is closed on the third day again, so the new
+// first day loses its input, and it and the day after it hold no row of those series (E). After
+// each, one pass writes every Legion day row, member and stored figure it moves in one
+// transaction, logs at most one eval_days change of each eval, each with the rebuild's mark, and
+// leaves the Legion walk's record as it stood and no walk with days to build; and the database
+// holds the Legion rows, the members and the stored figures of a second database whose issue
+// closed so before its first walk.
+func TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
+	live := newRefresherRig(t)
+	live.batch = 2
+	history := live.seedLegionEval(t)
+	live.settle(t)
+	wrote := recordWrites(t, live.rig)
+	record := func() string {
+		t.Helper()
+		var at string
+		if err := live.database.Pool.QueryRow(t.Context(), `
+			select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = 'EVAL' and built_by = $2
+		`, walkLegion, live.build).Scan(&at); err != nil {
+			t.Fatalf("read the Legion walk's record: %v", err)
+		}
+		return at
+	}
+	first := legionHistoryDay(0)
+	for _, move := range []struct {
+		name   string
+		closed time.Time
+	}{
+		{"B, EVAL-3 closed two days before the project's first close", first.Add(14 * time.Hour)},
+		{"E, EVAL-3 closed on the third day again", history.d2.Add(9 * time.Hour)},
+	} {
+		closeAgain := func(r *refresherRig, of *legionEval) {
+			t.Helper()
+			row := of.rows["EVAL-3"]
+			row.ClosedAt = new(move.closed)
+			of.rows["EVAL-3"] = row
+			r.writeFacts(t, of, "EVAL-3")
+		}
+		if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
+			t.Fatalf("drain the change log's outbox: %v", err)
+		}
+		seq, stood := live.latestSeq(t), record()
+		closeAgain(live, history)
+		wrote()
+		_, next := live.pass(t)
+		transactions := wrote()
+		if len(transactions) != 1 {
+			t.Errorf("%s: the pass wrote day rows, members or figures in %d transactions, want one: %v", move.name, len(transactions), transactions)
+		}
+		if next.Equal(live.now) {
+			t.Errorf("%s: the pass left a walk with days to build", move.name)
+		}
+		if got := record(); got != stood {
+			t.Errorf("%s: the Legion walk's record is %q after the pass, want it as it stood, %q", move.name, got, stood)
+		}
+		if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
+			t.Fatalf("drain the change log's outbox: %v", err)
+		}
+		changes, err := delivery.ChangesSince(t.Context(), live.database.Pool, seq, 100000)
+		if err != nil {
+			t.Fatalf("read the delivery changes after %d: %v", seq, err)
+		}
+		logged := map[string]int{}
+		for _, one := range changes {
+			if one.Kind != delivery.ChangeKindEvalDays || one.Ref == "" {
+				continue
+			}
+			logged[one.Ref]++
+			if one.RunKind != delivery.EvalDaysWrittenByRebuild || logged[one.Ref] > 1 {
+				t.Errorf("%s: eval_days change %d of %s carries run_kind %q, want one of each eval, with %q", move.name, logged[one.Ref], one.Ref, one.RunKind,
+					delivery.EvalDaysWrittenByRebuild)
+			}
+		}
+		if len(logged) == 0 {
+			t.Errorf("%s: the pass logged no eval_days change", move.name)
+		}
+		walk := newRefresherRig(t)
+		closed := walk.seedLegionEval(t)
+		closeAgain(walk, closed)
+		walk.settle(t)
+		live.expectSameLegionAsWalk(t, move.name, walk)
+		days, n := seriesDays(live.dayRows(t), "EVAL", SlugLegionWorkTime, "hours")
+		t.Logf("%s: one pass wrote in the transactions %v and logged %v; work time holds rows of %v, n %v", move.name, transactions, logged, days, n)
+	}
+}

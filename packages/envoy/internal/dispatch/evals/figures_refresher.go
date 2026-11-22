@@ -252,9 +252,11 @@ func (r *refresh) noteWalked(family, project string, day time.Time) {
 // one transaction per project once the walks' batches are written: a walk writes each day in a
 // transaction of its own, and a range that holds several of a batch's days would be folded once
 // for each of them in their own transactions, up to walkBatch times a pass. Until it commits, a
-// read sees the figures of the rows before the batch, for the length of one pass; a pass that
-// fails first leaves the days' stamps unmoved, and the next pass's read of the change log folds
-// them (figureChanges).
+// read sees the figures of the rows before the batch, for the length of one pass, and a view
+// recomputed then answers them; so the fold's commit logs a change of each eval whose figures it
+// moved (foldFiguresOfDays), and the view is recomputed once more, from the figures of the rows
+// it read. A pass that fails first leaves the days' stamps unmoved, and the next pass's read of
+// the change log folds them (figureChanges).
 func (r *refresh) foldWalked(ctx context.Context) error {
 	walked := r.walked
 	r.walked = nil
@@ -280,19 +282,49 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 }
 
 // foldFiguresOfDays folds again, in a transaction of its own, project's figures of the days of
-// spans whose rows moved (foldFiguresInTx). Its evals are computed ones, whose rows the refresher
-// alone writes, so it takes no eval's lock.
+// spans whose rows moved (foldFiguresInTx's fold). Its evals are computed ones, whose rows the
+// refresher alone writes, so it takes no eval's lock.
+//
+// The transaction writes no day row, so eval_days' triggers log nothing of it, and no trigger
+// sits on the figure tables: it logs an eval_days change itself of each eval whose figures it
+// folded again, spanning their days (eval_days_change_log, migration 20261117100014), in the
+// change log's outbox as a day write's are. A view recomputed between the day rows' commits and
+// this one read those rows beside the figures of before them, and nothing else would mark it once
+// the figures stand. The fold could not run in the batch's last day commit instead: that commit
+// logs a change only where the day's own rows moved, and a view recomputed between two earlier
+// commits of the batch would still answer figures the last commit then moved. A fold that moves
+// no figure logs nothing.
 func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, spans map[string]daySpan) error {
+	if len(spans) == 0 {
+		return nil
+	}
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the stored figures of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	if err := foldFiguresInTx(ctx, tx, build, project, spans); err != nil {
+	scope, ok, err := readFigureScope(ctx, tx, build, project)
+	if err != nil || !ok {
 		return err
+	}
+	entries, err := readEntries(ctx, tx, project, slices.Sorted(maps.Keys(spans)))
+	if err != nil {
+		return err
+	}
+	folded, err := refoldMoved(ctx, tx, scope, entriesByID(entries), spans)
+	if err != nil {
+		return err
+	}
+	for _, evalID := range slices.Sorted(maps.Keys(folded)) {
+		if _, err := tx.Exec(ctx, `select eval_days_change_log($1, $2, $3::date, $4::date)`, project, evalID, folded[evalID].first, folded[evalID].last); err != nil {
+			return fmt.Errorf("log the figures of %s folded again: %w", evalID, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the stored figures of %s: %w", project, err)
+	}
+	if len(folded) > 0 {
+		s.drainChanges(ctx)
 	}
 	return nil
 }

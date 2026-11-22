@@ -2,12 +2,19 @@ package evals
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
+
+// changesCursor is where the refresher's change cursor stands, 0 where no pass has committed.
+func (r *refresherRig) changesCursor(t *testing.T) int {
+	t.Helper()
+	return r.count(t, `select coalesce((select position from eval_days_cursor where name = $1), 0)`, changesCursor)
+}
 
 // failOnce makes the first insert into eval_days of a row when holds fail, and every later one
 // pass: a sequence is no part of the transaction that reads it, so the failure is spent once
@@ -41,13 +48,13 @@ func (r *refresherRig) failingPass(t *testing.T) {
 
 // TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails: a pull request of the main
 // project merged again six days before pr-open-to-merge's first day moves that eval's first input
-// day earlier, and the days between the two need zero rows. The write of the new first day moves
-// the delivery walk back to the day after it in its own transaction (ProjectDay.Rewind), and the
-// walk writes those zero rows. The test fails the first write of one of them: the pass fails, and
-// the pass after it, whose walk stands where the write moved it, leaves every day from the new
-// first day to today with a row. Recorded in a later transaction of the pass, the move back would
-// have been lost with the failure: the retry finds the eval's first day already moved, and nothing
-// left for the walk.
+// day earlier, and the days between the two need zero rows. The page writes the new first day,
+// the day the pull request left and those zero rows in its one commit, with its cursors
+// (refresh.writeNamed). The test fails the first write of one of the zero rows: the commit fails
+// whole, so the pass leaves every day row, the delivery walk's record and the change cursor as
+// they stood, and the pass after it, which reads the same change again, leaves every day from the
+// new first day to today with a row. Before, the new first day was written in a transaction of
+// its own, which moved the walk back, and the walk wrote the zero rows.
 func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -74,12 +81,25 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 	repo, number := memberPR(t, member)
 	r.failOnce(t, "new.eval_id = '"+EvalID(main, SlugPROpenToMerge)+"' and new.day > '"+moved.Format(time.DateOnly)+
 		"'::date and new.day < '"+first.Format(time.DateOnly)+"'::date")
+	before, record, cursor := r.dayRows(t), r.walkRecord(t), r.changesCursor(t)
 	r.exec(t, "merge "+member+" again six days before the first day", `
 		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour')
 		where repo = $1 and number = $2
 	`, repo, number, moved.Add(12*time.Hour))
 	r.failingPass(t)
+	if lines, described := rewritten(before, r.dayRows(t)); len(lines) > 0 {
+		t.Errorf("the pass that failed wrote the days %v, want none: its days go in one commit, which failed\n\t%s", lines, strings.Join(described, "\n\t"))
+	}
+	if got := r.walkRecord(t); got != record {
+		t.Errorf("the delivery walk's record is %q after the pass that failed, want it as it stood, %q", got, record)
+	}
+	if got := r.changesCursor(t); got != cursor {
+		t.Errorf("the change cursor stands at %d after the pass that failed, want it where it stood, %d", got, cursor)
+	}
 	r.pass(t)
+	if got := r.walkRecord(t); got != record {
+		t.Errorf("the delivery walk's record is %q after the pass that wrote the days, want it as it stood, %q", got, record)
+	}
 	after, n := seriesDays(r.dayRows(t), main, SlugPROpenToMerge, measures.SeriesMinutes)
 	if missing, gap := contiguous(after, refresherToday); len(after) == 0 || !after[0].Equal(moved) || gap {
 		t.Errorf("pr-open-to-merge of %s holds rows on %v, missing %s; want every day from %s to today", main, after, missing.Format(time.DateOnly), moved.Format(time.DateOnly))

@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -237,14 +238,14 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 // has read its changes) with those the delivery and CI rows stand built for (keptUnder, recorded
 // beside the settings they stand built under), after syncSettings, so the record exists or the
 // page's commit makes it. Where they differ the page records the new set with its cursors
-// (w.kept), and, unless it begins the delivery walk again, moves the walk back to the earliest
-// start that changed, in the same transaction (w.keptRewind): a new repository's start, a gone
-// one's, and the earlier of a moved one's two. The walk then builds every day of the repositories
-// that changed from that start on, whose rows and members a whole walk over the same runs holds,
-// where the change that brought a repository's first runs writes the days it names alone, and
-// deletes the rows of a repository whose runs went. A crash before the commit leaves the record as
-// it was, so the next page finds the same difference. A move of the deploy repository moves no
-// run, and so nothing here.
+// (w.kept), and, unless the running build's delivery walk has computed no day or begins again,
+// builds in the same transaction the days of each repository that differs (w.keptWas,
+// refresh.writeNamed): a new repository's from its start on, the days between a moved one's two
+// starts, and none of a gone one's, whose rows and members go. Those are the rows and members a
+// whole walk over the same runs holds, where the change that brought a repository's first runs
+// names the days of its runs alone. A crash before the commit leaves the record as it was, so the
+// next page finds the same difference. A move of the deploy repository moves no run, and so
+// nothing here.
 func (r *refresh) syncKept(ctx context.Context, w *pageWork) error {
 	if r.settings == nil {
 		return nil
@@ -256,11 +257,7 @@ func (r *refresh) syncKept(ctx context.Context, w *pageWork) error {
 	if sameKept(kept, r.keptUnder) {
 		return nil
 	}
-	w.kept = kept
-	if !w.restart[walkDelivery] {
-		w.keptRewind = keptChange(r.keptUnder, kept)
-		r.noteRewind(walkKey{family: walkDelivery}, w.keptRewind)
-	}
+	w.kept, w.keptWas = kept, r.keptUnder
 	r.keptUnder = kept
 	return nil
 }
@@ -269,37 +266,6 @@ func (r *refresh) syncKept(ctx context.Context, w *pageWork) error {
 // repositories with the same starts.
 func sameKept(a, b []keptRepo) bool {
 	return slices.EqualFunc(a, b, func(x, y keptRepo) bool { return x.name == y.name && x.since.Equal(y.since) })
-}
-
-// keptChange is the earliest start that differs between the repositories was and is: a
-// repository's of one alone, and the earlier of a repository's two where its start moved; nil
-// where none differs.
-func keptChange(was, is []keptRepo) *time.Time {
-	var earliest *time.Time
-	note := func(day time.Time) {
-		if earliest == nil || day.Before(*earliest) {
-			earliest = &day
-		}
-	}
-	before := make(map[string]time.Time, len(was))
-	for _, repo := range was {
-		before[repo.name] = repo.since
-	}
-	for _, repo := range is {
-		since, held := before[repo.name]
-		switch {
-		case !held:
-			note(repo.since)
-		case !since.Equal(repo.since):
-			note(since)
-			note(repo.since)
-		}
-		delete(before, repo.name)
-	}
-	for _, since := range before {
-		note(since)
-	}
-	return earliest
 }
 
 // recordKept records, in q, kept as the repositories the stored delivery and CI rows stand built
@@ -402,7 +368,7 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     days the walk builds by: those the build itself finds, day by day from the first, where it
 //     builds every day, and otherwise the store's, which the walk built, but those lostFirstDays
 //     drops; with the zero rows of each series from its first input day on where the walk has
-//     computed the day, and with none where it has not (planWrite's rule); and of the days written,
+//     computed the day, and with none where it has not (writeNamed's rule); and of the days written,
 //     those holding a row or that can hold a stored row of a moved eval (on or after its first
 //     stored first input day), the rows of the evals slugs names and the members of families, held
 //     until the last chunk is built; and beside that build, the stored members of families of the
@@ -559,7 +525,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		r.first[walkKey{family: walkDelivery, project: project}] = first
 	}
 	// computed reports whether the running build's delivery walk has computed day: a day it has
-	// not holds the rows with input alone, as any write outside the walk leaves it (planWrite).
+	// not holds the rows with input alone, as any write outside the walk leaves it (writeNamed).
 	computed := func(day time.Time) bool {
 		return found && walk.next != nil && day.Before(*walk.next) && !r.begun[walkDelivery]
 	}
@@ -737,6 +703,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := MarkSettingsRewrite(ctx, tx); err != nil {
 		return err
 	}
+	if err := markSettingsApplied(ctx, tx); err != nil {
+		return err
+	}
 	if err := upsertDays(ctx, tx, rows, r.build); err != nil {
 		return err
 	}
@@ -761,7 +730,26 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the rewrite of a settings change: %w", err)
 	}
+	r.settingsApplied = true
 	r.store.drainChanges(ctx)
+	return nil
+}
+
+// markSettingsApplied logs, in tx, that the day rows stand at the delivery settings once tx
+// commits: one eval_days change of no eval (delivery.SettingsApplied), carrying the settings
+// rewrite's mark, recorded in the change log's outbox as every eval change is
+// (delivery_change_log_pending, migration 20261117100001). The refresher logs it in the
+// transaction that brings the rows to the settings a change of the settings row named, the
+// rewrite's, or, where the change moved no row (a move of the deploy repository, whose rows a read
+// chooses), the page's commit (commitPage). The Delivery page's live hub recomputes every evals
+// view for it, at once: an evals view reads the settings and the rows together, so it is
+// recomputed when both stand, and not at the change of the settings row, whose recompute would
+// answer the new settings over rows the old ones built.
+func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, null, null, null, null)`,
+		delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenBySettingsRewrite); err != nil {
+		return fmt.Errorf("log that the day rows stand at the delivery settings: %w", err)
+	}
 	return nil
 }
 
@@ -1139,7 +1127,9 @@ const deleteStaleSettingsDaysStatement = `
 // upserted; and each stored on a day written (by project) that built does not hold, deleted, on
 // that day alone. A member whose row stands is sent to neither statement: a production rule's
 // change moves the shipping run of some pull requests and the projects of some deploys, and leaves
-// most of a history's members where they are.
+// most of a history's members where they are. The members go in the byte order of their keys, in
+// statements of at most statementBytes of parameters each (statementChunks), as the day rows do
+// (writeDayRows): a repository's first runs bring a member of every pull request merged since.
 func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberKey]memberAt, written map[projectDay]bool) error {
 	var moved, gone []memberKey
 	for key, at := range built {
@@ -1152,10 +1142,17 @@ func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberK
 			gone = append(gone, key)
 		}
 	}
-	if len(moved) > 0 {
-		projects, families, deployRepos, keys := make([]string, len(moved)), make([]string, len(moved)), make([]string, len(moved)), make([]string, len(moved))
-		repos, shippedBy, days := make([]string, len(moved)), make([]string, len(moved)), make([]time.Time, len(moved))
-		for i, key := range moved {
+	slices.SortFunc(moved, compareMemberKeys)
+	slices.SortFunc(gone, compareMemberKeys)
+	movedBytes := func(key *memberKey) int {
+		at := built[*key]
+		return 7*4 + len(key.project) + len(key.family) + len(key.deployRepo) + len(key.rowKey) + 8 + len(at.repo) + len(at.shippedBy)
+	}
+	for chunk := range statementChunks(moved, paramBytes(7), movedBytes) {
+		count := len(chunk)
+		projects, families, deployRepos, keys := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+		repos, shippedBy, days := make([]string, count), make([]string, count), make([]time.Time, count)
+		for i, key := range chunk {
 			at := built[key]
 			projects[i], families[i], deployRepos[i], keys[i] = key.project, key.family, key.deployRepo, key.rowKey
 			days[i], repos[i], shippedBy[i] = at.day, at.repo, at.shippedBy
@@ -1164,19 +1161,23 @@ func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberK
 			insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
 			select member.* from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::date[], $6::text[], $7::text[])
 				as member(project_key, family, deploy_repo, row_key, day, repo, shipped_by)
-			order by member.project_key, member.family, member.deploy_repo, member.row_key
+			order by member.project_key collate "C", member.family collate "C", member.deploy_repo collate "C", member.row_key collate "C"
 			on conflict (project_key, family, deploy_repo, row_key) do update
 			set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
 			where (eval_day_members.day, eval_day_members.repo, eval_day_members.shipped_by)
 				is distinct from (excluded.day, excluded.repo, excluded.shipped_by)
 		`, projects, families, deployRepos, keys, days, repos, shippedBy); err != nil {
-			return fmt.Errorf("record the %d members a settings change moved: %w", len(moved), err)
+			return fmt.Errorf("record the %d members that moved: %w", len(moved), err)
 		}
 	}
-	if len(gone) > 0 {
-		projects, families, deployRepos, keys := make([]string, len(gone)), make([]string, len(gone)), make([]string, len(gone)), make([]string, len(gone))
-		days := make([]time.Time, len(gone))
-		for i, key := range gone {
+	goneBytes := func(key *memberKey) int {
+		return 5*4 + len(key.project) + len(key.family) + len(key.deployRepo) + len(key.rowKey) + 8
+	}
+	for chunk := range statementChunks(gone, paramBytes(5), goneBytes) {
+		count := len(chunk)
+		projects, families, deployRepos, keys := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+		days := make([]time.Time, count)
+		for i, key := range chunk {
 			projects[i], families[i], deployRepos[i], keys[i], days[i] = key.project, key.family, key.deployRepo, key.rowKey, stored[key].day
 		}
 		if _, err := tx.Exec(ctx, `
@@ -1185,8 +1186,15 @@ func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberK
 			where m.project_key = gone.project_key and m.family = gone.family and m.deploy_repo = gone.deploy_repo
 				and m.row_key = gone.row_key and m.day = gone.day
 		`, projects, families, deployRepos, keys, days); err != nil {
-			return fmt.Errorf("delete the %d members a settings change's days no longer hold: %w", len(gone), err)
+			return fmt.Errorf("delete the %d members their days no longer hold: %w", len(gone), err)
 		}
 	}
 	return nil
+}
+
+// compareMemberKeys orders members by the bytes of their keys: project, family, deploy repository
+// and row key.
+func compareMemberKeys(a, b memberKey) int {
+	return cmp.Or(strings.Compare(a.project, b.project), strings.Compare(a.family, b.family),
+		strings.Compare(a.deployRepo, b.deployRepo), strings.Compare(a.rowKey, b.rowKey))
 }

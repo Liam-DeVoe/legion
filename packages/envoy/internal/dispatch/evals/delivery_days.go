@@ -783,13 +783,14 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // that day does not hold, such as a repository whose last row moved to another day or project
 // (deleteStaleDays). It records day's members in eval_day_members on its day, and deletes the
 // members of the project's delivery and CI families recorded on that day that day does not hold,
-// so each item's row there says where it was last counted; where figures is set, as the
+// so each item's row there says where it was last counted; and where figures is set, as the
 // refresher's write of a day outside a walk sets it, it folds again the stored figures of the
-// day where its rows moved, where builtBy writes them (figures.go); and where day.Rewind is set it
-// moves the delivery walk back to that day (writeProjectDay). A row of another project, another
-// day or another eval, and an item of another family, is refused before anything is written.
+// day where its rows moved, where builtBy writes them (figures.go). It moves no walk: a page
+// whose changes move what other days hold writes those days with it, in its one commit
+// (span.go). A row of another project, another day or another eval, and an item of another
+// family, is refused before anything is written.
 func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, walkKey{family: walkDelivery}, builtBy, figures)
+	return s.writeProjectDay(ctx, deliveryFamily.what, day, deliveryDaySlugs, deliveryDayFamilies, builtBy, figures)
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -10,13 +11,19 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // evalsChange is one delivery_changes row of an eval kind: the eval's project in Repo and the eval
@@ -153,13 +160,26 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 			}
 		}
 	}
+	// A change of the delivery settings row marks no evals view: such a view reads the settings and
+	// the day rows together, and the refresher's word that the rows stand at the settings
+	// (delivery.SettingsApplied), an eval_days change of no eval, marks every one of them and no
+	// other view.
 	settingsRow := delivery.Change{Seq: 2, Kind: "settings"}
+	applied := delivery.Change{Seq: 3, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}
+	if !delivery.SettingsApplied(applied) || !delivery.EvalDaysImmediate(applied) {
+		t.Errorf("an eval_days change of no eval with the settings rewrite's mark is the settings applied %t and immediate %t, want both",
+			delivery.SettingsApplied(applied), delivery.EvalDaysImmediate(applied))
+	}
 	for _, view := range views {
-		if view.view.spec.kind == evalsView && !view.view.touchedBy(settingsRow, now) {
-			t.Errorf("a change of the delivery settings row leaves %s unmarked", view.what)
+		evalsPage := view.view.spec.kind == evalsView
+		if evalsPage && view.view.touchedBy(settingsRow, now) {
+			t.Errorf("a change of the delivery settings row marks %s, whose rows the refresher has not brought to the settings yet", view.what)
+		}
+		if got := view.view.touchedBy(applied, now); got != evalsPage {
+			t.Errorf("the settings applied: touchedBy(%s) = %t, want %t", view.what, got, evalsPage)
 		}
 	}
-	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks every evals view",
+	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks no evals view, and the settings applied every one and no other view",
 		filingMarks, len(views), len(others), evalsMarks)
 }
 
@@ -639,6 +659,15 @@ const (
 // write of day rows that is not the rewrite's.
 const evalsRewrite = "the settings rewrite's eval_days change"
 
+// evalsRebuild is a step's kind for an eval_days change a rebuild of a span wrote, which carries
+// the rebuild's mark (delivery.EvalDaysWrittenByRebuild), and evalsApplied for the refresher's
+// word that the day rows stand at the delivery settings (delivery.SettingsApplied), an eval_days
+// change of no eval that carries the settings rewrite's mark.
+const (
+	evalsRebuild = "the rebuild's eval_days change"
+	evalsApplied = "the settings applied"
+)
+
 // markEvalsView is an evals view of INFRA after steps, from start: each change marked as the
 // intake marks a page of the change log (markChangesLocked), each recompute's moment as
 // recompute makes it. The view is in a generation of its own, which reads nothing, so what each
@@ -674,6 +703,11 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 			case evalsRewrite:
 				change = evalsChange(delivery.ChangeKindEvalDays, "INFRA", slug, &today, &today)
 				change.RunKind = delivery.EvalDaysWrittenBySettingsRewrite
+			case evalsRebuild:
+				change = evalsChange(delivery.ChangeKindEvalDays, "INFRA", slug, &today, &today)
+				change.RunKind = delivery.EvalDaysWrittenByRebuild
+			case evalsApplied:
+				change = delivery.Change{Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}
 			default:
 				panic("markEvalsView: a step of unknown kind " + strconv.Quote(step.kind))
 			}
@@ -712,9 +746,12 @@ func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""},
 			{pass, rewrite, ""}, {pass, rewrite, evals.SlugMergeToProduction},
 		}, pass, false},
-		{"the rewrite inside the settings change's quiet, the one recompute due at the settings change's mark", []evalsMarkStep{
+		{"the rewrite 100 ms after the settings change, which marks no evals view: due at its own mark", []evalsMarkStep{
 			{0, settings, ""}, {100 * time.Millisecond, rewrite, ""},
-		}, 0, false},
+		}, 100 * time.Millisecond, false},
+		{"the settings applied where the change moved no day row, 1.5 s after the settings change", []evalsMarkStep{
+			{0, settings, ""}, {pass, evalsApplied, ""},
+		}, pass, false},
 		{"the rewrite 45 s after the settings change, long after its own recompute", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {slow, rewrite, ""},
 		}, slow, false},
@@ -747,7 +784,7 @@ func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 
 // TestEveryOtherEvalsViewMarkWaitsTheQuiet: every other mark of an evals view coalesces, due
 // viewQuiet after the last one, cause change: two of each kind that marks it (readings, versions,
-// day writes that are not the rewrite's) and two settings changes; a reading or a version after a
+// day writes that are not the rewrite's); a reading or a version after a
 // settings change, which is no rewrite of day rows; a day write that is not the rewrite's, 1.5 s
 // after a settings change that moved no day row, whose rewrite therefore committed none; and a day
 // write after the rewrite's.
@@ -764,7 +801,7 @@ func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 		{"two readings", []evalsMarkStep{{0, readings, ""}, {gap, readings, "pr-size"}}, gap},
 		{"two versions", []evalsMarkStep{{0, versions, ""}, {gap, versions, "review-time"}}, gap},
 		{"two day writes", []evalsMarkStep{{0, days, ""}, {gap, days, evals.SlugMergeToProduction}}, gap},
-		{"two settings changes", []evalsMarkStep{{0, settings, ""}, {gap, settings, ""}}, gap},
+		{"a reading in the quiet of another", []evalsMarkStep{{0, settings, ""}, {0, readings, ""}, {gap, readings, "pr-size"}}, gap},
 		{"a reading after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, readings, ""}}, pass},
 		{"a version after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, versions, ""}}, pass},
 		{"a day write 1.5 s after a settings change that moved no day row", []evalsMarkStep{
@@ -824,6 +861,9 @@ func newSettingsRewritePage(t *testing.T, configure func(*deliveryHub)) *setting
 // the rewrite's or as another writer's (writeDays).
 func (p *settingsRewritePage) saveSettings(t *testing.T) {
 	t.Helper()
+	// Every mark the page's setup left (the feed's seeding marks every view) is answered first, so
+	// a recompute after the save is the save's.
+	p.rig.quiesce(t, p.frame)
 	before, mark := latestChange(t, p.rig.database), p.rig.mark()
 	settings, err := delivery.GetSettings(t.Context(), p.rig.database.Pool)
 	if err != nil {
@@ -837,16 +877,15 @@ func (p *settingsRewritePage) saveSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the changes the save logged: %v", err)
 	}
-	if len(changes) != 1 || !settingsRowChange(changes[0]) {
+	if len(changes) != 1 || changes[0].Kind != delivery.ChangeKindSettings || changes[0].Repo != "" {
 		t.Fatalf("the settings save logged %+v, want one change of the settings row", changes)
 	}
 	p.rig.hub.catchUpNow()
-	p.conn.none(t, 2*viewQuiet, "a settings change the clock has not moved past")
-	p.rig.clock.Advance(viewQuiet)
-	p.rig.waitFor(t, mark, 5*time.Second, "the settings change's own recompute", func(note deliveryHubNote) bool {
-		return note.what == "recompute end" && note.cause == deliveryCauseChange
-	})
-	p.conn.none(t, 200*time.Millisecond, "the settings change's own recompute, which reads the figures before the rewrite")
+	p.rig.clock.Advance(viewMaxWait)
+	p.conn.none(t, 2*viewQuiet, "a settings change, which marks no evals view: the refresher's rewrite does")
+	if n := p.rig.count(mark, recomputeBegin("")); n != 0 {
+		t.Fatalf("the settings change began %d recomputes of the evals view, want none before the refresher has brought the rows to it", n)
+	}
 }
 
 // dayRowEvals is the two evals of INFRA whose day rows writeDays writes, by id, sorted.
@@ -862,6 +901,16 @@ var dayRowEvals = []string{"INFRA/deploy-frequency", "INFRA/merge-to-production"
 // of the hub's notes before the write and the newest change.
 func (p *settingsRewritePage) writeDays(t *testing.T, after time.Duration, byRewrite bool) (int, int64) {
 	t.Helper()
+	if byRewrite {
+		return p.writeDaysAs(t, after, delivery.EvalDaysWrittenBySettingsRewrite)
+	}
+	return p.writeDaysAs(t, after, "")
+}
+
+// writeDaysAs is writeDays' write, its transaction marked with the cause runKind: the settings
+// rewrite's (evals.MarkSettingsRewrite), a rebuild's (evals.MarkRebuild), or none for "".
+func (p *settingsRewritePage) writeDaysAs(t *testing.T, after time.Duration, runKind string) (int, int64) {
+	t.Helper()
 	p.rig.clock.Advance(after)
 	before, mark := latestChange(t, p.rig.database), p.rig.mark()
 	tx, err := p.rig.database.Pool.Begin(t.Context())
@@ -869,12 +918,15 @@ func (p *settingsRewritePage) writeDays(t *testing.T, after time.Duration, byRew
 		t.Fatalf("begin the write of the day rows: %v", err)
 	}
 	defer tx.Rollback(t.Context())
-	runKind := ""
-	if byRewrite {
+	switch runKind {
+	case delivery.EvalDaysWrittenBySettingsRewrite:
 		if err := evals.MarkSettingsRewrite(t.Context(), tx); err != nil {
 			t.Fatal(err)
 		}
-		runKind = delivery.EvalDaysWrittenBySettingsRewrite
+	case delivery.EvalDaysWrittenByRebuild:
+		if err := evals.MarkRebuild(t.Context(), tx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := tx.Exec(t.Context(), `
 		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, samples, counts, built_by)
@@ -1063,4 +1115,289 @@ func TestASettingsRewritesDeltaIsWholeWhenAChangeLandsDuringItsRecompute(t *test
 	}
 	t.Logf("the rewrite's read held position %d; its one delta upserts %v and lands on the route's body before the reading; the reading, marked while the view was computed, waited its quiet and its delta upserts %v",
 		note.through, dayRowEvals, liveUpsertIDs(t, second, "items"))
+}
+
+// TestARebuildIsRecomputedAtOnce: an eval_days change a rebuild of a span wrote, which carries the
+// rebuild's mark, is due at its own mark rather than viewQuiet after it (dueAt), with its own
+// cause, as the settings rewrite's is: alone; with a second eval's of the same commit; inside the
+// quiet of a day write that is not a rebuild's, whose mark the rebuild's then is, so the one
+// recompute is due at that first mark; and never before a failed read's retry. A change of the
+// settings row alone leaves an evals view not due at all.
+func TestARebuildIsRecomputedAtOnce(t *testing.T) {
+	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	days, rebuild := delivery.ChangeKindEvalDays, evalsRebuild
+	cases := []struct {
+		name  string
+		steps []evalsMarkStep
+		due   time.Duration
+	}{
+		{"a rebuild's change of one eval", []evalsMarkStep{{time.Second, rebuild, ""}}, time.Second},
+		{"a rebuild's changes of two evals", []evalsMarkStep{{time.Second, rebuild, ""}, {time.Second, rebuild, evals.SlugMergeToProduction}}, time.Second},
+		{"a rebuild inside the quiet of another day write", []evalsMarkStep{{0, days, ""}, {100 * time.Millisecond, rebuild, ""}}, 0},
+		{"a rebuild behind a failed read's retry", []evalsMarkStep{{0, evalsRetryHeld, ""}, {time.Second, rebuild, ""}}, deliveryLiveRetry},
+	}
+	for _, c := range cases {
+		at, cause, ok := markEvalsView(start, c.steps).dueAt()
+		if !ok || !at.Equal(start.Add(c.due)) || cause != deliveryCauseRebuild {
+			t.Errorf("%s: due %t, %s after the start (%s), want %s after it (%s)", c.name, ok, at.Sub(start), cause, c.due, deliveryCauseRebuild)
+			continue
+		}
+		t.Logf("%s: due %s after the start, cause %s", c.name, at.Sub(start), cause)
+	}
+	if at, cause, ok := markEvalsView(start, []evalsMarkStep{{0, delivery.ChangeKindSettings, ""}, {time.Second, delivery.ChangeKindSettings, ""}}).dueAt(); ok {
+		t.Errorf("two changes of the settings row leave an evals view due %s after the first (%s), want not due: the refresher's rewrite marks it", at.Sub(start), cause)
+	}
+}
+
+// TestARebuildsCommitSendsTheEvalsPageOneDeltaAtOnce: one transaction that holds two evals' day
+// rows and carries the rebuild's mark, as the refresher's rebuild of a span commits them, reaches
+// a page on a hub whose clock stands still: it is recomputed at its own mark, once, and the page
+// gets one delta holding both evals' new numbers, which lands on the route's body. Nothing follows
+// it, however far the clock moves past every quiet.
+func TestARebuildsCommitSendsTheEvalsPageOneDeltaAtOnce(t *testing.T) {
+	page := newSettingsRewritePage(t, nil)
+	mark, _ := page.writeDaysAs(t, time.Second, delivery.EvalDaysWrittenByRebuild)
+	delta := page.dayRowsDelta(t, "the rebuild")
+	page.apply(t, delta, page.route(t))
+	page.rig.clock.Advance(viewMaxWait)
+	page.conn.none(t, time.Second, "the rebuild's one delta, past every quiet")
+	begun, rebuilds := page.rig.count(mark, recomputeBegin("")), page.rig.count(mark, recomputeBegin(deliveryCauseRebuild))
+	if begun != 1 || rebuilds != 1 {
+		t.Fatalf("the rebuild began %d recomputes, %d of them %s, want the one", begun, rebuilds, deliveryCauseRebuild)
+	}
+	t.Logf("the rebuild's eval_days changes were recomputed once (%s) on a clock standing at their mark, and its one delta upserts %v and lands on the route's body",
+		deliveryCauseRebuild, dayRowEvals)
+}
+
+// refreshedEvalsPage is a page subscribed to the main project's evals over the 28 days ending on
+// the last day of the delivery history of 30 days (seedEvalHistories), whose day rows and stored
+// figures the refresher has written (refreshEvalDays), on a hub whose clock stands still. held is
+// the body the page holds.
+type refreshedEvalsPage struct {
+	rig      *hubRig
+	conn     *fakeLiveConn
+	frame    DeliveryLiveView
+	held     json.RawMessage
+	registry *evals.Store
+	fixture  deliverytest.Fixture
+	now      time.Time
+}
+
+// newRefreshedEvalsPage seeds the history, runs prepare (where it is not nil) on it, refreshes the
+// day rows with a registry over database, or over traced where that is given a tracer, and
+// subscribes the page.
+func newRefreshedEvalsPage(t *testing.T, tracer pgx.QueryTracer, prepare func(database *store.Store, fixture deliverytest.Fixture)) *refreshedEvalsPage {
+	t.Helper()
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	fixture, windows := seedEvalHistories(t, database, deps, 30)
+	end := windows[0].Spec.Now
+	if fixture.To.After(end) {
+		end = fixture.To
+	}
+	page := &refreshedEvalsPage{conn: newFakeLiveConn(), fixture: fixture, now: end.Add(-time.Minute), registry: evals.New(database, deps.Docs, deps.Events)}
+	if tracer != nil {
+		page.registry = evals.New(storetest.TracedStore(t, database, tracer), deps.Docs, deps.Events)
+	}
+	if prepare != nil {
+		prepare(database, fixture)
+	}
+	page.rig = hubOn(t, handler, database, deps, newStillHubClock(), nil)
+	page.refresh(t)
+	today := measures.Midnight(page.now)
+	page.frame = evalsLiveView(fixture.Project, evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), "")
+	page.rig.hub.Subscribe(page.conn, subscribeFrame("e", page.frame))
+	page.held = page.conn.snapshot(t, 10*time.Second, "e").Body
+	page.rig.settle(t)
+	page.rig.quiesce(t, page.frame)
+	if sent := page.take(t, 200*time.Millisecond); sent > 0 {
+		t.Fatalf("the page was sent %d deltas after its snapshot, before anything was written", sent)
+	}
+	return page
+}
+
+// refresh runs the refresher's passes as of the page's moment until no walk has days left.
+func (p *refreshedEvalsPage) refresh(t *testing.T) {
+	t.Helper()
+	refreshEvalDays(t, p.registry, p.rig.database, p.now)
+}
+
+// route is the list route's body for the page's window, as of now.
+func (p *refreshedEvalsPage) route(t *testing.T) json.RawMessage {
+	t.Helper()
+	return getBody(t, p.rig.handler, evalsTarget(t, p.fixture.Project, p.held, ""))
+}
+
+// take applies every delta the page was sent, each within within of the one before it, to the body
+// it holds, and answers how many there were.
+func (p *refreshedEvalsPage) take(t *testing.T, within time.Duration) int {
+	t.Helper()
+	for taken := 0; ; taken++ {
+		select {
+		case frame := <-p.conn.frames:
+			delta, ok := frame.(DeliveryLiveDelta)
+			if !ok || delta.Sub != "e" {
+				raw, _ := json.Marshal(frame)
+				t.Fatalf("frame = %s, want a delta of the page's sub", raw)
+			}
+			p.held = applyLiveDelta(t, evalsView, p.held, delta)
+		case <-time.After(within):
+			return taken
+		}
+	}
+}
+
+// requireAtRoute fails unless the body the page holds is the list route's.
+func (p *refreshedEvalsPage) requireAtRoute(t *testing.T, what string) {
+	t.Helper()
+	if got, want := liveComparable(t, mustEncodeLive(t, evalsView, p.held)), liveComparable(t, mustEncodeLive(t, evalsView, p.route(t))); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s: the page does not hold the route's body:\nheld: %v\nGET:  %v", what, got, want)
+	}
+}
+
+// idle waits until the hub holds no mark of the page's view and computes it no more.
+func (p *refreshedEvalsPage) idle(t *testing.T) {
+	t.Helper()
+	p.rig.idle(t, p.frame)
+}
+
+// idle waits until the hub holds no mark of frame's view and computes it no more.
+func (r *hubRig) idle(t *testing.T, frame DeliveryLiveView) {
+	t.Helper()
+	spec, _ := parseDeliveryLiveView(frame)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		r.hub.mu.Lock()
+		view := r.hub.generation.views[spec.key]
+		busy := view.dirty || view.computing
+		r.hub.mu.Unlock()
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the view is still marked or computed after 10 s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// quiesce catches the hub up, moves its clock past every quiet and waits until frame's view is
+// answered (idle): on a clock that stands still, a mark that waits its quiet is due only once the
+// test moves the clock, and would otherwise be answered by the next recompute a test counts.
+func (r *hubRig) quiesce(t *testing.T, frame DeliveryLiveView) {
+	t.Helper()
+	r.hub.catchUpNow()
+	r.clock.Advance(viewMaxWait)
+	r.idle(t, frame)
+}
+
+// TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta: the history's second
+// repository holds deploy runs of its own, and one save of the delivery settings moves the deploy
+// repository to it and names a production job no run holds. The change of the settings row marks
+// no evals view, so on a clock moved past every quiet the page is sent nothing: a recompute then
+// would answer the new repository's rows as the old production rule built them, a state between
+// the old and the new. The refresher's pass rewrites the days under the new rule, and the page
+// gets one delta, at once on a clock that stands still, which lands on the route's body after the
+// rewrite; nothing follows it.
+func TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta(t *testing.T) {
+	var other string
+	page := newRefreshedEvalsPage(t, nil, func(database *store.Store, fixture deliverytest.Fixture) {
+		other = fixture.Repos[1]
+		for _, statement := range []string{`
+			insert into delivery_runs
+			select (jsonb_populate_record(null::delivery_runs, to_jsonb(run) || jsonb_build_object('repo', $2::text))).*
+			from delivery_runs run where run.repo = $1 and run.kind = 'deploy' and run.started_at >= $3`, `
+			insert into delivery_run_jobs
+			select (jsonb_populate_record(null::delivery_run_jobs, to_jsonb(job) || jsonb_build_object('repo', $2::text))).*
+			from delivery_run_jobs job join delivery_runs run on run.repo = job.repo and run.run_id = job.run_id
+			where job.repo = $1 and run.kind = 'deploy' and run.started_at >= $3`,
+		} {
+			if _, err := database.Pool.Exec(t.Context(), statement, fixture.DeployRepo, other, fixture.From.AddDate(0, 0, 12)); err != nil {
+				t.Fatalf("copy the deploy repository's deploy runs to %s: %v", other, err)
+			}
+		}
+	})
+	before := page.route(t)
+	settings, err := delivery.GetSettings(t.Context(), page.rig.database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	settings.DeployRepo, settings.ProductionJobNames = other, []string{"release / a job no run holds"}
+	if _, err := delivery.PutSettings(t.Context(), page.rig.database.Pool, settings, model.Actor{Kind: "user", ID: "alice"}); err != nil {
+		t.Fatalf("save the delivery settings: %v", err)
+	}
+	page.rig.hub.catchUpNow()
+	page.rig.clock.Advance(viewMaxWait)
+	page.conn.none(t, time.Second, "the settings save alone, before the refresher has rewritten the days it moves")
+
+	mark := page.rig.mark()
+	page.refresh(t)
+	page.rig.hub.catchUpNow()
+	delta := page.conn.delta(t, 10*time.Second, "e")
+	page.held = applyLiveDelta(t, evalsView, page.held, delta)
+	page.requireAtRoute(t, "the one delta after the rewrite")
+	if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.held))) {
+		t.Fatal("the route answers after the save what it answered before, and the check needs a save that moves it")
+	}
+	page.rig.clock.Advance(viewMaxWait)
+	page.conn.none(t, time.Second, "the rewrite's one delta, past every quiet")
+	if begun := page.rig.count(mark, recomputeBegin("")); begun != 1 {
+		t.Fatalf("the rewrite began %d recomputes of the page's view, want one", begun)
+	}
+	t.Logf("one save that moved the deploy repository to %s and the production rule sent the page one delta, after the rewrite, which upserts %v and lands on the route's body",
+		other, liveUpsertIDs(t, delta, "items"))
+}
+
+// figureScopeReads is a tracer that calls before ahead of each read of how far a project's stored
+// figures are folded (readFigureScope's statement), the first statement of every fold of them.
+type figureScopeReads struct {
+	before func()
+}
+
+func (f *figureScopeReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if f.before != nil && strings.Contains(data.SQL, "from eval_figures_built") {
+		f.before()
+	}
+	return ctx
+}
+
+func (f *figureScopeReads) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute: the deploy repository is mapped
+// to the second project, which begins the delivery walk again, and the walk rewrites the main
+// project's days a batch a pass, each day a commit of its own, and folds the stored figures of a
+// batch's days in one more commit, after the last of them. Ahead of every fold the hub catches up
+// with the day commits, its clock is moved past their quiet, and the page's view is recomputed: it
+// reads the days as the batch left them and the stored figures as they stood before it. The
+// fold's commit logs a change of each eval whose figures it moved, so the view is marked again,
+// and once the clock has passed that mark's quiet the page holds the route's body. Before, the
+// fold logged nothing, and the page kept the figures of before the last batch.
+func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T) {
+	reads := &figureScopeReads{}
+	page := newRefreshedEvalsPage(t, reads, nil)
+	before := page.route(t)
+	second := page.fixture.SecondProject
+	if _, err := page.rig.database.Pool.Exec(t.Context(), `update repo_projects set project = $2 where repo = $1`, page.fixture.DeployRepo, second); err != nil {
+		t.Fatalf("map %s to %s: %v", page.fixture.DeployRepo, second, err)
+	}
+	if _, err := delivery.DrainPending(t.Context(), page.rig.database.Pool); err != nil {
+		t.Fatalf("move the mapping's change into the log: %v", err)
+	}
+	folds := 0
+	reads.before = func() {
+		folds++
+		page.rig.hub.catchUpNow()
+		page.rig.clock.Advance(viewMaxWait)
+		page.idle(t)
+	}
+	page.refresh(t)
+	reads.before = nil
+	page.rig.hub.catchUpNow()
+	page.rig.clock.Advance(viewMaxWait)
+	page.idle(t)
+	deltas := page.take(t, time.Second)
+	if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.route(t)))) {
+		t.Fatal("the route answers after the mapping moved what it answered before, and the check needs a walk that moves it")
+	}
+	page.requireAtRoute(t, "after the walk's last fold")
+	t.Logf("the walk begun again folded its batches' figures behind %d recomputes of the page's view; the page took %d deltas and holds the route's body", folds, deltas)
 }

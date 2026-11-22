@@ -39,10 +39,10 @@ import (
 // count), and the rest as before. The set of them, each with its start (keptRepo.since), is
 // recorded beside the settings the rows stand built under (eval_days_settings), and a page that
 // reads another set, a repository whose first runs arrived, one whose runs went or one whose start
-// moved, moves the delivery walk back to the earliest start that changed (syncKept): the walk
-// then builds every day of that repository from its start on, its rows and its members of every
-// pull request it counts, as a whole walk over the same runs builds them, where the change that
-// brought the runs writes only the days it names.
+// moved, builds the days of each that differs in its own commit (syncKept, span.go): every day of
+// a new repository from its start on, its rows and its members of every pull request it counts,
+// as a whole walk over the same runs builds them, where the change that brought the runs names
+// only the days of the runs.
 //
 // The first day of each of a repository's series, which a read names (data_since, each series its
 // own) and before which a range reads "no data", is that repository's own, and never earlier than

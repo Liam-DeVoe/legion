@@ -412,6 +412,7 @@ const (
 	deliveryCauseSubscribe       = "subscribe"
 	deliveryCauseChange          = "change"
 	deliveryCauseSettingsRewrite = "settings-rewrite"
+	deliveryCauseRebuild         = "rebuild"
 	deliveryCauseExpiry          = "expiry"
 )
 

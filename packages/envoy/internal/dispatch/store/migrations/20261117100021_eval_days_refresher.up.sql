@@ -59,11 +59,11 @@
 --              that read the deploy repository the stored rows are kept for, in the byte order of
 --              their names, and each one's start (the UTC day of its first deploy or PR-checks
 --              run, before which it holds no row), pairwise: the set the delivery walk last built
---              for (evals.keptRepo). A page that reads another set moves the delivery walk back to
---              the earliest start that changed, a new repository's, a gone one's or the earlier of
---              a moved one's two, in the transaction of its cursors (evals.syncKept), so the walk
---              builds every day of a repository whose first runs arrived, and of one whose runs
---              went; the rewrite of a settings change leaves them as they are.
+--              for (evals.keptRepo). A page that reads another set builds, in the transaction of
+--              its cursors, the days of each repository that differs: a new repository's from its
+--              start on, the days between a moved one's two starts, and none of a gone one's,
+--              whose rows go (evals.syncKept, span.go); the rewrite of a settings change leaves
+--              them as they are.
 --   updated_at when the row was last recorded.
 --
 -- Three new tables, all empty: nothing existing is read or rewritten, and the release before this

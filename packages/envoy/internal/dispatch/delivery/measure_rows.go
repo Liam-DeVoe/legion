@@ -247,7 +247,7 @@ type Deploys struct {
 }
 
 // ReadDeploys reads Deploys for [from, to). The earlier rows start at since: the latest creation
-// among the deploys that succeeded before the first of Applies completed (readLatestShipBefore; the
+// among the deploys that succeeded before the first of Applies completed (ReadLatestShipBefore; the
 // beginning of time where none did), since a pull request merged before it had shipped by then
 // and so ships with none of Applies; or the creation of one of Applies, where one was created
 // earlier still, so that run is among the apply runs. Nothing earlier is read where the window
@@ -268,7 +268,7 @@ func deploysOf(ctx context.Context, pool *store.Pool, settings DeliverySettings,
 	if len(deploys.Applies) == 0 {
 		return deploys, nil
 	}
-	since, err := readLatestShipBefore(ctx, pool, settings.DeployRepo, production, deploys.Applies[0].CompletedAt)
+	since, err := ReadLatestShipBefore(ctx, pool, settings.DeployRepo, production, deploys.Applies[0].CompletedAt)
 	if err != nil {
 		return Deploys{}, err
 	}

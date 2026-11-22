@@ -223,8 +223,9 @@ func (r *refresherRig) changesHead(t *testing.T) delivery.ChangeCursor {
 	return head
 }
 
-// evalDayChanges is every eval_days change logged after seq, as `<eval id> <first day>..<last
-// day>`, in seq order.
+// evalDayChanges is every eval_days change of an eval logged after seq, as `<eval id> <first
+// day>..<last day>`, in seq order. The eval_days change of no eval, the refresher's word that the
+// day rows stand at the delivery settings (delivery.SettingsApplied), names no day and is left out.
 func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	t.Helper()
 	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, after, 100000)
@@ -233,7 +234,7 @@ func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	}
 	var lines []string
 	for _, change := range changes {
-		if change.Kind == "eval_days" {
+		if change.Kind == "eval_days" && !delivery.SettingsApplied(change) {
 			lines = append(lines, fmt.Sprintf("%s %s..%s", change.Ref, change.TOld.UTC().Format(time.DateOnly), change.TNew.UTC().Format(time.DateOnly)))
 		}
 	}

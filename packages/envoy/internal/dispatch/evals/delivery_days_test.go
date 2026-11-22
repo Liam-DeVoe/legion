@@ -268,7 +268,7 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 			}
 		}
 		for _, project := range legion {
-			if err := pass.writeLegion(ctx, project, day, false); err != nil {
+			if err := pass.writeLegion(ctx, project, day); err != nil {
 				t.Fatalf("write the Legion rows of %s on %s: %v", project, day.Format(time.DateOnly), err)
 			}
 		}
@@ -645,16 +645,17 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	}{
 		{
 			name: "leftDaysOwedStatement", statement: leftDaysOwedStatement, lists: []string{"given"},
-			arguments:  []any{"EVAL", day, families, memberDeployRepos, keys, shippedBy, deliveryDayFamilies, KindDelivery},
-			parameters: []string{"text", "date", "text[]", "text[]", "text[]", "text[]", "text[]", "text"},
+			arguments:  []any{"EVAL", day, families, memberDeployRepos, keys, shippedBy, deliveryDayFamilies, KindDelivery, []string(nil), []string(nil)},
+			parameters: []string{"text", "date", "text[]", "text[]", "text[]", "text[]", "text[]", "text", "text[]", "text[]"},
 			literals: []string{"'EVAL'", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']", "array['']",
-				"array['delivery', 'ci']", "'delivery'"},
+				"array['delivery', 'ci']", "'delivery'", "null::text[]", "null::text[]"},
 		},
 		{
 			name: "goneMembersDeleteStatement", statement: goneMembersDeleteStatement,
-			arguments:  []any{"EVAL", deliveryDayFamilies, day, families, memberDeployRepos, keys},
-			parameters: []string{"text", "text[]", "date", "text[]", "text[]", "text[]"},
-			literals:   []string{"'EVAL'", "array['delivery', 'ci']", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']"},
+			arguments:  []any{"EVAL", deliveryDayFamilies, day, families, memberDeployRepos, keys, []string(nil), []string(nil)},
+			parameters: []string{"text", "text[]", "date", "text[]", "text[]", "text[]", "text[]", "text[]"},
+			literals: []string{"'EVAL'", "array['delivery', 'ci']", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']",
+				"null::text[]", "null::text[]"},
 		},
 		{
 			name: "deleteStaleDaysStatement", statement: deleteStaleDaysStatement,

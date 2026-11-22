@@ -35,12 +35,22 @@
 -- run_kind holds the cause the writing transaction names in the transaction-local setting
 -- dispatch.eval_days_cause, null where it names none. The refresher's rewrite of a delivery
 -- settings change sets it to 'settings_rewrite' (delivery.EvalDaysWrittenBySettingsRewrite,
--- through evals.MarkSettingsRewrite) before its first write of a day row, and no other writer sets
--- it: the Delivery page's live hub recomputes an evals view at once for the rewrite's changes, and
+-- through evals.MarkSettingsRewrite) before its first write of a day row, and its rebuild of a
+-- span, the one transaction that holds the days a page names with every other day they move, to
+-- 'rebuild' (delivery.EvalDaysWrittenByRebuild, through evals.MarkRebuild); no other writer sets
+-- it. The Delivery page's live hub recomputes an evals view at once for those two's changes, and
 -- every other change waits its quiet. The pending row takes the cause its first write finds, and
 -- the drain (delivery_changes_drain, 20261117100001) copies it into delivery_changes.
 -- set_config(..., true) reverts the setting when the transaction ends, so a pooled connection's
 -- next transaction reads it empty, which nullif makes null.
+--
+-- Two eval_days changes are logged by no trigger here. The refresher's fold of a walk batch's
+-- stored figures writes no day row, and calls eval_days_change_log itself for each eval whose
+-- figures it folded again (evals.foldFiguresOfDays), so a view that read the batch's rows beside
+-- the figures of before them is recomputed. And the refresher logs one eval_days change of no
+-- eval, repo and ref null and run_kind 'settings_rewrite', through delivery_change_log_pending,
+-- in the transaction that leaves the day rows standing at the delivery settings a change of the
+-- settings row named (evals.markSettingsApplied): every evals view is recomputed for it.
 --
 -- An update logs only the rows whose content moved: as 0100's and 20261117100002's triggers ignore
 -- the columns a pass rewrites whatever it finds, the update half ignores updated_at and built_by,

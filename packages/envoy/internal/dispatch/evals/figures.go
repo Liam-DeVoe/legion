@@ -901,15 +901,31 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 // folded for 280-350 ms and then wrote for 400-480 ms (dispatch://INFRA-2916, phase H). entries is
 // the project's evals by id, every eval spans names among them.
 func refoldFigures(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, spans map[string]daySpan) error {
+	_, err := refoldMoved(ctx, tx, scope, entries, spans)
+	return err
+}
+
+// refoldMoved is refoldFigures, and answers, by eval, the span of the days whose figures it folded
+// again, none where no day's rows had moved.
+func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, spans map[string]daySpan) (map[string]daySpan, error) {
 	moved, err := movedFigureDays(ctx, tx, scope, entries, spans)
 	if err != nil || len(moved) == 0 {
-		return err
+		return nil, err
 	}
 	plan, err := readFigurePlan(ctx, tx, scope, entries, moved)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), figureFoldWorkers))
+	if err := plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), figureFoldWorkers)); err != nil {
+		return nil, err
+	}
+	folded := map[string]daySpan{}
+	for group, days := range moved {
+		for day := range days {
+			folded[group.eval] = folded[group.eval].widen(day)
+		}
+	}
+	return folded, nil
 }
 
 // foldFiguresInTx is the stored figures' part of a write of project's day rows by build, in tx, the

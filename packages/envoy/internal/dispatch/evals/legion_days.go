@@ -226,24 +226,32 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 }
 
 // build is the rows of the project's cut repo ("" for all repositories) from input, the evals with
-// input in it alone.
+// input in it alone (legionHasInput).
 func (d LegionDay) build(repo string, input legionInput, since LegionSince) []DayRow {
 	var rows []DayRow
 	for _, slug := range legionDaySlugs {
-		has := len(input.finished) > 0
-		switch slug {
-		case SlugLegionSplitting:
-			has = has || len(input.filed) > 0
-		case SlugLegionIdleTime:
-			has = has && onOrAfter(since.Claims, d.Day)
-		case SlugLegionSlotWait:
-			has = has && onOrAfter(since.Slots, d.Day)
-		}
-		if has {
+		if legionHasInput(slug, len(input.finished) > 0, len(input.filed) > 0, since, d.Day) {
 			rows = append(rows, legionRows(d.Project, repo, slug, legionBuilders[slug](d.Day, input.finished, input.filed))...)
 		}
 	}
 	return rows
+}
+
+// legionHasInput reports whether the Legion eval slug has input on day, where closed says that an
+// issue with Legion phase work closed that day and filed that a Legion session filed an issue on
+// it: legion-splitting on a day with either, the other five on a day with a close, and
+// legion-idle-time and legion-slot-wait only from the first whole day after the project's first
+// claim and slot observation on (since).
+func legionHasInput(slug string, closed, filed bool, since LegionSince, day time.Time) bool {
+	switch slug {
+	case SlugLegionSplitting:
+		return closed || filed
+	case SlugLegionIdleTime:
+		return closed && onOrAfter(since.Claims, day)
+	case SlugLegionSlotWait:
+		return closed && onOrAfter(since.Slots, day)
+	}
+	return closed
 }
 
 // legionRows is parts as project's rows of slug in the cut repo, every one listed.
@@ -274,11 +282,10 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 // delivery day: each row upserted, recording builtBy, the running build; the project's rows of
 // that day of the Legion evals (legionDaySlugs) that day does not hold deleted (deleteStaleDays);
 // its issues recorded in eval_day_members on its day under the family `legion`, whose items
-// recorded on that day that it does not hold are deleted; where figures is set, the stored
-// figures of the day where its rows moved folded again, where builtBy writes them (figures.go);
-// and where day.Rewind is set, the project's Legion walk moved back to that day
-// (writeProjectDay). A row of another project, another day or an eval that is not a Legion one,
-// and an item of another family, is refused before anything is written.
+// recorded on that day that it does not hold are deleted; and where figures is set, the stored
+// figures of the day where its rows moved folded again, where builtBy writes them (figures.go).
+// A row of another project, another day or an eval that is not a Legion one, and an item of
+// another family, is refused before anything is written.
 func (s *Store) writeLegionDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, "Legion", day, legionDaySlugs, legionDayFamilies, walkKey{family: walkLegion, project: day.Project}, builtBy, figures)
+	return s.writeProjectDay(ctx, legionFamily.what, day, legionDaySlugs, legionDayFamilies, builtBy, figures)
 }

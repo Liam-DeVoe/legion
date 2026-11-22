@@ -1232,7 +1232,8 @@ func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) 
 // repository from its start on, the lead times of the days after its last deploy among them, and
 // its members of every pull request it counts. The change that brings the runs names their days
 // and those of the pull requests they ship alone; the repositories that hold runs move (syncKept),
-// which moves the delivery walk back to the new repository's start, and the walk builds the rest.
+// and the page builds every day of the new repository from its start on in its own commit
+// (refresh.writeNamed), which moves no walk.
 // At 04de13fa the days after its last deploy held neither those lead times' rows nor those members
 // (dispatch://INFRA-2916's failure 6).
 func TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArrive(t *testing.T) {
@@ -1266,8 +1267,8 @@ func TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArr
 // members and the stored figures of a second database that held the same runs before its first
 // walk: the members of every project's pull requests under that repository from its start on,
 // which the walk keeps for every repository that holds a run. The repositories that hold runs move
-// (syncKept), which moves the delivery walk back to the new repository's start. At 04de13fa those
-// members were missing.
+// (syncKept), and the page builds the new repository's members of every day from its start on in
+// its own commit (refresh.writeNamed). At 04de13fa those members were missing.
 func TestAnUnmappedRepositorysFirstRunsKeepWhatAWholeWalkKeeps(t *testing.T) {
 	const unmapped = "acme/unmapped"
 	live, deliveries := newSettingsRig(t, walkBatch)
@@ -1291,9 +1292,9 @@ func TestAnUnmappedRepositorysFirstRunsKeepWhatAWholeWalkKeeps(t *testing.T) {
 // delivery and CI rows, the members and the stored figures of a second database that made the
 // same move before its first walk: the series begins on the next day with input, and the day that
 // lost its input holds no row of it, where it kept its zero row before (the store's first day of
-// the series was that day itself). The write of the day drops the zero row and moves the delivery
-// walk back to it (refresh.planWrite), and the walk builds it and the days after it by the first
-// input days of the days it built (refresh.firstOf).
+// the series was that day itself). The page drops the zero row and, in the same commit, the
+// series' rows of every day up to its next day with input (refresh.writeNamed), which is where a
+// whole walk begins it.
 func TestASeriesWhoseFirstDayLosesItsInputBeginsWhereAWholeWalkBeginsIt(t *testing.T) {
 	live, deliveries := newSettingsRig(t, walkBatch)
 	main := deliveries.Project
@@ -1320,4 +1321,837 @@ func TestASeriesWhoseFirstDayLosesItsInputBeginsWhereAWholeWalkBeginsIt(t *testi
 		t.Errorf("%s's pr-open-to-merge holds rows of %v, want none on %s, which lost its input", main, after, first.Format(time.DateOnly))
 	}
 	t.Logf("%s's pr-open-to-merge began on %s and holds rows of %v after", main, first.Format(time.DateOnly), after)
+}
+
+// recordWrites makes every transaction that writes a day row, a member or a stored figure record
+// itself as it commits: a constraint trigger deferred to the commit on eval_days, eval_day_members,
+// eval_range_figures and eval_day_figures notes the transaction's id beside the table. It answers
+// the tables each transaction recorded since the last call wrote, by transaction id. The table and
+// the triggers are the test database's alone.
+func recordWrites(t *testing.T, r rig) func() map[int64][]string {
+	t.Helper()
+	statements := []string{
+		`create table evals_test_writes (txid bigint not null, written text not null, primary key (txid, written))`,
+		`create function evals_test_record_write() returns trigger language plpgsql as $$
+		begin
+			insert into evals_test_writes (txid, written) values (txid_current(), tg_table_name) on conflict do nothing;
+			return null;
+		end $$`,
+	}
+	for _, table := range []string{"eval_days", "eval_day_members", "eval_range_figures", "eval_day_figures"} {
+		statements = append(statements, `create constraint trigger evals_test_record_write after insert or update or delete on `+table+`
+			deferrable initially deferred for each row execute function evals_test_record_write()`)
+	}
+	for _, statement := range statements {
+		if _, err := r.database.Pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("record the writing transactions: %v", err)
+		}
+	}
+	return func() map[int64][]string {
+		t.Helper()
+		rows, err := r.database.Pool.Query(t.Context(), `
+			with taken as (delete from evals_test_writes returning txid, written)
+			select txid, written from taken order by txid, written`)
+		if err != nil {
+			t.Fatalf("read the writing transactions: %v", err)
+		}
+		wrote := map[int64][]string{}
+		var txid int64
+		var table string
+		if _, err := pgx.ForEachRow(rows, []any{&txid, &table}, func() error {
+			wrote[txid] = append(wrote[txid], table)
+			return nil
+		}); err != nil {
+			t.Fatalf("read the writing transactions: %v", err)
+		}
+		return wrote
+	}
+}
+
+// storedPrint is one fingerprint of every stored day row, member and stored figure, read by one
+// statement, so of one snapshot: what a reader of that moment can see of them.
+const storedPrint = `
+	select md5(
+		coalesce((select string_agg(md5(d::text), '' order by d.project_key, d.eval_id, d.writer, d.deploy_repo, d.series, d.repo, d.day) from eval_days d), '') || '|' ||
+		coalesce((select string_agg(md5(m::text), '' order by m.project_key, m.family, m.deploy_repo, m.row_key) from eval_day_members m), '') || '|' ||
+		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_range_figures f), '') || '|' ||
+		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_day_figures f), ''))`
+
+// commitPrints is a tracer (storetest.TracedStore) that reads storedPrint, on the rig's own pool,
+// after each transaction the traced pool commits: every state of the rows, the members and the
+// figures a reader can see between two commits of a pass.
+type commitPrints struct {
+	t    *testing.T
+	rig  rig
+	mu   sync.Mutex
+	seen []string
+}
+
+type commitPrintAt struct{}
+
+func (c *commitPrints) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.EqualFold(strings.TrimSpace(data.SQL), "commit") {
+		return context.WithValue(ctx, commitPrintAt{}, true)
+	}
+	return ctx
+}
+
+func (c *commitPrints) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if ctx.Value(commitPrintAt{}) == nil || data.Err != nil {
+		return
+	}
+	print := c.read()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen = append(c.seen, print)
+}
+
+// read is storedPrint as it stands now.
+func (c *commitPrints) read() string {
+	var print string
+	if err := c.rig.database.Pool.QueryRow(context.Background(), storedPrint).Scan(&print); err != nil {
+		c.t.Errorf("read the fingerprint of the stored rows: %v", err)
+	}
+	return print
+}
+
+// spanChange is one change that moved a walk back before a rewound span landed in one commit: its
+// name, what it does to a settled rig before the pass the test judges (prepare, nil for nothing),
+// the change itself, and what a rig that never walked does to stand where prepare left the first
+// (prepareWalk, nil for nothing).
+type spanChange struct {
+	name        string
+	prepare     func(t *testing.T, r *refresherRig)
+	change      func(t *testing.T, r *refresherRig)
+	prepareWalk func(t *testing.T, r *refresherRig)
+}
+
+// spanChanges is the changes TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt makes over
+// deliveries' history, where first is the first day of the main project's pr-open-to-merge:
+//
+//   - B: a pull request of the main project merged again six days before that first day, which
+//     moves the first input day of its series earlier;
+//   - E: every pull request merged on that first day merged a day later, so the day loses its input;
+//   - C: the deploy repository moved to the history's second repository, which holds pull requests
+//     and no run, and that repository's first deploy runs, the deploy repository's of the history's
+//     first three days, copied; and a repository no project is mapped to given the deploy
+//     repository's deploy runs.
+func spanChanges(deliveries deliverytest.Fixture, first time.Time) []spanChange {
+	var early *delivery.DeliveryPullRequest
+	for i, pr := range deliveries.PullRequests {
+		if early == nil && pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) {
+			early = &deliveries.PullRequests[i]
+		}
+	}
+	api, cutoff := deliveries.Repos[1], deliveries.From.AddDate(0, 0, 3)
+	moved := deliveries.Settings
+	moved.DeployRepo = api
+	const unmapped = "acme/unmapped"
+	return []spanChange{
+		{name: "B, a pull request merged six days before its project's first day", change: func(t *testing.T, r *refresherRig) {
+			t.Helper()
+			if early == nil {
+				t.Fatal("the history holds no merged pull request of the deploy repository that names no issue")
+			}
+			r.exec(t, "merge "+PullRequestMember(early.Repo, early.Number)+" six days before the first day", `
+				update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour')
+				where repo = $1 and number = $2
+			`, early.Repo, early.Number, first.AddDate(0, 0, -6).Add(12*time.Hour))
+		}},
+		{name: "E, the first day's pull requests merged a day later", change: func(t *testing.T, r *refresherRig) {
+			t.Helper()
+			r.exec(t, "merge every pull request of "+first.Format(time.DateOnly)+" a day later", `
+				update delivery_pull_requests set merged_at = merged_at + interval '1 day' where merged_at >= $1 and merged_at < $2
+			`, first, first.AddDate(0, 0, 1))
+		}},
+		{name: "C, the first runs of a repository that never deployed",
+			prepare: func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				r.putSettings(t, moved, alice)
+				r.pass(t)
+			},
+			change: func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				r.copyRunsBefore(t, deliveries.DeployRepo, api, delivery.DeliveryRunKindDeploy, &cutoff)
+			},
+			prepareWalk: func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				r.putSettings(t, moved, alice)
+			}},
+		{name: "C, the first runs of a repository no project is mapped to", change: func(t *testing.T, r *refresherRig) {
+			t.Helper()
+			r.copyRuns(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy)
+		}},
+	}
+}
+
+// walkRecord is the rig's build's record of the delivery walk: the transaction that last wrote it
+// and the day it stands at.
+func (r *refresherRig) walkRecord(t *testing.T) string {
+	t.Helper()
+	var record string
+	if err := r.database.Pool.QueryRow(t.Context(), `
+		select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = '' and built_by = $2
+	`, walkDelivery, r.build).Scan(&record); err != nil {
+		t.Fatalf("read the delivery walk's record: %v", err)
+	}
+	return record
+}
+
+// TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt: a change that moved a walk back, whose days
+// the walk then rebuilt a batch a pass, each day a commit of its own, now lands in one commit
+// (dispatch://INFRA-2916, R14's 2 s for every change kind). Over a settled history whose passes
+// walk two days each, so a walk moved back would need several, each of spanChanges is made, and
+// then one pass. That pass:
+//
+//   - commits every day row, member and stored figure it writes in one transaction (recordWrites);
+//   - logs at most one eval_days change of each eval, each carrying the rebuild's mark
+//     (delivery.EvalDaysWrittenByRebuild), for which the live hub recomputes an evals view at once;
+//   - leaves no reader a state other than the one before it and the one after it: the fingerprint
+//     of the rows, members and figures read after each of its commits (commitPrints) is one of the
+//     two;
+//   - leaves the delivery walk's record as it stood, and no walk with days to build;
+//   - and leaves the database holding the delivery and CI rows, the members and the stored figures
+//     of a second database that made the same change before its first walk (expectSameAsWalk).
+func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
+	probe, deliveries := newSettingsHistory(t, walkBatch)
+	probe.settle(t)
+	days, _ := seriesDays(probe.dayRows(t), deliveries.Project, SlugPROpenToMerge, measures.SeriesMinutes)
+	if len(days) < 2 {
+		t.Fatalf("%s's pr-open-to-merge holds rows of %v, and the check needs two days", deliveries.Project, days)
+	}
+	for _, change := range spanChanges(deliveries, days[0]) {
+		t.Run(change.name, func(t *testing.T) {
+			live, _ := newSettingsRig(t, 2)
+			if change.prepare != nil {
+				change.prepare(t, live)
+			}
+			if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
+				t.Fatalf("drain the change log's outbox: %v", err)
+			}
+			seq, record := live.latestSeq(t), live.walkRecord(t)
+			change.change(t, live)
+			wrote := recordWrites(t, live.rig)
+			prints := &commitPrints{t: t, rig: live.rig}
+			before := prints.read()
+			live.registry = New(storetest.TracedStore(t, live.database, prints), live.documents, live.registry.events)
+			_, next := live.pass(t)
+			after := prints.read()
+
+			transactions := wrote()
+			if len(transactions) != 1 {
+				t.Errorf("the pass wrote day rows, members or figures in %d transactions, want one: %v", len(transactions), transactions)
+			}
+			if before == after {
+				t.Errorf("the pass left the rows, the members and the figures as they stood, and the change moves them")
+			}
+			states := map[string]bool{}
+			for _, print := range prints.seen {
+				states[print] = true
+			}
+			delete(states, before)
+			delete(states, after)
+			if len(states) > 0 {
+				t.Errorf("a reader between two commits of the pass saw %d states that are neither the one before it nor the one after it", len(states))
+			}
+			if next.Equal(live.now) {
+				t.Errorf("the pass left a walk with days to build")
+			}
+			if got := live.walkRecord(t); got != record {
+				t.Errorf("the delivery walk's record is %q after the pass, want it as it stood, %q", got, record)
+			}
+			if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
+				t.Fatalf("drain the change log's outbox: %v", err)
+			}
+			changes, err := delivery.ChangesSince(t.Context(), live.database.Pool, seq, 100000)
+			if err != nil {
+				t.Fatalf("read the delivery changes after %d: %v", seq, err)
+			}
+			logged := map[string]int{}
+			for _, one := range changes {
+				if one.Kind != delivery.ChangeKindEvalDays || one.Ref == "" {
+					continue
+				}
+				logged[one.Ref]++
+				if one.RunKind != delivery.EvalDaysWrittenByRebuild {
+					t.Errorf("the eval_days change of %s carries run_kind %q, want %q", one.Ref, one.RunKind, delivery.EvalDaysWrittenByRebuild)
+				}
+			}
+			for evalID, count := range logged {
+				if count > 1 {
+					t.Errorf("the pass logged %d eval_days changes of %s, want one", count, evalID)
+				}
+			}
+			// A repository no project is mapped to brings members and no day row, and so no change.
+			wroteRows := false
+			for _, tables := range transactions {
+				wroteRows = wroteRows || slices.Contains(tables, "eval_days")
+			}
+			if wroteRows && len(logged) == 0 {
+				t.Errorf("the pass wrote day rows and logged no eval_days change")
+			}
+
+			walk, _ := newSettingsHistory(t, walkBatch)
+			if change.prepareWalk != nil {
+				change.prepareWalk(t, walk)
+			}
+			change.change(t, walk)
+			walk.settle(t)
+			live.expectSameAsWalk(t, change.name, walk)
+			t.Logf("%s: one pass wrote in the transactions %v, logged the eval_days changes %v and left %d states between its %d commits",
+				change.name, transactions, logged, len(states), len(prints.seen))
+		})
+	}
+}
+
+// memberWrites is a tracer that records the arguments of each statement that writes
+// eval_day_members on the pool it traces.
+type memberWrites struct {
+	mu   sync.Mutex
+	sent [][]any
+}
+
+func (m *memberWrites) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	// Every statement that takes the members of a day or of a span as arrays: the upserts and
+	// deletes of eval_day_members, and the statements that find the days their items leave.
+	if strings.Contains(data.SQL, "eval_day_members") && strings.Contains(data.SQL, "unnest(") {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.sent = append(m.sent, slices.Clone(data.Args))
+	}
+	return ctx
+}
+
+func (m *memberWrites) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// memberArgBytes is the bytes the arguments of a statement that writes members take as pgx encodes
+// them: 4 of length before each, a string's bytes, and for an array its header and each element
+// after 4 bytes of length, a string's bytes or a date's 8 at most.
+func memberArgBytes(t *testing.T, args []any) int {
+	t.Helper()
+	bytes := 4 * len(args)
+	for _, arg := range args {
+		switch value := arg.(type) {
+		case string:
+			bytes += len(value)
+		case time.Time:
+			bytes += 8
+		case []string:
+			bytes += arrayHeaderBytes
+			for _, one := range value {
+				bytes += 4 + len(one)
+			}
+		case []time.Time:
+			bytes += arrayHeaderBytes + (4+8)*len(value)
+		default:
+			t.Fatalf("a statement that writes members takes an argument of type %T, which the check does not size", arg)
+		}
+	}
+	return bytes
+}
+
+// TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements: over a settled history in which 3,000
+// pull requests of the deploy repository merged on the history's last day, a repository no project
+// is mapped to gets its first deploy runs, the deploy repository's of the first three days, copied.
+// The rows of the evals that read the deploy repository are kept for the new repository from its
+// start on, and so are the members: every pull request of every day from then on, the 3,000 of the
+// last day among them, a day no change of the page names. The one pass after the runs writes those
+// members in statements of at most statementBytes of parameters each, several of them, and the
+// database then holds what a second database that held the runs before its first walk holds.
+func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
+	const unmapped, copies = "acme/unmapped", 3000
+	crowd := func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+		t.Helper()
+		crowdLastDay(t, r, deliveries, copies)
+	}
+	live, deliveries := newSettingsHistory(t, walkBatch)
+	crowd(t, live, deliveries)
+	live.settle(t)
+	cutoff := deliveries.From.AddDate(0, 0, 3)
+	live.copyRunsBefore(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy, &cutoff)
+	writes := &memberWrites{}
+	live.registry = New(storetest.TracedStore(t, live.database, writes), live.documents, live.registry.events)
+	_, next := live.pass(t)
+	if next.Equal(live.now) {
+		t.Errorf("the pass left a walk with days to build")
+	}
+	largest, total := 0, 0
+	for index, args := range writes.sent {
+		size := memberArgBytes(t, args)
+		largest, total = max(largest, size), total+size
+		if size > statementBytes {
+			t.Errorf("statement %d that writes members takes %d bytes of parameters, past %d", index, size, statementBytes)
+		}
+	}
+	if total <= statementBytes || len(writes.sent) < 2 {
+		t.Errorf("the pass wrote members in %d statements of %d bytes of parameters together, and the check needs more than %d bytes in several",
+			len(writes.sent), total, statementBytes)
+	}
+	held := live.count(t, `select count(*) from eval_day_members where deploy_repo = $1`, unmapped)
+	if held < copies {
+		t.Errorf("%s holds %d members, want the %d pull requests of the last day among them", unmapped, held, copies)
+	}
+
+	walk, _ := newSettingsHistory(t, walkBatch)
+	crowd(t, walk, deliveries)
+	walk.copyRunsBefore(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy, &cutoff)
+	walk.settle(t)
+	live.expectSameAsWalk(t, unmapped+"'s first runs beside "+strconv.Itoa(copies)+" pull requests of one day", walk)
+	t.Logf("%s's %d members went in %d statements of %d bytes of parameters together, the largest %d of %d",
+		unmapped, held, len(writes.sent), total, largest, statementBytes)
+}
+
+// crowdLastDay merges copies more pull requests of the deploy repository on the history's last
+// day, each a copy of one merged that day that names no issue, and answers that one.
+func crowdLastDay(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture, copies int) delivery.DeliveryPullRequest {
+	t.Helper()
+	var template *delivery.DeliveryPullRequest
+	last := deliveries.To.AddDate(0, 0, -1)
+	for i, pr := range deliveries.PullRequests {
+		if pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+			!pr.MergedAt.Before(last) && slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) {
+			template = &deliveries.PullRequests[i]
+		}
+	}
+	if template == nil {
+		t.Fatalf("the history holds no pull request of the deploy repository merged on its last day, %s", last.Format(time.DateOnly))
+	}
+	r.exec(t, "merge "+strconv.Itoa(copies)+" more pull requests on the last day", `
+		insert into delivery_pull_requests
+		select (jsonb_populate_record(null::delivery_pull_requests, to_jsonb(pr) || jsonb_build_object('number', 100000 + n))).*
+		from delivery_pull_requests pr, generate_series(1, $3::int) as n
+		where pr.repo = $1 and pr.number = $2
+	`, template.Repo, template.Number, copies)
+	return *template
+}
+
+// TestADaysMembersPastTheBoundGoInSeveralStatements: over a history in which 3,000 pull requests
+// of the deploy repository merged on its last day, the walk writes that day, and then a page
+// writes it again, once one of them opened an hour earlier. Each write sends the day's members,
+// more than statementBytes of them, to the statements that record the days its items leave,
+// upsert them and delete the ones the day no longer holds, and each of those statements takes at
+// most statementBytes of parameters, the members cut into runs of their keys (memberRuns). The
+// page's write leaves every member where the walk put it, and the day's rows as a second database
+// holds them whose pull request opened so before its first walk. Before, each of the three
+// statements took the day's members whole: 884,665 bytes in one.
+func TestADaysMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
+	const copies = 3000
+	live, deliveries := newSettingsHistory(t, walkBatch)
+	crowded := crowdLastDay(t, live, deliveries, copies)
+	writes := &memberWrites{}
+	live.registry = New(storetest.TracedStore(t, live.database, writes), live.documents, live.registry.events)
+	check := func(what string) {
+		t.Helper()
+		largest, total := 0, 0
+		for index, args := range writes.sent {
+			size := memberArgBytes(t, args)
+			largest, total = max(largest, size), total+size
+			if size > statementBytes {
+				t.Errorf("%s: statement %d that takes members takes %d bytes of parameters, past %d", what, index, size, statementBytes)
+			}
+		}
+		if total <= statementBytes {
+			t.Errorf("%s sent members in %d statements of %d bytes of parameters together, and the check needs more than %d", what, len(writes.sent), total, statementBytes)
+		}
+		t.Logf("%s sent members in %d statements of %d bytes of parameters together, the largest %d of %d", what, len(writes.sent), total, largest, statementBytes)
+		writes.sent = nil
+	}
+	live.settle(t)
+	check("the walk")
+	day := measures.Midnight(*crowded.MergedAt)
+	members := live.memberLines(t)
+	if len(members) < copies {
+		t.Fatalf("the walk recorded %d members, want the %d pull requests of %s among them", len(members), copies, day.Format(time.DateOnly))
+	}
+	open := func(r *refresherRig) {
+		t.Helper()
+		r.exec(t, "open a pull request of the last day an hour earlier", `
+			update delivery_pull_requests set created_at = created_at - interval '1 hour' where repo = $1 and number = $2
+		`, crowded.Repo, 100000+copies)
+	}
+	open(live)
+	report, _ := live.pass(t)
+	if !report.days[builtDay{family: walkDelivery, project: deliveries.Project, day: day}] {
+		t.Fatalf("the pass wrote %v, and not %s's day %s", report.sorted(), deliveries.Project, day.Format(time.DateOnly))
+	}
+	check("the page")
+	if differ := sameValues(live.memberLines(t), members, func(at string) string { return at }); len(differ) > 0 {
+		t.Errorf("the page's write moved members, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	walk, _ := newSettingsHistory(t, walkBatch)
+	crowdLastDay(t, walk, deliveries, copies)
+	open(walk)
+	walk.settle(t)
+	live.expectSameAsWalk(t, "a day of "+strconv.Itoa(copies)+" pull requests written again", walk)
+}
+
+// spanSeriesChange is one kind of change of a seeded series (TestASeededSeriesOfSpanChanges...): it
+// reads what it needs of live, draws from rng, and answers the change to make in each database,
+// nil where the history admits none of its kind now.
+type spanSeriesChange struct {
+	name string
+	draw func(t *testing.T, rng *rand.Rand, live *refresherRig) func(t *testing.T, r *refresherRig)
+}
+
+// TestASeededSeriesOfSpanChangesLandsInOnePassEachAsAWholeWalkHoldsThem: two databases load one
+// history and walk it whole, the first two days a pass. A seeded series of changes that each
+// moved a walk back before (a pull request merged before every first day, B; the first merge day's
+// pull requests merged a day later, E; a repository's first deploy runs, the runs of its earliest
+// day gone, and all its runs gone, C; and the deploy repository's deploys of its first deploy day
+// gone, E and C together) is made in both, one after another; the test prints the seed, and
+// EVALS_SPAN_CHANGES_SEED draws a series again. After each change one pass of the first rebuilds
+// what it moves and leaves no walk with days to build, and the second walks every day again from
+// no record of its rows' settings; the first then holds the same day rows, members and stored
+// figures as the second (expectSameAsWalk).
+func TestASeededSeriesOfSpanChangesLandsInOnePassEachAsAWholeWalkHoldsThem(t *testing.T) {
+	seed := rand.Uint64()
+	if given := os.Getenv("EVALS_SPAN_CHANGES_SEED"); given != "" {
+		parsed, err := strconv.ParseUint(given, 10, 64)
+		if err != nil {
+			t.Fatalf("EVALS_SPAN_CHANGES_SEED=%q is no seed: %v", given, err)
+		}
+		seed = parsed
+	}
+	t.Logf("the series' seed is %d: EVALS_SPAN_CHANGES_SEED=%d draws it again", seed, seed)
+	rng := rand.New(rand.NewPCG(seed, 0))
+	live, deliveries := newSettingsRig(t, 2)
+	walking, _ := newSettingsRig(t, walkBatch)
+	live.expectSameAsWalk(t, "the first whole walk", walking)
+
+	day := func(t *testing.T, r *refresherRig, query string, args ...any) (time.Time, bool) {
+		t.Helper()
+		var at *time.Time
+		if err := r.database.Pool.QueryRow(t.Context(), query, args...).Scan(&at); err != nil {
+			t.Fatalf("read %q: %v", query, err)
+		}
+		if at == nil {
+			return time.Time{}, false
+		}
+		return measures.Midnight(*at), true
+	}
+	var added []string
+	runDays := `select count(distinct (started_at at time zone 'UTC')::date) from delivery_runs where repo = $1`
+	dropRuns := func(t *testing.T, r *refresherRig, repo string, kind *delivery.DeliveryRunKind, before time.Time) {
+		t.Helper()
+		var of *string
+		if kind != nil {
+			of = new(string(*kind))
+		}
+		r.exec(t, "delete the jobs of "+repo+"'s runs before "+before.Format(time.DateOnly), `
+			delete from delivery_run_jobs job using delivery_runs run
+			where run.repo = job.repo and run.run_id = job.run_id and run.repo = $1 and ($2::text is null or run.kind = $2) and run.started_at < $3
+		`, repo, of, before)
+		r.exec(t, "delete "+repo+"'s runs before "+before.Format(time.DateOnly), `
+			delete from delivery_runs where repo = $1 and ($2::text is null or kind = $2) and started_at < $3
+		`, repo, of, before)
+	}
+	kinds := []spanSeriesChange{
+		{"a pull request merged before every first day", func(t *testing.T, rng *rand.Rand, live *refresherRig) func(*testing.T, *refresherRig) {
+			earliest, held := day(t, live, `select min(merged_at) from delivery_pull_requests where merged_at is not null`)
+			merged := live.count(t, `select count(*) from delivery_pull_requests where merged_at is not null and created_at is not null`)
+			if !held || merged == 0 {
+				return nil
+			}
+			pick, to := rng.IntN(merged), earliest.AddDate(0, 0, -1-rng.IntN(3)).Add(12*time.Hour)
+			return func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				r.exec(t, "merge a pull request before every first day", `
+					update delivery_pull_requests request
+					set merged_at = $2, created_at = least(request.created_at, $2::timestamptz - interval '1 hour')
+					from (select repo, number from delivery_pull_requests where merged_at is not null and created_at is not null
+						order by repo, number offset $1 limit 1) picked
+					where request.repo = picked.repo and request.number = picked.number
+				`, pick, to)
+			}
+		}},
+		{"the first merge day's pull requests merged a day later", func(t *testing.T, _ *rand.Rand, live *refresherRig) func(*testing.T, *refresherRig) {
+			first, held := day(t, live, `select min(merged_at) from delivery_pull_requests where merged_at is not null`)
+			if !held || live.count(t, `select count(distinct (merged_at at time zone 'UTC')::date) from delivery_pull_requests where merged_at is not null`) < 3 {
+				return nil
+			}
+			return func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				r.exec(t, "merge the first merge day's pull requests a day later", `
+					update delivery_pull_requests set merged_at = merged_at + interval '1 day' where merged_at >= $1 and merged_at < $2
+				`, first, first.AddDate(0, 0, 1))
+			}
+		}},
+		{"a repository's first deploy runs", func(t *testing.T, rng *rand.Rand, live *refresherRig) func(*testing.T, *refresherRig) {
+			if len(added) == 3 {
+				return nil
+			}
+			repo, cutoff := fmt.Sprintf("acme/span-%d", len(added)+1), deliveries.From.AddDate(0, 0, 2+rng.IntN(4))
+			if len(added) == 0 {
+				// The history's second repository, which a project is mapped to and whose pull requests
+				// its deploys ship.
+				repo = deliveries.Repos[1]
+			}
+			added = append(added, repo)
+			return func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				r.copyRunsBefore(t, deliveries.DeployRepo, repo, delivery.DeliveryRunKindDeploy, &cutoff)
+			}
+		}},
+		{"the runs of a repository's earliest day gone", func(t *testing.T, rng *rand.Rand, live *refresherRig) func(*testing.T, *refresherRig) {
+			var candidates []string
+			for _, repo := range added {
+				if live.count(t, runDays, repo) >= 2 {
+					candidates = append(candidates, repo)
+				}
+			}
+			if len(candidates) == 0 {
+				return nil
+			}
+			repo := candidates[rng.IntN(len(candidates))]
+			since, _ := day(t, live, `select min(started_at) from delivery_runs where repo = $1`, repo)
+			return func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				dropRuns(t, r, repo, nil, since.AddDate(0, 0, 1))
+			}
+		}},
+		{"every run of a repository gone", func(t *testing.T, rng *rand.Rand, live *refresherRig) func(*testing.T, *refresherRig) {
+			var candidates []string
+			for _, repo := range added {
+				if live.count(t, runDays, repo) >= 1 {
+					candidates = append(candidates, repo)
+				}
+			}
+			if len(candidates) == 0 {
+				return nil
+			}
+			repo := candidates[rng.IntN(len(candidates))]
+			return func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				dropRuns(t, r, repo, nil, live.now.AddDate(1, 0, 0))
+			}
+		}},
+		{"the deploy repository's deploys of its first deploy day gone", func(t *testing.T, _ *rand.Rand, live *refresherRig) func(*testing.T, *refresherRig) {
+			deploy := delivery.DeliveryRunKindDeploy
+			first, held := day(t, live, `select min(started_at) from delivery_runs where repo = $1 and kind = $2`, deliveries.DeployRepo, string(deploy))
+			if !held || live.count(t, `select count(distinct (started_at at time zone 'UTC')::date) from delivery_runs where repo = $1 and kind = $2`,
+				deliveries.DeployRepo, string(deploy)) < 3 {
+				return nil
+			}
+			return func(t *testing.T, r *refresherRig) {
+				t.Helper()
+				dropRuns(t, r, deliveries.DeployRepo, &deploy, first.AddDate(0, 0, 1))
+			}
+		}},
+	}
+	// The series is at least 14 changes, and goes on, a kind not drawn yet first, until every kind
+	// is drawn or 30 changes are made: a seed can leave a history that admits one kind never (the
+	// runs of a repository's earliest day go only where an added repository holds runs of two days).
+	drawn := map[string]bool{}
+	defer func() {
+		for _, kind := range kinds {
+			if !drawn[kind.name] {
+				t.Logf("the series drew no change of the kind %q: its history admitted none", kind.name)
+			}
+		}
+	}()
+	for step := 1; step <= 14 || len(drawn) < len(kinds) && step <= 30; step++ {
+		var name string
+		var change func(*testing.T, *refresherRig)
+		fresh := step > 14 || rng.IntN(2) == 0
+		for _, onlyFresh := range []bool{fresh, false} {
+			for _, k := range rng.Perm(len(kinds)) {
+				if change != nil || onlyFresh && drawn[kinds[k].name] {
+					continue
+				}
+				if change = kinds[k].draw(t, rng, live); change != nil {
+					name = kinds[k].name
+				}
+			}
+		}
+		if change == nil {
+			t.Fatalf("change %d: the history admits no change of any kind", step)
+		}
+		drawn[name] = true
+		what := fmt.Sprintf("change %d, %s", step, name)
+		change(t, live)
+		_, next := live.pass(t)
+		if next.Equal(live.now) {
+			t.Errorf("%s: the pass left a walk with days to build", what)
+		}
+		walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+		change(t, walking)
+		walking.settle(t)
+		live.expectSameAsWalk(t, what, walking)
+		if t.Failed() {
+			t.Fatalf("%s: the series stops at its first change the pass did not rebuild as a whole walk does", what)
+		}
+		t.Logf("%s: one pass holds what the whole walk holds", what)
+	}
+}
+
+// copyRunBack writes, as the run id of repo, a copy of the run from with its jobs, every time of
+// them days days earlier; with fail, the copy's jobs named production and the run itself failed.
+func (r *refresherRig) copyRunBack(t *testing.T, repo string, from, id int64, days int, production []string, fail bool) {
+	t.Helper()
+	r.exec(t, fmt.Sprintf("copy run %d as %d, %d days earlier", from, id, days), `
+		insert into delivery_runs
+		select (jsonb_populate_record(null::delivery_runs, to_jsonb(run) || jsonb_build_object(
+			'run_id', $3::bigint, 'url', run.url || '-copy-' || $3::text,
+			'started_at', run.started_at - make_interval(days => $4), 'completed_at', run.completed_at - make_interval(days => $4),
+			'created_at', run.created_at - make_interval(days => $4), 'head_commit_at', run.head_commit_at - make_interval(days => $4),
+			'conclusion', case when $5 then 'failure' else run.conclusion::text end))).*
+		from delivery_runs run where run.repo = $1 and run.run_id = $2
+	`, repo, from, id, days, fail)
+	r.exec(t, fmt.Sprintf("copy the jobs of run %d as %d's", from, id), `
+		insert into delivery_run_jobs
+		select (jsonb_populate_record(null::delivery_run_jobs, to_jsonb(job) || jsonb_build_object(
+			'run_id', $3::bigint,
+			'started_at', job.started_at - make_interval(days => $4), 'completed_at', job.completed_at - make_interval(days => $4),
+			'conclusion', case when $5 and job.name = any($6) then 'failure' else job.conclusion::text end))).*
+		from delivery_run_jobs job where job.repo = $1 and job.run_id = $2
+	`, repo, from, id, days, fail, production)
+}
+
+// The runs earlyDeploys writes.
+const earlyFirstRun, earlyFailedRun, earlyNextRun = 9000001, 9000002, 9000003
+
+// earlyDeploys writes, in the deploy repository, two days before the history's first, a deploy
+// that reached production (earlyFirstRun) and one that failed (earlyFailedRun), and the day
+// after them a deploy that reached production (earlyNextRun), each a copy of the history's first
+// deploy that did, and answers the first of those two days: the start of the repository's
+// history, which the deploy that failed holds once the first one's run is gone.
+func (r *refresherRig) earlyDeploys(t *testing.T, deliveries deliverytest.Fixture) time.Time {
+	t.Helper()
+	if len(deliveries.Applies) == 0 {
+		t.Fatal("the history holds no deploy that reached production")
+	}
+	template := deliveries.Applies[0].RunID
+	back := int(measures.Midnight(runStart(t, deliveries.Runs, template)).Sub(deliveries.From).Hours()/24) + 2
+	repo, production := deliveries.DeployRepo, deliveries.Settings.ProductionJobNames
+	r.copyRunBack(t, repo, template, earlyFirstRun, back, production, false)
+	r.copyRunBack(t, repo, template, earlyFailedRun, back, production, true)
+	r.copyRunBack(t, repo, template, earlyNextRun, back-1, production, false)
+	return deliveries.From.AddDate(0, 0, -2)
+}
+
+// mergeBeforeHistory merges a population pull request of the deploy repository that names no
+// issue at noon three days before early, the start of the repository's history, and answers the
+// pull request as the history holds it. Merged then, it is an item of no day of the repository,
+// and the first of the repository's deploys to complete ships it.
+func (r *refresherRig) mergeBeforeHistory(t *testing.T, deliveries deliverytest.Fixture, early time.Time) delivery.DeliveryPullRequest {
+	t.Helper()
+	index := slices.IndexFunc(deliveries.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
+		return pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author)
+	})
+	if index < 0 {
+		t.Fatal("the history holds no merged pull request of the deploy repository that names no issue")
+	}
+	moved := deliveries.PullRequests[index]
+	r.exec(t, "merge a pull request before the deploy repository's history", `
+		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour')
+		where repo = $1 and number = $2
+	`, moved.Repo, moved.Number, early.AddDate(0, 0, -3).Add(12*time.Hour))
+	return moved
+}
+
+// deploysWithPRs is how many deploys with pull requests project's deploy-frequency counts on day
+// in its all-repositories row kept for repo, -1 where it holds no such row.
+func (r *refresherRig) deploysWithPRs(t *testing.T, project, repo string, day time.Time) int {
+	t.Helper()
+	return r.count(t, `
+		select coalesce((select (counts ->> 'with_prs')::float::int from eval_days
+			where project_key = $1 and eval_id = $2 and deploy_repo = $3 and series = $4 and repo = '' and day = $5), -1)
+	`, project, EvalID(project, SlugDeployFrequency), repo, measures.SeriesDeploys, day)
+}
+
+// TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext: a deploy ships every pull
+// request whose first shipping apply it is, whatever day the pull request merged, and a pull
+// request merged before the deploy repository's history began is an item of no day, so no item
+// names the deploy that ships it. Over a history whose deploy repository holds, two days before
+// the rest, a deploy that reached production and one that failed, and the day after them a deploy
+// that reached production (earlyDeploys), a pull request merged before them all ships with the
+// first: that deploy is one with pull requests, and the one of the day after ships none. The
+// first deploy's run is then deleted. Its day still holds a deploy run, so no series' first input
+// day moves and the page builds no span; the pull request ships with the deploy of the day after,
+// and the one pass writes that deploy's day too (refresh.shippedNeighbours), which no change
+// names: it counts a deploy with pull requests, as a second database holds it whose run was
+// deleted before its first walk (expectSameAsWalk). Before, that day kept counting none.
+func TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext(t *testing.T) {
+	remove := func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+		t.Helper()
+		r.exec(t, "delete the first deploy's jobs", `delete from delivery_run_jobs where repo = $1 and run_id = $2`, deliveries.DeployRepo, earlyFirstRun)
+		r.exec(t, "delete the first deploy's run", `delete from delivery_runs where repo = $1 and run_id = $2`, deliveries.DeployRepo, earlyFirstRun)
+	}
+	live, deliveries := newSettingsHistory(t, walkBatch)
+	early := live.earlyDeploys(t, deliveries)
+	live.mergeBeforeHistory(t, deliveries, early)
+	live.settle(t)
+	main, repo := deliveries.Project, deliveries.DeployRepo
+	if on, after := live.deploysWithPRs(t, main, repo, early), live.deploysWithPRs(t, main, repo, early.AddDate(0, 0, 1)); on != 1 || after != 0 {
+		t.Fatalf("%s counts %d deploys with pull requests on %s and %d the day after, and the check needs 1 and 0: the first deploy ships the pull request merged before the history",
+			main, on, early.Format(time.DateOnly), after)
+	}
+	if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	seq := live.latestSeq(t)
+	remove(t, live, deliveries)
+	report, next := live.pass(t)
+	if next.Equal(live.now) {
+		t.Errorf("the pass left a walk with days to build")
+	}
+	if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	changes, err := delivery.ChangesSince(t.Context(), live.database.Pool, seq, 100000)
+	if err != nil {
+		t.Fatalf("read the delivery changes after %d: %v", seq, err)
+	}
+	for _, change := range changes {
+		if change.RunKind == delivery.EvalDaysWrittenByRebuild {
+			t.Errorf("the pass built a span (the eval_days change of %s carries the rebuild's mark), and the check needs a page that builds none", change.Ref)
+		}
+	}
+	if on, after := live.deploysWithPRs(t, main, repo, early), live.deploysWithPRs(t, main, repo, early.AddDate(0, 0, 1)); on != 0 || after != 1 {
+		t.Errorf("%s counts %d deploys with pull requests on %s and %d the day after, want 0 and 1: the deploy of the day after ships the pull request now",
+			main, on, early.Format(time.DateOnly), after)
+	}
+	walk, _ := newSettingsHistory(t, walkBatch)
+	walk.mergeBeforeHistory(t, deliveries, walk.earlyDeploys(t, deliveries))
+	remove(t, walk, deliveries)
+	walk.settle(t)
+	live.expectSameAsWalk(t, "the first deploy's run deleted", walk)
+	t.Logf("the pass wrote %v", report.sorted())
+}
+
+// TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployThatShippedIt: over
+// the same history (earlyDeploys), whose first deploy ships a pull request merged before the
+// repository's history began, the pull request's merge moves to the moment the history holds it
+// at, inside the repository's history. The deploy that ships it there is named by the pull
+// request's new merge day; the first deploy, which shipped it and ships none now, was recorded
+// with no item, so it is the pull request's merge before the change that names it
+// (refresh.shippedNeighbours): its day counts no deploy with pull requests, as a second database
+// holds it that never moved the merge (expectSameAsWalk).
+func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployThatShippedIt(t *testing.T) {
+	live, deliveries := newSettingsHistory(t, walkBatch)
+	early := live.earlyDeploys(t, deliveries)
+	moved := live.mergeBeforeHistory(t, deliveries, early)
+	live.settle(t)
+	main, repo := deliveries.Project, deliveries.DeployRepo
+	if on := live.deploysWithPRs(t, main, repo, early); on != 1 {
+		t.Fatalf("%s counts %d deploys with pull requests on %s, and the check needs 1: the first deploy ships the pull request merged before the history",
+			main, on, early.Format(time.DateOnly))
+	}
+	live.exec(t, "merge the pull request when the history merges it", `
+		update delivery_pull_requests set merged_at = $3, created_at = $4 where repo = $1 and number = $2
+	`, moved.Repo, moved.Number, moved.MergedAt, moved.CreatedAt)
+	report, next := live.pass(t)
+	if next.Equal(live.now) {
+		t.Errorf("the pass left a walk with days to build")
+	}
+	if on := live.deploysWithPRs(t, main, repo, early); on != 0 {
+		t.Errorf("%s counts %d deploys with pull requests on %s, want 0: the first deploy ships no pull request now", main, on, early.Format(time.DateOnly))
+	}
+	walk, _ := newSettingsHistory(t, walkBatch)
+	walk.earlyDeploys(t, deliveries)
+	walk.settle(t)
+	live.expectSameAsWalk(t, "the pull request merged inside the history again", walk)
+	t.Logf("the pass wrote %v", report.sorted())
 }

@@ -36,9 +36,12 @@ import (
 //     day before and after. A change of the delivery settings rewrites, in one transaction, every
 //     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a move
 //     of the deploy repository moves none, since the evals that read it are kept for every
-//     repository that holds a delivery run and a read chooses among them (deploy_repos.go); a
-//     change of a repository's mapping in repo_projects (20261117100020) begins the delivery walk
-//     again, and every project's Legion walk too.
+//     repository that holds a delivery run and a read chooses among them (deploy_repos.go). A page
+//     whose changes move a series' first input day, or the repositories that hold a delivery run,
+//     writes the days it names and every other day those moves reach in its one commit, and
+//     moves no walk (span.go). A change of a repository's mapping in repo_projects
+//     (20261117100020) begins the delivery walk again, and every project's Legion walk too: a
+//     walk restart, whose days the walk rebuilds a batch a pass.
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of
 //     today, and one that moves an issue's repository or parent rewrites the days of the filings of
@@ -67,7 +70,7 @@ import (
 // or a day the walk has not computed yet, which reads "no data" until the walk computes it (item
 // 5). A day a change names is written from its own input; every day after a first input day it
 // moves earlier, or from one that lost its input, and every day of a repository whose first runs
-// arrived, is moved back to the walk, which builds it as a whole walk does (refresher_work.go).
+// arrived, is written with it, in the page's one commit, as a whole walk builds it (span.go).
 //
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // changes again; every write is safe to make twice.
@@ -537,20 +540,36 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // commitPage moves the two cursors to the positions a page read, begins again each walk the page's
 // changes call for, records work.built, where it is set, as the delivery settings the delivery and
 // CI rows stand built under (eval_days_settings), and work.kept, where it is set, as the
-// repositories they stand built for, moving the delivery walk back to work.keptRewind (syncKept),
-// in one transaction: the days the page named are written before it, so a crash between the two
-// reads the same changes again, and a walk the changes begin again or move back is recorded with
-// the cursor that passed them, and with the settings the walk builds under where none were
-// recorded (syncSettings). The event cursor is stamped with the moment the pass ran as of, and the
-// change cursor with its ReadAt, when a page last read the change log to its end (page), which the
-// lost-cursor rule reads and which a full page leaves where it stood. Once the transaction commits,
-// the pass records where it left the event cursor (eventsTo, owedFacts).
-func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork) error {
+// repositories they stand built for (syncKept), in one transaction, which first writes rebuilds:
+// the days of each family whose days the page writes in its commit, with every other day they
+// move (writeRebuilds: the rows, then the members, then the stored figures, ahead of the cursors,
+// the walks and the settings). The days the page named that move no other day are written before
+// it, so a crash between the two reads the same changes again, and a walk the changes begin again
+// is recorded with the cursor that passed them, and with the settings the walk builds under where
+// none were recorded (syncSettings). Where one of the page's changes is of the delivery settings
+// row and no rewrite of the page said so already, the commit says that the day rows stand at the
+// settings (markSettingsApplied). The event cursor is stamped with the moment the pass ran as
+// of, and the change cursor with its ReadAt, when a page last read the change log to its end
+// (page), which the lost-cursor rule reads and which a full page leaves where it stood. Once the
+// transaction commits, the pass records where it left the event cursor (eventsTo, owedFacts) and
+// what the rebuilds wrote (committed), and moves a batch of the change log's outbox into the log
+// where the commit logged a change.
+func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, rebuilds []*rebuild) error {
+	began := time.Now()
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := writeRebuilds(ctx, tx, rebuilds); err != nil {
+		return err
+	}
+	applied := work.settingsRow && !r.settingsApplied
+	if applied {
+		if err := markSettingsApplied(ctx, tx); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_days_cursor (name, position, at, updated_at)
 		select name, position, at, read_at
@@ -585,16 +604,6 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
-	if work.keptRewind != nil {
-		// Every build's delivery walk moves back, as every build's begins again above, and one to
-		// begin or behind the day stays where it is.
-		if _, err := tx.Exec(ctx, `
-			update eval_days_walks set next_day = $3, updated_at = $4
-			where family = $1 and project_key = $2 and next_day > $3
-		`, walkDelivery, "", *work.keptRewind, r.now); err != nil {
-			return fmt.Errorf("move the delivery walk back to %s: %w", work.keptRewind.Format(time.DateOnly), err)
-		}
-	}
 	if work.built != nil {
 		if err := recordBuiltUnder(ctx, tx, *work.built); err != nil {
 			return err
@@ -609,6 +618,14 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
 	}
 	r.eventsTo = cursors.events
+	r.committed(rebuilds)
+	logRebuilds(rebuilds, time.Since(began))
+	if applied {
+		r.settingsApplied = true
+	}
+	if applied || len(rebuilds) > 0 {
+		r.store.drainChanges(ctx)
+	}
 	return nil
 }
 

@@ -30,8 +30,11 @@ import (
 // eval_versions row is one new version of a definition or of one of its series and carries no
 // span, since it changes how every window of the eval reads; an eval_days row is one
 // transaction's writes of one eval's day rows, spanning midnight UTC of the first and the last day
-// written, and its RunKind names the settings rewrite where that wrote it
-// (EvalDaysWrittenBySettingsRewrite).
+// written, and its RunKind names the refresher's transaction that wrote it where that is its
+// rewrite of a settings change or its rebuild of a span (EvalDaysWrittenBySettingsRewrite,
+// EvalDaysWrittenByRebuild). An eval_days row of no eval, whose Repo and Ref are empty, is the
+// refresher's word that the day rows stand at the delivery settings a change of the settings
+// row named (SettingsApplied below): it carries the settings rewrite's RunKind and no span.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
@@ -44,7 +47,7 @@ type Change struct {
 	Seq     int64
 	At      time.Time
 	Kind    string // one of the ChangeKind constants
-	RunKind string // "deploy" | "pr_checks" for a run or a job; EvalDaysWrittenBySettingsRewrite (above); "" for the rest
+	RunKind string // "deploy" | "pr_checks" for a run or a job; an eval_days change's cause (above); "" for the rest
 	Repo    string
 	Ref     string
 	TOld    *time.Time
@@ -75,10 +78,39 @@ const (
 // rewrite of a delivery settings change wrote (evals.MarkSettingsRewrite). The rewrite's
 // transaction sets the transaction-local setting dispatch.eval_days_cause to it before its first
 // write of a day row, and eval_days_change_log records that setting as the change's run_kind
-// (migration 20261117100014); no other writer of day rows sets it. The Delivery page's live hub
-// recomputes an evals view such a change marks at once, where every other change waits the quiet
-// that gathers a burst into one recompute.
+// (migration 20261117100014). The Delivery page's live hub recomputes an evals view such a change
+// marks at once, where every other change but a rebuild's waits the quiet that gathers a burst
+// into one recompute.
+//
+// It is also the RunKind of the eval_days change of no eval (SettingsApplied): the one change the
+// refresher's page logs once the day rows stand at the delivery settings a change of the settings
+// row named, in the rewrite's transaction where it rewrote rows and in the page's commit where
+// the change moved none (a move of the deploy repository, which a read chooses rows by). An evals
+// view reads the settings and the rows together, so it is recomputed for this change, at once, and
+// not for the change of the settings row itself, which it would answer from rows not yet
+// rewritten.
 const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
+
+// EvalDaysWrittenByRebuild is the RunKind of an eval_days change that the refresher's rebuild of a
+// span wrote (evals.MarkRebuild): the one transaction in which a page whose changes move a series'
+// first input day, or the repositories that hold a delivery run, writes the days it names with
+// every other day those moves reach. Its day rows arrive together, as the settings rewrite's do,
+// so the live hub recomputes an evals view such a change marks at once.
+const EvalDaysWrittenByRebuild = "rebuild"
+
+// SettingsApplied reports whether change is the refresher's word that the day rows stand at the
+// delivery settings (EvalDaysWrittenBySettingsRewrite): an eval_days change of no eval.
+func SettingsApplied(change Change) bool {
+	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == ""
+}
+
+// EvalDaysImmediate reports whether change is an eval_days change whose day rows arrived together
+// in one transaction of the refresher's, its rewrite of a settings change or its rebuild of a
+// span, with no burst left to gather: a view of them is recomputed at once.
+func EvalDaysImmediate(change Change) bool {
+	return change.Kind == ChangeKindEvalDays &&
+		(change.RunKind == EvalDaysWrittenBySettingsRewrite || change.RunKind == EvalDaysWrittenByRebuild)
+}
 
 // ChangeRetention is how long delivery_changes keeps a row: a page away longer reads its window once.
 const ChangeRetention = 24 * time.Hour
