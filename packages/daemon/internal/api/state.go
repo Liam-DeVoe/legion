@@ -815,12 +815,13 @@ type Issue struct {
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
 	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
 	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
-	// of the running step, StepRole), and GivenEntry the
-	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
-	// sends the entry's own work to a role whose given number is below the entry its row names, on
-	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
-	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
-	// daemon has still to reach.
+	// of the running step, StepRole), and GivenEntry the entry of the last task the claim of the
+	// worker on that role's step was queued (supervise.Claim.GivenEntry; the worker is the claim
+	// the record gives the step, record.WorkerClaim, which can be a keyed agent's beside the
+	// role's own claim). The daemon sends the entry's own work to a worker whose given number is
+	// below the entry its row names, on every admission pass and on a sweep of its own each minute
+	// (workflow.OwedEntry, admit's resumeSlottedWorkers), so a reader tells a role holding the
+	// work its row names from one the daemon has still to reach.
 	//
 	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
 	// phase a root's own architect works, so the two numbers there are the architect's as they
