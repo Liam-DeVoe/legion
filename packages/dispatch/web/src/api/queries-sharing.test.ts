@@ -224,6 +224,43 @@ test("a read of every done issue starts a rolling window on its hour, and a rang
   }
 });
 
+// k9: a window whose end is at or before its first moment holds no close, and the list route
+// refuses it (INVALID_CLOSED_WINDOW). Done's reads of it answer no row and ask the route nothing.
+test("a window that holds no moment is read as no done issue, with no request", async () => {
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const listIssuePage = spyOn(api, "listIssuePage").mockResolvedValue({
+    issues: [],
+    limit: 50,
+    offset: 0,
+    total: 0,
+  });
+  const backwards: ClosedWindow = {
+    from: Date.parse("2026-11-10T00:00:00Z"),
+    to: Date.parse("2026-11-03T00:00:00Z"),
+    rolling: false,
+  };
+  try {
+    expect(await client().fetchQuery(projectDoneIssuesQuery("CORE", backwards))).toEqual([]);
+    expect(
+      await client().fetchQuery(
+        projectDonePageQuery("CORE", { offset: 0, size: 50, window: backwards })
+      )
+    ).toEqual({ issues: [], limit: 50, offset: 0, total: 0 });
+    expect(listIssues).not.toHaveBeenCalled();
+    expect(listIssuePage).not.toHaveBeenCalled();
+    // Its reads are its own, apart from those of every done issue.
+    expect(projectDoneIssuesQuery("CORE", backwards).queryKey).not.toEqual(
+      projectDoneIssuesQuery("CORE", undefined).queryKey
+    );
+    expect(
+      projectDonePageQuery("CORE", { offset: 0, size: 50, window: backwards }).queryKey
+    ).not.toEqual(projectDonePageQuery("CORE", { offset: 0, size: 50 }).queryKey);
+  } finally {
+    listIssues.mockRestore();
+    listIssuePage.mockRestore();
+  }
+});
+
 test("Open's count is the total of a one-row page of the open listing", async () => {
   const asked: Record<string, string>[] = [];
   answerRequests(

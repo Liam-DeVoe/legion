@@ -2274,6 +2274,35 @@ test.each([
     expect(options?.open === true || options?.status !== undefined).toBe(true);
 });
 
+// k9: Done sends the list route no window it refuses. A to day before the from day holds no
+// moment: Done lists no row and asks for none, and the address and the chip keep the window. A day
+// count that reaches back past the first time the route reads holds every close, so Done reads
+// every done row with no `closed_since`.
+test("Done asks for no window the list route refuses: to before from lists no row, and a count past every date reads every done row", async () => {
+  const { listing, page } = table(VIEW_ROWS(), "?view=done&f.closed=2026-11-10..2026-11-03");
+  expect(await screen.findByText("No issues match these filters.")).toBeDefined();
+  await waitFor(() => expect(listingReads(listing, page)).toEqual([OPEN_COUNT_READ]));
+  expect(
+    screen.getByRole("button", { name: "Remove Closed: 2026-11-10 to 2026-11-02 filter" })
+  ).toBeDefined();
+  expect(routeSearch()).toBe("?view=done&f.closed=2026-11-10..2026-11-03");
+  expect(screen.queryByText(/Could not load/)).toBeNull();
+  // The next page starts over, with spies of its own.
+  for (const restore of restores.splice(0)) restore();
+
+  const reads = table(VIEW_ROWS(), "?view=done&f.closed=750000d");
+  expect(await screen.findByRole("row", { name: /^CORE-5 / })).toBeDefined();
+  expect(screen.getByRole("row", { name: /^CORE-3 / })).toBeDefined();
+  await waitFor(() =>
+    expect(listingReads(reads.listing, reads.page)).toEqual(
+      [
+        `page ${JSON.stringify({ project: "CORE", status: ["done"], sort: "-closed_at", limit: 50, offset: 0 })}`,
+        OPEN_COUNT_READ,
+      ].sort()
+    )
+  );
+});
+
 /** The saved views alice keeps for CORE: Open narrowed to Todo, Done, and every status. */
 function keepSavedViews(views: readonly { name: string; query: string }[]) {
   localStorage.setItem(

@@ -73,6 +73,25 @@ test("a window with one end leaves the other out, and no end at all writes nothi
   expect(wrote).toEqual(["..2026-11-10", "2026-11-03.."]);
 });
 
+// k9: the picker takes no To before its From. Each date bounds the other, so the browser's
+// calendar offers no such day and its check stops Apply, and Apply writes nothing for it.
+test("the picker takes no To before its From", async () => {
+  const user = userEvent.setup();
+  const wrote: (string | undefined)[] = [];
+  render(<Header column={closed(undefined, wrote)} />);
+  await user.click(screen.getByRole("button", { name: "Filter Closed" }));
+  await enter(user, "Closed from", "2026-11-10");
+  expect(screen.getByLabelText("Closed to")).toHaveAttribute("min", "2026-11-10");
+  expect(screen.getByLabelText("Closed from")).not.toHaveAttribute("max");
+  await enter(user, "Closed to", "2026-11-03");
+  expect(screen.getByLabelText("Closed from")).toHaveAttribute("max", "2026-11-03");
+  await user.click(screen.getByRole("button", { name: "Apply" }));
+  expect(wrote).toEqual([]);
+  // The panel stays open with the two dates, for the reader to change.
+  expect(screen.getByLabelText("Closed from")).toHaveValue("2026-11-10");
+  expect(screen.getByLabelText("Closed to")).toHaveValue("2026-11-03");
+});
+
 test("it offers 1, 7, 28 and 90 days and All, each one press", async () => {
   const user = userEvent.setup();
   const wrote: (string | undefined)[] = [];

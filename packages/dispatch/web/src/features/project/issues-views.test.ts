@@ -11,6 +11,7 @@ import type { Actor } from "../../api/types";
 import { copyAddress, type TableAddressGrammar, useTableAddress } from "../../lib/page-address";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { openIssueStatuses } from "./board-model";
+import { holdsNoMoment } from "./issues-legion";
 import {
   readSelection,
   readUrl,
@@ -562,6 +563,47 @@ test("f.closed=<N>d is the last N times 24 hours up to now, rolling", () => {
   expect(readWindow("1000000000d", NOW)).toBeUndefined();
 });
 
+// k9: the list route reads `closed_since` only from 0000-01-01T00:00:00Z on, since an RFC 3339
+// time writes its year in four digits. A count that reaches back past it holds every close, as no
+// window does, so no read sends the route a time it refuses (INVALID_CLOSED_SINCE).
+test("f.closed=<N>d reaching back past the first time the list route reads is no window", () => {
+  const first = Date.parse("0000-01-01T00:00:00Z");
+  const furthest = Math.floor((NOW - first) / DAY);
+  const window = readWindow(`${furthest}d`, NOW);
+  expect(window).toEqual({ from: NOW - furthest * DAY, to: null, rolling: true });
+  expect(new Date(window?.from ?? 0).toISOString()).toBe("0000-01-01T12:00:00.000Z");
+  expect(readWindow(`${furthest + 1}d`, NOW)).toBeUndefined();
+  expect(readWindow("750000d", NOW)).toBeUndefined();
+});
+
+// k9: a range whose `to` is at or before its `from` holds no moment. Done lists no row for it and
+// asks the route nothing, which refuses it (INVALID_CLOSED_WINDOW). The window stays as the
+// address names it, so its chip shows it.
+test("f.closed=<from>..<to> whose to is at or before its from holds no moment", () => {
+  const backwards = readWindow("2026-11-10..2026-11-03", NOW);
+  expect(backwards).toEqual({
+    from: Date.parse("2026-11-10T00:00:00Z"),
+    to: Date.parse("2026-11-03T00:00:00Z"),
+    rolling: false,
+  });
+  expect(holdsNoMoment(backwards)).toBe(true);
+  for (const at of ["2026-11-02T12:00:00Z", "2026-11-05T12:00:00Z", "2026-11-11T12:00:00Z"])
+    expect({ at, held: inWindow(at, backwards) }).toEqual({ at, held: false });
+  expect(holdsNoMoment(readWindow("2026-11-03..2026-11-03", NOW))).toBe(true);
+  expect(holdsNoMoment(readWindow("2026-11-03T10:00:00Z..2026-11-03T09:59:59.999Z", NOW))).toBe(
+    true
+  );
+  // A window of one moment holds it; open ends, a day count and no window hold moments too.
+  expect(holdsNoMoment(readWindow("2026-11-03T10:00:00Z..2026-11-03T10:00:00.001Z", NOW))).toBe(
+    false
+  );
+  for (const value of ["2026-11-03..2026-11-04", "2026-11-10..", "..2026-11-03", "7d", "all"])
+    expect({ value, empty: holdsNoMoment(readWindow(value, NOW)) }).toEqual({
+      value,
+      empty: false,
+    });
+});
+
 test("f.closed=<from>..<to> takes UTC dates or RFC 3339 times in Z, from included and to left out, either end open", () => {
   const week = readWindow("2026-11-03..2026-11-10", NOW);
   expect(week).toEqual({
@@ -637,6 +679,10 @@ test("the picker includes the To day it shows: 11/03 to 11/09 writes f.closed=20
   expect(rangeValue("2026-11-03", "")).toBe("2026-11-03..");
   expect(rangeValue("", "2026-11-09")).toBe("..2026-11-10");
   expect(rangeValue("", "")).toBeUndefined();
+  // The picker takes no To before its From: its window would hold no moment.
+  expect(rangeValue("2026-11-10", "2026-11-03")).toBeUndefined();
+  expect(rangeValue("2026-11-10", "2026-11-09")).toBeUndefined();
+  expect(rangeValue("2026-11-10", "2026-11-10")).toBe("2026-11-10..2026-11-11");
   expect(rangeDays("2026-11-03..")).toEqual({ from: "2026-11-03", to: "" });
   expect(rangeDays("..2026-11-10")).toEqual({ from: "", to: "2026-11-09" });
   expect(rangeDays("2026-11-03T10:30:00Z..2026-11-04T08:00:00Z")).toEqual({

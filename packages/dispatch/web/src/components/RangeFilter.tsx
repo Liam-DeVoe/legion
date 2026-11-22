@@ -47,7 +47,9 @@ function CalendarIcon(): ReactNode {
   );
 }
 
-/** The panel's controls, made each time it opens, so its dates start at the window in force. */
+/** The panel's controls, made each time it opens, so its dates start at the window in force. The
+ *  picker takes no To before its From: each date bounds the other (`min`, `max`), so the browser's
+ *  calendar offers no such day and its check stops Apply, and `rangeValue` writes nothing for it. */
 function RangePanel({
   close,
   name,
@@ -95,6 +97,7 @@ function RangePanel({
           <input
             aria-label={`${name} from`}
             className={DATE_INPUT}
+            max={to === "" ? undefined : to}
             onChange={(event) => setFrom(event.target.value)}
             type="date"
             value={from}
@@ -103,6 +106,7 @@ function RangePanel({
           <input
             aria-label={`${name} to`}
             className={DATE_INPUT}
+            min={from === "" ? undefined : from}
             onChange={(event) => setTo(event.target.value)}
             type="date"
             value={to}

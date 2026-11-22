@@ -13,6 +13,7 @@ import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import {
   type ClosedWindow,
   HOUR_MS,
+  holdsNoMoment,
   type ItemsWindow,
   LEGION_WORK_TIME,
   readLegionItems,
@@ -451,8 +452,9 @@ function hourStart(window: ClosedWindow | undefined): ClosedWindow | undefined {
 /** Every done issue of a project that a Closed window holds, or every done issue where the view
  *  names no window: what a view that lists done rows reads when the browser sorts, narrows and
  *  pages them. A rolling window is read from the start of the hour of its first moment
- *  (`hourStart`). Under the project listing's prefix, so the events that read the listing
- *  again read this again too, and a board move waits as it does there. */
+ *  (`hourStart`). A window that holds no moment holds no done issue, so the route, which refuses
+ *  it, is not asked (`holdsNoMoment`). Under the project listing's prefix, so the events that read
+ *  the listing again read this again too, and a board move waits as it does there. */
 export const projectDoneIssuesQuery = (project: string, window: ClosedWindow | undefined) => {
   const range = closedRange(hourStart(window));
   return queryOptions({
@@ -464,6 +466,7 @@ export const projectDoneIssuesQuery = (project: string, window: ClosedWindow | u
       range.closed_before ?? "",
     ],
     queryFn: async (context) => {
+      if (holdsNoMoment(window)) return [];
       await boardMovesSettled(context, project);
       return api.listIssues({ project, status: ["done"], ...range });
     },
@@ -475,7 +478,8 @@ export const projectDoneIssuesQuery = (project: string, window: ClosedWindow | u
  *  nothing but a Closed window. `size` is the page's rows and `offset` the rows before it. The
  *  read sends the window's own first moment, so its rows and its `total` are the window's. For a
  *  rolling window that moment moves with the clock the caller reads, and each new moment is a new
- *  read. Under the project listing's prefix, as `projectDoneIssuesQuery`. */
+ *  read. A window that holds no moment is an empty page that asks the route nothing
+ *  (`holdsNoMoment`). Under the project listing's prefix, as `projectDoneIssuesQuery`. */
 export const projectDonePageQuery = (
   project: string,
   page: { readonly offset: number; readonly size: number; readonly window?: ClosedWindow }
@@ -492,6 +496,8 @@ export const projectDonePageQuery = (
       page.offset,
     ],
     queryFn: async (context) => {
+      if (holdsNoMoment(page.window))
+        return { issues: [], limit: page.size, offset: page.offset, total: 0 };
       await boardMovesSettled(context, project);
       return api.listIssuePage({
         project,

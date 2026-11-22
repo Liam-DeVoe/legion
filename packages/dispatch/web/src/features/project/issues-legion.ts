@@ -207,6 +207,15 @@ export interface ClosedWindow {
   readonly rolling: boolean;
 }
 
+/** Whether a Closed window holds no moment: its end at or before its first moment, as an address
+ *  whose to day comes before its from day names. No close falls in it, and the list route refuses
+ *  it (`INVALID_CLOSED_WINDOW`), so a read of it asks the route nothing and lists no row. */
+export function holdsNoMoment(window: ClosedWindow | undefined): boolean {
+  return (
+    window !== undefined && window.from !== null && window.to !== null && window.from >= window.to
+  );
+}
+
 /** The eval whose items carry a closed issue's Legion facts, one `issue` row per issue. */
 export const LEGION_WORK_TIME = "legion-work-time";
 

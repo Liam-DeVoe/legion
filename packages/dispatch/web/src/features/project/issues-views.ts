@@ -19,6 +19,7 @@ import { type IssueStatus, openIssueStatuses } from "./board-model";
 import {
   type ClosedWindow,
   HOUR_MS,
+  holdsNoMoment,
   LEGION_PHASES,
   type LegionFacts,
   sinceMs,
@@ -421,12 +422,19 @@ function readEnd(text: string): number | null | undefined {
 /** The value of `f.closed` that names no window. */
 export const ALL_CLOSED = "all";
 
+/** The first moment the list route reads in `closed_since` or `closed_before`: an RFC 3339 time
+ *  writes its year in four digits, so no time before 0000-01-01T00:00:00Z. No close comes before
+ *  it. */
+const FIRST_READABLE_MS = Date.parse("0000-01-01T00:00:00Z");
+
 /**
  * The Closed window `f.closed` names, or undefined for none. `<N>d` is the last N times 24 hours
  * up to `nowMs`, rolling. `<from>..<to>` is a range of UTC dates (`2026-11-03`) or RFC 3339 times
  * written in UTC with `Z`, `from` included and `to` left out, as the list route takes
- * `closed_since` and `closed_before`; either end may be left out. `all`, and a value this cannot
- * read, are no window: an older link still opens the view.
+ * `closed_since` and `closed_before`; either end may be left out. A range whose `to` is at or
+ * before its `from` holds no moment (`holdsNoMoment`): it lists no row, and no read asks the
+ * route for it. `all`, and a value this cannot read, are no window: an older link still opens the
+ * view.
  */
 export function readWindow(
   value: string | null | undefined,
@@ -437,10 +445,9 @@ export function readWindow(
   if (days !== null) {
     const count = Number(days[1]);
     const from = nowMs - count * DAY_MS;
-    // A count so large that its first moment is past what a `Date` holds is no window.
-    return count > 0 && !Number.isNaN(new Date(from).getTime())
-      ? { from, to: null, rolling: true }
-      : undefined;
+    // A count whose first moment comes before the first moment the list route reads holds every
+    // close, as no window does: so it is none, and no read sends the route a time it refuses.
+    return count > 0 && from >= FIRST_READABLE_MS ? { from, to: null, rolling: true } : undefined;
   }
   const split = value.indexOf("..");
   if (split === -1) return undefined;
@@ -478,11 +485,14 @@ export function lastDayOf(to: string): string {
 }
 
 /** The `f.closed` value a date picker writes for the UTC days `from` to `to`, both included, or
- *  undefined where it names neither: so 2026-11-03 to 2026-11-09 writes
- *  `2026-11-03..2026-11-10`, and one day is `<day>..<next day>`. */
+ *  undefined where it names neither or its To comes before its From, a window that holds no
+ *  moment: so 2026-11-03 to 2026-11-09 writes `2026-11-03..2026-11-10`, and one day is
+ *  `<day>..<next day>`. */
 export function rangeValue(from: string, to: string): string | undefined {
   if (from === "" && to === "") return undefined;
-  return `${from}..${toEndOfDay(to)}`;
+  const value = `${from}..${toEndOfDay(to)}`;
+  // A range reads no clock, so any `nowMs` reads it the same.
+  return holdsNoMoment(readWindow(value, 0)) ? undefined : value;
 }
 
 /** The UTC days a date picker shows for a `<from>..<to>` value, its To the last day the window
