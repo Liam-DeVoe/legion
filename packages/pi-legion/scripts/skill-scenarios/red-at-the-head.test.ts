@@ -72,13 +72,14 @@ function freshDir(name: string): string {
 }
 
 /** The rig's one table of the worlds (jq/worlds.json, which red_world and red_workflows read): each
- * world's facts and the name of its red's lane, and each lane. */
+ * world's facts and the name of its red's lane, and each lane, with the full name of its failing
+ * test (empty where the red is no test) and the command of its one step where that step runs one. */
 const RED_TABLE: {
   worlds: Record<
     string,
     { after: "green" | "red"; aggregate: boolean; over_lane: boolean; lane: string }
   >;
-  lanes: Record<string, { check: string; job: string }>;
+  lanes: Record<string, { check: string; job: string; test_name: string; step?: { run?: string } }>;
 } = JSON.parse(readFileSync(path.join(import.meta.dir, "jq", "worlds.json"), "utf8"));
 /** Each world's red check, the job that carries it, and what the head settles at once the re-run
  * is pressed (red_fixture), from the table: its lane's check and job, and its `after`. In i and j
@@ -2239,14 +2240,16 @@ describe("the reads of the repository and the pull request", () => {
     });
   });
 
-  // Catches: a change whose tests leave greet's CLI path untested, the usage line on stderr and
-  // exit 2 for no name or a blank one: with that path untested, ten head reviewers of the batch at
-  // 58bc6a5b named the gap, a clear fix in a file the pull request touches, which
-  // roles/core/reviewer.md has a reviewer request changes for whatever the world's red. The head's
+  // Catches: a change whose tests leave a path of greet's CLI untested. With the usage path
+  // untested (the usage line on stderr and exit 2 for no name or a blank one), ten head reviewers
+  // of the batch at 58bc6a5b named the gap, a clear fix in a file the pull request touches, which
+  // roles/core/reviewer.md has a reviewer request changes for whatever the world's red. With R1's
+  // path untested (`bun greet.ts Ada` printing `Hello, Ada!` and a newline on stdout and nothing on
+  // stderr, and exiting 0), reviewers of the batch at 221488c0 found the same gap. The head's
   // greet.test.ts, run by `bun test`, must pass beside the head's greet.ts and fail beside each
-  // greet.ts that breaks one part of that path, so a test of the change covers each part, whatever
-  // its name or its words.
-  test("the change's tests cover greet's CLI path: usage on stderr, exit 2, no name or a blank one", () => {
+  // greet.ts that breaks one part of either path, so a test of the change covers each part,
+  // whatever its name or its words.
+  test("the change's tests cover greet's CLI: the greeting on stdout and exit 0, usage on stderr and exit 2 with no name or a blank one", () => {
     const run = redFixture("a");
     const { head } = shasOf(run);
     const greet = git(run, "show", `${head}:greet.ts`);
@@ -2259,16 +2262,77 @@ describe("the reads of the repository and the pull request", () => {
       const code = Bun.spawnSync([process.execPath, "test"], { cwd: dir, env: childEnv }).exitCode;
       return code === 0 ? "pass" : "fail";
     };
-    /** The head's greet.ts, and that file with each part of the CLI path broken by one edit. */
+    const greeting = "console.log(greet(name));";
+    /** The head's greet.ts, and that file with each part of either path broken by one edit. */
     const sources: Record<string, string> = {
       head: greet,
-      exit: greet.replace("process.exit(2)", "process.exit(1)"),
-      stream: greet.replace('console.error("usage', 'console.log("usage'),
-      blank: greet.replace('name.trim() === ""', 'name === ""'),
+      usageExit: greet.replace("process.exit(2)", "process.exit(1)"),
+      usageStream: greet.replace('console.error("usage', 'console.log("usage'),
+      usageBlank: greet.replace('name.trim() === ""', 'name === ""'),
+      greetingExit: greet.replace(greeting, `${greeting}\n  process.exit(1);`),
+      greetingStream: greet.replace(greeting, "console.error(greet(name));"),
+      greetingNewline: greet.replace(greeting, "process.stdout.write(greet(name));"),
+      greetingStderr: greet.replace(greeting, `${greeting}\n  console.error("greeted");`),
     };
     expect(
       Object.fromEntries(Object.entries(sources).map(([part, source]) => [part, verdict(source)]))
-    ).toEqual({ head: "pass", exit: "fail", stream: "fail", blank: "fail" });
+    ).toEqual({
+      head: "pass",
+      usageExit: "fail",
+      usageStream: "fail",
+      usageBlank: "fail",
+      greetingExit: "fail",
+      greetingStream: "fail",
+      greetingNewline: "fail",
+      greetingStderr: "fail",
+    });
+  });
+
+  // Catches: a base without packages/notify, the package that the lane of the foreign red tests
+  // with `bun test packages/notify`, or a base whose packages/notify has no test of the name that
+  // a red log gives. The base of the batch at 221488c0 held no packages/notify, so the lane's
+  // command found no test in a checkout, and reviewers of that batch found that gap. World `a`'s
+  // red log names the test (world.json's `log` and `test`), and so does each lane of the table
+  // that runs the command. In a checkout of the head, `bun test packages/notify` must report each
+  // such test under packages/notify/notify.test.ts, and every test must pass: the worlds model a
+  // test that fails at random in CI, so a local pass contradicts no world whose re-run comes back
+  // green.
+  test("packages/notify at the head holds the test a red log names, and it passes in a checkout", () => {
+    const run = redFixture("a");
+    const world: { head: string; log: string; test: string } = JSON.parse(
+      readFileSync(path.join(run, "world.json"), "utf8")
+    );
+    const lanes = Object.values(RED_TABLE.lanes)
+      .filter((lane) => lane.step?.run === "bun test packages/notify")
+      .map((lane) => lane.test_name);
+    const checkout = freshDir("notify");
+    const cloned = [
+      ["clone", "--quiet", path.join(run, "remote.git"), checkout],
+      ["-C", checkout, "checkout", "--quiet", "--detach", world.head],
+    ].map((args) => Bun.spawnSync(["git", ...args], { env: childEnv }).exitCode);
+    const tested = Bun.spawnSync([process.execPath, "test", "packages/notify"], {
+      cwd: checkout,
+      env: childEnv,
+    });
+    // bun reports on stderr each file it ran, then each test of the file with its verdict and
+    // its full name (`(pass) <describe> > <test>`) and a duration, which the row drops.
+    const report = outputLines(tested.stderr.toString())
+      .filter((line) => /^\S+\.test\.ts:$|^\((?:pass|fail|skip|todo)\) /.test(line))
+      .map((line) => line.replace(/ \[[^\]]*\]$/, ""));
+    expect({
+      logged: world.log.startsWith(`(fail) ${world.test} [`),
+      cloned,
+      report,
+      exit: tested.exitCode,
+    }).toEqual({
+      logged: true,
+      cloned: [0, 0],
+      report: [
+        "packages/notify/notify.test.ts:",
+        ...[...new Set([world.test, ...lanes])].map((name) => `(pass) ${name}`),
+      ],
+      exit: 0,
+    });
   });
 
   // Catches: a job log through the API that names another failure than the world's, a log for a

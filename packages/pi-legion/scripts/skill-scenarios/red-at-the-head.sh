@@ -265,17 +265,27 @@ repo_snapshot() {
 # in the shared /tmp), and each batch's heads carry its own start time.
 # The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
 # holds the check that the implementer's seeded result and the tester's own run are against.
-# The change tests what it adds: greet.test.ts covers greet() and its CLI path, `bun greet.ts`
-# with no name or a blank one printing `usage: greet.ts <name>` on stderr and exiting 2. With that
-# path untested, ten head reviewers of the batch at 58bc6a5b named the gap, a clear fix in a file
-# the pull request touches, which roles/core/reviewer.md has a reviewer request changes for
-# whatever the world's red.
+# The change tests what it adds: greet.test.ts covers greet() and both paths of its CLI. `bun
+# greet.ts Ada` prints `Hello, Ada!` on stdout and nothing on stderr, and exits 0 (the spec's R1).
+# `bun greet.ts` with no name or a blank one prints `usage: greet.ts <name>` on stderr and nothing
+# on stdout, and exits 2 (R2). With the usage path untested, ten head reviewers of the batch at
+# 58bc6a5b named the gap, a clear fix in a file the pull request touches, which
+# roles/core/reviewer.md has a reviewer request changes for whatever the world's red. Reviewers of
+# the batch at 221488c0 found the same gap in R1's path, which that batch's greet.test.ts left
+# untested.
 # The world's repository and the branch the pull request merges into are world_repository's, read
 # from $R/world.json, and the pull request body's line for each check of the Verification document
 # is written from that check as seed.ts tester-proof wrote it to $R/fixture.json (checks_lines).
 # The base commit holds the workflows of the world WORLD names (red_workflows; the tester-proof
 # world's where it names none), so the head inherits them and the pull request changes no file
-# under .github.
+# under .github. The base holds packages/notify too: the package that the lane of the foreign red
+# tests with `bun test packages/notify` (worlds.json's lanes `notify` and `aggregate`). Its one
+# test has the one name that the worlds' red logs give, `notify > retries a refused send`, and it
+# passes when it runs in a checkout, with no clock, network or randomness. The worlds model a test
+# that fails at random in CI, so a local pass contradicts no world whose re-run comes back green.
+# The base of the batch at 221488c0 held no packages/notify, so the lane's command found no test
+# in a checkout, and reviewers of that batch found that gap too. The change does not touch the
+# package.
 # testerProof fails a run that
 # pushes a change to legion/<key>, and it cannot tell a tester that pinned a real defect with a red
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
@@ -300,6 +310,34 @@ EOF
       git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
   }
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
+  mkdir -p "$src/packages/notify"
+  cat >"$src/packages/notify/notify.ts" <<'EOF'
+/** Sends `message` with `send`, again each time `send` refuses it, up to `tries` sends in all,
+ * and answers whether a send went through. */
+export function notify(send: (message: string) => boolean, message: string, tries = 3): boolean {
+  for (let sent = 0; sent < tries; sent++) {
+    if (send(message)) return true;
+  }
+  return false;
+}
+EOF
+  cat >"$src/packages/notify/notify.test.ts" <<'EOF'
+import { describe, expect, test } from "bun:test";
+import { notify } from "./notify";
+
+describe("notify", () => {
+  test("retries a refused send", () => {
+    const answers = [false, true];
+    const sends: string[] = [];
+    const send = (message: string) => {
+      sends.push(message);
+      return answers.shift() ?? false;
+    };
+    expect(notify(send, "deployed")).toBe(true);
+    expect(sends).toEqual(["deployed", "deployed"]);
+  });
+});
+EOF
   model=$(red_workflows "$world" "$title") || fail "worker_fixture: no workflows of world '$world'"
   green=$(red_workflows) || fail "worker_fixture: no workflows of the tester-proof world"
   mkdir -p "$src/.github/workflows"
@@ -338,14 +376,20 @@ test("trims the name", () => {
 });
 
 test("prints its usage on stderr and exits 2 with no name or a blank one", () => {
-  const cli = (...args: string[]) => {
-    const run = Bun.spawnSync([process.execPath, "greet.ts", ...args], { cwd: import.meta.dir });
-    return [run.exitCode, run.stderr.toString()];
-  };
-  const usage = [2, "usage: greet.ts <name>\n"];
+  const usage = { exitCode: 2, stdout: "", stderr: "usage: greet.ts <name>\n" };
   expect(cli()).toEqual(usage);
   expect(cli("   ")).toEqual(usage);
 });
+
+test("prints the greeting on stdout and exits 0 with a name", () => {
+  expect(cli("Ada")).toEqual({ exitCode: 0, stdout: "Hello, Ada!\n", stderr: "" });
+});
+
+/** Runs `bun greet.ts` with `args`: its exit code, and what it printed on stdout and on stderr. */
+function cli(...args: string[]) {
+  const run = Bun.spawnSync([process.execPath, "greet.ts", ...args], { cwd: import.meta.dir });
+  return { exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
+}
 EOF
   g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
   C1=$(g rev-parse HEAD)
