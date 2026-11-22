@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 )
 
 // The map file `envoy-dispatch premortem-convert --prevented-by` reads: one line for each risk, three
@@ -68,7 +68,7 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 	} {
 		text := "# the map\n0\tnone\tA reason.\n" + refused.line + "\n"
 		if _, _, err := parsePreventedBy(text); err == nil || !strings.HasPrefix(err.Error(), "3: ") ||
-			!namesAsAWord(err.Error(), refused.names...) {
+			!graphstoretest.NamesAsAWord(err.Error(), refused.names...) {
 			t.Errorf("a map with %s on line 3 is refused %v, want line 3 named, naming %q", refused.name, err, refused.names)
 		}
 
@@ -80,7 +80,7 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 		code := runSubcommand(context.Background(), []string{"premortem-convert", "--issue", "CORE-1",
 			"--artifact", "graph-premortem-md", "--prevented-by", path}, envGetter(map[string]string{}), &stdout, &stderr)
 		if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), path+":3: ") ||
-			!namesAsAWord(stderr.String(), refused.names...) {
+			!graphstoretest.NamesAsAWord(stderr.String(), refused.names...) {
 			t.Errorf("premortem-convert with %s on line 3 exited %d with stdout %q and stderr %q, want 1 naming %s:3 and %q",
 				refused.name, code, stdout.String(), stderr.String(), path, refused.names)
 		}
@@ -90,7 +90,7 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 	// follows it names every flag.
 	var stdout, stderr bytes.Buffer
 	if code := runSubcommand(context.Background(), []string{"premortem-convert", "--issue", "CORE-1"},
-		envGetter(map[string]string{}), &stdout, &stderr); code != 2 || !namesAsAWord(strings.SplitN(stderr.String(), "\n", 2)[0], "--artifact") {
+		envGetter(map[string]string{}), &stdout, &stderr); code != 2 || !graphstoretest.NamesAsAWord(strings.SplitN(stderr.String(), "\n", 2)[0], "--artifact") {
 		t.Errorf("premortem-convert without --artifact exited %d with stderr %q, want 2 naming the flag", code, stderr.String())
 	}
 	stderr.Reset()
@@ -98,23 +98,4 @@ func TestThePremortemMapFileIsRefusedNamingTheLine(t *testing.T) {
 		envGetter(map[string]string{}), &stdout, &stderr); code != 0 || !strings.Contains(stderr.String(), "three fields separated by\none tab each") {
 		t.Errorf("premortem-convert -h exited %d with stderr %q, want 0 and the usage giving the map file's format", code, stderr.String())
 	}
-}
-
-// namesAsAWord is whether text names each of names as words of its own, as the dispatch api's
-// tests hold a refusal to what it names: text split on spaces and commas, each word shorn of the
-// quotes, brackets, colons, semicolons and full stops at its ends, holds each name as one of its
-// words, and a name of several words as that run of words. A test of this package cannot import
-// a test helper of that one, so this is the same rule, word for word.
-func namesAsAWord(text string, names ...string) bool {
-	var words []string
-	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
-		words = append(words, strings.Trim(word, "\"'`()[]:;."))
-	}
-	spaced := " " + strings.Join(words, " ") + " "
-	for _, name := range names {
-		if !strings.Contains(spaced, " "+name+" ") {
-			return false
-		}
-	}
-	return true
 }

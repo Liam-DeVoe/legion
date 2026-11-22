@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -21,8 +22,8 @@ import (
 // statement together (cybermonklabs/legion#4554).
 const referencesClosureBound = 2 * time.Second
 
-// inClosureRead runs read, getIssueReferences's refs.Closure, in a read transaction of its own, on
-// a context that ends a second past referencesClosureBound. read is handed that context and the
+// inClosureRead runs refs.Closure, getIssueReferences's read, in a read transaction of its own, on
+// a context that ends a second past referencesClosureBound. The read is handed that context and the
 // transaction as closureBudget, so every statement it sends - the out and in statements and each
 // loader that names their nodes - runs under what is left of the bound since the read started.
 // One statement_timeout of the whole bound for the transaction would not hold the bound: the read
@@ -47,7 +48,7 @@ const referencesClosureBound = 2 * time.Second
 // local), and it starts with refs.ClosureTag, as every other statement of the read does, so that
 // pg_stat_activity names it as the read's. TestTheIssueReferencesReadRunsWithJITOff holds the
 // route's read to it on a session that starts at jit = on.
-func (s *server) inClosureRead(ctx context.Context, read func(context.Context, refs.Queryer) (refs.References, error)) (refs.References, error) {
+func (s *server) inClosureRead(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()
@@ -63,7 +64,7 @@ func (s *server) inClosureRead(ctx context.Context, read func(context.Context, r
 	if _, err := tx.Exec(ctx, refs.ClosureTag+"set local jit = off"); err != nil {
 		return refs.References{}, err
 	}
-	return read(ctx, closureBudget{tx: tx, started: started})
+	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey)
 }
 
 // closureBudget is inClosureRead's transaction tx as its read reads it (refs.Queryer). Before

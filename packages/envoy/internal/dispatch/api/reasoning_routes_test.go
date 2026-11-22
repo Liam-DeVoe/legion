@@ -11,11 +11,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -115,8 +115,9 @@ func (r reasoningRig) current(fromKind, fromID, kind string) []string {
 }
 
 // requireRefused fails unless response is status with code, its message naming each of names as
-// words of its own (namesAsAWord): what the route's refusal names - an address, an id, a kind, a
-// state, a field - and never its sentence, which a rewording changes with no change in behaviour.
+// words of its own (graphstoretest.NamesAsAWord): what the route's refusal names - an address, an
+// id, a kind, a state, a field - and never its sentence, which a rewording changes with no change
+// in behaviour.
 func requireRefused(t *testing.T, name string, response *httptest.ResponseRecorder, status int, code string, names ...string) refusalAnswer {
 	t.Helper()
 	t.Logf("%s: status=%d body=%s", name, response.Code, response.Body.String())
@@ -124,29 +125,10 @@ func requireRefused(t *testing.T, name string, response *httptest.ResponseRecord
 		t.Fatalf("%s: status=%d body=%s, want %d %s", name, response.Code, response.Body.String(), status, code)
 	}
 	refusal := decodeBody[refusalAnswer](t, response)
-	if refusal.Code != code || !namesAsAWord(refusal.Error, names...) {
+	if refusal.Code != code || !graphstoretest.NamesAsAWord(refusal.Error, names...) {
 		t.Fatalf("%s is refused %+v, want %s naming %q", name, refusal, code, names)
 	}
 	return refusal
-}
-
-// namesAsAWord is whether text names each of names as words of its own: text split on spaces and
-// commas, each word shorn of the quotes, brackets, colons, semicolons and full stops at its ends,
-// holds each name as one of its words, and a name of several words as that run of words. An
-// address a comma or a colon follows is a word, and one that only begins a longer word, as a
-// lens's address begins its finding's `<lens address>#b-<id>`, is none.
-func namesAsAWord(text string, names ...string) bool {
-	var words []string
-	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
-		words = append(words, strings.Trim(word, "\"'`()[]:;."))
-	}
-	spaced := " " + strings.Join(words, " ") + " "
-	for _, name := range names {
-		if !strings.Contains(spaced, " "+name+" ") {
-			return false
-		}
-	}
-	return true
 }
 
 // TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape drives each route of the reasoning kinds
@@ -317,7 +299,7 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 	_, hasKinds := rig.counts(graphstore.KindLens, graphstore.TupleHasKind)
 	if refusal := requireRefused(t, "a second has_kind", rig.post(nodePath("lens/"+inversion.ID, "pointers"),
 		map[string]any{"kind": graphstore.TupleHasKind, "action": pointerAppend, "to": "botec"}, "alice"),
-		http.StatusConflict, "POINTER_ALREADY_ASSERTED", graphstore.TupleHasKind); namesAsAWord(refusal.Error, graphstore.LensKindPreMortem) {
+		http.StatusConflict, "POINTER_ALREADY_ASSERTED", graphstore.TupleHasKind); graphstoretest.NamesAsAWord(refusal.Error, graphstore.LensKindPreMortem) {
 		t.Errorf("a second has_kind is refused %q, which names %s as a pre-mortem's kept kind does", refusal.Error, graphstore.LensKindPreMortem)
 	}
 	if _, after := rig.counts(graphstore.KindLens, graphstore.TupleHasKind); after != hasKinds {
@@ -863,10 +845,7 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 		risks, places := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
 		lenses, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
 		answer := requireRefused(t, refused.name, rig.post(refused.path, refused.body, "alice"),
-			http.StatusBadRequest, codeVisibilityWiderThanParent)
-		if !namesAsAWord(answer.Error, refused.parent) {
-			t.Errorf("%s is refused %q, want it to name the node it would stand under or on, %s", refused.name, answer.Error, refused.parent)
-		}
+			http.StatusBadRequest, codeVisibilityWiderThanParent, refused.parent)
 		if !strings.HasPrefix(answer.Error, refused.child) {
 			t.Errorf("%s is refused %q, want it to name the node it drew, %s<uuid>, first", refused.name, answer.Error, refused.child)
 		}

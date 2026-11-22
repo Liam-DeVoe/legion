@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -162,7 +163,7 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 
 // requireValueRefused fails unless err is the store's refusal of value for attribute: the sentinel
 // a route answers 400 INVALID_ATTRIBUTE_VALUE for, and the typed refusal naming both, whose words
-// name both and every value the attribute takes (namesAsAWord).
+// name both and every value the attribute takes (graphstoretest.NamesAsAWord).
 func requireValueRefused(t *testing.T, err error, attribute, value string) {
 	t.Helper()
 	if !errors.Is(err, ErrInvalidAttributeValue) {
@@ -175,7 +176,7 @@ func requireValueRefused(t *testing.T, err error, attribute, value string) {
 	if refusal.Attribute != attribute || refusal.Value != value {
 		t.Errorf("the refusal names %s %q, want %s %q", refusal.Attribute, refusal.Value, attribute, value)
 	}
-	if names := append([]string{attribute, value}, attributeValues(attribute)...); !namesAsAWord(refusal.Error(), names...) {
+	if names := append([]string{attribute, value}, attributeValues(attribute)...); !graphstoretest.NamesAsAWord(refusal.Error(), names...) {
 		t.Errorf("the refusal reads %q, want it to name %q", refusal.Error(), names)
 	}
 }

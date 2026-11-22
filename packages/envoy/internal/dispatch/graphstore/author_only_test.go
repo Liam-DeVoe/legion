@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -189,7 +190,7 @@ func requireVisibilityNotAdmitted(t *testing.T, err error, kind string) {
 	if refusal.Kind != kind {
 		t.Errorf("the refusal names the kind %q, want %q", refusal.Kind, kind)
 	}
-	if !namesAsAWord(refusal.Error(), kind) {
+	if !graphstoretest.NamesAsAWord(refusal.Error(), kind) {
 		t.Errorf("the refusal reads %q, which does not name the kind %s", refusal.Error(), kind)
 	}
 }

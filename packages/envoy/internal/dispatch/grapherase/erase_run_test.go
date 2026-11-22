@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -402,7 +402,7 @@ func TestTheEraseOfANodeIsRefusedWhileANodeOfAStandingKindStandsUnderIt(t *testi
 		}
 		for _, under := range refused.under {
 			named := slices.ContainsFunc(erasure.Blockers, func(blocker string) bool {
-				return namesAsAWord(blocker, under, graphstore.TuplePartOf) && !namesAsAWord(blocker, "row")
+				return graphstoretest.NamesAsAWord(blocker, under, graphstore.TuplePartOf) && !graphstoretest.NamesAsAWord(blocker, "row")
 			})
 			if !named {
 				t.Errorf("the erase of %s:%s names no blocker for %s standing under it, its part_of and no row, among %v",
@@ -457,23 +457,4 @@ func TestTheEraseOfANodeIsRefusedWhileANodeOfAStandingKindStandsUnderIt(t *testi
 	if into != 0 {
 		t.Errorf("the erased finding leaves %d tuple(s) into it, want none under either spelling", into)
 	}
-}
-
-// namesAsAWord is whether text names each of names as words of its own, as the dispatch api's
-// tests hold a refusal to what it names: text split on spaces and commas, each word shorn of the
-// quotes, brackets, colons, semicolons and full stops at its ends, holds each name as one of its
-// words, and a name of several words as that run of words. A test of this package cannot import
-// a test helper of that one, so this is the same rule, word for word.
-func namesAsAWord(text string, names ...string) bool {
-	var words []string
-	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
-		words = append(words, strings.Trim(word, "\"'`()[]:;."))
-	}
-	spaced := " " + strings.Join(words, " ") + " "
-	for _, name := range names {
-		if !strings.Contains(spaced, " "+name+" ") {
-			return false
-		}
-	}
-	return true
 }

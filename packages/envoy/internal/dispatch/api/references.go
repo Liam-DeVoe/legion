@@ -746,9 +746,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, err := s.inClosureRead(r.Context(), func(ctx context.Context, q refs.Queryer) (refs.References, error) {
-		return refs.Closure(ctx, q, who, issue.Key)
-	})
+	closure, err := s.inClosureRead(r.Context(), who, issue.Key)
 	if err != nil {
 		if closureBoundHit(err) {
 			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",

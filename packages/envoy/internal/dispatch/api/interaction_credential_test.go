@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
@@ -133,7 +134,7 @@ func requireInteractionDeclared(t *testing.T, database *store.Store) {
 	// carries no sentinel, so it is read by the kind it names.
 	const undeclared = "no_such_node_kind"
 	if _, err := refs.BacklinkCounts(ctx, database.Pool, model.Actor{}, undeclared, []string{"x"}, nil); err == nil ||
-		!namesAsAWord(err.Error(), undeclared) {
+		!graphstoretest.NamesAsAWord(err.Error(), undeclared) {
 		t.Errorf("a count of %s, which declares no arms, answers %v, want the refusal backlinkTargetArms makes, naming %s", undeclared, err, undeclared)
 	}
 	for _, kind := range []string{graphstore.TupleChangedByRun, graphstore.TupleAuthoredBy} {

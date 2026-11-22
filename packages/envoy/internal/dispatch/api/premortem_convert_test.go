@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -105,7 +106,7 @@ func TestTheParserReadsTheCapturedPremortem(t *testing.T) {
 			{"- **Prevention:** additive only.", []string{"10", "**Prevention:**"}},
 		} {
 			_, err := parsePremortem(strings.Replace(capture.Document.Markdown, missing.cut, "Some prose.", 1))
-			if err == nil || !namesAsAWord(err.Error(), missing.names...) {
+			if err == nil || !graphstoretest.NamesAsAWord(err.Error(), missing.names...) {
 				t.Errorf("the document without %q is refused %v, want it naming %q", missing.cut, err, missing.names)
 			}
 		}
@@ -306,7 +307,7 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 			t.Logf("%s: %v", refused.name, err)
 			var mapError *PremortemMapError
 			if !errors.As(err, &mapError) || mapError.Entry != refused.entry || mapError.Risk != refused.risk ||
-				!namesAsAWord(mapError.Problem, refused.names...) {
+				!graphstoretest.NamesAsAWord(mapError.Problem, refused.names...) {
 				t.Errorf("%s is refused %v, want entry %d, risk %d, naming %q", refused.name, err, refused.entry, refused.risk, refused.names)
 			}
 			if after := rig.storeCounts(); after != before {
@@ -547,7 +548,7 @@ func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
 		t.Logf("%s: %v", name, err)
 		var mapError *PremortemMapError
 		if !errors.As(err, &mapError) || !errors.Is(err, graphstore.ErrInvalidPointer) || mapError.Entry != 6 || mapError.Risk != 5 ||
-			!namesAsAWord(err.Error(), names...) {
+			!graphstoretest.NamesAsAWord(err.Error(), names...) {
 			t.Errorf("%s is refused %v, want the store's refusal of entry 6, risk 5, naming %q", name, err, names)
 		}
 		unchanged(name)

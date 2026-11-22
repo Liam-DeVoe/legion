@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -66,7 +67,7 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s, want %d", refused.name, response.Code, response.Body.String(), refused.status)
 		}
 		refusal := decodeBody[refusalAnswer](t, response)
-		if refusal.Code != refused.code || !namesAsAWord(refusal.Error, refused.names...) {
+		if refusal.Code != refused.code || !graphstoretest.NamesAsAWord(refusal.Error, refused.names...) {
 			t.Errorf("%s is refused %+v, want %s naming %q", refused.name, refusal, refused.code, refused.names)
 		}
 		if listed, rows, nodes := held(); listed != beforeListed || rows != beforeRows || nodes != beforeNodes {

@@ -1,14 +1,20 @@
 // Package graphstoretest holds what the tests of more than one package read of the node and
 // tuple store and no code of the store reads: the tuple kinds of the base attributes
 // (BaseAttributes), the store writers the source scans hold every write of the store to
-// (WriteFunctions), and the visibility a test's write reserves a node for its author under
-// (VisibilityFor). It is an ordinary package rather than a _test.go file because Go cannot share
+// (WriteFunctions), the visibility a test's write reserves a node for its author under
+// (VisibilityFor), and the rule a test holds a refusal's words to, each name a word of its own
+// (NamesAsAWord). It is an ordinary package rather than a _test.go file because Go cannot share
 // test-only code across packages, and it imports nothing of graphstore, so graphstore's own tests
 // can import it: they hold each copy kept here of a value of graphstore to that value
 // (graphstore's TestGraphstoretestBaseAttributesAreTheStoresOwn and
 // TestGraphstoretestVisibilitiesAreTheStoresOwn). What a test seeds through the store's own
 // writers, which imports graphstore, is graphseedtest's.
 package graphstoretest
+
+import (
+	"strings"
+	"unicode"
+)
 
 // BaseAttributes is the tuple kind of every base attribute, a fresh slice for each caller: a copy
 // of the set graphstore.IsBaseAttribute reads, which graphstore's
@@ -39,4 +45,23 @@ func WriteFunctions() []string {
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
 		"EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteRun"}
+}
+
+// NamesAsAWord is whether text names each of names as words of its own: text split on spaces and
+// commas, each word shorn of the quotes, brackets, colons, semicolons and full stops at its ends,
+// holds each name as one of its words, and a name of several words as that run of words. An
+// address a comma or a colon follows is a word, and one that only begins a longer word, as a
+// lens's address begins its finding's `<lens address>#b-<id>`, is none.
+func NamesAsAWord(text string, names ...string) bool {
+	var words []string
+	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
+		words = append(words, strings.Trim(word, "\"'`()[]:;."))
+	}
+	spaced := " " + strings.Join(words, " ") + " "
+	for _, name := range names {
+		if !strings.Contains(spaced, " "+name+" ") {
+			return false
+		}
+	}
+	return true
 }

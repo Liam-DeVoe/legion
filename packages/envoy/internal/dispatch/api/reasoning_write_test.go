@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -126,7 +127,7 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		served.writeHandlerError(recorder, err)
 		body := decodeBody[errorBody](t, recorder)
-		if recorder.Code != status || body.Code != code || !namesAsAWord(body.Error, names...) {
+		if recorder.Code != status || body.Code != code || !graphstoretest.NamesAsAWord(body.Error, names...) {
 			t.Errorf("the refusal answers %d %s %q, want %d %s naming %q", recorder.Code, body.Code, body.Error, status, code, names)
 		}
 	}

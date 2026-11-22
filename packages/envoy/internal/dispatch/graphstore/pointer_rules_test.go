@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -474,7 +474,7 @@ func TestTheArmsRefuseEveryPartOfOutOfALens(t *testing.T) {
 			return arms, err
 		}},
 	} {
-		if arms, err := call.write(); !errors.Is(err, errPointerInArms) || !namesAsAWord(err.Error(), TuplePartOf, KindLens) || arms != "" {
+		if arms, err := call.write(); !errors.Is(err, errPointerInArms) || !graphstoretest.NamesAsAWord(err.Error(), TuplePartOf, KindLens) || arms != "" {
 			t.Errorf("%s of a lens's part_of %s at %s = %v, want errPointerInArms naming %s and %s", call.name, call.form, call.kind, err, TuplePartOf, KindLens)
 		}
 	}
@@ -629,8 +629,8 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 			}
 			// Named at both lenses' addresses, the refusal names each lens by its address and
 			// neither by its id.
-			if !ok || !namesAsAWord(named.Error(), addressOf(refused.near), addressOf(refused.to)) ||
-				namesAsAWord(named.Error(), refused.near) || namesAsAWord(named.Error(), refused.to) {
+			if !ok || !graphstoretest.NamesAsAWord(named.Error(), addressOf(refused.near), addressOf(refused.to)) ||
+				graphstoretest.NamesAsAWord(named.Error(), refused.near) || graphstoretest.NamesAsAWord(named.Error(), refused.to) {
 				t.Errorf("the refusal named at both lenses' addresses reads %v (named %t), want it to name %s and %s, and neither lens by its id",
 					named, ok, addressOf(refused.near), addressOf(refused.to))
 			}
@@ -746,8 +746,8 @@ func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Stor
 	defer tx.Rollback(ctx)
 	err = write(ctx, tx)
 	refusal := requirePointerRefused(t, err, TuplePreventedBy, append([]string{check}, names...)...)
-	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || !namesAsAWord(named.Error(), append([]string{address}, names...)...) ||
-		namesAsAWord(named.Error(), check) {
+	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || !graphstoretest.NamesAsAWord(named.Error(), append([]string{address}, names...)...) ||
+		graphstoretest.NamesAsAWord(named.Error(), check) {
 		t.Errorf("the refusal named at %s reads %v (named %t), want it to name %s and %q, and %s no more", address, named, ok, address, names, check)
 	}
 	if named, ok := refusal.NamedAt(blockKind, other, address); ok {
@@ -784,7 +784,8 @@ func retracted(tuple Tuple) Tuple {
 
 // requirePointerRefused fails unless err is the store's refusal of a pointer at a node its rule
 // does not allow: the sentinel a route answers 400 INVALID_POINTER for, as the typed refusal of a
-// tuple of kind whose words name each of names (namesAsAWord). It answers that refusal.
+// tuple of kind whose words name each of names (graphstoretest.NamesAsAWord). It answers that
+// refusal.
 func requirePointerRefused(t *testing.T, err error, kind string, names ...string) *InvalidPointerError {
 	t.Helper()
 	if !errors.Is(err, ErrInvalidPointer) {
@@ -794,29 +795,10 @@ func requirePointerRefused(t *testing.T, err error, kind string, names ...string
 	if !errors.As(err, &refusal) {
 		t.Fatalf("the write answered %v, which is no InvalidPointerError", err)
 	}
-	if refusal.Kind != kind || !namesAsAWord(refusal.Error(), names...) {
+	if refusal.Kind != kind || !graphstoretest.NamesAsAWord(refusal.Error(), names...) {
 		t.Errorf("the refusal of a %s tuple reads %q, want a %s tuple's naming %q", refusal.Kind, refusal.Error(), kind, names)
 	}
 	return refusal
-}
-
-// namesAsAWord is whether text names each of names as words of its own, as the api package's
-// tests hold a refusal to what it names: text split on spaces and commas, each word shorn of the
-// quotes, brackets, colons, semicolons and full stops at its ends, holds each name as one of its
-// words, and a name of several words as that run of words. A test of this package cannot import
-// a test helper of that one, so this is the same rule, word for word.
-func namesAsAWord(text string, names ...string) bool {
-	var words []string
-	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
-		words = append(words, strings.Trim(word, "\"'`()[]:;."))
-	}
-	spaced := " " + strings.Join(words, " ") + " "
-	for _, name := range names {
-		if !strings.Contains(spaced, " "+name+" ") {
-			return false
-		}
-	}
-	return true
 }
 
 // requireAlreadyAsserted fails unless err is want, which a route answers 409

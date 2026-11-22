@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -73,7 +74,7 @@ func TestLensKindAddWritesOneKindAndRefusesAHeldID(t *testing.T) {
 			[]string{"source"}},
 	} {
 		code, stdout, stderr := run(refused.args...)
-		if code != 1 || !namesAsAWord(stderr, refused.names...) {
+		if code != 1 || !graphstoretest.NamesAsAWord(stderr, refused.names...) {
 			t.Errorf("lens-kind-add with %s exited %d with stdout %q and stderr %q, want 1 naming %q", refused.name, code, stdout, stderr, refused.names)
 		}
 		if afterNodes, afterTuples := count(); afterNodes != nodes || afterTuples != tuples {

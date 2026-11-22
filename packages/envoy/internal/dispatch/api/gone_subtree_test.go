@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -386,11 +387,11 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 		}
 	}
 	// requireGoneNamed fails unless response is 409 NODE_GONE whose message names address, the node
-	// as the request named it, as one of its words (namesAsAWord).
+	// as the request named it, as one of its words (graphstoretest.NamesAsAWord).
 	requireGoneNamed := func(name string, response *httptest.ResponseRecorder, address string) {
 		t.Helper()
 		refusal := decodeBody[refusalAnswer](t, response)
-		if response.Code != http.StatusConflict || refusal.Code != codeNodeGone || !namesAsAWord(refusal.Error, address) {
+		if response.Code != http.StatusConflict || refusal.Code != codeNodeGone || !graphstoretest.NamesAsAWord(refusal.Error, address) {
 			t.Errorf("%s answers %d %s, want 409 %s naming %s", name, response.Code, response.Body.String(), codeNodeGone, address)
 		}
 	}
@@ -525,15 +526,12 @@ func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	nodes, tuples := rig.counts(refs.BlockNodeKind, graphstore.TuplePartOf)
 	// The refusal names both nodes, as TestAChildIsNeverWiderThanItsParent holds a risk's and a
 	// lens's: the finding first, whose address is the lens's own with the finding's block id,
-	// `<lens address>#b-<id>`, and the lens as a word of its own (namesAsAWord), which words that
-	// name the finding alone never hold.
+	// `<lens address>#b-<id>`, and the lens as a word of its own (graphstoretest.NamesAsAWord),
+	// which words that name the finding alone never hold.
 	asked := "a finding asked for project under alice's author-only lens " + lens.Address
 	answer := requireRefused(t, asked, rig.post(nodePath(lens.Address, "findings"), map[string]any{
 		"text": "Every reader would see this.", "visibility": graphstore.VisibilityProject}, "alice"),
-		http.StatusBadRequest, codeVisibilityWiderThanParent)
-	if !namesAsAWord(answer.Error, lens.Address) {
-		t.Errorf("%s is refused %q, want it to name the lens %s, the node it cannot stand under", asked, answer.Error, lens.Address)
-	}
+		http.StatusBadRequest, codeVisibilityWiderThanParent, lens.Address)
 	if !strings.HasPrefix(answer.Error, lens.Address+"#b-") {
 		t.Errorf("%s is refused %q, want it to name the finding it drew, %s#b-<id>, first", asked, answer.Error, lens.Address)
 	}

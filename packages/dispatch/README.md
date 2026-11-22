@@ -798,8 +798,9 @@ sources `lib.sh`. The other four source none of it:
 `document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own,
 `outside-path-reach.sh` is handed to a person as one file (below), and `outside-edge-refusals.sh`
 is one file that sources nothing (below). `with-harness.sh` is no driver
-and sources none of it, and `lib-baseline.sh`, `lib-processes.sh` and `seed-decisions.sh` are
-files the drivers source, not drivers.
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `seed-decisions.sh`,
+`node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
+(which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from
