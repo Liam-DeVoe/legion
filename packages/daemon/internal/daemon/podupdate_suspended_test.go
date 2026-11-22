@@ -359,16 +359,15 @@ func (b *bundlingRuntime) replacedWith() []int64 {
 	return slices.Clone(b.savedAtReplace)
 }
 
-// Spec step 6 under `work` and decision 2 of the review's first round: the daemon keeps the pod of
-// a claim the work hold stopped, so that the worker's unpushed work stays, and a pod update round
-// that replaces that pod keeps the work as the idle release keeps it. The round still passes the
-// held claim over: it does not ask it or wait for it. Before it replaces the pod, the shim of the
-// role it replaces the pod through bundles the issue workspace, and the daemon saves the bundle in
-// the store the idle release saves through (store.PutRoundWorkspaceBundle). The next pod of the
-// issue takes that bundle for its one restore (savedWorkspaceBundle,
-// store.TakeWorkspaceBundleForRestore), and the pod the work came off is sent nothing. The
-// replacement's line names the save, and the message on the issue says that the next pod restores
-// the work rather than that the work is lost.
+// Spec step 6 under `work`: the daemon keeps the pod of a claim the work hold stopped, so that the
+// worker's unpushed work stays, and a pod update round that replaces that pod keeps the work as
+// the idle release keeps it. The round still passes the held claim over: it does not ask it or
+// wait for it. Before it replaces the pod, the shim of the role it replaces the pod through
+// bundles the issue workspace, and the daemon saves the bundle in the store the idle release saves
+// through (store.PutRoundWorkspaceBundle). The next pod of the issue takes that bundle for its one
+// restore (savedWorkspaceBundle, store.TakeWorkspaceBundleForRestore), and the pod the work came
+// off is sent nothing. The replacement's line names the save, and the message on the issue says
+// that the next pod restores the work rather than that the work is lost.
 //
 // A save that fails holds the replacement: nothing is replaced, a line names the issue and the
 // error, and the round stays open. The next sweep saves again and replaces the pod.
@@ -478,15 +477,15 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped(t *testing.T) {
 // in the round's pod to build the bundle (saveHeldWork's rule for such a pod).
 const heldWorkNoProcessError = "no role process runs in the pod"
 
-// Decision 2 of the review's first round, for a round whose pod no role process runs in. Only a
-// shim can build the bundle, so where the work hold stopped a claim of the round and no role
-// process runs in the pod, the round does not replace that pod, as the idle release keeps a pod
-// whose bundle cannot be built: nothing is replaced by issue and no launch replaces the pod. The
-// round holds the replacement as a failed save holds it: a line names the issue, the held claim
-// and the error, and once the round's bound has come the operator's side is told once, naming the
-// held work. The round still asks the held claim nothing. Once a role runs in the pod again — here
-// the tester, which the operator resumes into the round's own pod, kept for the held work — the
-// round replaces the pod through that role's process and saves the bundle before it does.
+// A round whose pod no role process runs in, where the work hold stopped a claim of the round.
+// Only a shim can build the bundle, so the round does not replace that pod, as the idle release
+// keeps a pod whose bundle cannot be built: nothing is replaced by issue and no launch replaces
+// the pod. The round holds the replacement as a failed save holds it: a line names the issue, the
+// held claim and the error, and once the round's bound has come the operator's side is told once,
+// naming the held work. The round still asks the held claim nothing. Once a role runs in the pod
+// again — here the tester, which the operator resumes into the round's own pod, kept for the held
+// work — the round replaces the pod through that role's process and saves the bundle before it
+// does.
 func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing.T) {
 	const held, worker = claim.RolePlanner, claim.RoleTester
 	rig := newPodUpdateRig(t,

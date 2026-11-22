@@ -341,8 +341,8 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 	}
 
 	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch.
-	keepsForThePause := func(ends bool, why string) bool {
-		return !ends && strings.Contains(why, fmt.Sprintf("owes the %s a launch", claim.RoleImplementer))
+	keepsForThePause := func(keep podKeep, why string) bool {
+		return keep != podFree && strings.Contains(why, fmt.Sprintf("owes the %s a launch", claim.RoleImplementer))
 	}
 	isClaim := func(of supervise.Claim) bool { return of.Token == token }
 	for _, row := range rows {

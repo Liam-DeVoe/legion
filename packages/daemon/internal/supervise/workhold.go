@@ -6,8 +6,8 @@ package supervise
 // turn its close message starts (RequestSuspend.TurnAfter). What is the hold's own is here: the
 // one check that holds every request that could start a turn of a claim the hold stopped
 // (workHoldWaits, read by the fence through each event's door), and the hold's end. Each decision
-// that may make the hold's stop reads the tree's work hold row for share and lets the lock go at
-// once (readHoldForStop). The read that finds the row gone drops a stop not yet made, and answers
+// that may make the hold's stop reads whether the tree's work hold row stands (readHoldForStop,
+// Store.WorkHoldStands). The read that finds the row gone drops a stop not yet made, and answers
 // the hold's stop asked now ErrWorkHoldEnded. No decision holds the row after that read, so no
 // decision's runtime call holds back the opening, which waits for the row under the lock every
 // fact takes. Once the stop is written, the machine reads the row again (holdReadAfterStop). The
@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // workHoldWaits is the work hold's answer to ev, and nil where it has none: a claim the hold
@@ -187,8 +188,8 @@ func (m *Machine) dropHoldStop(ctx context.Context) (bool, error) {
 	return true, m.sendPending(ctx)
 }
 
-// readHoldForStop reads the tree's work hold row for share (Store.LockWorkHold) for a decision
-// that may make the work hold's stop, and lets the lock go at once (readWorkHold): a decision of a
+// readHoldForStop reads whether the tree's work hold row stands (readWorkHold,
+// Store.WorkHoldStands) for a decision that may make the work hold's stop: a decision of a
 // claim the hold's stop is held over (Machine.held, By SuspendedByHold), or one of the hold's stop
 // asked now (RequestSuspend, By SuspendedByHold). Handle calls it after the claim's lock, before
 // the fence. The opening takes the same row for update before it reads the tree's claims, and
@@ -276,26 +277,21 @@ func (m *Machine) readHoldForStop(ctx context.Context, ev Event) (dropped bool, 
 	return dropped, err
 }
 
-// readWorkHold is whether the work hold of the claim's tree stands: it takes the tree's work hold
-// row for share (Store.LockWorkHold) under the claim-write deadline (Deps.claimWrite), as a claim
-// write's wait is bounded, and ends the lock at once. Both reads of the row go through it: the
-// decision's (readHoldForStop) and the read after the hold's stop (holdReadAfterStop).
+// readWorkHold is whether the work hold of the claim's tree stands (Store.WorkHoldStands), read
+// under the claim-write deadline (Deps.claimWrite), as a claim write's wait is bounded. Both reads
+// of the row go through it: the decision's (readHoldForStop) and the read after the hold's stop
+// (holdReadAfterStop).
 func (m *Machine) readWorkHold(ctx context.Context) (bool, error) {
-	locking, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()
-	stands, release, err := m.deps.Store.LockWorkHold(locking, m.claim.Tree)
-	if err != nil {
-		return false, err
-	}
-	release()
-	return stands, nil
+	return m.deps.Store.WorkHoldStands(reading, m.claim.Tree)
 }
 
 // holdReadAfterStop reads the tree's work hold row again once the work hold's stop (request, By
-// SuspendedByHold) is written: a lock for share in a transaction of its own, under the
-// claim-write deadline, which it ends at once (readWorkHold). The opening takes that row for
-// update before it reads the tree's claims, and deletes it in that same transaction. So this read
-// waits for an opening in flight, or it reads the row while no opening holds it:
+// SuspendedByHold) is written: a read for share in a transaction of its own, under the claim-write
+// deadline (readWorkHold). The opening takes that row for update before it reads the tree's
+// claims, and deletes it in that same transaction. So this read waits for an opening in flight, or
+// it reads the row while no opening holds it:
 //
 //   - The row stands: nothing more. An opening after this read reads the claims after the stop,
 //     which is committed, and starts the claim itself.
@@ -353,6 +349,16 @@ func (m *Machine) dropUnmadeHoldStop() {
 // (record.SuperviseRequest.Opening) carries a task that begins with OpeningTask(opening, ""), and
 // the record refuses any other.
 func OpeningTask(opening, work string) string { return opening + "\n\n" + work }
+
+// OpeningWork is task's work: task with the opening's sentences it begins with (OpeningTask(opening,
+// "")) cut off its front. A task with no opening, or a task that does not begin with the opening's
+// sentences, is its whole text.
+func OpeningWork(task, opening string) string {
+	if opening == "" {
+		return task
+	}
+	return strings.TrimPrefix(task, OpeningTask(opening, ""))
+}
 
 // openingTask is the one task the hold's opening gives a claim it stopped (EndHold): task, the
 // opening start's own, unless the claim kept a task of its own that no turn has taken and task

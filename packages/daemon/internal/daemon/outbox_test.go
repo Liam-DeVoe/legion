@@ -2818,10 +2818,9 @@ func (s *outboxClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (s
 
 func (s *outboxClaimStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
-// LockWorkHold answers that every tree's work hold stands, with a release that does nothing: no
-// test of this fake opens one.
-func (s *outboxClaimStore) LockWorkHold(context.Context, string) (bool, func(), error) {
-	return true, func() {}, nil
+// WorkHoldStands answers that every tree's work hold stands: no test of this fake opens one.
+func (s *outboxClaimStore) WorkHoldStands(context.Context, string) (bool, error) {
+	return true, nil
 }
 
 func (s *outboxClaimStore) PutDelivery(_ context.Context, token claim.Token, delivery supervise.Delivery) error {

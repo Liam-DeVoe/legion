@@ -1278,10 +1278,12 @@ type SuperviseRequest struct {
 	HoldVersion int `json:"holdVersion,omitempty"`
 	// Opening is the work hold's opening sentences, on the start the hold's opening writes for a
 	// claim the hold stopped (workflow's openHeldClaims). Task is those sentences, a blank line and
-	// the claim's work, and the outbox hands the sentences apart to supervise.Machine.EndHold, which
-	// puts them in front of a task the claim kept instead where that kept task is the one task the
-	// opening gives: a claim the hold stopped is given one task, never a second. Every other start,
-	// and every other op, carries none.
+	// the claim's work. Opening marks the row as an opening start: a start of the role gives way to
+	// such a start while it is queued (workflow.OpeningStartStands), and an opening start that meets
+	// a claim the hold no longer holds finishes without acting (the outbox's supervise). The outbox
+	// cuts these sentences off the task (supervise.OpeningWork), and hands supervise.Machine.EndHold
+	// the work behind sentences it builds again from the tree's record (workflow.HeldClaimOpening).
+	// Every other start, and every other op, carries none.
 	Opening string `json:"opening,omitempty"`
 }
 
@@ -1401,6 +1403,14 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
+	// Close marks a design gate's close message, under either hold: every message of the gate's
+	// close (workflow's tellGateMoved and workHoldClose), the architect's among them. The outbox
+	// reads the tree's standing gate before it wakes a merger for such a row or publishes it, and
+	// finishes the row unpublished where the gate no longer stands closed (internal/daemon's
+	// closeOutrun): a role message runs as it comes due, and a close whose publish failed retries on
+	// its backoff, so it can come due after the open message that followed it. Every other message
+	// carries none.
+	Close bool `json:"close,omitempty"`
 	// Wake marks the design gate's close message to a merger whose claim was released when the
 	// gate closed, under either hold: the outbox wakes the released merger for the message rather
 	// than dropping it, so the merger can take its pull request out of GitHub's merge queue. It is
@@ -1408,8 +1418,7 @@ type RoleMessage struct {
 	// message to a merger whose claim is live, or whose start a lane runs, since that start may have
 	// read the gate open before the close and may launch the merger after it (workflow's
 	// mergersToWake): the outbox wakes nothing of it and waits for the merger's session. Every
-	// other message carries none. A row marked Wake is a close message, and the outbox finishes it
-	// unpublished where the gate no longer stands closed (internal/daemon's closeOutrun).
+	// other message carries none. A row marked Wake is a close message, and is marked Close too.
 	Wake bool `json:"wake,omitempty"`
 	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:
 	// work`, workflow's workHoldClose). The outbox posts it once the message reached the claim, as
@@ -1417,8 +1426,8 @@ type RoleMessage struct {
 	// moment (SuperviseRequest.Deadline, TurnAfter), and posts nothing where the tree's standing
 	// gate no longer stands closed by then (TreeGate.Standing), so a stop not yet made when the
 	// gate opens again is not made. Every other message carries none. The release before decodes
-	// strictly, so the way back of migrations/20261121000254_work_holds.up.sql takes both keys off
-	// every role message.
+	// strictly, so the way back of migrations/20261121000254_work_holds.up.sql takes this key,
+	// Close and Wake off every role message.
 	Stop *HoldStop `json:"stop,omitempty"`
 }
 
@@ -2446,9 +2455,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
 		}
-		if stop := value.Stop; stop != nil && (stop.Tree == "" || !claim.IsRole(stop.Role) || stop.HoldVersion < 0) {
-			return fmt.Errorf("a role message's stop is the work hold's stop of a role of a tree, naming no negative version; it is %q of %q at version %d",
-				stop.Role, stop.Tree, stop.HoldVersion)
+		if stop := value.Stop; stop != nil {
+			if stop.Tree == "" || !claim.IsRole(stop.Role) {
+				return fmt.Errorf("a role message's stop is the work hold's stop of a role of a tree; it is %q of %q", stop.Role, stop.Tree)
+			}
+			if err := validateWorkHoldRequest(stop.Suspend()); err != nil {
+				return fmt.Errorf("a role message's stop of the %s of %s: %w", stop.Role, stop.Tree, err)
+			}
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {
@@ -2730,8 +2743,9 @@ func validSuperviseOp(op SuperviseOp) bool {
 // writes (`gates.hold: work`): a source on a suspend alone, and only the hold's; a deadline, a
 // turn and the version that closed the gate on the hold's stop alone, no turn without a deadline,
 // which supervise refuses as a stop that is never made, and no negative version; and opening
-// sentences on a start alone, whose task begins with them, so the one task the claim is given and
-// the sentences the outbox hands supervise apart are the same words.
+// sentences on a start alone, whose task begins with them. That prefix rule makes the outbox's cut
+// of the sentences off the task exact (supervise.OpeningWork). A role message's stop is checked
+// here too, as the supervise row it posts (HoldStop.Suspend).
 func validateWorkHoldRequest(value SuperviseRequest) error {
 	if value.SuspendedBy != "" && value.Op != "suspend" {
 		return fmt.Errorf("a supervise %s names the source %q; only a suspend names one", value.Op, value.SuspendedBy)

@@ -253,6 +253,10 @@ func TestARoundSavesItsWorkspaceBundleUnderAnIdNoReleaseHas(t *testing.T) {
 	if err := s.DeleteRestoredWorkspaceBundle(ctx, issue, next); err != nil {
 		t.Fatal(err)
 	}
+	if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("after a confirmation of the release id %d the store holds %d bytes (held=%t, %v), want the %d of the round's save kept",
+			next, size, held, err, len(saved.Bundle))
+	}
 	second := saved
 	second.Bundle = []byte("PACK the held worker's work, saved again")
 	again, err := s.PutRoundWorkspaceBundle(ctx, issue, second)

@@ -934,19 +934,16 @@ type Store interface {
 	// frees nothing, so the claim's record of which abandoned session a release freed never
 	// disagrees with the names the store still holds for it.
 	ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error)
-	// LockWorkHold takes the work hold row of tree for share (the tree's work_holds row) and
-	// answers whether the row exists: whether the tree's hold stands. The workflow writes that row
-	// at the hold's close. The opening takes it for update before it reads the tree's claims, and
-	// deletes it in that same transaction (workflow's tellAndEndWorkHold). The lock lives in a
-	// transaction of its own, apart from the claim writes, which writes nothing and lasts until
-	// release ends it. So an opening that commits while the lock is held waits for release, and a
-	// lock asked for while an opening holds the row waits for the opening's commit and then reads
-	// no row. The wait for the lock ends at ctx's deadline. release is never nil when err is nil,
-	// and the caller calls it once. The machine calls release at once, so the call is a read of
-	// whether the hold stands (Machine.readWorkHold): a decision that may make the hold's stop
-	// reads the row before it decides (Machine.readHoldForStop), and once the hold's stop is
-	// written, the machine reads it again (Machine.holdReadAfterStop).
-	LockWorkHold(ctx context.Context, tree string) (stands bool, release func(), err error)
+	// WorkHoldStands is whether the work hold of tree stands: whether the tree's work_holds row
+	// exists. The workflow writes that row at the hold's close. The opening takes it for update
+	// before it reads the tree's claims, and deletes it in that same transaction (workflow's
+	// tellAndEndWorkHold). The read takes the row for share in a transaction of its own, apart from
+	// the claim writes, which writes nothing and ends before the read returns. So a read asked while
+	// an opening holds the row waits for the opening's commit and then reads no row, and no read
+	// holds an opening back once it returns. The wait ends at ctx's deadline. A decision that may
+	// make the hold's stop reads it before it decides (Machine.readHoldForStop), and once the
+	// hold's stop is written, the machine reads it again (Machine.holdReadAfterStop).
+	WorkHoldStands(ctx context.Context, tree string) (bool, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -1375,10 +1372,10 @@ var ErrHeldByOperator = wait.New("the suspension holds until the operator resume
 var ErrHeldByWorkHold = wait.New("the work hold holds the claim until its tree's standing design gate opens")
 
 // ErrWorkHoldEnded is the work hold's stop (RequestSuspend, By SuspendedByHold) meeting a tree
-// whose hold the opening has ended: the decision read the tree's work hold row for share
-// (Store.LockWorkHold) and found no row. The stop is not made. Where the stop's row posts the stop
-// again while that stop is held over the claim, the held stop is dropped, as every decision that
-// reads no row drops it (readHoldForStop), and the task it held back is sent. Where the claim
+// whose hold the opening has ended: the decision read the tree's work hold row
+// (Store.WorkHoldStands) and found no row. The stop is not made. Where the stop's row posts the
+// stop again while that stop is held over the claim, the held stop is dropped, as every decision
+// that reads no row drops it (readHoldForStop), and the task it held back is sent. Where the claim
 // already stands stopped by the hold, the daemon is told that the hold has ended under the stop
 // (Deps.WorkHoldEndedUnderStop), so it starts the claim. Where that claim's stop write is still
 // owed, the decision answers an error that wraps errClaimWriteOwed instead and tells nobody, so

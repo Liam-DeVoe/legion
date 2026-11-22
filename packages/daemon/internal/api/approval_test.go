@@ -379,8 +379,9 @@ func TestApprovalRouteCarriesR1sWords(t *testing.T) {
 // stands for that row until its next registration: a new version raises its latest version, a
 // later approval moves it, a changes request the row would take clears it, one the row would
 // ignore leaves it (one older than the approval it records, or one on a version older than its
-// latest), and the registration's row keeps its approval. Every other claim, and a deployment that
-// gates no spec step, is answered none.
+// latest), and the registration's row keeps its approval and a latest version newer than the
+// registration's read. Every other claim, and a deployment that gates no spec step, is answered
+// none.
 func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	t.Run("A1 approved at the latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
@@ -637,6 +638,30 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 		r.reviewAt(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 3, changes)
 		r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
 		r.wantRecord(record.ClearedSpecApproval{Issue: ownRoot, ArtifactID: ownDocument, Version: 2, LatestVersion: 4, Mark: mark(approved)})
+	})
+	t.Run("A19 A18 after a registration whose read predates the record's latest version", func(t *testing.T) {
+		r := newApprovalRig(t, specGated)
+		r.parked(2)
+		r.parkedApproval(2)
+		approved := r.seq
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
+		r.todo(ownRoot)
+		architect := r.architect(ownRoot)
+		// register_gate's read begins here and finds version 3. The person asks for changes to
+		// version 3, and version 4 is written. The version reaches the daemon before the
+		// registration, and the changes request after it. The row takes the record's latest
+		// version, 4, and so ignores the request, as a row at version 4 does (A18).
+		since := r.seq
+		changes := r.next()
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 4)
+		r.apply(intake.GateRegistered{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, Version: 3, DispatchVersion: 3,
+			Since: record.EventMark{Seq: since}})
+		r.reviewAt(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 3, changes)
+		r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		r.wantApprovedRow(ownRoot, 4, 2, mark(approved))
+		if kept := r.clearedSpecApproval(ownRoot); kept != nil {
+			t.Fatalf("the re-admission's record after the registration = %+v, want it cleared", *kept)
+		}
 	})
 }
 

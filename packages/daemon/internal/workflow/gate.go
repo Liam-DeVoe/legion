@@ -45,8 +45,9 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // carried to a later version makes the later one, and is not told it again when the gate of that
 // document was already open at that version. Where no row of the registered document stands, the
 // record the root's re-admission left of the spec row it cleared stands for that row
-// (clearedSpecRow): the new row keeps its approval of an older version, and takes its approval of
-// the registered version where the read predates it. The registration then deletes the record.
+// (clearedSpecRow): the new row keeps its approval of an older version, takes its approval of the
+// registered version where the read predates it, and takes its latest version where that is newer
+// than the read's. The registration then deletes the record.
 //
 // The approval request the registration's read found open is mirrored as the read found it
 // (mirrorRegisteredRequest), before anything decides whether the registration changes the gate:
@@ -119,7 +120,6 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
-	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
 	// The row this registration replaces: the stored row of this document, or, where none stands,
 	// the record the root's re-admission left of the spec row it cleared (clearedSpecRow).
 	held := stored
@@ -128,6 +128,12 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			return intake.Result{}, err
 		}
 	}
+	// The record keeps a newer version than the registration's read the way a stored row does: the
+	// row is registered at the newer of the two, so a late review of an older version stays stale.
+	if stored == nil && held != nil {
+		version = max(version, held.LatestVersion)
+	}
+	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
 	// An approval of an older version that row holds is kept, as a version event keeps it
 	// (classify.ApplyDesignGateEvent): a late changes request it answered stays answered, and a
 	// registration of a version the person has not approved yet leaves that approval standing.
@@ -1053,9 +1059,11 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // leave it to merge a head the gate holds. And the message to a merger that may be launching, its
 // claim live or its start running in a lane, waits for its session rather than finishing on a role
 // nobody holds yet: the outbox reads the gate once before a start acts, so a start of the merger
-// can read it open, and launch the merger with its task after this close. Under `work` the move is
-// the work hold's close or its opening, with recipients and texts of their own (workHoldClose,
-// workHoldOpen), and the close stops such a merger at its ready instead.
+// can read it open, and launch the merger with its task after this close. Each message of the
+// close is marked as a close message (record.RoleMessage.Close), and the outbox publishes none of
+// them once the gate opened again, so no role reads "closed" after the open message. Under `work`
+// the move is the work hold's close or its opening, with recipients and texts of their own
+// (workHoldClose, workHoldOpen), and the close stops such a merger at its ready instead.
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -1107,7 +1115,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		}
 	}
 	for _, to := range told {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body, Wake: woken[to.token]}); err != nil {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body, Close: !open, Wake: woken[to.token]}); err != nil {
 			return err
 		}
 	}
@@ -1127,17 +1135,21 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 //   - a merger whose claim is released, which the message wakes;
 //   - a merger whose claim is live, launching among them, whose session may not hold the role's
 //     topic yet;
-//   - and a merger whose start a lane runs now (startUnderWay's running), which read the gate open
+//   - and a merger whose start a lane runs now (StartUnderWay's running), which read the gate open
 //     before this close, or reads it now, and which may launch the merger with its task after it.
 //
 // The row waits while the claim is not gone, and the merger reads the close once its session
-// holds its topic. A merger whose start is only queued is not waited for: that start reads the
-// closed gate at its next attempt and waits at the fence through the whole hold, so it launches
-// nothing, and a message that waited for it would hold the issue's pod from its idle release until
-// the gate opens. Once the start passes the fence after the opening, the merger takes its task as
-// any start gives it. A merger an operator or the daemon suspended, or a failed or retired one,
-// with no start running, is not woken and is not waited for. root is the tree root, which StopActs
-// reads for a tree close, and members are the tree's members, whose generations key the reads.
+// holds its topic. A merger with no claim yet is waited for only while a start of it is under way
+// (StartUnderWay) and its issue can be woken: a start that ends without the claim, because its
+// issue left the workflow or its tree lingers, ends the row (internal/daemon's
+// closeWaitsForAMerger). A merger whose start is only queued is not waited for: that start reads
+// the closed gate at its next attempt and waits at the fence through the whole hold, so it
+// launches nothing, and a message that waited for it would hold the issue's pod from its idle
+// release until the gate opens. Once the start passes the fence after the opening, the merger
+// takes its task as any start gives it. A merger an operator or the daemon suspended, or a failed
+// or retired one, with no start running, is not woken and is not waited for. root is the tree
+// root, which StopActs reads for a tree close, and members are the tree's members, whose
+// generations key the reads.
 func (e *Engine) mergersToWake(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue,
 	told []addressedRole) (map[claim.Token]bool, error) {
 	generations := make(map[string]uint64, len(members))
@@ -1158,7 +1170,7 @@ func (e *Engine) mergersToWake(ctx context.Context, tx pgx.Tx, root record.Issue
 		}
 		for token, run := range runs {
 			held := treeClaim{run: run}
-			if _, running := startUnderWay(run, root); held.live() || held.state().Released() || running {
+			if _, running := StartUnderWay(run, root); held.live() || held.state().Released() || running {
 				woken[token] = true
 			}
 		}

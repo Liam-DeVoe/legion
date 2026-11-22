@@ -1341,17 +1341,17 @@ func (s heldReadAfterStop) PutClaim(ctx context.Context, c supervise.Claim) erro
 	return err
 }
 
-func (s heldReadAfterStop) LockWorkHold(ctx context.Context, tree string) (bool, func(), error) {
+func (s heldReadAfterStop) WorkHoldStands(ctx context.Context, tree string) (bool, error) {
 	if s.written.CompareAndSwap(true, false) {
 		close(s.reading)
 		<-s.proceed
 	}
-	return s.Store.LockWorkHold(ctx, tree)
+	return s.Store.WorkHoldStands(ctx, tree)
 }
 
 // Spec step 7, H33, the other order: the released tester's stop is made and committed before the
-// opening reads the claims. The stop's decision read the tree's work hold row and let it go at
-// once (supervise's readHoldForStop), and the read of the row after the stop waits here. So the
+// opening reads the claims. The stop's decision read the tree's work hold row in a transaction of
+// its own (supervise's readHoldForStop), and the read of the row after the stop waits here. So the
 // opening waits for no lock: it reads the tester stopped by the hold, queues its start and
 // commits. The read after the stop then finds the row gone and the daemon is told, but the
 // opening's start covers the tester, so the tester is started once, with the opening's own task.
@@ -1404,13 +1404,13 @@ func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
 	}
 }
 
-// Spec step 7, H33, and decision 1 of the review's first round, for the one order the decision's
-// read leaves: the released tester's stop is decided before the opening commits and written after
-// it. The stop's decision reads the tree's work hold row standing and lets it go at once
-// (supervise's readHoldForStop), and the stop's write waits here. The opening waits for no lock:
-// it reads the tester released, queues no start of it, deletes the row and commits. The stop is
-// then made. The read of the row after the stop's write finds the row gone (supervise's
-// holdReadAfterStop), so the daemon starts the tester at once, once, with the opening's task.
+// Spec step 7, H33, for the one order the decision's read leaves: the released tester's stop is
+// decided before the opening commits and written after it. The stop's decision reads the tree's
+// work hold row standing in a transaction of its own (supervise's readHoldForStop), and the stop's
+// write waits here. The opening waits for no lock: it reads the tester released, queues no start
+// of it, deletes the row and commits. The stop is then made. The read of the row after the stop's
+// write finds the row gone (supervise's holdReadAfterStop), so the daemon starts the tester at
+// once, once, with the opening's task.
 func TestWorkHoldStartsAStopDecidedBeforeTheOpeningCommitsWithTheOpeningsTask(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	write := heldStopWrite{Store: r.trees, token: r.token(claim.RoleTester), writing: make(chan struct{}), proceed: make(chan struct{})}
@@ -1459,15 +1459,14 @@ func TestWorkHoldStartsAStopDecidedBeforeTheOpeningCommitsWithTheOpeningsTask(t 
 	}
 }
 
-// Decision 1 of the review's first round, for the stall the review named: a decision of another
-// source that calls the runtime while the opening runs. The close's stop is held for the turn its
-// message starts in the ready implementer, so each decision of the implementer reads the tree's
-// work hold row (supervise's readHoldForStop). The daemon's own suspension of the implementer, as
-// a linger or a park asks it, stops the implementer's process, and the runtime holds that stop.
-// The opening commits meanwhile and waits for no lock: the decision let the row go once it read
-// it. Before, the decision held the row for share across the runtime's stop, and the opening,
-// which takes the row for update under the lock every fact takes, held every fact of the daemon
-// until the stop returned or the database ended the decision's lock 30 s later.
+// A decision of another source that calls the runtime while the opening runs holds no lock on the
+// tree's work hold row. The close's stop is held for the turn its message starts in the ready
+// implementer, so each decision of the implementer reads the tree's work hold row (supervise's
+// readHoldForStop). The daemon's own suspension of the implementer, as a linger or a park asks it,
+// stops the implementer's process, and the runtime holds that stop. The opening commits meanwhile
+// and waits for no lock: the decision's read ended with its own transaction. The opening takes the
+// row for update under the lock every fact takes, so a decision that held the row across the
+// runtime's stop would hold every fact of the daemon until the stop returned.
 func TestWorkHoldOpeningWaitsForNoRuntimeCallOfAnotherDecision(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	token := r.token(claim.RoleImplementer)
@@ -1516,20 +1515,20 @@ func TestWorkHoldOpeningWaitsForNoRuntimeCallOfAnotherDecision(t *testing.T) {
 	}
 }
 
-// refusedHoldLock is the rig's store with every lock on a tree's work hold row refused while
+// refusedHoldRead is the rig's store with every read of a tree's work hold row refused while
 // refuse is set: the decision that asks for it goes on without its read (supervise's
 // readHoldForStop), so a stop held over its claim is made on no read of the row. Every other call
 // goes straight to the store.
-type refusedHoldLock struct {
+type refusedHoldRead struct {
 	supervise.Store
 	refuse *atomic.Bool
 }
 
-func (s refusedHoldLock) LockWorkHold(ctx context.Context, tree string) (bool, func(), error) {
+func (s refusedHoldRead) WorkHoldStands(ctx context.Context, tree string) (bool, error) {
 	if s.refuse.Load() {
-		return false, nil, errors.New("the database did not answer")
+		return false, errors.New("the database did not answer")
 	}
-	return s.Store.LockWorkHold(ctx, tree)
+	return s.Store.WorkHoldStands(ctx, tree)
 }
 
 // Spec step 7, the backstop of a stop made with no read of the tree's work hold row
@@ -1548,7 +1547,7 @@ func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 	refuse := &atomic.Bool{}
-	r.sup.deps.Store = refusedHoldLock{Store: r.trees, refuse: refuse}
+	r.sup.deps.Store = refusedHoldRead{Store: r.trees, refuse: refuse}
 	machine, token := r.working(claim.RoleImplementer), r.token(claim.RoleImplementer)
 	launched := r.launches(claim.RoleImplementer)
 	r.close(4)
@@ -2189,7 +2188,8 @@ func (p *notConfirmedOnce) Publish(ctx context.Context, topic, message string, p
 // holds no topic yet, and finishes undelivered. The close's row then finds the gate open and
 // finishes with one line, so the merger's last word is not "closed". A live worker's close message
 // whose publish its holder did not confirm finds the gate open at its retry in the same way: the
-// worker is told the opening alone.
+// worker is told the opening alone. So does the architect's close message under `work`, which
+// carries no stop and no wake: it is marked as a close message (record.RoleMessage.Close).
 func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
 	for _, hold := range []config.Hold{config.HoldMerge, config.HoldWork} {
@@ -2260,6 +2260,44 @@ func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 		}
 		if c := r.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateWorking || c.WorkHeld() {
 			t.Fatalf("the implementer is %s, held %v; want it at work and not stopped", c.State, c.WorkHeld())
+		}
+	})
+	t.Run("a retried close to a live architect under work", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+		logs := &testlog.Buffer{}
+		r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+		r.live(claim.RoleArchitect)
+		architect := r.token(claim.RoleArchitect)
+		r.runner.notices = &notConfirmedOnce{holderPublisher: r.publisher, topic: notify.RoleTopicPrefix + string(architect)}
+		r.close(4)
+		r.runOnce()
+		if got := r.published(claim.RoleArchitect); len(got) != 0 {
+			t.Fatalf("the architect was told %q, want the close unconfirmed and retried", got)
+		}
+		r.approve(4, 12)
+		r.runOnce()
+		r.clock.advance(65 * time.Second)
+		r.runOnce()
+
+		// The opening sends the architect a notice of the approval on its topic too, so the
+		// role messages are read apart from it: the opening is told, and the close never is.
+		closed := r.closedSentence(4) + " " + holdSentence + " Your own work goes on."
+		told := r.published(claim.RoleArchitect)
+		opened := false
+		for _, message := range told {
+			if message == closed {
+				t.Fatalf("the architect was told %q, want no close: the gate opened before the close was published", told)
+			}
+			opened = opened || message == r.openedMessage(4)
+		}
+		if !opened {
+			t.Fatalf("the architect was told %q, want the opening", told)
+		}
+		if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
+			t.Fatalf("the outbox still holds %d role messages, want the close finished", got)
+		}
+		if lines := loggedMessages(t, logs.String(), unpublished); len(lines) != 1 || lines[0]["role"] != string(architect) {
+			t.Fatalf("the outbox logged %v, want one line naming the architect", lines)
 		}
 	})
 }
@@ -2358,5 +2396,63 @@ func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueued(t *testing.T) {
 	}
 	if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, "Merge the pull request.") {
 		t.Fatalf("the merger was prompted %+v once the gate opened, want its phase's task", prompts)
+	}
+}
+
+// Under `merge`, the close marks its message to a merger whose start a lane runs, so the message
+// waits for the merger's session (workflow's mergersToWake). Here that start never creates the
+// claim: the close commits while the start provisions its workspace, the provision fails, and the
+// start row then goes before it runs again, as a start of an issue that left the workflow goes.
+// While the start is under way, the message waits. Once no start of the merger is under way and
+// no claim of it exists, nothing creates the claim while the gate stays closed, so the message
+// finishes with one line and no stop rather than wait until the gate opens.
+func TestMergeHoldEndsTheCloseOfAMergerWhoseStartCreatesNoClaim(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	merger := r.token(claim.RoleMerger)
+	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
+	closed := false
+	r.runner.provision = func(context.Context, workspace.Request) (workspace.Workspace, error) {
+		if !closed {
+			closed = true
+			r.close(4)
+		}
+		return workspace.Workspace{}, errors.New("the workspace could not be provisioned")
+	}
+	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		Task: "Merge the pull request."})
+	r.runOnce()
+	if !closed {
+		t.Fatal("the merger's start provisioned no workspace, so the close was never made")
+	}
+	// A role message's row names its role by the claim token.
+	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
+		t.Fatalf("the close message to the merger left %d rows while its start is under way, want it waiting", got)
+	}
+
+	r.inTx(func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.ctx, `delete from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+			and payload->>'role' = $2`, r.tree.key, string(claim.RoleMerger))
+		return err
+	})
+	r.clock.advance(65 * time.Second)
+	r.runOnce()
+
+	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 0 {
+		t.Fatalf("the close message to the merger left %d rows once no start of it was under way, want it finished", got)
+	}
+	const ended = "outbox role message finished undelivered: its merger has no claim, and no start of it can create one while the gate is closed"
+	if lines := loggedMessages(t, logs.String(), ended); len(lines) != 1 || lines[0]["role"] != string(merger) {
+		t.Fatalf("the outbox logged %v, want one line naming the merger", lines)
+	}
+	if got := r.launches(claim.RoleMerger); got != 0 {
+		t.Fatalf("the runtime started the merger %d times, want none", got)
+	}
+	if got := r.published(claim.RoleMerger); len(got) != 0 {
+		t.Fatalf("the merger was told %q, want nothing", got)
+	}
+	if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
+		t.Fatalf("the outbox holds the stops %+v of the merger, want none", stops)
 	}
 }

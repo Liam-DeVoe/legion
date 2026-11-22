@@ -138,10 +138,9 @@ func (s *memoryClaims) AdmitClaim(ctx context.Context, c supervise.Claim) (super
 
 func (s *memoryClaims) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
-// LockWorkHold answers that every tree's work hold stands, with a release that does nothing: no
-// test of this fake opens one.
-func (s *memoryClaims) LockWorkHold(context.Context, string) (bool, func(), error) {
-	return true, func() {}, nil
+// WorkHoldStands answers that every tree's work hold stands: no test of this fake opens one.
+func (s *memoryClaims) WorkHoldStands(context.Context, string) (bool, error) {
+	return true, nil
 }
 
 func (s *memoryClaims) PutDelivery(context.Context, legionclaim.Token, supervise.Delivery) error {

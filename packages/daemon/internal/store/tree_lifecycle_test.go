@@ -81,20 +81,19 @@ func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
 	}
 }
 
-// The work hold's row as a claim's decision takes it (supervise.Store.LockWorkHold): a tree's
+// The work hold's row as a claim's decision reads it (supervise.Store.WorkHoldStands): a tree's
 // hold stands while its work_holds row exists, from the close that writes the row to the opening
 // that deletes it, and a tree with no row has no hold.
-func TestWorkHoldLockStandsWhileTheTreesRowExists(t *testing.T) {
+func TestWorkHoldStandsWhileTheTreesRowExists(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
 	stands := func(tree string) bool {
 		t.Helper()
-		held, release, err := store.LockWorkHold(ctx, tree)
+		held, err := store.WorkHoldStands(ctx, tree)
 		if err != nil {
-			t.Fatalf("lock the work hold of %s: %v", tree, err)
+			t.Fatalf("read the work hold of %s: %v", tree, err)
 		}
-		release()
 		return held
 	}
 	if stands(rootIssue) {
@@ -116,11 +115,11 @@ func TestWorkHoldLockStandsWhileTheTreesRowExists(t *testing.T) {
 }
 
 // The opening deletes the tree's work_holds row and keeps the hold, with what ended it, as the
-// record of the tree's last opening (record.Store.OpenWorkHold). The share lock a claim's
-// decision takes (supervise.Store.LockWorkHold) reads that hold as ended: it answers that the
-// hold does not stand, with a release that does nothing, as for a tree with no hold. The record
-// of the opening still names the hold. A close after the opening makes the hold stand again.
-func TestWorkHoldShareLockReadsAnOpenedHoldAsEnded(t *testing.T) {
+// record of the tree's last opening (record.Store.OpenWorkHold). The read a claim's decision
+// makes (supervise.Store.WorkHoldStands) reads that hold as ended: it answers that the hold does
+// not stand, as for a tree with no hold. The record of the opening still names the hold. A close
+// after the opening makes the hold stand again.
+func TestWorkHoldStandsReadsAnOpenedHoldAsEnded(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
@@ -135,14 +134,9 @@ func TestWorkHoldShareLockReadsAnOpenedHoldAsEnded(t *testing.T) {
 		t.Fatalf("open the work hold of %s: %v", rootIssue, err)
 	}
 
-	stands, release, err := store.LockWorkHold(ctx, rootIssue)
-	if release != nil {
-		t.Cleanup(release)
+	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || stands {
+		t.Fatalf("the read of the opened hold = stands %t, %v; want a hold that does not stand", stands, err)
 	}
-	if err != nil || stands || release == nil {
-		t.Fatalf("the share lock of the opened hold = stands %t, release %t, %v; want a hold that does not stand and a release", stands, release != nil, err)
-	}
-	release()
 	if err := store.Tx(ctx, func(tx pgx.Tx) error {
 		read, err := records.TreeWorkHold(ctx, tx, rootIssue)
 		if err == nil && (read == nil || read.Standing() || !reflect.DeepEqual(*read, opened)) {
@@ -154,12 +148,8 @@ func TestWorkHoldShareLockReadsAnOpenedHoldAsEnded(t *testing.T) {
 	}
 
 	closeWorkHold(t, store, records)
-	stands, release, err = store.LockWorkHold(ctx, rootIssue)
-	if release != nil {
-		t.Cleanup(release)
-	}
-	if err != nil || !stands {
-		t.Fatalf("the share lock after a close that follows the opening = stands %t, %v; want the hold to stand again", stands, err)
+	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || !stands {
+		t.Fatalf("the read after a close that follows the opening = stands %t, %v; want the hold to stand again", stands, err)
 	}
 }
 
@@ -196,20 +186,19 @@ func waitingOnALock(t *testing.T, store *Store) bool {
 }
 
 // The opening's lock on its tree's work hold row (record.Store.LockWorkHold, for update) and the
-// lock a claim's decision takes on it (supervise.Store.LockWorkHold, for share) serialize on that
-// row. A share lock asked for while the opening holds the row waits for the opening's commit, and
-// once the opening has deleted the row and committed, it reads no row. A share lock taken first
-// holds the opening back until its release. A share lock whose deadline passes while the opening
-// holds the row answers an error.
-func TestWorkHoldShareLockWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
+// read a claim's decision makes of it (supervise.Store.WorkHoldStands, for share) serialize on
+// that row. A read asked for while the opening holds the row waits for the opening's commit, and
+// once the opening has deleted the row and committed, it reads no row. A read holds nothing once
+// it answers, so an opening after it takes the row at once. A read whose deadline passes while the
+// opening holds the row answers an error.
+func TestWorkHoldStandsWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
 	hold := closeWorkHold(t, store, records)
-	type lock struct {
-		stands  bool
-		release func()
-		err     error
+	type read struct {
+		stands bool
+		err    error
 	}
 
 	opening, err := store.Pool().Begin(ctx)
@@ -224,58 +213,37 @@ func TestWorkHoldShareLockWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	if err := records.DeleteWorkHold(ctx, opening, rootIssue); err != nil {
 		t.Fatal(err)
 	}
-	locked := make(chan lock, 1)
+	reads := make(chan read, 1)
 	go func() {
-		stands, release, err := store.LockWorkHold(ctx, rootIssue)
-		locked <- lock{stands, release, err}
+		stands, err := store.WorkHoldStands(ctx, rootIssue)
+		reads <- read{stands, err}
 	}()
-	testwait.Eventually(t, "the share lock to wait for the opening's lock of the row", func() bool { return waitingOnALock(t, store) })
+	testwait.Eventually(t, "the read to wait for the opening's lock of the row", func() bool { return waitingOnALock(t, store) })
 	select {
-	case got := <-locked:
-		if got.release != nil {
-			got.release()
-		}
-		t.Fatalf("the share lock answered %+v while the opening held the row, want it to wait for the opening's commit", got)
+	case got := <-reads:
+		t.Fatalf("the read answered %+v while the opening held the row, want it to wait for the opening's commit", got)
 	default:
 	}
 	if err := opening.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got := <-locked
-	if got.release != nil {
-		t.Cleanup(got.release)
+	if got := <-reads; got.err != nil || got.stands {
+		t.Fatalf("the read after the opening committed = stands %t, %v; want no row", got.stands, got.err)
 	}
-	if got.err != nil || got.stands {
-		t.Fatalf("the share lock after the opening committed = stands %t, %v; want no row", got.stands, got.err)
-	}
-	got.release()
 
 	closeWorkHold(t, store, records)
-	stands, release, err := store.LockWorkHold(ctx, rootIssue)
-	if release != nil {
-		t.Cleanup(release)
+	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || !stands {
+		t.Fatalf("the read of the closed hold = stands %t, %v; want the row", stands, err)
 	}
-	if err != nil || !stands {
-		t.Fatalf("the share lock of the closed hold = stands %t, %v; want the row", stands, err)
-	}
-	opened := make(chan error, 1)
-	go func() {
-		opened <- store.Tx(ctx, func(tx pgx.Tx) error {
-			if _, err := records.LockWorkHold(ctx, tx, rootIssue); err != nil {
-				return err
-			}
-			return records.DeleteWorkHold(ctx, tx, rootIssue)
-		})
-	}()
-	testwait.Eventually(t, "the opening to wait for the share lock", func() bool { return waitingOnALock(t, store) })
-	select {
-	case err := <-opened:
-		t.Fatalf("the opening returned %v while the share lock held the row, want it to wait for the release", err)
-	default:
-	}
-	release()
-	if err := <-opened; err != nil {
-		t.Fatalf("the opening after the release: %v", err)
+	quick, cancelQuick := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelQuick()
+	if err := store.Tx(quick, func(tx pgx.Tx) error {
+		if _, err := records.LockWorkHold(quick, tx, rootIssue); err != nil {
+			return err
+		}
+		return records.DeleteWorkHold(quick, tx, rootIssue)
+	}); err != nil {
+		t.Fatalf("the opening after the read: %v; want it to take the row at once, since the read holds nothing once it answers", err)
 	}
 
 	closeWorkHold(t, store, records)
@@ -289,12 +257,8 @@ func TestWorkHoldShareLockWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	stands, release, err = store.LockWorkHold(bounded, rootIssue)
-	if release != nil {
-		t.Cleanup(release)
-	}
-	if err == nil || release != nil {
-		t.Fatalf("the share lock past its deadline = stands %t, %v; want an error and no release", stands, err)
+	if stands, err := store.WorkHoldStands(bounded, rootIssue); err == nil {
+		t.Fatalf("the read past its deadline = stands %t, no error; want an error", stands)
 	}
 }
 

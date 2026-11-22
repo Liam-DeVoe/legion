@@ -159,10 +159,9 @@ type memStore struct {
 	// Every other tree's hold stands, so no decision drops the hold stop of a tree the test did
 	// not open (readHoldForStop).
 	opened map[string]bool
-	// locksTaken and locksReleased count the locks on a tree's work hold row the store granted
-	// (LockWorkHold) and the releases called on them, so a test sees that each read of the row
-	// released its lock (locks).
-	locksTaken, locksReleased int
+	// holdReads counts the reads of a tree's work hold row the store answered (WorkHoldStands), so
+	// a test sees which decisions read the row (holdReadCount).
+	holdReads int
 }
 
 func newMemStore() *memStore {
@@ -330,29 +329,24 @@ func (s *memStore) AdmitClaim(ctx context.Context, c Claim) (Claim, error) {
 
 func (s *memStore) CheckLaunch(context.Context, Claim) error { return nil }
 
-// LockWorkHold is the store's lock on the tree's work hold row: the hold stands unless the test
-// opened the tree (openHold), and a lock the test fails (fail("LockWorkHold")) answers its error
-// and is not granted. Each lock granted is counted, and so is each call of its release (locks).
-func (s *memStore) LockWorkHold(_ context.Context, tree string) (bool, func(), error) {
+// WorkHoldStands is the store's read of the tree's work hold row: the hold stands unless the test
+// opened the tree (openHold), and a read the test fails (fail("WorkHoldStands")) answers its error.
+// Each read answered is counted (holdReadCount).
+func (s *memStore) WorkHoldStands(_ context.Context, tree string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.failures["LockWorkHold"]; err != nil {
-		return false, nil, err
+	if err := s.failures["WorkHoldStands"]; err != nil {
+		return false, err
 	}
-	s.locksTaken++
-	return !s.opened[tree], func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.locksReleased++
-	}, nil
+	s.holdReads++
+	return !s.opened[tree], nil
 }
 
-// locks is how many locks on a tree's work hold row the store granted, and how many releases of
-// them were called.
-func (s *memStore) locks() (taken, released int) {
+// holdReadCount is how many reads of a tree's work hold row the store answered.
+func (s *memStore) holdReadCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.locksTaken, s.locksReleased
+	return s.holdReads
 }
 
 // openHold is the work hold's opening of tree as the store keeps it: the tree's work_holds row is

@@ -46,7 +46,7 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // unpromptedPhaseWorker, asking whether nothing will prompt a live claim, ArchitectRelaunchOf,
 // asking whether a start is a root architect's next move, catch_up.go's queuedRowCovers, asking
 // whether a queued row covers a ready claim, OpeningStartStands, asking whether a queued start of
-// the work hold's opening stands, and startUnderWay, asking whether a start may still launch a
+// the work hold's opening stands, and StartUnderWay, asking whether a start may still launch a
 // claim that a close of the design gate reads as not live. One body is what keeps them from reading
 // the same rows differently.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
@@ -153,7 +153,7 @@ func OpeningStartStands(run record.RoleRun, root record.Issue, current phase.Pha
 	return false
 }
 
-// startUnderWay is whether a queued start may still launch run's claim (underWay): a start of the
+// StartUnderWay is whether a queued start may still launch run's claim (underWay): a start of the
 // role newer than any stop that still acts (actingStop), and no production check's look, whose
 // issue has left the workflow. running is whether a lane runs such a start now, under a live lease
 // (record.QueuedSupervise.Running). root is the issue's tree root as recorded, which StopActs reads
@@ -168,8 +168,10 @@ func OpeningStartStands(run record.RoleRun, root record.Issue, current phase.Pha
 // start that no lane runs reads the closed gate at its next attempt, and waits. The work hold's
 // close stops the claim of any start under way, since a stop that finds no launch makes nothing
 // (workHoldClose). The merge hold's close waits for the session of a merger whose start runs
-// alone (tellGateMoved's mergersToWake), since a message that waits holds the issue's pod.
-func startUnderWay(run record.RoleRun, root record.Issue) (underWay, running bool) {
+// alone (tellGateMoved's mergersToWake), since a message that waits holds the issue's pod. The
+// outbox reads it too, for such a close message whose merger has no claim yet: the message waits
+// only while a start of the merger is under way (internal/daemon's closeWaitsForAMerger).
+func StartUnderWay(run record.RoleRun, root record.Issue) (underWay, running bool) {
 	stop := actingStop(run, root)
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.CheckLook == 0 && queued.ID > stop {

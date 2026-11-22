@@ -1567,20 +1567,20 @@ var errNoProcessToSave = errors.New("no role process runs in the pod, and only a
 // keeps a pod whose bundle it cannot build (outbox's bundleIssueWorkspace). It holds the
 // replacement as a failed save holds it: the line names the issue, the held claims and the error,
 // and once the round's bound has come the operator's side is told once (tellLateRound,
-// heldWorkUnsavedReason). The round still passes over the held claim. It goes on once a role
-// process runs in the pod, since a launch into the pod keeps the pod for the held work
-// (roundPodEnds), or once the hold ends. An operator's suspension and a project pause's hold are
-// read first, as roundPodEnds reads them, and a runtime that replaces no pod by issue takes no pod
-// here, so neither is this pod's to hold. It reports whether it held the replacement.
+// heldWorkUnsavedReason). The line is at Info, since each sweep logs it until the wait ends. The
+// round still passes over the held claim. It goes on once a role process runs in the pod, since a
+// launch into the pod keeps the pod for the held work (roundPodEnds), or once the hold ends. It
+// acts only where the held work is the hold roundPodEnds names (keptForHeldWork): an operator's
+// suspension and a project pause's hold come first, and a runtime that replaces no pod by issue
+// takes no pod here, so neither is this pod's to hold. It reports whether it held the replacement.
 func (s *supervision) heldWorkKeepsPod(ctx context.Context, issue string, live []supervise.Claim, round, pod, reasons string, clock roundClock) bool {
-	if _, replaces := s.runtime.(runtime.IssuePodReplacer); !replaces || len(heldByOperator(live, round, clock)) > 0 || clock.held() {
+	if _, replaces := s.runtime.(runtime.IssuePodReplacer); !replaces {
 		return false
 	}
-	held := heldWorkClaims(live, round, clock)
-	if len(held) == 0 {
+	if keep, _ := roundPodEnds(live, round, clock); keep != keptForHeldWork {
 		return false
 	}
-	s.log.Error(heldWorkNotSaved, "issue", issue, "round", round, "pod", pod, "held", namesOf(held), "error", errNoProcessToSave)
+	s.log.Info(heldWorkNotSaved, "issue", issue, "round", round, "pod", pod, "held", namesOf(heldWorkClaims(live, round, clock)), "error", errNoProcessToSave)
 	s.tellLateRound(ctx, issue, live, round, pod, reasons, heldWorkUnsavedReason(errNoProcessToSave), clock)
 	return true
 }
@@ -1609,10 +1609,12 @@ func (s *supervision) heldWorkKeepsPod(ctx context.Context, issue string, live [
 // replaceIssuePodForRound), and that replacement ends the round: a launch into the pod before then
 // would have its first turn cut by it (dispatch://INFRA-4109 R7), so a launch that comes first
 // reads the same rule as it runs and replaces the pod itself (roundPodEndsAtLaunch). Where
-// something holds the pod (roundPodEnds), the round waits. A runtime that replaces no pod by issue
-// (runtime.IssuePodReplacer) leaves the round waiting too, and such a pod holds the round past its
-// bound, so the operator's side is told of it once the bound has come (tellLateRound,
-// noProcessReason).
+// something holds the pod (roundPodEnds), the round waits. Where that hold is a claim of the round
+// that the work hold stopped, the round waits for a role process to save that claim's work, and
+// the operator's side is told of it once the bound has come (heldWorkKeepsPod, tellLateRound,
+// heldWorkUnsavedReason). A runtime that replaces no pod by issue (runtime.IssuePodReplacer)
+// leaves the round waiting too, and such a pod holds the round past its bound, so the operator's
+// side is told of it once the bound has come (tellLateRound, noProcessReason).
 //
 // held is the claims of the round an operator's suspension holds (readReplacement), and it is
 // weighed here, after the pod is read, never before. A gone pod ends its round whatever the
@@ -1815,22 +1817,36 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 	if _, ok := s.runtime.(runtime.IssuePodReplacer); !ok {
 		return nil
 	}
-	if ends, _ := roundPodEnds(live, round, clock); !ends {
+	if keep, _ := roundPodEnds(live, round, clock); keep != podFree {
 		return nil
 	}
 	return &podReplacement{issue: issue, round: round, pod: pod, reasons: reasons, holds: clock.holds, by: viaIssue}
 }
 
-// roundPodEnds is whether nothing holds the pod of a round that has no role process in it, and,
-// where something does, what that is, for the line or the refusal that names it. Where nothing
-// holds the pod, the round ends by the pod's replacement before any launch goes into it: a launch
-// into a pod the round is about to replace has its first turn cut by that replacement, and is
-// launched a second time (dispatch://INFRA-4109 R7, INFRA-4455's tester on 2026-11-19). It is the
-// one statement of that rule. The walk reads it in both of its readings of such a round
-// (podlessRound, roundWithNoProcessInItsPod), the replacement reads it again before and under the
-// pod's launch turn (issuePodKept), and a launch into the pod reads it under that same turn, when
-// the launch runs, so the bound is read then rather than when the claim was resumed
-// (roundPodEndsAtLaunch).
+// podKeep names what holds the pod of a round that has no role process in it (roundPodEnds), one
+// value for each hold, in the order roundPodEnds reads them.
+type podKeep int
+
+const (
+	// podFree is no hold: the round ends by the pod's replacement.
+	podFree podKeep = iota
+	keptByOperator
+	keptByPause
+	keptForHeldWork
+	keptForOwedLaunch
+	keptForAsk
+)
+
+// roundPodEnds is which hold keeps the pod of a round that has no role process in it (podKeep,
+// podFree for none), and, where a hold keeps it, what that hold is, for the line or the refusal
+// that names it. Where nothing holds the pod, the round ends by the pod's replacement before any
+// launch goes into it: a launch into a pod the round is about to replace has its first turn cut by
+// that replacement, and is launched a second time (dispatch://INFRA-4109 R7, INFRA-4455's tester
+// on 2026-11-19). It is the one statement of that rule. The walk reads it in both of its readings
+// of such a round (podlessRound, roundWithNoProcessInItsPod, heldWorkKeepsPod), the replacement
+// reads it again before and under the pod's launch turn (issuePodKept), and a launch into the pod
+// reads it under that same turn, when the launch runs, so the bound is read then rather than when
+// the claim was resumed (roundPodEndsAtLaunch).
 //
 // Five things hold the pod, read in this order:
 //
@@ -1871,19 +1887,19 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 //
 // Past the bound only the first three hold the pod: the bound ends every other wait of a round. The
 // bound has already moved by the time the pause held the pod (roundClock.roundBound).
-func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool, string) {
+func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (podKeep, string) {
 	if held := heldByOperator(group, round, clock); len(held) > 0 {
-		return false, "an operator's suspension holds " + strings.Join(namesOf(held), ", ")
+		return keptByOperator, "an operator's suspension holds " + strings.Join(namesOf(held), ", ")
 	}
 	if clock.held() {
-		return false, "a project's pause holds the pod"
+		return keptByPause, "a project's pause holds the pod"
 	}
 	if held := heldWorkClaims(group, round, clock); len(held) > 0 {
-		return false, "the work hold stopped " + strings.Join(namesOf(held), ", ") +
+		return keptForHeldWork, "the work hold stopped " + strings.Join(namesOf(held), ", ") +
 			", and no role process runs in the pod to save the work as a bundle"
 	}
 	if clock.pastBound(group, round) {
-		return true, ""
+		return podFree, ""
 	}
 	var owed []supervise.Claim
 	for _, c := range group {
@@ -1892,7 +1908,7 @@ func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool
 		}
 	}
 	if len(owed) > 0 {
-		return false, "a project's pause owes the " + strings.Join(namesOf(owed), ", ") +
+		return keptForOwedLaunch, "a project's pause owes the " + strings.Join(namesOf(owed), ", ") +
 			" a launch, and it keeps the pod for their work until each runs again"
 	}
 	var asked []supervise.Claim
@@ -1902,9 +1918,9 @@ func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool
 		}
 	}
 	if len(asked) > 0 {
-		return false, strings.Join(namesOf(asked), ", ") + " holds the ask of the round and has not answered it"
+		return keptForAsk, strings.Join(namesOf(asked), ", ") + " holds the ask of the round and has not answered it"
 	}
-	return true, ""
+	return podFree, ""
 }
 
 // issuePodKept is why a replacement by issue may not be made at one read of the issue's claims,
@@ -1928,7 +1944,7 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 	if process, running := podProcess(group, round); running {
 		return fmt.Errorf("%w: the claim %s records a process in the pod", errReplacementNotDue, process.Claim)
 	}
-	if ends, held := roundPodEnds(group, round, clock); !ends {
+	if keep, held := roundPodEnds(group, round, clock); keep != podFree {
 		return fmt.Errorf("%w: %s", errReplacementNotDue, held)
 	}
 	return nil
@@ -2159,7 +2175,7 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 			"issue", issue, "round", round, "claim", token, "error", err)
 		return s.keepAtLaunch(issue, round, token, "the holds of a project's pause cannot be read")
 	}
-	if ends, held := launchRoundPodEnds(group, launching, round, clock); !ends {
+	if keep, held := launchRoundPodEnds(group, launching, round, clock); keep != podFree {
 		return s.keepAtLaunch(issue, round, token, held)
 	}
 	s.replacedAtLaunch(issue, round, readRoundEnd(group, round, clock))
@@ -2170,17 +2186,18 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 
 // launchRoundPodEnds is the reading of roundPodEndsAtLaunch that the claims and the clock alone
 // answer, over group, the claims of the issue with launching, the launching claim, among them. It
-// is whether a launch into the pod of round replaces that pod, and, where it does not, why. The
-// launch keeps the pod where something holds it (roundPodEnds), or where, before the bound, the
-// launching claim holds the round's ask itself and has not answered it (holdsUnansweredAsk).
-func launchRoundPodEnds(group []supervise.Claim, launching supervise.Claim, round string, clock roundClock) (bool, string) {
-	if ends, held := roundPodEnds(group, round, clock); !ends {
-		return false, held
+// is which hold keeps the pod of round from a launch's replacement (podFree for none, and the
+// launch replaces the pod), and, where a hold keeps it, why. The launch keeps the pod where
+// something holds it (roundPodEnds), or where, before the bound, the launching claim holds the
+// round's ask itself and has not answered it (holdsUnansweredAsk, keptForAsk).
+func launchRoundPodEnds(group []supervise.Claim, launching supervise.Claim, round string, clock roundClock) (podKeep, string) {
+	if keep, held := roundPodEnds(group, round, clock); keep != podFree {
+		return keep, held
 	}
 	if !clock.pastBound(group, round) && holdsUnansweredAsk(launching, round) {
-		return false, "the launching claim holds the ask of the round and has not answered it"
+		return keptForAsk, "the launching claim holds the ask of the round and has not answered it"
 	}
-	return true, ""
+	return podFree, ""
 }
 
 // keepAtLaunch is the answer of roundPodEndsAtLaunch that keeps round's pod for token's launch, for
@@ -2472,9 +2489,12 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 // A pod something holds, no answer — a store that could not be read, or a runtime that runs no
 // pods and implements no such read — and a runtime that replaces no pod by issue leave the round
 // where it stands, waiting for a claim to record a pod again, and the operator's side is told of
-// it once the round's bound has come (tellPodlessRound). A pod a project's pause holds tells
-// nobody (roundClock.held, decision 12 of dispatch://INFRA-3759): the pause stopped every role of
-// it on purpose, and the round waits for the hold to end.
+// it once the round's bound has come (tellPodlessRound). Where a claim the work hold stopped keeps
+// the pod (roundPodEnds), the round waits for a role process to save that claim's work instead,
+// and the operator's side is told of it through tellLateRound with heldWorkUnsavedReason
+// (heldWorkKeepsPod). A pod a project's pause holds tells nobody (roundClock.held, decision 12 of
+// dispatch://INFRA-3759): the pause stopped every role of it on purpose, and the round waits for
+// the hold to end.
 func (s *supervision) podlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, clock roundClock) *podReplacement {
 	if pods, ok := s.runtime.(runtime.IssuePodReader); ok {
 		sandboxPod, read := pods.IssuePod(issue)

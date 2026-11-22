@@ -1128,14 +1128,13 @@ func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
 
 // Spec step 3: a stop the daemon has not made when the gate opens again is not made. The opening
 // deletes the tree's work hold row in its own transaction, and each decision of a claim the hold's
-// stop is held over reads that row for share (Store.LockWorkHold, readHoldForStop). The first
-// such decision after the opening's commit reads no row and drops the stop, whatever the outbox's
-// stop row has run since: the turn's end leaves the claim idle and sends the task the stop held
-// back, and the hold's deadline cuts no turn. The hold's stop asked of an opened tree is answered
-// ErrWorkHoldEnded and makes no stop. A lock that is not granted keeps the stop held, so the
-// turn's end makes it as before; the read of the row after that stop is refused as well, so the
-// turn's end answers its error, and the stop's row is left to drop it. Each lock granted is
-// released at its read.
+// stop is held over reads whether that row stands (Store.WorkHoldStands, readHoldForStop). The
+// first such decision after the opening's commit reads no row and drops the stop, whatever the
+// outbox's stop row has run since: the turn's end leaves the claim idle and sends the task the
+// stop held back, and the hold's deadline cuts no turn. The hold's stop asked of an opened tree is
+// answered ErrWorkHoldEnded and makes no stop. A read that fails keeps the stop held, so the turn's
+// end makes it; the read of the row after that stop fails as well, so the turn's end answers its
+// error, and the stop's row is left to drop it.
 func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 	const dropped = `msg="supervise: the work hold ended before its stop was made; the stop is not made"`
 	heldInTurn := func(t *testing.T) *harness {
@@ -1215,13 +1214,13 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 			t.Fatalf("the claim was sent %q, want the task the stop held back", prompts[1].Message)
 		}
 	})
-	t.Run("a lock that is not granted keeps the stop held", func(t *testing.T) {
+	t.Run("a read that fails keeps the stop held", func(t *testing.T) {
 		h := heldInTurn(t)
 		h.store.openHold(h.claim().Tree)
 		refused := errors.New("the database did not answer")
-		h.store.fail("LockWorkHold", refused)
+		h.store.fail("WorkHoldStands", refused)
 
-		// The stop is made under no lock, and the read of the row after it is refused too
+		// The stop is made with no read of the row, and the read of the row after it fails too
 		// (holdReadAfterStop), so the turn's end answers that read's error.
 		if err := h.handle(StreamTurnEnd{Claim: h.token}); !errors.Is(err, refused) {
 			t.Fatalf("the turn's end answered %v, want the refused read of the row after the stop", err)
@@ -1232,7 +1231,7 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 		h.wantPendingTask(laterTask)
 		h.wantPrompts(1)
 		if lines := h.logs.lines("level=WARN", "the hold's stop stays held", "the database did not answer"); len(lines) != 1 {
-			t.Fatalf("logged %q, want one warning that the stop stays held, naming the lock that failed", lines)
+			t.Fatalf("logged %q, want one warning that the stop stays held, naming the read that failed", lines)
 		}
 		if lines := h.logs.lines(dropped); len(lines) != 0 {
 			t.Fatalf("logged %q, want no drop of the stop", lines)
@@ -1260,14 +1259,14 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 		h.wantState(StateIdle)
 		h.wantCalls("Suspend", 0)
 	})
-	t.Run("a lock not granted to the hold's stop answers its error and makes no stop", func(t *testing.T) {
+	t.Run("a read that fails for the hold's stop answers its error and makes no stop", func(t *testing.T) {
 		h := newHarness(t)
 		h.inPhaseTurn()
-		failed := errors.New("the lock waited past the claim-write deadline")
-		h.store.fail("LockWorkHold", failed)
+		failed := errors.New("the read waited past the claim-write deadline")
+		h.store.fail("WorkHoldStands", failed)
 
 		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, failed) || errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the hold's stop whose lock was not granted answered %v, want the lock's error and no hold", err)
+			t.Fatalf("the hold's stop whose read failed answered %v, want the read's error and no hold", err)
 		}
 
 		if c := h.claim(); c.WorkHeld() || c.SuspensionHeld {
@@ -1276,20 +1275,6 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 		h.must(StreamTurnEnd{Claim: h.token})
 		h.wantState(StateIdle)
 		h.wantCalls("Suspend", 0)
-	})
-	t.Run("every lock taken is released", func(t *testing.T) {
-		h := heldInTurn(t)
-		h.store.openHold(h.claim().Tree)
-		h.must(StreamTurnEnd{Claim: h.token})
-		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrWorkHoldEnded) {
-			t.Fatalf("the hold's stop after the opening answered %v, want %v", err, ErrWorkHoldEnded)
-		}
-
-		taken, released := h.store.locks()
-		if taken < 4 || released != taken {
-			t.Fatalf("the store granted %d locks on the tree's work hold row and %d were released; want at least four, "+
-				"the stop's, the task's, the turn end's and the stop asked after the opening, each released once", taken, released)
-		}
 	})
 }
 
@@ -1304,24 +1289,23 @@ func TestWorkHoldTakesNoLockForAToolStepOrAnAnswer(t *testing.T) {
 	if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
 		t.Fatalf("the hold's stop of a claim in a turn answered %v, want it held for the turn", err)
 	}
-	before, _ := h.store.locks()
+	before := h.store.holdReadCount()
 
 	h.must(StreamToolStep{Claim: h.token, Tool: "bash", CallID: "call-1", ArgsBytes: 12, ArgsHash: "hash-1"})
 	h.must(StreamToolStep{Claim: h.token, Tool: "bash", CallID: "call-1", End: true})
 	h.must(StreamAnswered{Claim: h.token, Model: "anthropic/claude-sonnet", Generation: h.generation()})
 
-	if taken, released := h.store.locks(); taken != before || released != before {
-		t.Fatalf("after a tool step and an answer the store had granted %d locks and released %d, want %d of each: neither takes the lock",
-			taken, released, before)
+	if reads := h.store.holdReadCount(); reads != before {
+		t.Fatalf("after a tool step and an answer the store had answered %d reads of the row, want %d: neither reads it", reads, before)
 	}
 	if step := h.store.step(h.token); step.CallID != "call-1" || step.EndedAt.IsZero() {
 		t.Fatalf("the store records the step %+v, want the call's start and end", step)
 	}
 	h.must(StreamTurnEnd{Claim: h.token})
 	h.wantHeld()
-	if taken, released := h.store.locks(); taken != before+2 || released != taken {
-		t.Fatalf("after the turn's end the store had granted %d locks and released %d, want two more, released: the turn end's and the read after its stop",
-			taken, released)
+	if reads := h.store.holdReadCount(); reads != before+2 {
+		t.Fatalf("after the turn's end the store had answered %d reads of the row, want two more: the turn end's and the read after its stop",
+			reads)
 	}
 }
 
@@ -1464,71 +1448,6 @@ func holdReadHarness(t *testing.T, at func(h *harness)) (*harness, *endedUnderSt
 	return h, told
 }
 
-// heldLocks is how many locks on a tree's work hold row the store had granted, and how many of
-// them had been released, at one moment.
-type heldLocks struct{ taken, released int }
-
-// Spec step 7, check a3d61f8e and decision 1 of the review's first round: a decision that may make
-// the hold's stop reads the tree's work hold row for share and lets the lock go at once
-// (readHoldForStop), so no decision holds a lock on that row across a call of the runtime,
-// whatever source asks for the call. The opening waits for that row under the lock every fact
-// takes, so a lock held across a process stop held every fact of the daemon for as long as the
-// stop ran. The runtime reads the store's counts when it is asked to stop the process: every lock
-// granted was released before.
-//
-//   - The hold's stop asked now reads the row, and the read of the row after the stop's write
-//     (holdReadAfterStop) takes one more lock and releases it at once.
-//   - The daemon's own suspension of an idle claim whose hold stop is held for the turn its
-//     message starts reads the row too, since the hold's stop is held over the claim, and it
-//     stops the process with no lock held.
-func TestWorkHoldHoldsNoLockAcrossARuntimeCall(t *testing.T) {
-	atStop := func(t *testing.T) (*harness, *endedUnderStop, *[]heldLocks) {
-		t.Helper()
-		var seen []heldLocks
-		h, told := holdReadHarness(t, func(h *harness) {
-			taken, released := h.store.locks()
-			seen = append(seen, heldLocks{taken: taken, released: released})
-		})
-		h.reach(StateIdle)
-		return h, told, &seen
-	}
-	t.Run("the hold's stop asked now", func(t *testing.T) {
-		h, told, seen := atStop(t)
-		before, _ := h.store.locks()
-
-		h.must(versioned(directHoldStop(h)))
-
-		h.wantHeld()
-		if want := []heldLocks{{taken: before + 1, released: before + 1}}; !slices.Equal(*seen, want) {
-			t.Fatalf("the runtime was asked to stop the process with %+v locks granted and released, want %+v: the decision's read released before the stop",
-				*seen, want)
-		}
-		if taken, released := h.store.locks(); taken != before+2 || released != taken {
-			t.Fatalf("after the stop the store had granted %d locks and released %d, want %d of each: the decision's read and the read after the stop's write",
-				taken, released, before+2)
-		}
-		told.wantNone(t)
-	})
-	t.Run("the daemon's suspension of a claim whose hold stop is held", func(t *testing.T) {
-		h, told, seen := atStop(t)
-		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the hold's stop of an idle claim answered %v, want it held for the turn its message starts", err)
-		}
-		before, _ := h.store.locks()
-
-		h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "LEGION-209 lingers"})
-
-		if want := []heldLocks{{taken: before + 1, released: before + 1}}; !slices.Equal(*seen, want) {
-			t.Fatalf("the runtime was asked to stop the process with %+v locks granted and released, want %+v: the decision's read released before the stop",
-				*seen, want)
-		}
-		if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon {
-			t.Fatalf("the claim is %s by %q, want it suspended by the daemon", c.State, c.SuspendedBy)
-		}
-		told.wantNone(t)
-	})
-}
-
 // Spec step 7 ("starts each claim that the hold stopped") and R2, check a3d61f8e: once the hold's
 // stop is written, the machine reads the tree's work hold row again (holdReadAfterStop). The
 // opening takes that row for update before it reads the claims and deletes it, so where the read
@@ -1559,10 +1478,10 @@ func TestWorkHoldReadsItsRowAgainOnceTheStopIsWritten(t *testing.T) {
 		told.wantOnce(h)
 	})
 	t.Run("a read that fails answers its error and tells nobody", func(t *testing.T) {
-		refused := errors.New("the lock waited past the claim-write deadline")
+		refused := errors.New("the read waited past the claim-write deadline")
 		h, told := holdReadHarness(t, func(h *harness) {
 			h.store.openHold(tree)
-			h.store.fail("LockWorkHold", refused)
+			h.store.fail("WorkHoldStands", refused)
 		})
 		h.reach(StateIdle)
 
@@ -1580,9 +1499,9 @@ func TestWorkHoldReadsItsRowAgainOnceTheStopIsWritten(t *testing.T) {
 		h, told := holdReadHarness(t, nil)
 		h.releasedWithATask()
 		h.store.onPut = func(c Claim) {
-			// The opening commits as the takeover is written. The decision read the row before
-			// and let it go at once (readHoldForStop), so the opening waits for no lock of the
-			// takeover's. onPut runs under the store's lock, which guards the opened trees.
+			// The opening commits as the takeover is written. The decision read the row before,
+			// in a transaction of its own (readHoldForStop), so the opening waits for nothing of
+			// the takeover's. onPut runs under the store's lock, which guards the opened trees.
 			if c.SuspendedBy == SuspendedByHold {
 				h.store.opened[c.Tree] = true
 			}
@@ -1624,13 +1543,13 @@ func TestWorkHoldStopAskedAgainOfAClaimItStopped(t *testing.T) {
 	refused := errors.New("the database did not answer")
 	stoppedWithAFailedRead := func(t *testing.T) (*harness, *endedUnderStop) {
 		t.Helper()
-		h, told := holdReadHarness(t, func(h *harness) { h.store.fail("LockWorkHold", refused) })
+		h, told := holdReadHarness(t, func(h *harness) { h.store.fail("WorkHoldStands", refused) })
 		h.reach(StateIdle)
 		if err := h.handle(versioned(directHoldStop(h))); !errors.Is(err, refused) {
 			t.Fatalf("the hold's stop answered %v, want the refused read of the row after the stop", err)
 		}
 		h.wantHeld()
-		h.store.fail("LockWorkHold", nil)
+		h.store.fail("WorkHoldStands", nil)
 		return h, told
 	}
 	t.Run("in a tree that still holds work", func(t *testing.T) {
@@ -1656,9 +1575,6 @@ func TestWorkHoldStopAskedAgainOfAClaimItStopped(t *testing.T) {
 		h.wantHeld()
 		h.wantCalls("Suspend", 1)
 		told.wantOnce(h)
-		if taken, released := h.store.locks(); released != taken {
-			t.Fatalf("the store had granted %d locks and released %d, want each released", taken, released)
-		}
 	})
 }
 
@@ -1752,7 +1668,4 @@ func TestWorkHoldStopAskedAgainWaitsForItsOwedWrite(t *testing.T) {
 	}
 	h.wantHeld()
 	told.wantOnce(h)
-	if taken, released := h.store.locks(); released != taken {
-		t.Fatalf("the store had granted %d locks and released %d, want each released", taken, released)
-	}
 }

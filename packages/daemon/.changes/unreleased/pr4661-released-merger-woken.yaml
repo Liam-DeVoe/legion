@@ -9,6 +9,6 @@ body: |-
   a closed gate lets through. Under `merge`, a hook prompt to a released merger now waits while the
   tree's design gate is closed, where before it woke the merger. Under `merge`, the close message
   to a merger that is launching, or whose start read the gate open just before the close, waits for
-  the merger's session too. Under both words, a close message to a woken merger, and a work hold's
-  close message, is not sent when the gate opened again before the daemon could send it, so the
-  role does not read "closed" after the gate opened.
+  the merger's session too. Under both words, no message of the design gate's close is sent when
+  the gate opened again before the daemon could send it, the architect's message included, so no
+  role reads "closed" after the gate opened.

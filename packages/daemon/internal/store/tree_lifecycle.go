@@ -7,7 +7,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -108,38 +107,36 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	})
 }
 
-// LockWorkHold takes tree's work_holds row for share and answers whether the row exists
-// (supervise.Store.LockWorkHold): whether the work hold of tree stands. The workflow writes the
-// row at the hold's close, and the opening takes it for update and deletes it in its own
-// transaction (record.Store.PutWorkHold, LockWorkHold, OpenWorkHold). The opening keeps the hold
-// as the record of the tree's last opening, in work_hold_openings, which this lock does not read:
-// a hold an opening ended does not stand. The lock is held by a transaction of its own, which
-// writes nothing and lasts until release rolls it back. The machine calls release at once, so the
-// call is a read of whether the hold stands that waits for an opening in flight (supervise's
-// Machine.readWorkHold). No decision of a claim holds the row across another store call or a call
-// of the runtime. While the lock lasts, its transaction is the caller's connection of the pool.
+// WorkHoldStands is whether the work hold of tree stands (supervise.Store.WorkHoldStands): whether
+// tree's work_holds row exists. The workflow writes the row at the hold's close, and the opening
+// takes it for update and deletes it in its own transaction (record.Store.PutWorkHold,
+// LockWorkHold, OpenWorkHold). The opening keeps the hold as the record of the tree's last
+// opening, in work_hold_openings, which this read does not read: a hold an opening ended does not
+// stand. The read takes the row for share in a transaction of its own, which writes nothing and
+// rolls back before it returns. So a read asked while an opening holds the row waits for the
+// opening's commit and then reads no row, and no decision of a claim holds the row across another
+// store call or a call of the runtime.
 //
 // The wait for the row ends at ctx's deadline, laid twice as the state route lays its bound
 // (internal/api's projectState): the context ends the Go side's wait, and the same bound is the
 // transaction's lock_timeout, which ends a lock wait inside the server. The rollback runs on a
-// context apart from ctx, with that same bound, so a lock asked for at the deadline still ends
-// its transaction. A tree with no row takes no lock: its transaction ends at once, and release
-// does nothing. An error ends the transaction, and no release is answered.
-func (s *Store) LockWorkHold(ctx context.Context, tree string) (stands bool, release func(), err error) {
+// context apart from ctx, with that same bound, so a read asked at the deadline still ends its
+// transaction.
+func (s *Store) WorkHoldStands(ctx context.Context, tree string) (bool, error) {
 	if err := s.pool.guard(ctx); err != nil {
-		return false, nil, err
+		return false, err
 	}
 	var bound time.Duration
 	if deadline, ok := ctx.Deadline(); ok {
 		if bound = time.Until(deadline); bound <= 0 {
-			return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, context.DeadlineExceeded)
+			return false, fmt.Errorf("read the work hold of %s: %w", tree, context.DeadlineExceeded)
 		}
 	}
 	tx, err := s.pool.begin(ctx, pgx.TxOptions{})
 	if err != nil {
-		return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, err)
+		return false, fmt.Errorf("read the work hold of %s: %w", tree, err)
 	}
-	end := func() {
+	defer func() {
 		ending := context.WithoutCancel(ctx)
 		if bound > 0 {
 			var cancel context.CancelFunc
@@ -147,23 +144,20 @@ func (s *Store) LockWorkHold(ctx context.Context, tree string) (stands bool, rel
 			defer cancel()
 		}
 		_ = tx.Rollback(ending)
-	}
+	}()
 	if bound > 0 {
 		if _, err := tx.Exec(ctx, "set local lock_timeout = "+strconv.FormatInt(max(bound.Milliseconds(), 1), 10)); err != nil {
-			end()
-			return false, nil, fmt.Errorf("bound the wait for the work hold of %s: %w", tree, err)
+			return false, fmt.Errorf("bound the wait for the work hold of %s: %w", tree, err)
 		}
 	}
 	var one int
 	switch err := tx.QueryRow(ctx, `select 1 from work_holds where tree = $1 for share`, tree).Scan(&one); {
 	case errors.Is(err, pgx.ErrNoRows):
-		end()
-		return false, func() {}, nil
+		return false, nil
 	case err != nil:
-		end()
-		return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, err)
+		return false, fmt.Errorf("read the work hold of %s: %w", tree, err)
 	}
-	return true, sync.OnceFunc(end), nil
+	return true, nil
 }
 
 // ReserveWorkflowTreeCleanup records the workflow close before any resource snapshot. A retry of an

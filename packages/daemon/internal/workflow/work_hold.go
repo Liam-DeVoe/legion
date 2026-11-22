@@ -259,7 +259,7 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     it, so its stop is written at once, and the hold takes its `released` source over with its
 //     bundle and its pending task kept;
 //   - a phase worker that is neither live nor released, and whose run holds a start under way
-//     (startUnderWay), nothing, and its stop is written at once: the start read the gate open
+//     (StartUnderWay), nothing, and its stop is written at once: the start read the gate open
 //     before this close, and it may create, resume or retry the claim after it. The stop's row is
 //     newer than the start's, so it still acts on the claim that start launches (StopActs), and
 //     the outbox runs it once the start's lease ends: it stops the launching claim at its ready,
@@ -270,7 +270,9 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     nothing: the operator's suspension and the daemon's stand above the hold's.
 //
 // Each stop names the version that closed the gate (record.SuperviseRequest.HoldVersion), and is
-// one log line naming the issue, the role and the version.
+// one log line naming the issue, the role and the version. Each message is marked as a close
+// message (record.RoleMessage.Close), so the outbox publishes none of them once the gate opened
+// again.
 func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, document string, version int) error {
 	hold := record.WorkHold{Project: root.Project, Tree: root.Tree, RootGeneration: root.Generation, Step: step,
 		ArtifactID: document, Version: version, ClosedAt: e.now()}
@@ -288,10 +290,10 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 	told, stopped := 0, 0
 	for _, c := range claims {
 		var how string
-		underWay, _ := startUnderWay(c.run, root)
+		underWay, _ := StartUnderWay(c.run, root)
 		switch {
 		case c.role == claim.RoleArchitect && c.live():
-			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: architectClose}); err != nil {
+			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: architectClose, Close: true}); err != nil {
 				return err
 			}
 			told++
@@ -301,7 +303,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 		case c.live():
 			how = "told to end its turn"
 			stop := stopOf(c)
-			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose, Stop: &stop}); err != nil {
+			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose, Close: true, Stop: &stop}); err != nil {
 				return err
 			}
 			told++
@@ -309,7 +311,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 			how = "woken from its release to end its turn"
 			stop := stopOf(c)
 			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose,
-				Wake: true, Stop: &stop}); err != nil {
+				Close: true, Wake: true, Stop: &stop}); err != nil {
 				return err
 			}
 			told++
@@ -354,8 +356,8 @@ func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue,
 // It takes the tree's work_holds row for update before it reads the tree's claims
 // (record.Store.LockWorkHold), and the transaction deletes the row, keeps it as the record of the
 // tree's last opening (record.Store.OpenWorkHold) and commits with that lock held. A claim's
-// decision that may make the hold's stop reads the same row for share and lets the lock go at once
-// (supervise.Store.LockWorkHold, supervise's readHoldForStop). So a decision that asks for the row
+// decision that may make the hold's stop reads the same row for share in a transaction of its own
+// (supervise.Store.WorkHoldStands, supervise's readHoldForStop). So a decision that asks for the row
 // while this holds it waits for the commit and then reads no row, and makes no stop, and this
 // waits for no decision's runtime call. A stop can still be written after this read of the claims:
 // the stop of a decision that read the row before this took it, and a stop held for a turn, a

@@ -210,14 +210,7 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 // taken off its front. A task that carries no such sentences is its whole text, and so is one whose
 // text does not begin with them: a delivery the release before rewrote keeps the column it does not
 // name, so its Opening may name sentences its new task does not carry.
-func (d Delivery) Work() string {
-	if d.Opening != "" {
-		if work, ok := strings.CutPrefix(d.Task, OpeningTask(d.Opening, "")); ok {
-			return work
-		}
-	}
-	return d.Task
-}
+func (d Delivery) Work() string { return OpeningWork(d.Task, d.Opening) }
 
 // sentences is which of the claim's two untold records a prompt carries the sentence of: the
 // session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
