@@ -2570,6 +2570,62 @@ test("offline, a row's Start next whose write landed is free again at the reques
   }
 });
 
+// Offline, the List's Take out of epic lands its write, and the list read after it is paused until
+// the network returns. The action holds the bar through that read until the request deadline
+// (`REQUEST_DEADLINE_MS`), counted from the write's landing, which is past the write deadline
+// counted from the press. The read is part of the press's action, so the bar's going then is the
+// reader's doing: the bar goes in the commit that lets the action's controls go, and its hand-off
+// puts the focus on the checkbox of the issue marked last, which the list still holds. From the
+// press to that commit the focus stays on Take out of epic, and it is never on the page's body.
+test("offline, Take out of epic whose list read never settles hands the focus to the marked issue's checkbox at the request deadline, never to the body", async () => {
+  const online = onlineManager.isOnline();
+  // The write's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const answer = Promise.withResolvers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => answer.promise as never);
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Table epic" }),
+      issue("CORE-2", { parent: "CORE-1" }),
+    ],
+    "",
+    { client, rescued: true }
+  );
+  await userEvent.setup().click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  const bar = () => screen.queryByRole("toolbar", { name: "Selected issues" });
+  const takeOut = within(bar() as HTMLElement).getByRole("button", { name: "Take out of epic" });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    act(() => takeOut.focus());
+    await user.keyboard("{Enter}");
+    await tick(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    answer.resolve(savedIssue("CORE-2"));
+    // Where the focus is at every half second from the press while the bar stays, until 2 s past
+    // the request deadline at the most.
+    const focused = new Set<string>();
+    for (let waited = 0; bar() !== null && waited <= REQUEST_DEADLINE_MS + 2_000; waited += 500) {
+      focused.add(focusedName());
+      await tick(500);
+    }
+    expect(bar()?.textContent ?? "no bar").toBe("no bar");
+    expect([...focused]).toEqual(["Take out of epic"]);
+    expect(focusedName()).toBe("Select CORE-2");
+    // The page's rescue, a frame and a task on, leaves it there.
+    await tick(500);
+    expect(focusedName()).toBe("Select CORE-2");
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+  } finally {
+    onlineManager.setOnline(online);
+    realClock();
+  }
+});
+
 // A notice's button that takes the notice away hands the focus on, never to the page's body
 // (ruling ff1a60f5): to the control now at its place among the List's notices, else the one
 // before it, else the toolbar's search box.
