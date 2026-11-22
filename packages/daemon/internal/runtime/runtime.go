@@ -525,7 +525,12 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// Backends); "" is Oh My Pi (Of). ReviewHead is the commit a reviewer's launch is given to review,
+// the head of the issue's pull request the daemon records (internal/daemon's specs reads it): a
+// pod's reviewer is told it as workspace.ReviewHeadEnv, and its role-init refuses to start it
+// where its own clone cannot stand there (workspace.ProvisionReviewClone); "" for every other
+// role and for a reviewer whose issue the daemon records no head for. The tmux runtime ignores
+// it: the daemon makes a tmux reviewer's clone itself, at that head, before the launch.
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -546,6 +551,7 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+	ReviewHead        string
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the

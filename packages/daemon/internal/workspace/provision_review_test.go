@@ -17,13 +17,14 @@ import (
 
 // reviewFixture is a shared clone standing on an issue's branch at origin, made as the issue's
 // workspace provision makes one, and the review clone ProvisionReviewClone is asked to make
-// beside it: origin, the commit a commit makes there on the branch, and the request.
+// beside it: origin, the commits a commit makes there (base on the default branch, then first on
+// the issue's branch), and the request, which gives the reviewer first, the branch's head.
 type reviewFixture struct {
-	setup   fixturegit.Runner
-	git, jj string
-	origin  string
-	request ReviewRequest
-	first   string
+	setup       fixturegit.Runner
+	git, jj     string
+	origin      string
+	request     ReviewRequest
+	base, first string
 }
 
 func newReviewFixture(t *testing.T) reviewFixture {
@@ -44,7 +45,7 @@ func newReviewFixture(t *testing.T) reviewFixture {
 	initOrigin := fixturegit.InitWorkTree(f.origin, "main")
 	initOrigin[0] = f.git
 	f.setup.Run(root, initOrigin...)
-	f.commit(t, "base\n")
+	f.base = f.commit(t, "base\n")
 	f.setup.Run(f.origin, f.git, "checkout", "--quiet", "-b", Bookmark(issue))
 	f.first = f.commit(t, "base\nfirst\n")
 	state := filepath.Join(root, "state")
@@ -57,7 +58,7 @@ func newReviewFixture(t *testing.T) reviewFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.request = ReviewRequest{Clone: located.Clone, Dir: review, Repo: repo, Issue: issue, DefaultBranch: "main"}
+	f.request = ReviewRequest{Clone: located.Clone, Dir: review, Repo: repo, Issue: issue, DefaultBranch: "main", Head: f.first}
 	return f
 }
 
@@ -72,12 +73,26 @@ func (f reviewFixture) commit(t *testing.T, body string) string {
 
 // The review clone holds objects of its own: no file under its object store is a hard link to a
 // file of the shared clone's, so no role that writes the shared clone's object files in place
-// writes what the reviewer's git reads.
+// writes what the reviewer's git reads, and it names no other object store. An
+// objects/info/alternates that another role plants in the shared clone, naming a store that role
+// writes, does not reach the review clone, whose objects come through git's transport and not as
+// a copy of the shared clone's files; and a review clone that holds such a file is refused,
+// naming it, rather than handed to a reviewer whose git would read objects from that store.
 func TestAReviewCloneSharesNoObjectFileWithTheSharedClone(t *testing.T) {
 	f := newReviewFixture(t)
+	planted := filepath.Join(filepath.Dir(f.origin), "planted")
+	initPlanted := fixturegit.InitWorkTree(planted, "main")
+	initPlanted[0] = f.git
+	f.setup.Run(filepath.Dir(f.origin), initPlanted...)
+	plantedObjects := filepath.Join(planted, ".git", "objects")
+	writeFiles(t, f.request.Clone, map[string]string{".git/objects/info/alternates": plantedObjects + "\n"})
 	run := NewRunner(testTimeout, map[string]string{"git": f.git, "jj": f.jj})
 	if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
 		t.Fatalf("ProvisionReviewClone: %v", err)
+	}
+	alternates := filepath.Join(f.request.Dir, ".git", "objects", "info", "alternates")
+	if body, err := os.ReadFile(alternates); !os.IsNotExist(err) {
+		t.Errorf("the review clone holds %s = %q (%v), want none: the shared clone's planted store %s reached it", alternates, body, err, plantedObjects)
 	}
 	files := 0
 	err := filepath.WalkDir(filepath.Join(f.request.Dir, ".git", "objects"), func(path string, entry fs.DirEntry, err error) error {
@@ -100,6 +115,11 @@ func TestAReviewCloneSharesNoObjectFileWithTheSharedClone(t *testing.T) {
 	if files == 0 {
 		t.Fatalf("the review clone at %s holds no object file, so this row read nothing", f.request.Dir)
 	}
+
+	writeFiles(t, f.request.Dir, map[string]string{".git/objects/info/alternates": plantedObjects + "\n"})
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), alternates) {
+		t.Fatalf("a provision of a review clone that holds %s = %v, want a refusal naming it", alternates, err)
+	}
 }
 
 // skipJJNew is a runner that answers every `jj new` as done without running it, as a refresh that
@@ -113,7 +133,7 @@ func (r skipJJNew) Run(ctx context.Context, command Command) (Result, error) {
 	return r.Runner.Run(ctx, command)
 }
 
-// A review clone whose checked-out HEAD is not the head the provision brought it to is refused,
+// A review clone whose checked-out HEAD is not the head the daemon gives the reviewer is refused,
 // naming both commits, rather than handed to a reviewer that would read another commit.
 func TestAReviewCloneLeftAtAnotherCommitIsRefused(t *testing.T) {
 	f := newReviewFixture(t)
@@ -123,15 +143,76 @@ func TestAReviewCloneLeftAtAnotherCommitIsRefused(t *testing.T) {
 	}
 	second := f.commit(t, "base\nfirst\nsecond\n")
 	f.setup.Run(f.request.Clone, f.git, "fetch", "--quiet", "origin")
+	f.request.Head = second
 	err := ProvisionReviewClone(context.Background(), skipJJNew{run}, f.request)
 	if err == nil || !strings.Contains(err.Error(), f.first) || !strings.Contains(err.Error(), second) {
 		t.Fatalf("a provision that left the clone at %s rather than %s = %v, want a refusal naming both", f.first, second, err)
 	}
 }
 
-// A review clone that is already there is brought to the head the shared clone records at every
-// provision, from the shared clone's objects and with no network, as a fresh clone would stand: a
-// reviewer started on it reviews the head of now, not the one its clone was first made at. What
+// The review clone stands on the head the daemon gives the reviewer (ReviewRequest.Head, the pull
+// request's head the daemon records), never on what the shared clone records for the issue's
+// branch, which any role that writes the shared clone can move and which goes stale when the
+// branch moves at origin without the shared clone's fetch. A head the shared clone holds is
+// checked out, fetched by its id where no branch the shared clone records reaches it, whatever the
+// shared clone's branch names; a head it does not hold is refused, naming the head and the commit
+// the shared clone records for the branch, on a fresh clone and on one already there; and a head
+// that is not a full commit id is refused before git reads it.
+func TestAReviewCloneStandsOnTheHeadTheDaemonGives(t *testing.T) {
+	f := newReviewFixture(t)
+	run := NewRunner(testTimeout, map[string]string{"git": f.git, "jj": f.jj})
+	second := f.commit(t, "base\nfirst\nsecond\n")
+
+	f.request.Head = second
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), second) || !strings.Contains(err.Error(), f.first) {
+		t.Fatalf("a first provision at %s, which the shared clone does not hold (its branch at %s) = %v, want a refusal naming both", second, f.first, err)
+	}
+	if _, err := os.Lstat(f.request.Dir); !os.IsNotExist(err) {
+		t.Fatalf("a refused first provision left %s: %v", f.request.Dir, err)
+	}
+
+	// Another role moves the shared clone's record of the issue's branch back to the base.
+	f.setup.Run(f.request.Clone, f.git, "update-ref", "refs/remotes/origin/"+Bookmark("ACME-4"), f.base)
+	f.request.Head = f.first
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+		t.Fatalf("a provision at %s with the shared clone's branch moved to %s: %v", f.first, f.base, err)
+	}
+	if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != f.first {
+		t.Fatalf("with the shared clone's branch moved to %s, the review clone stands on %s, want the head given %s", f.base, at, f.first)
+	}
+
+	f.request.Head = second
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), second) || !strings.Contains(err.Error(), f.base) {
+		t.Fatalf("a refresh at %s, which the shared clone does not hold (its branch at %s) = %v, want a refusal naming both", second, f.base, err)
+	}
+	if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != f.first {
+		t.Fatalf("a refused refresh moved the review clone to %s, want it left on %s", at, f.first)
+	}
+
+	// The shared clone fetches the head, then another role moves its record of the branch back to
+	// the base again, so no branch the review clone fetches reaches the head.
+	f.setup.Run(f.request.Clone, f.git, "fetch", "--quiet", "origin")
+	f.setup.Run(f.request.Clone, f.git, "update-ref", "refs/remotes/origin/"+Bookmark("ACME-4"), f.base)
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+		t.Fatalf("a refresh at %s once the shared clone holds it: %v", second, err)
+	}
+	if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != second {
+		t.Fatalf("the review clone stands on %s, want the head given %s", at, second)
+	}
+
+	for _, head := range []string{"main", "--upload-pack=touch", second[:12], strings.ToUpper(second)} {
+		f.request.Head = head
+		if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), "full commit id") {
+			t.Errorf("a provision at head %q = %v, want a refusal of a head that is no full commit id", head, err)
+		}
+	}
+}
+
+// A review clone that is already there is brought to the head at every provision, from the shared
+// clone's objects and with no network, as a fresh clone would stand: a reviewer started on it
+// reviews the head of now, not the one its clone was first made at. The request gives no head, as
+// a daemon that records no pull request head for the issue gives none, so the head is the one the
+// shared clone records. What
 // the reviewer wrote in it before stays in a change of its own, and the working copy holds the new
 // head's tree; a lock a reviewer's git killed mid-write left in the clone does not stop it, and
 // a temporary clone a killed attempt left beside it is gone with the next one. Once origin no

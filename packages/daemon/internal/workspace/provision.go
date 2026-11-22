@@ -368,11 +368,18 @@ func stateDirOf(dir string) string {
 	return dir
 }
 
+// ReviewHeadEnv names the variable a pod's reviewer is told the head the daemon gives it in
+// (runtime/sandbox's agentEnv), which its role-init reads (internal/launcher) and hands
+// ReviewRequestFor. A role-init of an image from before it reads no such variable, and a daemon
+// from before it sets none, which ReviewRequestFor reads as no head given.
+const ReviewHeadEnv = "LEGION_REVIEW_HEAD"
+
 // ReviewRequestFor is the request a pod reviewer's role-init makes or refreshes its own clone with
 // (internal/launcher): dir, its LEGION_WORKSPACE, must be the ReviewLocation of issue's workspace in
-// a state directory's layout, and that workspace's shared clone is what it is cloned from. Any
+// a state directory's layout, and that workspace's shared clone is what it is cloned from; head is
+// the head the daemon gives the reviewer (ReviewHeadEnv), "" from a daemon that gives none. Any
 // other dir is refused, naming it.
-func ReviewRequestFor(dir, issue, defaultBranch string) (ReviewRequest, error) {
+func ReviewRequestFor(dir, issue, defaultBranch, head string) (ReviewRequest, error) {
 	shared := IssueWorkspace(dir)
 	located, err := locationOf(shared)
 	if err != nil || shared == dir {
@@ -381,7 +388,7 @@ func ReviewRequestFor(dir, issue, defaultBranch string) (ReviewRequest, error) {
 	if want, err := ReviewLocation(stateDirOf(shared), located.Repo, issue); err != nil || want != dir {
 		return ReviewRequest{}, fmt.Errorf("%s is not the reviewer's clone of %s", dir, issue)
 	}
-	return ReviewRequest{Clone: located.Clone, Dir: dir, Repo: located.Repo, Issue: issue, DefaultBranch: defaultBranch}, nil
+	return ReviewRequest{Clone: located.Clone, Dir: dir, Repo: located.Repo, Issue: issue, DefaultBranch: defaultBranch, Head: head}, nil
 }
 
 // ReviewRootOf is the directory every reviewer's clone of the state directory sits under
@@ -396,8 +403,11 @@ func ReviewRootOf(dir string) (string, error) {
 
 // ReviewRequest is where ProvisionReviewClone makes a reviewer's clone and what from. Clone is the
 // shared clone the review clone takes its objects from, and its record of origin's branches; Dir
-// is the review clone (ReviewLocation). The head is Issue's branch (Bookmark) as the shared clone
-// last saw it at origin, else DefaultBranch's, for an issue whose branch origin no longer holds.
+// is the review clone (ReviewLocation). Head is the commit the daemon gives the reviewer, the head
+// of the issue's pull request it records: the review clone stands there or the provision is
+// refused. A daemon that records no head for the issue gives none, and the head is then Issue's
+// branch (Bookmark) as the shared clone last saw it at origin, else DefaultBranch's, for an issue
+// whose branch origin no longer holds.
 // StoreLock and CheckoutSlot are Request's, for the same steps: the lock is held while the shared
 // clone is read, and the checkout takes a place. A pod's reviewer passes neither: its role-init is
 // the one provision of its pod's review clone, and a git clone or fetch reads a shared clone that
@@ -407,6 +417,7 @@ type ReviewRequest struct {
 	Clone, Dir           string
 	Repo                 ghrepo.Repository
 	Issue, DefaultBranch string
+	Head                 string
 	StoreLock            sync.Locker
 	CheckoutSlot         func(ctx context.Context) (release func(), err error)
 	Log                  func(string)
@@ -421,16 +432,18 @@ var reviewProvisionEnv = append(ReviewGitEnv(ReviewGitConfig()), "GIT_ALLOW_PROT
 const reviewStagingSuffix = ".review-"
 
 // ProvisionReviewClone makes the reviewer's own clone at request.Dir, or brings the one there to
-// the head. A new one is a `git clone --no-checkout --no-hardlinks` of the shared clone, which
-// copies its object files rather than linking them, so no role's write of the shared clone's
-// object files reaches the review clone, then origin's
+// the head. A new one is a `git clone --no-checkout --no-hardlinks --no-local` of the shared clone,
+// which takes its objects through git's transport, hash-checked, rather than as a copy of the
+// shared clone's files, so no role's write of the shared clone's object files reaches the review
+// clone, and no objects/info/alternates the shared clone holds names a store it reads; a clone
+// that holds one is refused (refuseAlternates). Then origin's
 // branches as the shared clone records them (its refs/remotes/origin, which the clone alone does
 // not copy), origin set to GitHub with the shared clone's credential helper and gh's default
-// repository, then a checkout of the head, detached, and jj colocated with it, since the shim's
-// adoption of the working copy and every role's prompt run jj in the workspace. It is made under a
-// temporary sibling and renamed into place only once whole, so a clone that stands at Dir is a
-// finished one, and one that stands there without its .jj is no clone of this function's, and is
-// removed and made again; a temporary sibling an earlier attempt left when it was killed is
+// repository, then a checkout of the head (reviewHead), detached, and jj colocated with it, since
+// the shim's adoption of the working copy and every role's prompt run jj in the workspace. It is
+// made under a temporary sibling and renamed into place only once whole, so a clone that stands at
+// Dir is a finished one, and one that stands there without its .jj is no clone of this function's,
+// and is removed and made again; a temporary sibling an earlier attempt left when it was killed is
 // removed before the next is made.
 //
 // A clone already there is brought to the head as a fresh one would stand, at every provision, so
@@ -438,7 +451,9 @@ const reviewStagingSuffix = ".review-"
 // git killed mid-write left in it are removed, since its only writer is the reviewer, which is not
 // running while its next launch provisions; origin's branches are fetched again from the shared
 // clone's objects, by its path and with no network; and `jj new <head>` puts the working copy on
-// the head, leaving what the reviewer wrote there before in a change of its own.
+// the head, leaving what the reviewer wrote there before in a change of its own. Either way the
+// clone's HEAD is then read, and a clone that stands anywhere but the head is refused, naming both
+// commits (requireReviewHead).
 //
 // No other role's run writes it: a clone copies neither the shared clone's configuration nor its
 // hooks, and no normal git operation rewrites an object file another clone links to. Its clone,
@@ -456,6 +471,8 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 		return errors.New("review clone repository is required")
 	case request.Issue == "":
 		return errors.New("review clone issue is required")
+	case request.Head != "" && !fullCommitID(request.Head):
+		return fmt.Errorf("review clone of %s: the head under review %q is no full commit id", request.Issue, request.Head)
 	}
 	if err := refuseSymlinkedLayout(request.Dir, request.Dir); err != nil {
 		return err
@@ -494,18 +511,23 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 		return fmt.Errorf("make the review clone's temporary directory: %w", err)
 	}
 	defer func() { _ = rolefile.RemoveTree(temporary) }()
-	store := &storeLock{locker: request.StoreLock}
-	store.lock()
-	clone := []string{"git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", request.Clone, temporary}
-	result, err := runCommandTimeout(ctx, run, clone, reviewProvisionEnv, parent, CloneTimeout)
-	if _, err = checkedResult(clone, result, err); err == nil {
-		err = fetchForReview(ctx, run, temporary, "origin")
-	}
-	store.unlock()
-	if err != nil {
-		return err
-	}
-	head, err := reviewHead(ctx, run, request, temporary)
+	head, err := func() (string, error) {
+		store := &storeLock{locker: request.StoreLock}
+		store.lock()
+		defer store.unlock()
+		clone := []string{"git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", "--no-local", request.Clone, temporary}
+		result, err := runCommandTimeout(ctx, run, clone, reviewProvisionEnv, parent, CloneTimeout)
+		if _, err := checkedResult(clone, result, err); err != nil {
+			return "", err
+		}
+		if err := refuseAlternates(temporary); err != nil {
+			return "", err
+		}
+		if err := fetchForReview(ctx, run, temporary, "origin"); err != nil {
+			return "", err
+		}
+		return reviewHead(ctx, run, request, temporary, "origin")
+	}()
 	if err != nil {
 		return err
 	}
@@ -552,9 +574,13 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 }
 
 // refreshReviewClone brings the review clone at request.Dir to the head (ProvisionReviewClone):
-// the stale locks under its git directory removed, origin's branches fetched again from the shared
-// clone by its path, under its store lock, then `jj new <head>` in the clone, in a checkout place.
+// a clone that names another object store refused (refuseAlternates), the stale locks under its
+// git directory removed, origin's branches and the head fetched again from the shared clone by its
+// path, under its store lock, then `jj new <head>` in the clone, in a checkout place.
 func refreshReviewClone(ctx context.Context, run Runner, request ReviewRequest) error {
+	if err := refuseAlternates(request.Dir); err != nil {
+		return fmt.Errorf("%w; remove the review clone, and the next launch makes it afresh", err)
+	}
 	log := request.Log
 	if log == nil {
 		log = func(string) {}
@@ -563,14 +589,15 @@ func refreshReviewClone(ctx context.Context, run Runner, request ReviewRequest) 
 	if err := removeLocksUnder(filepath.Join(request.Dir, ".git"), time.Now(), log, why); err != nil {
 		return err
 	}
-	store := &storeLock{locker: request.StoreLock}
-	store.lock()
-	err := fetchForReview(ctx, run, request.Dir, request.Clone)
-	store.unlock()
-	if err != nil {
-		return err
-	}
-	head, err := reviewHead(ctx, run, request, request.Dir)
+	head, err := func() (string, error) {
+		store := &storeLock{locker: request.StoreLock}
+		store.lock()
+		defer store.unlock()
+		if err := fetchForReview(ctx, run, request.Dir, request.Clone); err != nil {
+			return "", err
+		}
+		return reviewHead(ctx, run, request, request.Dir, request.Clone)
+	}()
 	if err != nil {
 		return err
 	}
@@ -587,8 +614,9 @@ func refreshReviewClone(ctx context.Context, run Runner, request ReviewRequest) 
 }
 
 // requireReviewHead refuses the review clone at dir unless the commit its git HEAD names is head,
-// the one the provision brought it to: a reviewer reads the change through that HEAD, so a clone
-// left at any other commit is refused, naming both, rather than handed to the reviewer.
+// the one the daemon gives the reviewer (or, where it gives none, the one the provision brought it
+// to): a reviewer reads the change through that HEAD, so a clone left at any other commit is
+// refused, naming both, rather than handed to the reviewer.
 func requireReviewHead(ctx context.Context, run Runner, dir, head string) error {
 	result, err := RunChecked(ctx, run, []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "rev-parse", "HEAD"}, reviewProvisionEnv, dir)
 	if err != nil {
@@ -598,6 +626,35 @@ func requireReviewHead(ctx context.Context, run Runner, dir, head string) error 
 		return fmt.Errorf("review clone %s stands on %s, not on %s, the head under review", dir, at, head)
 	}
 	return nil
+}
+
+// refuseAlternates refuses the review clone at dir where its object store names another
+// (objects/info/alternates): its git would read objects from a store that another role may write.
+// A clone that --no-local made holds none, so one there was written into the clone since; such a
+// clone is refused rather than read.
+func refuseAlternates(dir string) error {
+	alternates := filepath.Join(dir, ".git", "objects", "info", "alternates")
+	if _, err := os.Lstat(alternates); err == nil {
+		return fmt.Errorf("review clone %s: %s names another object store, which its git would read", dir, alternates)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read the review clone's %s: %w", alternates, err)
+	}
+	return nil
+}
+
+// fullCommitID is whether id is a commit id as git writes one in full, lower-case hex of SHA-1's
+// 40 digits or SHA-256's 64: a head the daemon gives is read by git as an object id and never as
+// an option, a ref or a revision expression.
+func fullCommitID(id string) bool {
+	if len(id) != 40 && len(id) != 64 {
+		return false
+	}
+	for _, r := range id {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // inCheckoutPlace runs checkout, a step that writes the review clone's whole working copy, holding
@@ -625,24 +682,86 @@ func fetchForReview(ctx context.Context, run Runner, dir, from string) error {
 	return err
 }
 
-// reviewHead is the head the review clone at dir is to stand on: Issue's branch at origin, else
-// DefaultBranch's, as its last fetch (fetchForReview) recorded them.
-func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir string) (string, error) {
-	for _, branch := range []string{Bookmark(request.Issue), request.DefaultBranch} {
-		if branch == "" {
-			continue
+// reviewHeadRef is the ref a review clone holds at the head the daemon gave its reviewer, which jj
+// shows the reviewer as the remote bookmark head-under-review@legion: jj reads a commit only
+// through a ref it imports, and a head fetched by its id has no other.
+const reviewHeadRef = "refs/remotes/legion/head-under-review"
+
+// reviewHead is the head the review clone at dir is to stand on, read under the shared clone's
+// store lock once origin's branches are fetched (fetchForReview). Where the daemon gives a head
+// (request.Head), it is that commit: fetched by its id from from — the clone's own origin while it
+// still names the shared clone, else the shared clone's path — where the branches did not bring
+// it, and refused where the shared clone does not hold it, naming it and the commit the shared
+// clone records for Issue's branch, since what the shared clone's refs say is no part of what the
+// reviewer reads; the clone's reviewHeadRef is then set to it. Where the daemon gives none, it is
+// Issue's branch at origin, else DefaultBranch's, as the fetch recorded them.
+func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir, from string) (string, error) {
+	if request.Head == "" {
+		for _, branch := range []string{Bookmark(request.Issue), request.DefaultBranch} {
+			if branch == "" {
+				continue
+			}
+			if at, err := originBranch(ctx, run, dir, branch); err != nil || at != "" {
+				return at, err
+			}
 		}
-		argv := []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "rev-parse", "--verify", "--quiet",
-			"refs/remotes/origin/" + branch + "^{commit}"}
-		found, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
-		if err := answered(argv, found, err); err != nil {
+		return "", fmt.Errorf("review clone of %s: the shared clone %s records neither %s nor %q at origin", request.Repo, request.Clone, Bookmark(request.Issue), request.DefaultBranch)
+	}
+	gitDir := "--git-dir=" + filepath.Join(dir, ".git")
+	held, err := holdsCommit(ctx, run, dir, request.Head)
+	if err != nil {
+		return "", err
+	}
+	if !held {
+		argv := []string{"git", gitDir, "fetch", "--quiet", "--no-tags", from, request.Head}
+		fetched, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
+		if err := answered(argv, fetched, err); err != nil {
 			return "", err
 		}
-		if found.ExitCode == 0 {
-			return strings.TrimSpace(found.Stdout), nil
+		if held, err = holdsCommit(ctx, run, dir, request.Head); err != nil {
+			return "", err
+		}
+		if !held {
+			recorded, err := originBranch(ctx, run, dir, Bookmark(request.Issue))
+			if err != nil {
+				return "", err
+			}
+			if recorded == "" {
+				recorded = "nothing"
+			}
+			return "", fmt.Errorf("review clone of %s: the head under review %s is no commit of the shared clone %s, whose %s at origin is %s; the reviewer starts once a fetch of the shared clone brings that head (%s)",
+				request.Repo, request.Head, request.Clone, Bookmark(request.Issue), recorded, strings.TrimSpace(fetched.Stderr))
 		}
 	}
-	return "", fmt.Errorf("review clone of %s: the shared clone %s records neither %s nor %q at origin", request.Repo, request.Clone, Bookmark(request.Issue), request.DefaultBranch)
+	if _, err := RunChecked(ctx, run, []string{"git", gitDir, "update-ref", reviewHeadRef, request.Head}, reviewProvisionEnv, dir); err != nil {
+		return "", err
+	}
+	return request.Head, nil
+}
+
+// originBranch is the commit the review clone at dir records for branch at origin, as its last
+// fetch of the shared clone's record brought it, "" where it records none.
+func originBranch(ctx context.Context, run Runner, dir, branch string) (string, error) {
+	argv := []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "rev-parse", "--verify", "--quiet",
+		"refs/remotes/origin/" + branch + "^{commit}"}
+	found, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
+	if err := answered(argv, found, err); err != nil {
+		return "", err
+	}
+	if found.ExitCode != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(found.Stdout), nil
+}
+
+// holdsCommit is whether the review clone at dir holds commit, a full commit id, as a commit.
+func holdsCommit(ctx context.Context, run Runner, dir, commit string) (bool, error) {
+	argv := []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "cat-file", "-e", commit + "^{commit}"}
+	found, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
+	if err := answered(argv, found, err); err != nil {
+		return false, err
+	}
+	return found.ExitCode == 0, nil
 }
 
 // RemoveReviewClone removes the reviewer's clone at dir, which its issue's workspace removal does

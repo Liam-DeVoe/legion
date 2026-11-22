@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,11 +32,13 @@ type reviewStagePlan struct{ Self, Mount, Path string }
 
 // In a pod the reviewer works in its own clone of the issue on the issue's volume, which no
 // other role's process sees or writes. Its role-init, in the reviewer's own namespace once it is
-// built, makes the clone from the pod's shared clone at the issue's branch, and starts the
-// reviewer's shim in it; the next start of the reviewer brings the clone to the branch's new
-// head. Every other role's role-init covers the volume's reviews directory with an empty
-// filesystem of the role's own and starts the role in the issue's workspace: the role sees no
-// clone there, and what it writes there never reaches the volume.
+// built, makes the clone from the pod's shared clone at the head the daemon gives it
+// (LEGION_REVIEW_HEAD), and starts the reviewer's shim in it; the next start of the reviewer
+// brings the clone to the new head it is given, though another role moved the shared clone's
+// record of the issue's branch elsewhere, and a start at a head the shared clone does not hold is
+// refused before the shim runs. Every other role's role-init covers the volume's reviews directory
+// with an empty filesystem of the role's own and starts the role in the issue's workspace: the
+// role sees no clone there, and what it writes there never reaches the volume.
 func TestARolesInitMakesTheReviewersOwnCloneThatNoOtherRoleSees(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -75,14 +78,21 @@ func TestARolesInitMakesTheReviewersOwnCloneThatNoOtherRoleSees(t *testing.T) {
 	for _, want := range []struct{ key, value, why string }{
 		{"stage reviewer status", "0", "the reviewer's role-init made its clone and ran its shim"},
 		{"agent-reviewer pwd", report["stage review"], "the reviewer's shim starts in its own clone"},
-		{"agent-reviewer head", report["stage first"], "the reviewer's clone stands on the issue's branch"},
+		{"agent-reviewer head", report["stage first"], "the reviewer's clone stands on the head it is given"},
 		{"stage reviewer2 status", "0", "the reviewer's next role-init brought its clone to the new head"},
-		{"agent-reviewer2 head", report["stage second"], "the reviewer's next start reviews the branch's new head"},
+		{"agent-reviewer2 head", report["stage second"], "the reviewer's next start reviews the head it is given, not the shared clone's moved record"},
+		{"stage reviewer3 status", "none", "a start at a head the shared clone does not hold is refused before the shim runs"},
 		{"stage review-kept", "present", "the reviewer's clone is still on the volume after the other roles ran"},
 	} {
 		if got, ok := report[want.key]; !ok || got != want.value || got == "" {
 			t.Errorf("%s = %q, want %q: %s\n%s", want.key, got, want.value, want.why, output)
 		}
+	}
+	if pwd, ran := report["agent-reviewer3 pwd"]; ran {
+		t.Errorf("the reviewer's shim ran in %s at a head the shared clone does not hold\n%s", pwd, output)
+	}
+	if third := report["stage third"]; third == "" || !strings.Contains(string(output), "the head under review "+third) {
+		t.Errorf("the refused start names no head under review %q\n%s", third, output)
 	}
 	for _, role := range []string{"tester", "implementer"} {
 		for _, want := range []struct{ key, value, why string }{
@@ -225,12 +235,16 @@ func runReviewStage(t *testing.T, plan reviewStagePlan) error {
 
 	roleInitLaunch = roleInitHelperLaunch(self)
 	cover := RoleCover{RolesDir: rolesDir, Home: home, HomeMounts: homeMounts, FixedRoot: fixedRoot}
-	generation := func(role, label, workspaceDir string) error {
+	generation := func(role, label, workspaceDir, head string) error {
+		roleEnv := append(slices.Clip(env), "LEGION_WORKSPACE="+workspaceDir, "LEGION_ISSUE=ACME-1", "LEGION_DEFAULT_BRANCH=main",
+			reviewAgentEnv+"="+label+" "+workspace.ReviewRoot(state))
+		if head != "" {
+			roleEnv = append(roleEnv, "LEGION_REVIEW_HEAD="+head)
+		}
 		process, err := newRoleProcess(RoleInitConfig{
 			RoleCover: cover, Role: role, Generation: 1,
 			Argv: []string{self, "-test.run=^TestReviewAgentHelper$"},
-		}, append(env, "LEGION_WORKSPACE="+workspaceDir, "LEGION_ISSUE=ACME-1", "LEGION_DEFAULT_BRANCH=main",
-			reviewAgentEnv+"="+label+" "+workspace.ReviewRoot(state)), os.Stdout, os.Stdout)
+		}, roleEnv, os.Stdout, os.Stdout)
 		if err != nil {
 			return err
 		}
@@ -247,7 +261,7 @@ func runReviewStage(t *testing.T, plan reviewStagePlan) error {
 		fmt.Printf("stage %s status=%s\n", strings.TrimPrefix(label, "agent-"), reportedStatus)
 		return nil
 	}
-	if err := generation("reviewer", "agent-reviewer", review); err != nil {
+	if err := generation("reviewer", "agent-reviewer", review, first); err != nil {
 		return err
 	}
 	second, err := commit("base\nfirst\nsecond\n", "second")
@@ -257,12 +271,25 @@ func runReviewStage(t *testing.T, plan reviewStagePlan) error {
 	if _, err := git(located.Clone, "fetch", "--quiet", "origin"); err != nil {
 		return err
 	}
+	// Another role moves the shared clone's record of the issue's branch back to the first head.
+	if _, err := git(located.Clone, "update-ref", "refs/remotes/origin/"+workspace.Bookmark("ACME-1"), first); err != nil {
+		return err
+	}
 	fmt.Printf("stage second=%s\n", second)
-	if err := generation("reviewer", "agent-reviewer2", review); err != nil {
+	if err := generation("reviewer", "agent-reviewer2", review, second); err != nil {
+		return err
+	}
+	// The branch moves at origin again, and the shared clone does not fetch it.
+	third, err := commit("base\nfirst\nsecond\nthird\n", "third")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("stage third=%s\n", third)
+	if err := generation("reviewer", "agent-reviewer3", review, third); err != nil {
 		return err
 	}
 	for _, role := range []string{"tester", "implementer"} {
-		if err := generation(role, "agent-"+role, located.Dir); err != nil {
+		if err := generation(role, "agent-"+role, located.Dir, ""); err != nil {
 			return err
 		}
 		fmt.Printf("stage %s-planted=%s\n", role, presence(filepath.Join(workspace.ReviewRoot(state), "planted-by-agent-"+role)))

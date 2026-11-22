@@ -317,8 +317,8 @@ type workflowRuntime struct {
 // it is logged, and the notices it would have released still go on their schedule.
 const readyReleaseTimeout = 30 * time.Second
 
-// appMintAttempt bounds one attempt at the boot's App calls, the logins read (appLoginsAtBoot) and
-// the key proof (proveAppKeys): the bot identity lookups and each App's read of its installations
+// appMintAttempt bounds one attempt at the boot's App calls, the login read (appLoginAtBoot) and
+// the key proof (proveAppKeys): the one App's bot login lookup and its read of its installations
 // under its JWT answer in well under a second, so an attempt that runs this long holds a request
 // GitHub never answered.
 var appMintAttempt = 15 * time.Second
@@ -981,25 +981,34 @@ func engineConfig(cfg config.Config, appLogin string, hookPrompts map[string]str
 	}
 }
 
-// engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
-// which every task the engine composes names (workflow.Config.WorkspaceDir): each runtime's own
-// function that places the workspace, sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir
-// under the state directory under tmux, read for the repository the issue's record names, as the
-// launch reads it (issueRepository). An issue whose recorded repository does not parse, which no
-// launch can work either, names none, and its task names the branch alone.
-func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
-	place := func(repo ghrepo.Repository, issue string) (string, error) {
+// engineWorkspaceDir is the directory the runtime cfg names starts an issue's role process in,
+// which every task the engine composes names (workflow.Config.WorkspaceDir): for every role but
+// the reviewer, each runtime's own function that places the issue's workspace, sandbox.WorkspaceDir
+// under Kubernetes and tmux.WorkspaceDir under the state directory under tmux; for the reviewer,
+// its own clone of the issue under that runtime's root (workspace.ReviewLocation under
+// sandbox.TreeRoot or the state directory), which is the pod reviewer's LEGION_WORKSPACE
+// (sandbox's issuePod.prepare) and the directory a tmux reviewer's pane starts in (tmux's
+// workspaceDir). Each is read for the repository the issue's record names, as the launch reads it
+// (issueRepository). An issue whose recorded repository does not parse, which no launch can work
+// either, names none, and its task names the branch alone.
+func engineWorkspaceDir(cfg config.Config) func(record.Issue, claim.Role) string {
+	root, place := cfg.StateDir, func(repo ghrepo.Repository, issue string) (string, error) {
 		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
 	}
 	if cfg.Runtime.Name == "kubernetes" {
-		place = sandbox.WorkspaceDir
+		root, place = sandbox.TreeRoot, sandbox.WorkspaceDir
 	}
-	return func(issue record.Issue) string {
+	return func(issue record.Issue, role claim.Role) string {
 		repo, err := issue.Repository()
 		if err != nil {
 			return ""
 		}
-		dir, err := place(repo, issue.Key)
+		var dir string
+		if role == claim.RoleReviewer {
+			dir, err = workspace.ReviewLocation(root, repo, issue.Key)
+		} else {
+			dir, err = place(repo, issue.Key)
+		}
 		if err != nil {
 			return ""
 		}
@@ -1508,13 +1517,14 @@ func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, rep
 }
 
 // ensureReviewClone makes the reviewer's own clone of an issue on the daemon's host, or brings the
-// one there to the current head, at every reviewer launch (outbox.ensureReviewClone), through the
-// outbox, which orders it with every other provision of the shared clone it is made from.
-func (w *workflowRuntime) ensureReviewClone(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error {
+// one there to head, the head the launch gives the reviewer, at every reviewer launch
+// (outbox.ensureReviewClone), through the outbox, which orders it with every other provision of
+// the shared clone it is made from.
+func (w *workflowRuntime) ensureReviewClone(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch, head string) error {
 	if w.outbox == nil {
 		return fmt.Errorf("provision the review clone of %s: the workflow's outbox is not attached yet", issue)
 	}
-	return w.outbox.ensureReviewClone(ctx, issue, repo, defaultBranch)
+	return w.outbox.ensureReviewClone(ctx, issue, repo, defaultBranch, head)
 }
 
 // enqueueOutbox writes outbox rows of issue, due now, in one transaction of its own, which owns

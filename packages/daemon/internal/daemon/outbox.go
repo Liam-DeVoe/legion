@@ -3662,12 +3662,13 @@ func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Re
 }
 
 // ensureReviewClone makes key's reviewer's own clone (workspace.ProvisionReviewClone), or brings
-// the one there to the current head, at every reviewer launch on the daemon's host (the launch's
-// spec, specs.ensureReviewClone), after ensureWorkspace has made sure of the shared clone it is
+// the one there to head, the head of key's pull request the launch read from the store ("" where
+// it records none), at every reviewer launch on the daemon's host (the launch's spec,
+// specs.ensureReviewClone), after ensureWorkspace has made sure of the shared clone it is
 // cloned from. It takes the issue's turn, as a provision of the issue's workspace does, so it
 // never reads a shared clone that the issue's own provision is still making, and hands the clone
 // the repository's store lock and the checkout places a provision takes (provisionIn).
-func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string) error {
+func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch, head string) error {
 	if r.podsProvision() {
 		return nil
 	}
@@ -3686,7 +3687,7 @@ func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.
 	store, releaseStore := r.provisions.stores.take(located.Clone)
 	defer releaseStore()
 	if err := r.provisionReview(ctx, workspace.ReviewRequest{
-		Clone: located.Clone, Dir: dir, Repo: repo, Issue: key, DefaultBranch: defaultBranch,
+		Clone: located.Clone, Dir: dir, Repo: repo, Issue: key, DefaultBranch: defaultBranch, Head: head,
 		StoreLock: store, CheckoutSlot: r.provisions.slot,
 		Log: func(line string) { r.log.Info("review clone: "+line, "issue", key) },
 	}); err != nil {

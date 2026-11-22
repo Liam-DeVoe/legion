@@ -1449,12 +1449,14 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			stamping := workerSpec(t)
 			stamping.IssueTrailer = stamping.Issue
 			// The resumed tree agent is told what holds it to the session it resumes, which no fresh
-			// launch is told (runtime.SessionExclusiveVariable); the reviewer is told its own git and
-			// the default branch its clone is checked out at (gitConfigEnvFor, agentEnv).
+			// launch is told (runtime.SessionExclusiveVariable); the reviewer is told its own git, the
+			// head it reviews and the default branch its clone is checked out at (gitConfigEnvFor,
+			// agentEnv).
 			resuming := stamping
 			resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 			told := map[string]bool{}
 			reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
+			reviewer.ReviewHead = "0123456789abcdef0123456789abcdef01234567"
 			for _, spec := range []runtime.SpawnSpec{stamping, resuming, reviewer, claudeWorkerSpec(t), controllerSpec(t)} {
 				spec.Env, spec.Secrets = nil, nil
 				for name := range envOf(workerOf(t, r, spec)) {
@@ -2147,14 +2149,15 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 				}
 				// A pane whose repository the project names is told the issue key it stamps its
 				// commits with (LEGION_ISSUE_TRAILER), and no golden case works such a repository;
-				// the reviewer is told its own git and default branch, and no golden case is a
-				// reviewer.
+				// the reviewer is told its own git, the head it reviews and its default branch, and no
+				// golden case is a reviewer.
 				stamping := workerSpec(t)
 				stamping.Env, stamping.Secrets = nil, nil
 				stamping.IssueTrailer = stamping.Issue
 				carry(podOf(t, r, stamping), workerOf(t, r, stamping))
 				reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
 				reviewer.Env, reviewer.Secrets = nil, nil
+				reviewer.ReviewHead = "0123456789abcdef0123456789abcdef01234567"
 				carry(podOf(t, r, reviewer), workerOf(t, r, reviewer))
 				probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
 				carry(probe, containerNamed(t, probe, probeContainer))

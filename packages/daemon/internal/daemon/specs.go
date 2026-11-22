@@ -115,11 +115,19 @@ type specs struct {
 	hostWorkspaces  bool
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
 	// ensureReviewClone makes the reviewer's own clone of an issue on the daemon's host, or brings
-	// the one there to the current head, at every reviewer launch (outbox.ensureReviewClone,
-	// through the workflow), once ensureWorkspace has made sure of the shared clone it is cloned
-	// from: the directory a tmux reviewer works in (reviewerGit). nil for a daemon with no
-	// workflow, whose launches work no repository.
-	ensureReviewClone func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// the one there to head, at every reviewer launch (outbox.ensureReviewClone, through the
+	// workflow), once ensureWorkspace has made sure of the shared clone it is cloned from: the
+	// directory a tmux reviewer works in (reviewerGit). nil for a daemon with no workflow, whose
+	// launches work no repository.
+	ensureReviewClone func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch, head string) error
+	// reviewHead is the head of an issue's pull request as the store records it at the launch, ""
+	// for an issue it records none for (workflowRuntime.reviewHead): the commit a reviewer's launch
+	// is given to review (runtime.SpawnSpec.ReviewHead), at which its own clone stands or its
+	// start is refused (workspace.ProvisionReviewClone), on the daemon's host (ensureReviewClone)
+	// and in a pod (its role-init). nil for a daemon with no workflow, which records no pull
+	// request, and in a test whose specs literal leaves it out; a reviewer of such a specs is given
+	// no head.
+	reviewHead func(ctx context.Context, issue string) (string, error)
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -216,6 +224,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 	}
 	spec.IssueTrailer = s.issueTrailer(spec.Repository, c.Issue)
+	if c.Role == claim.RoleReviewer && s.reviewHead != nil && !spec.Repository.IsZero() {
+		if spec.ReviewHead, err = s.reviewHead(ctx, c.Issue); err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("the head %s reviews: %w", c.Token, err)
+		}
+	}
 	// Every launch, not only a claim's first: a claim resumed, relaunched or recovered on this host
 	// may have no workspace here — its issue ran in another runtime's pods before, or its tree's
 	// linger removed it — and a pane cannot start without one. Provisioning checks out the issue's
@@ -226,7 +239,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
 		}
 		if c.Role == claim.RoleReviewer {
-			if reviewerEnv, err = s.reviewerGit(ctx, c, spec.Repository, spec.DefaultBranch); err != nil {
+			if reviewerEnv, err = s.reviewerGit(ctx, c, spec.Repository, spec.DefaultBranch, spec.ReviewHead); err != nil {
 				return runtime.SpawnSpec{}, err
 			}
 		}
@@ -275,7 +288,8 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 }
 
 // reviewerGit is a tmux reviewer's own clone and git (workspace/reviewgit.go): its clone of the
-// issue's repository, made or brought to the current head (ensureReviewClone), at the directory
+// issue's repository, made or brought to head, the head the launch gives it (ensureReviewClone),
+// at the directory
 // the tmux runtime starts its pane in (workspace.ReviewLocation), and the environment its git runs
 // under. That is the shim InstallReviewGit writes at each reviewer launch, first on a PATH that is
 // otherwise the daemon's own — the PATH every pane inherits, which the runtime then puts its
@@ -288,9 +302,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 // too, and point github.com at the credential helper the review clone itself names. A pod's
 // reviewer is told its own by the Sandbox runtime (mainEnvironment), which refuses these names in
 // a spec.
-func (s specs) reviewerGit(ctx context.Context, c supervise.Claim, repo ghrepo.Repository, defaultBranch string) (map[string]string, error) {
+func (s specs) reviewerGit(ctx context.Context, c supervise.Claim, repo ghrepo.Repository, defaultBranch, head string) (map[string]string, error) {
 	if s.ensureReviewClone != nil {
-		if err := s.ensureReviewClone(ctx, c.Issue, repo, defaultBranch); err != nil {
+		if err := s.ensureReviewClone(ctx, c.Issue, repo, defaultBranch, head); err != nil {
 			return nil, fmt.Errorf("the review clone of %s: %w", c.Token, err)
 		}
 	}
@@ -346,6 +360,24 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)
 	}
 	return owner, nil
+}
+
+// reviewHead is specs.reviewHead: the head of issue's pull request as the store records it now
+// (record.PullRequest's HeadSHA), "" where it records no pull request of the issue, read in a
+// read-only transaction of its own at each reviewer launch, as owningArchitect reads.
+func (w *workflowRuntime) reviewHead(ctx context.Context, issue string) (string, error) {
+	var head string
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		pr, err := w.records.PullRequest(ctx, tx, issue)
+		if err != nil || pr == nil {
+			return err
+		}
+		head = pr.HeadSHA
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("read the pull request head of %s: %w", issue, err)
+	}
+	return head, nil
 }
 
 // passthrough merges into env each of names the daemon's own environment holds, and no other: a

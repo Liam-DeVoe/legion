@@ -19,11 +19,11 @@ import (
 )
 
 // A reviewer's own clone (workspace/reviewgit.go) is made from its issue's shared clone at the
-// deterministic place workspace.ReviewLocation names, at the issue's branch or else its default
-// branch, under the issue's turn, which every provision and removal of the issue's workspace
-// takes, and handed the repository's store lock free, for the clone to take around its steps on
-// the shared clone, and the checkout places. A clone that cannot be made fails the call, naming
-// the issue; under a runtime that provisions its own (a Sandbox pod), the host makes none.
+// deterministic place workspace.ReviewLocation names, at the head of the issue's pull request the
+// daemon records, under the issue's turn, which every provision and removal of the issue's
+// workspace takes, and handed the repository's store lock free, for the clone to take around its
+// steps on the shared clone, and the checkout places. A clone that cannot be made fails the call,
+// naming the issue; under a runtime that provisions its own (a Sandbox pod), the host makes none.
 func TestAReviewCloneIsMadeUnderItsIssuesTurnWithTheStoreLockFree(t *testing.T) {
 	repo := ghrepo.MustParse("acme/widgets")
 	stateDir := t.TempDir()
@@ -61,7 +61,8 @@ func TestAReviewCloneIsMadeUnderItsIssuesTurnWithTheStoreLockFree(t *testing.T) 
 			return refuse
 		},
 	}
-	if err := r.ensureReviewClone(context.Background(), "S1-2", repo, "release/v7.1"); err != nil {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	if err := r.ensureReviewClone(context.Background(), "S1-2", repo, "release/v7.1", head); err != nil {
 		t.Fatalf("ensureReviewClone: %v", err)
 	}
 	review, err := workspace.ReviewLocation(stateDir, repo, "S1-2")
@@ -71,18 +72,18 @@ func TestAReviewCloneIsMadeUnderItsIssuesTurnWithTheStoreLockFree(t *testing.T) 
 	if len(made) != 1 {
 		t.Fatalf("made %d review clones, want one", len(made))
 	}
-	if got := made[0]; got.Clone != located.Clone || got.Dir != review || got.Repo != repo || got.Issue != "S1-2" || got.DefaultBranch != "release/v7.1" {
-		t.Errorf("the review clone was asked of %+v, want the shared clone %s into %s for S1-2 of %s at release/v7.1", got, located.Clone, review, repo)
+	if got := made[0]; got.Clone != located.Clone || got.Dir != review || got.Repo != repo || got.Issue != "S1-2" || got.DefaultBranch != "release/v7.1" || got.Head != head {
+		t.Errorf("the review clone was asked of %+v, want the shared clone %s into %s for S1-2 of %s at %s, release/v7.1 its default", got, located.Clone, review, repo, head)
 	}
 
 	refuse = errors.New("the shared clone records no branch")
-	if err := r.ensureReviewClone(context.Background(), "S1-2", repo, "main"); err == nil || !strings.Contains(err.Error(), "the review clone of S1-2") || !strings.Contains(err.Error(), "records no branch") {
+	if err := r.ensureReviewClone(context.Background(), "S1-2", repo, "main", head); err == nil || !strings.Contains(err.Error(), "the review clone of S1-2") || !strings.Contains(err.Error(), "records no branch") {
 		t.Errorf("ensureReviewClone with a clone that failed = %v, want the failure naming the issue", err)
 	}
 
 	made, refuse = nil, nil
 	rt.InPod = true
-	if err := r.ensureReviewClone(context.Background(), "S1-2", repo, "main"); err != nil {
+	if err := r.ensureReviewClone(context.Background(), "S1-2", repo, "main", head); err != nil {
 		t.Fatalf("ensureReviewClone under a runtime that provisions its own: %v", err)
 	}
 	if len(made) != 0 {
