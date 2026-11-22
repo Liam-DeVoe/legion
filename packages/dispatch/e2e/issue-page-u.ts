@@ -36,9 +36,11 @@ import type { ApiRequests } from "./traffic";
  *   the tree answers (`?view=`). `heldDecisionsRead` is the decisions read that the gate on the
  *   seeds written as decision nodes (`decisionNodesGate`) reads.
  * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (the
- *   `<slug>#b-<block id>`), `askRowId` an ask's (its block's node where the asks read names its
- *   block, as `tree-read/tree-nodes.ts` names it), and `askOfNode` the asks read's row of an ask
- *   node; `idReadsOf` is the issue read and the asks read `treeIdOf` names nodes by.
+ *   `<slug>#b-<block id>`), `blockRowId` the id the row of a seed's block carries, a decision's
+ *   or a statement's, by that block's node in a tree read, `askRowId` an ask's (its block's node
+ *   where the asks read names its block, as `tree-read/tree-nodes.ts` names it), and `askOfNode`
+ *   the asks read's row of an ask node; `idReadsOf` is the issue read and the asks read
+ *   `treeIdOf` names nodes by.
  * - **What the page draws.** `reviewWordOf` is the state word a decision's row draws from its
  *   node; `specColumn` is, for each statement the Spec view draws, what stands beside it - the
  *   decision cell whose bracket spans it (`[data-spec-cell]`) and the links of its line
@@ -85,6 +87,23 @@ async function readTree(key: string, view: TreeView | null): Promise<IssueTreeRe
   return mergeTreePages([first, ...rest]);
 }
 
+/** The node of this issue tagged `supertag` whose block is `block`, out of `nodes`, the nodes
+ *  `what` answers: the read names a block by its store id and carries its block id beside it
+ *  (`block_id`). A block no node of `nodes` is fails, naming the block. */
+function blockNodeIn(
+  nodes: readonly IssueTreeNode[],
+  supertag: string,
+  block: string,
+  what: string
+): IssueTreeNode {
+  const node = nodes.find(
+    (one) =>
+      one.supertag === supertag && one.issue === undefined && (one.block_id ?? one.id) === block
+  );
+  if (node === undefined) throw new Error(`${what} holds no ${supertag} node "${block}"`);
+  return node;
+}
+
 /** The decision nodes of issue `key` whose blocks are `blocks`, in that order, from one tree
  *  read as it answers now. */
 export async function decisionNodesOf(
@@ -92,15 +111,7 @@ export async function decisionNodesOf(
   blocks: readonly string[]
 ): Promise<IssueTreeNode[]> {
   const nodes = (await readTree(key, null)).nodes ?? [];
-  return blocks.map((block) => {
-    // The read names a block by its store id and carries its block id beside it (`block_id`).
-    const node = nodes.find(
-      (one) =>
-        one.supertag === "decision" && one.issue === undefined && (one.block_id ?? one.id) === block
-    );
-    if (node === undefined) throw new Error(`${key}'s tree read holds no decision node ${block}`);
-    return node;
-  });
+  return blocks.map((block) => blockNodeIn(nodes, "decision", block, `${key}'s tree read`));
 }
 
 /** The `text_sha256` the tree read answers on `node`, a decision node of issue `key`, in the
@@ -150,6 +161,19 @@ export function decisionRowId(node: IssueTreeNode): string {
   return node.document === undefined
     ? node.id
     : blockNode(node.document.slug, node.block_id ?? node.id);
+}
+
+/** The id the row of block `block` carries, where `answer`, issue `key`'s tree read, holds it as a
+ *  node of the issue tagged `supertag` (a decision, a statement): `decisionRowId`'s
+ *  `<slug>#b-<block id>`, the id the page names every block of a document by, never the block id
+ *  alone. A block the read holds no such node of fails, naming the block. */
+export function blockRowId(
+  key: string,
+  answer: IssueTreeRead,
+  supertag: string,
+  block: string
+): string {
+  return decisionRowId(blockNodeIn(answer.nodes ?? [], supertag, block, `${key}'s tree read`));
 }
 
 /** One row of the asks read. */

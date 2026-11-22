@@ -39,6 +39,7 @@ import {
 import {
   askOfNode,
   askRowId,
+  blockRowId,
   decisionNodesOf,
   decisionRowId,
   decisionSum,
@@ -178,12 +179,14 @@ async function stateWordOf(page: Page, id: string): Promise<string | null> {
 // Row 1: every decision the page draws is a node, with the review state the model holds.
 // ---------------------------------------------------------------------------------------------
 
-/** How row 1 names the rows of one seed: by the id the tree draws a node of the tree read by
- *  (`treeIdOf`), an ask by its row (`askRowId`), and the open questions of the asks read. */
+/** How row 1 names the rows of one seed: a decision and a statement by the id the row of their
+ *  block carries (`blockRowId`, `<slug>#b-<block id>`), an ask by its row (`askRowId`), and the
+ *  open questions of the asks read. A block the tree read holds no node of fails the row. */
 interface RowNames {
   readonly ask: (askId: string) => string;
-  readonly node: (readId: string) => string;
+  readonly decision: (block: string) => string;
   readonly openAsks: readonly string[];
+  readonly requirement: (block: string) => string;
 }
 
 /** One decision of the Spec column as row 1 expects it: the names its cell and its links go by,
@@ -357,10 +360,11 @@ async function readRowOne(
   const idOf = treeIdOf(answer, reads);
   const wanted = wantedOf({
     ask: (askId) => askRowId(reads, askId),
-    node: idOf,
+    decision: (block) => blockRowId(key, answer, "decision", block),
     openAsks: (reads.asks ?? []).flatMap((ask) =>
       ask.state === "open" && ask.kind !== "approval" ? [askRowId(reads, ask.id)] : []
     ),
+    requirement: (block) => blockRowId(key, answer, "requirement", block),
   });
   const foot = decisionsFoot(page);
   // `readFilter` above read the view once its rows and count held still with the network quiet,
@@ -513,8 +517,8 @@ function rowOneSeed<S extends SeededIssue>(
 const ROW_ONE_SEEDS = [
   rowOneSeed("seedDecisionsFilter", seedDecisionsFilter, (seeded, names) => {
     const block = (index: number) => seeded.decisions[index] ?? "";
-    const D = (index: number) => names.node(block(index));
-    const r = (index: number) => names.node(seeded.requirements[index - 1] ?? "");
+    const D = (index: number) => names.decision(block(index));
+    const r = (index: number) => names.requirement(seeded.requirements[index - 1] ?? "");
     const decision = (index: number) => [D(index), block(index)];
     const declined = names.ask(seeded.declinedAskId);
     const answered = names.ask(seeded.answeredAskId);
@@ -546,9 +550,9 @@ const ROW_ONE_SEEDS = [
     declined: null,
     departure: null,
     parts: {
-      agents: [names.node(seeded.tiedToNote), names.node(seeded.untied)],
+      agents: [names.decision(seeded.tiedToNote), names.decision(seeded.untied)],
       open_questions: names.openAsks,
-      review: [names.node(seeded.tiedNewer), names.node(seeded.tiedOlder)],
+      review: [names.decision(seeded.tiedNewer), names.decision(seeded.tiedOlder)],
       yours: [],
     },
   })),
