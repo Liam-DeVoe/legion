@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes: R3 bounds the time a
@@ -97,14 +99,20 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 
 // TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes: R3 bounds the
 // time a held message holds the durable's ack floor at about 11 minutes, 11 reads and 10
-// hand-backs, and a write of the project's own setting in the middle of the count does not start
-// the count again. After INFRA's good starting read its daemon stops answering, as in
+// hand-backs, and no sequence of writes of the project's own setting lengthens it. After INFRA's
+// good starting read its daemon stops answering, as in
 // TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes, and a gap's message holds the read.
-// After four hand-backs a person writes INFRA's setting again: the same daemon, or another one
-// that does not answer either. R3 has the write read the daemon it names at once (startingPoint,
-// ReadReasonStart), so the write adds that one read to the hold and no more. The message is
-// acknowledged after stateMaxHolds hand-backs in all; on the intake's clock it held the floor for
-// less than its 11 reads, the write's own read and a minute.
+// During the count a person writes INFRA's setting:
+//   - naming the same daemon, once or three times. R3 says a project has at most one whole read in
+//     flight and at most one owed, and a reason that arrives while one is in flight or owed joins
+//     it. So each write's read joins the held read, as a take-over's does, and the count goes on:
+//     the message is acknowledged after stateMaxHolds hand-backs in all, and on the intake's clock
+//     it held the floor for less than its 11 reads and a minute.
+//   - naming another daemon, which does not answer either. R3 applies no message of the daemon the
+//     setting named before once the setting names another, so the held message, the old daemon's,
+//     is finished at its next delivery after the write, unapplied, and goes back no more: its
+//     delay is holdAtLeast in the rig, so the floor is released within seconds of the write. The
+//     new daemon's starting read is made at once, and no message holds it.
 //
 // At f77fd4c7 each write of the setting deletes the project's cursor (settingWritten), and the
 // count of the hold's hand-backs with it (read_holds), so the message's next redelivery holds the
@@ -113,15 +121,18 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *testing.T) {
 	for _, test := range []struct {
 		name string
+		// writes lists, for each write of the setting, how many hand-backs the message has made
+		// at the least before it.
+		writes []int
 		// another names another daemon, which stalls as INFRA's does, in the setting written.
 		another bool
 	}{
-		{"the same daemon", false},
-		{"another daemon that does not answer", true},
+		{"the same daemon", []int{4}, false},
+		{"the same daemon three times", []int{2, 4, 6}, false},
+		{"another daemon that does not answer", []int{4}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			const failures = stateMaxHolds + 1
-			const before = 4
 			const window = 200 * time.Millisecond
 			transport := http.DefaultTransport.(*http.Transport).Clone()
 			transport.ResponseHeaderTimeout = window
@@ -142,32 +153,56 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 			from := rig.clock.now()
 			rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 			holder := rig.lastStreamSeq()
-			rig.waitFor(time.Minute, func() bool { return len(rig.logRecords(heldLine)) >= before }, func() string {
-				return fmt.Sprintf("the message went back %d times, want %d before the setting's write", len(rig.logRecords(heldLine)), before)
-			})
 			named := daemon
 			if test.another {
 				named = newFakeDaemon(t, "")
 				named.stalls(stall)
 			}
-			if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
-				t.Fatalf("write INFRA's setting again: %v", err)
+			var wroteAt time.Time
+			var atWrite int
+			for i, at := range test.writes {
+				rig.waitFor(time.Minute, func() bool { return len(rig.logRecords(heldLine)) >= at }, func() string {
+					return fmt.Sprintf("the message went back %d times, want %d before write %d of the setting", len(rig.logRecords(heldLine)), at, i+1)
+				})
+				atWrite, wroteAt = len(rig.logRecords(heldLine)), time.Now()
+				if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+					t.Fatalf("write INFRA's setting again: %v", err)
+				}
+				rig.wake <- struct{}{}
 			}
-			rig.wake <- struct{}{}
 
 			var info *natsgo.ConsumerInfo
-			rig.waitFor(2*time.Minute, func() bool {
+			acknowledged := func() bool {
 				info = rig.consumerInfo()
 				return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
-			}, func() string {
+			}
+			if test.another {
+				const within = 10 * time.Second
+				if !testwait.Holds(within, 25*time.Millisecond, acknowledged) {
+					t.Fatalf("the message of the daemon the setting named before was not finished within %s of the write that named another daemon, %d hand-backs in all, %d at the write: %+v",
+						within, len(rig.logRecords(heldLine)), atWrite, info)
+				}
+				if after := len(rig.heldValues(holder, "handBack")) - atWrite; after > 1 {
+					t.Errorf("the message of the daemon the setting named before went back %d more times after the write that named another daemon, want at most the one in flight at the write", after)
+				}
+				if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
+					t.Errorf("the phase's history is %v: the message of the daemon the setting named before was applied", got)
+				}
+				if named.served() < 1 {
+					t.Errorf("the daemon the setting names was never read")
+				}
+				t.Logf("finished %s after the write, %d hand-backs in all", time.Since(wroteAt).Round(time.Millisecond), len(rig.logRecords(heldLine)))
+				return
+			}
+			rig.waitFor(2*time.Minute, acknowledged, func() string {
 				return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d hand-backs: %+v", len(rig.logRecords(heldLine)), info)
 			})
 			held := rig.clock.now().Sub(from)
 			handBacks := rig.heldValues(holder, "handBack")
-			reads := time.Duration(failures+1) * RequestTimeout
+			reads := time.Duration(failures) * RequestTimeout
 			if len(handBacks) > stateMaxHolds || held >= reads+time.Minute {
-				t.Errorf("the message went back %d times, counted %v, and held the ack floor for %s on the intake's clock across one write of the setting, want at most %d hand-backs and less than %s, its %d reads, the write's own read and a minute: the write deleted the cursor and its count of the hold's hand-backs",
-					len(handBacks), handBacks, held.Round(time.Second), stateMaxHolds, reads+time.Minute, failures)
+				t.Errorf("the message went back %d times, counted %v, and held the ack floor for %s on the intake's clock across %d write(s) of the setting, want at most %d hand-backs and less than %s, its %d reads and a minute: each write's read joins the held read",
+					len(handBacks), handBacks, held.Round(time.Second), len(test.writes), stateMaxHolds, reads+time.Minute, failures)
 			}
 		})
 	}
