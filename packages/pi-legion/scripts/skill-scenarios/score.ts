@@ -1678,7 +1678,11 @@ function strings(value: unknown): string[] {
  * as that value too: a tool's arguments carry a JSON document as text (the Envoy publish a
  * `write` to xd://envoy_publish sends is its `content`), and a reader that reads them through
  * JSON.stringify meets that document's line breaks as `\\n`, before which no word boundary falls.
- * A sentence that opens a paragraph of the message is read as it stands (INFRA-1303, D8). */
+ * A sentence that opens a paragraph of the message is read as it stands (INFRA-1303, D8). A string
+ * that holds a string literal's escapes is read with them unescaped too: an eval cell's `code`
+ * carries the message it publishes as a literal of its JavaScript or Python (`tool.envoy_publish`
+ * in the cell), whose paragraph break is the two characters `\n` (INFRA-1303, q-head-3 of the
+ * batch at 221488c0). */
 function decodedStrings(value: unknown): string[] {
   if (typeof value !== "string") return strings(value).flatMap(decodedStrings);
   let inner: unknown;
@@ -1687,7 +1691,40 @@ function decodedStrings(value: unknown): string[] {
   } catch {
     inner = undefined;
   }
-  return typeof inner === "object" && inner !== null ? [value, ...decodedStrings(inner)] : [value];
+  const unescaped = unescapedLiteral(value);
+  const read = unescaped === value ? [value] : [value, unescaped];
+  return typeof inner === "object" && inner !== null ? [...read, ...decodedStrings(inner)] : read;
+}
+/** A string with the escapes a JavaScript or Python string literal can hold read as the characters
+ * they stand for: `\n`, `\r`, `\t`, `\b`, `\f`, `\v`, `\0`, a quote, a backslash, `\xHH`,
+ * `\uHHHH`, `\u{H...}`, Python's `\UHHHHHHHH`, and a backslash before a line break, which joins
+ * the lines. Any other backslash stays as it stands. */
+function unescapedLiteral(text: string): string {
+  const named: Record<string, string> = {
+    n: "\n",
+    r: "\r",
+    t: "\t",
+    b: "\b",
+    f: "\f",
+    v: "\v",
+    "0": "\0",
+    "'": "'",
+    '"': '"',
+    "`": "`",
+    "\\": "\\",
+    "\n": "",
+  };
+  return text.replace(
+    /\\(?:x([0-9a-fA-F]{2})|u\{([0-9a-fA-F]{1,6})\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|([nrtbfv0'"`\\\n]))/g,
+    (whole, x, braced, u, big, one) => {
+      const hex = x ?? braced ?? u ?? big;
+      if (hex !== undefined) {
+        const code = Number.parseInt(hex, 16);
+        return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+      }
+      return named[one] ?? whole;
+    }
+  );
 }
 
 /** One tool call of the session, at the assistant message that made it. */
