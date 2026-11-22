@@ -29,7 +29,7 @@ func edgeConfirmRequest(ctx context.Context, outside string, projects []string, 
 	if body != "" {
 		reader = strings.NewReader(body)
 	}
-	return httptest.NewRequest(method, path, reader).WithContext(withEdgeHold(withBrokerCaller(ctx, caller)))
+	return httptest.NewRequest(method, path, reader).WithContext(withEdgeHold(withBrokerCaller(ctx, caller), logging.New("test")))
 }
 
 // Every edge decision that shows or sends to a session confirms it by a leader read of its stored
@@ -86,7 +86,8 @@ func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 
 			// A leader read that does not answer is the bus-unavailable 503, with Retry-After: 1 and
 			// the bus's own unanswered wording, not the 404 of a session the server wrote nor a
-			// partial 200.
+			// partial 200, and its body names no session: the confirmation's own error names the
+			// session it read (edgeScope.confirmUnanswered).
 			fault := httptest.NewRecorder()
 			faultCtx := cancelled
 			if tc.seam {
@@ -105,6 +106,9 @@ func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 			_ = json.Unmarshal(fault.Body.Bytes(), &refusal)
 			if !strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
 				t.Errorf("the 503 body is %q, want the bus's own unanswered wording %q", refusal.Error, busUnansweredPrefix)
+			}
+			if strings.Contains(fault.Body.String(), peer) {
+				t.Errorf("the 503 body is %s, which names %s: an unanswered confirmation names no session", fault.Body.String(), peer)
 			}
 		})
 	}

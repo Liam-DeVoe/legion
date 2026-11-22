@@ -47,8 +47,9 @@ package main
 //     (edgeScope), each session shown confirmed by its stored record read from the stream's leader
 //     (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter), so a record the server
 //     wrote at a session's key reads as no session's, and a read that did not answer is the
-//     bus-unavailable 503; the interest list and another session's interests are 403, and the
-//     Legion agent registry is not written here.
+//     bus-unavailable 503, whose text names no session (edgeScope.confirmUnanswered); the interest
+//     list and another session's interests are 403, and the Legion agent registry is not written
+//     here.
 //   - The start: refused beside every other credential, beside Dispatch's principal, beside
 //     webhooks, and without the broker-token settings (validateEdgeMode).
 //
@@ -137,17 +138,24 @@ func (e *edgeRefusal) write(w http.ResponseWriter) { writeJSON(w, e.status, e.bo
 // edgeHoldKey is the context key that marks a request an edge listener admitted.
 type edgeHoldKey struct{}
 
+// edgeHold is the mark withEdgeHold puts on a request an edge listener admitted: the logger that
+// gets what the edge's answers hide (edgeScope.confirmUnanswered), apiAuth's own.
+type edgeHold struct {
+	logger *logging.Logger
+}
+
 // withEdgeHold marks a request an edge listener admitted (apiAuth): every rule here holds it to
-// the projects of the broker token it was admitted on, which its broker caller carries.
-func withEdgeHold(ctx context.Context) context.Context {
-	return context.WithValue(ctx, edgeHoldKey{}, true)
+// the projects of the broker token it was admitted on, which its broker caller carries. logger
+// gets what an answer to it hides.
+func withEdgeHold(ctx context.Context, logger *logging.Logger) context.Context {
+	return context.WithValue(ctx, edgeHoldKey{}, edgeHold{logger: logger})
 }
 
 // heldProjects is the projects r is held to, its broker token's (ciphertoken.Caller.Projects, the
 // caller's own copy), and whether it is held at all: true only for a request an edge listener
 // admitted, false on every other listener.
 func heldProjects(r *http.Request) ([]string, bool) {
-	if held, _ := r.Context().Value(edgeHoldKey{}).(bool); !held {
+	if _, held := r.Context().Value(edgeHoldKey{}).(edgeHold); !held {
 		return nil, false
 	}
 	caller, _ := brokerCaller(r)
@@ -158,10 +166,12 @@ func heldProjects(r *http.Request) ([]string, bool) {
 // (heldProjects), and the repository reader that says which of their GitHub topics stand. It is
 // nil for a request no edge listener admitted, and each method answers a nil scope as every
 // listener answers, so a read route asks it unconditionally and writes no edge branch of its own;
-// only the answers a session with no entry gets test the scope itself (hidesConfirmed).
+// only the answers a session with no entry gets test the scope itself (hidesConfirmed). logger gets
+// what its answers hide (confirmUnanswered).
 type edgeScope struct {
 	projects     []string
 	repositories *edgeRepositories
+	logger       *logging.Logger
 }
 
 // edgeScopeOf is r's scope, nil for a request no edge listener admitted. repositories may be nil
@@ -171,7 +181,8 @@ func edgeScopeOf(r *http.Request, repositories *edgeRepositories) *edgeScope {
 	if !held {
 		return nil
 	}
-	return &edgeScope{projects: projects, repositories: repositories}
+	hold, _ := r.Context().Value(edgeHoldKey{}).(edgeHold)
+	return &edgeScope{projects: projects, repositories: repositories, logger: hold.logger}
 }
 
 // shows reports whether the scope shows the session whose entry is entry: its record names its own
@@ -195,10 +206,11 @@ func (s *edgeScope) shows(entry session.SessionEntry) bool {
 // so the session is granted only when the leader's newest message is a writer's registration the
 // scope shows. A message the server wrote, one that does not decode as the key's registration, or
 // none, reads as no session's, and so does a key the leader refused or held no message for
-// (nats.ErrKeyNotFound, bus.ErrRefused). A read that did not answer is returned as its error, not as
+// (nats.ErrKeyNotFound, bus.ErrRefused). A read that did not answer is returned as an error, not as
 // an absence, so a caller answers the bus-unavailable 503 it answers for any read that did not
-// answer, never the 404 of a session it does not show nor a silent drop from a list. A nil scope
-// shows every session, and an entry the cache would not show, both cost no read.
+// answer, never the 404 of a session it does not show nor a silent drop from a list; that error
+// names no session (confirmUnanswered). A nil scope shows every session, and an entry the cache
+// would not show, both cost no read.
 func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry) (bool, error) {
 	if s == nil {
 		return true, nil
@@ -208,7 +220,7 @@ func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.Sessio
 	}
 	stored, ok, err := sessions.StoredByWriter(ctx, sessionID)
 	if err != nil {
-		return false, err
+		return false, s.confirmUnanswered(sessionID, err)
 	}
 	return ok && s.shows(stored), nil
 }
@@ -217,7 +229,8 @@ func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.Sessio
 // confirmed by the record the leader holds for sessionID, and one the bucket holds no record of
 // (nats.ErrKeyNotFound), are hidden as a session no listener has heard of (unknownSession).
 // sessionID is the key the decision is about. A read that did not answer, the confirmation's own
-// among them, is returned as its error, not as hidden, so the route answers the bus-unavailable 503.
+// among them, is returned as an error, not as hidden, so the route answers the bus-unavailable 503;
+// the confirmation's names no session (confirmUnanswered).
 // A nil scope hides nothing.
 func (s *edgeScope) hidesConfirmed(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, err error) (bool, error) {
 	if s == nil {
@@ -264,8 +277,8 @@ func (s *edgeScope) topics(sessionID string, topics []string) []string {
 // its writer chose and its live state to the outside session. Its replacement (replaced_by,
 // replaced_at) is read from the other entries of its role token, records of the same kind, so it is
 // shown only when it too is a session of that project, and answered as none otherwise. A
-// confirmation read that did not answer is returned as its error, so the route answers the
-// bus-unavailable 503. A nil scope shows every entry.
+// confirmation read that did not answer is returned as an error that names no session
+// (confirmUnanswered), so the route answers the bus-unavailable 503. A nil scope shows every entry.
 func (s *edgeScope) showsAgentConfirmed(ctx context.Context, sessions *session.SessionRegistry, agent legionagents.Agent) (legionagents.Agent, bool, error) {
 	if s == nil {
 		return agent, true, nil
@@ -276,7 +289,7 @@ func (s *edgeScope) showsAgentConfirmed(ctx context.Context, sessions *session.S
 	}
 	shown, err := sessionInProject(ctx, sessions, agent.SessionID, project)
 	if err != nil {
-		return legionagents.Agent{}, false, err
+		return legionagents.Agent{}, false, s.confirmUnanswered(agent.SessionID, err)
 	}
 	if !shown {
 		return legionagents.Agent{}, false, nil
@@ -284,13 +297,28 @@ func (s *edgeScope) showsAgentConfirmed(ctx context.Context, sessions *session.S
 	if agent.ReplacedBy != nil {
 		replaced, err := sessionInProject(ctx, sessions, *agent.ReplacedBy, project)
 		if err != nil {
-			return legionagents.Agent{}, false, err
+			return legionagents.Agent{}, false, s.confirmUnanswered(*agent.ReplacedBy, err)
 		}
 		if !replaced {
 			agent.ReplacedBy, agent.ReplacedAt = nil, nil
 		}
 	}
 	return agent, true, nil
+}
+
+// confirmUnanswered is err, the error of a leader read confirming sessionID's stored record
+// (session.SessionRegistry.StoredByWriter, through showsConfirmed or sessionInProject) that did not
+// answer, as an edge answer gives it. err's own text names sessionID, a session the read did not
+// confirm and the request may not have named: a role's holder, a row of the session list, a Legion
+// agent's session or its replacement, any of which can be another project's session whose record
+// the server re-published under one of the token's projects. So the answer is in the listener's own
+// words, which name no session (edgeHolderHidden), with err beneath, which still decides the
+// answer's status and Retry-After (writeBusUnavailable, writeLegionAgentError), and err goes to the
+// scope's log with the session it names.
+func (s *edgeScope) confirmUnanswered(sessionID string, err error) error {
+	s.logger.Warn("edge listener could not confirm a session's stored record from the stream's leader; its answer names no session",
+		slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	return &edgeHolderHidden{text: "confirm a session's stored record from the bucket's stream leader", err: err}
 }
 
 // agentsConfirmed is agents with only the entries whose session the scope shows, each confirmed (showsAgentConfirmed), in their
@@ -345,8 +373,9 @@ func sessionInProject(ctx context.Context, sessions *session.SessionRegistry, se
 // show, so it reads as unclaimed too, even where it was a session of one of the scope's projects:
 // the rule fails closed, and a claim of the role still takes it from the holder that stopped
 // answering. The holder's key is result.Holder, the id the claim names, never the key a cached
-// record names. A read that did not answer is returned as its error, so the role read answers the
-// bus-unavailable 503. A nil scope, and a role no claim holds, both cost no read.
+// record names. A read that did not answer is returned as an error that names no session
+// (confirmUnanswered), so the role read answers the bus-unavailable 503. A nil scope, and a role no
+// claim holds, both cost no read.
 func (s *edgeScope) holderConfirmed(ctx context.Context, sessions *session.SessionRegistry, result roles.Resolution) (roles.Resolution, error) {
 	if result.State == roles.Unclaimed {
 		return result, nil
@@ -367,7 +396,8 @@ func (s *edgeScope) holderConfirmed(ctx context.Context, sessions *session.Sessi
 // judged on the entry the cache holds of holderID. So a record the server wrote at the holder's
 // key, and one a cache that trails the bucket still shows under projects a newer write dropped,
 // each name no holder. holderID is the id the claim names, the key the decision is about. A read
-// that did not answer is returned as its error. A nil scope names every holder with no read.
+// that did not answer is returned as an error that names no session (confirmUnanswered). A nil
+// scope names every holder with no read.
 func (s *edgeScope) namesHolderConfirmed(ctx context.Context, sessions *session.SessionRegistry, holderID string) (bool, error) {
 	entry, _ := sessions.Lookup(holderID)
 	return s.showsConfirmed(ctx, sessions, holderID, entry)
@@ -408,9 +438,9 @@ func hideHolder(logger *logging.Logger, line, role, holder, text string, err err
 	return &edgeHolderHidden{text: text, err: err}
 }
 
-// edgeHolderHidden is the error an edge answer gives a failure whose own text names a holder the
-// scope may not show (hideHolder): its text is the listener's own, and it unwraps to the failure,
-// which decides how the answer is written.
+// edgeHolderHidden is the error an edge answer gives a failure whose own text names a holder or a
+// session the scope may not show (hideHolder, edgeScope.confirmUnanswered): its text is the
+// listener's own, and it unwraps to the failure, which decides how the answer is written.
 type edgeHolderHidden struct {
 	text string
 	err  error

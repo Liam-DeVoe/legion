@@ -1582,19 +1582,18 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 // lost to it. It writes a fresh id, never the frame's own mark, since noteRepositoryGap mints a new
 // id for every mark, so the relay loop's clear of that mark as sent (repositoryGapSent) can never
 // take the re-mark's. The worst case is then one redundant notice at a later run, never a lost one.
-// It forgets this process's noted mark first. Whether the write lands or fails, the mark this
-// process notes at the end is the re-mark's new id either way; the forget only makes the relay
-// loop's owedRepositoryGap read the entry's mark from this listener's copy, rather than a noted
-// one, while the write is in flight. It runs off onReply's callback, in its own goroutine, within
-// sendRequestBudget, since the write is a KV read and write that must not stall the other
-// sessions' receipts that one callback carries. A write that fails notes a fresh id in this
-// process alone (the loop may have cleared the frame's own mark as sent, and noteRepositoryGap notes
-// nothing when its write fails), so this listener's next relay run still sends it (owedRepositoryGap);
-// a move to another listener before that run loses it, since the entry carries no mark.
+// While its write is in flight the mark this process noted stands, which noteRepositoryGap wrote on
+// the entry before it noted it, so the relay loop's owedRepositoryGap reads the mark the entry holds
+// rather than this listener's copy of the entry, which can trail that write. It runs off onReply's
+// callback, in its own goroutine, within sendRequestBudget, since the write is a KV read and write
+// that must not stall the other sessions' receipts that one callback carries. A write that fails
+// notes a fresh id in this process alone (the loop may have cleared the frame's own mark as sent,
+// and noteRepositoryGap notes nothing when its write fails), so this listener's next relay run still
+// sends it (owedRepositoryGap); a move to another listener before that run loses it, since the entry
+// carries no mark.
 func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
 	defer cancel()
-	m.forgetRepositoryGap(sessionID)
 	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
 		// noteRepositoryGap notes nothing when its write fails, so this notes the fresh id itself,
 		// as noteRepositoryGap's own tail does: the lazy-map create and the store.

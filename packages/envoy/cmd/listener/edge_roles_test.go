@@ -441,7 +441,7 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 	rig := newEdgeRig(t)
 	var scope *edgeScope
 	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
 	}
 	const hidden, shown = "ses_edge_forward_pub", "ses_edge_forward_priv"
 	for _, holder := range []struct {
@@ -492,14 +492,15 @@ func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
 // sendEndingInProcess claims role for holder, a session of project another listener registered,
 // and sends a message to role through sendToRole under the edge's scope (none under the control),
 // with every forward ending while an earlier forward is in process, its error naming the subject
-// it went to. With movedTo set, movedTo is a session of PRIV past the live window, and the role
-// moves to it under the first forward. It fails t unless the answer is the 503 maybe_stored with
+// it went to. With movedTo set, movedTo is a session of PRIV past the live window whose record the
+// scope shows (confirmed before the send), and the role moves to it under the first forward. It
+// fails t unless the answer is the 503 maybe_stored with
 // Retry-After of an earlier attempt in process, and returns the answer's body.
 func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, movedTo string) string {
 	t.Helper()
 	var scope *edgeScope
 	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
 	}
 	rig.placeElsewhere(t, holder, project)
 	if _, err := rig.deps.registry.SetRole(holder, "shared-listener", role, false); err != nil {
@@ -509,7 +510,10 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		var raw natsgo.KeyValue
 		swapSessionBucket(t, rig.harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue { raw = kv; return kv })
 		live, _ := rig.deps.sessions.Windows()
-		lapsed, err := json.Marshal(session.SessionEntry{MachineID: "shared-listener", SelfSubscribed: true, Title: movedTo, Projects: []string{"PRIV"},
+		// The record names its own key, so it is a registration the edge shows (edgeScope.shows):
+		// a record naming no key is no session's, and the row could not tell the holder the forward
+		// went to from the holder the send resolved last.
+		lapsed, err := json.Marshal(session.SessionEntry{SessionID: movedTo, MachineID: "shared-listener", SelfSubscribed: true, Title: movedTo, Projects: []string{"PRIV"},
 			UpdatedAt: time.Now().Add(-live - time.Minute).UnixMilli()})
 		if err != nil {
 			t.Fatal(err)
@@ -519,6 +523,9 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		}
 		if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { entry, _ := rig.deps.sessions.Lookup(movedTo); return entry.Title == movedTo }) {
 			t.Fatalf("%s's entry never reached this listener's copy", movedTo)
+		}
+		if named, err := scope.namesHolderConfirmed(context.Background(), rig.deps.sessions, movedTo); err != nil || !named {
+			t.Fatalf("UNKNOWN: the scope names %s as a holder: %t (%v); want true, so the row tells the holder the forward went to from the one the send resolved last", movedTo, named, err)
 		}
 	}
 	var forwards atomic.Int32
@@ -553,8 +560,12 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 // shows (PRIV) whose session is past the live window, so the send forwards nothing more, and its
 // window ends. The 503 maybe_stored carries the first forward's error, which names the PUB
 // holder's agent subject, so it is judged by the holder that forward went to, not by the holder
-// the send resolved last: it names neither the hidden holder nor its subject. Control: with edge
-// mode off, the scope shows every holder and the row fails.
+// the send resolved last: it names neither the hidden holder nor its subject. The later holder's
+// record names its own key, and the scope is shown to name it before the send
+// (edgeScope.namesHolderConfirmed), so a judgment by the later holder would let the error through.
+// Controls: with edge mode off, the scope shows every holder and the row fails; with the error
+// judged when the window ends, by the holder the send resolved last (endedInProcess calling
+// shownForwardError, as the edge-mode change had it before its fix), the row fails.
 func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *testing.T) {
 	const hidden, shown = "ses_edge_moved_in_process_pub", "ses_edge_moved_in_process_priv"
 	body := sendEndingInProcess(t, newEdgeRig(t), "legion-priv-priv-7-tester", hidden, "PUB", shown)
