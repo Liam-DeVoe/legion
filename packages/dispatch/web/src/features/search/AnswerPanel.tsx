@@ -15,6 +15,7 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { NO_MODEL_WORDS } from "../going/run-states";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AnswerBlock } from "./blocks/AnswerBlock";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
@@ -25,7 +26,7 @@ const noteClassName = `text-xs ${textMutedOnSurface}`;
 function errorText(code: string): string {
   switch (code) {
     case GOING_ERROR_NO_MODEL_CONFIGURED:
-      return "No answer: this Dispatch has no answering model configured.";
+      return NO_MODEL_WORDS;
     case GOING_ERROR_ANSWER_DID_NOT_ARRIVE:
       return "No answer: the answer did not arrive in time.";
     case GOING_ERROR_ANSWER_FAILED:
@@ -44,15 +45,16 @@ function changedText(dropped: number): string {
 }
 
 /**
- * Dispatch's answer to the words in the bar, in its own panel beside the hits. The text is the
+ * Dispatch's short answer to the words in the bar (R3), in its own panel under the rows. Its
+ * text shows at most 3 lines; Enter on the line Ask starts the run that gives the full answer,
+ * which the panel's foot says while that line is the selected row (`fullAnswer`). The text is the
  * stream's `text` frames drawn through the page's markdown renderer as plain text: the server
  * escaped every punctuation byte of it, so no link, image, tag or code span comes of anything the
  * model wrote, and the renderer reads no reference in it either. The answer's links are its
  * `item` frames, listed beneath it, and nothing else. The block, where the answer draws one,
  * follows the text, as its frame follows the text's. Each line below says what the stream said
  * about the answer: that it was cut, that the server changed it, that the model wrote none, that
- * it rests on no source, how fresh the roster it read was, or that it failed. What this Dispatch
- * cannot do is the bar's foot's to say (`CapabilityNote`), once, and never under an answer.
+ * it rests on no source, how fresh the roster it read was, or that it failed.
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a
@@ -66,9 +68,12 @@ function changedText(dropped: number): string {
  */
 export function AnswerPanel({
   answer,
+  fullAnswer,
   stale,
 }: {
   readonly answer: GoingAnswer;
+  /** Whether Enter now starts the run of the words: the selected row is the line Ask. */
+  readonly fullAnswer: boolean;
   /** Whether `answer` answers words the person has typed past. */
   readonly stale: boolean;
 }): ReactNode {
@@ -83,6 +88,11 @@ export function AnswerPanel({
       data-testid="going-answer"
     >
       <AnswerBody answer={answer} stale={stale} />
+      {fullAnswer && !stale ? (
+        <p className={`mt-2 ${noteClassName}`} data-testid="going-answer-full">
+          ↵ for the full answer
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -123,7 +133,7 @@ function AnswerBody({
         ) : null}
         {answer.text === "" ? null : (
           <div
-            className={stale ? textMutedOnSurface : textPrimaryOnSurface}
+            className={`line-clamp-3 ${stale ? textMutedOnSurface : textPrimaryOnSurface}`}
             data-testid="going-answer-text"
           >
             <MarkdownBody markdown={answer.text} referenceText="" softBreaks="line" />

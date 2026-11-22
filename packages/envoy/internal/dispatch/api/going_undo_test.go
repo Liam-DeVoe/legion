@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -226,6 +227,14 @@ func TestUndoOfOneRun(t *testing.T) {
 		}
 		if kept := fields["title"]; kept.OK || !strings.Contains(kept.Message, `"Bob's"`) || !strings.Contains(kept.Message, "user bob") {
 			t.Fatalf("the title's undo answered %+v, want it kept, naming Bob's title and bob", kept)
+		}
+		// The bar words the kept value as the page shows it, so the value and its writer come as
+		// data beside the message.
+		if kept := fields["title"]; !goingSameJSON(kept.Now, json.RawMessage(`"Bob's"`)) || kept.By == nil || *kept.By != (goingHolder{Kind: "user", ID: "bob"}) {
+			t.Fatalf("the title's undo answered now %s by %+v, want Bob's title as JSON and user bob", kept.Now, kept.By)
+		}
+		if written := fields["status"]; written.Now != nil || written.By != nil {
+			t.Fatalf("the status's undo answered now %s by %+v, want neither on a field written back", written.Now, written.By)
 		}
 		if !fields["status"].OK || line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "status") {
 			t.Fatalf("the line answered %+v, want %s naming the kept title and the status written back", line, codeGoingUndoChanged)

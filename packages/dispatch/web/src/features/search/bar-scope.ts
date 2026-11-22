@@ -6,9 +6,10 @@
  * the project where the page names nothing narrower. `Tab` narrows that to the block the writing
  * cursor was in as the bar opened, and `Backspace` widens it to the project.
  *
- * This is not the project chip of the filter bar, which narrows the search and carries its own
- * `Remove Project INFRA` control: that chip says which items are searched, this one says what the
- * bar acts on. They sit on either side of the box, and only the filter chip can be removed.
+ * This is not the project chip of the filters behind the bar's Filters button, which narrows the
+ * search and carries its own `Remove Project INFRA` control: that chip says which items are
+ * searched, this one, inside the box on its left, says what the bar acts on, and only the filter
+ * chip can be removed.
  */
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import {

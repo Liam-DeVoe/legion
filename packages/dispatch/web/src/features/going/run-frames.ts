@@ -40,11 +40,13 @@ export interface RunStep {
   readonly running: boolean;
 }
 
-/** How a run's turn ended, as its `end` frame says it. */
+/** How a run's turn ended, as its `end` frame says it: its state, why, what it offers next, and
+ *  the key of the issue a new-issue run filed, "" for none. */
 export interface RunEnd {
   readonly state: string;
   readonly reason: string;
   readonly offers: readonly string[];
+  readonly issue: string;
 }
 
 /** A run as its frames say it is. */
@@ -293,6 +295,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
     }
     case "end": {
       const end: RunEnd = {
+        issue: textOf(fields.issue),
         offers: textsOf(fields.offers),
         reason: textOf(fields.reason),
         state: textOf(fields.state),

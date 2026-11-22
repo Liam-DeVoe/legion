@@ -130,7 +130,13 @@ test("on an issue a live session holds, the fast tier offers no line that sends 
     await openBarOver(page, `/issues/${key}`);
     await searchBox(page).fill(words);
     await expect(lineOnTop(page)).toBeVisible();
-    await expect(bar(page).getByRole("option", { name: /send|agent/i })).toHaveCount(0);
+    // The line on top repeats the words, which name the agent; no other row offers to send
+    // them to the session (design v3, state 1).
+    const rows = bar(page).getByRole("option");
+    await expect(rows.filter({ hasText: /send/i })).toHaveCount(0);
+    await expect(
+      rows.and(bar(page).locator(":not([data-line])")).filter({ hasText: /agent/i })
+    ).toHaveCount(0);
     // Enter on the line on top runs the words, and the run ends sending the session nothing.
     await searchBox(page).press("Enter");
     await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });

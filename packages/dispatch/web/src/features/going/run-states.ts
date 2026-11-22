@@ -110,3 +110,118 @@ export function runNext(state: RunState, event: RunEvent): RunTransition {
       return { state };
   }
 }
+
+/** The one action a run's end offers (design v2, state 9, rule 7): Continue on a bound, Try again
+ *  on a failure, a new conversation where this one grew too long to go on, or none. */
+export type EndAction = "continue" | "retry" | "new" | undefined;
+
+/** How a run's end reads for its person: one sentence and its one action. `noModel` marks the
+ *  failure of a Dispatch with no answering model, which says the one sentence of design v2,
+ *  state 13, and offers nothing. */
+export interface EndWords {
+  readonly text: string;
+  readonly action: EndAction;
+  readonly noModel: boolean;
+}
+
+/** The code a stop or failure reason starts with: "TIME_BUDGET" of "TIME_BUDGET: this run
+ *  worked…", "STOPPED" of "STOPPED: its person stopped it"; "" for a reason with none. */
+export function reasonCode(reason: string): string {
+  const code = reason.split(":", 1)[0]?.trim() ?? "";
+  return /^[A-Z][A-Z0-9_]*$/u.test(code) ? code : "";
+}
+
+/** The levels as the mode control names them. */
+const LEVEL_WORDS: Readonly<Record<string, string>> = {
+  deep: "Deep",
+  fast: "Fast",
+  standard: "Standard",
+};
+
+/** Each bound of a level, by its stop reason's code (`going/agent/levels.go`). */
+const BOUND_WORDS: Readonly<Record<string, string>> = {
+  CALL_BUDGET: "step limit",
+  OUTPUT_TOKEN_BUDGET: "reply length limit",
+  TIME_BUDGET: "time limit",
+};
+
+/** Why a run's grant stopped it, by its reason's code (`api/going_grant.go`). */
+const GRANT_WORDS: Readonly<Record<string, string>> = {
+  MEMBERSHIP_ENDED: "you may no longer use Dispatch",
+  SESSION_ENDED: "you signed out",
+  SIGN_IN_EXPIRED: "your sign-in expired",
+  TOKEN_REVOKED: "the agent token it acted with was revoked",
+};
+
+/** What a failure says, by its reason's code (`going/agent/run.go`, `api/going_agent.go`), and its
+ *  action where it is not Try again. */
+const FAILURE_WORDS: Readonly<
+  Record<string, { readonly text: string; readonly action?: EndAction }>
+> = {
+  AGENT_KILLED: { text: "Dispatch's agent stopped while it worked on this run." },
+  HISTORY_TOO_LARGE: {
+    action: "new",
+    text: "This conversation grew too long for the model to read.",
+  },
+  MODEL_CALL_TIME: { text: "The model took too long to answer." },
+  MODEL_CONTENT_FILTER: { text: "The model's content filter refused this request." },
+  MODEL_FAILED: { text: "Dispatch could not reach the model." },
+  MODEL_REFUSED: { text: "The model refused to answer." },
+  MODEL_REPLY_TOO_LARGE: { text: "The model's reply was too long to read." },
+};
+
+/** The sentence of a Dispatch with no answering model (design v2, state 13). */
+export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answering model.";
+
+/**
+ * How the end of a run in `state`, stopped or failed with `reason` (its end frame's, or its
+ * record's), reads for its person (design v2, state 9): never a code or the reason's own words,
+ * which are written for a developer. A bound is a pause: "Stopped at Standard's time limit", with
+ * what the run did so far (`didSoFar`, "read 14 items") and Continue. A Stop keeps what it did: "Stopped
+ * · kept what it did", or why its grant ended it. A failure is one sentence and Try again, or the
+ * sentence of state 13 for a Dispatch with no answering model. Undefined for a run that has not
+ * stopped or failed.
+ */
+export function endWords(
+  state: RunState,
+  reason: string,
+  level: string,
+  didSoFar: string
+): EndWords | undefined {
+  const code = reasonCode(reason);
+  switch (state) {
+    case "stopped_bound": {
+      const named = LEVEL_WORDS[level] ?? "its level";
+      const bound = BOUND_WORDS[code];
+      const stopped =
+        bound === undefined ? `Stopped at a limit of ${named}` : `Stopped at ${named}'s ${bound}`;
+      return {
+        action: "continue",
+        noModel: false,
+        text: didSoFar === "" ? stopped : `${stopped} · ${didSoFar} so far`,
+      };
+    }
+    case "stopped_person": {
+      const grant = GRANT_WORDS[code];
+      return {
+        action: undefined,
+        noModel: false,
+        text:
+          grant === undefined
+            ? "Stopped · kept what it did"
+            : `Stopped because ${grant} · kept what it did`,
+      };
+    }
+    case "failed": {
+      if (code === "NO_MODEL") return { action: undefined, noModel: true, text: NO_MODEL_WORDS };
+      const failure = FAILURE_WORDS[code];
+      return {
+        action: failure?.action ?? "retry",
+        noModel: false,
+        text: failure?.text ?? "Dispatch's agent failed on this run.",
+      };
+    }
+    default:
+      return undefined;
+  }
+}

@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 
 import { STARTED_RUN, withRunFrame } from "./run-frames";
-import { type RunEvent, type RunRequest, type RunState, runNext } from "./run-states";
+import {
+  endWords,
+  NO_MODEL_WORDS,
+  type RunEvent,
+  type RunRequest,
+  type RunState,
+  reasonCode,
+  runNext,
+} from "./run-states";
 
 // The state table of one run of the command bar (plan.md t15): each state - idle, working,
 // waiting for a plan, done, stopped at a bound, stopped by the person, failed - under each event -
@@ -159,4 +167,108 @@ test("a plan frame that waits is propose_plan, and an end that offers Continue i
     state: "stopped",
   });
   expect(stopped.state).toBe("stopped_person");
+});
+
+// How each end reason the run frames carry reads for the person (design v2, state 9): one
+// sentence and one action, never the reason's code or its own words, which are a developer's.
+// The reasons are the agent's (`going/agent/run.go`, `levels.go`, `history.go`) and the server's
+// (`api/going_grant.go`, `going_run_stream.go`, `going_agent_supervision.go`).
+test("a bound reads as a pause at the run's level with what it did so far, and offers Continue", () => {
+  expect(
+    endWords(
+      "stopped_bound",
+      "TIME_BUDGET: this run worked the 5m0s a standard run may; Continue starts a follow-up with a new budget",
+      "standard",
+      "read 14 items"
+    )
+  ).toEqual({
+    action: "continue",
+    noModel: false,
+    text: "Stopped at Standard's time limit · read 14 items so far",
+  });
+  expect(endWords("stopped_bound", "CALL_BUDGET: …", "fast", "")?.text).toBe(
+    "Stopped at Fast's step limit"
+  );
+  expect(endWords("stopped_bound", "OUTPUT_TOKEN_BUDGET: …", "deep", "searched twice")?.text).toBe(
+    "Stopped at Deep's reply length limit · searched twice so far"
+  );
+  expect(endWords("stopped_bound", "", "standard", "")?.text).toBe(
+    "Stopped at a limit of Standard"
+  );
+});
+
+test("a Stop keeps what it did, and never repeats the reason's code", () => {
+  const stopped = endWords("stopped_person", "STOPPED: its person stopped it", "standard", "");
+  expect(stopped).toEqual({
+    action: undefined,
+    noModel: false,
+    text: "Stopped · kept what it did",
+  });
+  expect(stopped?.text).not.toContain("STOPPED");
+  expect(
+    endWords("stopped_person", "SESSION_ENDED: the person this run acts for signed out", "fast", "")
+      ?.text
+  ).toBe("Stopped because you signed out · kept what it did");
+  expect(endWords("stopped_person", "SIGN_IN_EXPIRED: …", "fast", "")?.text).toBe(
+    "Stopped because your sign-in expired · kept what it did"
+  );
+});
+
+test("a failure is one sentence and one action, with no code", () => {
+  const cases: readonly (readonly [string, string, string])[] = [
+    ["MODEL_FAILED: azure: 502 Bad Gateway", "Dispatch could not reach the model.", "retry"],
+    [
+      "MODEL_CALL_TIME: a model call of this run took past 2m0s",
+      "The model took too long to answer.",
+      "retry",
+    ],
+    ["MODEL_REFUSED: the chat model refused to answer", "The model refused to answer.", "retry"],
+    ["MODEL_CONTENT_FILTER: …", "The model's content filter refused this request.", "retry"],
+    ["MODEL_REPLY_TOO_LARGE: …", "The model's reply was too long to read.", "retry"],
+    [
+      "HISTORY_TOO_LARGE: the last 8 model turns …",
+      "This conversation grew too long for the model to read.",
+      "new",
+    ],
+    [
+      "AGENT_KILLED: the agent process died 3 times …",
+      "Dispatch's agent stopped while it worked on this run.",
+      "retry",
+    ],
+    ["AGENT_FAILED: save step 3: deadline", "Dispatch's agent failed on this run.", "retry"],
+    [
+      'UNKNOWN_TOOL: step 4 of this run names the tool "x"',
+      "Dispatch's agent failed on this run.",
+      "retry",
+    ],
+  ];
+  for (const [reason, text, action] of cases) {
+    const words = endWords("failed", reason, "standard", "read 2 items");
+    expect(words).toEqual({ action: action as "retry" | "new", noModel: false, text });
+    expect(words?.text).not.toMatch(/[A-Z]{2,}_/u);
+  }
+});
+
+test("a run that failed because the Dispatch has no answering model says the one sentence and offers nothing", () => {
+  expect(
+    endWords(
+      "failed",
+      "NO_MODEL: this server names no chat model (DISPATCH_ANSWERER), so its agent cannot work the run",
+      "standard",
+      ""
+    )
+  ).toEqual({ action: undefined, noModel: true, text: NO_MODEL_WORDS });
+  expect(NO_MODEL_WORDS).toBe("Answers are off on this Dispatch: it has no answering model.");
+});
+
+test("a run that has not stopped or failed has no end words, and a reason's code is its first word", () => {
+  for (const state of ["idle", "working", "waiting", "done"] as const) {
+    expect(endWords(state, "PLAN_REJECTED: the person rejected the plan", "standard", "")).toBe(
+      undefined
+    );
+  }
+  expect(reasonCode("TIME_BUDGET: this run worked")).toBe("TIME_BUDGET");
+  expect(reasonCode("NO_MODEL")).toBe("NO_MODEL");
+  expect(reasonCode("the run failed: why")).toBe("");
+  expect(reasonCode("")).toBe("");
 });

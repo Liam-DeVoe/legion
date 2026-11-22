@@ -13,14 +13,14 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The search palette, in the rows whose claim is what the index found: the grouped hits and
- * their marks, an ask hit's own answer, and the two routes a hit opens. The keyboard-hints row
- * is here too: it is read in the desktop and the phone configurations at once, and a stubbed
- * row runs in one of them. What the palette draws over one fixed answer is in
+ * The search palette, in the rows whose claim is what the index found: the hits grouped by their
+ * kind and their marks, an ask hit's own answer, and the two routes a hit opens. The
+ * keyboard-hints row is here too: it is read in the desktop and the phone configurations at
+ * once, and a stubbed row runs in one of them. What the palette draws over one fixed answer is in
  * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
  */
 
-test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to its highlighted term", async ({
+test("Ctrl+K and Cmd+K open the palette, hits grouped by kind navigate a document to its highlighted term", async ({
   browser,
 }) => {
   const fixture = await seedSearchFixture();
@@ -40,23 +40,28 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     await search.fill(searchTerm);
 
     const options = dialog.getByRole("option");
-    // Three rows, in the server's order: the issue whose spec holds the term (an issue's
-    // keyword vector carries its primary document's text), that document, and the comment.
+    // Three rows, in the server's order, each under the heading of its kind (design v3, state
+    // 1): the issue whose spec holds the term (an issue's keyword vector carries its primary
+    // document's text), that document, and the comment.
     await expect(options).toHaveCount(3);
     await expect(options.first()).toHaveAttribute(
       "id",
       `search-option-issue-${fixture.firstIssueKey}`
     );
-    const documentResult = dialog.getByRole("option", { name: /^doc spec\.md / });
+    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
+    const documentResult = group("Documents").getByRole("option");
     await expect(documentResult).toBeVisible();
+    // A document of an issue is named beside its issue.
+    await expect(documentResult.getByText(fixture.firstIssueKey, { exact: true })).toBeVisible();
+    await expect(documentResult).toContainText("Navigation instruments · spec.md");
     await expect(documentResult.locator("mark")).toHaveText([searchTerm, searchTerm]);
-    await expect(dialog.locator('[role="presentation"]')).toHaveCount(2);
-    await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-1: Navigation instruments"]')
-    ).toBeVisible();
-    await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-2: Other work"]')
-    ).toBeVisible();
+    await expect(dialog.locator('[role="presentation"]')).toHaveText([
+      "Issues",
+      "Documents",
+      "Comments",
+    ]);
+    // A hit names the issue it belongs to on its own row.
+    await expect(group("Comments").getByRole("option")).toContainText("Other work");
 
     const documentID = await documentResult.getAttribute("id");
     expect(documentID).not.toBeNull();
@@ -98,7 +103,7 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
   }
 });
 
-test("a search term lists marked document, comment, ask, and issue-title results in issue groups", async ({
+test("a search term lists marked document, comment, ask, and issue-title results in groups of their kind", async ({
   browser,
 }) => {
   await seedSearchFixture();
@@ -115,22 +120,29 @@ test("a search term lists marked document, comment, ask, and issue-title results
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
     const options = dialog.getByRole("option");
+    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
     // Five rows: the four the term is marked in, and CORE-1, which the term reached through
     // its spec (an issue's keyword vector carries its primary document's text) and whose own
     // title never held it, so its row marks nothing.
     await expect(options).toHaveCount(5);
-    for (const name of [/^issue Astrolabe calibration/, /^doc /, /^comment /, /^ask /]) {
-      const option = dialog.getByRole("option", { name });
+    for (const option of [
+      group("Issues").getByRole("option").filter({ hasText: "Astrolabe calibration" }),
+      group("Documents").getByRole("option"),
+      group("Comments").getByRole("option"),
+      group("Asks").getByRole("option"),
+    ]) {
       await expect(option).toHaveCount(1);
       await expect(option.locator("mark").first()).toHaveText(/astrolabe/i);
     }
-    const foundByItsSpec = dialog.getByRole("option", { name: /^issue Navigation instruments/ });
+    const foundByItsSpec = group("Issues")
+      .getByRole("option")
+      .filter({ hasText: "Navigation instruments" });
     await expect(foundByItsSpec).toHaveCount(1);
     await expect(foundByItsSpec.locator("mark")).toHaveCount(0);
-    await expect(dialog.locator('[role="presentation"]')).toHaveCount(3);
-    await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-4: Astrolabe calibration"]')
-    ).toBeVisible();
+    // One heading for each kind, whatever order the server's ranks put them in, and the ask
+    // names the issue it is on.
+    await expect(dialog.locator('[role="presentation"]')).toHaveCount(4);
+    await expect(group("Asks").getByRole("option")).toContainText(titleIssue.key);
   } finally {
     await context.close();
   }
@@ -185,7 +197,8 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(dialog.getByRole("option")).toHaveCount(3);
-    await expect(dialog.getByRole("option", { name: /^ask / })).toHaveCount(3);
+    const asks = dialog.getByRole("group", { exact: true, name: "Asks" });
+    await expect(asks.getByRole("option")).toHaveCount(3);
 
     const answeredHit = dialog.getByRole("option").filter({ hasText: "Which orrery frame" });
     await expect(answeredHit).toContainText("Answered");
@@ -193,9 +206,10 @@ test("an ask hit says whether it is answered, and an answered one shows its late
     await expect(answeredHit).toContainText("No option chosen");
     await expect(answeredHit).toContainText("Keep the steel one after all.");
     await expect(answeredHit).not.toContainText("zenithward");
-    // The option's name is all its text: the excerpt, the status line and the answer's start
-    // (`ANSWER_PREVIEW_CHARS` beside `AskHitStatus`), well under the 2,000-character answer.
-    await expect(answeredHit).toHaveAccessibleName(/^ask /u);
+    // The option's name is all its text: the issue it is on, the excerpt, the status line and
+    // the answer's start (`ANSWER_PREVIEW_CHARS` beside `AskHitStatus`), well under the
+    // 2,000-character answer.
+    await expect(answeredHit).toHaveAccessibleName(new RegExp(`^${issue.key}`, "u"));
     await expect(answeredHit).not.toHaveAccessibleName(/zenithward/u);
     await expect(answeredHit).toHaveAccessibleName(/^[\s\S]{1,600}$/u);
     await expect(answeredHit).not.toContainText("Keep the brass one.");
@@ -217,7 +231,7 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 
 // SLOW(>=2s): a seeded project document, issue and message, and the two routes the palette's
 // hits open - a Conversation turn and the document, which mounts its editor.
-test("a project-document hit is grouped under the document and opens it; a message hit opens its Conversation turn", async ({
+test("a project-document hit names its project and opens it; a message hit names its issue and opens its Conversation turn", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -240,18 +254,20 @@ test("a project-document hit is grouped under the document and opens it; a messa
     await search.fill("sextant");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
+    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
     await expect(dialog.getByRole("option")).toHaveCount(3);
-    await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE: Design notes"]')
-    ).toBeVisible();
-    await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE: Design notes"]')
-    ).not.toHaveAttribute("data-status");
-    await expect(
-      page.locator(`[role="presentation"][aria-label="${issue.key}: Sextant work"]`)
-    ).toHaveAttribute("data-status", "triage");
+    // A project document is named by its project and its name, and carries no status; a message
+    // names its issue, with the issue's status (design v3, state 1).
+    const documentHit = group("Documents").getByRole("option");
+    await expect(documentHit.getByText("CORE", { exact: true })).toBeVisible();
+    await expect(documentHit).toContainText("Design notes");
+    await expect(documentHit).not.toHaveAttribute("data-status");
+    const messageHit = group("Messages").getByRole("option");
+    await expect(messageHit.getByText(issue.key, { exact: true })).toBeVisible();
+    await expect(messageHit).toContainText("Sextant work");
+    await expect(messageHit).toHaveAttribute("data-status", "triage");
 
-    await dialog.getByRole("option", { name: /^message / }).click();
+    await messageHit.click();
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/messages/${message.id}$`));
     await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
       "aria-selected",
@@ -264,7 +280,7 @@ test("a project-document hit is grouped under the document and opens it; a messa
     // The palette opens on the page the reader is already on: Ctrl+K, not another load.
     await page.keyboard.press("Control+k");
     await page.getByRole("combobox", { name: "Search" }).fill("sextant");
-    await dialog.getByRole("option", { name: /^doc / }).click();
+    await group("Documents").getByRole("option").click();
     await expect(page).toHaveURL(
       new RegExp(`/projects/CORE/documents/${document.artifact.slug}\\?q=sextant$`)
     );
@@ -301,7 +317,8 @@ test("the palette's keyboard hints show for a pointer and not for a touch reader
     const hints = page.getByTestId("search-keyboard-hints");
     if (testInfo.project.name === "chromium") {
       await expect(hints).toBeVisible();
-      await expect(hints).toContainText("to open");
+      // The keys of the highlighted row alone, a hit here (design v3, state 1).
+      await expect(hints).toHaveText("↵ Open · Esc Close");
     } else {
       await expect(hints).toBeHidden();
     }

@@ -105,6 +105,13 @@ const shellHandlers: RequestHandler[] = [
   http.get("*/api/v1/me/going-plans", () =>
     Response.json({ limit: 50, offset: 0, rows: [], total: 0 })
   ),
+  // The command bar reads History as it opens (`goingConversationsQuery`), to offer Continue on
+  // a conversation of the last hour. The answer is a person with no conversation, which offers
+  // none; a test of History or of Continue spies `api.myGoingRuns`. It is answered at any origin,
+  // as the capability read above is.
+  http.get("*/api/v1/me/going-runs", () =>
+    Response.json({ limit: 50, offset: 0, rows: [], total: 0 })
+  ),
   // The base an upload names: before it posts a markdown file, the Upload control reads the
   // token of the document the owner already holds under that name
   // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can

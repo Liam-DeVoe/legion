@@ -1,10 +1,11 @@
 import { type DispatchToolLabel, dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
 
-import type { GoingPlanAnswer, GoingPlanRow, GoingPlanTick } from "../../api/types";
+import type { GoingPlanAnswer, GoingPlanRow, GoingPlanTick, GoingUndoLine } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 import { PROPERTY_LABELS } from "../issue-page/page-structure";
 import { CONTROL_LABELS, issueStatusWord } from "../issue-page/page-words";
 import { laneLabel } from "../project/board-model";
+import { clockWords } from "../search/blocks/block-cells";
 import { objectOf, textOf } from "./fields";
 import type { PlanDraft } from "./going-store";
 
@@ -239,9 +240,9 @@ function moveText(args: Arguments, newIssues: ReadonlyMap<number, string>): stri
   return places.length === 0 ? undefined : places.join(", ");
 }
 
-/** How the person edits a new value: the issue page's priority menu, its label picker, a box of
- *  text, or not at all. */
-export type FieldEdit = "priority" | "labels" | "text" | undefined;
+/** How the person edits a new value: the issue page's priority menu, its label picker, its status
+ *  menu, its assignee picker, a box of text, or not at all. */
+export type FieldEdit = "priority" | "labels" | "status" | "assignee" | "text" | undefined;
 
 /** One field a row writes: its name, its value now and the value the row writes, the person's
  *  edit where they made one, how the person can edit it, and whether its value may name a new
@@ -270,6 +271,8 @@ const VALUE_TOOLS: Readonly<Record<string, true>> = {
 function editOf(field: string, value: unknown): FieldEdit {
   if (field === "priority" && (value === null || typeof value === "number")) return "priority";
   if (field === "labels" && Array.isArray(value)) return "labels";
+  if (field === "status" && typeof value === "string") return "status";
+  if (field === "assignee" && (value === null || typeof value === "string")) return "assignee";
   return typeof value === "string" ? "text" : undefined;
 }
 
@@ -608,6 +611,170 @@ export function planTitle(rows: readonly GoingPlanRow[]): string {
     return said;
   });
   return capitalized(listed(parts)) || "Change nothing";
+}
+
+/** The states of a row the person's approval, or Auto-review, sent to run: waiting its turn,
+ *  running, run, failed, or skipped because a change it needs did not run. */
+const SENT_STATES: Readonly<Partial<Record<GoingPlanRow["state"], true>>> = {
+  approved: true,
+  done: true,
+  failed: true,
+  running: true,
+  skipped: true,
+};
+
+/** The states of a sent row that has come to an end. */
+const FINISHED_STATES: Readonly<Partial<Record<GoingPlanRow["state"], true>>> = {
+  done: true,
+  failed: true,
+  skipped: true,
+};
+
+/** What an Undo did, in its card's title (design v2, state 7): "Undone · 3 changes reverted", or
+ *  how many of the changes it could revert where another writer's value stayed or a revert was
+ *  refused. A message is never reverted, and counts in neither. */
+export function undoneTitle(lines: readonly GoingUndoLine[]): string {
+  const reversible = lines.filter((line) => line.undo !== "not_undone");
+  const reverted = reversible.filter((line) => line.outcome.ok).length;
+  if (reversible.length === 0) return "Undone · nothing to revert";
+  return reverted === reversible.length
+    ? `Undone · ${counted(reverted, "change", "changes")} reverted`
+    : `Undone · ${reverted} of ${counted(reversible.length, "change", "changes")} reverted`;
+}
+
+/**
+ * The plan card's title as the plan stands (design v2, states 6 and 7): while it waits, the
+ * sentence its rows make (`planTitle`); while its rows run, "Applying 1 of 3…", counting the row
+ * that runs now among the rows sent to run; once they ran, "Applied 3 changes · 16:42", the time
+ * the run ended (`appliedAt`) where the page knows it, and how many of them ran where some did
+ * not; once its run was undone (`undone`, what Undo answered), "Undone · 3 changes reverted"; and
+ * "Discarded" once the person discarded it.
+ */
+export function cardTitle(
+  plan: GoingPlanAnswer,
+  undone: readonly GoingUndoLine[] | undefined,
+  appliedAt: number | undefined
+): string {
+  const rows = plan.rows ?? [];
+  if (undone !== undefined) return undoneTitle(undone);
+  const sent = rows.filter((row) => SENT_STATES[row.state] === true);
+  switch (plan.state) {
+    case "waiting":
+      return planTitle(rows);
+    case "rejected":
+      return "Discarded · nothing ran";
+    case "approved":
+    case "running": {
+      const finished = sent.filter((row) => FINISHED_STATES[row.state] === true).length;
+      return `Applying ${Math.min(finished + 1, sent.length)} of ${sent.length}…`;
+    }
+    default: {
+      const done = sent.filter((row) => row.state === "done").length;
+      const applied =
+        sent.length === 0
+          ? "Nothing applied"
+          : done === sent.length
+            ? `Applied ${counted(done, "change", "changes")}`
+            : `Applied ${done} of ${counted(sent.length, "change", "changes")}`;
+      return appliedAt === undefined ? applied : `${applied} · ${clockWords(appliedAt)}`;
+    }
+  }
+}
+
+/** How a row stands in its card (design v2, state 7): waiting for the person, sent and waiting
+ *  its turn, running (a spinner), run (a check), failed, or not run. */
+export type RowMark = "waits" | "turn" | "running" | "done" | "failed" | "not_run";
+
+/** Each row state's mark. */
+export const ROW_MARKS: Readonly<Record<GoingPlanRow["state"], RowMark>> = {
+  approved: "turn",
+  done: "done",
+  failed: "failed",
+  running: "running",
+  skipped: "not_run",
+  unticked: "not_run",
+  waiting: "waits",
+};
+
+/** The words of each mark, which a screen reader hears in its place. */
+export const MARK_WORDS: Readonly<Record<RowMark, string>> = {
+  done: "Done",
+  failed: "Failed",
+  not_run: "Not run",
+  running: "Running",
+  turn: "Waits its turn",
+  waits: "Waits for you",
+};
+
+/** What a message row's result says (R7): sent, queued until the session can take it, or refused
+ *  with the reason in words. */
+function deliveryResult(row: GoingPlanRow): string | undefined {
+  switch (row.result?.delivery) {
+    case "sent":
+      return "Sent";
+    case "queued":
+      return "Queued: Dispatch delivers it when the session can take it";
+    case "refused": {
+      const reason = rowResultMessage(row);
+      return `Refused: ${reason === "" ? "the session did not take it" : reason}`;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** What a row says once its plan no longer waits (design v2, state 7), and whether that is a
+ *  failure, which offers "Say what to do instead". */
+export interface RowOutcome {
+  readonly text: string;
+  readonly failed: boolean;
+}
+
+/**
+ * What a row that no longer waits says (design v2, state 7; R4, R7): a message row its result,
+ * "Sent", "Queued: …" or "Refused: ‹the reason›"; a failed row its reason in words; a row skipped
+ * because a change it needs did not run, "Not run: it needs the change above"; an unticked row,
+ * "Not run: you left it unticked". A row that waits its turn, runs or ran says nothing past its
+ * mark. Undefined where it says nothing.
+ */
+export function rowOutcome(row: GoingPlanRow): RowOutcome | undefined {
+  const delivery = rowKind(row) === "message" ? deliveryResult(row) : undefined;
+  if (delivery !== undefined) return { failed: row.state === "failed", text: delivery };
+  switch (row.state) {
+    case "failed": {
+      const reason = rowResultMessage(row);
+      return {
+        failed: true,
+        text: reason === "" ? "Dispatch refused this change, and nothing was changed." : reason,
+      };
+    }
+    case "skipped":
+      return { failed: false, text: "Not run: it needs the change above" };
+    case "unticked":
+      return { failed: false, text: "Not run: you left it unticked" };
+    default:
+      return undefined;
+  }
+}
+
+/** One field of an Undo line: how its undo went. */
+export type UndoField = NonNullable<GoingUndoLine["fields"]>[number];
+
+/** A field Undo kept because another writer changed it after the run, as the server sends it as
+ *  data: its value now and who wrote it; undefined for any other field, and for a field of an
+ *  answer that names the value in its message alone. */
+export function keptValue(
+  field: UndoField
+): { readonly now: unknown; readonly by: UndoField["by"] } | undefined {
+  return field.ok || !Object.hasOwn(field, "now") ? undefined : { by: field.by, now: field.now };
+}
+
+/** What became of a row's change once its run was undone (design v2, state 7; R6), where no field
+ *  of it was kept as another writer left it: "Reverted", "Sent, not undone" for a message, or why
+ *  it could not be reverted. */
+export function undoWords(line: GoingUndoLine): string {
+  if (line.undo === "not_undone") return "Sent, not undone";
+  return line.outcome.ok ? "Reverted" : `Not reverted: ${line.outcome.message}`;
 }
 
 /** The approval modes, as the person's setting names them (`CommandBarSection.tsx`). */

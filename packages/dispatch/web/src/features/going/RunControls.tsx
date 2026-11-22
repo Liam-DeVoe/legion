@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import type { GoingRun } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
@@ -167,12 +167,26 @@ export function boxHint(
   return asking.runWaits ? "Reading the plan…" : undefined;
 }
 
+/** The row of the conversation's box on the screen: the bar's or the panel's, one at a time. */
+let shownBoxRow: HTMLElement | undefined;
+
+/** Puts the cursor in the conversation's box on the screen ("Say what to do instead", design v2,
+ *  state 7), and answers whether there was one. */
+export function focusConversationBox(): boolean {
+  const box = shownBoxRow?.querySelector<HTMLElement>(
+    'input:not([type="radio"]):not([type="checkbox"]), textarea'
+  );
+  box?.focus();
+  return box !== undefined && box !== null;
+}
+
 /**
  * The row of the conversation's box, in the bar and in the panel (design v2, state 2): the
  * context chip on its left (`chip`, none where the surface shows its context elsewhere), the box
  * itself (`box`), the level control beside it, and Stop at its right while the run works; under
  * it, the hint of what Enter does (`boxHint`). The box keeps its place among the row's parts in
- * every state, so the element the person types in, and its focus, stay as the row changes.
+ * every state, so the element the person types in, and its focus, stay as the row changes. While
+ * the row is drawn, `focusConversationBox` puts the cursor in its box.
  */
 export function BoxRow({
   box,
@@ -186,9 +200,17 @@ export function BoxRow({
   readonly onStop: () => void;
 }): ReactNode {
   const working = useGoingValue(conversationWorking);
+  const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const shown = row.current ?? undefined;
+    shownBoxRow = shown;
+    return () => {
+      if (shownBoxRow === shown) shownBoxRow = undefined;
+    };
+  }, []);
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2" ref={row}>
         {chip === undefined ? null : (
           <span
             className={`${pillClassName("label")} max-w-48`}

@@ -7,10 +7,11 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
-import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
+import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
 import { resetGoingStore, setPlace, startRun } from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
 import { PlanCard, usePlanCardKeys } from "./PlanRows";
+import { BoxRow } from "./RunControls";
 import { useOpenPlan } from "./usePlan";
 
 // The plan card of a plan that waits (design v3, state 6; spec R4, R5, R7): its title made from
@@ -274,7 +275,9 @@ test("a row that closes or removes something is marked in red, and a removed lab
     expect(drawnRow(0).querySelector('[data-mark="removed"]')?.textContent).toBe("removed a11y");
     expect(drawnRow(1)).toHaveAttribute("data-removes", "true");
     expect(within(drawnRow(1)).getByTestId("going-plan-removes")).toHaveTextContent("Closes");
-    expect(fieldOf(drawnRow(1), "status")).toHaveTextContent(/^Status: In progress → Done/u);
+    // The new status is the issue page's own status menu, set to the status the row writes.
+    expect(shownText(fieldOf(drawnRow(1), "status"))).toBe("Status: In progress →");
+    expect(screen.getByRole("combobox", { name: "Status of DEMO-2" })).toHaveValue("done");
     expect(drawnRow(2)).toHaveAttribute("data-removes", "true");
     expect(fieldOf(drawnRow(2), "claim")).toHaveTextContent(/^Claimed by: alice → Nobody$/u);
     expect(drawnRow(3)).not.toHaveAttribute("data-removes");
@@ -672,3 +675,271 @@ test("↑ in the empty box moves into the card, where ↑ ↓ move, Space ticks,
     restore();
   }
 });
+
+// Design v3, state 6, "Editing a value": a status and an assignee are edited with the issue
+// page's own controls, the status menu and the assignee picker, and Approve carries the values.
+test("the status menu and the assignee picker edit a row's values, and Approve carries them", async () => {
+  const user = userEvent.setup();
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const handOver = row(0, {
+    arguments: { assignee: "alice", issue: "DEMO-5", status: "in_progress" },
+    fields: ["assignee", "status"],
+    issue: "DEMO-5",
+    item: "DEMO-5",
+    now: { assignee: null, status: "todo" },
+  });
+  const restore = await openPlan(planOf([handOver]));
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  approve.mockImplementation(async () => planOf([handOver], { state: "running" }));
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    const status = screen.getByRole("combobox", { name: "Status of DEMO-5" });
+    expect(status).toHaveValue("in_progress");
+    await user.selectOptions(status, "testing");
+    expect(
+      within(fieldOf(drawnRow(0), "status")).getByTestId("going-plan-edited")
+    ).toBeInTheDocument();
+    const assignee = screen.getByRole("combobox", { name: "Assignee of DEMO-5" });
+    expect(assignee).toHaveValue("alice");
+    // The picker reads who has signed in once the person reaches for it, as on the issue page.
+    await user.hover(assignee);
+    await waitFor(() => expect(within(assignee).getAllByRole("option")).toHaveLength(3));
+    await user.selectOptions(assignee, "bob");
+    expect(
+      within(fieldOf(drawnRow(0), "assignee")).getByTestId("going-plan-edited")
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("going-plan-approve"));
+    await waitFor(() =>
+      expect(approve).toHaveBeenCalledWith(
+        "run-1",
+        {
+          plan: 1,
+          rows: [{ row: 0, tick: true, values: { assignee: "bob", status: "testing" } }],
+          version: "v1",
+        },
+        keyedAttempt
+      )
+    );
+  } finally {
+    listUsers.mockRestore();
+    restore();
+  }
+});
+
+/** A plan of three rows standing in `states`: a priority, a parent that needs the priority's
+ *  row, and a message; the first failed with its reason where it failed, and the message queued
+ *  where it ran. */
+function sentRows(states: readonly GoingPlanRow["state"][]): GoingPlanRow[] {
+  return [
+    row(0, {
+      arguments: { issue: "DEMO-1", priority: 1 },
+      fields: ["priority"],
+      issue: "DEMO-1",
+      item: "DEMO-1",
+      now: { priority: 3 },
+      result:
+        states[0] === "failed"
+          ? { code: "FORBIDDEN", delivery: null, message: "you have no access", status: 403 }
+          : null,
+      state: states[0],
+    }),
+    row(1, {
+      arguments: { issue: "DEMO-2", parent: "DEMO-1" },
+      fields: ["parent"],
+      issue: "DEMO-2",
+      item: "DEMO-2",
+      needs: [0],
+      now: { parent: null },
+      state: states[1],
+    }),
+    row(2, {
+      arguments: { body: "Please look.", issue: "DEMO-1" },
+      class: "message",
+      issue: "DEMO-1",
+      item: "DEMO-1",
+      result:
+        states[2] === "done" ? { code: "", delivery: "queued", message: "", status: 201 } : null,
+      state: states[2],
+      tool: "dispatch_message",
+    }),
+  ];
+}
+
+/** Each mark the card's rows draw. */
+function marks(): readonly (string | null)[] {
+  return screen.getAllByTestId("going-plan-row-mark").map((mark) => mark.getAttribute("data-mark"));
+}
+
+// Design v2, state 7: after approval each row ticks in place - a spinner while it runs, a ring
+// while it waits its turn - and the title says which change runs.
+test("while an approved plan runs, its title says Applying 1 of 3 and its rows tick in place", async () => {
+  const restore = await openPlan(
+    planOf(sentRows(["running", "approved", "approved"]), { state: "running" })
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applying 1 of 3…");
+    expect(marks()).toEqual(["running", "turn", "turn"]);
+    expect(screen.queryByTestId("going-plan-approve")).toBeNull();
+    expect(screen.queryByTestId("going-plan-mode")).toBeNull();
+    expect(screen.queryByTestId("going-undo-button")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// Design v2, state 7 (R4, R7): a failed row says why with "Say what to do instead", which puts
+// the cursor in the box; the rows that needed it say they did not run; a message row says what
+// became of it.
+test("once it ran, a failed row says why and Say what to do instead puts the cursor in the box", async () => {
+  const user = userEvent.setup();
+  const restore = await openPlan(
+    planOf(sentRows(["failed", "skipped", "done"]), { state: "done" })
+  );
+  try {
+    renderWithQueries(<CardAndBox />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 1 of 3 changes");
+    expect(marks()).toEqual(["failed", "not_run", "done"]);
+    expect(within(drawnRow(0)).getByTestId("going-plan-row-state")).toHaveTextContent(
+      "you have no access Say what to do instead"
+    );
+    expect(within(drawnRow(1)).getByTestId("going-plan-row-state")).toHaveTextContent(
+      "Not run: it needs the change above"
+    );
+    expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent(
+      "Queued: Dispatch delivers it when the session can take it"
+    );
+    await user.click(within(drawnRow(0)).getByTestId("going-plan-fix"));
+    expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus();
+  } finally {
+    restore();
+  }
+});
+
+// Design v2, state 7 (R6): the card keeps one Undo once a row ran; after it, the title says what
+// was reverted, a value someone else changed since stays and its row names it as the page shows
+// it, and a sent message's row reads "Sent, not undone".
+test("Undo on the card reverts the run, names a value someone else changed, and a message sent, not undone", async () => {
+  const user = userEvent.setup();
+  const ran = planOf(
+    [
+      row(0, {
+        arguments: { issue: "DEMO-1", priority: 1 },
+        fields: ["priority"],
+        issue: "DEMO-1",
+        item: "DEMO-1",
+        now: { priority: 3 },
+        state: "done",
+      }),
+      row(1, {
+        arguments: { issue: "DEMO-3", title: "Raise the dome" },
+        fields: ["title"],
+        issue: "DEMO-3",
+        item: "DEMO-3",
+        now: { title: "Dome" },
+        state: "done",
+      }),
+      row(2, {
+        arguments: { body: "Done.", issue: "DEMO-1" },
+        class: "message",
+        issue: "DEMO-1",
+        item: "DEMO-1",
+        result: { code: "", delivery: "sent", message: "", status: 201 },
+        state: "done",
+        tool: "dispatch_message",
+      }),
+    ],
+    { state: "done" }
+  );
+  const restore = await openPlan(ran);
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  undo.mockImplementation(async () => ({
+    lines: [
+      {
+        fields: [],
+        item: "DEMO-1",
+        outcome: { code: "", message: "sent, not undone", ok: true, status: 200 },
+        plan: 1,
+        row: 2,
+        tool: "dispatch_message",
+        undo: "not_undone",
+      },
+      {
+        fields: [
+          {
+            by: { id: "bob", kind: "user" },
+            field: "title",
+            message: `holds "Bob's dome" now, which user bob wrote after this run, so it is kept`,
+            now: "Bob's dome",
+            ok: false,
+          },
+        ],
+        item: "DEMO-3",
+        outcome: { code: "GOING_UNDO_CHANGED", message: "title: holds …", ok: false, status: 409 },
+        plan: 1,
+        row: 1,
+        tool: "dispatch_issue_update",
+        undo: "write_back",
+      },
+      {
+        fields: [{ field: "priority", message: "written back", ok: true }],
+        item: "DEMO-1",
+        outcome: { code: "", message: "written back", ok: true, status: 200 },
+        plan: 1,
+        row: 0,
+        tool: "dispatch_issue_update",
+        undo: "write_back",
+      },
+    ],
+  }));
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 3 changes");
+    expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent("Sent");
+    await user.click(screen.getByTestId("going-undo-button"));
+    await waitFor(() => expect(undo).toHaveBeenCalledWith("run-1", undefined, keyedAttempt));
+    await waitFor(() =>
+      expect(screen.getByTestId("going-plan-title")).toHaveTextContent(
+        "Undone · 1 of 2 changes reverted"
+      )
+    );
+    expect(within(drawnRow(0)).getByTestId("going-undo-line")).toHaveTextContent("Reverted");
+    expect(within(drawnRow(1)).getByTestId("going-undo-line").textContent).toBe(
+      "Title stays Bob's dome: bob changed it after this run"
+    );
+    expect(within(drawnRow(2)).getByTestId("going-undo-line")).toHaveTextContent(
+      "Sent, not undone"
+    );
+    expect(screen.queryByTestId("going-undo-button")).toBeNull();
+    expect(screen.getByTestId("going-plan").textContent ?? "").not.toMatch(/[{}"]|GOING_/u);
+  } finally {
+    restore();
+  }
+});
+
+/** The plan card above the conversation's box row, whose box "Say what to do instead" puts the
+ *  cursor in. */
+function CardAndBox(): ReactNode {
+  return (
+    <>
+      <Card />
+      <BoxRow
+        box={<input aria-label="Ask the command bar" type="text" />}
+        chip={undefined}
+        hint={undefined}
+        onStop={() => {}}
+      />
+    </>
+  );
+}

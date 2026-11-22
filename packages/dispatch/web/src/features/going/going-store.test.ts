@@ -5,6 +5,7 @@ import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
 import {
   asksPerson,
+  continueRun,
   conversationTitle,
   dropQueued,
   goingState,
@@ -12,6 +13,7 @@ import {
   openConversation,
   queuedReady,
   resetGoingStore,
+  setLevel,
   setPlace,
   startRun,
 } from "./going-store";
@@ -65,6 +67,37 @@ function answerRuns(...records: GoingRun[]) {
 const ENDED_DONE = { offers: [], reason: "", state: "done" };
 
 afterEach(resetGoingStore);
+
+// Design v2, state 9: Continue on a run a bound stopped is a follow-up at that run's own level,
+// whatever the bar is set to now, and "Continue in Deep" names Deep; it stamps when the run ended.
+test("Continue follows a bound-stopped run up at its own level, and Continue in Deep at Deep", async () => {
+  const runs = answerRuns(
+    record("r-1", "c-1", "split CORE-1"),
+    record("r-2", "c-1", "Continue"),
+    record("r-3", "c-1", "Continue")
+  );
+  const BOUND = { offers: ["continue"], reason: "TIME_BUDGET: …", state: "stopped" };
+  try {
+    await startRun("split CORE-1", CONTEXT, "alice");
+    runs.send("r-1", "end", BOUND);
+    expect(goingState().runs.get("r-1")?.endedAt).toBeNumber();
+    setLevel("fast");
+    expect(await continueRun("r-1", CONTEXT, "alice")).toBe(true);
+    expect(runs.start.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ continues: "r-1", level: "standard", words: "Continue" })
+    );
+    runs.send("r-2", "end", BOUND);
+    expect(await continueRun("r-2", CONTEXT, "alice", "deep")).toBe(true);
+    expect(runs.start.mock.calls[2]?.[0]).toEqual(
+      expect.objectContaining({ continues: "r-2", level: "deep" })
+    );
+    // A run that a bound did not stop offers no Continue.
+    runs.send("r-3", "end", ENDED_DONE);
+    expect(await continueRun("r-3", CONTEXT, "alice")).toBe(false);
+  } finally {
+    runs.restore();
+  }
+});
 
 test("Ctrl-K opens the bar on the conversation while its run works or its plan waits, and on the search once it ended", async () => {
   const runs = answerRuns(record("r-1", "c-1", "split CORE-1"));

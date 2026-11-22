@@ -4,9 +4,9 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
-// document editor included; `/` and `g p` open the same bar; the chip is seeded from the page and
-// `Tab`/`Backspace` move it; an empty input lists the person's recent items beside the actions of
-// the page.
+// document editor included; `/` and `g p` open the same bar; the chip inside the box is seeded
+// from the page and `Tab`/`Backspace` move it; an empty input lists the person's recent items and
+// no actions, and an action shows once the words typed are in its name (design v3, state 1).
 
 const documentName = "Design notes";
 const paragraph = "The sextant sights the horizon.";
@@ -33,10 +33,12 @@ function bar(page: Page): Locator {
   return page.getByRole("dialog", { name: "Search" });
 }
 
-/** What the bar says it will act on. Not the project chip of the filter bar below the box, which
+/** What the bar says it will act on: the chip inside the box, on its left, in short words ("the
+ *  project CORE", "the whole project", "a block"), whose tooltip says it in full ("Acting on the
+ *  project CORE · …"). Not the project chip of the filters behind the Filters button, which
  *  narrows the search and carries its own Remove control. */
-function scope(page: Page): Locator {
-  return bar(page).getByTestId("search-scope");
+function chip(page: Page): Locator {
+  return bar(page).getByTestId("going-box-chip");
 }
 
 /** Opens the bar with the key under test from wherever focus already is. */
@@ -106,8 +108,8 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
   }
 });
 
-// SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its actions
-// group and its box.
+// SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its rows and
+// its box.
 test("slash and g p open the same bar as Control+K @phone", async ({ browser }) => {
   // Every check here carries the suite's own 15 s deadline, and a run where two of the three
   // keys open something else reports each of them, which takes longer than one row's budget.
@@ -120,14 +122,18 @@ test("slash and g p open the same bar as Control+K @phone", async ({ browser }) 
   async function expectTheOneBar(page: Page, keys: readonly string[]): Promise<void> {
     const opened = keys.join(" ");
     await expect
-      .soft(scope(page), `${opened} opens the bar with its chip`)
-      .toHaveText(/Acting on the project CORE/);
+      .soft(chip(page), `${opened} opens the bar with its chip`)
+      .toHaveText("the project CORE");
+    await expect
+      .soft(chip(page), `${opened} opens the bar with its chip's words in full`)
+      .toHaveAttribute("title", /^Acting on the project CORE/);
+    // The empty box lists no actions: an action shows once its name is typed.
     await expect
       .soft(
         bar(page).getByRole("group", { name: "Actions" }),
-        `${opened} opens the bar with this page's actions`
+        `${opened} opens the bar with no list of actions`
       )
-      .toBeVisible();
+      .toHaveCount(0);
     await expect
       .soft(
         page.getByRole("combobox", { name: "Search" }),
@@ -167,19 +173,19 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await expect(page.getByRole("heading", { name: /Openers/ })).toBeVisible();
     await page.locator("body").focus();
     await openBar(page, ["Control+k"]);
-    await expect.soft(scope(page), "on an issue, that issue").toHaveText(/CORE-1/);
+    await expect.soft(chip(page), "on an issue, that issue").toHaveText("CORE-1");
     await closeBar(page);
 
     await openDocumentWithCaret(page, fixture.documentSlug);
     await openBar(page, ["Control+k"]);
-    await expect.soft(scope(page), "on a document, that document").toHaveText(/Design notes/);
+    await expect.soft(chip(page), "on a document, that document").toHaveText("Design notes");
     await closeBar(page);
 
     await openIssueList(page);
     await openBar(page, ["Control+k"]);
     await expect
-      .soft(scope(page), "on the issue list with none selected, the project")
-      .toHaveText(/Acting on the project CORE/);
+      .soft(chip(page), "on the issue list with none selected, the project")
+      .toHaveText("the project CORE");
     await closeBar(page);
 
     // Two issues selected: `x` marks the row the list's own `j` left the focus on.
@@ -191,15 +197,15 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await expect(page.getByRole("checkbox", { name: `Select ${fixture.secondKey}` })).toBeChecked();
     await openBar(page, ["Control+k"]);
     await expect
-      .soft(scope(page), "with two issues selected, those two")
-      .toHaveText(new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}`));
+      .soft(chip(page), "with two issues selected, those two")
+      .toHaveText(`${fixture.firstKey} and ${fixture.secondKey}`);
     await closeBar(page);
 
     await page.goto("/agents");
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
     await page.locator("body").focus();
     await openBar(page, ["Control+k"]);
-    await expect.soft(scope(page), "elsewhere, nothing").toHaveCount(0);
+    await expect.soft(chip(page), "elsewhere, nothing").toHaveCount(0);
     await closeBar(page);
   } finally {
     await context.close();
@@ -226,8 +232,8 @@ test("the bar acts on the issues the table has selected, and leaving the table c
     await expect(page.getByRole("checkbox", { name: `Select ${third.key}` })).toBeChecked();
 
     await openBar(page, ["Control+k"]);
-    await expect(scope(page)).toHaveText(
-      new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}[\\s\\S]*${third.key}`)
+    await expect(chip(page)).toHaveText(
+      `${fixture.firstKey}, ${fixture.secondKey} and ${third.key}`
     );
     await closeBar(page);
 
@@ -236,7 +242,7 @@ test("the bar acts on the issues the table has selected, and leaving the table c
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     await page.locator("body").focus();
     await openBar(page, ["Control+k"]);
-    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await expect(chip(page)).toHaveText("the project CORE");
     await closeBar(page);
 
     // Back on the table, the rows come back unselected rather than carrying a hidden mark.
@@ -260,23 +266,28 @@ test("Tab narrows the chip to the block the cursor is in and Backspace widens it
     const page = await context.newPage();
     await openDocumentWithCaret(page, fixture.documentSlug);
     await openBar(page, ["Control+k"]);
-    await expect(scope(page)).toHaveText(/Design notes/);
+    await expect(chip(page)).toHaveText("Design notes");
 
     await page.keyboard.press("Tab");
-    await expect(scope(page)).toHaveText(new RegExp(paragraph));
+    await expect(chip(page)).toHaveText("a block");
+    await expect(chip(page)).toHaveAttribute(
+      "title",
+      new RegExp(`^Acting on the block “${paragraph}”`)
+    );
 
     await page.keyboard.press("Backspace");
-    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await expect(chip(page)).toHaveText("the whole project");
+    await expect(chip(page)).toHaveAttribute("title", /^Acting on the project CORE/);
   } finally {
     await context.close();
   }
 });
 
 // SLOW(>=2s): two items are opened before the bar is, so the browser has recent items to list.
-test("an empty input lists the person's recent items and the actions of that page @phone", async ({
+test("an empty input lists the person's recent items and no actions, and an action shows once its name is typed @phone", async ({
   browser,
 }) => {
-  // Four reported checks on one open, each against the suite's own 15 s deadline.
+  // Several reported checks on one open, each against the suite's own 15 s deadline.
   test.setTimeout(120_000);
   const fixture = await seed();
   const context = await asUser(browser, "alice");
@@ -294,7 +305,8 @@ test("an empty input lists the person's recent items and the actions of that pag
     // A row in hand, so the list's own action is among the page's.
     await page.keyboard.press("j");
     await openBar(page, ["Control+k"]);
-    await expect(page.getByRole("combobox", { name: "Search" })).toHaveValue("");
+    const box = page.getByRole("combobox", { name: "Search" });
+    await expect(box).toHaveValue("");
 
     const recent = bar(page).getByRole("group", { name: "Recent" });
     await expect.soft(recent.getByRole("option", { name: /Design notes/ })).toHaveCount(1);
@@ -302,10 +314,17 @@ test("an empty input lists the person's recent items and the actions of that pag
       .soft(recent.getByRole("option", { name: new RegExp(fixture.firstKey) }))
       .toHaveCount(1);
     const actions = bar(page).getByRole("group", { name: "Actions" });
+    await expect.soft(actions, "the empty box lists no actions").toHaveCount(0);
+
+    // An action shows once the words typed start its name, and Recent leaves the list.
+    await box.fill("Open issue");
     await expect.soft(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
+    await expect.soft(recent).toHaveCount(0);
+    await box.fill("Create");
     await expect.soft(actions.getByRole("option", { name: "Create issue" })).toHaveCount(1);
 
     // A recent item opens from the bar.
+    await box.fill("");
     await recent.getByRole("option", { name: /Design notes/ }).click();
     await expect(page).toHaveURL(`/projects/CORE/documents/${fixture.documentSlug}`);
   } finally {

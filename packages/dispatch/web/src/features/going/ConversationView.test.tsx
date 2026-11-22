@@ -1,13 +1,15 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the conversation's own scroll event below, which user-event has no form for
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
-import type { GoingRun } from "../../api/types";
+import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
 import { dangerText } from "../../theme/classes";
+import { clockWords } from "../search/blocks/block-cells";
 import { ConversationView } from "./ConversationView";
 import { goingState, openConversation, resetGoingStore, startRun } from "./going-store";
 import { useOpenPlan } from "./usePlan";
@@ -24,7 +26,11 @@ import { useOpenPlan } from "./usePlan";
 // "Thinking…" with its seconds until the first step or answer, from the moment of Enter, and the
 // words sent while the run works, waiting at the foot with × to drop them.
 
-function record(state: GoingRun["state"], workingMs = 1000): GoingRun {
+function record(
+  state: GoingRun["state"],
+  workingMs = 1000,
+  extra: Partial<GoingRun> = {}
+): GoingRun {
   const at = new Date().toISOString();
   return {
     context: null,
@@ -40,14 +46,29 @@ function record(state: GoingRun["state"], workingMs = 1000): GoingRun {
     stop_reason: null,
     used: { calls: 1, tokens: 10, working_ms: workingMs },
     words: "where is DEMO-15",
+    ...extra,
   };
 }
 
-/** The bar's conversation of one run, whose stream carries `frames` and stays open. */
+/** The bar's conversation of one run, whose stream carries `frames` and stays open. With
+ *  `dialogKeys`, it is drawn in a dialog as the bar draws it, and each key that reaches the
+ *  dialog is put in `dialogKeys`. */
 async function showRun(
   state: GoingRun["state"],
   frames: readonly (readonly [string, unknown])[],
-  { onRetry = () => {}, workingMs }: { onRetry?: (words: string) => void; workingMs?: number } = {}
+  {
+    dialogKeys,
+    onContinue = () => {},
+    onRetry = () => {},
+    run = {},
+    workingMs,
+  }: {
+    dialogKeys?: string[];
+    onContinue?: (run: string, level?: GoingRun["level"]) => void;
+    onRetry?: (words: string) => void;
+    run?: Partial<GoingRun>;
+    workingMs?: number;
+  } = {}
 ): Promise<() => void> {
   const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
     for (const [name, data] of frames) onFrame(name, data);
@@ -56,20 +77,284 @@ async function showRun(
   openConversation({
     id: "c-1",
     newest_at: new Date().toISOString(),
-    runs: [record(state, workingMs)],
+    runs: [record(state, workingMs, run)],
   });
-  renderWithQueries(<Conversation onRetry={onRetry} />);
+  const conversation = <Conversation onContinue={onContinue} onRetry={onRetry} />;
+  renderWithQueries(
+    dialogKeys === undefined ? (
+      conversation
+    ) : (
+      <div
+        aria-label="Search"
+        className="relative"
+        onKeyDown={(event) => dialogKeys.push(event.key)}
+        role="dialog"
+      >
+        {conversation}
+      </div>
+    )
+  );
   await screen.findByTestId("going-run");
   return () => stream.mockRestore();
 }
 
 function Conversation({
+  onContinue = () => {},
   onRetry = () => {},
 }: {
+  readonly onContinue?: (run: string, level?: GoingRun["level"]) => void;
   readonly onRetry?: (words: string) => void;
 }): ReactNode {
-  return <ConversationView answering={useOpenPlan()} onContinue={() => {}} onRetry={onRetry} />;
+  return <ConversationView answering={useOpenPlan()} onContinue={onContinue} onRetry={onRetry} />;
 }
+
+test("a run that failed because the Dispatch has no answering model says so in one sentence, with no Failed and no code", async () => {
+  const restore = await showRun("failed", [
+    [
+      "end",
+      {
+        offers: [],
+        reason:
+          "NO_MODEL: this server names no chat model (DISPATCH_ANSWERER), so its agent cannot work the run",
+        state: "failed",
+      },
+    ],
+  ]);
+  try {
+    expect((await screen.findByTestId("going-cannot-answer")).textContent).toBe(
+      "Answers are off on this Dispatch: it has no answering model."
+    );
+    const run = screen.getByTestId("going-run");
+    expect(run.textContent ?? "").not.toMatch(/Failed|NO_MODEL|DISPATCH_ANSWERER/u);
+    expect(screen.queryByTestId("going-run-state")).toBeNull();
+    expect(screen.queryByTestId("going-run-action")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+test("a failure reads one sentence and Try again, which runs the same words again", async () => {
+  const user = userEvent.setup();
+  const retried: string[] = [];
+  const restore = await showRun(
+    "failed",
+    [["end", { offers: [], reason: "MODEL_FAILED: azure: 502 Bad Gateway", state: "failed" }]],
+    { onRetry: (words) => retried.push(words) }
+  );
+  try {
+    const line = await screen.findByTestId("going-run-state");
+    expect(line.textContent).toBe("Dispatch could not reach the model. Try again");
+    expect(line.textContent).not.toMatch(/MODEL_FAILED|502/u);
+    await user.click(within(line).getByRole("button", { name: "Try again" }));
+    expect(retried).toEqual(["where is DEMO-15"]);
+  } finally {
+    restore();
+  }
+});
+
+test("a bound is a grey card with what the run did so far, Continue and Continue in Deep", async () => {
+  const user = userEvent.setup();
+  const continued: (readonly [string, GoingRun["level"] | undefined])[] = [];
+  const restore = await showRun(
+    "stopped",
+    [
+      ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
+      [
+        "end",
+        {
+          offers: ["continue"],
+          reason: "TIME_BUDGET: this run worked the 5m0s a standard run may",
+          state: "stopped",
+        },
+      ],
+    ],
+    { onContinue: (run, level) => continued.push([run, level]) }
+  );
+  try {
+    const bound = await screen.findByTestId("going-run-bound");
+    expect(within(bound).getByTestId("going-run-state").textContent).toBe(
+      "Stopped at Standard's time limit · read 1 item so far"
+    );
+    await user.click(within(bound).getByTestId("going-run-continue"));
+    await user.click(within(bound).getByTestId("going-run-continue-deep"));
+    expect(continued).toEqual([
+      ["r-1", undefined],
+      ["r-1", "deep"],
+    ]);
+  } finally {
+    restore();
+  }
+});
+
+// Design v2, state 5: a block is a card with a caption that says what it counts and when, and a
+// table past 8 rows opens whole, over the whole bar that draws the conversation, with a way back.
+test("a table's caption says what it counts and when, and Show all opens it over the whole bar until Esc or Back", async () => {
+  const user = userEvent.setup();
+  const finished = "2026-11-22T16:40:00Z";
+  const dialogKeys: string[] = [];
+  const restore = await showRun(
+    "done",
+    [
+      [
+        "block",
+        {
+          kind: "table",
+          rows: Array.from({ length: 12 }, (_, index) => ({
+            issues: index + 1,
+            status: index % 2 === 0 ? "in_progress" : "todo",
+          })),
+          spec: { columns: ["status", "issues"], params: {}, source: "run", table: "chain" },
+          title: "DEMO issues by status",
+        },
+      ],
+      ["reply", { labels: [], text: "Here they are.", tools: [] }],
+      ["end", { offers: [], reason: "", state: "done" }],
+    ],
+    { dialogKeys, run: { finished_at: finished } }
+  );
+  try {
+    // The block was read before the run finished, and was read again here after it: the caption
+    // says the time the run finished.
+    expect((await screen.findByTestId("going-block-caption")).textContent).toBe(
+      `DEMO issues by status · as of ${clockWords(Date.parse(finished))}`
+    );
+    const table = screen.getByTestId("going-block-table");
+    expect(within(table).getAllByRole("row")).toHaveLength(9);
+    expect(within(table).getAllByRole("cell")[0]).toHaveTextContent("In progress");
+    await user.click(screen.getByTestId("going-block-show-all"));
+    const whole = screen.getByTestId("going-block-whole");
+    // It covers the whole bar: it is drawn in the bar's dialog itself, over the conversation and
+    // the box, and not in the conversation's own scrolled area.
+    expect(whole.parentElement).toBe(screen.getByRole("dialog", { name: "Search" }));
+    expect(whole.className).toContain("absolute inset-0");
+    expect(within(whole).getAllByRole("row")).toHaveLength(13);
+    expect(within(whole).getByTestId("going-block-whole-close")).toHaveFocus();
+    // Esc closes the table first, and the bar never hears it.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("going-block-whole")).toBeNull();
+    expect(dialogKeys).not.toContain("Escape");
+
+    await user.click(screen.getByTestId("going-block-show-all"));
+    await user.click(screen.getByTestId("going-block-whole-close"));
+    expect(screen.queryByTestId("going-block-whole")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// Design v2, state 8: the view follows new output until the person scrolls up; then "↓ New reply"
+// shows at the next output and takes them back to the foot.
+test("the conversation follows new output until the person scrolls up, and New reply brings it back", async () => {
+  const user = userEvent.setup();
+  let send: ((name: string, data: unknown) => void) | undefined;
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    send = onFrame;
+    return new Promise<void>(() => {});
+  });
+  try {
+    openConversation({ id: "c-1", newest_at: new Date().toISOString(), runs: [record("working")] });
+    renderWithQueries(<Conversation />);
+    const view = screen.getByTestId("going-conversation-view");
+    Object.defineProperty(view, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(view, "clientHeight", { configurable: true, value: 200 });
+    act(() => send?.("call", { kind: "read", label: "Reading DEMO-15", step: 2, tool: "read" }));
+    // At the foot it follows: the new line scrolled the view down, and no pill shows.
+    expect(view.scrollTop).toBe(1000);
+    expect(screen.queryByTestId("going-new-reply")).toBeNull();
+
+    view.scrollTop = 100;
+    fireEvent.scroll(view);
+    act(() =>
+      send?.("tool", {
+        items: ["DEMO-15"],
+        kind: "read",
+        label: "Read DEMO-15",
+        step: 2,
+        tool: "read",
+      })
+    );
+    expect(view.scrollTop).toBe(100);
+    const pill = screen.getByTestId("going-new-reply");
+    expect(pill).toHaveTextContent("↓ New reply");
+    await user.click(pill);
+    expect(view.scrollTop).toBe(1000);
+    expect(screen.queryByTestId("going-new-reply")).toBeNull();
+  } finally {
+    stream.mockRestore();
+  }
+});
+
+// Design v2, state 8: an old turn keeps its folded line, and its applied plan folds to one line,
+// "Applied 2 changes · Undo", which opens the card.
+test("an old turn's applied plan folds to one line with Undo, which opens the card", async () => {
+  const user = userEvent.setup();
+  const applied: GoingPlanAnswer = {
+    mode: "ask",
+    plan: 1,
+    rows: [0, 1].map(
+      (number): GoingPlanRow => ({
+        arguments: { issue: `DEMO-${number + 1}`, priority: 1 },
+        changed: false,
+        claim: null,
+        class: "field",
+        fields: ["priority"],
+        issue: `DEMO-${number + 1}`,
+        item: `DEMO-${number + 1}`,
+        needs: [],
+        now: { priority: 3 },
+        result: { code: "", delivery: null, message: "", status: 200 },
+        row: number,
+        state: "done",
+        tool: "dispatch_issue_update",
+        waits: [],
+      })
+    ),
+    run: "r-1",
+    state: "done",
+    summary: "",
+    version: "v1",
+  };
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => applied);
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    if (id === "r-1") {
+      onFrame("plan", { plan: 1, state: "waiting" });
+      onFrame("plan", { plan: 1, state: "done" });
+      onFrame("end", { offers: [], reason: "", state: "done" });
+    } else {
+      onFrame("reply", { labels: [], text: "Both are P1 now.", tools: [] });
+      onFrame("end", { offers: [], reason: "", state: "done" });
+    }
+    return new Promise<void>(() => {});
+  });
+  try {
+    openConversation({
+      id: "c-1",
+      newest_at: new Date().toISOString(),
+      runs: [
+        record("done", 1000, { continues: "r-1", id: "r-2", words: "and now?" }),
+        record("done", 1000, { words: "raise DEMO-1 and DEMO-2" }),
+      ],
+    });
+    renderWithQueries(<Conversation />);
+    const [old] = await screen.findAllByTestId("going-run");
+    const folded = await within(old as HTMLElement).findByTestId("going-plan");
+    expect(folded).toHaveAttribute("data-folded", "true");
+    expect(within(folded).getByTestId("going-plan-title")).toHaveTextContent("Applied 2 changes");
+    expect(within(folded).getByTestId("going-undo-button")).toHaveTextContent("Undo");
+    expect(within(folded).queryByTestId("going-plan-row")).toBeNull();
+    await user.click(within(folded).getByTestId("going-plan-title"));
+    const card = within(old as HTMLElement).getByTestId("going-plan");
+    expect(within(card).getAllByTestId("going-plan-row")).toHaveLength(2);
+    expect(
+      within(card)
+        .getAllByTestId("going-plan-row-mark")
+        .map((mark) => mark.getAttribute("data-mark"))
+    ).toEqual(["done", "done"]);
+  } finally {
+    read.mockRestore();
+    stream.mockRestore();
+  }
+});
 
 afterEach(() => {
   cleanup();

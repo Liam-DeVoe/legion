@@ -90,11 +90,17 @@ type goingUndoLine struct {
 }
 
 // goingUndoField is how the undo of one field of a call went: put back (ok), or kept as another
-// writer left it, with what it holds now and who wrote it named in message.
+// writer left it, with what it holds now and who wrote it named in message. A field kept because
+// another writer changed it after the run also carries that value as data (now, the field's JSON
+// as the item's read answers it) and its writer (by, absent where no event names one), so the
+// command bar words the value as the item's page shows it; message stays for a bar deployed before
+// now and by.
 type goingUndoField struct {
-	Field   string `json:"field"`
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
+	Field   string          `json:"field"`
+	OK      bool            `json:"ok"`
+	Message string          `json:"message"`
+	Now     json.RawMessage `json:"now,omitempty"`
+	By      *goingHolder    `json:"by,omitempty"`
 }
 
 // goingUndoAnswer is what an undo answers: one line for each landed call of the run, newest first.
@@ -578,11 +584,16 @@ func goingChangedFields(write goingLandedWrite) []string {
 	return goingFields(goingWriteFields[write.tool])
 }
 
-// writer names who wrote the newest event of an item, as a claim refusal names a holder
-// (claimHolder), read from the store: the newest event of issue where document is "", else the
-// newest event of the owner - issue, or project where issue is "" - that names document; "another
-// writer" where none is found.
+// writer names who wrote the newest event of an item (lastWriter), as a claim refusal names a
+// holder (goingWriterText).
 func (u goingUndoer) writer(ctx context.Context, issue, project, document string) string {
+	return goingWriterText(u.lastWriter(ctx, issue, project, document))
+}
+
+// lastWriter is who wrote the newest event of an item, read from the store: the newest event of
+// issue where document is "", else the newest event of the owner - issue, or project where issue
+// is "" - that names document; nil where none is found.
+func (u goingUndoer) lastWriter(ctx context.Context, issue, project, document string) *model.Actor {
 	var actor model.Actor
 	var err error
 	switch {
@@ -598,18 +609,27 @@ func (u goingUndoer) writer(ctx context.Context, issue, project, document string
 		`, project, document).Scan(&actor)
 	}
 	if err != nil || actor.ID == "" {
-		return "another writer"
+		return nil
 	}
-	return claimHolder(actor, "")
+	return &actor
 }
 
-// askWriter names who wrote the newest event of the ask id (writer).
-func (u goingUndoer) askWriter(ctx context.Context, id string) string {
+// askLastWriter is who wrote the newest event of the ask id (lastWriter).
+func (u goingUndoer) askLastWriter(ctx context.Context, id string) *model.Actor {
 	var actor model.Actor
 	if err := u.s.deps.Store.Pool.QueryRow(ctx, `select actor from events where payload->>'id' = $1 order by id desc limit 1`, id).Scan(&actor); err != nil || actor.ID == "" {
+		return nil
+	}
+	return &actor
+}
+
+// goingWriterText names a writer as a claim refusal names a holder (claimHolder): "another
+// writer" for none.
+func goingWriterText(actor *model.Actor) string {
+	if actor == nil {
 		return "another writer"
 	}
-	return claimHolder(actor, "")
+	return claimHolder(*actor, "")
 }
 
 // goingFailed is the outcome of an undo that could not be made at all, or of a read it made that
@@ -644,10 +664,18 @@ func goingFieldChange(field, why string) string {
 	return field + ": " + why
 }
 
-// goingKeptField is the message of a field another writer changed after the run: what it holds now
-// (held) and who wrote it, without naming the field (goingFieldChange).
-func goingKeptField(held json.RawMessage, who string) string {
-	return fmt.Sprintf("holds %s now, which %s wrote after this run, so it is kept", held, who)
+// goingKeptField is the outcome of a field another writer changed after the run: what it holds now
+// (held) and who wrote it (by, nil where no event names one), as data and in words, the words
+// without naming the field (goingFieldChange).
+func goingKeptField(held json.RawMessage, by *model.Actor) goingUndoField {
+	kept := goingUndoField{
+		Message: fmt.Sprintf("holds %s now, which %s wrote after this run, so it is kept", held, goingWriterText(by)),
+		Now:     held,
+	}
+	if by != nil {
+		kept.By = &goingHolder{Kind: by.Kind, ID: by.ID}
+	}
+	return kept
 }
 
 // goingRank is the field an issue's rank is recorded under. Its value is the issue's place
@@ -670,39 +698,41 @@ func (u goingUndoer) issueFields(ctx context.Context, line goingUndoLine, undone
 		now, _ := current.value.(map[string]any)
 		return now, err
 	}
-	who := sync.OnceValue(func() string { return u.writer(ctx, undone.target, "", "") })
-	restoreOf := func(field string, held, before, after json.RawMessage) (any, string, error) {
+	who := sync.OnceValue(func() *model.Actor { return u.lastWriter(ctx, undone.target, "", "") })
+	restoreOf := func(field string, held, before, after json.RawMessage) (any, goingUndoField, error) {
 		switch field {
 		case goingAdvances:
 			var heldValue, afterValue goingAdvancesValue
 			if json.Unmarshal(held, &heldValue) != nil || json.Unmarshal(after, &afterValue) != nil {
-				return nil, "the change's record holds no revision to write back against, so it is kept", nil
+				return nil, goingUndoField{Message: "the change's record holds no revision to write back against, so it is kept"}, nil
 			}
 			if heldValue.Revision != afterValue.Revision {
-				return nil, fmt.Sprintf("holds revision %d now, which %s wrote after this run, so it is kept", heldValue.Revision, who()), nil
+				return nil, goingUndoField{Message: fmt.Sprintf("holds revision %d now, which %s wrote after this run, so it is kept",
+					heldValue.Revision, goingWriterText(who()))}, nil
 			}
 			var beforeValue goingAdvancesValue
 			if json.Unmarshal(before, &beforeValue) != nil || beforeValue.IDs == nil {
-				return nil, "the change's record holds no priority ids to write back, so it is kept", nil
+				return nil, goingUndoField{Message: "the change's record holds no priority ids to write back, so it is kept"}, nil
 			}
-			return beforeValue.IDs, "", nil
+			return beforeValue.IDs, goingUndoField{}, nil
 		case goingRank:
 			var heldPlace, beforePlace, afterPlace issueRankPlace
 			if json.Unmarshal(held, &heldPlace) != nil || json.Unmarshal(before, &beforePlace) != nil || json.Unmarshal(after, &afterPlace) != nil {
-				return nil, "the change's record holds no place to put the issue back in, so it is kept", nil
+				return nil, goingUndoField{Message: "the change's record holds no place to put the issue back in, so it is kept"}, nil
 			}
 			// Its neighbours move as other issues are ranked; only its own rank says whether another
 			// writer moved this issue.
 			if heldPlace.Rank != afterPlace.Rank {
-				return nil, fmt.Sprintf("the issue stands between %s and %s now, where %s moved it after this run, so it is kept",
-					goingNeighbourText(heldPlace.After), goingNeighbourText(heldPlace.Before), who()), nil
+				return nil, goingUndoField{Message: fmt.Sprintf("the issue stands between %s and %s now, where %s moved it after this run, so it is kept",
+					goingNeighbourText(heldPlace.After), goingNeighbourText(heldPlace.Before), goingWriterText(who()))}, nil
 			}
-			return u.observer.rankRestore(ctx, undone.target, beforePlace)
+			restore, why, err := u.observer.rankRestore(ctx, undone.target, beforePlace)
+			return restore, goingUndoField{Message: why}, err
 		default:
 			if !goingSameJSON(held, after) {
 				return nil, goingKeptField(held, who()), nil
 			}
-			return goingWriteBackValue(field, before), "", nil
+			return goingWriteBackValue(field, before), goingUndoField{}, nil
 		}
 	}
 	conditionOf := func(restored map[string]json.RawMessage) (map[string]any, goingCondition) {
@@ -822,12 +852,12 @@ func (u goingUndoer) askFields(ctx context.Context, line goingUndoLine, undone g
 		now, _ := current.value.(map[string]any)
 		return now, err
 	}
-	who := sync.OnceValue(func() string { return u.askWriter(ctx, undone.target) })
-	restoreOf := func(_ string, held, before, after json.RawMessage) (any, string, error) {
+	who := sync.OnceValue(func() *model.Actor { return u.askLastWriter(ctx, undone.target) })
+	restoreOf := func(_ string, held, before, after json.RawMessage) (any, goingUndoField, error) {
 		if !goingSameJSON(held, after) {
 			return nil, goingKeptField(held, who()), nil
 		}
-		return goingJSONOrNullRaw(before), "", nil
+		return goingJSONOrNullRaw(before), goingUndoField{}, nil
 	}
 	conditionOf := func(restored map[string]json.RawMessage) (map[string]any, goingCondition) {
 		expect := map[string]json.RawMessage{}
@@ -842,7 +872,8 @@ func (u goingUndoer) askFields(ctx context.Context, line goingUndoLine, undone g
 // writeBack is a write back of the fields one call changed, by one PATCH through route, its
 // placeholders filled from values: restoreOf says, from what each field holds now, held before the
 // call and was left by it, the value the PATCH writes back, or why the field is kept - another
-// writer changed it since - or fails, which fails the whole write back before anything is sent.
+// writer changed it since - as that field's outcome with a message (goingKeptField), or fails,
+// which fails the whole write back before anything is sent.
 // conditionOf says what guards the write back, from the fields restored and what the call left
 // them: the condition the PATCH carries on its context, marked as a write back (Expect,
 // going_conditions.go), and the body keys of a precondition token a field carries instead
@@ -852,7 +883,7 @@ func (u goingUndoer) askFields(ctx context.Context, line goingUndoLine, undone g
 func (u goingUndoer) writeBack(
 	line goingUndoLine, undone goingUndone, read func([]string) (map[string]any, error),
 	route string, values map[string]string,
-	restoreOf func(field string, held, before, after json.RawMessage) (any, string, error),
+	restoreOf func(field string, held, before, after json.RawMessage) (any, goingUndoField, error),
 	conditionOf func(restored map[string]json.RawMessage) (map[string]any, goingCondition), changed []string,
 ) (goingUndoLine, *goingUndoSend) {
 	var before, after map[string]json.RawMessage
@@ -871,14 +902,15 @@ func (u goingUndoer) writeBack(
 	var changes, restored []string
 	line.Fields = make([]goingUndoField, 0, len(fields))
 	for _, field := range fields {
-		value, why, err := restoreOf(field, goingJSONOrNull(now[field]), goingJSONOrNullRaw(before[field]), after[field])
+		value, kept, err := restoreOf(field, goingJSONOrNull(now[field]), goingJSONOrNullRaw(before[field]), after[field])
 		if err != nil {
 			line.Outcome = goingFailed(err)
 			return goingLineOf(line, fields), nil
 		}
-		if why != "" {
-			changes = append(changes, goingFieldChange(field, why))
-			line.Fields = append(line.Fields, goingUndoField{Field: field, Message: why})
+		if kept.Message != "" {
+			changes = append(changes, goingFieldChange(field, kept.Message))
+			kept.Field = field
+			line.Fields = append(line.Fields, kept)
 			continue
 		}
 		restore[field], restoredAfter[field] = value, after[field]

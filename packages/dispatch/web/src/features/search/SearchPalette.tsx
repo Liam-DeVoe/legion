@@ -1,8 +1,7 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -12,25 +11,28 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { projectsQuery, whoAmIQuery } from "../../api/queries";
+import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import { pillClassName } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
   badgeLow,
+  bgTransparent,
   borderDefault,
   card,
   dangerText,
+  focusWithinBorder,
   inputClasses,
   kbdHint,
   searchHitBg,
   searchHitText,
+  secondaryButtonCompact,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
   textMutedOnSelectedCard,
   textMutedOnSurface,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
@@ -41,6 +43,7 @@ import {
   conversationWorking,
   movePanel,
   newConversation,
+  openConversation,
   useGoingValue,
   useSendQueued,
 } from "../going/going-store";
@@ -48,6 +51,7 @@ import { History } from "../going/History";
 import { usePlanCardKeys } from "../going/PlanRows";
 import { BROWSER_PANEL_KEYS } from "../going/panel-states";
 import { BoxRow, boxHint, boxWords, ConversationHeader } from "../going/RunControls";
+import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
@@ -58,16 +62,16 @@ import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
-import { CapabilityNote } from "./CapabilityNote";
+import { dropFiling, fileNewIssue, useFiling } from "./filing";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
-import { type SearchBarFilters, searchRequest } from "./search-filters";
+import { type SearchBarFilters, searchFilterChips, searchRequest } from "./search-filters";
 import {
   groupResults,
-  kindLabel,
   optionId,
+  ownerWords,
   searchOperators,
   searchResultKind,
   stepActive,
@@ -79,25 +83,37 @@ import { useTieredSearch } from "./useTieredSearch";
 const emptyResults: SearchResult[] = [];
 const emptyProjects: Project[] = [];
 const ACTIONS_GROUP_ID = "search-group-actions";
-/** The group of the line on top, and the line's own id. */
-const LINE_GROUP_ID = "search-group-line";
+/** The line on top's first row, which keeps this id whatever it reads - Ask, Do, File as a new
+ *  issue, the filing that is out or the one that failed - so the highlight stays on it as it
+ *  changes; and its second row, Ask, while the first reads Do or File. */
 const LINE_OPTION_ID = "search-option-line";
+const LINE_ASK_OPTION_ID = "search-option-line-ask";
+const CONTINUE_OPTION_ID = "search-option-continue";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
+const FILTERS_PANEL_ID = "search-filters-panel";
 
-/** Words that are an issue's key alone (`CORE-12`): their hit is the next step, and they ask no
+/** How recent a conversation is for the bar to offer "Continue" on it as it opens (design v3,
+ *  Keys): the last hour. */
+const CONTINUE_WITHIN_MS = 60 * 60 * 1000;
+
+/** Words that are an issue's key alone (`CORE-12`): their hit heads the list, and they ask no
  *  model for an answer. */
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
-/** Whether `result` is the very item the words name: its issue's key or title, or its document's
- *  name, whatever the case. `said` is the words in lower case. Such a hit heads the list, and the
- *  line on top is not offered. */
+/** Whether `result` is the very item the words name: an issue hit whose key or title they are, or
+ *  a document hit whose name they are, whatever the case. `said` is the words in lower case. A
+ *  comment, an ask or a message is never the item named, though its issue may be. Such a hit
+ *  ranks above the line on top, so Enter opens it (R2), and the words ask no model. */
 function namesHit(result: SearchResult, said: string): boolean {
   const owner = result.owner;
-  return owner.kind === "issue"
-    ? (owner.key ?? "").toLowerCase() === said || (owner.title ?? "").toLowerCase() === said
-    : (owner.name ?? "").toLowerCase() === said;
+  if (result.kind === "issue") {
+    return (owner.key ?? "").toLowerCase() === said || (owner.title ?? "").toLowerCase() === said;
+  }
+  return (
+    result.kind === "document" && (result.artifact?.name ?? owner.name ?? "").toLowerCase() === said
+  );
 }
 
 interface ActionRow {
@@ -125,10 +141,47 @@ interface RecentRow {
   kind: "recent";
 }
 
+/** A row of the line on top (R2, design v3, states 1 and 13): Ask, Do or File as a new issue for
+ *  the words in the box, the filing that is out, or the filing that failed, with its reason as
+ *  its words and Try again as its press. */
+interface LineRow {
+  readonly id: string;
+  readonly kind: "line";
+  readonly line: "ask" | "do" | "file" | "filing" | "failed";
+  /** What the row says before the words: "Ask", "Do", "File as a new issue in DEMO",
+   *  "Filing in DEMO…", "Not filed". */
+  readonly label: string;
+  readonly words: string;
+  readonly select: () => void;
+}
+
 /** One selectable line, whatever it came from: arrows, Enter and `aria-activedescendant` see
- *  only these. An offer's row (`OfferRow`) carries its own press, so the dialog never reaches
- *  back into the offer to run it. */
-type PaletteRow = ActionRow | OfferRow | ProjectRow | RecentRow | ResultRow;
+ *  only these. An offer's row (`OfferRow`) and a line's carry their own press, so the dialog
+ *  never reaches back into what made them to run it. */
+type PaletteRow = ActionRow | LineRow | OfferRow | ProjectRow | RecentRow | ResultRow;
+
+/** What Enter does on `row`, for the foot's key hint; undefined where it does nothing. */
+function enterWord(row: PaletteRow | undefined): string | undefined {
+  switch (row?.kind) {
+    case undefined:
+      return undefined;
+    case "line":
+      return {
+        ask: "Ask",
+        do: "Do",
+        failed: "Try again",
+        file: "File",
+        filing: undefined,
+      }[row.line];
+    case "offer":
+      // The one offer the bar lists is Continue.
+      return "Continue";
+    case "action":
+      return "Run";
+    default:
+      return "Open";
+  }
+}
 
 function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
   const common = {
@@ -187,23 +240,33 @@ function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
   );
 }
 
+/** A key as the bar's hints draw it. */
+function Key({ children }: { children: string }): ReactNode {
+  return <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>{children}</kbd>;
+}
+
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
- *  or Space selecting it. `layout` arranges the row's own content. */
+ *  or Space selecting it. `layout` arranges the row's own content; `line` and `status` are read
+ *  back as `data-line` (which line on top the row is) and `data-status` (a hit's issue status). */
 function PaletteOption({
   active,
   children,
   id,
   layout = "",
+  line,
   onSelect,
   reference,
+  status,
 }: {
   active: boolean;
   children: ReactNode;
   id: string;
   layout?: string;
+  line?: LineRow["line"];
   onSelect: () => void;
   /** A hit's target, which makes the row a `RefPreview` trigger. */
   reference?: DispatchReferenceRoute;
+  status?: string;
 }): ReactNode {
   return (
     <div
@@ -211,6 +274,8 @@ function PaletteOption({
       className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
         active ? selectedCardBorder : ""
       }`}
+      data-line={line}
+      data-status={status}
       id={id}
       onClick={onSelect}
       onKeyDown={(event) => {
@@ -234,14 +299,15 @@ function PaletteOption({
   );
 }
 
+/** A hit: its kind's icon, its owner - the issue's key and title, or the project document's
+ *  project and name - with the issue's status, and the snippet the server marked. A hit of a
+ *  done issue reads muted. */
 function ResultOption({
   active,
-  muted,
   onSelect,
   result,
 }: {
   active: boolean;
-  muted: boolean;
   onSelect: () => void;
   result: SearchResult;
 }): ReactNode {
@@ -254,9 +320,15 @@ function ResultOption({
   const source = snippetSegments(result.snippet)
     .map((segment) => segment.text)
     .join("");
-  // The route table carries the kind as a plain string; a kind this build has no icon or label
-  // for keeps its own word and draws no icon, rather than borrowing another kind's.
+  // The route table carries the kind as a plain string; a kind this build has no icon for draws
+  // none, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
+  const owner = ownerWords(result.owner);
+  const status = result.owner.kind === "issue" ? result.owner.status : undefined;
+  const muted = status === "done";
+  // A document of an issue is named beside the issue it belongs to; a project document is the
+  // owner itself.
+  const document = result.owner.kind === "issue" ? result.artifact?.name : undefined;
 
   return (
     <PaletteOption
@@ -264,6 +336,7 @@ function ResultOption({
       id={optionId(result)}
       onSelect={onSelect}
       reference={nodeRouteFromHref(result.href)}
+      status={status}
     >
       <div
         className={`flex min-w-0 items-center gap-2 text-xs ${
@@ -271,11 +344,16 @@ function ResultOption({
         }`}
       >
         {kind === undefined ? null : <SearchResultIcon kind={kind} />}
-        <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {kind === undefined ? result.kind : kindLabel(kind)}
+        <span className="shrink-0 font-semibold">{owner.key}</span>
+        <span className="min-w-0 flex-1 truncate">
+          {document === undefined ? owner.name : `${owner.name} · ${document}`}
         </span>
-        {result.artifact === undefined ? null : (
-          <span className="truncate">{result.artifact.name}</span>
+        {status === undefined ? null : (
+          <span
+            className={`shrink-0 rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}
+          >
+            {statusText(status)}
+          </span>
         )}
       </div>
       <MarkdownPreview
@@ -290,7 +368,7 @@ function ResultOption({
   );
 }
 
-/** An action or project row: a label and an optional trailing hint. */
+/** An action, project, recent item or Continue row: a label and an optional trailing hint. */
 function CommandOption({
   active,
   hint,
@@ -317,23 +395,128 @@ function CommandOption({
   );
 }
 
-/** One labelled run of command rows: the line on top, the Recent items the bar opens on, the
- *  Actions a query leads to, the More actions it matches further in, the Projects it names, or
- *  the New issue it offers for words that matched nothing. */
+/**
+ * A row of the line on top (R2): "✦ Ask ‹the words›", "✦ Do ‹the words›" or "✦ File as a new
+ * issue in DEMO: ‹the words›", with "↵" on the right of the first row; the filing that is out,
+ * with a spinner; or the filing that failed, its reason in words and Try again. While Jev may
+ * still name another line (`deciding`), a faint dot pulses in a place the row always keeps, so
+ * the row does not move when its label changes.
+ */
+function LineOption({
+  active,
+  deciding,
+  first,
+  onSelect,
+  row,
+}: {
+  active: boolean;
+  deciding: boolean;
+  /** Whether this is the line's first row, which carries "↵". */
+  first: boolean;
+  onSelect: () => void;
+  row: LineRow;
+}): ReactNode {
+  const failed = row.line === "failed";
+  return (
+    <PaletteOption
+      active={active}
+      id={row.id}
+      layout="flex items-center gap-2"
+      line={row.line}
+      onSelect={onSelect}
+    >
+      {row.line === "filing" ? (
+        <span
+          aria-hidden="true"
+          className={`size-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent ${textMutedOnSurface}`}
+        />
+      ) : (
+        <span aria-hidden="true" className={`shrink-0 text-sm ${textMutedOnSurface}`}>
+          ✦
+        </span>
+      )}
+      <span
+        className={`min-w-0 flex-1 truncate text-sm ${failed ? dangerText : textPrimaryOnSurface}`}
+        data-testid="search-line-words"
+      >
+        <span className="font-medium">{row.label}</span>
+        {row.words === "" ? null : (
+          <>
+            {row.line === "file" || failed ? ": " : " "}
+            {row.words}
+          </>
+        )}
+      </span>
+      <span aria-hidden="true" className="flex w-2 shrink-0 justify-center">
+        <span
+          className={`size-1.5 rounded-full bg-current opacity-40 ${textMutedOnSurface} ${
+            deciding ? "animate-pulse" : "invisible"
+          }`}
+          data-testid={deciding ? "search-line-deciding" : undefined}
+        />
+      </span>
+      {failed ? (
+        <span className={`shrink-0 text-xs font-medium ${textSecondaryOnSurface}`}>Try again</span>
+      ) : null}
+      {first && row.line !== "filing" ? <Key>↵</Key> : null}
+    </PaletteOption>
+  );
+}
+
+/* A group's heading is `aria-hidden` for the same reason as a hit's owner words: the group below
+   takes its name from it, and a reader would otherwise hear it twice. The group is a `fieldset`
+   named by the heading, so a reader hears where the list changes from one kind of row to the
+   next. A group with no heading on the screen (the line on top, the best match) is named by
+   `label` alone. `min-w-0` overrides a fieldset's UA `min-inline-size: min-content`, which a
+   long row would otherwise widen the bar to. */
+function ListGroup({
+  children,
+  heading,
+  id,
+  label,
+}: {
+  children: ReactNode;
+  /** Whether the group draws its label as a heading above its rows. */
+  heading: boolean;
+  id: string;
+  label: string;
+}): ReactNode {
+  if (!heading) {
+    return (
+      <fieldset aria-label={label} className="min-w-0" id={id}>
+        {children}
+      </fieldset>
+    );
+  }
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        className={`flex min-w-0 items-center border-b px-3 py-1.5 text-xs font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
+        id={id}
+        role="presentation"
+      >
+        {label}
+      </div>
+      <fieldset aria-labelledby={id} className="min-w-0">
+        {children}
+      </fieldset>
+    </>
+  );
+}
+
+/** One labelled run of command rows: the Recent items the bar opens on, the Actions a query
+ *  leads to, the More actions it matches further in, or the Projects it names. */
 interface CommandSection {
   id: string;
   label: string;
   options: readonly {
     hint: ReactNode;
     label: string;
-    row: ActionRow | OfferRow | ProjectRow | RecentRow;
+    row: ActionRow | ProjectRow | RecentRow;
   }[];
 }
 
-/* The heading is `aria-hidden` for the same reason as an owner row: the group below takes its
-   name from it, and a reader would otherwise hear it twice. The group is a `fieldset` named by the
-   heading, as each hit owner's group is, so a reader hears where the list changes from what this
-   page can do to what the query found. */
 function CommandGroup({
   activeId,
   onSelect,
@@ -347,28 +530,18 @@ function CommandGroup({
     return null;
   }
   return (
-    <>
-      <div
-        aria-hidden="true"
-        className={`flex min-w-0 items-center border-b px-3 py-1.5 text-xs font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
-        id={section.id}
-        role="presentation"
-      >
-        {section.label}
-      </div>
-      <fieldset aria-labelledby={section.id} className="min-w-0">
-        {section.options.map(({ hint, label, row }) => (
-          <CommandOption
-            active={row.id === activeId}
-            hint={hint}
-            id={row.id}
-            key={row.id}
-            label={label}
-            onSelect={() => onSelect(row)}
-          />
-        ))}
-      </fieldset>
-    </>
+    <ListGroup heading id={section.id} label={section.label}>
+      {section.options.map(({ hint, label, row }) => (
+        <CommandOption
+          active={row.id === activeId}
+          hint={hint}
+          id={row.id}
+          key={row.id}
+          label={label}
+          onSelect={() => onSelect(row)}
+        />
+      ))}
+    </ListGroup>
   );
 }
 
@@ -430,12 +603,19 @@ function PaletteDialog({
     readonly id: string | null;
     readonly left: boolean;
   }>({ hits: "", id: null, left: false });
+  // Whether the reader moved the highlight with an arrow since the words last changed: until
+  // they do, a best match or Continue arriving takes the head, so Enter opens it (R2).
+  const [arrowed, setArrowed] = useState(false);
+  // The filters and the search syntax help, behind the Filters button at the box's right, and
+  // opened by "/" in the empty box (design v3, state 1).
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [filters, setFilters] = useState<SearchBarFilters>({});
-  // What the bar will act on, in the words the chip says it in: the line above the box, the
-  // two keys that move it, and what each offer acts on at the level they have left it at.
+  // What the bar will act on, in the words the chip in the box says it in, the two keys that
+  // move it, and what each offer acts on at the level they have left it at.
   const scope = useBarScope(query);
   // The person's recent items, read from the browser on the render that opens the bar: the
   // keystroke that opens it makes no request, which is what lets the list paint at once. They
@@ -464,6 +644,23 @@ function PaletteDialog({
   useSendQueued(asking.enter);
   const [history, setHistory] = useState(false);
   const login = whoAmI.data?.login;
+  // The filing Enter on File as a new issue starts, which outlives this open (`filing.ts`): it is
+  // the line's first row while it is out or once it failed, and the bar closes once it is filed.
+  const filingStore = useFiling();
+  const filing = filingStore.filing;
+  const filedSeen = useRef(filingStore.filed);
+  useEffect(() => {
+    if (filingStore.filed === filedSeen.current) {
+      return;
+    }
+    filedSeen.current = filingStore.filed;
+    if (!talking) {
+      onClose();
+    }
+  }, [filingStore.filed, onClose, talking]);
+  // History's conversations, the newest first: the newest, where it is from the last hour, is
+  // Continue on the empty box (design v3, Keys).
+  const conversations = useQuery(goingConversationsQuery());
   // Every global key is masked while any dialog is open; the palette keeps `$mod+k` as its own
   // close, so pressing it twice still opens and closes, and `$mod+Shift+k` keeps the
   // conversation at the side of the page. In a browser whose page never gets Ctrl-Shift-K,
@@ -500,10 +697,11 @@ function PaletteDialog({
   // this one. The page's project rides with them, under the parameter that narrows nothing,
   // and it is the chip's project at every level because every level sits in one project.
   const narrowed = searchRequest(filters, scope.targets.project);
+  const filterCount = searchFilterChips(filters).length;
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
-  // the hits, the operators the query was read as, the degraded line and the message under the
-  // list - reads this one answer, so the list, what it says about itself and the highlight all
-  // speak of one search.
+  // the hits, the operators the query was read as and the message under the list - reads this
+  // one answer, so the list, what it says about itself and the highlight all speak of one
+  // search.
   const {
     asked,
     search,
@@ -514,35 +712,161 @@ function PaletteDialog({
   const projects = useQuery(projectsQuery());
   const results = search.data?.results ?? emptyResults;
   // What search made of the words, read from its own answer rather than parsed a second time
-  // here, and whether meaning search ran at all. A Dispatch that predates either field answers
-  // neither, so the bar marks no operator and says nothing about meaning search.
+  // here. A Dispatch that predates the field answers none, so the bar marks no operator.
   const operators = searchOperators(search.data?.query?.operators);
-  const degraded = search.data?.degraded !== undefined;
-  const groups = groupResults(results);
-  // An action whose label the query starts (every action, while the query is empty) is the one
-  // the reader is typing, and it heads the list. One that holds the query further in (`issue` in
-  // `Close issue`, `status` in `Move card to the next status`) is a coincidence of words: it is
-  // listed below the hits and never highlighted for the reader, so a search and Enter opens a
-  // hit, and such an action runs only once the reader has arrowed to it.
-  const actionOptions = actions
-    .filter((action) => action.label.toLowerCase().includes(needle))
-    .map((action) => {
-      const row: ActionRow = {
-        action,
-        id: `search-option-action-${action.scope}-${action.id}`,
-        kind: "action",
-      };
-      return {
-        hint: <KeyHints keys={action.keys} />,
-        label: action.label,
-        leads: action.label.toLowerCase().startsWith(needle),
-        row,
-      };
-    });
+  // The hits answer the query in the box, so a query still in flight shows none: the message
+  // below the list says which of "type more", "searching", "failed" and "nothing" it is. A
+  // refresh that fails keeps the answer the query already has, and so do the hits.
+  const showHits = queryEnabled && !waitingForQuery && search.data !== undefined;
+  // A hit the words name exactly - its key or its title - ranks above the line on top, so Enter
+  // opens it (R2); the rest are grouped by kind, at most 6 a group.
+  const bestResults = showHits
+    ? results.filter((result) => namesHit(result, needle))
+    : emptyResults;
+  const bestRows = bestResults.map(
+    (result): ResultRow => ({ id: optionId(result), kind: "result", result })
+  );
+  const hitGroups = showHits
+    ? groupResults(results.filter((result) => !bestResults.includes(result))).map(
+        ({ heading, kind, results: kindResults }) => ({
+          heading,
+          kind,
+          rows: kindResults.map(
+            (result): ResultRow => ({ id: optionId(result), kind: "result", result })
+          ),
+        })
+      )
+    : [];
+  // Words that are an issue's key, or that name a hit, ask no model: their hit is the next step.
+  const namesItsHit = ISSUE_KEY.test(searchText) || bestResults.length > 0;
+  // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits, and
+  // the line on top Jev chooses for them.
+  const { answers, answersOff, deciding, enterLine, line, shownAnswer, stale } = useGoingBar({
+    context: scope.context,
+    enabled: queryEnabled && !namesItsHit,
+    login,
+    project: filters.project ?? "",
+    showHits,
+    words: searchText,
+  });
+  const project = scope.context.project ?? "";
+  // Enter on a line of Ask or Do: a run of the agent on the words, which the bar stays open to
+  // show as the conversation.
+  const askWords = (words: string) => {
+    if (asking.enter(words)) {
+      setQuery("");
+      setActive({ hits: "", id: null, left: false });
+    }
+  };
+  // Enter on File as a new issue, or on Try again: the filing, which the line's first row shows.
+  const fileWords = (words: string, into: string) => {
+    void fileNewIssue({ context: scope.context, login, project: into, queryClient, words });
+  };
+  // The line on top (R2, R9): offered for any words the bar can ask about, and for an issue's
+  // key once its hit is listed above it. Its first row reads Ask, Do or File as a new issue;
+  // where it reads Do or File, the second reads Ask, so the person can always ask instead. A
+  // filing that is out, or that failed, takes the first row's place, and nothing else changes.
+  const lineOffered = answers && queryEnabled && (!ISSUE_KEY.test(searchText) || showHits);
+  const askRow: LineRow = {
+    id: LINE_ASK_OPTION_ID,
+    kind: "line",
+    label: "Ask",
+    line: "ask",
+    select: () => askWords(searchText),
+    words: searchText,
+  };
+  let lineRows: readonly LineRow[] = [];
+  if (filing !== undefined && !talking) {
+    const where = filing.project === "" ? "" : ` in ${filing.project}`;
+    const first: LineRow =
+      filing.state === "filing"
+        ? {
+            id: LINE_OPTION_ID,
+            kind: "line",
+            label: `Filing${where}…`,
+            line: "filing",
+            // A filing that is out takes no second press.
+            select: () => {},
+            words: "",
+          }
+        : {
+            id: LINE_OPTION_ID,
+            kind: "line",
+            label: "Not filed",
+            line: "failed",
+            select: () => fileWords(filing.words, filing.project),
+            words: filing.reason,
+          };
+    lineRows = lineOffered ? [first, askRow] : [first];
+  } else if (lineOffered) {
+    const first: LineRow = {
+      id: LINE_OPTION_ID,
+      kind: "line",
+      label:
+        line === "file"
+          ? project === ""
+            ? "File as a new issue"
+            : `File as a new issue in ${project}`
+          : line === "do"
+            ? "Do"
+            : "Ask",
+      line,
+      // Enter acts on the label on the screen at the moment of the key, never on a later one.
+      select: () => {
+        if (enterLine() === "file") {
+          fileWords(searchText, project);
+        } else {
+          askWords(searchText);
+        }
+      },
+      words: searchText,
+    };
+    lineRows = line === "ask" ? [first] : [first, askRow];
+  }
+  // Continue on the empty box: the newest conversation History lists, where it is from the last
+  // hour, by its first question.
+  const newest = conversations.data?.rows?.[0];
+  const newestTitle = newest?.runs?.at(-1)?.words ?? "";
+  const continueRow: OfferRow | undefined =
+    !talking &&
+    searchText === "" &&
+    newest !== undefined &&
+    newestTitle !== "" &&
+    Date.now() - Date.parse(newest.newest_at) < CONTINUE_WITHIN_MS
+      ? {
+          id: CONTINUE_OPTION_ID,
+          kind: "offer",
+          label: `Continue: ${newestTitle}`,
+          select: () => openConversation(newest),
+        }
+      : undefined;
+  // An action shows only once its name holds the words (design v3, state 1): the empty box lists
+  // none. An action whose label the words start is the one the reader is typing, and it is
+  // listed above the hits. One that holds the words further in (`issue` in `Close issue`) is a
+  // coincidence of words: it is listed below the hits and never highlighted for the reader, so a
+  // search and Enter opens a hit, and such an action runs only once the reader has arrowed to it.
+  const actionOptions =
+    needle === ""
+      ? []
+      : actions
+          .filter((action) => action.label.toLowerCase().includes(needle))
+          .map((action) => {
+            const row: ActionRow = {
+              action,
+              id: `search-option-action-${action.scope}-${action.id}`,
+              kind: "action",
+            };
+            return {
+              hint: <KeyHints keys={action.keys} />,
+              label: action.label,
+              leads: action.label.toLowerCase().startsWith(needle),
+              row,
+            };
+          });
   // Projects are rows of the one bar, found by typing: `g p` opens the bar as every other key
   // does, and the project a reader is after is one or two letters away. With an empty box they
-  // are not listed at all - every project of a Dispatch would bury the recent items and the
-  // actions a reader opened the bar for.
+  // are not listed at all - every project of a Dispatch would bury the recent items a reader
+  // opened the bar for.
   const projectRows: ProjectRow[] =
     needle === ""
       ? []
@@ -559,80 +883,14 @@ function PaletteDialog({
     searchText === ""
       ? recents.map((item) => ({ id: `search-option-recent-${item.path}`, item, kind: "recent" }))
       : [];
-  // The hits answer the query in the box, so a query still in flight shows none: the message
-  // below the list says which of "type more", "searching", "failed" and "nothing" it is. A
-  // refresh that fails keeps the answer the query already has, and so do the hits.
-  const showHits = queryEnabled && !waitingForQuery && search.data !== undefined;
-  const hitGroups = showHits
-    ? groups.map(({ owner, results: ownerResults }) => ({
-        owner,
-        rows: ownerResults.map(
-          (result): ResultRow => ({ id: optionId(result), kind: "result", result })
-        ),
-      }))
-    : [];
-  // The line on top (R2, R3): the next step the words lead to, which Enter on it takes - a run of
-  // the agent on them, or a new issue filed from them. Words that are a hit's own key or title
-  // lead to that hit instead, so no line is offered, the hit heads the list, and no model is asked
-  // of them.
-  const namesItsHit =
-    ISSUE_KEY.test(searchText) || (showHits && results.some((result) => namesHit(result, needle)));
-  // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits, and
-  // the line on top Jev chooses for them.
-  const { answers, enterLine, gaps, line, shownAnswer, stale } = useGoingBar({
-    context: scope.context,
-    enabled: queryEnabled && !namesItsHit,
-    login,
-    project: filters.project ?? "",
-    showHits,
-    words: searchText,
-  });
-  const lineLabel =
-    line === "file"
-      ? scope.context.project
-        ? `File as a new issue in ${scope.context.project}`
-        : "File as a new issue"
-      : line === "do"
-        ? "Do"
-        : "Ask";
-  const lineSection: CommandSection = {
-    id: LINE_GROUP_ID,
-    label: "Next step",
-    options:
-      answers && queryEnabled && !namesItsHit
-        ? [
-            {
-              hint: <KeyHints keys={["Enter"]} />,
-              label: lineLabel,
-              row: {
-                id: LINE_OPTION_ID,
-                kind: "offer",
-                label: lineLabel,
-                select: () => {
-                  const kind = enterLine() === "file" ? "new_issue" : undefined;
-                  if (asking.enter(searchText, kind)) {
-                    setQuery("");
-                    setActive({ hits: "", id: null, left: false });
-                  }
-                },
-              },
-            },
-          ]
-        : [],
-  };
   // A conversation lists nothing: the box under it says what Enter does there.
   const commandSections: readonly CommandSection[] = talking
     ? []
     : [
-        lineSection,
         {
           id: RECENT_GROUP_ID,
           label: "Recent",
-          options: recentRows.map((row) => ({
-            hint: null,
-            label: row.item.label,
-            row,
-          })),
+          options: recentRows.map((row) => ({ hint: null, label: row.item.label, row })),
         },
         {
           id: ACTIONS_GROUP_ID,
@@ -665,13 +923,13 @@ function PaletteDialog({
   // rule keeps off them, and the groups drawn below all read this one array.
   const footSections: readonly CommandSection[] = talking ? [] : [moreActions];
   const footRows = footSections.reduce((count, section) => count + section.options.length, 0);
-  const leadRows = commandSections.flatMap((section) =>
-    section.options.map((option) => option.row)
-  );
   const hitRows = hitGroups.flatMap((group) => group.rows);
   // What the list shows, in the order it shows it: the arrows walk this same list.
   const rows: PaletteRow[] = [
-    ...leadRows,
+    ...bestRows,
+    ...lineRows,
+    ...(continueRow === undefined ? [] : [continueRow]),
+    ...commandSections.flatMap((section) => section.options.map((option) => option.row)),
     ...hitRows,
     ...footSections.flatMap((section) => section.options.map((option) => option.row)),
   ];
@@ -679,11 +937,13 @@ function PaletteDialog({
   // none.
   const listedQuery = showHits ? asked : "";
   // The highlight is the row the reader sees highlighted, held by its id: hits arriving below
-  // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
-  // send it to the head, and the head it lands on is then adopted, so a row coming back does
-  // not take the highlight back from it. The head is the first row - the line on top where the
-  // words lead to one - unless that is a foot row - a More action, which comes last: with only
-  // foot rows listed nothing is highlighted, and Enter runs nothing until the reader arrows.
+  // the rows above them, or an answer re-ranking them, leave it on that row; the line on top
+  // keeps its id whatever it reads, so its label changing leaves it there too. The first hits of
+  // a query send it to the head, and the head it lands on is then adopted, so a row coming back
+  // does not take the highlight back from it. The head is the first row unless that is a foot
+  // row - a More action, which comes last: with only foot rows listed nothing is highlighted,
+  // and Enter runs nothing until the reader arrows. A best match or Continue, which come first,
+  // take the head as they arrive until the reader arrows.
   // A row that leaves a list already answering this query takes the highlight with it and
   // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
   // held. Sending it to the head there would move the selection under the reader's hand, and
@@ -695,8 +955,9 @@ function PaletteDialog({
   const chosen = rows.findIndex((row) => row.id === active.id);
   const held = active.id !== null || active.left;
   const reranked = listedQuery !== "" && listedQuery === active.hits && held;
-  const head = leadRows.length > 0 || hitRows.length > 0 ? 0 : -1;
-  const activeIndex = chosen === -1 && !reranked ? head : chosen;
+  const head = rows.length > footRows ? 0 : -1;
+  const leads = !arrowed && (bestRows.length > 0 || continueRow !== undefined);
+  const activeIndex = leads ? 0 : chosen === -1 && !reranked ? head : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
   const left = shownId === null && reranked;
@@ -727,9 +988,9 @@ function PaletteDialog({
   useCloseOnNavigation(true, onClose);
 
   const selectRow = (row: PaletteRow) => {
-    if (row.kind === "offer") {
-      // The line on top, pressed through the row it carries rather than through what it
-      // starts: a run, which the bar stays open to show.
+    if (row.kind === "offer" || row.kind === "line") {
+      // Continue and the line on top, pressed through the row they carry rather than through
+      // what they start: a conversation or a filing, which the bar stays open to show.
       row.select();
       return;
     }
@@ -758,10 +1019,14 @@ function PaletteDialog({
   const searchOut = waitingForQuery || (queryEnabled && search.isFetching);
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
-  // The box before Enter: Tab and Backspace move the chip, the arrows walk the list, and Enter
-  // acts on the highlighted row.
+  // The box before Enter: "/" in the empty box opens the filters, Tab and Backspace move the
+  // chip, the arrows walk the list, and Enter acts on the highlighted row.
   const handleSearchKey = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (scope.handleKey(event)) {
+    if (event.key === "/" && query === "") {
+      // In a box with words, "/" is a character.
+      event.preventDefault();
+      setFiltersOpen(true);
+    } else if (scope.handleKey(event)) {
       // The browser's own move is what this cancels: Tab narrows the chip rather than leaving
       // the box.
       event.preventDefault();
@@ -775,6 +1040,7 @@ function PaletteDialog({
             ? 0
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
+      setArrowed(true);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null, left: false });
     } else if (
       event.key === "Enter" &&
@@ -818,7 +1084,9 @@ function PaletteDialog({
   });
   // The box, one element in every state of the bar, so the person's focus and words stay in it as
   // the bar turns from the search into the conversation and back. Before Enter it is the combobox
-  // of the list under it; as a conversation it is a plain text box.
+  // of the list under it; as a conversation it is a plain text box. Its frame holds the context
+  // chip on its left and, before Enter, the Filters button on its right; each keeps its place,
+  // empty where it does not show, so the input is the same element throughout.
   const listParts = talking
     ? {}
     : {
@@ -828,24 +1096,57 @@ function PaletteDialog({
         role: "combobox",
       };
   const box = (
-    <input
-      {...listParts}
-      aria-label={talking ? "Ask the command bar" : "Search"}
-      className={`block min-w-48 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-      data-testid="bar-box"
-      onChange={(event) => {
-        setQuery(event.target.value);
-        // A new query is a new list, so the highlight is undecided again and the first
-        // hits to answer it take the head.
-        setActive({ hits: "", id: null, left: false });
-      }}
-      onKeyDown={talking ? handleTalkKey : handleSearchKey}
-      placeholder={placeholder}
-      ref={inputRef}
-      type={talking ? "text" : "search"}
-      value={query}
-    />
+    <div
+      className={`flex min-w-48 flex-1 items-center gap-1.5 rounded-lg border px-1.5 ${inputClasses(true)} ${focusWithinBorder}`}
+    >
+      {scope.chip === undefined ? null : (
+        <span
+          className={`${pillClassName("label")} max-w-48 shrink-0`}
+          data-testid="going-box-chip"
+          title={scope.chipTitle}
+        >
+          <span className="min-w-0 truncate">{scope.chip}</span>
+        </span>
+      )}
+      <input
+        {...listParts}
+        aria-label={talking ? "Ask the command bar" : "Search"}
+        className={`block min-w-0 flex-1 px-1.5 py-2 text-sm outline-none ${bgTransparent}`}
+        data-testid="bar-box"
+        onChange={(event) => {
+          setQuery(event.target.value);
+          // A new query is a new list, so the highlight is undecided again and the first
+          // hits to answer it take the head.
+          setActive({ hits: "", id: null, left: false });
+          setArrowed(false);
+          // A failed filing belongs to the words it failed on.
+          if (filing?.state === "failed") {
+            dropFiling();
+          }
+        }}
+        onKeyDown={talking ? handleTalkKey : handleSearchKey}
+        placeholder={placeholder}
+        ref={inputRef}
+        type={talking ? "text" : "search"}
+        value={query}
+      />
+      {talking ? null : (
+        <button
+          aria-controls={FILTERS_PANEL_ID}
+          aria-expanded={filtersOpen}
+          className={secondaryButtonCompact}
+          data-testid="search-filters-button"
+          onClick={() => setFiltersOpen((shown) => !shown)}
+          type="button"
+        >
+          {filterCount === 0 ? "Filters" : `Filters · ${filterCount}`}
+        </button>
+      )}
+    </div>
   );
+  // What Enter does on the highlighted row, for the foot.
+  const enterHint = enterWord(activeRow);
+  const shownHits = bestRows.length + hitRows.length;
 
   return (
     <>
@@ -861,7 +1162,7 @@ function PaletteDialog({
         <div
           aria-label="Search"
           aria-modal="true"
-          className={`pointer-events-auto flex max-h-full w-full flex-col overflow-hidden rounded-b-lg border shadow-2xl xl:max-w-[720px] xl:rounded-lg ${talking ? "h-[80vh]" : ""} ${card} ${borderDefault}`}
+          className={`pointer-events-auto relative flex max-h-full w-full flex-col overflow-hidden rounded-b-lg border shadow-2xl xl:max-w-[720px] xl:rounded-lg ${talking ? "h-[80vh]" : ""} ${card} ${borderDefault}`}
           data-state={talking ? "conversation" : "search"}
           ref={dialog.containerRef}
           role="dialog"
@@ -877,7 +1178,6 @@ function PaletteDialog({
               setHistory(false);
             }}
           />
-          {talking ? null : scope.header}
           {/* The conversation the bar holds, above its box: the runs, their steps and their
               plan, or History in their place. */}
           {talking ? (
@@ -896,7 +1196,7 @@ function PaletteDialog({
           <div className={`shrink-0 p-3 ${talking ? "border-t" : "border-b"} ${borderDefault}`}>
             <BoxRow
               box={box}
-              chip={talking ? scope.chip : undefined}
+              chip={undefined}
               hint={talking ? boxHint(asking, query) : undefined}
               onStop={asking.stop}
             />
@@ -909,19 +1209,33 @@ function PaletteDialog({
           {talking ? null : (
             <>
               {history ? <History onOpen={() => setHistory(false)} /> : null}
-              {/* What narrows the search and what the words themselves can do, between the box
-                  and the hits: the chips the reader has added with the controls for the rest, and
-                  the three operator forms. That meaning search did not run is the foot's to say,
-                  with the rest of what this bar cannot do (`CapabilityNote`), so it pushes no hit
-                  down. */}
-              <div className={`shrink-0 border-b ${borderDefault}`}>
-                <SearchFilterBar
-                  filters={filters}
-                  onFilters={setFilters}
-                  projects={projects.data ?? emptyProjects}
-                />
-                <SearchOperators inUse={operators} />
-              </div>
+              {/* What narrows the search and what the words themselves can do, behind the
+                  Filters button: the chips the reader has added with the controls for the rest,
+                  and the three operator forms. */}
+              {filtersOpen ? (
+                <div
+                  className={`shrink-0 border-b ${borderDefault}`}
+                  data-testid="search-filters-panel"
+                  id={FILTERS_PANEL_ID}
+                >
+                  <SearchFilterBar
+                    filters={filters}
+                    onFilters={setFilters}
+                    projects={projects.data ?? emptyProjects}
+                  />
+                  <SearchOperators inUse={operators} />
+                </div>
+              ) : null}
+              {/* On a Dispatch with no answering model, the one sentence that says so, in the
+                  line on top's place (design v3, state 13); search works as usual. */}
+              {answersOff && queryEnabled ? (
+                <p
+                  className={`shrink-0 border-b px-3 py-3 text-sm ${borderDefault} ${textSecondaryOnSurface}`}
+                  data-testid="going-cannot-answer"
+                >
+                  {NO_MODEL_WORDS}
+                </p>
+              ) : null}
               {rows.length === 0 ? null : (
                 <div
                   className="max-h-[60vh] min-h-20 flex-1 overflow-y-auto"
@@ -929,6 +1243,41 @@ function PaletteDialog({
                   ref={listRef}
                   role="listbox"
                 >
+                  {bestRows.length === 0 ? null : (
+                    <ListGroup heading={false} id="search-group-best" label="Best match">
+                      {bestRows.map((row) => (
+                        <ResultOption
+                          active={activeRow?.id === row.id}
+                          key={row.id}
+                          onSelect={() => selectRow(row)}
+                          result={row.result}
+                        />
+                      ))}
+                    </ListGroup>
+                  )}
+                  {lineRows.length === 0 ? null : (
+                    <ListGroup heading={false} id="search-group-line" label="Next step">
+                      {lineRows.map((row, index) => (
+                        <LineOption
+                          active={activeRow?.id === row.id}
+                          deciding={index === 0 && deciding && filing === undefined}
+                          first={index === 0}
+                          key={row.id}
+                          onSelect={() => selectRow(row)}
+                          row={row}
+                        />
+                      ))}
+                    </ListGroup>
+                  )}
+                  {continueRow === undefined ? null : (
+                    <CommandOption
+                      active={activeRow?.id === continueRow.id}
+                      hint={null}
+                      id={continueRow.id}
+                      label={continueRow.label}
+                      onSelect={() => selectRow(continueRow)}
+                    />
+                  )}
                   {commandSections.map((section) => (
                     <CommandGroup
                       activeId={activeRow?.id}
@@ -937,78 +1286,18 @@ function PaletteDialog({
                       section={section}
                     />
                   ))}
-                  {hitGroups.map(({ owner, rows: hitRows }) => {
-                    const header =
-                      owner.kind === "issue"
-                        ? {
-                            id: `issue:${owner.key}`,
-                            key: owner.key,
-                            name: owner.title,
-                            status: owner.status,
-                          }
-                        : {
-                            id: `document:${owner.artifact_id}`,
-                            key: owner.project,
-                            name: owner.name,
-                            status: undefined,
-                          };
-                    const muted = header.status === "done";
-                    return (
-                      <Fragment key={header.id}>
-                        {/* The group's own row: a label for the hits under it, on the recessed
-                            surface so the hits read as the list and this reads as its heading.
-                            Its status is the lifecycle label the rest of the product shows -
-                            `Needs review`, never the raw value. */}
-                        {/* `aria-hidden` because the group below takes its name from this row: a
-                            reader would otherwise hear the owner twice, once as the row and once
-                            as the group's label. `aria-labelledby` computes a name from a hidden
-                            element, so the group keeps it. */}
-                        <div
-                          aria-hidden="true"
-                          aria-label={`${header.key}: ${header.name}`}
-                          className={`flex min-w-0 items-center gap-2 border-b px-3 py-1.5 text-xs ${borderDefault} ${surfaceMutedBg} ${
-                            muted ? textMutedOnSurfaceMuted : ""
-                          }`}
-                          data-status={header.status}
-                          id={`search-group-${header.id}`}
-                          role="presentation"
-                        >
-                          <span className="font-semibold">{header.key}</span>
-                          <span
-                            className={`min-w-0 flex-1 truncate ${
-                              muted ? textMutedOnSurfaceMuted : textSecondaryOnSurfaceMuted
-                            }`}
-                          >
-                            {header.name}
-                          </span>
-                          {header.status === undefined ? null : (
-                            <span
-                              className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}
-                            >
-                              {statusText(header.status)}
-                            </span>
-                          )}
-                        </div>
-                        {/* The hits of one owner are a group named by the row above them, so a
-                            reader who cannot see that row still hears which issue or document a
-                            hit belongs to. The options stay direct children of the group and the
-                            listbox's own arrow navigation is untouched. A `fieldset` carries the
-                            group role implicitly; `min-w-0` overrides its UA `min-inline-size:
-                            min-content`, which a long hit would otherwise widen the palette to. */}
-                        <fieldset aria-labelledby={`search-group-${header.id}`} className="min-w-0">
-                          {hitRows.map((row) => (
-                            <ResultOption
-                              active={activeRow?.id === row.id}
-                              muted={muted}
-                              key={row.id}
-                              onSelect={() => selectRow(row)}
-                              result={row.result}
-                            />
-                          ))}
-                        </fieldset>
-                      </Fragment>
-                    );
-                  })}
+                  {hitGroups.map(({ heading, kind, rows: kindRows }) => (
+                    <ListGroup heading id={`search-group-kind-${kind}`} key={kind} label={heading}>
+                      {kindRows.map((row) => (
+                        <ResultOption
+                          active={activeRow?.id === row.id}
+                          key={row.id}
+                          onSelect={() => selectRow(row)}
+                          result={row.result}
+                        />
+                      ))}
+                    </ListGroup>
+                  ))}
                   {footSections.map((section) => (
                     <CommandGroup
                       activeId={activeRow?.id}
@@ -1019,11 +1308,15 @@ function PaletteDialog({
                   ))}
                 </div>
               )}
-              {/* The short answer, beside the hits. */}
+              {/* The short answer of the pause (R3), in its own panel under the rows. */}
               {shownAnswer === undefined ? null : (
-                <AnswerPanel answer={shownAnswer} stale={stale} />
+                <AnswerPanel
+                  answer={shownAnswer}
+                  fullAnswer={activeRow?.kind === "line" && activeRow.line === "ask"}
+                  stale={stale}
+                />
               )}
-              {tooShort ? (
+              {searchText.length === 1 ? (
                 <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
                   Type at least 2 characters
                 </p>
@@ -1032,7 +1325,7 @@ function PaletteDialog({
                   Search with a short phrase: {searchText.length} characters is over the{" "}
                   {SEARCH_QUERY_MAX}-character limit
                 </p>
-              ) : waitingForQuery || search.isPending ? (
+              ) : !queryEnabled ? null : waitingForQuery || search.isPending ? (
                 <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>Searching…</p>
               ) : search.isError && search.data === undefined ? (
                 <div className="shrink-0 p-3">
@@ -1048,11 +1341,11 @@ function PaletteDialog({
                 <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
                   No results for &quot;{searchText}&quot;
                 </p>
-              ) : search.data?.total !== undefined && search.data.total > results.length ? (
-                // The bar lists one page of hits, so a query matching more says so rather than
-                // looking complete.
+              ) : search.data?.total !== undefined && search.data.total > shownHits ? (
+                // The bar lists the best hits of one page of them, so a query matching more says
+                // so rather than looking complete.
                 <p className={barNoteClassName}>
-                  Showing the best {results.length} of {search.data.total} matches
+                  Showing the best {shownHits} of {search.data.total} matches
                 </p>
               ) : projects.isError && needle !== "" ? (
                 // Projects are rows of this list too, so a query that found none has to say
@@ -1067,32 +1360,20 @@ function PaletteDialog({
                   />
                 </div>
               ) : null}
-              {/* What this bar cannot do here, said once and from the moment it opens, under
-                  everything the words brought: no answer carries it, so none is pushed down by
-                  it. */}
-              <CapabilityNote degraded={degraded} gaps={gaps} />
-              {/* The palette is a keyboard surface and never said so: the keys that drive it sit
-                  at its foot, quieter than any hit above them - and only where there is a pointer
-                  that can hover, since a touch reader has none of these keys and the row would
-                  cost them 33px of hits. */}
-              <div
-                className={`hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-xs pointer-fine:flex ${borderDefault} ${textMutedOnSurface}`}
+              {/* The keys of the highlighted row alone (design v3, state 1), quieter than any
+                  row above them - and only where there is a pointer that can hover, since a
+                  touch reader has none of these keys and the line would cost them its height. */}
+              <p
+                className={`hidden shrink-0 border-t px-3 py-2 text-xs pointer-fine:block ${borderDefault} ${textMutedOnSurface}`}
                 data-testid="search-keyboard-hints"
               >
-                <span className="inline-flex items-center gap-1">
-                  <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>↑</kbd>
-                  <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>↓</kbd>
-                  to move
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
-                  to open
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>
-                  to close
-                </span>
-              </div>
+                {enterHint === undefined ? null : (
+                  <>
+                    <Key>↵</Key> {enterHint} ·{" "}
+                  </>
+                )}
+                <Key>Esc</Key> Close
+              </p>
             </>
           )}
         </div>

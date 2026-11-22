@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { goingConversationsQuery, whoAmIQuery } from "../../api/queries";
-import type { GoingContextInput, GoingRunInput } from "../../api/types";
+import type { GoingContextInput, GoingRun } from "../../api/types";
 import {
   continueRun,
   conversationWorking,
@@ -25,14 +25,15 @@ export interface Asking {
    *  can come before the plan is read: until then Enter answers nothing and starts no run. */
   readonly runWaits: boolean;
   /** Enter with `words` in the box: approves the waiting plan from an empty box, revises it in
-   *  words, or starts a run of the words, of `kind` where one is given (`new_issue` for the line
-   *  File as a new issue); answers whether it did any. */
-  readonly enter: (words: string, kind?: GoingRunInput["kind"]) => boolean;
+   *  words, continues a run a bound of its level stopped from an empty box (design v2, state 9),
+   *  or starts a run of the words; answers whether it did any. */
+  readonly enter: (words: string) => boolean;
   /** Esc in the box: stops the run that works where the box is empty, else moves the
    *  conversation as Esc does (`panelNext`). */
   readonly escape: (words: string) => void;
   readonly stop: () => void;
-  readonly onContinue: (run: string) => void;
+  /** Continue on a run a bound stopped: a follow-up of `level`, else of the run's own level. */
+  readonly onContinue: (run: string, level?: GoingRun["level"]) => void;
   /** Retry under an answer: a new run of the same `words`, started as Enter starts one, a
    *  follow-up of the conversation where its newest run has ended. */
   readonly retry: (words: string) => void;
@@ -42,8 +43,9 @@ export interface Asking {
  * The one behaviour of the conversation's two boxes, the bar over the page and the panel at the
  * side, with the page's `context`: Enter approves a plan that waits (R4: Enter approves) or, with
  * words, says what to change of it; with no plan waiting, it starts a run of the words, a
- * follow-up of the conversation where its newest run has ended. Esc in the empty box while the run
- * works stops the run (R1, R10). Each run started here is a run History lists, so History is read
+ * follow-up of the conversation where its newest run has ended, and in the empty box it continues
+ * a run a bound of its level stopped (R10, Continue ↵). Esc in the empty box while the run works
+ * stops the run (R1, R10). Each run started here is a run History lists, so History is read
  * again once it starts.
  */
 export function useAsk(context: GoingContextInput): Asking {
@@ -63,17 +65,23 @@ export function useAsk(context: GoingContextInput): Asking {
     });
   return {
     answering,
-    enter: (words, kind) => {
+    enter: (words) => {
       const said = words.trim();
       if (planWaits) {
         if (said === "") answering.approve();
         else answering.revise(said);
         return true;
       }
-      if (runWaits || said === "" || goingState().starting) {
+      if (runWaits || goingState().starting) {
         return false;
       }
-      listed(startRun(said, context, login, undefined, kind));
+      const newest = newestRun();
+      if (said === "") {
+        if (newest === undefined || shownState(newest) !== "stopped_bound") return false;
+        listed(continueRun(newest.id, context, login));
+        return true;
+      }
+      listed(startRun(said, context, login));
       return true;
     },
     escape: (words) => {
@@ -82,7 +90,7 @@ export function useAsk(context: GoingContextInput): Asking {
         login
       );
     },
-    onContinue: (run) => listed(continueRun(run, context, login)),
+    onContinue: (run, level) => listed(continueRun(run, context, login, level)),
     planWaits,
     retry: (words) => listed(startRun(words, context, login)),
     runWaits,

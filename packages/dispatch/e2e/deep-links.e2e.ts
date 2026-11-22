@@ -280,13 +280,14 @@ async function withAnimationFramesHeld(page: Page, during: () => Promise<void>):
 }
 
 /** Searches the issue tracker for `query` from the shell's search dialog and returns its one
- *  comment hit. */
+ *  comment hit, from the group of comment hits (design v3, state 1: hits grouped by kind). */
 async function searchHit(page: Page, query: string): Promise<Locator> {
   await page.getByRole("button", { name: /^search/i }).click();
   await page.getByRole("combobox", { name: "Search" }).fill(query);
-  const hit = page.getByRole("dialog", { name: "Search" }).getByRole("option", {
-    name: /^comment /,
-  });
+  const hit = page
+    .getByRole("dialog", { name: "Search" })
+    .getByRole("group", { exact: true, name: "Comments" })
+    .getByRole("option");
   await expect(hit).toHaveCount(1);
   return hit;
 }

@@ -9,6 +9,7 @@ import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
 import { resetGoingStore } from "../features/going/going-store";
+import { dropNotice } from "../features/going/Notice";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
@@ -16,6 +17,7 @@ import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetRowReferenceReadings } from "../features/issue-page/row-references";
 import { resetTimestampTick } from "../features/refs/Timestamp";
+import { dropFiling } from "../features/search/filing";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
 import {
@@ -199,6 +201,12 @@ afterEach(resetReachability);
 // test's shell with the bar open over the page, taking every key a page binds - `/` reaches the
 // bar's box rather than the Agents page's - and a run it started would go on reading its stream.
 afterEach(resetGoingStore);
+// The notice at the page's foot and the bar's filing outlive the bar in the same way: a notice one
+// test showed, or a filing it left out, would show in the next test's page.
+afterEach(() => {
+  dropNotice();
+  dropFiling();
+});
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
 // tick a row did not start must not land in another row as an update outside act. One armed on a
 // fake clock the row put back never fires and would leave the tick marked as armed, so no later

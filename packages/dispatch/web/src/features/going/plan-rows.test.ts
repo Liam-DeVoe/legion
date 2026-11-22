@@ -1,19 +1,25 @@
 import { expect, test } from "bun:test";
 
-import type { GoingPlanAnswer, GoingPlanRow } from "../../api/types";
+import type { GoingPlanAnswer, GoingPlanRow, GoingUndoLine } from "../../api/types";
+import { clockWords } from "../search/blocks/block-cells";
 import type { PlanDraft } from "./going-store";
 import {
+  cardTitle,
   changeLabel,
   fieldWords,
+  keptValue,
   labelMarks,
   planTitle,
   reviewWords,
   rowChanges,
   rowKind,
   rowLabel,
+  rowOutcome,
   rowRemoves,
   specSentences,
   undoneChangeLabel,
+  undoneTitle,
+  undoWords,
   valueWords,
   withChangesUnticked,
 } from "./plan-rows";
@@ -353,4 +359,146 @@ test("a row whose item changed after the plan showed is unticked once for each c
   expect(withChangesUnticked(ticked, changed("Bob's dome"))).toBe(ticked);
   // Another change of the item unticks it again.
   expect([...withChangesUnticked(ticked, changed("Carol's dome")).unticked]).toEqual([0, 1]);
+});
+
+// After approval (design v2, state 7): the card's title follows its rows, each row says how it
+// stands in words, and Undo's answer is said per change, a kept value named as data.
+function undoLine(extra: Partial<GoingUndoLine>): GoingUndoLine {
+  return {
+    fields: [],
+    item: "DEMO-1",
+    outcome: { code: "", message: "written back", ok: true, status: 200 },
+    plan: 1,
+    row: 0,
+    tool: "dispatch_issue_update",
+    undo: "write_back",
+    ...extra,
+  };
+}
+
+/** A plan in `state` whose rows, one per issue, stand in `states`. */
+function sentPlan(
+  state: GoingPlanAnswer["state"],
+  states: readonly GoingPlanRow["state"][]
+): GoingPlanAnswer {
+  return {
+    ...plan,
+    rows: states.map((stands, number) => ({
+      ...update(number, `DEMO-${number}`, { priority: 1 }),
+      state: stands,
+    })),
+    state,
+  };
+}
+
+test("the card's title says Applying 1 of 3 while its rows run, then Applied with the time it ended", () => {
+  expect(
+    cardTitle(sentPlan("running", ["running", "approved", "approved"]), undefined, undefined)
+  ).toBe("Applying 1 of 3…");
+  expect(
+    cardTitle(
+      sentPlan("running", ["done", "running", "approved", "unticked"]),
+      undefined,
+      undefined
+    )
+  ).toBe("Applying 2 of 3…");
+  const at = Date.parse("2026-11-22T16:42:00Z");
+  expect(cardTitle(sentPlan("done", ["done", "done", "done"]), undefined, at)).toBe(
+    `Applied 3 changes · ${clockWords(at)}`
+  );
+  expect(cardTitle(sentPlan("done", ["done", "failed", "skipped"]), undefined, undefined)).toBe(
+    "Applied 1 of 3 changes"
+  );
+  expect(cardTitle(sentPlan("done", ["unticked"]), undefined, undefined)).toBe("Nothing applied");
+  expect(cardTitle(sentPlan("rejected", ["waiting"]), undefined, undefined)).toBe(
+    "Discarded · nothing ran"
+  );
+  // While it waits, the title is the sentence its rows make.
+  expect(cardTitle(sentPlan("waiting", ["waiting"]), undefined, undefined)).toBe("Change DEMO-0");
+});
+
+test("after Undo the title counts the changes reverted, never a message", () => {
+  const lines = [
+    undoLine({ row: 0 }),
+    undoLine({ row: 1 }),
+    undoLine({ row: 2, tool: "dispatch_message", undo: "not_undone" }),
+  ];
+  expect(undoneTitle(lines)).toBe("Undone · 2 changes reverted");
+  expect(cardTitle({ ...plan, state: "done" }, lines, Date.now())).toBe(
+    "Undone · 2 changes reverted"
+  );
+  expect(
+    undoneTitle([
+      undoLine({ row: 0 }),
+      undoLine({
+        outcome: { code: "GOING_UNDO_CHANGED", message: "kept", ok: false, status: 409 },
+      }),
+    ])
+  ).toBe("Undone · 1 of 2 changes reverted");
+  expect(undoneTitle([])).toBe("Undone · nothing to revert");
+});
+
+test("a row that no longer waits says how it stands: a message's result, a failure, a row not run", () => {
+  const sent = (delivery: "sent" | "queued" | "refused", words: string): GoingPlanRow => ({
+    ...message(0),
+    result: { code: "", delivery, message: words, status: delivery === "refused" ? 409 : 201 },
+    state: delivery === "refused" ? "failed" : "done",
+  });
+  expect(rowOutcome(sent("sent", ""))).toEqual({ failed: false, text: "Sent" });
+  expect(rowOutcome(sent("queued", ""))).toEqual({
+    failed: false,
+    text: "Queued: Dispatch delivers it when the session can take it",
+  });
+  expect(rowOutcome(sent("refused", "the session is gone"))).toEqual({
+    failed: true,
+    text: "Refused: the session is gone",
+  });
+  expect(
+    rowOutcome({
+      ...update(1, "DEMO-1", { priority: 1 }),
+      result: { code: "FORBIDDEN", delivery: null, message: "you have no access", status: 403 },
+      state: "failed",
+    })
+  ).toEqual({ failed: true, text: "you have no access" });
+  expect(rowOutcome({ ...update(2, "DEMO-2", { priority: 1 }), state: "skipped" })).toEqual({
+    failed: false,
+    text: "Not run: it needs the change above",
+  });
+  expect(rowOutcome({ ...update(3, "DEMO-3", { priority: 1 }), state: "unticked" })?.text).toBe(
+    "Not run: you left it unticked"
+  );
+  for (const state of ["approved", "running", "done", "waiting"] as const) {
+    expect(rowOutcome({ ...update(4, "DEMO-4", { priority: 1 }), state })).toBeUndefined();
+  }
+});
+
+test("Undo's answer names a kept value as data, and a message sent, not undone", () => {
+  expect(
+    keptValue({
+      by: { id: "bob", kind: "user" },
+      field: "title",
+      message: `holds "Bob's dome" now, which user bob wrote after this run, so it is kept`,
+      now: "Bob's dome",
+      ok: false,
+    })
+  ).toEqual({ by: { id: "bob", kind: "user" }, now: "Bob's dome" });
+  // A value cleared since is kept as no value, which is data too.
+  expect(keptValue({ field: "route", message: "holds null now…", now: null, ok: false })).toEqual({
+    by: undefined,
+    now: null,
+  });
+  // An answer of a server that named the value in its message alone, and a field written back.
+  expect(keptValue({ field: "title", message: "holds …", ok: false })).toBeUndefined();
+  expect(
+    keptValue({ field: "title", message: "written back", now: "x", ok: true })
+  ).toBeUndefined();
+  expect(undoWords(undoLine({ tool: "dispatch_message", undo: "not_undone" }))).toBe(
+    "Sent, not undone"
+  );
+  expect(undoWords(undoLine({}))).toBe("Reverted");
+  expect(
+    undoWords(
+      undoLine({ outcome: { code: "X", message: "the issue was deleted", ok: false, status: 404 } })
+    )
+  ).toBe("Not reverted: the issue was deleted");
 });

@@ -22647,12 +22647,16 @@
       },
       "GoingUndoField": {
         "properties": {
+          "by": {
+            "$ref": "#/components/schemas/GoingHolder"
+          },
           "field": {
             "type": "string"
           },
           "message": {
             "type": "string"
           },
+          "now": {},
           "ok": {
             "type": "boolean"
           }

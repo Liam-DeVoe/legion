@@ -5495,8 +5495,10 @@ export interface components {
       lines: components["schemas"]["GoingUndoLine"][] | null;
     };
     GoingUndoField: {
+      by?: components["schemas"]["GoingHolder"];
       field: string;
       message: string;
+      now?: unknown;
       ok: boolean;
     };
     GoingUndoLine: {

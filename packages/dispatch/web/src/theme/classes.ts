@@ -151,6 +151,10 @@ export const borderStrong = "border-slate-300 dark:border-slate-700";
  * e.g. an inline title showing its editability on hover without a persistent outline. */
 export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate-700";
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
+/** `focusBorder` for a frame around an input that has no border of its own (the command bar's
+ *  box, with its chip and its Filters button beside the words): the frame takes the focus
+ *  accent while the input inside it holds the focus. */
+export const focusWithinBorder = "focus-within:border-sky-600 dark:focus-within:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
 export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
 /** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a

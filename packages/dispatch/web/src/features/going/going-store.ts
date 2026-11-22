@@ -5,7 +5,7 @@ import type {
   GoingContextInput,
   GoingConversation,
   GoingRun,
-  GoingRunInput,
+  GoingUndoLine,
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { type PanelEvent, type PanelKeys, type PanelPlace, panelNext } from "./panel-states";
@@ -27,8 +27,8 @@ import { type RunState, runEnded, runNext } from "./run-states";
 /** One run as the page knows it: its record (its words, its conversation, and how it stood when
  *  it was started, listed in History or stopped), what its frames say, whether it was started on
  *  this page, whether the person has seen how it ended, why its stream could not be read, whether
- *  its stream dropped and is being opened again, when the person asked for it, and when its work
- *  first came to rest. */
+ *  its stream dropped and is being opened again, when the person asked for it, when its work
+ *  first came to rest, when it ended, and when each of its blocks came. */
 export interface RunEntry {
   readonly id: string;
   readonly record: GoingRun;
@@ -49,6 +49,11 @@ export interface RunEntry {
    *  plan waiting - in this page's clock; undefined until then. "Worked for" counts from `since`
    *  to it for a run whose record was read while it worked. */
   readonly settledAt: number | undefined;
+  /** When this page read the run's end, in this page's clock; undefined until then. */
+  readonly endedAt: number | undefined;
+  /** When this page read each of the run's block frames, in this page's clock, in the order of
+   *  `frames.blocks`: the time a block's read was made, for a run followed while it works. */
+  readonly blocksAt: readonly number[];
 }
 
 /** The person's answer to the open plan so far: the rows they unticked, and the values they
@@ -102,6 +107,10 @@ export interface GoingState {
   readonly queued: QueuedWords | undefined;
   /** Why the last start, stop or Continue was refused, in Dispatch's words. */
   readonly refusal: string | undefined;
+  /** What each run's Undo answered, by run, once it was pressed on this page: one line for each
+   *  change it reversed or kept. Dispatch answers a second press from the same landings, so this
+   *  only keeps the answer on the screen while the page lives. */
+  readonly undone: ReadonlyMap<string, readonly GoingUndoLine[]>;
 }
 
 const INITIAL: GoingState = {
@@ -115,6 +124,7 @@ const INITIAL: GoingState = {
   refusal: undefined,
   runs: new Map(),
   starting: undefined,
+  undone: new Map(),
 };
 
 let state: GoingState = INITIAL;
@@ -265,12 +275,18 @@ function follow(id: string): void {
         read += 1;
         withRun(id, (run) => {
           const frames = withRunFrame(first ? STARTED_RUN : run.frames, name, data);
+          const at = Date.now();
+          // A frame adds at most one block; the stream read again from its first frame reads
+          // each block again.
+          const blocksAt = first ? [] : run.blocksAt;
           return {
             ...run,
+            blocksAt: frames.blocks.length > blocksAt.length ? [...blocksAt, at] : blocksAt,
+            endedAt: run.endedAt ?? (runEnded(frames.state) ? at : undefined),
             frames,
             read,
             reconnecting: false,
-            settledAt: run.settledAt ?? (frames.state === "working" ? undefined : Date.now()),
+            settledAt: run.settledAt ?? (frames.state === "working" ? undefined : at),
           };
         });
       },
@@ -397,6 +413,8 @@ export function newConversation(): void {
 
 function entryOf(record: GoingRun, startedHere: boolean, since?: number): RunEntry {
   return {
+    blocksAt: [],
+    endedAt: undefined,
     frames: STARTED_RUN,
     id: record.id,
     read: 0,
@@ -415,16 +433,15 @@ function entryOf(record: GoingRun, startedHere: boolean, since?: number): RunEnt
  * up the open conversation's newest run where that run has ended (`POST /api/v1/going/runs` with
  * `continues`), and starts a conversation of its own otherwise. While the newest run works, the
  * words start no run beside it: they wait for it (`queued`, after any words that wait already),
- * and `useSendQueued` sends them once it no longer works. A run of the `kind` `new_issue` is the
- * line File as a new issue: a Fast run that files the words as one new issue at once, so it takes
- * no level of its own. The words show as the question from the moment of the call (`starting`).
+ * and `useSendQueued` sends them once it no longer works. The run takes `level`, else the level
+ * the bar is set to. The words show as the question from the moment of the call (`starting`).
  */
 export async function startRun(
   words: string,
   context: GoingContextInput,
   login: string | undefined,
   continues?: string,
-  kind?: GoingRunInput["kind"]
+  level?: GoingRun["level"]
 ): Promise<boolean> {
   const newest = newestRun();
   if (continues === undefined && newest !== undefined && shownState(newest) === "working") {
@@ -443,8 +460,8 @@ export async function startRun(
     const run = await api.createGoingRun(
       {
         context,
+        level: level ?? state.level,
         words,
-        ...(kind === undefined ? { level: state.level } : { kind }),
         ...(follows === undefined ? {} : { continues: follows }),
       },
       goingBounds(login)
@@ -520,17 +537,24 @@ export function stopRun(id: string, login: string | undefined): void {
 }
 
 /** Continue on a run a bound of its level stopped: a follow-up of its conversation with a new
- *  budget of the same level. It answers whether the follow-up started. */
+ *  budget of `level`, else of the stopped run's own level ("Continue in Deep" names Deep). It
+ *  answers whether the follow-up started. */
 export function continueRun(
   id: string,
   context: GoingContextInput,
-  login: string | undefined
+  login: string | undefined,
+  level?: GoingRun["level"]
 ): Promise<boolean> {
   const run = state.runs.get(id);
   if (run === undefined || runNext(shownState(run), "continue").send !== "continue") {
     return Promise.resolve(false);
   }
-  return startRun("Continue", context, login, id);
+  return startRun("Continue", context, login, id, level ?? run.record.level);
+}
+
+/** Holds what the Undo of `run` answered (`GoingState.undone`). */
+export function setUndone(run: string, lines: readonly GoingUndoLine[]): void {
+  set({ ...state, undone: new Map(state.undone).set(run, lines) });
 }
 
 /** Opens a conversation History lists: its runs, oldest first, each read from its stream's first

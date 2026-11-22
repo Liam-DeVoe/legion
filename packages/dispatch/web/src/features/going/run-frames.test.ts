@@ -336,3 +336,15 @@ test("an answer waits for the person only where the frame that ends it says so, 
     ]).waitsForPerson
   ).toBe(false);
 });
+
+test("the end of a new-issue run names the issue it filed, and any other end names none", () => {
+  const filed = withRunFrame(STARTED_RUN, "end", {
+    issue: "DEMO-46",
+    offers: ["undo"],
+    reason: "",
+    state: "done",
+  });
+  expect(filed.end).toEqual({ issue: "DEMO-46", offers: ["undo"], reason: "", state: "done" });
+  const answered = withRunFrame(STARTED_RUN, "end", { offers: [], reason: "", state: "done" });
+  expect(answered.end?.issue).toBe("");
+});

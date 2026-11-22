@@ -405,6 +405,7 @@ test("the project chip asking the same words of another project lets the kept an
   try {
     await keepAnAnswer(user);
 
+    await user.click(screen.getByRole("button", { name: "Filters" }));
     await user.click(screen.getByRole("button", { name: "Project" }));
     await user.click(await screen.findByRole("button", { name: "DEMO" }));
     await screen.findByRole("button", { name: "Remove Project DEMO" });
@@ -571,22 +572,68 @@ test("reopening the bar draws the last answered run again from its stream's firs
   }
 });
 
-test("a Dispatch that does not answer asks nothing and says what the bar cannot do", async () => {
+// On a Dispatch with no answering model (design v3, state 13), the one sentence that says so
+// stands in the line on top's place, the hits are as usual, and nothing else is said of how the
+// Dispatch is set up (rule 8).
+test("a Dispatch that does not answer asks nothing, lists no line, and says so once in the line's place", async () => {
   const user = userOnFakeClock();
   goingCapability.mockResolvedValue(UNCONFIGURED_CAPABILITY);
   const bar = renderBar();
   try {
     await type(user, "astrolabe");
     await tick(MEANING_PAUSE_MS);
+    const sentence = await screen.findByTestId("going-cannot-answer");
+    expect(sentence).toHaveTextContent(
+      "Answers are off on this Dispatch: it has no answering model."
+    );
+    expect(screen.getAllByTestId("going-cannot-answer")).toHaveLength(1);
+    expect(document.getElementById("search-option-line")).toBeNull();
+    expect(screen.getAllByRole("option")).toHaveLength(1);
     for (const id of [
-      "going-cannot-answer",
+      "going-capability",
       "going-cannot-decide",
       "going-no-session",
       "going-no-label",
+      "going-no-blocks",
     ]) {
-      expect(await screen.findByTestId(id)).toBeInTheDocument();
+      expect(screen.queryByTestId(id)).toBeNull();
     }
     expect(createGoingRequest).not.toHaveBeenCalled();
+  } finally {
+    bar.unmount();
+  }
+});
+
+// The short answer (R3, design v3, state 1) is in its own panel under the rows, its text at most
+// 3 lines, and says "↵ for the full answer" while Enter would start the run of the words: while
+// the line Ask is the highlighted row.
+test("the short answer shows at most 3 lines, with ↵ for the full answer while the line Ask is highlighted", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    send(
+      streams[0],
+      { data: { text: "The first answer" }, event: "text" },
+      { data: { items: 0, words: 3 }, event: "end" }
+    );
+    const text = await screen.findByTestId("going-answer-text");
+    await waitFor(() => expect(text).toHaveTextContent("The first answer"));
+    expect(text.className).toContain("line-clamp-3");
+    const panel = screen.getByTestId("going-answer");
+    // Under the rows, never among them.
+    expect(
+      screen.getByRole("listbox").compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).not.toBe(0);
+    expect(within(panel).getByTestId("going-answer-full")).toHaveTextContent(
+      "↵ for the full answer"
+    );
+
+    await user.keyboard("{ArrowDown}");
+    expect(within(panel).queryByTestId("going-answer-full")).toBeNull();
   } finally {
     bar.unmount();
   }

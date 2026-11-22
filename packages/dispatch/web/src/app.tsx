@@ -26,6 +26,7 @@ import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversati
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { movePanel, resetGoingStore, setPlace, useGoingValue } from "./features/going/going-store";
+import { Notice } from "./features/going/Notice";
 import { RunChip } from "./features/going/RunChip";
 import { SidePanel } from "./features/going/SidePanel";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
@@ -947,6 +948,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         >
           <PendingWritesIndicator />
           <RunChip />
+          <Notice />
           <DraftsNotKept />
           {connection === "stuck" ? (
             <p

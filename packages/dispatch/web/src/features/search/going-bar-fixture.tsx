@@ -6,14 +6,15 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { GoingCapability, GoingEvent, IssueReferenceSummary } from "../../api/types";
+import { Notice } from "../going/Notice";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 
 /**
- * The command bar on a Dispatch that answers, as the answer's and the capability note's rows
- * drive it: every part of the bar configured, one hit for whatever is typed, and each run's
- * stream handed to the row to send frames down, the bar's abort rejecting it as a browser's does.
+ * The command bar on a Dispatch that answers, as the answer's and the line on top's rows drive
+ * it: every part of the bar configured, one hit for whatever is typed, and each run's stream
+ * handed to the row to send frames down, the bar's abort rejecting it as a browser's does.
  */
 
 /** A Dispatch with an answering model that draws blocks, a deciding model it reaches, and a
@@ -78,6 +79,8 @@ export function spyOnGoingBar(): GoingBarSpies {
     cancelGoingRequest,
     goingCapability,
     search,
+    // History, which the bar reads as it opens to offer Continue: no conversation here.
+    spyOn(api, "myGoingRuns").mockResolvedValue({ limit: 50, offset: 0, rows: [], total: 0 }),
     spyOn(api, "getIssueSummary").mockImplementation((key) =>
       Promise.resolve({
         documents: [],
@@ -106,12 +109,15 @@ export function spyOnGoingBar(): GoingBarSpies {
   };
 }
 
-/** The bar, open over a project's issue list. `onCommit` is called as each render of the bar
- *  reaches the page, in the commit itself: after its layout effects and before any useEffect of
- *  that render runs. */
-export function renderBar(onCommit?: () => void): { unmount: () => void } {
+/** The bar, open over a project's issue list, with the page's notice beside it. `onCommit` is
+ *  called as each render of the bar reaches the page, in the commit itself: after its layout
+ *  effects and before any useEffect of that render runs; `onClose` as the bar asks to close. */
+export function renderBar(
+  onCommit?: () => void,
+  onClose: () => void = () => {}
+): { unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const palette = <SearchPalette onClose={() => {}} open />;
+  const palette = <SearchPalette onClose={onClose} open />;
   const view = render(
     <MemoryRouter initialEntries={["/projects/LEGION/issues"]}>
       <QueryClientProvider client={queryClient}>
@@ -123,6 +129,7 @@ export function renderBar(onCommit?: () => void): { unmount: () => void } {
               {palette}
             </Profiler>
           )}
+          <Notice />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>

@@ -11,7 +11,6 @@ import {
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
-  bgTransparent,
   focusVisibleRing,
   pageInkText,
   pageLabelChip,
@@ -33,16 +32,15 @@ import { gatedStepEntries } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
-import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { StatusGlyph } from "./StatusGlyph";
+import { StatusMenu } from "./StatusMenu";
 import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
@@ -184,33 +182,15 @@ export function IssuePropertiesRow({
       data-testid="issue-state-actions"
       ref={line}
     >
-      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour. The
-          rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
-          every width, the least a target may be (WCAG 2.5.8). The shape is an svg and not text,
-          since the page's typeface lacks ◐; it hides itself from assistive technology and holds
-          no words, so its span only centres it on the pill while the select stretches. */}
-      <label
-        className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
-      >
-        <span className="self-center">
-          <StatusGlyph glyph={statusGlyph(status)} />
-        </span>
-        {/* Sized to the status it shows, as the prototype's pill is; a browser with no
-            `field-sizing` draws the select at its longest option, which is its own width. */}
-        <select
-          aria-label={PROPERTY_LABELS.status}
-          className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
-          disabled={isClosed}
-          onChange={(event) => writes.pickStatus(event.target.value)}
-          value={status}
-        >
-          {selectableStatuses.map((choice) => (
-            <option key={choice} value={choice}>
-              {statusLabel(choice)}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour, the
+          select filling the pill's box (`StatusMenu`). */}
+      <StatusMenu
+        disabled={isClosed}
+        label={PROPERTY_LABELS.status}
+        onPick={writes.pickStatus}
+        status={status}
+        statuses={selectableStatuses}
+      />
       {/* The priority and the assignee stay enabled while another write is in flight and queue a
           pick behind it, as the status does and as their own controls say: a press straight out
           of the title's editor lands on them. */}

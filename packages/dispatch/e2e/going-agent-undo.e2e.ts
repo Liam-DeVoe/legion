@@ -13,6 +13,7 @@ import { modelsLane, proposePlan, say, scriptChat, scriptDecision } from "./fake
 import {
   approveAndFinish,
   askTheAgent,
+  bar,
   decided,
   lineOnTop,
   newestRun,
@@ -35,8 +36,14 @@ import { withAlice } from "./users";
 // writes back over a later change of another person, and one that keeps the undo kind trace for a
 // suggestion, which stays open.
 
+/** The lines Undo writes on the plan card of the newest run, one in each of its rows. */
 function undoLines(page: Page) {
   return newestRun(page).getByTestId("going-undo-line");
+}
+
+/** The row of the newest run's plan card whose words hold `text`. */
+function planRow(page: Page, text: string) {
+  return newestRun(page).getByTestId("going-plan-row").filter({ hasText: text });
 }
 
 // SLOW(>=2s): a split planned, approved and run, another person's change, and the Undo.
@@ -86,7 +93,10 @@ test("Undo of the split writes each old value back, closes the new issue, and ke
     await expect(undoLines(page)).toHaveCount(3, { timeout: RUN_STEPS_MS });
     expect((await getIssue(split.first)).title).toBe("Pour the foundation");
     expect((await getIssue(split.second)).title).toBe("Bob's dome");
-    await expect(undoLines(page).filter({ hasText: split.second })).toContainText("kept");
+    // The row names the value Bob left as the page shows it, and who changed it (R6).
+    await expect(planRow(page, split.second).getByTestId("going-undo-line")).toHaveText(
+      "Title stays Bob's dome: bob changed it after this run"
+    );
     expect((await getIssue(made?.key ?? "")).status).toBe("done");
     expect(await listIssueMessages(made?.key ?? "")).toHaveLength(0);
   });
@@ -135,7 +145,11 @@ test("Undo of a run that posted a suggestion and a message rejects the suggestio
     await approveAndFinish(page);
     await newestRun(page).getByTestId("going-undo-button").click();
     await expect(undoLines(page)).toHaveCount(2, { timeout: RUN_STEPS_MS });
-    await expect(undoLines(page).filter({ hasText: "message" })).toContainText("sent, not undone");
+    await expect(
+      newestRun(page)
+        .locator('[data-testid="going-plan-row"][data-kind="message"]')
+        .getByTestId("going-undo-line")
+    ).toHaveText("Sent, not undone");
     const suggested = (await listComments(issue.key)).find(
       (comment) => comment.suggestion !== null
     );
@@ -166,13 +180,21 @@ test("Undo of a new issue that has a route closes it, and the issue holds no mes
     await searchBox(page).fill(words);
     await expect(lineOnTop(page)).toContainText("File as a new issue", { timeout: RUN_STEPS_MS });
     await searchBox(page).press("Enter");
-    await expect(newestRun(page).getByTestId("going-undo-button")).toBeVisible({
+    // Once it is filed, the bar closes and the notice names the issue with its Undo (design v3,
+    // state 13), for 10 s.
+    const notice = page.getByTestId("going-notice");
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(/^Filed CORE-\d+$/, {
       timeout: RUN_STEPS_MS,
     });
+    await expect(bar(page)).toHaveCount(0);
     const made = (await listIssues("CORE")).find((issue) => !before.includes(issue.key));
     expect(made?.route).toContain("new-issue-owner");
-    await newestRun(page).getByTestId("going-undo-button").click();
-    await expect(undoLines(page)).toHaveCount(1, { timeout: RUN_STEPS_MS });
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(`Filed ${made?.key}`);
+    await notice.getByTestId("going-notice-undo").click();
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(
+      `Undone · ${made?.key} closed`,
+      { timeout: RUN_STEPS_MS }
+    );
     expect((await getIssue(made?.key ?? "")).status).toBe("done");
     expect(await listIssueMessages(made?.key ?? "")).toHaveLength(0);
   });

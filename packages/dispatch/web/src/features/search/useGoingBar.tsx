@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 
 import { goingCapabilityQuery } from "../../api/queries";
 import type { GoingContextInput, GoingLine } from "../../api/types";
-import { type CapabilityGap, capabilityGaps } from "./CapabilityNote";
 import { type GoingAnswer, useGoingAnswer } from "./useGoingAnswer";
 
 /** How long the line on top waits for the decision model Jev once the pause has asked it (R2):
@@ -78,6 +77,9 @@ export function lineShown(state: LineState): GoingLine {
 export interface GoingBar {
   /** Whether this Dispatch answers at all: its agent runs, and the line on top offers them. */
   readonly answers: boolean;
+  /** Whether this Dispatch is known to have no answering model, which the bar says in the line
+   *  on top's place (design v3, state 13); false until the capability read answers. */
+  readonly answersOff: boolean;
   /** The answer to draw beside the hits: undefined until the hits it sits beside are shown, but
    *  for the last answer drawn again as the bar opens, and for an answer to words the person
    *  typed past, which stays until the answer to the words in the box has something of its own
@@ -85,9 +87,11 @@ export interface GoingBar {
   readonly shownAnswer: GoingAnswer | undefined;
   /** Whether `shownAnswer` answers words the person has typed past. */
   readonly stale: boolean;
-  /** What this Dispatch cannot do, which the bar's foot says once from the moment it opens
-   *  (`CapabilityNote`): none until the capability read answers. */
-  readonly gaps: readonly CapabilityGap[];
+  /** Whether Jev may still name another line for the words in the box: they are asked of a
+   *  model, this Dispatch has a deciding model it reaches, and the line is not settled yet. The
+   *  line on top reads Ask with a faint pulsing dot meanwhile; with no deciding model it reads
+   *  Ask for good, and nothing says so. */
+  readonly deciding: boolean;
   /** What the line on top reads for the words in the box (`lineShown`). */
   readonly line: GoingLine;
   /** Enter on the line on top: settles it as it reads, so a later answer of Jev's for these
@@ -170,13 +174,22 @@ export function useGoingBar({
     }, LINE_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [waiting, words]);
+  const decision = capability.data?.decision;
+  const unsettled = state.kind === "typing" || state.kind === "hits" || state.kind === "pending";
   return {
     answers,
+    answersOff: capability.data !== undefined && !answers,
+    deciding:
+      enabled &&
+      answers &&
+      decision?.configured === true &&
+      decision.reachable &&
+      words !== "" &&
+      unsettled,
     enterLine: () => {
       setHeld({ state: lineNext(state, { kind: "enter" }), words });
       return lineShown(state);
     },
-    gaps: capability.data === undefined ? [] : capabilityGaps(capability.data),
     line: lineShown(state),
     shownAnswer:
       earlier ?? (answer !== undefined && (answer.replayed || showHits) ? answer : undefined),

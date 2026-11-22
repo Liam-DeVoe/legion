@@ -142,8 +142,14 @@ function fixturePoints(points: string[][]): string[][] {
   return [...points].sort(([left = ""], [right = ""]) => left.localeCompare(right));
 }
 
+/** Each status of the fixture as a block writes it, in Dispatch's words (design v2, state 5). */
+const STATUS_WORDS: Readonly<Record<keyof typeof FIXTURE, string>> = { done: "Done", todo: "Todo" };
+
 const fixtureCountPoints = fixturePoints(
-  Object.entries(FIXTURE).map(([status, count]) => [status, String(count)])
+  Object.entries(FIXTURE).map(([status, count]) => [
+    STATUS_WORDS[status as keyof typeof FIXTURE],
+    String(count),
+  ])
 );
 
 async function expectChart(page: Page): Promise<void> {
