@@ -2,7 +2,8 @@
 # those checks name, against the lane's non-durable Postgres service, in CI
 # rather than on a pod, at a commit whose packages/envoy tree is the head's. A push to this branch
 # that changes this file starts it. It is deleted in the commit after the run it records, so no
-# lane carries it and nothing of main's CI reads it.
+# lane carries it and nothing of main's CI reads it. This copy is for merge 45's tree (57fdc330):
+# the push of the commit before it left this file as the branch already held it, so it started nothing.
 name: INFRA-1075 twenty runs
 
 on:
