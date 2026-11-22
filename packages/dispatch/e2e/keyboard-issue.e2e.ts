@@ -1,6 +1,7 @@
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { leaveFocus, openIssue } from "./keyboard-issue";
+import { focusThePage } from "./issue-page-g";
+import { openIssue } from "./keyboard-issue";
 import { pickFromMenu, priorityTrigger } from "./menus";
 import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
@@ -47,14 +48,14 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(priorityMenu).toHaveCount(0);
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("s");
     await expect(
       statusMenu.getByRole("menuitemradio", { exact: true, name: "Triage" })
     ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(statusMenu).toHaveCount(0);
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // A digit sets P0–P3 through the same write the menu uses, and Shift+P pins through the
     // header's own control. Both are optimistic, so each write is waited for rather than raced,
@@ -68,7 +69,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     expect((await patch).postDataJSON()).toEqual({ priority: 2 });
     await expect(priority).toHaveText("P2");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
-    await leaveFocus(page);
+    await focusThePage(page);
 
     const pinned = page.waitForResponse(
       (response) =>
@@ -78,12 +79,12 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.keyboard.press("Shift+P");
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
     expect((await pinned).ok()).toBe(true);
-    await leaveFocus(page);
+    await focusThePage(page);
 
     await page.reload();
     await expect(priority).toHaveText("P2");
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // l opens the labels popover - the listbox itself, not just its trigger.
     await page.keyboard.press("l");
@@ -91,7 +92,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("listbox", { name: "Labels options" })).toHaveCount(0);
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // e edits the title, where every single key is text again: typing "sp0" neither opened
     // the Status or the priority menu nor set P0, and Escape discards the edit.
@@ -111,7 +112,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         priority: 2,
         title: "Keyboard issue",
       });
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // t is a chord: the indicator shows it waiting, then the second key picks that tab. c is a
     // global shortcut on its own (the create dialog), and completing the chord is not it. The
