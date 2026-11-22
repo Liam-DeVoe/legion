@@ -414,6 +414,17 @@ func (s *Server) Freeze(t testing.TB) func() {
 	return s.relay.freeze()
 }
 
+// Config is the server's configuration as its file holds it now, which a test changes and passes
+// to Reload: a reload takes a whole configuration.
+func (s *Server) Config(t testing.TB) string {
+	t.Helper()
+	data, err := os.ReadFile(s.configPath)
+	if err != nil {
+		t.Fatalf("read the server's configuration: %v", err)
+	}
+	return string(data)
+}
+
 // Reload has the running server take config as its whole configuration, as an operator signalling
 // a reload does: the server keeps its connections and applies the new configuration to them. It
 // returns the server's own refusal when the server would not take the configuration, and nil when
