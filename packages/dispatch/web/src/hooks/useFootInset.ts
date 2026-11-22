@@ -74,9 +74,13 @@ import { type RefObject, useLayoutEffect } from "react";
  *
  * - Why a hit test. Only the screen knows what lies under a float: a list of names misses the next
  *   scroller, and no rule on style alone can tell which of the page's scroll containers sits under
- *   one. So for each float the hook takes three points across its box, 8px in from each side and
- *   its centre, at the middle of its band, and asks `document.elementsFromPoint` what is there. It
- *   skips every element inside a float and takes the first one left: the content under the float.
+ *   one. So for each float the hook takes nine points across its box - 8px in from each side and
+ *   its centre, each 2px inside its top edge, at the middle of its band and 2px inside its bottom
+ *   edge - and asks `document.elementsFromPoint` what is there, so any part of a float over a
+ *   scroller's foot is found: a point at the middle alone missed the update banner's upper half
+ *   over the issues table's last row at 1280x720. It skips every element inside a float and takes
+ *   the first one left: the content under the float. An element hit at several points of one
+ *   float is walked once.
  * - Why the first scroller whose foot reaches the float. From that element the hook walks up its
  *   ancestors, itself included. The first whose `overflow-y` is `auto` or `scroll`, whose lower
  *   edge, clipped to the screen, lies below the float's top edge, and whose content overflows it
@@ -461,20 +465,24 @@ function clearScrollers(): void {
     { readonly byDocument: boolean; readonly floats: Band[]; readonly lo: number }
   >();
   for (const { band, left, right } of placedFloats) {
-    const y = screen - (band.hi + band.lo) / 2;
-    for (const x of [left + 8, (left + right) / 2, right - 8]) {
-      const hit = document
-        .elementsFromPoint(x, y)
-        .find((element) => !placedFloats.some((float) => float.element.contains(element)));
-      const under = hit === undefined ? undefined : scrollerUnder(hit, band.hi, screen);
-      if (under === undefined) continue;
-      const over = found.get(under.scroller) ?? {
-        byDocument: under.byDocument,
-        floats: [],
-        lo: under.lo,
-      };
-      found.set(under.scroller, over);
-      if (!over.floats.includes(band)) over.floats.push(band);
+    const walked = new Set<Element>();
+    for (const offset of [band.hi - 2, (band.hi + band.lo) / 2, band.lo + 2]) {
+      for (const x of [left + 8, (left + right) / 2, right - 8]) {
+        const hit = document
+          .elementsFromPoint(x, screen - offset)
+          .find((element) => !placedFloats.some((float) => float.element.contains(element)));
+        if (hit === undefined || walked.has(hit)) continue;
+        walked.add(hit);
+        const under = scrollerUnder(hit, band.hi, screen);
+        if (under === undefined) continue;
+        const over = found.get(under.scroller) ?? {
+          byDocument: under.byDocument,
+          floats: [],
+          lo: under.lo,
+        };
+        found.set(under.scroller, over);
+        if (!over.floats.includes(band)) over.floats.push(band);
+      }
     }
   }
   const clearances = new Map<
