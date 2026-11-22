@@ -83,8 +83,8 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // fetch its repository again. The lease is minted once per repository a tick, however many of
 // that repository's pods the walk holds, and a repository whose mint fails is logged once and
 // left to the next tick, where its pods are tried again. The gh bundles are built once per App
-// role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
-// reads its Apps' installations and not one per slot.
+// role, role (where it is none of Legion's) and repository of the tick in the same way
+// (appauth.Bundles), so a tick over an issue pod reads its Apps' installations and not one per slot.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion
@@ -284,7 +284,8 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // Update can add and the drift check replaces the pod for (movedGhDirs).
 //
 // bundles is the walk's own memo of the bundles it has built (appauth.Bundles): the slots of a pod
-// that run as one App and for one repository are one bundle, built by the first of them. The
+// that run as one App and for one repository are one bundle, built by the first of them, but a
+// role that is none of Legion's is held apart under its own name (appauth's bundleKey). The
 // controller's is asked for by owner and memoised by nothing, a controller pod holding the one
 // role.
 func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Role, held map[slotKey]slotHolder, repo ghrepo.Repository, bundles *appauth.Bundles) {

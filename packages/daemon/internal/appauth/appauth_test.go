@@ -242,8 +242,8 @@ func TestAppRoleForEveryRole(t *testing.T) {
 }
 
 // A role the deployment defines acts as the App its github_app setting names, while each of
-// Legion's own roles keeps its App whatever the deployment's map says, and a role neither Legion
-// nor the deployment defines gets no App at all: it is an error naming the role, never a panic
+// Legion's own roles keeps its App whatever the deployment's map says, and a role neither Legion,
+// the deployment nor the issue's plan defines gets no App at all: it is an error naming the role, never a panic
 // and never a default App.
 func TestADeploymentRolesAppIsItsSetting(t *testing.T) {
 	deployed := DeploymentApps{"checker": Implement, "critic": Review}

@@ -68,10 +68,11 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
 //
-// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
-// role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
-// each build opens with a live read of every page of its App's installations under a fresh JWT
-// (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
+// The walk builds each bundle once (appauth.Bundles), held by the App role the pane's claim role
+// runs as on its issue (appauth.AppRoleFor), the role itself where it is none of Legion's, and the
+// pane's repository, and each build opens with a live read of every page of its App's
+// installations under a fresh JWT (appauth.GitHubCredential), so the panes of one issue whose
+// roles are Legion's and run as one App cost the tick one
 // read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
 // reads GitHub for what its bundles hold (INFRA-2543 R2).
 //
