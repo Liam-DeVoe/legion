@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
+      # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-three-places
       matrix:
         shard: [1, 2, 3, 4]
     steps:

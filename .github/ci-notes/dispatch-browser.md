@@ -305,10 +305,10 @@ pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282.
 `visual` projects hold 20, which the visual job runs one row at a time, and the 54
 wall-clock rows are the alone job's.
 
-## Why the leg count stands in two places
+## Why the leg count stands in three places
 
-Four legs. The count is written here and in the `legs` value of the browser step
-(`legs=4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a count larger than the leg list
+Four legs. The count is written in the shard job's matrix (`shard: [1, 2, 3, 4]`, whose `# why:` line points here), in the `legs` value of the browser step
+(`legs=4` in .github/scripts/dispatch-browser-shard-suite.sh) and in that step's title (`shard ${{ matrix.shard }} of 4`), and nowhere else, so the three move together: a count larger than the leg list
 would leave the rows dealt to the missing legs unrun with nothing red, and a smaller one fails each leg above it, whose number the deal refuses.
 
 ## What the shard job downloads in place of a Go build

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's quarter of their rows, the row count the merge job reads, and
+# Playwright run over the rows the deal gives this leg, the row count the merge job reads, and
 # the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
@@ -141,6 +141,8 @@ esac
 # project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
 # what keeps them out of a run that names no project, which this is not. The alone job
 # names them, one machine each.
+# why: .github/ci-notes/dispatch-browser.md#how-a-shard-leg-chooses-its-tests
+legs=4
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -161,11 +163,11 @@ esac
 # below are written. The `||` writes the status and lets the pipeline succeed. Each side
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
-# why: .github/ci-notes/dispatch-browser.md#how-a-shard-leg-chooses-its-tests
-legs=4
-bun e2e/tools/shard-deal.ts "$shard" "$legs" "$RUNNER_TEMP/shard-tests.txt" e2e/playwright.config.ts $projects $lane_grep
+# The deal runs inside the same guard, since its listing loads every spec and a load error
+# there would otherwise end the script just as early.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --test-list "$RUNNER_TEMP/shard-tests.txt" --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+{ { bun e2e/tools/shard-deal.ts "$shard" "$legs" "$RUNNER_TEMP/shard-tests.txt" e2e/playwright.config.ts $projects $lane_grep &&
+    bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --test-list "$RUNNER_TEMP/shard-tests.txt" --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts; } 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")

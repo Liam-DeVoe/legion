@@ -152,13 +152,13 @@ export function recordedTimes(logs: readonly string[]): Table {
       const file = location.replace(/:\d+:\d+$/u, "");
       const test = `[${project}] › ${location} › ${title}`;
       const attempt = `${test} #${retried?.[1] ?? 0}`;
-      const seconds =
-        mark === "-" || timed === null ? 0 : Number(timed[1]) * (unitSeconds[timed[2]] ?? 1);
+      const ran = mark !== "-" && timed !== null;
+      const seconds = ran ? Number(timed[1]) * unitSeconds[timed[2]] : 0;
       if (attempts.has(attempt)) continue;
       attempts.add(attempt);
       const found = tests.get(test) ?? { group: `[${project}] › ${file}`, ran: false, seconds: 0 };
       found.seconds += seconds;
-      found.ran ||= timed !== null && mark !== "-";
+      found.ran ||= ran;
       tests.set(test, found);
     }
   }
@@ -232,17 +232,15 @@ if (import.meta.main) {
       console.error(usage);
       process.exit(2);
     }
-    const dealt = deal(await listed(config, selection), legs);
-    const mine = [...(dealt[leg - 1]?.groups ?? [])].sort((one, other) =>
-      byName(one.name, other.name)
-    );
+    const weighed = await listed(config, selection);
+    const dealt = deal(weighed, legs);
+    const mine = [...dealt[leg - 1].groups].sort((one, other) => byName(one.name, other.name));
     writeFileSync(out, mine.map((group) => `${group.line}\n`).join(""));
     const testsIn = dealt.map((each) => each.groups.reduce((sum, group) => sum + group.tests, 0));
-    const groups = dealt.flatMap((each) => each.groups);
     console.log(
-      `shard-deal: ${groups.length} groups of ${testsIn.reduce((sum, tests) => sum + tests, 0)} ` +
+      `shard-deal: ${weighed.length} groups of ${weighed.reduce((sum, group) => sum + group.tests, 0)} ` +
         `tests dealt to ${legs} legs by e2e/shard-times.json, ` +
-        `${groups.filter((group) => !group.recorded).length} of the groups not in it`
+        `${weighed.filter((group) => !group.recorded).length} of the groups not in it`
     );
     dealt.forEach((each, index) => {
       console.log(
