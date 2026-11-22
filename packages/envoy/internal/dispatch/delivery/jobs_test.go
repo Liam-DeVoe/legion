@@ -511,7 +511,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	// Runs before the pool's and the fake's cleanups, so no read outlives the test into them.
 	t.Cleanup(func() {
 		releaseOnce()
-		fired.Wait()
+		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
 	})
 	waitFor(t, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
 		return fmt.Sprintf("%d jobs reads in flight, want %d", inFlight.Load(), reconcilePartialConcurrency)
@@ -524,7 +524,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	}
 
 	releaseOnce()
-	fired.Wait()
+	testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
 	if got := reads.Load(); got != runs {
 		t.Fatalf("jobs reads = %d, want one for each of the %d runs", got, runs)
 	}
@@ -594,7 +594,7 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	t.Cleanup(func() {
 		releaseHeld()
 		releaseWaited()
-		fired.Wait()
+		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
 	})
 
 	// Every slot is held by a read whose listing waits at GitHub; the run left over waits for a slot.
