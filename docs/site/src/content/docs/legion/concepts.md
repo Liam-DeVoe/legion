@@ -44,11 +44,12 @@ with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
-Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
-is installed on.
-Each token is minted on that owner's installation with the role's own permissions: the implement
-App's write set for the implementer and the merger, the review App's review set for every other
-role.
+Every worker holds a gh bundle of the GitHub App its role acts as on its issue, with one token for
+each owner that App is installed on.
+Each token is minted on that owner's installation with that App's permissions: the implement
+App's write set for the implementer, the merger and a role of the issue's plan of the type
+implementation, the set of the App its `github_app` names for a role of the deployment that the
+issue's plan does not define, and the review App's review set for every other role.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
@@ -187,9 +188,11 @@ checks.
 
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
-**plan** that picks which of these steps it runs: one task whose steps are
-some of `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer`
-among them, where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
+**plan** that picks which steps it runs: one task whose steps name roles of this table, roles of
+the deployment and roles the plan defines itself, each in a `plan_role` block such as
+`:::plan_role{#prober type="testing" model="<a listed model>"}` whose text is the role's prompt,
+with `implementer` among them and the tester, the reviewer and `acceptance:owner` after it, where
+`acceptance:owner` is the architect's own acceptance in `accepting`. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work

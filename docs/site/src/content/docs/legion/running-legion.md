@@ -19,7 +19,7 @@ your cluster, from one published worker image.
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and, for the issues that name no repository, the project's default repository, set in Dispatch ([below](#the-projects-repositories)). |
 | The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs. |
-| Three GitHub Apps | An **implement** App (the implementer's and merger's identity), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
+| Three GitHub Apps | An **implement** App (the identity of the implementer, the merger and each role of the type implementation that an issue's plan defines), a **review** App (every other role's, but a role of the deployment acts as the App its `github_app` names) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
 | A model route | An Oh My Pi provider file and settings overlay, and the credential they read ([below](#the-model-route)). |
 
@@ -228,9 +228,11 @@ installation that Dispatch searches.
 An install of a role App counts as every other installation of it does, because the daemon
 keeps no list of owners.
 An account that installs the implement App gets a directory with that App's write token in the
-gh bundle of every implementer and merger, from the next bundle the daemon builds.
-An install of the review App gives every other role that App's token the same way, and the
-controller its read-only one.
+gh bundle of every role that acts as that App, from the next bundle the daemon builds: the
+implementer, the merger, a role of the deployment whose `github_app` names it, and a role of an
+issue's plan of the type implementation.
+An install of the review App gives every role that acts as the review App that App's token the
+same way, and the controller its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in the
 `Legion addressing` line of its prompt.
 Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's
@@ -1057,7 +1059,9 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 
 ## The model route
 
-Legion names no model and no provider: how an agent reaches a model is yours. The repository's
+Legion names no provider, and a model only where your settings or an issue's plan name one for a
+role (`models`, `roles.<name>.model`, the `model` of a `plan_role` block): how an agent reaches a
+model is yours. The repository's
 `deploy/kubernetes/operator-route/` is a working example, rendered in the
 [configuration reference](/legion/legion/reference/config/):
 
