@@ -42,12 +42,14 @@ no_auth_user: "admin"
 }
 
 // hub is a hub to run a command against: its URL, an admin connection that sets the scene and reads
-// what the command left, and the record of every stream create and update asked of it.
+// what the command left, the record of every stream create and update asked of it, and its cluster,
+// nil for a lone server.
 type hub struct {
-	url    string
-	admin  *natsgo.Conn
-	js     natsgo.JetStreamContext
-	writes *testnats.StreamWrites
+	url     string
+	admin   *natsgo.Conn
+	js      natsgo.JetStreamContext
+	writes  *testnats.StreamWrites
+	cluster *testnats.Cluster
 }
 
 // startHub starts a lone server, or a cluster of n members when n > 1, whose user subject holds
@@ -55,8 +57,10 @@ type hub struct {
 func startHub(t *testing.T, n int, grant natsgrant.Permissions) *hub {
 	t.Helper()
 	var url string
+	var cluster *testnats.Cluster
 	if n > 1 {
-		url = testnats.StartClusterConfig(t, n, hubConfig(grant)).URL()
+		cluster = testnats.StartClusterConfig(t, n, hubConfig(grant))
+		url = cluster.URL()
 	} else {
 		_, url = testnats.StartConfig(t, "jetstream {}\n"+hubConfig(grant), []string{"-js"}, true)
 	}
@@ -64,7 +68,7 @@ func startHub(t *testing.T, n int, grant natsgrant.Permissions) *hub {
 	t.Cleanup(admin.Close)
 	js, err := admin.JetStream(natsgo.MaxWait(30 * time.Second))
 	require.NoError(t, err)
-	return &hub{url: url, admin: admin, js: js, writes: testnats.WatchStreamWrites(t, url)}
+	return &hub{url: url, admin: admin, js: js, writes: testnats.WatchStreamWrites(t, url), cluster: cluster}
 }
 
 // connect connects as subject, asking on inbox, and hands every asynchronous error to errs.
@@ -398,4 +402,36 @@ func TestStreamsCheckAsksNoInfoOfAMissingStream(t *testing.T) {
 		}
 	}
 	require.Positive(t, asked, "check asked no info at all, so the rule above read nothing")
+}
+
+// jsClusterNoPeers is JetStream's code for a create no set of peers can place (nats-server's
+// JSClusterNoPeersErrF, "no suitable peers for placement"), which nats.go names no constant for: what
+// a three-copy create draws while the meta leader counts a restarted member offline.
+const jsClusterNoPeers natsgo.ErrorCode = 10005
+
+// A create that update sends and the server refuses keeps the server's own error in its finding: on
+// a three-member cluster a five-copy create of ENVOY_NOTIFICATIONS finds too few peers and is
+// refused with code 10005, and the failure naming the stream carries Err, which errors.As reads as
+// the API error with that code, beside its unchanged text. A caller retries on the code, not the
+// text. The refusal the code is kept for, a three-copy create while the meta leader still counts a
+// restarted member offline, draws the same code; it cannot be made on purpose, since nats-server
+// places a three-copy stream on an offline member while two of three are online
+// (server/jetstream_cluster.go:10862-10881), so the test makes the code by too few members.
+func TestStreamsUpdateKeepsARefusedCreatesCode(t *testing.T) {
+	h := startHub(t, 3, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
+	conn := h.connect(t, operatorInbox, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+
+	report, err := streams.Update(ctx, conn, streamset.Settings{Replicas: 5}, phase(natsgrant.OperatorPhaseHeld))
+	require.NoError(t, err)
+	require.Empty(t, report.Unknown)
+	require.Equal(t, 1, report.ExitCode(), "%v", report.Lines())
+	failure := report.Failures[len(report.Failures)-1]
+	require.Equal(t, bus.Stream, failure.Stream, "%v", report.Lines())
+	require.Error(t, failure.Err, "the refused create's finding holds no error, only its text: %s", failure.What)
+	require.Equal(t, failure.Err.Error(), failure.What, "the finding's text changed")
+	var api *natsgo.APIError
+	require.ErrorAs(t, failure.Err, &api, "the refused create's finding lost the server's error: %s", failure.What)
+	require.Equal(t, jsClusterNoPeers, api.ErrorCode, "%s", failure.What)
 }
