@@ -8,6 +8,7 @@ import { wordsOf } from "../../refs/tree-fragment";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decisionNodeChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
+import { treeRead } from "../spec-filter/tree-read";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
@@ -152,16 +153,15 @@ export function useDecisionsEntries({
   view: TreeNode;
 }): DecisionsEntries {
   // The tree read, which holds each Change under its decision, and the decisions until the view
-  // answers, watched by an observer that is never enabled: the page's own read fetches it
-  // (`useIssueTree.ts`), and the view sends none.
-  const treeRead = useQuery({ ...issueTreeQuery(issue.key), enabled: false });
-  const tree = treeRead.data;
+  // answers.
+  const issueTreeRead = useQuery(treeRead(issueTreeQuery(issue.key)));
+  const tree = issueTreeRead.data;
   // The decisions view read, watched the same way for how it stands: the page reads it
   // (`ViewReadProvider`) and holds its answer on the issue's node (`TreeNode.views`).
-  const viewRead = useQuery({ ...viewQuery(issue.key, "decisions"), enabled: false });
+  const viewRead = useQuery(treeRead(viewQuery(issue.key, "decisions")));
   // The issue's asks, which say which answered question is a person's decision
   // (`decisionNodes`), watched the same way: the page's tree reads them under this key.
-  const asksRead = useQuery({ ...issueAsksQuery(issue.key), enabled: false });
+  const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
   const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer.
   const held = root.views?.decisions ?? tree;
@@ -179,7 +179,7 @@ export function useDecisionsEntries({
   // answer, which the view draws from, and a read that holds no answer reads pending again, its
   // error cleared, the moment it runs again, though it stays refused until it answers. A refused
   // decisions view counts only while neither it nor the tree read holds an answer.
-  const treeRefused = standsFailed(treeRead);
+  const treeRefused = standsFailed(issueTreeRead);
   const viewRefused = standsFailed(viewRead);
   const decisionsRefused = treeRefused || (held === undefined && viewRefused);
   const asksRefused = standsFailed(asksRead);
@@ -190,7 +190,7 @@ export function useDecisionsEntries({
     ],
     [asksRefused, decisionsRefused]
   );
-  const decisionsFetching = treeRead.isFetching || viewRead.isFetching;
+  const decisionsFetching = issueTreeRead.isFetching || viewRead.isFetching;
   const asksFetching = asksRead.isFetching;
   const retrying = useMemo<readonly DecisionsRead[]>(
     () => [
@@ -199,14 +199,14 @@ export function useDecisionsEntries({
     ],
     [asksFetching, decisionsFetching]
   );
-  const decisionsFailures = treeRead.errorUpdateCount + viewRead.errorUpdateCount;
+  const decisionsFailures = issueTreeRead.errorUpdateCount + viewRead.errorUpdateCount;
   const asksFailures = asksRead.errorUpdateCount;
   const failures = useMemo<Readonly<Record<DecisionsRead, number>>>(
     () => ({ asks: asksFailures, decisions: decisionsFailures }),
     [asksFailures, decisionsFailures]
   );
   // Each read is asked again by its own query, so a Retry asks for its reads and no other.
-  const { refetch: readTree } = treeRead;
+  const { refetch: readTree } = issueTreeRead;
   const { refetch: readView } = viewRead;
   const { refetch: readAsks } = asksRead;
   const retry = useCallback(

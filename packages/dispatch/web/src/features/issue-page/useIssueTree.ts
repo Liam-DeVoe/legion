@@ -20,6 +20,7 @@ import {
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
+import { treeRead } from "./spec-filter/tree-read";
 import {
   TREE_VIEWS,
   type TreeAnswer,
@@ -266,10 +267,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // one read of who is signed in, so it costs no request of its own.
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
-  // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
-  // and holds whatever `ViewReadProvider` read for the load; the answers in `TREE_VIEWS`' order.
+  // Each filter's view read, watched by an observer that sends nothing (`treeRead`) and holds
+  // whatever `ViewReadProvider` read for the load; the answers in `TREE_VIEWS`' order.
   const [specView, verificationView, planView, decisionsView] = useQueries({
-    queries: TREE_VIEWS.map((view) => ({ ...viewQuery(key, view), enabled: false })),
+    queries: TREE_VIEWS.map((view) => treeRead(viewQuery(key, view))),
   });
   const spec = specView?.data;
   const verification = verificationView?.data;

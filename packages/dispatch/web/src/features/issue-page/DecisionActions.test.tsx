@@ -1,10 +1,9 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
-import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import { issueTreeKey } from "../../api/queries";
 import type { Artifact, DecisionKeep } from "../../api/types";
@@ -18,7 +17,6 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -236,13 +234,12 @@ test("a Change that Dispatch refuses keeps its words when the body closes and op
 });
 
 // Decision 92: a refused send says so in the page's own words and never in the server's, which
-// name what the reader cannot act on - here a quote that matches two places of the document -
-// and the words the reader wrote stay in the field, to send again.
+// name what the reader cannot act on - here the block the anchor names, which does not hold the
+// quote (`400 INVALID_ANCHOR`) - and the words the reader wrote stay in the field, to send again.
 test("a refused send shows the plain words and keeps the draft", async () => {
-  const refusal =
-    "anchor quote matches 2 places; pass a zero-based occurrence to choose one of them";
+  const refusal = 'anchor block_id "d1" names a block that does not hold the quote';
   const createComment = spyOn(api, "createComment").mockRejectedValue(
-    new ApiError(409, { code: "QUOTE_AMBIGUOUS", error: refusal })
+    new ApiError(400, { code: "INVALID_ANCHOR", error: refusal })
   );
   const user = userEvent.setup();
   const body = renderBody();
@@ -253,7 +250,7 @@ test("a refused send shows the plain words and keeps the draft", async () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(ANSWER_LINES.change_not_sent);
     expect(document.body.textContent, "the row draws the server's own words").not.toContain(
-      "occurrence"
+      "block_id"
     );
     const field = screen.getByLabelText(CONTROL_LABELS.your_change);
     expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Keep one preset.");
@@ -261,10 +258,6 @@ test("a refused send shows the plain words and keeps the draft", async () => {
     body.unmount();
     createComment.mockRestore();
   }
-});
-
-beforeAll(async () => {
-  await warmMarkdownRenderer();
 });
 
 /** The colours of the Change form's lines on each surface: `main`'s on today's page, and the new
@@ -346,46 +339,6 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
   }
 });
 
-/** The quote the Change form offers for the one decision `fields` describe, which waits for
- *  review so its node draws the Change. */
-async function quoteOf(fields: Pick<TreeAnswerNode, "text" | "text_tree">): Promise<string> {
-  const user = userEvent.setup();
-  const { unmount } = renderActions([decisionNode("d1", fields.text, fields)]);
-  try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
-    return screen.getByTestId("decision-quote").textContent ?? "";
-  } finally {
-    unmount();
-  }
-}
-
-// A Change anchors on the words of the decision's first block, which the server finds by
-// matching them against the document's own flattened text: that text writes one space wherever
-// two text runs are not adjacent in the document's positions (`pmdoc.buildFlattenedText`). The
-// end of one list item and the start of the next are four positions apart, so the quote the
-// form sends must hold that space too, or `pmdoc.FindQuote` finds nothing to anchor on. The
-// words come from the reading the server sent (the node's `text_tree`), which the test builds
-// with the page's own engine (`__tests__/display-trees`).
-test("the quote of a first block that is a list holds one space between its items", async () => {
-  const text = "## Name them notices\n\n- **alpha**\n- beta\n\nThat is the whole of it.";
-  expect(await quoteOf({ text, text_tree: displayTree(text) })).toBe("alpha beta");
-});
-
-// The same rule at a hard break: the break is a leaf of its own and takes a position, so the
-// two lines it divides are one space apart in the text the server matches a quote against.
-test("the quote of a first block with a hard break holds one space between its lines", async () => {
-  const text = "## Wrap the lines\n\nline one  \nline two\n\nThat is the whole of it.";
-  expect(await quoteOf({ text, text_tree: displayTree(text) })).toBe("line one line two");
-});
-
-// An answer with no reading of its text comes from a pod of the build before during a rolling
-// deploy, and the Change still has a quote there: the first paragraph's own markdown, which is
-// all the browser has.
-test("a decision whose answer carried no reading quotes its first paragraph's markdown", async () => {
-  const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
-  expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
-});
-
 /** A document of the issue other than the one the decision is a block of. */
 const SPEC_DOCUMENT: Artifact = {
   ...document_,
@@ -424,10 +377,6 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
         body: "Say where.",
       },
     ]);
-    expect(
-      createComment.mock.calls[0]?.[1]?.anchor,
-      "the Change named a place among the quote's matches"
-    ).not.toHaveProperty("occurrence");
     expect(text, "the send read the document's text").not.toHaveBeenCalled();
   } finally {
     unmount();

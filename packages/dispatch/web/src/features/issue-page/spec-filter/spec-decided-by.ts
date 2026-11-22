@@ -409,10 +409,10 @@ function decisionOf(
       };
     }
   }
-  // Every other section is drawn by its own words, which are an agent's: its decision, or its
-  // record of a person's decision whose answered question this tree does not hold - one the
-  // tree places elsewhere, or one whose read failed. That record is never put in the person's
-  // mouth (R9: "no agent's words are drawn under a person's name").
+  // Every other decision is drawn by its own words, which are an agent's: an agent's decision,
+  // or an agent's record of a person's decision whose answered question this tree does not hold
+  // - one the tree places elsewhere, or one whose read failed. That record is never put in the
+  // person's mouth (R9: "no agent's words are drawn under a person's name").
   const at = node?.at ?? decision.changed_at ?? undefined;
   const tree = decision.text_tree ?? node?.tree;
   // The one line is cut from the words `lineWordsRaw` reads, as every one-line place cuts a
