@@ -1391,10 +1391,10 @@ const (
 	// listener that came up before the consumer existed is started again, so the span covers
 	// two of those starts.
 	idleRigListenerReportWait = 90 * time.Second
-	// idleRigPodWait bounds a pod up and running its role: the Sandbox, its launcher, the role
-	// process and its registration. It bounds a pod coming back for a wake too, which is the same
-	// work again, and a send that is retried until a live session takes it, which waits on that
-	// same pod.
+	// idleRigPodWait bounds a pod up and running its roles: the Sandbox, its launcher, each role
+	// process, its registration and its claim's ready. It bounds a pod coming back for a wake too,
+	// which is the same work again, and a send that is retried until a live session takes it,
+	// which waits on that same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
 	// tick: a launch undone for every pod of the rig at once, and so the longest span here.
