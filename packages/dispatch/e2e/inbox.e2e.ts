@@ -34,6 +34,7 @@ import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
+import { landingWithout } from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -47,13 +48,8 @@ const session = {
 };
 
 /**
- * Answers this page's landing with no Inbox list, so the page reads that list on its own route.
- *
- * A landing carries the list and seeds it under the key the Inbox reads it by
- * (`web/src/api/queries.ts`, `seedShell`), and a page given it asks `/api/v1/inbox` not at all
- * on its first load. Null is what a Dispatch that could not read that part answers, and the
- * seed leaves a null part for its own route on purpose, so this is the page's own fallback and
- * no behaviour invented here.
+ * Answers this page's landing with no Inbox list, so the page reads that list on its own route
+ * (`landingWithout`, `e2e/shell.ts`, which says why that is the page's own fallback).
  *
  * The two rows that use it are about what the page does with an Inbox RESPONSE that is older
  * than an event: the freshness marker an event sets while an Inbox read is in flight, and what
@@ -63,11 +59,7 @@ const session = {
  * and every refresh the Inbox makes after its first load is exactly this read.
  */
 async function landingWithoutTheInboxList(page: Page): Promise<void> {
-  await page.route("**/api/v1/landing*", async (route) => {
-    const response = await route.fetch();
-    const body = (await response.json()) as { shell: Record<string, unknown> };
-    await route.fulfill({ json: { ...body, shell: { ...body.shell, inbox: null } }, response });
-  });
+  await landingWithout(page, "inbox");
 }
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({

@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { type AddressInfo, createServer, type Socket } from "node:net";
 
 import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
@@ -663,6 +663,11 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 20 * 1024 * 1024;
   await slowWrites("POST", path, 5_000);
+  // The body's file. Its name is the one the test id and the SQL below read, and its type is
+  // whatever the browser takes `.bin` for, which is no `text/markdown`, so the page uploads it as
+  // the file it was before. It is 20 MB in the row's output directory, which the shard jobs
+  // upload whole, so the row removes it once its context is closed.
+  const upload = test.info().outputPath("in-flight.bin");
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -672,10 +677,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     await page.getByRole("tab", { name: "Artifacts" }).click();
     // The body goes in as a file on disk, not as a buffer: a buffer is base64-encoded into the
     // protocol message and decoded again in the browser, which cost seconds of both processes'
-    // time for 20 MB, where a path hands the browser the file itself. Its name is the one the
-    // test id and the SQL below read, and its type is whatever the browser takes `.bin` for,
-    // which is no `text/markdown`, so the page uploads it as the file it was before.
-    const upload = test.info().outputPath("in-flight.bin");
+    // time for 20 MB, where a path hands the browser the file itself.
     await writeFile(upload, Buffer.alloc(bytes, 7));
     await page.getByLabel("Upload artifact").setInputFiles(upload);
     if (browserName === "chromium") {
@@ -735,6 +737,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   } finally {
     await slowWrites("POST", path, 0);
     await alice.close();
+    await rm(upload, { force: true });
   }
 });
 

@@ -309,6 +309,11 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
   await expect(thread).toHaveCount(0);
 }
 
+/** The attribute an Answers row carries its ask's id in, and the inert one-line preview inside
+ *  that row (`web/src/features/answers/AnswersPage.tsx`). */
+export const ANSWER_ROW_ATTRIBUTE = "data-answer-row";
+export const ANSWER_PREVIEW = "[data-markdown-preview]";
+
 /**
  * The inert one-line preview a reader still meets: an answered ask's question on the Answers
  * page (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview` with no `links` prop,
@@ -321,7 +326,7 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
  * link inside it.
  */
 export function answeredQuestionPreview(page: Page, askId: string): Locator {
-  return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();
+  return page.locator(`[${ANSWER_ROW_ATTRIBUTE}="${askId}"]`).locator(ANSWER_PREVIEW).first();
 }
 
 /** Opens the Inbox narrowed to its Reply rows, below the reading column's width so every row is

@@ -398,8 +398,9 @@ test("two live-view sends pressed during an outage go out in press order, each o
 // The hold only has to outlast what comes between the claim and the repeat: the poll for the
 // one attempt, the two reads that find nothing written yet, the jump, and the backoff of a
 // second (`FIRST_BACKOFF_MS`) before the page asks again - well under a second and a half of
-// real time - so the repeat still finds the first run in flight. It was 18 s, which the page's
-// clock no longer needs since that clock is what cuts the attempt off.
+// real time - so the repeat still finds the first run in flight, and the 5 s hold (`slowWrites`
+// below) outlasts it. The hold need not cover the 15 s cut-off too: that runs on the page's
+// clock, which the row jumps past it (`page.clock`), not on real time.
 // SLOW(>=2s): the hook's 5 s hold is the server's own time, which no page clock can move, and the
 // row waits out the first run before its repeat is answered. The page's own 15 s cut-off is the
 // one `page.clock` drives, which lands it early in that hold.

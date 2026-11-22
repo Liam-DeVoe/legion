@@ -435,3 +435,19 @@ export async function failAssetWhen(
   });
   return () => failed;
 }
+
+/**
+ * Answers this page's landing with its shell's `part` null - the agent list or the Inbox list - so
+ * the page reads that list on its own route. A landing carries each list and seeds it under the
+ * key the page reads it by (`web/src/api/queries.ts`, `seedShell`), and a page given it asks that
+ * route not at all on its first load. Null is what a Dispatch that could not read the part
+ * answers, as one with no Envoy listener answers for the agents, and the seed leaves a null part
+ * for its own route on purpose, so this is the page's own fallback and no behaviour invented here.
+ */
+export async function landingWithout(page: Page, part: "agents" | "inbox"): Promise<void> {
+  await page.route("**/api/v1/landing*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { shell: Record<string, unknown> };
+    await route.fulfill({ json: { ...body, shell: { ...body.shell, [part]: null } }, response });
+  });
+}

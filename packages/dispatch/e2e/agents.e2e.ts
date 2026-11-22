@@ -39,6 +39,7 @@ import { inboxList } from "./inbox-pane";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
+import { landingWithout } from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
@@ -1865,11 +1866,7 @@ test("the Agents page loads through one dropped request for its agents", async (
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.route("**/api/v1/landing*", async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as { shell: Record<string, unknown> };
-      await route.fulfill({ json: { ...body, shell: { ...body.shell, agents: null } }, response });
-    });
+    await landingWithout(page, "agents");
     const first = await holdFirstRequest(page, /\/api\/v1\/agents$/u);
     await page.goto("/agents");
     await (await first.held).abort("connectionreset");

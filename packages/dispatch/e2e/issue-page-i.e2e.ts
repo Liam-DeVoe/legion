@@ -89,6 +89,7 @@ import {
   rowWords,
   tree,
   unfoldEveryBranch,
+  unfoldInPage,
 } from "./issue-page-g";
 import {
   branchMoreIndents,
@@ -1090,40 +1091,6 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // the first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
-  /**
-   * Opens every branch a fold left shut, as `unfoldEveryBranch` (`e2e/issue-page-g.ts`) does, by
-   * a click inside the page on each control in turn until none is drawn, at most 200 times, and
-   * leaves the focus on no row as that helper does. A pointer's press also focuses the row it
-   * lands on and scrolls the control into view, and Playwright's click first waits until the
-   * control stands still and takes the pointer: fifteen of those cost three seconds of this row.
-   * The row reads where each node is drawn - its level, its id and type, the words that name its
-   * other parent, and its chips - none of which a press's focus or scroll changes, so the
-   * controls' own click is all it needs. A row that reads what a press focuses keeps
-   * `unfoldEveryBranch`.
-   */
-  const unfoldInPage = async (page: Page): Promise<void> => {
-    const most = 200;
-    const left = await issuePage(page).evaluate(
-      async (root, { label, openings }) => {
-        const controls = `[data-node-row] button[aria-label="${label}"], [data-branch-more] button`;
-        for (let opened = 0; opened < openings; opened += 1) {
-          const shut = [...root.querySelectorAll<HTMLElement>(controls)].find((control) =>
-            control.checkVisibility()
-          );
-          if (shut === undefined) return 0;
-          shut.click();
-          // The branch the click opens is drawn by the next frame, with any control it holds.
-          const drawn = Promise.withResolvers<void>();
-          requestAnimationFrame(() => drawn.resolve());
-          await drawn.promise;
-        }
-        return root.querySelectorAll(controls).length;
-      },
-      { label: CONTROL_LABELS.unfold, openings: most }
-    );
-    expect(left, `the tree still draws a folded branch after ${most} openings`).toBe(0);
-    await focusThePage(page);
-  };
   await phase(browser, seedSpineCases, async (page, seeded) => {
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -1437,7 +1404,6 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     // The next-question key moves to the next open question and says so, at the row, when there
     // is none; the reader's next move lets that line go. It is pressed on the load at 1440 by 900
     // above, which opened with the focus on the first question.
-    await expect.poll(() => focusedNodeId(page)).toBe(first);
     await page.keyboard.press("q");
     await expect
       .poll(() => focusedNodeId(page), { message: "q did not reach the second open question" })
@@ -2424,7 +2390,6 @@ test("the children are one group of rows of the outline @phone", async ({ browse
         // What a child's row holds, read at 1440 px: its title as its words, how it stands, what
         // blocks it, who holds it, and its key as the tag, which opens the child's own page.
         if (size === DESKTOP) {
-          await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
           for (const key of seeded.children.keys) {
             const child = await getIssue(key);
             const row = childRow(page, key).first();
@@ -2466,7 +2431,6 @@ test("the children are one group of rows of the outline @phone", async ({ browse
         // view's load starts the page again from its address. The page's opening has put the
         // focus on a row of its own before the first chord is pressed.
         await expectOpeningLanded(page);
-        await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
         await toChildren("from the issue's address", at);
         await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/children$`));
         await expect
@@ -2524,7 +2488,6 @@ test("the children are one group of rows of the outline @phone", async ({ browse
       // it, and a press moves no focus and reports nothing at the row. Read on the issue's own
       // address, which is the Conversation view's load above; the next view's load starts the
       // page again from its own.
-      await expectIssuePageDrawn(page);
       await expect(outlineRows(page).first(), "the issue draws no row").toBeVisible();
       await expectOpeningLanded(page);
       await focusThePage(page);

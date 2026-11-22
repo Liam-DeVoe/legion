@@ -301,13 +301,17 @@ test("an answer that arrives after the title changed is not shown for the new ti
     // the test holds, and the page sets that timer only once it has read the answer, which can be
     // after Node saw the response arrive: a single millisecond moved before then fires nothing,
     // and the link never draws. So the clock moves a millisecond at a time until it does; the
-    // title stands, so no time moved here can start another check.
+    // title stands, so no time moved here can start another check. Each pass is a tick and one
+    // read, so the poll looks again a frame later rather than on Playwright's backoff.
     const answer = related.getByRole("link", { name: `${seeded.zeppelin} ${zeppelinTitle}` });
     await expect
-      .poll(async () => {
-        await page.clock.runFor(1);
-        return answer.isVisible();
-      })
+      .poll(
+        async () => {
+          await page.clock.runFor(1);
+          return answer.isVisible();
+        },
+        { intervals: [16] }
+      )
       .toBe(true);
     await expect(related.getByRole("link", { name: new RegExp(seeded.astrolabe) })).toHaveCount(0);
     await expect(related).toHaveAttribute("aria-busy", "false");

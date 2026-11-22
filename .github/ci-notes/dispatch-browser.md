@@ -536,10 +536,11 @@ run-broker.sh serves from.
 
 ## What the shard job places, and what its budget leaves for it
 
-The step budget note above does not count this step, which is new here. It copies one 106 MB
-artifact on the runner's disk (141 ms for those bytes on a pod, when #4383 measured it on
-2026-11-18), and the seconds the job's head leaves over when it rounds the job's sum up to
-its `timeout-minutes` hold it.
+The step budget note above does not count this step. Main's #4383 added it on 2026-11-18, with
+the second download attempt, to copy the attempt that completed out of its own directory. It
+copies one 106 MB artifact on the runner's disk (141 ms for those bytes on a pod, when #4383
+measured it on 2026-11-18), and the seconds the job's head leaves over when it rounds the job's
+sum up to its `timeout-minutes` hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 

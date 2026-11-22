@@ -113,8 +113,7 @@ function refillingNotice(scope: Page | Locator): Locator {
 /** Moves the page's clock until `scope` shows the refilling notice: after a read's refusal and its
  *  two retries, or, on a page that polls the list, its next poll and those. */
 async function untilRefilling(scope: Page | Locator): Promise<void> {
-  const notice = refillingNotice(scope);
-  await spendPageTimeUntil(notice.page(), () => notice.isVisible(), "the refilling notice shows");
+  await untilShown(refillingNotice(scope), "the refilling notice shows");
 }
 
 /** Moves the page's clock until `scope` shows no refilling notice: a polling page's next poll, or

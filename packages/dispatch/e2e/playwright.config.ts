@@ -234,8 +234,8 @@ const testTimeout = 60_000;
 // coreBundle.js:64256-64257). It is the context's default timeout as well (`actionTimeout || 0`,
 // node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:360), so a
 // `waitForResponse` or `waitForFunction` that names no timeout of its own takes it too. The
-// longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answered the
-// 18 s server hold of keyed-send.e2e.ts's comment row then, well inside this; it is 5 s now.
+// longest such wait this bound was read against is `replayed()` (e2e/keyed-writes.ts), which
+// answers the 5 s server hold of keyed-send.e2e.ts's comment row, well inside this.
 //
 // Derived from the population `testTimeout` above measures, not asserted: over those 320,101
 // passing results of 201 ci.yaml runs the slowest WHOLE row is 29,856 ms, so no single action in
@@ -767,8 +767,13 @@ export default defineConfig({
       snapshots: true,
       sources: true,
     },
-    // A picture of the page at the moment a row failed, which the trace above no longer carries
-    // as a screencast frame: one image for each failed attempt, and none for a pass.
+    // A picture of the page when a row fails, which the trace above no longer carries as a
+    // screencast frame. Each time a context closes during a row, Playwright 1.64.1 takes a
+    // temporary picture of every page still open in it, and keeps those pictures only when the
+    // row failed (`captureTemporary` and `persistTemporary`, node_modules/.bun/playwright@1.64.1/
+    // node_modules/playwright/lib/index.js:585-600); a failed row's pages still open when its
+    // function ends are pictured then. So a passing row still pays one picture for each page open
+    // at each context's close, and keeps none of them.
     screenshot: "only-on-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and

@@ -49,6 +49,7 @@ import {
   labelsLeft,
   lineOrder,
   MEASURED_TITLE,
+  openAt,
   propertiesLine,
   resizeTo,
   seedHeader,
@@ -58,6 +59,7 @@ import {
   TYPEFACE,
   timesDrawn,
   titleOfLines,
+  titlesOfLines,
   typefaceAddress,
   typefaceStatuses,
   undersizedTargets,
@@ -184,10 +186,9 @@ async function openInApp(page: Page, key: string): Promise<void> {
 // targets, the page no wider than the window, the navigation's control first on row one and the
 // dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
 // SLOW(>=2s): 33.7 s on chromium and 17.4 s on iphone (one worker on the two CPUs of the
-// INFRA-1109 pod, at 16b96e0b with this change; 42.2 s and 17.4 s there before it): six loads
-// of the issue, four resizes and two moves within the app on chromium, three loads and the two
-// moves on iphone, and at each of its widths every part of the header read whole and Details
-// opened and closed three times.
+// INFRA-1109 pod, at 16b96e0b): six loads of the issue, four resizes and two moves within the
+// app on chromium, three loads and the two moves on iphone, and at each of its widths every part
+// of the header read whole and Details opened and closed three times.
 test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -201,12 +202,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // fresh load in every project, and the next pass loads at 1440 px.
     const firstPass = desktopProject ? [IPHONE_13.width, DESKTOP.width] : [IPHONE_13.width];
     for (const [index, width] of firstPass.entries()) {
-      if (index === 0) {
-        await page.setViewportSize(viewportAt(width));
-        await gotoIssue(page, `/issues/${seeded.key}`);
-      } else {
-        await resizeTo(page, width);
-      }
+      await openAt(page, seeded.key, width, index === 0);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
@@ -254,12 +250,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // each width ends with Details and the menus closed, scrolls the page to its top below, and
     // takes the line's narrowing off before the labels are read again.
     for (const [index, width] of (desktopProject ? [1440, 1280, 1024, 390] : [390]).entries()) {
-      if (index === 0) {
-        await page.setViewportSize(viewportAt(width));
-        await gotoIssue(page, `/issues/${seeded.key}`);
-      } else {
-        await resizeTo(page, width);
-      }
+      await openAt(page, seeded.key, width, index === 0);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -830,9 +821,9 @@ test("the approval entries stay in the header and read the document each step ap
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
 // SLOW(>=2s): 21.4 s on chromium and 19.0 s on iphone (one worker on the two CPUs of the
-// INFRA-1109 pod, at 16b96e0b with this change; 39.9 s and 40.3 s there before it): four loads
-// of the issue in two signed-in contexts, each waiting for the typeface to load or fail, eight
-// resizes, and the header's limits measured at twelve widths.
+// INFRA-1109 pod, at 16b96e0b): four loads of the issue in two signed-in contexts, each waiting
+// for the typeface to load or fail, eight resizes, and the header's limits measured at twelve
+// widths.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -877,12 +868,7 @@ test("the header holds its limits when the typeface does not load @phone", async
           ? [IPHONE_13.width, DESKTOP.width]
           : [DESKTOP.width, IPHONE_13.width];
         for (const [index, width] of widths.entries()) {
-          if (index > 0) {
-            await resizeTo(page, width);
-          } else if (requestWaiting) {
-            await page.setViewportSize(viewportAt(width));
-            await gotoIssue(page, `/issues/${seeded.key}`);
-          }
+          if (index > 0 || requestWaiting) await openAt(page, seeded.key, width, index === 0);
           await expectHeaderDrawn(page);
           await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
           await expect
@@ -896,12 +882,7 @@ test("the header holds its limits when the typeface does not load @phone", async
         // and resizes to the other three: a face whose request failed stays failed for the
         // document, and a resize asks for no file.
         for (const [index, width] of [IPHONE_13.width, 320, 1024, DESKTOP.width].entries()) {
-          if (index === 0) {
-            await without.setViewportSize(viewportAt(width));
-            await gotoIssue(without, `/issues/${seeded.key}`);
-          } else {
-            await resizeTo(without, width);
-          }
+          await openAt(without, seeded.key, width, index === 0);
           await expectHeaderDrawn(without);
           await expect(issueHeader(without)).toContainText(MEASURED_TITLE);
           await expect
@@ -1266,10 +1247,9 @@ test("a press on the status straight out of the title's editor lands on the stat
 // events: the order `IssueTitleRow.tsx` holds the title's height by until the press is
 // delivered, at 390 px.
 // SLOW(>=2s): 20.4 s on chromium and 11.9 s on iphone (one worker on the two CPUs of the
-// INFRA-1109 pod, at 16b96e0b with this change; 26.4 s and 17.6 s there before it): at each
-// width both titles built a word at a time in one page function, then for each two loads of the
-// issue and the presses out of its edit: nine loads and a resize on chromium, five loads on
-// iphone.
+// INFRA-1109 pod, at 16b96e0b): at each width both titles built a word at a time in one page
+// function, then for each two loads of the issue and the presses out of its edit: nine loads and
+// a resize on chromium, five loads on iphone.
 test("the press that ends a title edit reaches the control under it @phone", async ({
   browser,
 }) => {
@@ -1283,14 +1263,10 @@ test("the press that ends a title edit reaches the control under it @phone", asy
       // out the render that takes the rail away. The heading is a stretched grid item
       // (`IssueTitleRow.tsx`), as wide as its row whatever title it draws, so the title the page
       // draws when it is measured does not change the measure.
-      if (index === 0) {
-        await page.setViewportSize(viewportAt(width));
-        await gotoIssue(page, `/issues/${seeded.key}`);
-      } else {
-        await resizeTo(page, width);
-      }
+      await openAt(page, seeded.key, width, index === 0);
       await expectHeaderDrawn(page);
-      const titles = { 2: await titleOfLines(page, 2), 3: await titleOfLines(page, 3) };
+      const [twoLines, threeLines] = await titlesOfLines(page, [2, 3]);
+      const titles = { 2: twoLines, 3: threeLines };
       for (const lines of [2, 3] as const) {
         const title = titles[lines];
         await patchIssue(seeded.key, { title });
@@ -1365,10 +1341,9 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 // a key ends finds the press under way, and a title of three lines stays drawn whole at 1440 px
 // instead of clamped to two. A drag of selected words is a press of the mouse, so the row runs at
 // the desktop width and on no phone.
-// SLOW(>=2s): 6.5 s (one worker on the two CPUs of the INFRA-1109 pod, at 16b96e0b with this
-// change; 7.8 s there before it): two loads, a three-line title built a word at a time in one
-// page function, and a drag of the selected words in eight steps, polled until its dragend and
-// the title's clamp.
+// SLOW(>=2s): 6.5 s (one worker on the two CPUs of the INFRA-1109 pod, at 16b96e0b): two loads, a
+// three-line title built a word at a time in one page function, and a drag of the selected words
+// in eight steps, polled until its dragend and the title's clamp.
 test("the title is clamped again after a key ends an edit whose words the reader dragged", async ({
   browser,
 }) => {
@@ -2025,7 +2000,7 @@ function framesDrawn(page: Page, frames: number): Promise<void> {
 // SLOW(>=2s): 522 widths of the line, 261 at each of two viewport widths, after one load and one
 // resize, each read once the labels' reading of it lands - about two frames a width where the
 // line's width changes, and four where it does not: 22.2 s on one worker on the two CPUs of the
-// INFRA-1109 pod (at 16b96e0b with this walk), where four frames at every width took 43.1 s.
+// INFRA-1109 pod, at 16b96e0b.
 test("the labels' count names every label the line leaves out, at every width of the line", async ({
   browser,
 }) => {
