@@ -394,7 +394,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 
   - A session registration and an interest are merged again over the bucket's value on a conflict, and a role claim's release or hand-back weighs the claim again at the revision it now stands at.
     Each answers `503` with `Retry-After: 1` once its attempts are spent:
-    5 for a session registration (`writeAttempts`, `internal/session/registry.go`), 3 for an interest (`interestWriteAttempts`, `internal/store/interest_writes.go`) and 3 for a release or hand-back (`roleClaimReleaseAttempts`, `internal/store/role_release.go`).
+    32 for a session registration (`entryWriteLosses`, `internal/session/registry.go`, the bound every write of a session's entry shares), 3 for an interest (`interestWriteAttempts`, `internal/store/interest_writes.go`) and 3 for a release or hand-back (`roleClaimReleaseAttempts`, `internal/store/role_release.go`).
 
   - A role claim's renewal (`renewRoleClaim`, `internal/store/role_renewal.go`) makes one attempt.
     A renewal that a claim landed under is dropped and logged, the registration that sent it still answers `200`, and the next registration renews the claim that stands.

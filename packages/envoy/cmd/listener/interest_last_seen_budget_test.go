@@ -76,7 +76,7 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 	started := time.Now()
 	go func() {
 		recorder := httptest.NewRecorder()
-		adminInterestsHandler(registry, sessions, nil, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/interests/", nil))
+		adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/interests/", nil))
 		answered <- recorder
 	}()
 	var recorder *httptest.ResponseRecorder

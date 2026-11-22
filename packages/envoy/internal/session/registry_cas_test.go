@@ -95,9 +95,9 @@ func (kv *conflictingSessionKV) Update(key string, value []byte, last uint64) (u
 	return kv.KeyValue.Update(key, value, last)
 }
 
-// A registration write that finds the stored revision moved under it every time gives up after five
-// attempts with ErrWriteConflict, which the listener answers as a 503 to retry, rather than looping
-// or overwriting the other writer.
+// A registration write that finds the stored revision moved under it every time gives up after
+// entryWriteLosses attempts with ErrWriteConflict, which the listener answers as a 503 to retry,
+// rather than looping or overwriting the other writer.
 func TestASessionWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 	a, _ := podRegistries(t)
 	const sessionID = "ses_raced"
@@ -110,8 +110,8 @@ func TestASessionWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 	if !errors.Is(err, ErrWriteConflict) {
 		t.Fatalf("Put while every write races = %v, want ErrWriteConflict", err)
 	}
-	if racing.writes != 5 {
-		t.Fatalf("Put made %d write attempts, want 5", racing.writes)
+	if racing.writes != entryWriteLosses {
+		t.Fatalf("Put made %d write attempts, want %d", racing.writes, entryWriteLosses)
 	}
 }
 

@@ -594,9 +594,27 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // ledgerAttempt, asked as message's lane asks it), reports a refusal or a skip with the lane's own
 // lines, and returns the forward to make, carrying the ledger attempt it claimed and stamped with
 // when its resolution started (roleForward.resolvedAt), and whether to make one. The lane names its
-// role in either form; the claim it resolves is keyed by the bare role name either way
-// (roleOfLaneTopic, store.Registry.ClaimedRole).
+// role in either form; the claim it resolves is the one that name is keyed by (roleOfLaneTopic,
+// store.RoleClaimKeyOf): the bare name, or <project>.<role> for a free-form role under a project.
+// A Legion role named under a project it does not work for reaches no holder
+// (roleLaneProjectError): its claim is keyed on the bare name, so the lane of another project
+// naming it would hand that project's message to the role's own project's holder. Such a message
+// is reported as every role message that reaches no holder is, skipped with the delivery
+// exception no_holder, so a publisher watching the lane's exceptions is told, before the ledger is
+// asked anything, as a role with no holder is (resolveCoreRoleHolder).
 func resolveRoleForward(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) (roleForward, bool) {
+	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
+	if err := roleLaneProjectError(lane); err != nil {
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			metricStatus: "skipped",
+			log: func(logger *logging.Logger) {
+				logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
+					slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
+			},
+			exceptionReason: "no_holder",
+		})
+		return roleForward{}, false
+	}
 	role, _ := roleOfLaneTopic(item.Topic)
 	resolvedAt := cfg.now()
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
@@ -632,6 +650,18 @@ func resolveRoleForward(cfg listenerDeliveryHandlerConfig, message deliveryMessa
 		return roleForward{}, false
 	}
 	return roleForward{item: item, sessionID: sessionID, attempt: attempt, resolvedAt: resolvedAt}, true
+}
+
+// roleLaneProjectError is why a role lane named in the form that names a project
+// (notifications.role.<KEY>.<role>) reaches no holder, or nil: a Legion role works for the
+// project its own name gives (contracts.RoleClaimOf), and its claim is keyed on the bare name, so
+// a lane of another project naming it, or of no project, would reach the holder of the role's own
+// project. The role lane drops such a message and the publish route refuses it, as POST
+// /v1/roles/set refuses the claim. A lane in the old form (the role alone) and a free-form role
+// under any project key have none.
+func roleLaneProjectError(lane string) error {
+	_, err := contracts.RoleClaimOf(lane)
+	return err
 }
 
 // roleForwardRefusalLines are one forward path's lines for each refusal beforeForward can return.

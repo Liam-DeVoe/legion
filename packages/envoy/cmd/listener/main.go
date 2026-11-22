@@ -104,6 +104,10 @@ type listenerDeps struct {
 	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
 	// (sendHandler). Empty names nobody, and every send carrying one is refused.
 	dispatchPrincipal string
+	// repositories is the edge listener's reader of the repositories its projects' issues
+	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
+	// listener but an edge one.
+	repositories *edgeRepositories
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1733,6 +1737,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// An edge listener admits a broker token alone, so it refuses to start beside any other
+	// credential, beside Dispatch's principal, beside webhooks, and without the broker-token
+	// settings (validateEdgeMode), before any of them is read below.
+	if err := validateEdgeMode(cfg.EdgeProjects, os.Environ()); err != nil {
+		log.Fatal(err)
+	}
 	logger := logging.New(cfg.MachineID, logging.WithInstance(instance))
 	// The first lines of the log belong to the settings a deployment still carries and this
 	// listener does not read, before it does any other work, so an operator reading from the top
@@ -1798,6 +1808,7 @@ func main() {
 		accounts:     oidcAccounts,
 		google:       googleCallers,
 		brokers:      brokerTokenAuth,
+		edgeProjects: cfg.EdgeProjects,
 		allowedHosts: cfg.AllowedHosts,
 		logger:       logger,
 	}
@@ -2382,6 +2393,15 @@ func main() {
 		}
 		return 0
 	}
+	// An edge listener reads the repositories its projects' issues resolve to from the broker's
+	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub
+	// frame to them. It is set before the relay relays anything, which it does only once this task
+	// serves its machine's receive term (below).
+	var repositories *edgeRepositories
+	if len(cfg.EdgeProjects) > 0 {
+		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
+		relays.repositories = repositories
+	}
 
 	// The role lane (startRoleLane), whose connection opens by the start rule too; an edge
 	// listener opens none.
@@ -2547,6 +2567,22 @@ func main() {
 				logger:   logger,
 			}, sessionConsumerSweepInterval),
 		}
+		// An edge listener reads its projects' repositories again every edgeRepositoryRefresh and
+		// removes the interests of a repository that left them (runEdgeRepositories). It lists
+		// and writes the interest bucket, so it runs with the reapers, under this receive term,
+		// which is also the term whose relays hold each GitHub frame to a fresh answer
+		// (sessionRelays.edgeWithholds). An edge listener opens no lease, so its one pod receives
+		// whenever it receives at all.
+		if repositories != nil {
+			edgeDone := make(chan struct{})
+			go func() {
+				defer close(edgeDone)
+				ticker := time.NewTicker(edgeRepositoryRefresh)
+				defer ticker.Stop()
+				runEdgeRepositories(ctx, ready, cfg.MachineID, ticker.C)
+			}()
+			done = append(done, edgeDone)
+		}
 		// The CI summary loop, on a listener that opened the CI store, emits one pr.<n>.checks
 		// event once a commit's checks settle, for every commit of a pull request, its head or
 		// not; new runs re-arm settlement. The debounce window is ENVOY_CI_DEBOUNCE (default 5s).
@@ -2615,6 +2651,7 @@ func main() {
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
 		dispatchPrincipal:   dispatchPrincipal,
+		repositories:        repositories,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 

@@ -71,7 +71,7 @@ type lapsedRoleAnswer struct {
 func (pod stateTestPod) getLapsedRole(t *testing.T, role string) (string, lapsedRoleAnswer) {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	roleGetHandler(pod.deps).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+	roleGetHandler(pod.deps, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/roles/%s: status %d %s, want 404 for a lapsed holder", role, recorder.Code, recorder.Body.String())
 	}

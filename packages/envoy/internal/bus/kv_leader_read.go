@@ -101,8 +101,20 @@ func (e leaderEntry) Operation() nats.KeyValueOp { return nats.KeyValuePut }
 // bounded by RequestTimeout, the bound every other read of a bucket's stream through this handle
 // takes (ReadStreamState), so no caller waits on this read for good.
 func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	latest, err := kv.GetLatestFromLeader(ctx, key)
+	return latest.Entry, err
+}
+
+// GetLatestFromLeader reads key as GetLatest reads it, from the leader of the bucket's stream, as
+// GetFromLeader reads it: the one stream message get of the key's newest message, which answers a
+// delete or purge marker's revision too, so no second read finds the marker. A conditional write
+// that lost to another write reads the key so before it writes again (internal/session's
+// registration writes), since a copy that keeps answering a write behind would hand it the revision
+// it just lost on, again and again. Everything else is GetFromLeader's: its refusals, its errors and
+// its bound on ctx.
+func (kv KeyValue) GetLatestFromLeader(ctx context.Context, key string) (LatestEntry, error) {
 	if err := kv.RefusesRead(key); err != nil {
-		return nil, err
+		return LatestEntry{}, err
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -118,17 +130,20 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 		marker = isMarker
 		return message, err
 	})
-	if errors.Is(err, nats.ErrMsgNotFound) || marker {
-		return nil, nats.ErrKeyNotFound
+	if errors.Is(err, nats.ErrMsgNotFound) {
+		return LatestEntry{}, nats.ErrKeyNotFound
+	}
+	if marker {
+		return LatestEntry{Revision: message.Sequence}, nats.ErrKeyNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
+		return LatestEntry{}, fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
 	}
-	return leaderEntry{
+	return LatestEntry{Entry: leaderEntry{
 		bucket:   bucket,
 		key:      key,
 		value:    message.Data,
 		revision: message.Sequence,
 		created:  message.Time,
-	}, nil
+	}, Revision: message.Sequence}, nil
 }

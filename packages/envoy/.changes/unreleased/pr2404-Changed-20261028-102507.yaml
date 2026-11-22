@@ -2,8 +2,8 @@ kind: Changed
 body: |-
     Session registrations, interests and role-claim releases and hand-backs are written by
     compare-and-set at the revision the listener read, weighed or merged again over the bucket's
-    value on a conflict, then `503` with `Retry-After: 1` once a write's attempts are spent: 5 for
-    a session registration (`writeAttempts`), 3 for an interest (`interestWriteAttempts`) and 3 for
+    value on a conflict, then `503` with `Retry-After: 1` once a write's attempts are spent: 32 for
+    a session registration (`entryWriteLosses`), 3 for an interest (`interestWriteAttempts`) and 3 for
     a role claim's release or hand-back (`roleClaimReleaseAttempts`). A role claim's renewal
     (`renewRoleClaim`) makes one attempt: one a claim landed under is dropped and logged, the
     registration still answers `200`, and the next registration renews the claim that stands. A

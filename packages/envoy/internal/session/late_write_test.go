@@ -72,7 +72,7 @@ func TestALateSessionWriteIsRefusedOverADeleteMadeAfterItsRead(t *testing.T) {
 	ctx, abandon := context.WithCancel(context.Background())
 	defer abandon()
 	abandoned := make(chan struct{})
-	late := &lateSessionWrite{KeyValue: raw, key: sessionID, answers: make(chan error, 2*writeAttempts), late: func() {
+	late := &lateSessionWrite{KeyValue: raw, key: sessionID, answers: make(chan error, 2*entryWriteLosses), late: func() {
 		abandon()
 		<-abandoned
 		if _, err := raw.Put(sessionID, []byte(`{"machine_id":"another-host"}`)); err != nil {
