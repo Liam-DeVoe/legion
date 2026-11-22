@@ -1103,6 +1103,53 @@ test("a read by path with a selector, one of another copy, and one of a case wit
   }
 });
 
+// Catches: a read of the copy by a path relative to the session's working directory, or under
+// `~`, that an arm leaves as recorded or answers at its absolute path, or a not-found result that
+// names another path than the one the session read.
+test("a whole read of the copy relative to the session's working directory, or under ~, is answered as a read by its absolute path is, at the path the session read, and none answers it as not found", () => {
+  const relative = "skills/alpha/SKILL.md";
+  const tilde = "~/src/acme-skills/skills/alpha/references/x.md";
+  const copy = { dir: COPY, cwd: "/home/agent/src/acme-skills", home: "/home/agent" };
+  const resolved: Case = {
+    ...pathCase,
+    id: "c-path-resolved",
+    messages: pathMessages.map((message, index) =>
+      index === 7
+        ? readCall("read_path_skill", relative)
+        : index === 9
+          ? readCall("read_path_x", tilde)
+          : message
+    ),
+    pathCopy: copy,
+  };
+  // Built from the files the session read, the old arm gives the case's own messages, byte for
+  // byte: the record names the absolute path each read opened.
+  const old = pathArm(resolved, "old");
+  expect(JSON.stringify(old.messages)).toBe(JSON.stringify(resolved.messages));
+  expect(old.pathCopy).toEqual({ ...copy, shownDir: SHOWN, rows: "hashline" });
+
+  const fresh = pathArm(resolved, "new");
+  expect(fresh.messages[8]).toEqual(
+    pathResult("read_path_skill", "SKILL.md", newSkill, snapshotTag(newSkill))
+  );
+  expect(fresh.messages[10]).toEqual(pathNotFound(pathMessages[10], tilde));
+  expect(pathFile(fresh, relative)).toEqual({ text: textOf(fresh.messages[8]), isError: false });
+  expect(pathFile(fresh, `./${relative}`)).toEqual({
+    text: textOf(fresh.messages[8]),
+    isError: false,
+  });
+
+  const none = pathArm(resolved, "none");
+  expect(none.messages).toContainEqual(pathNotFound(pathMessages[8], relative));
+  expect(none.messages).toContainEqual(pathNotFound(pathMessages[10], tilde));
+
+  // A copy that names no working directory does not take the relative read.
+  const { cwd: _, ...noCwd } = copy;
+  const unresolved = pathArm({ ...resolved, pathCopy: noCwd, skillReads: [2, 4, 10] }, "new");
+  expect(unresolved.messages[8]).toEqual(resolved.messages[8]);
+  expect(pathFile(unresolved, relative)).toBeUndefined();
+});
+
 // Catches: a long line of an arm's file shown whole where Oh My Pi cuts it, and a file Oh My Pi
 // shows in another form answered as if it showed it whole.
 test("a line past 768 characters is cut as Oh My Pi cuts it, with its notice, and a file Oh My Pi shows in a form the arms do not rebuild is refused, naming the case", () => {

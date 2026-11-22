@@ -160,14 +160,25 @@ route (`/v1/messages`, `anthropic/<id>`) and the OpenAI Responses route (`/v1/re
 models under `modelOverrides`); Oh My Pi 18.18.6 sends an OpenAI model's turn as a Responses body
 (its system prompt as `instructions`, its history as `input` items; testdata F8), and the capture
 keeps it as it does a Messages body. Hints are written by the hint model, which must be on the
-Messages route: an OpenAI case needs `--hint-model anthropic/<id>`. `gateway.ts` sends each body
-to its API's route (the key as `x-api-key`, or as `authorization: Bearer` on the Responses route),
+Messages route: an OpenAI case needs `--hint-model anthropic/<id>`. A hint is the line of at most
+160 characters that Oh My Pi lists a skill under in place of its description. A capture asks the
+hint model once for each skill text its cache lacks, and every arm and case of that text lists the
+cached hint. A reply Oh My Pi does not keep (empty, more than one line, or over 160 characters)
+fails no capture. As in Oh My Pi, the skill is then listed under its cut-down description: the
+description itself when it has at most 100 characters, else it is cut at a sentence or a word end
+within 99 and followed by `…`. The runner asks no more for that text, because Oh My Pi asks that
+model no more either. The cache file and the capture record's `hints` say `kept: false`, give the
+reply, and say why. Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on,
+Sonnet, Fable and Mythos 5 on or Haiku 5.5 on, which take none, so their hints run at the API's
+default of 1. `gateway.ts` sends each body to its API's route (the key as `x-api-key`, or as
+`authorization: Bearer` on the Responses route),
 reads the stream whole, and prices each reply at its model's list price (`PRICES`, from
 Anthropic's and OpenAI's pricing pages; gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read
 and $2.50 a 30-minute cache write per million tokens, more above 272,000 input tokens), counting a
 Responses reply's cached input and reasoning tokens too. A replay answers a reply whose every tool
-call reads a skill file from the arm, in the body's API (`function_call_output` items on the
-Responses route), at most three rounds. A Messages body gets a cache breakpoint on its last
+call reads a skill file from the arm (a `skill://` read, or a whole read by path of the cut's own
+copy), in the body's API (`function_call_output` items on the Responses route), at most three
+rounds. A Messages body gets a cache breakpoint on its last
 message; a Responses body gets none, since that route caches the shared prefix by itself. The
 judge stays `claude-opus-5-5` on the Messages route and reads a Responses reply's text and tool
 calls as it reads a Messages reply's, so its request names no model, route or arm.
@@ -443,9 +454,10 @@ files of two queries hold, and the pairs of files of two queries that hold one.
 
 ```
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
-  --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
-  --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] \
-  [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+  --skill <name> --old <skill dir at the cut's base> --new <skill dir in the cut> \
+  --sessions <sessions.jsonl> --seed <n> --copies <copies out dir> --count <count dir> \
+  --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] \
+  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -469,8 +481,31 @@ and near-miss tasks of a load test from the first requests of real sessions. `--
 sessions file: `build-cases` places each session's read of the skill with `attribute.ts`'s own
 rules (the prefix table, then a checkout, then the store's context), and keeps a session only
 when they place it at the cut repository's copy; a read they place at another copy, or at none, is
-`not-cut-copy`, with the rule named. A session is a
-candidate only on a model the gateway serves (`servedModels`: its id after the last `/`, so a
+`not-cut-copy`, with the rule named. A session's reads of the skill are its `skill://` reads and its
+reads of the skill's files by path, by the count's rule (a path or URL that, its read selector taken
+off, ends `<skill>/SKILL.md` or holds `skills/<skill>/references/`). A case is built from a
+successful `skill://` read, or from a successful whole read by path (no selector) that those rules
+place at the cut repository's copy, by the path as read, as the count places it. That copy's
+directory is the path up to the skill's directory, resolved as Oh My Pi's read resolves a path: an
+absolute path as it is, a relative one against the session's working directory (its header's `cwd`),
+and one under `~` against the home directory the session ran under, the part of its transcript's
+path before the first `/.omp/` (Oh My Pi keeps its sessions under `<home>/.omp/` and resolves `~`
+against that same home). Such a case names the copy (`pathCopy`: that directory, with the working
+and home directories), and every whole read by path of a file under it, absolute, relative or under
+`~`, is in `skillReads`, so each arm answers it with its own text and `none` answers it as not
+found. The case's profile installs the units of that copy, as it does for a `skill://` read's
+`[Skill file: …]` path. A session whose only successful reads of the skill are reads by path that no
+case is built from is dropped under the first reason that applies: `path-range` (a read selector,
+`:1-40` or `:raw`), `other-copy` (another repository's copy, or a URL), `unattributed` (a path the
+rules place at no copy), `path-relative` (the cut's copy at a relative path in a session whose
+header names no working directory, or under `~` in one whose transcript's path names no home). A
+case keeps every other successful read by path of the skill before its step as recorded in every
+arm, and its evidence item `excluded reads` names each. A case with a file read by path that the
+arms do not answer in Oh My Pi's form (arms.ts's `pathFormFault`, or a directory), in the old text
+or in `--new`'s, is dropped as `path-form`, so no `behaviour` run fails on it. Any other read of the
+skill's files before the step that the case neither holds nor names is still `read-by-path`. A
+session is a candidate only on a model the gateway serves (`servedModels`: its id after the last
+`/`, so a
 `claude-*` model behind any gateway's prefix counts); a session on any other model is counted as
 `model-not-served` and never run on another model. The `case` reader is offered only the base
 text's lines that the session's own read of that file held (a session whose reads hold none is
@@ -585,6 +620,25 @@ evidence says so (`held once`), and the listing measure counts such a recorded n
 In a load run, a read of another source's copy of the name (`skill://<namespace>/<name>`, or a
 path under `namespaced/<namespace>/skills/`, where a capture installs it) is no load of the tested
 skill; a read of `skill://<name>` or of the tested copy's path is.
+
+A case whose session read the cut's own copy of the skill by its path on disk names that copy
+(`pathCopy`: its absolute directory, with the session's working directory and the home directory it
+ran under, which resolve a relative or `~` path as Oh My Pi's read resolves one, cases.ts's
+`resolvedReadPath`), and each whole read of a file under it, absolute, relative or under `~` (no
+line range; cases.ts's `pathReadFile`) is one of the case's `skillReads`. Each arm but `none`
+answers such a read from its own file as the pinned Oh My Pi answers a read of a text file by path
+at its default settings: no `[Skill file: …]` line; in a session that shows hashline rows, the line
+`[<path>#<tag>]`, where the path is the one the session's own result shows and the tag is Oh My Pi's
+snapshot tag of the arm's text, then `<n>:<line>` for each line; `<n>|<line>` or the lines alone in
+a session whose reads show those; a line longer than 768 characters cut to 768 and `…`, followed by
+Oh My Pi's notice of the cut lines. A file the arm lacks gets `Path '<path>' not found`, the path as
+the session read it. `none` keeps the read and answers every file that way, where it removes a
+`skill://` read. A replay answers a reply's whole read by path of the copy the same way. A read with
+a line range, a read of another copy, and a path the case does not name stay as the session had
+them. Oh My Pi shows some files in a form the arms do not rebuild (not Markdown or plain text, not
+UTF-8, longer than 300 lines or 50 KB, or holding a line that opens a git conflict block): building
+an arm of such a case stops with an error naming the case, and a replay takes such a read for the
+judged step.
 
 A skill can reach a session other than by its listing line and a read, and each arm then gives the
 session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every
@@ -736,7 +790,12 @@ commit. Else the registry's tarball of the version (`https://registry.npmjs.org/
 its scope>-<version>.tgz`, one small download) names the skills it ships, each installed from the
 repository at the commit read; a version of neither ships nothing to the profile. Each read is a
 `version of <unit>` evidence item. The dev box's own plugin lists come first when two pin one
-package.
+package. A try of the tarball's download is given up after 60 s, its body included; a try that
+failed for a transient reason (that limit, a connection refused or reset, a name not resolved, an
+HTTP 429 or 5xx) is sent again after 5, 15, 45 and 135 s, as a GitHub read is, each retry said on
+standard error and counted with the GitHub reads' (`githubRetries`). A 404 is no tarball; any other
+failure, and a download that failed on every try (its error naming each try's), fails that profile's
+build, and the next build that needs the tarball downloads it again.
 
 A skill at its repository's root (a clone that is one skill, or a package whose manifest declares
 `.`) has the path `.` in a profile, which cases.ts's schema and load accept. A task profile is
@@ -845,17 +904,30 @@ The runner starts at most 4 gh processes at once, across all its GitHub reads (c
 about 145 MiB a call, and one profile can start a read for every repository at once. The
 environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
+Every child the runner starts and every download it makes has a limit. A gh call is ended after
+120 s (`GH_CALL_TIMEOUT_MS`; context.ts's reads have the same limit), and an ended call is sent
+again as a transient failure (`time limit`). A store command is ended once it prints nothing for 20
+minutes (`STORE_QUIET_MS`): the store's SQL ends itself after 15 minutes, and psql prints only after
+the query ends, so a pull that is still printing rows is never ended. A store read that is ended
+fails that read, naming the command and the limit: a pull is the `pull-failed` drop, and any other
+read fails the run. Each wait for a GitHub rate limit is said on standard error before it starts:
+the call, gh's reason, the wait and when it ends. A refusal for GitHub's secondary rate limit, which
+has no reset, waits a minute, doubled at each refusal; a refusal for the primary limit waits until
+its reset, at most 15 minutes. copies.ts and context.ts use the same rule (common.ts's
+`rateLimitWait`).
+
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
-skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and
-the count's query outputs. Run again with the same `--out` and the same inputs, `build-cases` keeps
-every session already decided (dropped, or a case the cases file holds), with no pull and no
-reader call, and goes on in the same order from the first session not decided, until `--max`
-cases in all; the budget counts the dollars already spent, and the summary's spend adds the runs.
-A session `not-needed` or stopped by the budget is not decided, so it is read again when it is
-needed. It refuses (exit 2, files left as they were) other inputs, naming each difference; a
-cases file with no summary; and a summary that records no inputs (one an older `build-cases`
-wrote). A kill at any moment leaves both files readable: each case is appended as one whole line,
-then the summary is written to a temporary name and renamed; a case line the summary does not
+skill, the seed, and the SHA-256 of `--old`'s files, every file of `--new`, the sessions file, the
+copies files read and the count's query outputs. Run again with the same `--out` and the same
+inputs, `build-cases` keeps every session already decided (dropped, or a case the cases file
+holds), with no pull and no reader call, and goes on in the same order from the first session not
+decided, until `--max` cases in all; the budget counts the dollars already spent, and the
+summary's spend adds the runs. A session `not-needed` or stopped by the budget is not decided, so
+it is read again when it is needed. It refuses (exit 2, files left as they were) other inputs,
+naming each difference; a cases file with no summary; and a summary that records no inputs, or no
+`--new` (one an older `build-cases` wrote). A kill at any moment leaves both files readable: each
+case is appended as one whole line, then the summary is written to a temporary name and renamed;
+a case line the summary does not
 record (a kill between the two) is left out when the build goes on, and its session is read
 again. `build-tasks` goes on the same way: its queries, one per store and day, take an hour and
 more on the real stores, so the summary records the terms and each query as it ends, and

@@ -5,12 +5,14 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
+import { type Arm, buildArm, pathFile, snapshotTag } from "./arms";
 import {
   type BuildIo,
   currentBranch,
   DROP_REASONS,
   type DropReason,
   type Evidence,
+  EXCLUDED_READS,
   EXIT,
   fileHash,
   GithubReads,
@@ -548,6 +550,95 @@ const SESSIONS: Record<
   },
 };
 
+/** A change of F1 that makes the read call at message `index` a read of `target` by its path, and
+ *  its result (the next message) a successful one in the form Oh My Pi shows a read by path in
+ *  hashline rows: `[<path>#<tag>]`, then `<n>:<line>` for each line of `text`, by default the text
+ *  F1's result showed less its `[Skill file: …]` line. */
+function readByPathAt(index: number, target: string, text?: string) {
+  return (lines: Record<string, unknown>[]) => {
+    setReadTarget(lines, index, target);
+    const result = messageLines(lines)[index + 1]?.message;
+    if (result === undefined) throw new Error(`F1 has no message ${index + 1}`);
+    const body = text ?? stripSkillHeader(result.content?.[0]?.text ?? "");
+    const rows = body.split("\n").map((line, n) => `${n + 1}:${line}`);
+    const header = `[${target.replace(/:[^/]*$/, "")}#${snapshotTag(body)}]`;
+    result.content = [{ type: "text", text: [header, ...rows].join("\n") }];
+    result.isError = false;
+    result.details = { totalLines: rows.length, rowPrefixes: true };
+  };
+}
+
+/** F1's working directory and the home directory of its scratch profile (testdata/CAPTURE.md):
+ *  F1_SKILLS is under the home, at `.omp/profiles/fixture/agent/skills`. */
+const F1_CWD = "/legion/scratch/tmp/acme-1/t1-runs/f1/work";
+const F1_HOME = "/legion/scratch/tmp/acme-1/t1-runs/f1/home";
+/** F1's copy of alpha relative to F1_CWD, and under `~` (F1_HOME). */
+const F1_RELATIVE = "../home/.omp/profiles/fixture/agent/skills/alpha";
+const F1_TILDE = "~/.omp/profiles/fixture/agent/skills/alpha";
+
+/** A change of F1 that reads alpha's two files by path under `dir` at messages 1 and 3. */
+const readsUnder = (dir: string) => (lines: Record<string, unknown>[]) => {
+  readByPathAt(1, `${dir}/SKILL.md`)(lines);
+  readByPathAt(3, `${dir}/references/x.md`)(lines);
+};
+
+/** The made-up sessions that read alpha by its path, in store_a at `/sessions/<name>.jsonl` (or
+ *  their own path): each is F1 changed by its entry, as SESSIONS' are, and none is in the build
+ *  over every made-up session. F1's reads of alpha (messages 1 and 3) become reads by path: of the
+ *  copy F1 read, which the prefix table places at the cut's copy, by its absolute path
+ *  (path-read), relative to F1's working directory (path-relative-read), or under `~` in a
+ *  session whose transcript is under that home's `.omp/` (path-home); the relative ones in a
+ *  session whose header names no working directory (path-no-cwd), and the `~` ones in one whose
+ *  transcript's path names no home (path-no-home); with a read selector (path-range); of
+ *  acme/other's copy (path-other); or in a directory of `skills/alpha` that no directory of the
+ *  path says the repository of, which three copies have (path-unattributed). path-mixed keeps
+ *  F1's skill:// reads and reads acme/other's copy by path at message 5; path-form is path-read
+ *  with a read at message 5 of a file that only the new text holds, in a form the arms do not
+ *  answer (NEW_WIDE). */
+const BY_PATH: Record<
+  string,
+  { change: (lines: Record<string, unknown>[]) => void; path?: string }
+> = {
+  "path-read": { change: readsUnder(`${F1_SKILLS}/alpha`) },
+  "path-relative-read": { change: readsUnder(F1_RELATIVE) },
+  "path-home": {
+    change: readsUnder(F1_TILDE),
+    path: `${F1_HOME}/.omp/profiles/fixture/agent/sessions/--work--/path-home.jsonl`,
+  },
+  "path-no-cwd": {
+    change: (lines) => {
+      readsUnder(F1_RELATIVE)(lines);
+      const header = lines.find((line) => line.type === "session");
+      if (header !== undefined) header.cwd = undefined;
+    },
+  },
+  "path-no-home": { change: readsUnder(F1_TILDE) },
+  "path-range": {
+    change: (lines) => {
+      readByPathAt(1, `${F1_SKILLS}/alpha/SKILL.md:1-20`)(lines);
+      readByPathAt(3, `${F1_SKILLS}/alpha/references/x.md:raw`)(lines);
+    },
+  },
+  "path-other": { change: readsUnder("/elsewhere/other-skills/alpha") },
+  "path-unattributed": { change: readsUnder("/home/dev/notes/skills/alpha") },
+  "path-mixed": {
+    change: readByPathAt(5, "/elsewhere/other-skills/alpha/SKILL.md", "# alpha of acme/other"),
+  },
+  "path-form": {
+    change: (lines) => {
+      readsUnder(`${F1_SKILLS}/alpha`)(lines);
+      readByPathAt(5, `${F1_SKILLS}/alpha/references/wide.md`, "Line 1.")(lines);
+    },
+  },
+};
+
+/** A file only the new text of alpha holds: 301 lines, more than a read by path shows whole, so
+ *  the arms do not answer a read of it (arms.ts's `pathFormFault`). */
+const NEW_WIDE = {
+  path: "references/wide.md",
+  text: Array.from({ length: 301 }, (_, n) => `Line ${n + 1}.`).join("\n"),
+};
+
 /** A change of F1 that sets the working directory its header names. */
 function workingDirectory(cwd: string) {
   return (lines: Record<string, unknown>[]) => {
@@ -569,7 +660,8 @@ function compaction(kept: unknown): Record<string, unknown> {
 }
 
 /** The made-up path of session `name`. */
-const sessionPath = (name: string) => SESSIONS[name]?.path ?? `/sessions/${name}.jsonl`;
+const sessionPath = (name: string) =>
+  SESSIONS[name]?.path ?? BY_PATH[name]?.path ?? `/sessions/${name}.jsonl`;
 
 /** The made-up session case `c` comes from. */
 const nameOf = (c: Case) =>
@@ -622,7 +714,7 @@ const FILLERS = 90;
 function sessionText(name: string): string {
   const lines = f1Lines();
   setText(lines, 5, () => `Step 3 (case ${name}).`);
-  SESSIONS[name]?.change?.(lines);
+  (SESSIONS[name]?.change ?? BY_PATH[name]?.change)?.(lines);
   return lines
     .map((line) => (line.notJson === true ? "{not json" : JSON.stringify(line)))
     .map((line) => `${line}\n`)
@@ -1498,6 +1590,8 @@ const setupDir = path.join(scratch, "setup");
 const config = path.join(setupDir, "skill-cuts.json");
 const keyFile = path.join(setupDir, "key");
 const old = path.join(setupDir, "old", "alpha");
+/** alpha's directory at the cut's head (`--new`): the old text less LINE, and NEW_WIDE. */
+const newDir = path.join(setupDir, "new", "alpha");
 const copiesDir = path.join(setupDir, "copies");
 const countDir = path.join(setupDir, "count");
 const psqlLog = path.join(setupDir, "psql.log");
@@ -1530,10 +1624,24 @@ beforeAll(() => {
     path.join(old, "references", "x.md"),
     `${stripSkillHeader(messages[4]?.content?.[0]?.text ?? "")}\n`
   );
+  mkdirSync(path.join(newDir, "references"), { recursive: true });
+  writeFileSync(
+    path.join(newDir, "SKILL.md"),
+    readFileSync(path.join(old, "SKILL.md"), "utf8").replace(`${LINE}\n`, "")
+  );
+  writeFileSync(
+    path.join(newDir, "references", "x.md"),
+    readFileSync(path.join(old, "references", "x.md"))
+  );
+  writeFileSync(path.join(newDir, NEW_WIDE.path), NEW_WIDE.text);
 
   const files: Record<string, Record<string, string>> = { store_a: {}, store_b: {}, store_c: {} };
   for (const [name, session] of Object.entries(SESSIONS)) {
     const store = files[session.store] ?? {};
+    store[sessionPath(name)] = sessionText(name);
+  }
+  for (const name of Object.keys(BY_PATH)) {
+    const store = files.store_a ?? {};
     store[sessionPath(name)] = sessionText(name);
   }
   // A subagent the good session started, one level below its directory, whose recorded prompt
@@ -1904,6 +2012,8 @@ function buildArgs(sessions: string, out: string, seed: string, ...extra: string
     "alpha",
     "--old",
     old,
+    "--new",
+    newDir,
     "--sessions",
     sessions,
     "--seed",
@@ -3121,6 +3231,177 @@ describe("build-cases over every made-up session", () => {
   });
 });
 
+describe("build-cases over reads of the skill by path", () => {
+  const out = path.join(scratch, "by-path", "cases.jsonl");
+  let code = -1;
+  let cases: Case[] = [];
+  let requests: RecordedRequest[] = [];
+  const caseNamed = (name: string) =>
+    cases.find((each) => each.source.pathHash === pathHash(sessionPath(name)));
+  const record = (name: string) =>
+    summaryOf(out).sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+  /** The path each read call of `c` reads, by the call's id. */
+  const readPaths = (c: Case | undefined) =>
+    new Map(
+      (c?.messages ?? []).flatMap((message) =>
+        (message.content ?? []).flatMap((block): [string, unknown][] =>
+          block.type === "toolCall" && block.name === "read"
+            ? [[block.id ?? "", Reflect.get(Object(block.arguments), "path")]]
+            : []
+        )
+      )
+    );
+  beforeAll(async () => {
+    const sessions = sessionsFile("by-path.jsonl", Object.keys(BY_PATH));
+    const from = recorder.requests.length;
+    code = await main(buildArgs(sessions, out, "3"), io([]));
+    requests = recorder.requests.slice(from);
+    cases = loadCases(out, old);
+  }, HOOK_BUILD_MS);
+
+  test("a whole read of the cut's copy by its path builds a case that names the copy, holds the read in skillReads, installs the copy, and hides the read's text from the case reader", () => {
+    expect(code).toBe(EXIT.ok);
+    const c = caseNamed("path-read");
+    // The copy as the read's path gives it, and the session's working directory; its transcript's
+    // path names no home.
+    expect(c?.pathCopy).toEqual({ dir: `${F1_SKILLS}/alpha`, cwd: F1_CWD });
+    expect(c?.skillReads).toEqual([2, 4]);
+    const paths = readPaths(c);
+    expect(c?.skillReads.map((index) => paths.get(c.messages[index]?.toolCallId ?? ""))).toEqual([
+      `${F1_SKILLS}/alpha/SKILL.md`,
+      `${F1_SKILLS}/alpha/references/x.md`,
+    ]);
+    // The line comes from the read by path, less Oh My Pi's rows.
+    expect(c?.line.text).toBe(LINE);
+    expect(c?.profile.skills).toContainEqual(
+      expect.objectContaining({ name: "alpha", repo: "acme/skills", path: "skills/alpha" })
+    );
+    expect(
+      c?.evidence?.some((each) =>
+        each.source.startsWith(`message 2 reads ${F1_SKILLS}/alpha/SKILL.md by its path`)
+      )
+    ).toBe(true);
+    expect(c?.evidence?.some((each) => each.item === EXCLUDED_READS)).toBe(false);
+    const reader = requests.filter(
+      (request) =>
+        request.body.includes("(case path-read)") && request.body.includes("propose one case")
+    );
+    expect(reader.length).toBeGreaterThan(0);
+    for (const request of reader) {
+      expect(request.body).toContain("[the text of a file of the skill, left out");
+      expect(request.body).not.toContain(`[${F1_SKILLS}/alpha/SKILL.md#`);
+    }
+  });
+
+  test("a whole read of the cut's copy relative to the session's working directory, or under ~ in a session whose transcript names its home, builds a case whose pathCopy resolves it, and each arm answers it at the path the session read", () => {
+    for (const [name, dir, dirs] of [
+      ["path-relative-read", F1_RELATIVE, { cwd: F1_CWD }],
+      ["path-home", F1_TILDE, { cwd: F1_CWD, home: F1_HOME }],
+    ] as const) {
+      const c = caseNamed(name);
+      expect({ name, pathCopy: c?.pathCopy }).toEqual({
+        name,
+        pathCopy: { dir: `${F1_SKILLS}/alpha`, ...dirs },
+      });
+      expect({ name, skillReads: c?.skillReads }).toEqual({ name, skillReads: [2, 4] });
+      if (c === undefined) continue;
+      const target = `${dir}/SKILL.md`;
+      const armOf = (arm: "old" | "new" | "none") =>
+        buildArm(c, arm, { old, new: newDir }, path.join(scratch, `arm-${name}-${arm}`));
+      const textAt = (arm: Arm, index: number) => arm.messages[index]?.content?.[0]?.text ?? "";
+      /** The absolute path the arm's record names as the file the read opened. */
+      const opened = (arm: Arm, index: number) =>
+        (arm.messages[index]?.details as { meta?: { source?: { value?: string } } } | undefined)
+          ?.meta?.source?.value;
+      // old: the old text's rows under the session's own hashline line, at the path it read.
+      const oldArm = armOf("old");
+      expect(textAt(oldArm, 2).split("\n")[0]).toStartWith(`[${target}#`);
+      expect(textAt(oldArm, 2)).toContain(`:${LINE}`);
+      expect(opened(oldArm, 2)).toBe(`${F1_SKILLS}/alpha/SKILL.md`);
+      // new: its own text, which has no LINE, at the same path; a new read of it, as replay
+      // asks one, is answered the same way.
+      const newArm = armOf("new");
+      expect(textAt(newArm, 2).split("\n")[0]).toStartWith(`[${target}#`);
+      expect(textAt(newArm, 2)).not.toContain(LINE);
+      expect(textAt(newArm, 4)).toContain("The alpha steps are counted from one");
+      expect(pathFile(newArm, target)).toEqual({ text: textAt(newArm, 2), isError: false });
+      // none: Oh My Pi's not-found result for the path as read.
+      const noneArm = armOf("none");
+      expect(textAt(noneArm, 2)).toBe(`Path '${target}' not found`);
+      expect(noneArm.messages[2]?.isError).toBe(true);
+    }
+  });
+
+  test("a session that reads alpha by path only with a selector, of another copy, at a path no rule places, or of the cut's copy at a relative or ~ path whose directory the session does not name is dropped under that reason, with no reader call", () => {
+    const expected: Record<string, [DropReason, string]> = {
+      "path-range": [
+        "path-range",
+        `message 2 answers the read of ${F1_SKILLS}/alpha/SKILL.md:1-20 (path-range: a read selector after its last /)`,
+      ],
+      "path-other": [
+        "other-copy",
+        "message 2 answers the read of /elsewhere/other-skills/alpha/SKILL.md (other-copy: the prefix table rule places it at acme/other skills/alpha)",
+      ],
+      "path-unattributed": [
+        "unattributed",
+        "message 2 answers the read of /home/dev/notes/skills/alpha/SKILL.md (unattributed: the path ends with skills/alpha/, the skill directory of 3 repositories",
+      ],
+      "path-no-cwd": [
+        "path-relative",
+        `message 2 answers the read of ${F1_RELATIVE}/SKILL.md (path-relative: the prefix table rule places it at acme/skills skills/alpha, at ${F1_RELATIVE}, which needs the session's working directory, which its header does not name)`,
+      ],
+      "path-no-home": [
+        "path-relative",
+        `message 2 answers the read of ${F1_TILDE}/SKILL.md (path-relative: the prefix table rule places it at acme/skills skills/alpha, at ${F1_TILDE}, which needs the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it))`,
+      ],
+    };
+    for (const [name, [reason, detail]] of Object.entries(expected)) {
+      expect({ name, reason: record(name)?.reason }).toEqual({ name, reason });
+      expect(record(name)?.detail).toContain(detail);
+      expect(record(name)?.windows).toBeUndefined();
+      expect(requests.some((request) => request.body.includes(`(case ${name})`))).toBe(false);
+    }
+  });
+
+  test("a session that reads alpha by skill:// and another copy by path builds its case from the skill:// reads, keeps the other read as recorded, and names it in its evidence", () => {
+    const c = caseNamed("path-mixed");
+    expect(c?.pathCopy).toBeUndefined();
+    expect(c?.skillReads).toEqual([2, 4]);
+    expect(c?.messages[6]?.content?.[0]?.text).toStartWith(
+      "[/elsewhere/other-skills/alpha/SKILL.md#"
+    );
+    expect(c?.evidence?.find((each) => each.item === EXCLUDED_READS)?.source).toBe(
+      "each answered as recorded in every arm: message 6 answers the read of /elsewhere/other-skills/alpha/SKILL.md (other-copy: the prefix table rule places it at acme/other skills/alpha)"
+    );
+  });
+
+  test("a case whose read by path is of a file the arms do not answer in Oh My Pi's form, in the new text, is dropped as path-form", () => {
+    expect(record("path-form")?.reason).toBe("path-form");
+    expect(record("path-form")?.detail).toBe(
+      `in the new text ${newDir}: ${NEW_WIDE.path} has 301 lines, and a read by path shows 300, then the end of each block past them`
+    );
+    expect(caseNamed("path-form")).toBeUndefined();
+  });
+
+  test("the summary counts each drop by its reason", () => {
+    const summary = summaryOf(out);
+    expect(summary.drops).toEqual({
+      "path-range": 1,
+      "other-copy": 1,
+      unattributed: 1,
+      "path-relative": 2,
+      "path-form": 1,
+    });
+    expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
+    expect(summary.casesBuilt).toBe(4);
+    expect(cases.map((each) => each.source.pathHash).sort()).toEqual(
+      ["path-read", "path-relative-read", "path-home", "path-mixed"]
+        .map((name) => pathHash(sessionPath(name)))
+        .sort()
+    );
+  });
+});
+
 test("a dev-box session that read a skill of a github: dependency's package and one of a cloned pool gets a profile that holds each unit's skills, the pool's at the commit its installer pins at the session's start", async () => {
   const out = path.join(scratch, "pinned-units", "cases.jsonl");
   const lines: string[] = [];
@@ -3536,7 +3817,7 @@ test("build-cases refuses an unknown cut and a sessions line whose path is not i
   );
   expect(recorder.requests.length).toBe(from);
   expect(logLength()).toBe(logged);
-});
+}, 60_000);
 
 test("build-cases refuses an --out inside a git or jj checkout, its own and --reprofile's, before any read", async () => {
   const from = recorder.requests.length;
@@ -3574,7 +3855,7 @@ test("build-cases refuses an --out inside a git or jj checkout, its own and --re
   expect(recorder.requests.length).toBe(from);
   expect(logLength()).toBe(logged);
   expect(ghCalls.length).toBe(calls);
-});
+}, 60_000);
 
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
   const skillDir = path.join(setupDir, "old", "alpha");
@@ -3826,7 +4107,7 @@ describe("build-cases goes on from where a run stopped", () => {
     expect(sessionsRefused.join("\n")).toContain(`--sessions was ${sessions}`);
     expect(sessionsRefused.join("\n")).toContain("holds a build of other inputs");
     expect(readFileSync(`${killed}.summary.json`, "utf8")).toBe(before);
-  });
+  }, 60_000);
 });
 
 test("--concurrency 3 keeps the same cases, in the same order, as one session at a time", async () => {
@@ -4159,7 +4440,7 @@ test("build-tasks refuses --sessions, --seed and --max without --first-read, and
   expect(recorder.requests.length).toBe(from);
   expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 test("removeSecrets takes out each secret shape and counts it, and leaves plain text alone", () => {
   const token = fixtureSecret("tok");
@@ -4277,7 +4558,7 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
     }
   }
   expect(refusedNames).toEqual(["broken"]);
-});
+}, 60_000);
 
 /** A sessions file of `count` sessions no store holds, each with no path. */
 function absentSessions(file: string, count: number): string {
@@ -4419,7 +4700,7 @@ test("build-cases refuses a stop bound that is no number, before any read", asyn
   }
   expect(recorder.requests.length).toBe(from);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 test("the pull reads the store command's output row by row with psqlRows' checks and faults, and reports a failing command first", async () => {
   const dir = path.join(scratch, "pull-output");
@@ -4768,7 +5049,7 @@ test("build-tasks refuses --profiles-out without --copies and --count, or withou
   expect(recorder.requests.length).toBe(from);
   expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 /** The arguments of a build-tasks run in the reader's mode on store_a, with `extra`. */
 const tasksArgs = (out: string, ...extra: string[]) => [
@@ -5039,7 +5320,7 @@ test("build-tasks refuses a bound that is no number, a bound with no candidate s
   expect(recorder.requests.length).toBe(from);
   expect(psqlLogLength()).toBe(logged);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 test("build-tasks with no bound writes the pinned bytes: the tasks, the summary, the profiles and the printed lines of a run with --model and of one with --profiles-out", async () => {
   /** The SHA-256 of `text`, the suite's scratch directory in it written `<scratch>`. */

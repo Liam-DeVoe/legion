@@ -7,11 +7,11 @@
  *
  * A read of a skill file is a `read` tool call of `skill://<skill>` (its SKILL.md) or
  * `skill://<skill>/<path>`, as `skillReadFile` reads one, or a whole read (no read selector) of a
- * file of the cut's own copy of the skill by its path on disk, when the case names that copy
- * (`pathCopy`), as `pathReadFile` reads one; `caseReadFile` says which file either reads. Every
- * read result of the case's messages that answers one is in `skillReads`, and the arms answer it
- * with their own text (arms.ts). A read of another copy, or one with a selector, stays as the
- * session had it.
+ * file of the cut's own copy of the skill by its path on disk, absolute, relative to the session's
+ * working directory or under `~`, when the case names that copy (`pathCopy`), as `pathReadFile`
+ * reads one; `caseReadFile` says which file either reads. Every read result of the case's
+ * messages that answers one is in `skillReads`, and the arms answer it with their own text
+ * (arms.ts). A read of another copy, or one with a selector, stays as the session had it.
  */
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
@@ -131,8 +131,10 @@ const AbsoluteDir = z.string().refine(
  * indices in `messages` of the read results of this skill's files (`caseReadFile`), and
  * `realStep` the real agent's next assistant message. `pathCopy`, when the case builder wrote it,
  * is the cut's own copy of the skill as the session read it by path: `dir`, its absolute
- * directory, with no `/` at its end; a case whose session read the skill by `skill://` only has
- * none.
+ * directory, with no `/` at its end, and what resolves a read's path to it as Oh My Pi's read
+ * resolves one (`resolvedReadPath`): `cwd`, the session's working directory, for a relative
+ * path, and `home`, the home directory it ran under, for a path under `~`; each absent when the
+ * builder did not know it. A case whose session read the skill by `skill://` only has none.
  * `violatingStep` is an assistant message the case reader wrote before any run: a plausible next
  * step that breaks the line and otherwise looks like a valid one (the same goal, the same kind of
  * tool calls); the judge must fail it (judge.ts, `judgeControls`). `source`
@@ -161,7 +163,9 @@ export const Case = z.strictObject({
   profile: Profile,
   messages: z.array(SessionMessage),
   skillReads: z.array(z.int().nonnegative()),
-  pathCopy: z.strictObject({ dir: AbsoluteDir }).optional(),
+  pathCopy: z
+    .strictObject({ dir: AbsoluteDir, cwd: AbsoluteDir.optional(), home: AbsoluteDir.optional() })
+    .optional(),
   realStep: SessionMessage.refine(
     (message) => message.role === "assistant",
     "is not an assistant message"
@@ -211,17 +215,59 @@ export function skillReadFile(skill: string, target: string): string | undefined
   return file.includes(":") || !InsidePath.safeParse(file).success ? undefined : file;
 }
 
+/** A `read` target with a scheme (`skill://`, `https://`): no path on disk. */
+const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** The absolute path the pinned Oh My Pi's `read` opens for the path `target` (its read selector
+ *  already taken off), resolved with the working directory `cwd` and the home directory `home`, or
+ *  undefined when it needs one of them that is absent, or `target` is a URL. As `expandPath` and
+ *  `resolveToCwd` do (packages/coding-agent/src/tools/path-utils.ts lines 109-123, 323-325 and
+ *  337-343 at the tag v18.18.6-sami.20261119-162325 of cybermonklabs/oh-my-pi; read.ts line 2194
+ *  calls them through `resolveReadPathAsync`, lines 1248-1286, whose other spellings it tries only
+ *  for a file that is not there): a `:` before a path's start is taken off (line 118), then an `@`
+ *  before `/`, `~` or `~/` (lines 75-95); a leading `~` is the home directory, `~/<rest>` the home
+ *  and `/<rest>`, `~<rest>` the two joined (packages/utils/src/path.ts lines 59-70); an absolute
+ *  path is kept as it is, and any other is resolved against the working directory
+ *  (`path.resolve`). */
+export function resolvedReadPath(
+  target: string,
+  where: { readonly cwd?: string; readonly home?: string }
+): string | undefined {
+  if (URL_TARGET.test(target)) return undefined;
+  let read = /^:(?=[/~]|\.\.?\/)/.test(target) ? target.slice(1) : target;
+  if (read.startsWith("@/") || read === "@~" || read.startsWith("@~/")) read = read.slice(1);
+  if (read.startsWith("~")) {
+    if (where.home === undefined) return undefined;
+    read =
+      read === "~"
+        ? where.home
+        : read.startsWith("~/")
+          ? `${where.home}${read.slice(1)}`
+          : path.posix.join(where.home, read.slice(1));
+  }
+  if (path.posix.isAbsolute(read)) return read;
+  return where.cwd === undefined ? undefined : path.posix.resolve(where.cwd, read);
+}
+
 /** The file of the case's own copy of its skill (`pathCopy`) that a `read` of the path `target`
  * reads whole, as a path inside the copy (`SKILL.md` for `<dir>/SKILL.md`), or undefined when the
- * case names no copy, `target` is not under `<dir>/`, carries a read selector (a `:` after its last
- * `/`, as `:1-180` or `:raw`), names a directory (a `/` at its end), or leaves the copy. */
+ * case names no copy, `target` carries a read selector (a `:` after its last `/`, as `:1-180` or
+ * `:raw`) or names a directory (a `/` at its end), or the path Oh My Pi's read opens for it
+ * (`resolvedReadPath`, with the copy's `cwd` and `home`) is not under `<dir>/`, leaves the copy,
+ * or needs a `cwd` or `home` the copy does not name. */
 export function pathReadFile(
-  c: { readonly pathCopy?: { readonly dir: string } },
+  c: {
+    readonly pathCopy?: { readonly dir: string; readonly cwd?: string; readonly home?: string };
+  },
   target: string
 ): string | undefined {
-  if (c.pathCopy === undefined || !target.startsWith(`${c.pathCopy.dir}/`)) return undefined;
-  const file = target.slice(c.pathCopy.dir.length + 1);
-  if (file.endsWith("/") || file.slice(file.lastIndexOf("/") + 1).includes(":")) return undefined;
+  if (c.pathCopy === undefined) return undefined;
+  if (target.endsWith("/") || target.slice(target.lastIndexOf("/") + 1).includes(":")) {
+    return undefined;
+  }
+  const full = resolvedReadPath(target, c.pathCopy);
+  if (full === undefined || !full.startsWith(`${c.pathCopy.dir}/`)) return undefined;
+  const file = full.slice(c.pathCopy.dir.length + 1);
   return InsidePath.safeParse(file).success ? file : undefined;
 }
 

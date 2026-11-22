@@ -24,10 +24,11 @@
  * `none`, each read call of the skill and its result are removed, and an assistant message left
  * with no text and no tool call goes too.
  *
- * A whole read of a file of the cut's own copy of the skill by its path on disk (cases.ts's
- * `pathReadFile` of the case's `pathCopy`; in `skillReads` too) is answered in each arm but `none`
- * from the arm's file the way the pinned Oh My Pi answers a read of a text file by path
- * (packages/coding-agent/src/tools/read.ts lines 2320-3187 at the tag
+ * A whole read of a file of the cut's own copy of the skill by its path on disk, absolute,
+ * relative to the session's working directory or under `~` (cases.ts's `pathReadFile` of the
+ * case's `pathCopy`, which resolves the path as Oh My Pi does; in `skillReads` too) is answered
+ * in each arm but `none` from the arm's file the way the pinned Oh My Pi answers a read of a text
+ * file by path (packages/coding-agent/src/tools/read.ts lines 2320-3187 at the tag
  * v18.18.6-sami.20261119-162325 of cybermonklabs/oh-my-pi), at its default settings. It has no
  * `[Skill file: …]` line, which only a `skill://` read gets (lines 2040-2046).
  * In a session that shows hashline rows it is one line `[<path>#<tag>]`, then `<n>:<line>` for
@@ -186,11 +187,14 @@ export interface DispatchAnswer {
 export type PathRows = "hashline" | "numbered" | "plain";
 
 /** The cut's own copy of a case's skill as the session read it by path (see the file's header):
- *  `dir`, its absolute directory (cases.ts's `pathCopy`); `shownDir`, the directory a hashline
+ *  `dir`, its absolute directory, and `cwd` and `home`, what resolves a read's relative or `~`
+ *  path to it (cases.ts's `pathCopy` and `resolvedReadPath`); `shownDir`, the directory a hashline
  *  line shows its files under (`""` when it shows them relative to the copy itself); `rows`, how
  *  a new read of it shows its rows. */
 export interface PathCopy {
   readonly dir: string;
+  readonly cwd?: string;
+  readonly home?: string;
   readonly shownDir: string;
   readonly rows: PathRows;
 }
@@ -415,13 +419,14 @@ export function pathFormFault(
 }
 
 /** Oh My Pi's result for a whole read by the path `target` of `file` (a path inside the skill's
- *  directory) of the arm's directory `skillDir` (undefined for `none`), its hashline line naming
- *  `shown` and its rows shown as `rows` (see the file's header; read.ts lines 2320-3187 at the
- *  pin). Returns why the arms do not rebuild it instead when Oh My Pi shows the file in another
- *  form (`pathFormFault`, or a page it saves as an artifact). */
+ *  directory) of the arm's directory `skillDir` (undefined for `none`), the absolute path it opens
+ *  being `source`, its hashline line naming `shown` and its rows shown as `rows` (see the file's
+ *  header; read.ts lines 2320-3187 at the pin). Returns why the arms do not rebuild it instead
+ *  when Oh My Pi shows the file in another form (`pathFormFault`, or a page it saves as an
+ *  artifact). */
 function pathAnswer(
   skillDir: string | undefined,
-  read: { file: string; target: string; shown: string; rows: PathRows }
+  read: { file: string; target: string; source: string; shown: string; rows: PathRows }
 ): PathAnswer | string {
   const notFound = { text: `Path '${read.target}' not found`, isError: true, details: {} };
   if (skillDir === undefined) return notFound;
@@ -464,7 +469,7 @@ function pathAnswer(
       },
       fileSize: bytes.length,
       meta: {
-        source: { type: "path", value: path.resolve(read.target) },
+        source: { type: "path", value: read.source },
         pagedSource: true,
         ...(cut === undefined
           ? {}
@@ -495,7 +500,13 @@ export function pathFile(arm: Arm, target: string): { text: string; isError: boo
   if (arm.skillDir !== undefined && armFile(arm.skillDir, file).stats?.isDirectory()) {
     return undefined;
   }
-  const read = { file, target, shown: path.join(copy.shownDir, file), rows: copy.rows };
+  const read = {
+    file,
+    target,
+    source: `${copy.dir}/${file}`,
+    shown: path.join(copy.shownDir, file),
+    rows: copy.rows,
+  };
   const answer = pathAnswer(arm.skillDir, read);
   return typeof answer === "string" ? undefined : { text: answer.text, isError: answer.isError };
 }
@@ -544,6 +555,8 @@ function pathCopyOf(c: Case, targets: ReadonlyMap<string, string>): PathCopy | u
   const edit = c.profile.tools === undefined || c.profile.tools.includes("edit");
   return {
     dir: c.pathCopy.dir,
+    ...(c.pathCopy.cwd === undefined ? {} : { cwd: c.pathCopy.cwd }),
+    ...(c.pathCopy.home === undefined ? {} : { home: c.pathCopy.home }),
     shownDir: shownDir ?? c.pathCopy.dir,
     rows: rows ?? (edit ? "hashline" : "plain"),
   };
@@ -563,6 +576,7 @@ function pathAnswered(
   const answer = pathAnswer(arm.skillDir, {
     file: read.file,
     target: read.target,
+    source: `${read.copy.dir}/${read.file}`,
     shown: own?.shown ?? path.join(read.copy.shownDir, read.file),
     rows: own?.rows ?? read.copy.rows,
   });

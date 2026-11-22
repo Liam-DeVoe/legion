@@ -9,10 +9,10 @@
  * readers.ts through gateway.ts, signed in by `--key-file`.
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
- *       --cut <id> --skill <name> --old <skill dir at the cut's base> --sessions <file>
- *       --seed <n> --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
- *       [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>]
- *       [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *       --cut <id> --skill <name> --old <skill dir at the cut's base> --new <skill dir at the
+ *       cut's head> --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
+ *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
+ *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
  *       the cut's base> --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
@@ -57,13 +57,14 @@
  * the one that reached the budget can be stopped by it too.
  *
  * **Going on.** The summary records the run's inputs: the cut, the skill, the seed, and the
- * SHA-256 of `--old`'s files, the sessions file, the copies files read and the count's query
- * outputs. When `--out` and its summary are there from a run of the same inputs, the build goes on
- * from them: every session they decided (dropped, or a case the cases file holds) is kept as it
- * was, with no pull and no reader call, and the build goes on in the same order from the first
- * session not decided, until `--max` cases in all; the budget counts the dollars already spent.
- * Inputs that differ are refused (exit 2), naming each; so is a cases file with no summary, and a
- * summary with no inputs. Each case is appended to the cases file as one whole line and then the
+ * SHA-256 of `--old`'s files, every file of `--new`, the sessions file, the copies files read and
+ * the count's query outputs. When `--out` and its summary are there from a run of the same
+ * inputs, the build goes on from them: every session they decided (dropped, or a case the cases
+ * file holds) is kept as it was, with no pull and no reader call, and the build goes on in the
+ * same order from the first session not decided, until `--max` cases in all; the budget counts
+ * the dollars already spent. Inputs that differ are refused (exit 2), naming each; so is a cases
+ * file with no summary, and a summary with no inputs (or with no `--new`, which an older
+ * build-cases did not take). Each case is appended to the cases file as one whole line and then the
  * summary is written to a temporary name and renamed, so both stay readable after a kill at any
  * moment; a case line the summary does not record (a kill between the two) is left out when the
  * build goes on, and its session is read again. For each session:
@@ -86,12 +87,28 @@
  *    message it leaves out: one marked `retryRecovery`, or an error with no content), each
  *    `custom_message` as a `custom` message (less the two plan-mode kinds it leaves out), each
  *    `branch_summary` as a `branchSummary` message. A string `content` is made one text block.
- * 3. The first successful read of a file of the skill (`read` of a `skill://<skill>` URL, as
- *    cases.ts's `skillReadFile` reads one) is found, and the copy its `[Skill file: <path>]` line
- *    names is placed by attribute.ts's own rules (`placer`: the prefix table, then a checkout,
- *    then the store's context), from `--count` and `--copies`, the two attribute.ts made the
- *    sessions file from. The session is kept only when they place the read at a copy of the cut's
- *    repository; one they place at another copy, or at none, is dropped with the rule named.
+ * 3. The session's reads of the skill are its reads of `skill://<skill>` files (as cases.ts's
+ *    `skillReadFile` reads one) and its reads of the skill's files by path, by count.sql's rule
+ *    (`readsByPath`: a path or URL that, its read selector taken off, ends `<skill>/SKILL.md` or
+ *    holds `skills/<skill>/references/`). The copy a read reads is placed by attribute.ts's own
+ *    rules (`placer`: the prefix table, then a checkout, then the store's context), from
+ *    `--count` and `--copies`, the two attribute.ts made the sessions file from: a `skill://`
+ *    read's at the path of its `[Skill file: <path>]` line, a read by path's at its own path, as
+ *    read. A case is built from a successful `skill://` read, or from a successful whole read by
+ *    path (no read selector) that they place at a copy of the cut's repository (a source). A
+ *    source's directory is its path up to the skill's directory, resolved as Oh My Pi's read
+ *    resolves it (cases.ts's `resolvedReadPath`): a relative path against the session's working
+ *    directory, its header's `cwd`, and a path under `~` against the home directory it ran under,
+ *    the part of its transcript's path before the first `/.omp/` (`sessionDirs`). The first
+ *    source is found. A first `skill://` read is kept only when they place it at a copy of the
+ *    cut's repository; one they place at another copy, or at none, is dropped with the rule
+ *    named. A session with neither, whose successful reads of the skill are all reads by path of
+ *    the kinds no case is built from (`pathKind`), is dropped by the first of their kinds in this
+ *    order: one with a read selector (`path-range`), one of another repository's copy or a URL
+ *    (`other-copy`), one at a path they place at no copy (`unattributed`), one of the cut's copy
+ *    whose relative or `~` path needs a directory the session does not name, or that resolves to
+ *    no absolute directory a case can name its copy by (`path-relative`); the drop's detail names
+ *    each read and why.
  *
  *    Every check that needs no model's answer runs here, before the session's first reader call,
  *    so a session such a check drops costs no reader spend: the placement; the model and thinking
@@ -101,14 +118,16 @@
  *    (below), built from every read the reader can reach, at each prompt build a step in its reach
  *    can run under: when no unit of those reads ships the cut repository's copy of the skill at any
  *    of them, no step's profile installs it. The
- *    checks of the step and its line (its model, the compaction and by-path reads before it, the
+ *    checks of the step and its line (its model, the compaction and the reads of the skill's
+ *    files before it, the form of each file read by path in the old and the new text, the
  *    line in the base text and in the read, a quote or restatement of it, and the profile of the
  *    reads before it) need the reader's answer, so they run after it and before the restatement
  *    check's and the audit's readers.
  * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's
  *    base text (`--old`) that a case may name: those of each file that the session's own
- *    successful reads of that file hold whole (the text after its `[Skill file: …]` line, each
- *    line trimmed, among the messages the reader reads), each with its number in the base file.
+ *    successful reads of that file hold whole (the text after its `[Skill file: …]` line, or a
+ *    read by path's text less Oh My Pi's rows and its hashline line, `pathReadText`; each line
+ *    trimmed, among the messages the reader reads), each with its number in the base file.
  *    A file the session did not read is not offered, and a session whose reads hold no line of
  *    the base text is dropped before any reader call (`no-common-line`), since the skill's text
  *    may have changed after the session read it. It reads them and the session's messages window
@@ -122,22 +141,33 @@
  *    it would follow a compaction that follows the read, which drops it, so a session whose
  *    windows reach it with no step is dropped for that (`read-before-compaction`). Each message is
  *    cut to MESSAGE_CHARS (its start and its end kept), and each read result of the skill's files
- *    is left out with a note. The reader proposes the first step the skill governs, its message
- *    index, the line it exercises (one of those offered), the criterion, a violating step (a
- *    plausible next step that breaks the line and otherwise looks valid), and each message before
- *    the step that states the line's instruction in any wording; or no step. The session's record
- *    in the summary says how many windows the reader read (`windows`).
+ *    (a `skill://` read, or a whole read by path of a source's copy) is left out with a note. The
+ *    reader proposes the first step the skill governs, its message index, the line it exercises
+ *    (one of those offered), the criterion, a violating step (a plausible next step that breaks
+ *    the line and otherwise looks valid), and each message before the step that states the line's
+ *    instruction in any wording; or no step. The session's record in the summary says how many
+ *    windows the reader read (`windows`).
  * 5. The case: `messages` the model's messages before the step, `realStep` the real assistant
  *    message at it, `violatingStep` the reader's violating step as an assistant message (its text,
  *    then each tool call), `skillReads` the index of each read result of a `skill://<skill>` file
- *    in `messages`, `model` and `thinking` the branch's last `model_change` and
+ *    in `messages` and, when a source before the step read the cut's copy by path, `pathCopy` (the
+ *    first such source's resolved directory, with the session's `cwd` and `home` where known) and
+ *    the index of each whole read by path of a file of that copy, its path resolved with those
+ *    (cases.ts's `pathReadFile`), `model` and `thinking` the branch's last `model_change` and
  *    `thinking_level_change` before the step, `sessionDigest` its last `system-prompt-digest`
  *    before the step, `sessionStart` the header's timestamp, `source` the store and the SHA-256 of
  *    the path (never the path), `context` (`devbox`; `legion:<project>:<role>` from the session's
- *    role, below; or `subagent:<agent>`), and `profile` (below). Where a compaction precedes the
- *    step and every read of the skill follows it, `messages` is what Oh My Pi gives the model
- *    after it: the summary as a `compactionSummary` message, the entries it kept, and those after
- *    it.
+ *    role, below; or `subagent:<agent>`), and
+ *    `profile` (below). Where a compaction precedes the step and every read of the skill follows
+ *    it, `messages` is what Oh My Pi gives the model after it: the summary as a
+ *    `compactionSummary` message, the entries it kept, and those after it. Each other successful
+ *    read by path of the skill before the step (a selector, another copy, no copy, a path the
+ *    build cannot resolve, or the cut's copy at another directory than `pathCopy`) is answered as
+ *    recorded in every arm, and the case's `evidence` names each (EXCLUDED_READS), so the arms do
+ *    not differ in part without saying so. Each file read whole by path is held to the form in
+ *    which the arms answer a read by path (arms.ts's `pathFormFault`) in the old text and the new
+ *    (`--new`); a case with one they do not answer is dropped (`path-form`), so no `behaviour`
+ *    run fails on it.
  * 6. Secrets are taken out of the case (`removeSecrets`: private keys, bearer tokens, known token
  *    shapes, credentials in URLs, and key, token, secret and password assignments), each counted
  *    in `secretsRemoved`.
@@ -161,7 +191,8 @@
  *
  * A session gives no case, and its drop is counted by reason (DROP_REASONS), when: the store holds
  * no file of its hash; the pull fails or returns nothing; a line is not an entry; it has no
- * header; no read of a skill file succeeded; the first read is not the cut repository's copy; a
+ * header; no read of a file of the skill succeeded, or each read by path that succeeded is of a
+ * kind no case is built from (step 3); the first read is not the cut repository's copy; a
  * subagent's `session_init` line is not whole; no form below names a Legion session's role; the
  * session's reads of the skill hold no whole line of the base text; the reader's every reply is
  * refused, its call fails, or it finds no step in the windows it reads (or a step at or before
@@ -173,12 +204,14 @@
  * the restatement check finds a message before the step that states the line's instruction in
  * other words, or the check cannot read them all; the audit finds the real step breaks the line,
  * or the line does not govern it, or gives no answer; no route of the gateway serves the model
- * before the step, or there is none; a read before the step reads a file of the skill by its path
- * or with a selector, which arms.ts does not rebuild (a path that ends `/<skill>/SKILL.md`, holds
- * `skills/<skill>/`, or is under the skill's installed directory); a GitHub read the profile needs
- * fails; or the profile's units install no copy of the skill from the cut repository. A session
- * the readers reach costs one case reader call a window, one restatement call a window, and one
- * audit call.
+ * before the step, or there is none; a read before the step reads a file of the skill in a way
+ * the case neither holds nor names (a `skill://` file with a selector, or a path that ends
+ * `/<skill>/SKILL.md`, holds `skills/<skill>/` or is under the skill's installed directory and
+ * is no read the case holds in `skillReads` or names as an excluded read: an error result of such
+ * a read too); a file the case reads by path is one the arms do not answer in Oh My Pi's form; a
+ * GitHub read the profile needs fails; or the profile's units install no copy of the skill from
+ * the cut repository. A session the readers reach costs one case reader call a window, one
+ * restatement call a window, and one audit call.
  *
  * **The model.** A case runs on the session's own model, as its last `model_change` before the
  * step names it (`<gateway>/claude-opus-5-5`, `openai/gpt-6.1-sol`), and on no other. The
@@ -226,10 +259,11 @@
  * its first build. Below, "the session's start" means that time (a subagent's pools are read at
  * its own start):
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
- *   read result before the step is under; for a path no row maps, each unit of the prefix rows of
- *   the copy attribute.ts's rules place the read at (a checkout, the store's context); and, for a
- *   Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package the
- *   worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
+ *   read result before the step is under, or the path of a successful whole read by path of the
+ *   case's copy (`pathCopy`, `profileReads`); for a path no row maps, each unit of the prefix rows
+ *   of the copy attribute.ts's rules place the read at (a checkout, the store's context); and,
+ *   for a Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package
+ *   the worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
  *   is installed alone. A read whose skill none of those units ships at the session's start (the
  *   copies output names a unit as the manifests name it later: a marketplace or plugin renamed
@@ -323,8 +357,9 @@
  * it did.
  *
  * **build-cases --reprofile** builds the profile of each case of a case file again, from the
- * case and its session's head: its store, the `[Skill file: …]` lines of its messages, its start,
- * whether it carries a recorded prompt, and the working directory the header in the session's head
+ * case and its session's head: its store, the `[Skill file: …]` lines of its messages and the
+ * paths of its whole reads by path of its `pathCopy`, its start, whether it carries a recorded
+ * prompt, and the working directory the header in the session's head
  * names (capture.ts's `sessionHeads`: session-head.sql through the store command, one query per
  * store, each head saved under `<out>.sessions/`), at the time the profile is read: its root's
  * prompt builds (digest-times.sql, one query per store), with a top-level case's step's message
@@ -458,10 +493,12 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
+import { pathFormFault } from "./arms";
 import {
   type InstallersRow,
   type ManifestsRow,
   modelId,
+  type Placement,
   type Placer,
   type PrefixTableRow,
   placer,
@@ -480,6 +517,8 @@ import {
   Profile,
   type ProfileSkill,
   pathHash,
+  pathReadFile,
+  resolvedReadPath,
   skillReadFile,
   Thinking,
   testedCopy,
@@ -666,7 +705,18 @@ export const DROP_REASONS = {
   "pull-failed": "the transcript pull failed or returned nothing",
   unparseable: "a line of the transcript is not one entry",
   "no-header": "the transcript has no session header with a start time",
-  "no-read": "no read of a skill:// file of the skill succeeded",
+  "no-read":
+    "no read of a file of the skill succeeded, by a skill:// URL or by its path (count.sql's rule)",
+  "path-range":
+    "the session's only successful reads of the skill are reads by path that no case is built from, and one has a read selector (a line range, `:raw`), which the arms do not answer",
+  "other-copy":
+    "the session's only successful reads of the skill are reads by path that no case is built from, none with a selector, and one reads another copy: attribute.ts's rules place it at another repository's copy, or it is a URL",
+  unattributed:
+    "the session's only successful reads of the skill are reads by path that no case is built from, none with a selector or of another copy, and one is at a path attribute.ts's rules place at no copy",
+  "path-relative":
+    "the session's only successful reads of the skill are whole reads by path of the cut's copy whose relative or `~` path needs a directory the session does not name (its header names no working directory, or its transcript's path no home, `<home>/.omp/…`), or that resolves to no absolute directory, so a case cannot name the copy (cases.ts's pathCopy)",
+  "path-form":
+    "a file of the cut's copy that the case's messages read whole by path is one the arms do not answer in Oh My Pi's form (arms.ts's pathFormFault, or a directory), in the old text or the new",
   "not-cut-copy":
     "attribute.ts's rules (the prefix table, a checkout, the store's context) do not place the skill's first read at the cut repository's copy, or the profile installs no copy of it",
   "no-role":
@@ -697,7 +747,8 @@ export const DROP_REASONS = {
   "no-model": "no model_change or thinking_level_change before the step",
   "model-not-served":
     "no route of the gateway serves the session's model before the step (its id is the id of none of the configuration's servedModels), or none of its models from the skill's read on",
-  "read-by-path": "a read before the step reads a file of the skill by its path or with a selector",
+  "read-by-path":
+    "a read before the step reads a file of the skill in a way the case neither holds nor names: a skill:// file with a selector, or a path that ends `/<skill>/SKILL.md`, holds `skills/<skill>/` or is under the skill's installed directory and is neither a whole read of the case's copy (pathCopy) nor an excluded read of its evidence (an error result of such a read too)",
   "profile-failed": "a GitHub read the profile needs failed",
 } as const;
 export type DropReason = keyof typeof DROP_REASONS;
@@ -1327,19 +1378,21 @@ function messageText(message: SessionMessage): string {
     .join("\n");
 }
 
-/** A skill read of the messages: the read result's index, its call's index, the file it read, and
- *  the path its `[Skill file: …]` line names. */
+/** A read of a file of the skill in the messages: the read result's index, its call's index, the
+ *  file it read (a path inside the skill's directory), the path its `[Skill file: …]` line names,
+ *  and whether it succeeded. `path`, for a whole read by path of the cut's copy (`copyReads`):
+ *  the path it read, whose result shows Oh My Pi's rows and no `[Skill file: …]` line. */
 interface SkillRead {
   readonly index: number;
   readonly call: number;
   readonly file: string;
   readonly header: string | undefined;
   readonly ok: boolean;
+  readonly path?: string;
 }
 
-/** Each read result of a `skill://<skill>` file in `messages`, in order. */
-function skillReads(messages: readonly SessionMessage[], skill: string): SkillRead[] {
-  const targets = readTargets(messages);
+/** The index in `messages` of each tool call's message, by the call's id. */
+function callIndices(messages: readonly SessionMessage[]): Map<string, number> {
   const calls = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
     if (message.role !== "assistant") continue;
@@ -1347,6 +1400,13 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
       if (block.type === "toolCall" && block.id !== undefined) calls.set(block.id, index);
     }
   }
+  return calls;
+}
+
+/** Each read result of a `skill://<skill>` file in `messages`, in order. */
+function skillReads(messages: readonly SessionMessage[], skill: string): SkillRead[] {
+  const targets = readTargets(messages);
+  const calls = callIndices(messages);
   const reads: SkillRead[] = [];
   for (const [index, message] of messages.entries()) {
     if (message.role !== "toolResult" || message.toolName !== "read") continue;
@@ -1365,12 +1425,265 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
   return reads;
 }
 
+/** A read selector after a read's last `/` (`:raw`, `:1-40`). */
+const READ_SELECTOR = /:[^/]*$/;
+/** A path or URL with a scheme (`skill://`, `https://`). */
+const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** Whether a read of `target` reads a file of skill `skill` by its path, by count.sql's rule: a
+ *  path or URL (no `skill://` one) that, its read selector taken off, ends `<skill>/SKILL.md` or
+ *  holds `skills/<skill>/references/` and more, each after a `/` or at its start. */
+function readsByPath(target: string, skill: string): boolean {
+  if (target.startsWith("skill://")) return false;
+  const file = `/${target.replace(READ_SELECTOR, "")}`;
+  const references = file.indexOf(`/skills/${skill}/references/`);
+  return (
+    file.endsWith(`/${skill}/SKILL.md`) ||
+    (references !== -1 && file.length > references + `/skills/${skill}/references/`.length)
+  );
+}
+
+/** The kinds of a read by path of the skill that no case is built from, in the order a session
+ *  whose only successful reads of the skill are such reads takes its drop reason from: a read
+ *  selector, another copy (or a URL), a path no rule places, the cut's copy at a path the build
+ *  cannot resolve to an absolute directory (`pathKind`). */
+const EXCLUDED_KINDS = [
+  "path-range",
+  "other-copy",
+  "unattributed",
+  "path-relative",
+] as const satisfies readonly DropReason[];
+type ExcludedKind = (typeof EXCLUDED_KINDS)[number];
+
+/** The check of a case's `pathCopy.dir` (cases.ts): an absolute directory with no empty, `.` or
+ *  `..` part and no `/` at its end. Its `cwd` and `home` are held to it too. */
+const PATH_COPY_DIR = Case.shape.pathCopy.unwrap().shape.dir;
+
+/** A case's copy of its skill as its session read it by path (cases.ts's `pathCopy`): its
+ *  directory, and the working and home directories a read's relative or `~` path resolves
+ *  against (cases.ts's `resolvedReadPath`). */
+type CopyPlace = NonNullable<Case["pathCopy"]>;
+
+/** The directories a session's reads by path resolve against (cases.ts's `resolvedReadPath`):
+ *  `cwd`, the working directory its header names; `home`, the home directory it ran under, the
+ *  part of its transcript's path before the first `/.omp/`. Oh My Pi resolves `~` against the
+ *  home directory (packages/utils/src/path.ts lines 59-70 at the pin) and writes its sessions
+ *  under its config root in that same home, `<home>/.omp/agent/sessions/` or a profile's
+ *  `<home>/.omp/profiles/<name>/agent/sessions/` (packages/utils/src/dirs.ts lines 127-146 and
+ *  360-363), so the transcript's path names it; a session whose config root another variable
+ *  moved names none. Each is left out when it is no absolute directory. */
+function sessionDirs(cwd: string | undefined, transcriptPath: string): Omit<CopyPlace, "dir"> {
+  const absolute = (dir: string | undefined) => {
+    const resolved =
+      dir !== undefined && path.posix.isAbsolute(dir) ? path.posix.resolve(dir) : undefined;
+    return resolved !== undefined && PATH_COPY_DIR.safeParse(resolved).success
+      ? resolved
+      : undefined;
+  };
+  const at = transcriptPath.indexOf("/.omp/");
+  const work = absolute(cwd);
+  const home = absolute(at > 0 ? transcriptPath.slice(0, at) : undefined);
+  return { ...(work === undefined ? {} : { cwd: work }), ...(home === undefined ? {} : { home }) };
+}
+
+/** A read by path of a file of the skill in the messages (`readsByPath`): the read result's index,
+ *  its call's index, the path read, whether it succeeded, and its kind. A `source` is a whole read
+ *  that attribute.ts's rules place at the cut repository's copy, at the absolute directory `dir`
+ *  (the path up to the skill's directory, attribute.ts's `copyPrefix`, resolved as Oh My Pi's read
+ *  resolves it: cases.ts's `resolvedReadPath`): a case can be built from it. Any other kind keeps
+ *  it out of a case (EXCLUDED_KINDS). `why` says why it is of its kind. */
+interface PathRead {
+  readonly index: number;
+  readonly call: number;
+  readonly target: string;
+  readonly ok: boolean;
+  readonly kind: "source" | ExcludedKind;
+  readonly dir?: string;
+  readonly why: string;
+}
+
+/** The kind of a read by path of `target` (PathRead), placed by `place` (attribute.ts's rules, on
+ *  the path as read, as the count places it), held to the cut's repository `cutRepo`, and its
+ *  directory resolved against the session's directories `dirs` (`sessionDirs`). A read of the cut's
+ *  copy whose relative or `~` path needs a directory `dirs` lacks, or that resolves to no absolute
+ *  directory a case can name, is `path-relative`. */
+function pathKind(
+  target: string,
+  place: (copyPath: string) => Placement,
+  cutRepo: string,
+  dirs: Omit<CopyPlace, "dir">
+): Pick<PathRead, "kind" | "dir" | "why"> {
+  if (READ_SELECTOR.test(target)) {
+    return { kind: "path-range", why: "a read selector after its last /" };
+  }
+  if (URL_TARGET.test(target)) {
+    return { kind: "other-copy", why: "a URL, read from the web at the commit it names" };
+  }
+  const placed = place(target);
+  if (placed.copy === undefined) {
+    const why = placed.outcome?.replace(/^unattributed: /, "") ?? "no rule places it at a copy";
+    return { kind: "unattributed", why };
+  }
+  const [repository = "", dir = ""] = placed.copy.split("\t");
+  const where = `the ${placed.rule} rule places it at ${repository} ${dir}`;
+  if (repository !== cutRepo) return { kind: "other-copy", why: where };
+  const copyDir = placed.prefix.replace(/\/$/, "");
+  const resolved = resolvedReadPath(copyDir, dirs);
+  if (resolved === undefined) {
+    const needs = /^[:@]?~/.test(copyDir)
+      ? "the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it)"
+      : "the session's working directory, which its header does not name";
+    return { kind: "path-relative", why: `${where}, at ${copyDir}, which needs ${needs}` };
+  }
+  if (!PATH_COPY_DIR.safeParse(resolved).success) {
+    return {
+      kind: "path-relative",
+      why: `${where}, at ${resolved}, no absolute directory a case can name the copy by`,
+    };
+  }
+  return { kind: "source", dir: resolved, why: where };
+}
+
+/** Each read result of `messages` whose call reads a file of skill `skill` by its path
+ *  (`readsByPath`), in order, with its kind (`pathKind`). */
+function pathReads(
+  messages: readonly SessionMessage[],
+  skill: string,
+  place: (copyPath: string) => Placement,
+  cutRepo: string,
+  dirs: Omit<CopyPlace, "dir">
+): PathRead[] {
+  const targets = readTargets(messages);
+  const calls = callIndices(messages);
+  const reads: PathRead[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (message.role !== "toolResult" || message.toolName !== "read") continue;
+    const target = targets.get(message.toolCallId ?? "");
+    if (target === undefined || !readsByPath(target, skill)) continue;
+    reads.push({
+      index,
+      call: calls.get(message.toolCallId ?? "") ?? index,
+      target,
+      ok: message.isError !== true,
+      ...pathKind(target, place, cutRepo, dirs),
+    });
+  }
+  return reads;
+}
+
+/** A read by path no case is built from, as a drop's detail and a case's evidence name it. A
+ *  `source` read is excluded only for being at another directory than the case's `pathCopy`. */
+function excludedRead(read: PathRead, pathCopy?: { readonly dir: string }): string {
+  const kind =
+    read.kind === "source" ? `another directory than the case's copy ${pathCopy?.dir}` : read.kind;
+  return `message ${read.index} answers the read of ${read.target} (${kind}: ${read.why})`;
+}
+
+/** Each read result of `messages` whose call reads a file of the cut's copy `pathCopy` whole by
+ *  its path (cases.ts's `pathReadFile`, which resolves a relative or `~` path with the copy's
+ *  `cwd` and `home`), in order, as a SkillRead of that file. */
+function copyReads(messages: readonly SessionMessage[], pathCopy: CopyPlace): SkillRead[] {
+  const targets = readTargets(messages);
+  const calls = callIndices(messages);
+  return messages.flatMap((message, index): SkillRead[] => {
+    if (message.role !== "toolResult" || message.toolName !== "read") return [];
+    const target = targets.get(message.toolCallId ?? "");
+    const file = target === undefined ? undefined : pathReadFile({ pathCopy }, target);
+    if (target === undefined || file === undefined) return [];
+    return [
+      {
+        index,
+        call: calls.get(message.toolCallId ?? "") ?? index,
+        file,
+        header: undefined,
+        ok: message.isError !== true,
+        path: target,
+      },
+    ];
+  });
+}
+
+/** Each whole read by path of a file of the copies `copies` in `messages` (`copyReads`), once,
+ *  in order. */
+function copiesReads(
+  messages: readonly SessionMessage[],
+  copies: readonly CopyPlace[]
+): SkillRead[] {
+  const reads = new Map<number, SkillRead>();
+  for (const copy of copies) {
+    for (const read of copyReads(messages, copy)) {
+      if (!reads.has(read.index)) reads.set(read.index, read);
+    }
+  }
+  return [...reads.values()].sort((a, b) => a.index - b.index);
+}
+
+/** A hashline line: `[<path>#<tag>]`, the path as Oh My Pi shows it (arms.ts's `PathRows`). */
+const HASHLINE_HEADER = /^\[.+#[0-9A-F]{4}\]$/;
+
+/** The text of the file a successful read by path shows: the result's text less what Oh My Pi
+ *  puts around the lines (arms.ts's `PathRows`), the `[<path>#<tag>]` line and each row's `<n>:` of
+ *  hashline rows, or each row's `<n>|` of numbered rows (`details.rowPrefixes`); plain rows as
+ *  they are. */
+function pathReadText(message: SessionMessage): string {
+  const text = message.content?.[0]?.text ?? "";
+  const lines = text.split("\n");
+  if (HASHLINE_HEADER.test(lines[0] ?? "")) {
+    return lines
+      .slice(1)
+      .map((line) => line.replace(/^\d+:/, ""))
+      .join("\n");
+  }
+  const details = message.details;
+  if (isObject(details) && Reflect.get(details, "rowPrefixes") === true) {
+    return lines.map((line) => line.replace(/^\d+\|/, "")).join("\n");
+  }
+  return text;
+}
+
+/** The text of the file the read `read` read, from its whole result `message`: a `skill://` read's
+ *  less its `[Skill file: …]` line, a read by path's less Oh My Pi's rows (`pathReadText`). */
+function readText(read: SkillRead, message: SessionMessage | undefined): string {
+  if (message === undefined) return "";
+  return read.path === undefined
+    ? stripSkillHeader(message.content?.[0]?.text ?? "")
+    : pathReadText(message);
+}
+
+/** Why the arms do not answer a whole read by path of one of `files` (paths inside the cut's copy)
+ *  in Oh My Pi's form from the old text or the new (arms.ts's `pathFormFault`), or undefined. A
+ *  file a text lacks they answer as not found; one a text holds as a directory they do not
+ *  answer. */
+function pathFormIn(
+  files: readonly string[],
+  texts: { readonly old: string; readonly new: string }
+): string | undefined {
+  for (const file of new Set(files)) {
+    for (const [name, dir] of [
+      ["old", texts.old],
+      ["new", texts.new],
+    ] as const) {
+      const full = path.join(dir, file);
+      const stats = statSync(full, { throwIfNoEntry: false });
+      if (stats === undefined) continue;
+      const fault = stats.isFile()
+        ? pathFormFault(file, readFileSync(full))
+        : `${file} is no file, and the arms answer reads of files only`;
+      if (fault !== undefined) return `in the ${name} text ${dir}: ${fault}`;
+    }
+  }
+  return undefined;
+}
+
 /** A successful read result whose first line is `[Skill file: <path>]`: its index in the
- *  messages, that path, and the skill its call names (`skill://<skill>`), when it names one. */
+ *  messages, that path, and the skill its call names (`skill://<skill>`), when it names one. With
+ *  `byPath`, a whole read by path of the cut's copy (`copyReads`): `header` is the path it read,
+ *  and `skill` the case's skill. */
 interface ShownRead {
   readonly index: number;
   readonly header: string;
   readonly skill: string | undefined;
+  readonly byPath?: true;
 }
 
 /** Each successful read result of `messages` that shows a skill file's path, any skill's. */
@@ -1387,10 +1700,26 @@ function shownReads(messages: readonly SessionMessage[]): ShownRead[] {
   });
 }
 
+/** The reads a profile is built from: each of `shownReads`, and each successful whole read by path
+ *  of a file of the cut's copies `copies` of `skill` (`copyReads`), in order. */
+function profileReads(
+  messages: readonly SessionMessage[],
+  skill: string,
+  copies: readonly CopyPlace[]
+): ShownRead[] {
+  const byPath = copiesReads(messages, copies).flatMap((read): ShownRead[] =>
+    read.ok && read.path !== undefined
+      ? [{ index: read.index, header: read.path, skill, byPath: true }]
+      : []
+  );
+  return [...shownReads(messages), ...byPath].sort((a, b) => a.index - b.index);
+}
+
 /** The lines of each base file in `files` that a successful read of it in `reads` holds whole
- *  (its text after the `[Skill file: …]` line; each line trimmed, as the builder's check of a
- *  proposed line compares them; blank lines aside), each with its number in the base file. A file
- *  no read holds a line of is not offered. `message` gives a read's whole message by its index. */
+ *  (`readText`: its text after the `[Skill file: …]` line, or less Oh My Pi's rows for a read by
+ *  path; each line trimmed, as the builder's check of a proposed line compares them; blank lines
+ *  aside), each with its number in the base file. A file no read holds a line of is not offered.
+ *  `message` gives a read's whole message by its index. */
 function offeredFiles(
   files: readonly { readonly path: string; readonly text: string }[],
   reads: readonly SkillRead[],
@@ -1399,13 +1728,13 @@ function offeredFiles(
   const texts = new Map(
     reads
       .filter((read) => read.ok)
-      .map((read): [number, string] => [read.index, message(read.index).content?.[0]?.text ?? ""])
+      .map((read): [number, string] => [read.index, readText(read, message(read.index))])
   );
   return files.flatMap((file) => {
     const held = new Set(
       reads
         .filter((read) => read.ok && read.file === file.path)
-        .flatMap((read) => textLines(stripSkillHeader(texts.get(read.index) ?? "")))
+        .flatMap((read) => textLines(texts.get(read.index) ?? ""))
         .map((line) => line.trim())
     );
     const lines = textLines(file.text).flatMap((text, index) =>
@@ -1417,22 +1746,26 @@ function offeredFiles(
 
 /** Why a read call of `messages` reads a file of the skill in a way arms.ts does not rebuild, or
  *  undefined: a `skill://<skill>` URL with a selector, or a path (its selector left aside) that
- *  ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under one of `installedDirs`. */
+ *  ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under one of `installedDirs`. A call
+ *  whose id `kept` holds (one the case holds as a read of its copy, or names as an excluded read)
+ *  is passed over. */
 function readByPath(
   messages: readonly SessionMessage[],
   skill: string,
-  installedDirs: readonly string[]
+  installedDirs: readonly string[],
+  kept: ReadonlySet<string>
 ): string | undefined {
   for (const [index, message] of messages.entries()) {
-    for (const { target } of readCalls([{ message }])) {
+    for (const { id, target } of readCalls([{ message }])) {
+      if (kept.has(id)) continue;
       if (readsSkillUrl(target, skill)) {
         if (skillReadFile(skill, target) === undefined) {
           return `message ${index} reads ${target}, with a selector`;
         }
         continue;
       }
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) continue;
-      const file = target.replace(/:[^/]*$/, "");
+      if (URL_TARGET.test(target)) continue;
+      const file = target.replace(READ_SELECTOR, "");
       if (
         file.endsWith(`/${skill}/SKILL.md`) ||
         file === `${skill}/SKILL.md` ||
@@ -3458,7 +3791,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     if (shown.has(read.header)) continue;
     shown.add(read.header);
-    const reading = `message ${read.index} reads [Skill file: ${read.header}]`;
+    const reading =
+      read.byPath === true
+        ? `message ${read.index} reads ${read.header} by its path`
+        : `message ${read.index} reads [Skill file: ${read.header}]`;
     let rows = copies.prefixes.filter((row) => prefixMatches(row.prefix ?? "", read.header));
     let under = (row: Record<string, string>) =>
       `${reading}, under the prefix-table.tsv row ${row.prefix}`;
@@ -4476,7 +4812,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --new <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
@@ -4592,6 +4928,9 @@ interface CaseRun {
   readonly cut: { readonly id: string; readonly repo: string };
   readonly skill: string;
   readonly old: string;
+  /** The skill's directory at the cut's head (`--new`): the new arm's text, whose files a case's
+   *  reads by path are checked against too (`pathFormIn`). */
+  readonly new: string;
   /** The skill's base files (`--old`). */
   readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly copies: Copies;
@@ -4911,30 +5250,59 @@ async function caseOf(
   const { sessionStart } = header;
   // Every message, light: what the scans of the whole session read.
   const allMessages = t.items.map((item) => item.slim);
+  // The session's reads of the skill: by a skill:// URL, and by its path (count.sql's rule). A case
+  // is built from a successful skill:// read, or from a successful whole read by path that
+  // attribute.ts's rules place at the cut's copy (a source); the step comes after the first of
+  // them.
   const reads = skillReads(allMessages, run.skill);
-  const first = reads.find((read) => read.ok);
+  const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
+  // A read by path relative to the session's working directory, or under `~`, resolves against
+  // its header's cwd and the home its transcript's path names.
+  const dirs = sessionDirs(header.cwd, transcriptPath);
+  const byPath = pathReads(allMessages, run.skill, placeRead, run.cut.repo, dirs);
+  const sourceCopies = [
+    ...new Set(byPath.flatMap((read) => (read.ok && read.dir !== undefined ? [read.dir] : []))),
+  ].map((dir): CopyPlace => ({ dir, ...dirs }));
+  const firstUrl = reads.find((read) => read.ok);
+  const firstPath = byPath.find((read) => read.ok && read.kind === "source");
+  const first =
+    firstPath === undefined || (firstUrl !== undefined && firstUrl.index < firstPath.index)
+      ? firstUrl
+      : firstPath;
   if (first === undefined) {
+    // A session whose only successful reads of the skill are reads by path that no case is built
+    // from is dropped by the first of their kinds, in EXCLUDED_KINDS' order.
+    const excluded = byPath.filter((read) => read.ok);
+    const kind = EXCLUDED_KINDS.find((each) => excluded.some((read) => read.kind === each));
+    if (kind !== undefined) {
+      return drop(
+        kind,
+        `the session reads ${run.skill} by path only so: ${excluded.map((read) => excludedRead(read)).join("; ")}`
+      );
+    }
     return drop(
       "no-read",
-      `${reads.length} read results of skill://${run.skill} files, none successful`
+      `${reads.length} read results of skill://${run.skill} files and ${byPath.length} of reads of its files by path, none successful`
     );
   }
   const firstAt = t.items[first.index]?.at ?? 0;
   record.model = lastBefore(t.branch, firstAt, modelChange);
-  // The copy the session read, placed by attribute.ts's own rules from the same count and copies
-  // output as the sessions file, so the builder keeps what attribute.ts counted for the cut's
-  // copy: a read in a checkout or one the store's context places, as well as one the prefix table
-  // maps.
-  const placed = run.placer.place(store.name, first.header ?? "", run.skill);
-  const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
-  if (placed.copy === undefined) {
-    return drop("not-cut-copy", `no rule places ${first.header} at a copy: ${placed.outcome}`);
-  }
-  if (placedRepository !== run.cut.repo) {
-    return drop(
-      "not-cut-copy",
-      `the ${placed.rule} rule places ${first.header} at ${placedRepository} ${placedPath}${placed.outcome === undefined ? "" : ` (${placed.outcome})`}`
-    );
+  // The copy a skill:// read read, placed by attribute.ts's own rules from the same count and
+  // copies output as the sessions file, so the builder keeps what attribute.ts counted for the
+  // cut's copy: a read in a checkout or one the store's context places, as well as one the prefix
+  // table maps. A read by path is a source only when they place it at the cut's copy.
+  if (first === firstUrl) {
+    const placed = placeRead(firstUrl.header ?? "");
+    const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
+    if (placed.copy === undefined) {
+      return drop("not-cut-copy", `no rule places ${firstUrl.header} at a copy: ${placed.outcome}`);
+    }
+    if (placedRepository !== run.cut.repo) {
+      return drop(
+        "not-cut-copy",
+        `the ${placed.rule} rule places ${firstUrl.header} at ${placedRepository} ${placedPath}${placed.outcome === undefined ? "" : ` (${placed.outcome})`}`
+      );
+    }
   }
 
   // The model and thinking level: the step's are the last before it, and the step comes after the
@@ -4983,9 +5351,12 @@ async function caseOf(
   const readable = t.items.filter((item) => boundaryAfterRead < 0 || item.at < boundaryAfterRead);
 
   // The lines the case reader may name: those of the base text the session's own successful
-  // reads of the skill's files held, among the messages it reads. A session with none gives no
-  // case, and no reader reads it.
-  const readsInReach = reads.filter((read) => read.ok && read.index < readable.length);
+  // reads of the skill's files held (by skill://, or whole by path from a source's copy), among
+  // the messages it reads. A session with none gives no case, and no reader reads it.
+  const pathFileReads = copiesReads(allMessages, sourceCopies);
+  const readsInReach = [...reads, ...pathFileReads].filter(
+    (read) => read.ok && read.index < readable.length
+  );
   const offered = offeredFiles(run.files, readsInReach, t.message);
   if (offered.length === 0) {
     const read = [...new Set(readsInReach.map((each) => each.file))];
@@ -5046,7 +5417,11 @@ async function caseOf(
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
   };
-  const reachableReads = shownReads(readable.map((item) => item.slim));
+  const reachableReads = profileReads(
+    readable.map((item) => item.slim),
+    run.skill,
+    sourceCopies
+  );
   let ships = false;
   for (const readTime of reach) {
     try {
@@ -5073,7 +5448,10 @@ async function caseOf(
       )
     );
   }
-  const hidden = skillReadResults(allMessages, run.skill);
+  const hidden = new Set([
+    ...skillReadResults(allMessages, run.skill),
+    ...pathFileReads.map((read) => read.index),
+  ]);
   const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
     index,
     role: message.role ?? "message",
@@ -5186,12 +5564,37 @@ async function caseOf(
   const before = messagesBefore(t, stepItem.at, firstAt);
   if ("drop" in before) return drop(before.drop, before.detail);
   const messages = before.messages;
+  // The case's reads of the skill's files: each skill:// read, and, when a source before the step
+  // read the cut's copy whole by path, each whole read by path of a file of that copy (the first
+  // such source's resolved directory, with the session's cwd and home: the case's `pathCopy`).
+  // Each other successful read by path of the skill is answered as recorded in every arm, and the
+  // case's evidence names it (`excluded reads`).
   const caseReads = skillReads(messages, run.skill);
+  const casePaths = pathReads(messages, run.skill, placeRead, run.cut.repo, dirs);
+  const sourceDir = casePaths.find((read) => read.ok && read.kind === "source")?.dir;
+  const pathCopy: CopyPlace | undefined =
+    sourceDir === undefined ? undefined : { dir: sourceDir, ...dirs };
+  const fileReads = [
+    ...caseReads,
+    ...(pathCopy === undefined ? [] : copyReads(messages, pathCopy)),
+  ].sort((a, b) => a.index - b.index);
+  const answered = new Set(fileReads.map((read) => read.index));
+  const excluded = casePaths.filter((read) => read.ok && !answered.has(read.index));
   const installedDirs = caseReads.flatMap((read) =>
     read.header?.endsWith(`/${read.file}`) ? [read.header.slice(0, -(read.file.length + 1))] : []
   );
-  const byPath = readByPath(messages, run.skill, installedDirs);
-  if (byPath !== undefined) return drop("read-by-path", byPath);
+  const kept = new Set(
+    [...fileReads, ...excluded].map((read) => messages[read.index]?.toolCallId ?? "")
+  );
+  const unheld = readByPath(messages, run.skill, installedDirs, kept);
+  if (unheld !== undefined) return drop("read-by-path", unheld);
+  // A case whose read by path the arms do not answer in Oh My Pi's form would fail every
+  // `behaviour` run of it.
+  const formFault = pathFormIn(
+    fileReads.flatMap((read) => (read.path === undefined ? [] : [read.file])),
+    run
+  );
+  if (formFault !== undefined) return drop("path-form", formFault);
 
   const file = run.files.find((each) => each.path === answer.line.file);
   const wanted = answer.line.text.trim();
@@ -5200,16 +5603,12 @@ async function caseOf(
   if (file === undefined || lineNumber === 0) {
     return drop("line-not-in-base", `${answer.line.file}: ${JSON.stringify(answer.line.text)}`);
   }
-  const held = caseReads.some((read) => {
-    const message = messages[read.index];
-    return (
+  const held = fileReads.some(
+    (read) =>
       read.ok &&
       read.file === file.path &&
-      textLines(stripSkillHeader(message?.content?.[0]?.text ?? "")).some(
-        (line) => line.trim() === wanted
-      )
-    );
-  });
+      textLines(readText(read, messages[read.index])).some((line) => line.trim() === wanted)
+  );
   if (!held) {
     return drop(
       "line-not-in-read",
@@ -5246,7 +5645,11 @@ async function caseOf(
   const readTime = step?.read ?? reach[0];
   let profiled: ProfileResult;
   try {
-    profiled = await caseProfile(run, { ...profileInput, readTime, reads: shownReads(messages) });
+    profiled = await caseProfile(run, {
+      ...profileInput,
+      readTime,
+      reads: profileReads(messages, run.skill, pathCopy === undefined ? [] : [pathCopy]),
+    });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
   }
@@ -5288,7 +5691,7 @@ async function caseOf(
     },
     criterion: answer.criterion,
   });
-  const skillReadIndices = caseReads.map((each) => each.index);
+  const skillReadIndices = fileReads.map((each) => each.index);
 
   // The whole history before the step, as the case keeps it, for a restatement of the line: every
   // message but the skill's own read results, window by window, each window one `restate` call.
@@ -5381,6 +5784,7 @@ async function caseOf(
         : { ...profiled.profile, systemPrompt: secrets.value.systemPrompt, tools: init.tools },
     messages: secrets.value.messages,
     skillReads: skillReadIndices,
+    ...(pathCopy === undefined ? {} : { pathCopy }),
     realStep: secrets.value.realStep,
     violatingStep: secrets.value.violatingStep,
     source: { store: store.name, pathHash: hash },
@@ -5394,6 +5798,14 @@ async function caseOf(
         item: `${AUDIT_EVIDENCE}${audit.verdict}`,
         source: `the audit reader, given the line, the messages before the step as the judge reads them and the real step, and no criterion: ${audit.reason}`,
       },
+      ...(excluded.length === 0
+        ? []
+        : [
+            {
+              item: EXCLUDED_READS,
+              source: `each answered as recorded in every arm: ${excluded.map((read) => excludedRead(read, pathCopy)).join("; ")}`,
+            },
+          ]),
     ],
   });
   return {
@@ -5478,6 +5890,9 @@ function readCopiesAndPlacer(
 const CONTEXT_EVIDENCE = /^(subagent |role |no role$|the recorded system prompt and tools$)/;
 /** The start of the item of a case's audit evidence, which comes after its profile's. */
 const AUDIT_EVIDENCE = "audit of the real step: ";
+/** The item of a case's evidence that names each successful read by path of the skill before its
+ *  step that the arms answer as recorded (`excludedRead`); it comes after the audit's. */
+export const EXCLUDED_READS = "excluded reads";
 /** The item of the profile's evidence for a Legion session whose working directory is no
  *  workspace, so its repository's context files are left out. */
 const NO_WORKSPACE = "left out: the session repository's context files";
@@ -5656,7 +6071,7 @@ async function reprofileCases(
         store: store.name,
         context: store.context,
         project: legion ? store.context.slice("legion:".length) : undefined,
-        reads: shownReads(c.messages),
+        reads: profileReads(c.messages, c.skill, c.pathCopy === undefined ? [] : [c.pathCopy]),
         sessionStart: c.sessionStart,
         cwd: held
           ? (head?.cwd ?? undefined)
@@ -5728,7 +6143,7 @@ async function reprofileCases(
                     ?.get(betweenKey(c.source.pathHash, reading.window)),
                 }
       ),
-      ...old.filter((each) => each.item.startsWith(AUDIT_EVIDENCE)),
+      ...old.filter((each) => each.item.startsWith(AUDIT_EVIDENCE) || each.item === EXCLUDED_READS),
     ];
     const built = Case.parse({ ...c, profile: { ...c.profile, ...profiled.profile }, evidence });
     rebuilt.push(built);
@@ -5780,12 +6195,14 @@ async function reprofileCases(
 
 /** What a build-cases run is made from, as its summary records it: a resumed run must be made
  *  from the same. The texts are digests of what the run read (`digestOf`); the paths are only
- *  for a reader of the summary. */
+ *  for a reader of the summary. `new`, every file of `--new`, is absent from a summary written
+ *  before build-cases took `--new`, so a build does not go on from that one. */
 const CasesInputs = z.strictObject({
   cut: z.string(),
   skill: z.string(),
   seed: z.string(),
   old: Digested,
+  new: Digested.optional(),
   sessions: Digested,
   copies: Digested,
   count: Digested,
@@ -5829,6 +6246,11 @@ function inputsDiffer(was: CasesInputs, now: CasesInputs): string[] {
         `--${key} was ${was[key].path} (sha256 ${was[key].sha256.slice(0, 12)}), now ${now[key].path} (sha256 ${now[key].sha256.slice(0, 12)})`
       );
     }
+  }
+  if (was.new?.sha256 !== now.new?.sha256) {
+    const shown = (given: Digested | undefined) =>
+      given === undefined ? "not given" : `${given.path} (sha256 ${given.sha256.slice(0, 12)})`;
+    differ.push(`--new was ${shown(was.new)}, now ${shown(now.new)}`);
   }
   return differ;
 }
@@ -5955,6 +6377,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       cut: { type: "string" },
       skill: { type: "string" },
       old: { type: "string" },
+      new: { type: "string" },
       sessions: { type: "string" },
       seed: { type: "string" },
       copies: { type: "string" },
@@ -5973,7 +6396,19 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   if (values.reprofile !== undefined) return reprofileCases(values, io);
   const given = required(
     values,
-    ["config", "key-file", "cut", "skill", "old", "sessions", "seed", "copies", "count", "out"],
+    [
+      "config",
+      "key-file",
+      "cut",
+      "skill",
+      "old",
+      "new",
+      "sessions",
+      "seed",
+      "copies",
+      "count",
+      "out",
+    ],
     BUILD_CASES_USAGE
   );
   // The cases file and its spool hold real session text.
@@ -6021,6 +6456,9 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     );
   }
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
+  if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--new ${given.new} is not a directory`);
+  }
   mustBeFile(given["key-file"], "--key-file");
   const files = skillFiles(given.old);
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
@@ -6037,6 +6475,13 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     old: digestOf(
       given.old,
       files.map((file) => file.path)
+    ),
+    new: digestOf(
+      given.new,
+      readdirSync(given.new, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.relative(given.new, path.join(entry.parentPath, entry.name)))
+        .sort()
     ),
     sessions: {
       ...digestOf(path.dirname(given.sessions), [path.basename(given.sessions)]),
@@ -6112,6 +6557,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     cut,
     skill: given.skill,
     old: given.old,
+    new: given.new,
     files,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),
