@@ -14,7 +14,7 @@ The user message holds four parts:
 - `<first-message>`: the first user message of a real session that read the skill. Your tasks go in that session's context: the same project, working directory, tools and other skills.
 - `<count>`: the most tasks you may write.
 
-The test gives a fresh agent your task as the user's message, then the agent's read of the skill and its result, and asks for the next assistant message under several texts of the skill (this text, a shorter rewrite of it, this text less the line you name, this text again, and no skill at all). A judge decides whether that step passes your criterion. With no skill, the read and its result are taken out, and the agent has only your task.
+The test gives a fresh agent your task as the user's message, then the agent's read of the skill and its result, and asks for the next assistant message under several texts of the skill (this text, another text of the skill, this text less the line you name, this text again, and no skill at all). A judge decides whether that step passes your criterion. With no skill, the read and its result are taken out, and the agent has only your task.
 
 Write each task:
 
