@@ -440,7 +440,7 @@ func checkRoleOverlays(ctx context.Context, entries []roleOverlays, check func(v
 // newProbeDeadline is the context the probe runs under once --probe-budget gives it a budget:
 // ctx, ended with context.DeadlineExceeded once budget has passed. A test puts its own in place,
 // to end the probe at a moment of a stand-in's run rather than at a time a loaded machine can
-// reach before that run's shell has started (tls_probe_test.go's deadlineOnceLogged).
+// reach before that run's shell has started (tls_probe_test.go's probeDeadlineOnceLogged).
 var newProbeDeadline = func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, budget)
 }

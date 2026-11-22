@@ -2227,24 +2227,26 @@ const tlsStandInStart = time.Minute
 // (shTLSClient, loggedStandIn, logFirst), and the limit clock (tlsCommandClient.limitClock and
 // tlsClientSpec.limitClock) that counts each such run's limit, at its real length, from the moment
 // the run's own line is in the log, and not from before its shell starts, then ends the run as the
-// client's own limit does, with errTLSRunLimit. A loaded machine can take longer than a
-// stand-in's limit to start a shell, and a limit that counted that start would end a run meant to
-// answer, or a run before it had logged itself. The probe runs one run at a time, so a line past
-// those the log held when a run began is that run's own. A read of the log that fails changes
-// nothing, and a run that logs nothing within tlsStandInStart has its limit counted from then.
-// The clock records each run's start: its line, and how long after the run began the line was
-// seen, which the run's elapsed time holds and its limit does not (startsOf).
+// client's own limit does (testwait.StandInDeadline): its Err context.DeadlineExceeded, and its
+// cause errTLSRunLimit. A loaded machine can take longer than a stand-in's limit to start a shell,
+// and a limit that counted that start would end a run meant to answer, or a run before it had
+// logged itself. The probe runs one run at a time, so a line past those the log held when a run
+// began is that run's own. A read of the log that fails changes nothing, and a run that logs
+// nothing within tlsStandInStart has its limit counted from then. The clock records each run's
+// start: its line, how long after the run began the line was seen, which the run's elapsed time
+// holds and its limit does not (startsOf), and the limit it was handed (limitsOf).
 type standInLog struct {
 	path   string
 	mu     sync.Mutex
 	starts []standInStart
 }
 
-// standInStart is one run's line in a standInLog, and how long after the run asked for its limit
-// clock, just before its command started, the line was seen.
+// standInStart is one run's line in a standInLog, how long after the run asked for its limit
+// clock, just before its command started, the line was seen, and the limit the clock counted.
 type standInStart struct {
 	line  string
 	after time.Duration
+	limit time.Duration
 }
 
 // standInLogs holds the one standInLog of each log path (standInLogAt).
@@ -2278,12 +2280,12 @@ func (l *standInLog) clock(ctx context.Context, limit time.Duration) (context.Co
 		before = len(lines)
 		return read
 	})
-	run, cancel := context.WithCancelCause(ctx)
+	run, pass, cancel := testwait.StandInDeadline(ctx)
 	go func() {
 		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
 			if lines, read := l.lines(); read && len(lines) > before {
 				l.mu.Lock()
-				l.starts = append(l.starts, standInStart{line: lines[before], after: time.Since(asked)})
+				l.starts = append(l.starts, standInStart{line: lines[before], after: time.Since(asked), limit: limit})
 				l.mu.Unlock()
 				return true
 			}
@@ -2293,11 +2295,11 @@ func (l *standInLog) clock(ctx context.Context, limit time.Duration) (context.Co
 		defer limited.Stop()
 		select {
 		case <-limited.C:
-			cancel(errTLSRunLimit)
+			pass(errTLSRunLimit)
 		case <-run.Done():
 		}
 	}()
-	return run, func() { cancel(context.Canceled) }
+	return run, cancel
 }
 
 // startsOf is how long after its run began each of the first n runs that logged line was seen to
@@ -2305,20 +2307,42 @@ func (l *standInLog) clock(ctx context.Context, limit time.Duration) (context.Co
 func (l *standInLog) startsOf(t *testing.T, line string, n int) []time.Duration {
 	t.Helper()
 	var after []time.Duration
+	for _, start := range l.seen(t, line, n) {
+		after = append(after, start.after)
+	}
+	return after
+}
+
+// limitsOf is the limit the clock counted for each of the first n runs that logged line, in the
+// order they ran: the limit the client handed it, which the run's TLS line must name.
+func (l *standInLog) limitsOf(t *testing.T, line string, n int) []time.Duration {
+	t.Helper()
+	var limits []time.Duration
+	for _, start := range l.seen(t, line, n) {
+		limits = append(limits, start.limit)
+	}
+	return limits
+}
+
+// seen is the first n starts the clock saw of runs that logged line, in the order they ran,
+// waiting for the clock to have seen n of them.
+func (l *standInLog) seen(t *testing.T, line string, n int) []standInStart {
+	t.Helper()
+	var starts []standInStart
 	if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		after = after[:0]
+		starts = starts[:0]
 		for _, start := range l.starts {
 			if start.line == line {
-				after = append(after, start.after)
+				starts = append(starts, start)
 			}
 		}
-		return len(after) >= n
+		return len(starts) >= n
 	}) {
-		t.Fatalf("the stand-ins' log %s showed %d starts of %q, want %d", l.path, len(after), line, n)
+		t.Fatalf("the stand-ins' log %s showed %d starts of %q, want %d", l.path, len(starts), line, n)
 	}
-	return after[:n]
+	return starts[:n]
 }
 
 // loggedStandIn is c, whose every run is sh -c <script>, with each run first appending
@@ -2376,14 +2400,14 @@ func probeDeadlineOnceLogged(t *testing.T, log *standInLog, line string) {
 	}
 }
 
-// deadlineOnceLoggedUnder is a factDeadline under parent that ends as a deadline does, its Err and
-// the cause of a context derived from it context.DeadlineExceeded, once log holds line one more
-// time than it did when it was made, and as parent ends where parent ends first: the probe reads
-// its deadline by Err in places, and a run tells it from its own limit by that cause
+// deadlineOnceLoggedUnder is a context under parent that ends as the probe's deadline does
+// (testwait.StandInDeadline), its Err and its cause context.DeadlineExceeded, once log holds line
+// one more time than it did when it was made, and as parent ends where parent ends first: the probe
+// reads its deadline by Err in places, and a run tells it from its own limit by that cause
 // (tlsCommandClient.run). A read of the log that fails changes nothing, and a line that never
 // comes ends it after tlsStandInStart.
 func deadlineOnceLoggedUnder(parent context.Context, log *standInLog, line string) (context.Context, context.CancelFunc) {
-	deadline := &factDeadline{values: context.WithoutCancel(parent), done: make(chan struct{})}
+	deadline, pass, cancel := testwait.StandInDeadline(parent)
 	var before int
 	testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
 		n, read := log.count(line)
@@ -2393,14 +2417,11 @@ func deadlineOnceLoggedUnder(parent context.Context, log *standInLog, line strin
 	go func() {
 		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
 			n, read := log.count(line)
-			return parent.Err() != nil || deadline.Err() != nil || read && n > before
+			return deadline.Err() != nil || read && n > before
 		})
-		if err := parent.Err(); err != nil {
-			deadline.end(err)
-		}
-		deadline.end(context.DeadlineExceeded)
+		pass(context.DeadlineExceeded)
 	}()
-	return deadline, func() { deadline.end(context.Canceled) }
+	return deadline, cancel
 }
 
 // count is how many times the log holds line, and whether it could be read.
@@ -2413,35 +2434,6 @@ func (l *standInLog) count(line string) (int, bool) {
 		}
 	}
 	return n, read
-}
-
-// factDeadline is a context that ends when end is first called, with that error as its Err and,
-// for a context derived from it, its cause. It carries its parent's values without its parent's
-// cancellation (values), so a derived context reads no cause but this one's end.
-type factDeadline struct {
-	values context.Context
-	done   chan struct{}
-	mu     sync.Mutex
-	err    error
-}
-
-func (c *factDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (c *factDeadline) Done() <-chan struct{}       { return c.done }
-func (c *factDeadline) Value(key any) any           { return c.values.Value(key) }
-
-func (c *factDeadline) Err() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.err
-}
-
-func (c *factDeadline) end(err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.err == nil {
-		c.err = err
-		close(c.done)
-	}
 }
 
 // timedTLSClient is a client that sums the time its runs at each site took, by the site's name.
@@ -2766,31 +2758,50 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	// grace the trap starts no process and sleeps for no fixed time: one that slept 0.6 s in a
 	// /bin/sleep of its own was SIGKILLed at the grace's end on a loaded machine, which took that
 	// long to start it. The deadline ends the probe's context as a real deadline does, its Err and
-	// the cause of the run's context context.DeadlineExceeded (factDeadline), so a run that read
-	// the probe's context once its stop was over, and not the cause its own context recorded when
-	// its limit fired, takes the deadline for what ended it, and fails the row.
+	// the cause of the run's context context.DeadlineExceeded (testwait.StandInDeadline), so a run
+	// that read the probe's context once its stop was over, and not the cause its own context
+	// recorded when its limit fired, takes the deadline for what ended it, and fails the row.
 	dir = t.TempDir()
 	deadlinePassed := filepath.Join(dir, "deadline")
 	if err := syscall.Mkfifo(deadlinePassed, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stopped := shTLSClient("node", dir, `trap ': >"$2/trapped"; read -r _ <"$2/deadline"; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
-	deadline := &factDeadline{values: context.Background(), done: make(chan struct{})}
-	defer deadline.end(context.Canceled)
+	deadline, pass, cancel := testwait.StandInDeadline(context.Background())
+	defer cancel()
+	// rowEnded holds once the row has returned, which ends every wait of the goroutine below, so
+	// nothing of the row outlives it.
+	ended := make(chan struct{})
+	defer close(ended)
+	rowEnded := func() bool {
+		select {
+		case <-ended:
+			return true
+		default:
+			return false
+		}
+	}
 	go func() {
 		if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
 			_, err := os.Stat(filepath.Join(dir, "trapped"))
-			return err == nil
-		}) {
+			return err == nil || rowEnded()
+		}) || rowEnded() {
 			return
 		}
-		deadline.end(context.DeadlineExceeded)
-		// The trap opens the pipe right after it marks its start, so this open, which waits for
-		// a reader, returns.
-		if told, err := os.OpenFile(deadlinePassed, os.O_WRONLY, 0); err == nil {
+		pass(context.DeadlineExceeded)
+		// The trap opens the pipe to read it right after it marks its start. An open to write it
+		// that does not wait (O_NONBLOCK) succeeds once that reader has the pipe open, and answers
+		// ENXIO before then; it is asked again until it succeeds or the row has ended, so a shell
+		// that died before it opened the pipe leaves nothing waiting on it.
+		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+			told, err := os.OpenFile(deadlinePassed, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+			if err != nil {
+				return rowEnded()
+			}
 			_, _ = told.WriteString("passed\n")
 			_ = told.Close()
-		}
+			return true
+		})
 	}()
 	outcome := stopped.probe(deadline, controlTLSSite, tlsRunTerms{})
 	if err := deadline.Err(); !errors.Is(err, context.DeadlineExceeded) {
@@ -3108,7 +3119,9 @@ func TestTLSProbeReadsAKilledRunThatPrintedAnAnswerAsAccepted(t *testing.T) {
 // had. Each detail then carries what the run printed and its error. Each run's limit is counted
 // from its own start (standInLog), so its time is read from the line less that start, which a
 // loaded machine can stretch and the limit does not count; the line prints tenths of a second, so
-// each bound allows half a tenth.
+// each bound allows half a tenth. The limit the clock was handed for each run is the limit its line
+// names, read exactly: a clock handed a limit other than the one the line names fails here however
+// the run's time rounds.
 func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -3134,13 +3147,19 @@ func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 	if len(emSign) != 2 {
 		t.Fatalf("node's emSign lines = %q, want two; stdout %q, stderr %q", emSign, stdout, stderr)
 	}
-	nodeStarts := runs.startsOf(t, "node emSign", 2)
+	nodeStarts, nodeLimits := runs.startsOf(t, "node emSign", 2), runs.limitsOf(t, "node emSign", 2)
 	for i, limit := range []float64{1, 2} {
 		form := regexp.MustCompile(`^probe-image: TLS client node emSign: no verdict \(its ` + strconv.FormatFloat(limit, 'f', -1, 64) + `s limit ended it after ([0-9]+\.[0-9])s: signal: terminated\)$`)
 		elapsed, ok := seconds(emSign[i], form)
 		if ran := elapsed - nodeStarts[i].Seconds(); !ok || ran < limit-halfATenth || ran >= limit+bound+halfATenth {
 			t.Errorf("node's emSign line %d = %q, started %s into its run, want it to name its %gs limit and a time from %gs to less than %gs after that start", i+1, emSign[i], nodeStarts[i], limit, limit, limit+bound)
 		}
+		if named := time.Duration(limit * float64(time.Second)); nodeLimits[i] != named {
+			t.Errorf("node's emSign run %d ran under a limit of %s, where its line names %s", i+1, nodeLimits[i], named)
+		}
+	}
+	if limit := runs.limitsOf(t, "aws emSign", 1)[0]; limit != time.Second {
+		t.Errorf("aws's emSign run ran under a limit of %s, where its line names 1s", limit)
 	}
 	signal := regexp.MustCompile(`^probe-image: TLS client aws emSign: unavailable \(signal: killed ended it after ([0-9]+\.[0-9])s, before its 1s limit: signal: killed\)$`)
 	if lines := tlsLines(stdout, "aws", emSignTLSSite.name); len(lines) != 1 {
@@ -3215,9 +3234,8 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 
 // A run's own limit, where no test sets a clock, is counted from before its command starts: the
 // context runLimit gives a run ends limit after the call, with the cause errTLSRunLimit, which is
-// how the run tells its limit from the probe's deadline. The stand-ins of
-// TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit count theirs from their
-// own start instead (standInLog), and this holds the clock they stand beside.
+// how the run tells its limit from the probe's deadline. Every stand-in of this file counts its
+// own from its start instead (standInLog), and this holds the clock they stand beside.
 func TestATLSRunsOwnLimitIsCountedFromBeforeItsCommandStarts(t *testing.T) {
 	const limit = 7 * time.Second
 	before := time.Now()
