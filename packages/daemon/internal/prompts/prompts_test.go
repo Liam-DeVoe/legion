@@ -90,6 +90,10 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
 			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
 			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
+		// The fresh agent a plan step `acceptance` with no key asks for composes no core of its own
+		// and ends its step with a verdict and no handoff record.
+		{"acceptance", claim.Role("acceptance"), false, []string{"core/common.md", "acceptance.md", "mechanics/headless.md"}, []string{"acceptance.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
+			"This step writes no handoff record"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parts, err := composer.Compose(tc.role, tc.isRoot)
@@ -243,7 +247,7 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 		"Retro then commits only `docs/solutions/`", "no file changes above the approved head", "the same sha when retro added nothing", "Retro's `docs/solutions/` commit is never",
 		"'~(docs/solutions | .legion/<issue>)'", ".legion/<issue>/<phase>.json", "record handoff", "handoff-only", "Retro's last commit removes",
 		"committed handoff", "`READY_UNREVIEWED_CHANGE`", "`READY_NOT_APPROVED`", "Approved head:"}
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger, claim.Role("acceptance")} {
 		text := composedText(t, composer, role, false)
 		for _, phrase := range retired {
 			if strings.Contains(text, phrase) {
@@ -283,7 +287,7 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 		isRoot bool
 	}{
 		{claim.RolePlanner, false}, {claim.RoleImplementer, false}, {claim.RoleTester, false},
-		{claim.RoleReviewer, false}, {claim.RoleMerger, false},
+		{claim.RoleReviewer, false}, {claim.RoleMerger, false}, {claim.Role("acceptance"), false},
 		{claim.RoleArchitect, true}, {claim.RoleArchitect, false},
 	} {
 		text := composedText(t, composer, tc.role, tc.isRoot)
@@ -300,11 +304,12 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 // counts the `check` blocks that exist, and a rule that made the empty case a failure would stop
 // every issue in flight on the day these prompts deploy. So the tester records the gap in its
 // handoff without failing the phase for it, the reviewer names it in its review without asking
-// for changes over it, and the architect's acceptance comment names it and decides, which is the
-// only gate on an issue that has no `before_merge` check. Each composed prompt that carries the
-// rule says the empty case and its role's answer to it, and no paragraph of that rule calls the
-// case a failure or a request for changes. Each is also told what a child proves: a child's own
-// check whose `serves` names the root's requirement, never a result against the root's own check.
+// for changes over it, and the acceptance comment, the architect's or the fresh acceptance
+// agent's, names it and decides, which is the only gate on an issue that has no `before_merge`
+// check. Each composed prompt that carries the rule says the empty case and its role's answer to
+// it, and no paragraph of that rule calls the case a failure or a request for changes. Each is
+// also told what a child proves: a child's own check whose `serves` names the root's requirement,
+// never a result against the root's own check.
 func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -323,6 +328,7 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 	}{
 		{claim.RoleTester, false, []string{"is a gap you name, never a reason of its own to send the issue back"}},
 		{claim.RoleReviewer, false, []string{"is a gap you name in your review, never a review that asks for changes"}},
+		{claim.Role("acceptance"), false, []string{"is a gap you name in your acceptance comment, never a reason of its own to send the work back", "Your reading is then the only gate on the issue"}},
 		{claim.RoleArchitect, false, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 		{claim.RoleArchitect, true, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 	} {
@@ -432,7 +438,7 @@ func TestNoComposedPromptTeachesAnE2ELineOrAProofArray(t *testing.T) {
 		isRoot bool
 	}{
 		{claim.RolePlanner, false}, {claim.RoleImplementer, false}, {claim.RoleTester, false},
-		{claim.RoleReviewer, false}, {claim.RoleMerger, false},
+		{claim.RoleReviewer, false}, {claim.RoleMerger, false}, {claim.Role("acceptance"), false},
 		{claim.RoleArchitect, true}, {claim.RoleArchitect, false},
 	} {
 		text := composedText(t, composer, tc.role, tc.isRoot)
@@ -873,6 +879,7 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 		{"tester", claim.RoleTester, false, worker},
 		{"reviewer", claim.RoleReviewer, false, worker},
 		{"merger", claim.RoleMerger, false, worker},
+		{"acceptance", claim.Role("acceptance"), false, worker},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
@@ -1021,6 +1028,7 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 		{"tester", claim.RoleTester, false},
 		{"reviewer", claim.RoleReviewer, false},
 		{"merger", claim.RoleMerger, false},
+		{"acceptance", claim.Role("acceptance"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := composedText(t, composer, tc.role, tc.isRoot)
@@ -1033,6 +1041,78 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A plan step `acceptance` with no key asks Legion for a fresh agent of the role acceptance, which
+// runs as accepting: an independent reading of the whole finished work before the retro, where
+// the step `acceptance:owner` is the owner's own reading. Its prompt is the core every phase
+// worker but the merger shares, its own part and the headless mechanics, then the daemon's part
+// for it and the part every phase worker ends with (worker-common.md), in that order: it has no
+// core of its own. The composed text holds the reading the owner's acceptance makes — the results
+// at the head, the goal red team, the verdict that ends the step and the step it returns to — and
+// the SEPARATE-POD line with the clause that says Legion starts no pod for it. The sign-off stays
+// the owner's: every clause that names `sign_off` denies it to this agent, and one at least does,
+// so a prompt that told the agent to sign off fails, and so does one that no longer says anything
+// of it. This shows the text is loaded, never that the agent follows it.
+func TestTheAcceptancePromptHoldsTheOwnersReadingAndTheSeparatePodLine(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	acceptance := claim.Role("acceptance")
+	parts, err := composer.Compose(acceptance, false)
+	if err != nil {
+		t.Fatalf("Compose %s: %v", acceptance, err)
+	}
+	shared, daemonParts := filepath.Join(stateDir, "prompts", "shared"), filepath.Join(stateDir, "prompts", "go")
+	want := []string{
+		filepath.Join(shared, "core", "common.md"),
+		filepath.Join(shared, "acceptance.md"),
+		filepath.Join(shared, "mechanics", "headless.md"),
+		filepath.Join(daemonParts, "acceptance.md"),
+		filepath.Join(daemonParts, "worker-common.md"),
+	}
+	// Errorf rather than Fatalf: a part missing from the list is also read below for the words it
+	// carries, so the failure names what the agent would no longer be told.
+	if !slices.Equal(parts.RolePromptPaths, want) {
+		t.Errorf("RolePromptPaths = %q, want %q", parts.RolePromptPaths, want)
+	}
+	text := composedText(t, composer, acceptance, false)
+	folded := foldWhitespace(text)
+	for _, phrase := range []string{
+		// The SEPARATE-POD line and the clause that says it is a wish (go/worker-common.md).
+		"SEPARATE-POD <ISSUE> <task> <reason>",
+		"Legion starts no pod for this line",
+		// The owner's reading, which this agent makes in its place.
+		"goal-red-team",
+		"dispatch results --issue",
+		"each `unmet` finding",
+		"no Verification document, or with one that holds no `before_merge` check",
+		// The completion that ends the step, and the step a fail returns to.
+		`op: "handoff_complete"`,
+		`verdict: "pass"`,
+		`verdict: "fail"`,
+		"`return_to`",
+	} {
+		if !strings.Contains(folded, phrase) {
+			t.Errorf("the composed acceptance prompt omits %q", phrase)
+		}
+	}
+	denies := regexp.MustCompile(`\b(never|not)\b`)
+	named := 0
+	for _, clause := range clauses(text) {
+		if !strings.Contains(clause, "sign_off") {
+			continue
+		}
+		named++
+		if !denies.MatchString(clause) {
+			t.Errorf("a clause of the composed acceptance prompt names `sign_off` without denying it to the agent: %q", clause)
+		}
+	}
+	if named == 0 {
+		t.Error("no clause of the composed acceptance prompt names `sign_off`, so nothing tells the agent the sign-off is the owner's")
 	}
 }
 

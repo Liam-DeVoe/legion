@@ -521,7 +521,7 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 			t.Fatalf("read the %s parts: %v", dir, err)
 		}
 	}
-	want := []string{"go/claude-mechanics.md", "roles/implementer.md", "roles/planner.md"}
+	want := []string{"go/claude-mechanics.md", "roles/acceptance.md", "roles/implementer.md", "roles/planner.md"}
 	if !slices.Equal(dispatching, want) {
 		t.Errorf("the parts that dispatch a task subagent are %q, want %q", dispatching, want)
 	}
