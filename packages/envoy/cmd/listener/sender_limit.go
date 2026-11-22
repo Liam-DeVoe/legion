@@ -156,7 +156,8 @@ func (l *senderLimit) admit(w http.ResponseWriter, r *http.Request, record *requ
 // report. stored marks a message the route stored, may have stored, or answered 504 for, and
 // nothing cancels it, since a repeat verdict after a send that may have stored the message may
 // name that send's own copy. A message the route may have stored is a publish the stream did not
-// acknowledge (published), and a role forward that failed with no refusal (sendToRole).
+// acknowledge, a duplicate verdict that answers a publish made again after a send of the request's
+// own that nothing answered (published), and a role forward that failed with no refusal (sendToRole).
 //
 // settle, which the route defers right after the take (senderLimit.admit), gives the take back
 // unless the message cost one (counted), so a path that marks nothing costs nothing: a refusal
@@ -202,21 +203,25 @@ func (c *senderCharge) forgive() {
 }
 
 // published marks the charge by the stream's answer to the route's publish of the message
-// (bus.Client.PublishAckWithin), the one rule the send route and the topic publish share. A
-// publish that may have stored the message (mayHaveStored: a send nothing answered,
-// bus.ErrUnacknowledged) costs one whatever the route answers: one whose answer the connection's
-// loss took among them, which the bus sends once and answers so (bus.ErrConnectionLost). Any other
-// failure stored nothing and marks nothing: a refusal of the server's, and a failure before
-// anything was sent, such as a wait for NATS to reconnect that outlasted the route's deadline. A
-// duplicate verdict names a copy the stream held before this publish, since the bus sends it once,
-// which costs nothing, also after a wake report. Every other answer stored the message.
+// (bus.Client.PublishAckWithin, through publishPastInProcess), the one rule the send route and the
+// topic publish share. A publish that may have stored the message (mayHaveStored: a send nothing
+// answered, bus.ErrUnacknowledged) costs one whatever the route answers: one whose answer the
+// connection's loss took among them, which the bus sends once and answers so
+// (bus.ErrConnectionLost). Any other failure stored nothing and marks nothing: a refusal of the
+// server's, a failure before anything was sent, such as a wait for NATS to reconnect that
+// outlasted the route's deadline, and a request that ended while an earlier publish under its
+// message id was still in process (earlierAttemptInProcess), with no send of its own unanswered,
+// whose copy is that earlier publish's. A duplicate verdict names a copy the stream held before
+// this publish, since the bus sends it once, which costs nothing, also after a wake report, unless
+// it answers a publish made again after a send of this request's own that nothing answered
+// (bus.StoredAck.Resent), which may have stored that copy. Every other answer stored the message.
 func (c *senderCharge) published(ack bus.StoredAck, err error) {
 	switch {
 	case mayHaveStored(err):
 		c.stored()
 	case err != nil:
 		// A refusal, or a failure before any send: the stream holds nothing of this publish.
-	case ack.Duplicate:
+	case ack.Duplicate && !ack.Resent:
 		c.forgive()
 	default:
 		c.stored()

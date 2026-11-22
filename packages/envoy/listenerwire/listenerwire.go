@@ -67,10 +67,12 @@ type APIError struct {
 	Expected []string `json:"expected,omitempty"`
 }
 
-// CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
-// acknowledged: the stream may hold the message, so a caller reads it as a receipt timeout - it may
-// have landed, and a repeat under the same idempotency key is recognised - and not as a send that
-// stored nothing. Every other 503 of those routes leaves the code out.
+// CodeMaybeStored is the code of a send's or a publish's 503 after which the stream may hold the
+// message: its publish went out and was never acknowledged, or its request ended while the stream
+// was still storing an earlier publish under the same message id, an earlier attempt of the same
+// message. A caller reads it as a receipt timeout - it may have landed, and a repeat under the
+// same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
+// those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
@@ -131,7 +133,9 @@ type PublishRequest struct {
 // so a repeat of either gets it. The listener's bus sends the publish once
 // (bus.Client.PublishAckWithin), so it never names the copy an earlier send of this one stored.
 // The listener's sender limit reads the same verdict and charges such a repeat nothing (its
-// senderCharge.published). Absent means false, which is what an older listener's answer reads as.
+// senderCharge.published), unless the verdict answers a publish the listener made again after the
+// stream refused, as still in process, a send of it that nothing answered (bus.StoredAck.Resent).
+// Absent means false, which is what an older listener's answer reads as.
 type SendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke

@@ -135,12 +135,6 @@ const (
 // a chain that runs out of it is a keep that failed as well.
 const roleKeepPublishWindow = 2 * time.Second
 
-// roleKeepInProcessPause is how long a keep waits before it publishes again under a message id a
-// clustered stream refused as still in process under another publish (bus.ErrDuplicateInProcess):
-// that publish is being stored, so the next answer is a duplicate naming its copy. It is short
-// because a store takes milliseconds, and the retries end with roleKeepPublishWindow.
-const roleKeepInProcessPause = 50 * time.Millisecond
-
 // roleKeepDrainWindow bounds one walk of a role's kept lane, which runs off the claim route, the
 // registration, the keep or the sweep that started the handover. It covers roleKeepDrainMax
 // forwards of roleForwardTimeout each, and the read of the role's claim record, the stream read,
@@ -762,21 +756,21 @@ func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contra
 // bus.KeptMsgID + ":after:" + that copy's sequence, whose own duplicate is judged the same way, for
 // as many links as it takes: every listener makes the same chain, because each link is named by
 // the sequence the stream gave. A clustered stream's refusal of an id still in process under
-// another publish (bus.ErrDuplicateInProcess) is published again roleKeepInProcessPause later,
-// since the next answer names the copy that publish stored. A publish whose answer the
-// connection's loss took (bus.ErrConnectionLost) may have stored the copy, and the bus sends it
-// once (PublishStoredAck): it is published again under the same id once the connection is back,
-// within ctx (bus.Reconnected), and the stream's answer is read as any is, so a copy the first
-// send stored comes back a duplicate naming it and is judged by heldKeptRoleCopy as the keep's
-// own. Every other failure, of a publish or of a read, and a chain that runs out of ctx, is a keep
-// that failed.
+// another publish (bus.ErrDuplicateInProcess) is published again until the answer names the copy
+// that publish stored (publishPastInProcess). A publish whose answer the connection's loss took
+// (bus.ErrConnectionLost) may have stored the copy, and the bus sends it once (PublishStoredAck):
+// it is published again under the same id once the connection is back, within ctx
+// (bus.Reconnected), and the stream's answer is read as any is, so a copy the first send stored
+// comes back a duplicate naming it and is judged by heldKeptRoleCopy as the keep's own. Every other
+// failure, of a publish or of a read, and a chain that runs out of ctx, is a keep that failed.
 //
 // The copy a duplicate names is a repeat unless a send of this keep under the same id may have
 // stored it and it is this keep's own envelope: a send whose answer the stream may hold
 // (bus.ErrUnacknowledged) - one whose answer the connection's loss took (bus.Reconnected), or one
-// that went out unanswered before an in-process refusal - may have stored the copy a later answer
-// names, and a copy carrying the keep's own event id is then the one it stored. A copy of another
-// event id was stored by another send, the keep's own having been dropped as its duplicate.
+// that went out unanswered before an in-process refusal, whose later answer publishPastInProcess
+// marks Resent - may have stored the copy a later answer names, and a copy carrying the keep's own
+// event id is then the one it stored. A copy of another event id was stored by another send, the
+// keep's own having been dropped as its duplicate.
 //
 // A new copy's hour counts from its store time, read back at its acknowledged sequence, which is
 // what the walk measures its age against. A read that fails counts it from the listener's clock
@@ -789,7 +783,8 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	// ownSend is whether a send of this keep under msgID may have stored the copy a later answer
 	// names: one the stream may hold though nothing answered it (bus.ErrUnacknowledged), whether
 	// the connection's loss took its answer or the stream then refused a later send as in process
-	// (publishPastInProcess), so a keep that then fails says so whatever its last failure was (fail).
+	// (publishPastInProcess, which answers Resent), so a keep that then fails says so whatever its
+	// last failure was (fail).
 	ownSend := false
 	fail := func(err error) (keptRoleCopy, error) {
 		if ownSend && !mayHaveStored(err) {
@@ -799,8 +794,8 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	}
 	for {
 		published := cfg.now()
-		ack, refusedOwn, err := publishPastInProcess(ctx, publish, subject, item, msgID)
-		ownSend = ownSend || refusedOwn || mayHaveStored(err)
+		ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return publish(ctx, subject, item, msgID) })
+		ownSend = ownSend || ack.Resent || mayHaveStored(err)
 		if bus.Reconnected(ctx, err) {
 			continue
 		}
@@ -819,27 +814,6 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
-		ownSend = false
-	}
-}
-
-// publishPastInProcess publishes item on subject under msgID through publish, and publishes it again
-// roleKeepInProcessPause later each time a clustered stream refuses the id as still in process
-// under another publish (bus.ErrDuplicateInProcess), since the next answer names the copy that
-// publish stored. ownSend reports whether a refused send went out unanswered first
-// (bus.ErrUnacknowledged), which may have stored the copy. A wait that ctx ends is the error, after
-// the last refusal. A keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame) both
-// publish through it.
-func publishPastInProcess(ctx context.Context, publish keptRolePublish, subject string, item contracts.Envelope, msgID string) (ack bus.StoredAck, ownSend bool, err error) {
-	for {
-		ack, err = publish(ctx, subject, item, msgID)
-		if !errors.Is(err, bus.ErrDuplicateInProcess) {
-			return ack, ownSend, err
-		}
-		ownSend = ownSend || mayHaveStored(err)
-		if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
-			return bus.StoredAck{}, ownSend, fmt.Errorf("%w (after %w)", waitErr, err)
-		}
 	}
 }
 
