@@ -36,8 +36,8 @@
  *    `POST /api/v1/machine-logins/{id}/revoke` answers 200 for a listed id, taking it off the list
  *    only where `revokeRemoves` holds; any other id is 404. With `silentAfterRevoke`, the list
  *    answers nothing once a revoke was answered.
- *  - `GET /api/v1/credential-grants?approver=me` lists `grants`, each a grant the policy gave a
- *    pod without asking (no approver) whose enrollment names its `operator`; with no `grants`, or
+ *  - `GET /api/v1/credential-grants?approver=me` lists `grants`, each a grant on a pod whose
+ *    enrollment names its `operator`, with its `approver` (none where unset); with no `grants`, or
  *    no `approver=me`, it answers as Dispatch does no such list (404, 400 APPROVER_ME_ONLY). `POST
  *    /api/v1/credential-grants/{id}/revoke` answers `grantRevoke` (404 where unset), each id kept in
  *    `grantsRevoked`.
@@ -111,8 +111,13 @@ export interface OriginBehaviour {
   readonly revokeRemoves?: boolean;
   /** Whether the list answers nothing at all once a revoke was answered. */
   readonly silentAfterRevoke?: boolean;
-  /** The person's credential-grants list: each grant's id and the operator its enrollment names. */
-  readonly grants?: readonly { readonly id: string; readonly operator: string }[];
+  /** The person's credential-grants list: each grant's id, the operator its enrollment names and
+   *  its approver (none where unset). */
+  readonly grants?: readonly {
+    readonly id: string;
+    readonly operator: string;
+    readonly approver?: string;
+  }[];
   /** What a revoke of a credential grant answers: its status and the code its body names. */
   readonly grantRevoke?: { readonly status: number; readonly code?: string };
   /** The enrollment page; `refuses` where unset. */
@@ -498,13 +503,13 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
         }
         if (behaviour.grants === undefined) return new Response("not here", { status: 404 });
         return Response.json({
-          grants: behaviour.grants.map(({ id, operator }) => ({
+          grants: behaviour.grants.map(({ id, operator, approver }) => ({
             grant_id: id,
-            granted: "automatic",
+            granted: approver === undefined ? "automatic" : "approval",
             record_id: null,
             enrollment: { kind: "pod", runtime_id: `pod-${id}`, operator, slot: null },
             names: ["STAND_IN_SECRET"],
-            approver: null,
+            approver: approver ?? null,
             decided_by: null,
           })),
         });

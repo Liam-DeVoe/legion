@@ -134,9 +134,11 @@
  *  Dispatch's own refusal, 403 RESTRICTED_MEMBER, FAIL on a 2xx or on the broker's 403
  *  NOT_APPROVER, which shows Dispatch relayed the revoke. Any other answer, or none, is UNKNOWN;
  *  so is the revoke row with no OUTSIDE_GRANTS_PROBE_ID, or one that is no UUID, which revokes
- *  nothing. The probe is a grant its caller chose as one the broker lets no person end, so a
- *  revoke let through ends nothing. The rows go to stdout and to OUTSIDE_EDGE_GRANTS
- *  (`<state>/outside-edge-grants.tsv` when unset). An empty kept cookie is refused, UNKNOWN.
+ *  nothing. The probe is a grant its caller chose as one the broker lets no person end (no
+ *  approver, no operator), so a revoke let through ends nothing; where the list just read shows
+ *  that grant with `approver` or `enrollment.operator` set, it revokes nothing, UNKNOWN. The rows
+ *  go to stdout and to OUTSIDE_EDGE_GRANTS (`<state>/outside-edge-grants.tsv` when unset). An
+ *  empty kept cookie is refused, UNKNOWN.
  *
  *  `t5` is the browser's half of a delisting window: with OUTSIDE_T5_DEADLINE (Unix seconds) and
  *  OUTSIDE_T5_TSV, it asks `/auth/whoami` with the kept cookie at most every 5 s until it is
@@ -1893,6 +1895,8 @@ async function grants(env: NodeJS.ProcessEnv): Promise<number> {
   const probe = (env.OUTSIDE_GRANTS_PROBE_ID ?? "").trim();
   const self = person.toLowerCase();
   const headers = { Accept: "application/json", Cookie: cookie, Origin: origin };
+  // The probe grant as the list below shows it, where it does: read again just before the revoke.
+  let probeSeen: unknown;
 
   // The list. Every row whose session does not act for the person is one Dispatch let through;
   // the row names how many, and whether the probe grant is among them, and no grant's id or name.
@@ -1904,6 +1908,8 @@ async function grants(env: NodeJS.ProcessEnv): Promise<number> {
     });
     const body = await answer.json().catch(() => undefined);
     const listed = member(body, "grants");
+    if (Array.isArray(listed))
+      probeSeen = listed.find((grant) => member(grant, "grant_id") === probe);
     if (answer.status !== GRANTS_LIST_STATUS || !Array.isArray(listed)) {
       rows.add({
         row: listRow,
@@ -1953,6 +1959,25 @@ async function grants(env: NodeJS.ProcessEnv): Promise<number> {
       verdict: "UNKNOWN",
     });
     return rows.finish();
+  }
+  // The probe's precondition, read the moment before the revoke: where the list showed the probe
+  // grant (as a list Dispatch let through does), it must still name no approver and no operator,
+  // the grant no person may end at the broker. One that names either, the person among them, is
+  // left alone.
+  if (probeSeen !== undefined) {
+    const fields = [
+      member(probeSeen, "approver") === null ? "" : "approver",
+      member(member(probeSeen, "enrollment"), "operator") === "" ? "" : "enrollment.operator",
+    ].filter((field) => field !== "");
+    if (fields.length > 0) {
+      rows.add({
+        row: revokeRow,
+        want: wantRevoke,
+        got: `the list shows the probe grant with ${fields.join(" and ")} set, so a revoke let through could end it; nothing was revoked`,
+        verdict: "UNKNOWN",
+      });
+      return rows.finish();
+    }
   }
   try {
     const answer = await fetch(

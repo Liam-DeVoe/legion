@@ -696,7 +696,8 @@ describe("the controls, against an outside origin stand-in", () => {
   // answered: the list PASS only holding the person's own grants alone (the operator matched
   // whatever its letter case), the revoke PASS only on Dispatch's own 403 RESTRICTED_MEMBER; the
   // broker's 403 NOT_APPROVER (Dispatch relayed it) and a 2xx are FAIL, every other answer
-  // UNKNOWN, and with no probe id, one that is no UUID or no cookie, nothing is revoked.
+  // UNKNOWN, and with no probe id, one that is no UUID or no cookie, nothing is revoked; nor where
+  // its own list shows the probe grant naming an approver or an operator (the person among them).
   test(
     "grants passes only on a list of the person's own grants and Dispatch's own refusal of the revoke",
     async () => {
@@ -711,58 +712,89 @@ describe("the controls, against an outside origin stand-in", () => {
         grantRevoke: { status: 403, code: "NOT_APPROVER" },
       });
       const through = startOriginStandIn({ grants: [], grantRevoke: { status: 200 } });
-      const other = startOriginStandIn({ grantRevoke: { status: 404, code: "NOT_FOUND" } });
+      const other = startOriginStandIn({
+        grantRevoke: { status: 503, code: "AGENT_SECRETS_UNAVAILABLE" },
+      });
       const noProbe = startOriginStandIn({ grants: [] });
       const badProbe = startOriginStandIn({ grants: [] });
       const noCookie = startOriginStandIn({ grants: [] });
-      const origins = [fixed, relayed, through, other, noProbe, badProbe, noCookie];
+      // The probe grant as a list Dispatch let through shows it: approved in anyone's stead, and
+      // on the person's own session; each revoke answered 200, which neither run may ask.
+      const judged = startOriginStandIn({
+        grants: [{ id: probe, operator: "", approver: "anyone" }],
+        grantRevoke: { status: 200 },
+      });
+      const theirs = startOriginStandIn({
+        grants: [{ id: probe, operator: "carol@outside.example" }],
+        grantRevoke: { status: 200 },
+      });
+      const origins = [fixed, relayed, through, other, noProbe, badProbe, noCookie, judged, theirs];
       const state = (origin: string, cookie = "dsession=stand-in") =>
         stateWith({ origin, cookie, person: "carol@outside.example" });
       const tsv = join(scratch, "grants-fixed.tsv");
       const emptyTsv = join(scratch, "grants-no-cookie.tsv");
       try {
-        const [fixedRun, relayedRun, throughRun, otherRun, noProbeRun, badProbeRun, noCookieRun] =
-          await Promise.all([
-            drive(
-              ["grants"],
-              {
-                OUTSIDE_EDGE_STATE: state(fixed.url),
-                OUTSIDE_GRANTS_PROBE_ID: probe,
-                OUTSIDE_EDGE_GRANTS: tsv,
-              },
-              "short"
-            ),
-            drive(
-              ["grants"],
-              { OUTSIDE_EDGE_STATE: state(relayed.url), OUTSIDE_GRANTS_PROBE_ID: probe },
-              "short"
-            ),
-            drive(
-              ["grants"],
-              { OUTSIDE_EDGE_STATE: state(through.url), OUTSIDE_GRANTS_PROBE_ID: probe },
-              "short"
-            ),
-            drive(
-              ["grants"],
-              { OUTSIDE_EDGE_STATE: state(other.url), OUTSIDE_GRANTS_PROBE_ID: probe },
-              "short"
-            ),
-            drive(["grants"], { OUTSIDE_EDGE_STATE: state(noProbe.url) }, "short"),
-            drive(
-              ["grants"],
-              { OUTSIDE_EDGE_STATE: state(badProbe.url), OUTSIDE_GRANTS_PROBE_ID: "../revoke" },
-              "short"
-            ),
-            drive(
-              ["grants"],
-              {
-                OUTSIDE_EDGE_STATE: state(noCookie.url, ""),
-                OUTSIDE_GRANTS_PROBE_ID: probe,
-                OUTSIDE_EDGE_GRANTS: emptyTsv,
-              },
-              "short"
-            ),
-          ]);
+        const [
+          fixedRun,
+          relayedRun,
+          throughRun,
+          otherRun,
+          noProbeRun,
+          badProbeRun,
+          noCookieRun,
+          judgedRun,
+          theirsRun,
+        ] = await Promise.all([
+          drive(
+            ["grants"],
+            {
+              OUTSIDE_EDGE_STATE: state(fixed.url),
+              OUTSIDE_GRANTS_PROBE_ID: probe,
+              OUTSIDE_EDGE_GRANTS: tsv,
+            },
+            "short"
+          ),
+          drive(
+            ["grants"],
+            { OUTSIDE_EDGE_STATE: state(relayed.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+            "short"
+          ),
+          drive(
+            ["grants"],
+            { OUTSIDE_EDGE_STATE: state(through.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+            "short"
+          ),
+          drive(
+            ["grants"],
+            { OUTSIDE_EDGE_STATE: state(other.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+            "short"
+          ),
+          drive(["grants"], { OUTSIDE_EDGE_STATE: state(noProbe.url) }, "short"),
+          drive(
+            ["grants"],
+            { OUTSIDE_EDGE_STATE: state(badProbe.url), OUTSIDE_GRANTS_PROBE_ID: "../revoke" },
+            "short"
+          ),
+          drive(
+            ["grants"],
+            {
+              OUTSIDE_EDGE_STATE: state(noCookie.url, ""),
+              OUTSIDE_GRANTS_PROBE_ID: probe,
+              OUTSIDE_EDGE_GRANTS: emptyTsv,
+            },
+            "short"
+          ),
+          drive(
+            ["grants"],
+            { OUTSIDE_EDGE_STATE: state(judged.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+            "short"
+          ),
+          drive(
+            ["grants"],
+            { OUTSIDE_EDGE_STATE: state(theirs.url), OUTSIDE_GRANTS_PROBE_ID: probe },
+            "short"
+          ),
+        ]);
         const wantList =
           "GET /api/v1/credential-grants?approver=me answers 200 holding only grants of sessions that act for carol@outside.example";
         const wantRevoke =
@@ -811,8 +843,10 @@ describe("the controls, against an outside origin stand-in", () => {
           got: "answered 404, with no grants list",
           verdict: "UNKNOWN",
         });
+        // Dispatch's fail-closed answer while it cannot read the broker's list revokes nothing, and
+        // is not its refusal of the revoke: UNKNOWN.
         expect(rowsOf(otherRun).get("grants-revoke"), otherRun.stdout).toMatchObject({
-          got: "answered 404 NOT_FOUND",
+          got: "answered 503 AGENT_SECRETS_UNAVAILABLE",
           verdict: "UNKNOWN",
         });
         expect(otherRun.code).toBe(2);
@@ -841,6 +875,18 @@ describe("the controls, against an outside origin stand-in", () => {
         expect(readFileSync(emptyTsv, "utf8").split("\n").filter(Boolean)).toHaveLength(2);
         expect(noCookie.asked).toEqual([]);
 
+        expect(rowsOf(judgedRun).get("grants-list")?.verdict, judgedRun.stdout).toBe("FAIL");
+        expect(rowsOf(judgedRun).get("grants-revoke"), judgedRun.stdout).toMatchObject({
+          got: "the list shows the probe grant with approver set, so a revoke let through could end it; nothing was revoked",
+          verdict: "UNKNOWN",
+        });
+        expect(rowsOf(theirsRun).get("grants-list")?.verdict, theirsRun.stdout).toBe("PASS");
+        expect(rowsOf(theirsRun).get("grants-revoke"), theirsRun.stdout).toMatchObject({
+          got: "the list shows the probe grant with enrollment.operator set, so a revoke let through could end it; nothing was revoked",
+          verdict: "UNKNOWN",
+        });
+        expect([...judged.grantsRevoked, ...theirs.grantsRevoked]).toEqual([]);
+
         // Each probe that ran was the one revoke the run made.
         expect([fixed, relayed, through, other].map((one) => one.grantsRevoked)).toEqual([
           [probe],
@@ -852,7 +898,9 @@ describe("the controls, against an outside origin stand-in", () => {
         for (const origin of origins) origin.stop();
       }
     },
-    rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short", "short"] })
+    rowLimit({
+      atOnce: ["short", "short", "short", "short", "short", "short", "short", "short", "short"],
+    })
   );
 
   test(
