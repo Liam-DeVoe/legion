@@ -342,7 +342,7 @@ export function IssueAddMenu({
         reachable: () => true,
       });
     }
-    if ((details.blocked_by ?? []).length === 0) {
+    if ((details.needs ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.blocked_by,
         ...atControl(blockedByControlName(details.key, 0)),

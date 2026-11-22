@@ -58,9 +58,8 @@ func TestACopysIDResolvesThroughItsNodesCopiedFromWhateverItsLineHolds(t *testin
 
 // The text routes' asks member reads each ask's answer off the ask's node, not its row (R3: every
 // read of an answer reads the node), as the Decisions read's entries do: while the row holds an
-// answer a process of the release before wrote into it alone, before the decisions step's catch-up
-// states it on the node, the text reads the ask open, as its node holds it, with no answerer; once
-// the node holds an answer, the text reads that one.
+// answer its node does not, which the test writes into the row alone, the text reads the ask open,
+// as its node holds it, with no answerer; once the node holds an answer, the text reads that one.
 func TestTheTextsAsksReadTheAnswerOffTheAsksNodeNotItsRow(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

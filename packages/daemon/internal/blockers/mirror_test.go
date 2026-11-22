@@ -380,7 +380,7 @@ func capturedIssueEvent(t *testing.T, seq int64, parent string, blockedBy, label
 	for _, edit := range []struct{ from, to string }{
 		{`"seq":2,`, fmt.Sprintf(`"seq":%d,`, seq)},
 		{`"parent":null`, `"parent":` + text(parent)},
-		{`"labels":[]`, `"blocked_by":` + text(blockedBy) + `,"labels":` + text(labels)},
+		{`"labels":[]`, `"needs":` + text(blockedBy) + `,"labels":` + text(labels)},
 	} {
 		edited := strings.Replace(event, edit.from, edit.to, 1)
 		if edited == event {

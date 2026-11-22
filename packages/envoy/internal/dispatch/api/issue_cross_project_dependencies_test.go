@@ -19,11 +19,11 @@ import (
 // first.
 const crossProjectRaceRounds = 8
 
-// dependencyEdge is one `blocked_by` link, written as the issue that waits and the issue it
+// dependencyEdge is one `needs` link, written as the issue that waits and the issue it
 // waits on.
 type dependencyEdge struct{ issue, target string }
 
-// TestBlockedByCrossesAProjectAndStillRefusesACycle: a `blocked_by` target may be an issue of
+// TestBlockedByCrossesAProjectAndStillRefusesACycle: a `needs` target may be an issue of
 // another project, so an issue that waits on work tracked elsewhere can record that wait
 // (INFRA-3036). Every refusal that stood before stands across projects too — a ring, a child
 // waiting on its parent, a parent waiting on its descendant and an issue waiting on itself —
@@ -45,7 +45,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			targets = []string{}
 		}
 		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
-			"blocked_by": targets,
+			"needs": targets,
 		}, "alice")
 	}
 	setBlockers := func(what, key string, targets []string) {
@@ -60,7 +60,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
 		}
-		return decodeBody[model.Issue](t, response).BlockedBy
+		return decodeBody[model.Issue](t, response).Needs
 	}
 	eventNames := func(key, eventType, blocker string) bool {
 		t.Helper()
@@ -102,24 +102,24 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	// the write appended, cleared again, and made at creation as well as by a patch.
 	setBlockers("wait on another project's issue", alpha[0], []string{beta[0]})
 	if got := blockedBy(alpha[0]); !slices.Equal(got, []string{beta[0]}) {
-		t.Fatalf("blocked_by of %s = %v, want %v", alpha[0], got, []string{beta[0]})
+		t.Fatalf("needs of %s = %v, want %v", alpha[0], got, []string{beta[0]})
 	}
 	if !eventNames(alpha[0], "issue.updated", beta[0]) {
 		t.Fatalf("no issue.updated of %s names the blocker %s it added", alpha[0], beta[0])
 	}
 	setBlockers("clear a wait on another project's issue", alpha[0], nil)
 	if got := blockedBy(alpha[0]); len(got) != 0 {
-		t.Fatalf("cleared blocked_by of %s = %v, want []", alpha[0], got)
+		t.Fatalf("cleared needs of %s = %v, want []", alpha[0], got)
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "ALPHA", "title": "Created waiting on another project",
-		"blocked_by": []string{beta[1]}, "force": true,
+		"needs": []string{beta[1]}, "force": true,
 	}, "alice")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create waiting on another project: status=%d body=%s", created.Code, created.Body.String())
 	}
-	if got := decodeBody[model.Issue](t, created).BlockedBy; !slices.Equal(got, []string{beta[1]}) {
-		t.Fatalf("created blocked_by = %v, want %v", got, []string{beta[1]})
+	if got := decodeBody[model.Issue](t, created).Needs; !slices.Equal(got, []string{beta[1]}) {
+		t.Fatalf("created needs = %v, want %v", got, []string{beta[1]})
 	}
 
 	// What stays refused. The cycle walk is project-blind, so a ring of two cross-project links
@@ -148,7 +148,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	expectRefusal("a parent waiting on its descendant", patchBlockers(parentKey, []string{childKey}),
 		http.StatusConflict, "DEPENDENCY_CYCLE")
 	expectRefusal("an issue waiting on itself", patchBlockers(alpha[2], []string{alpha[2]}),
-		http.StatusBadRequest, "BLOCKED_BY_INPUT")
+		http.StatusBadRequest, "NEEDS_INPUT")
 
 	ringLanded := func(ring []dependencyEdge) bool {
 		for _, link := range ring {
@@ -318,7 +318,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		outside := createIssue("OTH", "An issue of another project")
 
 		refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
-			"blocked_by": []string{outside},
+			"needs": []string{outside},
 		}))
 		if refused.Code != http.StatusForbidden {
 			t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
@@ -332,20 +332,20 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 				refusal.Error, brokerTestProject)
 		}
 		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
-		if got := decodeBody[model.Issue](t, read).BlockedBy; len(got) != 0 {
-			t.Fatalf("the refused write left blocked_by = %v, want []", got)
+		if got := decodeBody[model.Issue](t, read).Needs; len(got) != 0 {
+			t.Fatalf("the refused write left needs = %v, want []", got)
 		}
 
 		// The same caller still links inside its own project, so what is refused is the target
 		// outside the credential's project and not the route.
 		allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
-			"blocked_by": []string{sibling},
+			"needs": []string{sibling},
 		}))
 		if allowed.Code != http.StatusOK {
 			t.Fatalf("a scoped caller linking inside its own project: status=%d body=%s", allowed.Code, allowed.Body.String())
 		}
-		if got := decodeBody[model.Issue](t, allowed).BlockedBy; !slices.Equal(got, []string{sibling}) {
-			t.Fatalf("blocked_by = %v, want %v", got, []string{sibling})
+		if got := decodeBody[model.Issue](t, allowed).Needs; !slices.Equal(got, []string{sibling}) {
+			t.Fatalf("needs = %v, want %v", got, []string{sibling})
 		}
 	})
 }

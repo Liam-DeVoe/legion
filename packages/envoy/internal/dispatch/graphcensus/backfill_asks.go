@@ -22,9 +22,8 @@ import (
 // none, and graph_edges' old arms answer it until these two passes state the row on the node and
 // mark it, on the store's backfill contract: each walks only the rows its marker does not mark,
 // states every fact of a row in the transaction that marks it, and reads no marked row, so a run
-// after another, or beside a live server, does only the rows still owed. They are the boot step's
-// first phase after the object nodes (docs' decision step), and `backfill-graph-store` runs them
-// too.
+// after another, or beside a live server, does only the rows still owed. They run after the object
+// nodes in every boot's run of the whole backfill, and `backfill-graph-store` runs them too.
 //
 // Each batch takes the store's lock order (api/inbox_read.go's markInboxReadThreads): it reads
 // what it takes without a lock, then takes the owner row of every ask of the batch, each once and
@@ -42,9 +41,8 @@ import (
 // whose node the store holds, and none of whose three documents' addresses is past the store's
 // bound - such a row is left out whole, as a comment is (graphstore.AskPlaces.Fit). It is the from
 // and the where every read of those rows shares - the batch's read of what it takes
-// (askBatchRead), its read again under its locks (askRowsRead), the count of what is left and the
-// probe of whether any is owed (AsksOwed) - over asks k and its three documents, anchor, owner and
-// document.
+// (askBatchRead), its read again under its locks (askRowsRead) and the count of what is left -
+// over asks k and its three documents, anchor, owner and document.
 var askRowsOwed = `
 	from asks k
 	join graph_nodes node on node.kind = 'ask' and node.id = k.id::text
@@ -412,58 +410,4 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 		return 0, 0, 0, fmt.Errorf("commit an ask follower batch: %w", err)
 	}
 	return int64(len(askIDs)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), nil
-}
-
-// askPasses are the asks pass and the follower pass, in the order Backfill and BackfillAsks both
-// run them.
-var askPasses = []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers}
-
-// BackfillAsks is the boot step's first phase (docs' decision step): the object nodes of every
-// issue, document, ask and message written before their writers wrote one (backfillObjectNodes),
-// so every ask a build before this release wrote has its node before a mark names it, then the
-// asks and the ask_followers rows that name no node, each in committed batches of backfillBatch.
-// It answers what each pass did; an error stops it where it stands, and every batch committed
-// before it stays.
-//
-// kept for one release: decisions-step
-func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
-	done, err := backfillObjectNodes(ctx, database)
-	if err != nil {
-		return done, err
-	}
-	for _, write := range askPasses {
-		report, err := write(ctx, database)
-		done = append(done, report)
-		if err != nil {
-			return done, err
-		}
-	}
-	return done, nil
-}
-
-// AsksOwed reports whether BackfillAsks has anything to do: a row of an object kind that names no
-// node, or an asks or ask_followers row the passes would mark. Each read stops at its first owed
-// row, so a store that owes one costs little, but a store that owes nothing is read to the end: an
-// anti-join of issues, artifacts, asks and messages to graph_nodes, then asks and ask_followers,
-// which no index keys on a null marker. The decisions step reads it only where another build can
-// have written such a row (docs' decision step, probe).
-//
-// kept for one release: decisions-step
-func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
-	for _, kind := range objectKinds {
-		var owed bool
-		if err := q.QueryRow(ctx, `select exists (`+kind.read+`)`, kind.start, 1).Scan(&owed); err != nil {
-			return false, fmt.Errorf("read whether a %s row names no node: %w", kind.kind, err)
-		}
-		if owed {
-			return true, nil
-		}
-	}
-	var owed bool
-	if err := q.QueryRow(ctx, `
-		select exists (select 1 `+askRowsOwed+`) or exists (select 1 `+askFollowerRowsOwed+`)
-	`).Scan(&owed); err != nil {
-		return false, fmt.Errorf("read whether an ask or a follower names no node: %w", err)
-	}
-	return owed, nil
 }

@@ -1888,9 +1888,10 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The test of artifact.Retired above ran before this lock, and the decisions step's retirement
-	// takes it too (docs.RetireDocument): one committed since is read here, under the lock this
-	// edit's version write holds to its commit, and refused as that test refuses it.
+	// The test of artifact.Retired above ran before this lock, and a retirement takes it too
+	// (docs.RetireDocument, which the pre-mortem conversion runs): one committed since is read
+	// here, under the lock this edit's version write holds to its commit, and refused as that test
+	// refuses it.
 	if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, artifact.Name); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -2734,7 +2735,7 @@ func artifactSlug(name string) string {
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
 // documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
-// write: a decisions document is found through decisions_documents(),
+// write: a decisions document an earlier release stored is found by refs.DecisionsDocumentSQL,
 // and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: model.ArtifactSlugVerification,
@@ -2833,8 +2834,8 @@ var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 // `decision` block of the spec, and a document of that name would be stored where nothing reads
 // it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
 // It reads the name and not the issue, so a document of any other name is taken. An upload that
-// finds an issue's decisions document that still stands is that document's next version, which
-// the decisions step converts, and is never refused.
+// finds an issue's decisions document that still stands is that document's next version, and is
+// never refused.
 func decisionsAreNodes(target artifactTarget, name string) error {
 	if target.IssueKey == nil || artifactSlug(name) != refs.RetiredDecisionsSlug {
 		return nil

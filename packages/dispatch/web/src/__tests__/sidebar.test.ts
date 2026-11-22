@@ -50,7 +50,6 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     open_asks: 1,
     progress: { tasks: null, children: null },
     parent: null,
-    blocked_by: [],
     primary_artifact_id: "artifact-1",
     assignee: null,
     claim: null,

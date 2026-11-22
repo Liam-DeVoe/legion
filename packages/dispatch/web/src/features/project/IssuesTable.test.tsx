@@ -29,7 +29,6 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     rank: key,
     labels: [],
     parent: null,
-    blocked_by: [],
     assignee: null,
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -67,7 +66,6 @@ function savedIssue(key: string): Issue {
     number: Number(key.split("-")[1]),
     closed_at: null,
     external_links: [],
-    decisions_artifact_id: "",
     plan_artifact_id: "",
     verification_artifact_id: "",
   };

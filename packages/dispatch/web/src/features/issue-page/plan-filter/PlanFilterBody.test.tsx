@@ -686,7 +686,6 @@ function issueRead(verification?: Artifact): IssueDetails {
       { ...artifact(PLAN_ARTIFACT, PLAN), role: "plan" },
       ...(verification === undefined ? [] : [verification]),
     ],
-    decisions_artifact_id: "",
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
     verification_artifact_id: verification?.id ?? "",

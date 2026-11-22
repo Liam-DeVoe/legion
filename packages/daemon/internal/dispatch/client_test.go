@@ -105,20 +105,20 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	}
 }
 
-// TestTheDaemonReadsNeedsAndFallsBackToBlockedBy is c-one-dependency's daemon half
-// (dispatch://INFRA-1253 R10): a Dispatch of this release answers an issue's waits as needs beside
-// blocked_by, and one of the release before answers blocked_by alone, which a new daemon can meet.
-// The issue read and the listing each decode an answer holding needs and one holding blocked_by
-// alone to the same targets, and an answer whose two members name different issues is read by
-// needs.
-func TestTheDaemonReadsNeedsAndFallsBackToBlockedBy(t *testing.T) {
+// TestTheDaemonReadsNeedsAndHasNoBlockedByFallback is c-blocked-by-gone's daemon half (R27 of
+// dispatch://INFRA-1098): needs is the one member Dispatch answers an issue's waits in, and the
+// daemon reads it alone. The issue read and the listing each decode an answer that holds needs and
+// read the blockers it names, whatever blocked_by holds beside it, and decode an answer that holds
+// only blocked_by and read none, so no fallback from needs to blocked_by is left.
+func TestTheDaemonReadsNeedsAndHasNoBlockedByFallback(t *testing.T) {
+	waits := []string{"LEGION-2", "OTHER-3"}
 	answers := map[string]map[string]any{
-		"LEGION-10": {"needs": []string{"LEGION-2", "OTHER-3"}, "blocked_by": []string{"LEGION-2", "OTHER-3"}},
-		"LEGION-11": {"blocked_by": []string{"LEGION-2", "OTHER-3"}},
-		"LEGION-12": {"needs": []string{"LEGION-2", "OTHER-3"}},
-		"LEGION-13": {"needs": []string{"LEGION-2", "OTHER-3"}, "blocked_by": []string{"LEGION-9"}},
+		"LEGION-10": {"needs": waits},
+		"LEGION-11": {"blocked_by": waits},
+		"LEGION-12": {"needs": waits, "blocked_by": []string{"LEGION-9"}},
 	}
-	keys := []string{"LEGION-10", "LEGION-11", "LEGION-12", "LEGION-13"}
+	want := map[string][]string{"LEGION-10": waits, "LEGION-11": nil, "LEGION-12": waits}
+	keys := []string{"LEGION-10", "LEGION-11", "LEGION-12"}
 	answer := func(key string) map[string]any {
 		body := map[string]any{"key": key, "project": "LEGION", "title": key, "status": "todo", "rank": key}
 		for member, value := range answers[key] {
@@ -140,7 +140,6 @@ func TestTheDaemonReadsNeedsAndFallsBackToBlockedBy(t *testing.T) {
 	}))
 	defer server.Close()
 	client := New(server.URL, dispatchToken)
-	want := []string{"LEGION-2", "OTHER-3"}
 	listed, err := client.ListIssues(context.Background(), "LEGION", nil)
 	if err != nil {
 		t.Fatalf("list issues: %v", err)
@@ -153,11 +152,11 @@ func TestTheDaemonReadsNeedsAndFallsBackToBlockedBy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get %s: %v", key, err)
 		}
-		if !slices.Equal(issue.BlockedBy, want) {
-			t.Errorf("the issue read of %s, answering %v, reads waits %v, want %v", key, answers[key], issue.BlockedBy, want)
+		if !slices.Equal(issue.BlockedBy, want[key]) {
+			t.Errorf("the issue read of %s, answering %v, reads waits %v, want %v", key, answers[key], issue.BlockedBy, want[key])
 		}
-		if listed[index].Key != key || !slices.Equal(listed[index].BlockedBy, want) {
-			t.Errorf("the listing's row %s, answering %v, reads waits %v, want %v", listed[index].Key, answers[key], listed[index].BlockedBy, want)
+		if listed[index].Key != key || !slices.Equal(listed[index].BlockedBy, want[key]) {
+			t.Errorf("the listing's row %s, answering %v, reads waits %v, want %v", listed[index].Key, answers[key], listed[index].BlockedBy, want[key])
 		}
 	}
 }
@@ -298,7 +297,7 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 		}
 		writeJSON(t, w, map[string]any{
 			"key": "LEGION-4", "title": "Widget", "status": "testing", "parent": "LEGION-1", "rank": "B", "labels": []string{"Legion"},
-			"last_seq": 12, "resolved_repo": "acme/widgets", "blocked_by": []string{"LEGION-2"}, "claim": nil,
+			"last_seq": 12, "resolved_repo": "acme/widgets", "needs": []string{"LEGION-2"}, "claim": nil,
 			"advice": map[string]any{"suggestions": []any{}},
 		})
 	}))

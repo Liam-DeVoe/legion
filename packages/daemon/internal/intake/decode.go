@@ -339,12 +339,12 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			Rank         string          `json:"rank"`
 			Labels       []string        `json:"labels"`
 			ResolvedRepo json.RawMessage `json:"resolved_repo"`
-			// An event of a Dispatch of dispatch://INFRA-1253's release on carries needs beside
-			// blocked_by, and is read by needs (dispatch.WaitsOf). An event retained from a Dispatch
-			// that sent neither decodes to no blockers, as an issue waiting on nothing does: unlike
-			// a missing repository, which the consumer fills, nothing reads an absence here.
-			Needs     *[]string `json:"needs"`
-			BlockedBy []string  `json:"blocked_by"`
+			// An issue's waits are its needs, the one member a Dispatch from
+			// dispatch://INFRA-1253's release on writes them in (R27 of dispatch://INFRA-1098),
+			// with no fallback to blocked_by. An event retained from a Dispatch that sent no needs
+			// decodes to no blockers, as an issue waiting on nothing does: unlike a missing
+			// repository, which the consumer fills, nothing reads an absence here.
+			Needs []string `json:"needs"`
 			// Claim is present on every issue event of a Dispatch that has claims (null for none),
 			// and absent from an event retained from before it did, which says nothing of the claim.
 			Claim json.RawMessage `json:"claim"`
@@ -381,7 +381,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels, ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
-			ResolvedRepoMissing: missing, Blockers: dispatch.WaitsOf(issue.Needs, issue.BlockedBy), ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+			ResolvedRepoMissing: missing, Blockers: issue.Needs, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	case "artifact.approved", "artifact.changes_requested":
 		var artifact struct {
 			ArtifactID string `json:"artifact_id"`

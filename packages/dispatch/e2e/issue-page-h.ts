@@ -199,13 +199,13 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   await patchIssue(one.key, {
     advances: [priority.id],
     assignee: "alice",
-    blocked_by: [three.key],
     components: { ids: ["panel"], mode: "explicit" },
     external_links: [
       { kind: "github_pr", url: `https://github.com/${REPOSITORY}/pull/${PULL_NUMBER}` },
       { kind: "github_issue", url: OTHER_LINK },
     ],
     labels: [...TWENTY_LABELS],
+    needs: [three.key],
     repo: REPOSITORY,
     route: "role:architect",
   });
@@ -225,7 +225,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
       project: PROJECT,
       title: `Waits on ONE (${index})`,
     });
-    await patchIssue(waiter.key, { blocked_by: [one.key] });
+    await patchIssue(waiter.key, { needs: [one.key] });
     blocks.push(waiter.key);
     blockTitles.push(waiter.title);
   }

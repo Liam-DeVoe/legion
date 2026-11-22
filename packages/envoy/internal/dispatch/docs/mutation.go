@@ -64,11 +64,6 @@ type versionWrite struct {
 	// Nor does it carry an approval: the settlement carries one to the version once that pass has
 	// stated it.
 	roomIndexed bool
-	// steps names the phases of the decisions step whose own write this version is (restoreCase,
-	// conversionCase): set by SnapshotVersion from the mark the step alone puts on its context
-	// (withDecisionStepWrite), which no route can send, and zero for every other version, which
-	// the restore's and the conversion's carry cases do not reach.
-	steps decisionStepCases
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -1302,10 +1297,11 @@ func (e *ErrAnsweredAskKept) Error() string {
 // one that still holds a block under that id, as another type, is a write that retyped the block,
 // and the refusal says so. standing narrows it to the asks whose block the block index holds as an
 // ask block, as it narrows a person's removals (answerDroppedAnsweredAsks), for a write that
-// replaces the document whole: an answered ask whose block a person removed earlier, or one the
-// decisions step's restore still owes, is no block this write drops. The asks are read with the
-// address of the document holding each block (refs.AskBlockDocumentSQL), in the one statement, so
-// the refusal names each ask's node and its block's address and quotes its question.
+// replaces the document whole: an answered ask whose block left the document earlier - a person's
+// removal, or an agent's under a build before this refusal - is no block this write drops. The
+// asks are read with the address of the document holding each block (refs.AskBlockDocumentSQL),
+// in the one statement, so the refusal names each ask's node and its block's address and quotes
+// its question.
 func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, after *pmdoc.Node, lost func(blockID string) bool, standing bool) error {
 	rows, err := q.Query(ctx, `
 		select k.id::text, k.block_id, k.question, k.issue_key,
@@ -1874,7 +1870,6 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
-		steps:            decisionStepCasesOf(ctx),
 	})
 	if err != nil {
 		return VersionResult{}, err
@@ -3026,7 +3021,7 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 		// (carryAfterRender), or, for a restore, behind the row it writes itself (carryRestored).
 		if !spec.roomIndexed {
 			if err := carryAfterRender(ctx, tx, artifactID, version.Number, func() error {
-				return s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx))
+				return s.carryApproval(ctx, tx, artifactID, version, rendered, eventSink(ctx))
 			}); err != nil {
 				return versionWriteResult{}, err
 			}

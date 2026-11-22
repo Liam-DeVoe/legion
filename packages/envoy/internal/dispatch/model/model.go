@@ -605,12 +605,11 @@ type Issue struct {
 	Rank     string   `json:"rank"`
 	Labels   []string `json:"labels"`
 	Parent   *string  `json:"parent"`
-	// BlockedBy and Needs are the issue keys this issue waits on, of any project, sorted: one
-	// relation, the needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the
-	// issue_links rows that project them, under both spellings through this release, since a
-	// reader of the release before reads blocked_by.
-	BlockedBy []string `json:"blocked_by"`
-	Needs     []string `json:"needs" required:"false"`
+	// Needs is the issue keys this issue waits on, of any project, sorted: its needs relation, the
+	// needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the issue_links rows that
+	// project them. It is the one spelling: the issue read answers no blocked_by (R27 of
+	// dispatch://INFRA-1098).
+	Needs []string `json:"needs" required:"false"`
 	// DuplicateOf is the key of the issue of this issue's project it repeats, and FiledFrom the
 	// canonical reference of the ask, comment or message it was filed out of
 	// (dispatch://INFRA-1253 R9), each the far end of the issue's duplicate_of or filed_from tuple
@@ -644,12 +643,7 @@ type Issue struct {
 	// when the issue holds none. They are resolved on read, as PrimaryArtifactID is.
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
-	// DecisionsArtifactID is the id of the issue's decisions document while it stands
-	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
-	// release before reads it.
-	// kept for one release: compat-objects
-	DecisionsArtifactID string `json:"decisions_artifact_id"`
-	LastSeq             int    `json:"last_seq"`
+	LastSeq                int    `json:"last_seq"`
 }
 
 // Route statuses: whether an issue's route reaches a running session right now.
@@ -725,9 +719,8 @@ type IssueSummary struct {
 	Rank     string   `json:"rank"`
 	Labels   []string `json:"labels"`
 	Parent   *string  `json:"parent"`
-	// BlockedBy and Needs are Issue's: one relation under both spellings.
-	BlockedBy []string `json:"blocked_by"`
-	Needs     []string `json:"needs" required:"false"`
+	// Needs is Issue's.
+	Needs []string `json:"needs" required:"false"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
 	Advances         []IssueAdvance `json:"advances"`
@@ -1134,7 +1127,7 @@ type NearCopyChecksPage struct {
 // include the child itself, every status (icebox included); done is `status = 'done'`.
 // ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
 // child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
-// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
+// the elements of Issue's needs, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1266,10 +1259,10 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it. A document of
-	// an issue born converted carries no role in its row: its role is projected from the query
-	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
-	// `spec` projecting none (dispatch://INFRA-1253 R8, decision 2 of its plan).
+	// `decisions`, until it is retired. A document of an issue born converted carries no role in
+	// its row: its role is projected from the query value of its node (graphstore.QueryNode),
+	// `verification`, `plan` or `decisions`, the spec's `spec` projecting none
+	// (dispatch://INFRA-1253 R8, decision 2 of its plan).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
@@ -1733,6 +1726,140 @@ type RequirementProof struct {
 	Proves string `json:"proves" enum:"none,fail,reworded,pass"`
 }
 
+// IssueChain is GET /api/v1/issues/{key}/chain: one issue's chain from each decision to the result
+// that proves what it shaped, read in one read of the issue's tree over the tuples as the caller
+// may see it, with nothing of it stored. Every node is listed once, under its one store id, and
+// every hop names its far end by that id. A requirement names the decisions whose `shaped` reaches
+// it and the checks and plan tasks whose `serves` reaches it, never the nodes placed under it, so
+// a check serving three requirements is one entry of Checks that each of the three names. A check
+// names the requirements it serves and its results, and a result names its check and, read
+// backwards, the requirements and the decisions behind it. A node's Parent is its placement, the
+// one part_of the tree read answers for it, which is read apart from what it serves.
+//
+// At is the commit the caller named (`?at=`), which every check was judged against, and null
+// where none was named: each check's compared_with then says what it was judged against, as
+// GET /api/v1/issues/{key}/results answers it. Gaps is what the chain lacks, one entry each.
+type IssueChain struct {
+	Issue        string                  `json:"issue"`
+	At           *string                 `json:"at"`
+	Requirements []IssueChainRequirement `json:"requirements"`
+	Decisions    []IssueChainDecision    `json:"decisions"`
+	Checks       []IssueChainCheck       `json:"checks"`
+	PlanTasks    []IssueChainPlanTask    `json:"plan_tasks"`
+	Results      []IssueChainResult      `json:"results"`
+	Gaps         []IssueChainGap         `json:"gaps"`
+}
+
+// IssueChainRequirement is one requirement node of the issue's tree: its store id, its block id,
+// its reference, its words with every link dropped, its node state and its placement. Decisions,
+// Checks and PlanTasks are the ids of the nodes whose `shaped` or `serves` tuple names it now; a
+// check or a plan task at node state proposed or overtaken serves nothing, as the coverage read
+// counts it. Proved is whether a pass of one of those checks stands (IssueChainCheck.Proved).
+type IssueChainRequirement struct {
+	ID        string           `json:"id"`
+	BlockID   string           `json:"block_id"`
+	Ref       string           `json:"ref"`
+	Text      string           `json:"text"`
+	State     string           `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	Parent    *IssueTreeParent `json:"parent"`
+	Decisions []string         `json:"decisions"`
+	Checks    []string         `json:"checks"`
+	PlanTasks []string         `json:"plan_tasks"`
+	Proved    bool             `json:"proved"`
+}
+
+// IssueChainDecision is one decision of the issue whose `shaped` names a requirement of the chain:
+// an agent's `decision` block (kind block) or an ask a person answered (kind ask), as the decisions
+// read answers each. Text is its words: a block's words with every link dropped, an ask's
+// question. Answer is the answer the person gave an ask, and empty for a block. Shaped is the ids
+// of the requirements it shaped.
+type IssueChainDecision struct {
+	Kind    string   `json:"kind" enum:"block,ask"`
+	ID      string   `json:"id"`
+	BlockID string   `json:"block_id,omitempty"`
+	Text    string   `json:"text"`
+	Answer  string   `json:"answer,omitempty"`
+	Shaped  []string `json:"shaped"`
+}
+
+// IssueChainCheck is one check of the chain: each check node of the issue's tree, and each check of
+// an issue under it whose `serves` names one of the issue's requirements. Serves is the ids of the
+// requirements its `serves` names now, and Parent its own placement, one node whatever it serves.
+// Its words, its version and their digest, what it is compared with and whether a pass of it stands
+// are the results read's (CheckBlock), over the results the caller may see, and Results is their
+// ids, newest first. Proved is whether a pass stands (pass_stands yes); a check that is not proved
+// says in Unproven why each of its results is evidence and no proof.
+type IssueChainCheck struct {
+	ID              string               `json:"id"`
+	BlockID         string               `json:"block_id"`
+	Ref             string               `json:"ref"`
+	Issue           string               `json:"issue"`
+	Text            string               `json:"text"`
+	When            string               `json:"when"`
+	State           string               `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	Parent          *IssueTreeParent     `json:"parent"`
+	Serves          []string             `json:"serves"`
+	Version         int                  `json:"version"`
+	SHA256          string               `json:"sha256"`
+	ComparedWith    []CheckBasis         `json:"compared_with"`
+	ComparedNothing string               `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	PassStands      CheckPassStands      `json:"pass_stands"`
+	Results         []string             `json:"results"`
+	Proved          bool                 `json:"proved"`
+	Unproven        []IssueChainUnproven `json:"unproven"`
+}
+
+// IssueChainUnproven is one reason a check that is not proved stands unproven, read off the
+// standing the results read gives: no_result, the check holds no result the caller may see;
+// compared_nothing, the check is compared with nothing (its compared_nothing says why); and, for
+// the result Result names, failed (its verdict is fail), retracted (a retraction stands against
+// it), check_words_moved (it ran against words the check no longer holds), other_commit (its commit
+// is none of those the check is compared with) or commit_unknown (Dispatch could not place it).
+type IssueChainUnproven struct {
+	Reason string `json:"reason" enum:"no_result,compared_nothing,failed,retracted,check_words_moved,other_commit,commit_unknown"`
+	Result string `json:"result,omitempty"`
+}
+
+// IssueChainPlanTask is one plan task of the chain: each plan_task node of the issue's tree, and
+// each one of an issue under it whose `serves` names one of the issue's requirements, with its
+// words, its node state, its placement and the ids of the requirements it serves.
+type IssueChainPlanTask struct {
+	ID      string           `json:"id"`
+	BlockID string           `json:"block_id"`
+	Ref     string           `json:"ref"`
+	Issue   string           `json:"issue"`
+	Text    string           `json:"text"`
+	State   string           `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	Parent  *IssueTreeParent `json:"parent"`
+	Serves  []string         `json:"serves"`
+}
+
+// IssueChainResult is one result of a check of the chain and the walk read backwards from it.
+// Result is the result as GET /api/v1/issues/{key}/results answers it, with where its commit
+// stands, whether the check's words moved and its retraction, and never its compatibility
+// currency. Check is the id of its check, Requirements the ids of the requirements that check
+// serves, and Decisions the ids of the decisions that shaped those. Proves is whether this result
+// is a pass that stands: its commit at a basis, the check's words unmoved and no retraction
+// against it.
+type IssueChainResult struct {
+	Result       CheckResult `json:"result"`
+	Check        string      `json:"check"`
+	Proves       bool        `json:"proves"`
+	Requirements []string    `json:"requirements"`
+	Decisions    []string    `json:"decisions"`
+}
+
+// IssueChainGap is one thing the chain lacks: no_decision, a requirement no decision shaped;
+// no_check, a requirement no check serves; no_result, a check holding no result the caller may
+// see; serves_nothing, a check or a plan task whose `serves` names nothing. A requirement at node
+// state proposed or overtaken raises no gap, and neither does a check or a plan task at either.
+// Node is the id of the node the gap is of, and Line the gap in one line, its block id first.
+type IssueChainGap struct {
+	Kind string `json:"kind" enum:"no_decision,no_check,no_result,serves_nothing"`
+	Node string `json:"node"`
+	Line string `json:"line"`
+}
+
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
 // result, the issue it was recorded on (Issue, which is the check's issue only when the result
 // was recorded there) and the check it proves. CheckArtifactID is the artifact the check's
@@ -2192,7 +2319,7 @@ type AskAnsweredEventPayload struct {
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
 // for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// advances, blocked_by and needs together, duplicate_of, filed_from, external_links; for
+// advances, needs, duplicate_of, filed_from, external_links; for
 // issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
@@ -3835,14 +3962,15 @@ type GraphExcerpt struct {
 // behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
 // of an interaction, a lens, a finding, a risk and a constraint), which the view answers from the
 // tuples alone, and an issue's duplicate_of and filed_from, which the store holds alone too
-// (dispatch://INFRA-1253 R9). blocked_by is the kind graph_edges names an issue's wait on an issue
-// by through this release, in its old arm and its tuple arm alike, the kind a process of the
-// release before reads that wait by; this build's references read answers the same wait as needs
-// (EdgeKindNeeds) and takes either spelling in its kind filter (R10). A typed block's `block[]`
-// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is none of these
-// but needs: a schema name equal to one would merge silently with it in every reader, and needs is
-// the one relation the two families share, since an issue and a plan node wait by one relation.
-var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
+// (dispatch://INFRA-1253 R9). An issue's wait on an issue is needs (EdgeKindNeeds), the kind every
+// read answers it by, and no kind of this list is blocked_by (R27 of dispatch://INFRA-1098): until
+// the view is one select, graph_edges still stores that wait under the kind blocked_by, which the
+// references read takes under needs and answers as needs (api's answerIssueWaitsAsNeeds). A typed
+// block's `block[]` attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which
+// is none of these but needs: a schema name equal to one would merge silently with it in every
+// reader, and needs is the one relation the two families share, since an issue and a plan node wait
+// by one relation.
+var GraphEdgeKinds = []string{"mentions", "child_of", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
 	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by",
 	EdgeKindNeeds, "duplicate_of", "filed_from"}
 

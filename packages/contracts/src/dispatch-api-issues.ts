@@ -111,12 +111,9 @@ export const issueFields = {
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
-  /** Issue keys this issue waits on, of any project, sorted: the same list as `needs`, under the
-   *  spelling a reader of the release before reads. */
-  blocked_by: z.array(z.string()),
   /** Issue keys this issue waits on, of any project, sorted: its `needs` relation, one relation
-   *  with a plan node's wait. Absent from a Dispatch older than the issue tree, which answers
-   *  `blocked_by` alone. */
+   *  with a plan node's wait, and the one spelling of it (dispatch://INFRA-1098 R27). Absent from
+   *  a Dispatch older than the issue tree. */
   needs: z.array(z.string()).optional(),
   /** The key of the issue of this issue's project it repeats; null when it names none. Absent
    *  from a Dispatch older than the issue tree. */
@@ -160,10 +157,6 @@ export const issueFields = {
    *  Dispatch older than document roles. */
   verification_artifact_id: z.string().optional(),
   plan_artifact_id: z.string().optional(),
-  /** The id of the issue's decisions document while it stands, `""` once the decisions step
-   *  retires it. No reader of this build reads it; a page of the release before does. */
-  // kept for one release: compat-objects
-  decisions_artifact_id: z.string().optional(),
   last_seq: z.number().int(),
 };
 
@@ -219,7 +212,7 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
    *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `advances`, `blocked_by` and `needs` (one relation under both spellings), `duplicate_of`,
+   *  `advances`, `needs`, `duplicate_of`,
    *  `filed_from` and `external_links`; for `issue.created`, every field the new issue holds a
    *  value in. */
   changed: z.array(z.string()).optional(),

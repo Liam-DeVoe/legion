@@ -374,7 +374,6 @@ function event(
 function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     assignee: "alice@example.com",
-    blocked_by: [],
     closed_at: null,
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
     key: "CORE-1",
@@ -662,7 +661,7 @@ const rules: Record<string, Rule> = {
         "issue.updated",
         issue({
           ancestors: [],
-          changed: ["blocked_by"],
+          changed: ["needs"],
           references_changed: [{ id: "CORE-9", kind: "issue" }],
         })
       ),

@@ -138,24 +138,17 @@ function advancesRevisionToSend(issue: IssueDetails, named: number | undefined):
   return named ?? issue.advances_revision;
 }
 
-/** The two members a create or an update names the issue's waits by: needs, which a Dispatch of
- *  the issue tree reads, and blocked_by with the same targets, which a Dispatch of the release
- *  before reads alone, so a CLI of this release is served by either (dispatch://INFRA-1253 R10).
- *  A call naming no waits sends neither. */
-function waitsBody(blockedBy: readonly string[] | undefined): {
-  readonly needs?: string[];
-  readonly blocked_by?: string[];
-} {
-  return blockedBy === undefined ? {} : { needs: [...blockedBy], blocked_by: [...blockedBy] };
+/** The member a create or an update names the issue's waits by: needs alone, the one spelling
+ *  Dispatch reads (dispatch://INFRA-1098 R27). The flag stays `--blocked-by`; no request carries
+ *  a blocked_by member, which Dispatch refuses by name where it comes without needs. A call
+ *  naming no waits sends none. */
+function waitsBody(waits: readonly string[] | undefined): { readonly needs?: string[] } {
+  return waits === undefined ? {} : { needs: [...waits] };
 }
 
-/** The issues an issue answer says the issue waits on: its needs, where the answer holds it, and
- *  else its blocked_by, which a Dispatch of the release before answers alone. */
-export function waitsOf(issue: {
-  readonly needs?: readonly string[] | null;
-  readonly blocked_by?: readonly string[] | null;
-}): readonly string[] {
-  return issue.needs ?? issue.blocked_by ?? [];
+/** The issues an issue answer says the issue waits on: its needs. */
+export function waitsOf(issue: { readonly needs?: readonly string[] | null }): readonly string[] {
+  return issue.needs ?? [];
 }
 
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */

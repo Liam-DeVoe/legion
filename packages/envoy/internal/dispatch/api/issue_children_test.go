@@ -85,7 +85,7 @@ func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
 	blockers := []string{create("First blocker", nil).Key, create("Second blocker", nil).Key}
 	slices.Sort(blockers)
 	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{
-		"blocked_by": blockers,
+		"needs": blockers,
 	}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("block the leaf: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -195,7 +195,7 @@ func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
 // Each child of the issue read carries what it waits on and who holds it: the child waiting on
 // two issues answers their keys sorted as `needs` and no claim, the claimed child answers the
 // claim and no `needs`, and both answers are what that child's own issue read gives — the
-// elements of its `blocked_by` and its `claim` — so the page reads a child as it reads an issue.
+// elements of its `needs` and its `claim` — so the page reads a child as it reads an issue.
 // A child with nothing to say for either leaves the field out rather than sending it empty.
 func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	fixture := newIssueChildrenFixture(t)
@@ -225,8 +225,8 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 
 	for _, child := range []model.IssueChild{blocked, claimed} {
 		own := readTestIssue(t, fixture.handler, child.Key)
-		if !slices.Equal(child.Needs, own.BlockedBy) {
-			t.Errorf("%s needs %v as a child and is blocked by %v as an issue", child.Key, child.Needs, own.BlockedBy)
+		if !slices.Equal(child.Needs, own.Needs) {
+			t.Errorf("%s needs %v as a child and %v as an issue", child.Key, child.Needs, own.Needs)
 		}
 		if !reflect.DeepEqual(child.Claim, own.Claim) {
 			t.Errorf("%s is claimed by %#v as a child and %#v as an issue", child.Key, child.Claim, own.Claim)
@@ -251,7 +251,7 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 		t.Errorf("the child waiting on nothing sends needs %s, want the field left out", fields[fixture.branch]["needs"])
 	}
 	if _, sent := fields[fixture.leaf]["blocked_by"]; sent {
-		t.Errorf("a child sends blocked_by %s, which is the issue's own name and no child's", fields[fixture.leaf]["blocked_by"])
+		t.Errorf("a child sends blocked_by %s, which no answer carries", fields[fixture.leaf]["blocked_by"])
 	}
 }
 

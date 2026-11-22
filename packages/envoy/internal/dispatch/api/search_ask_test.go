@@ -167,9 +167,9 @@ func TestSearchAskHitsCarryTheirAnswerState(t *testing.T) {
 	}
 
 	// (d) a legacy settlement retraction: answered, then rewritten to resolved with its answer
-	// left only in its ask.answered event, as the decisions step's catch-up states a retraction a
-	// release before wrote (asks.Recorded): on the ask's node, which every read of an answer reads,
-	// and on its row.
+	// left only in its ask.answered event, as the boot's backfill states a retraction a release
+	// before wrote (asks.Recorded): on the ask's node, which every read of an answer reads, and on
+	// its row.
 	legacy := createSearchAsk(t, handler, issue.Key, "Plate the orrery arms?", "Silver", "Nickel")
 	legacyAnswer := answerSearchAsk(t, handler, legacy, map[string]any{
 		"selected": []string{"Silver"}, "text": "Silver, thinly.",
@@ -180,7 +180,7 @@ func TestSearchAskHitsCarryTheirAnswerState(t *testing.T) {
 	}
 	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
 	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
-	settleAskAsTheCatchUp(t, database, legacy, retracted)
+	settleAskRecorded(t, database, legacy, retracted)
 
 	// (e) open.
 	open := createSearchAsk(t, handler, issue.Key, "Wind the orrery weekly?", "Yes", "No")

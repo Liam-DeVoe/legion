@@ -168,13 +168,12 @@ var decisionProjections = []projection{
 
 // decisionBackfills are the backfill's passes over the asks and their followers
 // (dispatch://INFRA-1150, backfillPasses), after the object pass wrote the node of every ask
-// (backfillObjectNodes): the rest of the boot step's first phase (BackfillAsks), so a database the
-// command fills reads as one the boot fills.
+// (backfillObjectNodes), so every ask row the release before the store wrote is stated on its node.
 var decisionBackfills = []backfillPass{kindSoFar(backfillAsks), kindSoFar(backfillAskFollowers)}
 
 // kindSoFar is the backfillPass of a pass over one kind that reports what it did beside its
 // error when it fails: every batch of an asks or follower pass committed before a failure stays,
-// and the report says how far it got, as BackfillAsks does.
+// and the report says how far it got.
 func kindSoFar(write func(context.Context, *store.Store) (KindBackfill, error)) backfillPass {
 	return func(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 		done, err := write(ctx, database)
@@ -442,9 +441,10 @@ var askPastBound = `
 
 // askUnmarked counts every other asks row that names no node and that member, a predicate over
 // the row and askDocuments, makes one of a kind's own population: a row a process of the release
-// before wrote and the decisions step's backfill owes, which graph_edges' old arms answer, a class
-// of its own and no difference (projection.unmarked). So an ask kind whose every row is unmarked
-// holds rows still, and is no kind nothing of which is written yet (KindReport.Empty).
+// before wrote and the backfill's asks pass owes (backfillAsks), which graph_edges' old arms
+// answer, a class of its own and no difference (projection.unmarked). So an ask kind whose every
+// row is unmarked holds rows still, and is no kind nothing of which is written yet
+// (KindReport.Empty).
 func askUnmarked(member string) string {
 	return `
 		select count(*) from asks k` + askDocuments + `

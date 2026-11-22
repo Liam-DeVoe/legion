@@ -49,20 +49,11 @@ import (
 // carries nothing however its bytes compare. And every block id A holds must still stand in N,
 // but for the readings a case takes out.
 //
-// The cases are R2's, R10's, R7's and R9's. A reading never changes the decision it reads, so the
-// readings of a version's decisions and of its answered asks, added, edited or removed, are no
-// change to anything its reviewer approved (readingCase): the version a session writes when it
-// adds its reading of a person's decision still reads approved, at the version it wrote. The
-// server-owned ask attributes are R10's (attributeRemovalCase). The answered asks the restore
-// returns to the spec's `## Decisions` part, in place of the part's pointer line, are R7's
-// (restoreCase): the restore changes where an ask's block stands and not its words. The decisions
-// the conversion of an issue's decisions document writes into that part, and the links it gives
-// an answered ask as `shaped` pointers, are R9's (conversionCase): a decision and its ties are
-// outside what a spec's approval covers. Those two hold for the
-// decisions step's own write alone (decisionStepCases), and take out only what that write added:
-// an agent's upload or edit that makes the same change carries nothing by them, and neither does
-// an agent's change the step's version keeps - a decision whose words it rewrote, a pointer it gave
-// an ask, a block it wrote into the part.
+// The cases are R2's and R10's. A reading never changes the decision it reads, so the readings of
+// a version's decisions and of its answered asks, added, edited or removed, are no change to
+// anything its reviewer approved (readingCase): the version a session writes when it adds its
+// reading of a person's decision still reads approved, at the version it wrote. The server-owned
+// ask attributes are R10's (attributeRemovalCase).
 //
 // A version whose text is the approved text carries that approval too, byte for byte and before
 // any case is weighed (restoresApprovedText). The document's newest review approves version A; a
@@ -139,13 +130,10 @@ var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at",
 // case may change taken out of it, with whether it took anything out. Two versions that differ by
 // such changes alone are the same once both are taken through it. neutral reads the tree beside
 // what carryNewestApproval read of the two versions (carryInput): each ask block of the version
-// whose ask holds an answer, the asks the restore returned, and what the decisions step's write
-// added (decisionStepCases); approved says whether the tree is the approved version's, A's, or the
-// new one's, N's, since the restore and the conversion take out of each only what their write
-// changed in it.
+// whose ask holds an answer.
 type carryCase struct {
 	change  string
-	neutral func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool)
+	neutral func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool)
 }
 
 // readingCase is R2's: the readings a version's decisions and its answered asks close with,
@@ -156,7 +144,7 @@ type carryCase struct {
 // its ask block, which then agrees with no node.
 var readingCase = carryCase{
 	change: "the readings of its decisions and of its answered asks, which change no decision",
-	neutral: func(tree *pmdoc.Node, input carryInput, _ bool) (*pmdoc.Node, bool) {
+	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
 		return withoutReadings(tree, input.answered)
 	},
 }
@@ -167,186 +155,24 @@ var readingCase = carryCase{
 // which a write while two builds serve keeps in step with an answer given since.
 var attributeRemovalCase = carryCase{
 	change: "the server-owned attributes of its ask blocks, which hold no answer",
-	neutral: func(tree *pmdoc.Node, _ carryInput, _ bool) (*pmdoc.Node, bool) {
+	neutral: func(tree *pmdoc.Node, _ carryInput) (*pmdoc.Node, bool) {
 		return withoutAskServerAttributes(tree)
 	},
 }
 
-// restoreCase is R7's (D1): the ask blocks the restore writes into the spec's `## Decisions` part
-// - each answered ask it returns, and each ask block of the decisions document it moves, whatever
-// its ask's state - in place of its pointer line, with the `## Decisions` heading it adds to a
-// spec holding no such part, a block under a new id included. It takes out of N only the blocks
-// the restore's own write added (decisionStepCases.restored), and the heading where it is the
-// step's doing (stepsOwnHeading), and out of A only the pointer line that write took out
-// (pointerLinesTaken); a block an agent wrote into the part is no part of it, and neither is a
-// heading A held, empty or not. Where the approved version held the ask's block already, under
-// the id it stands at now, the block is taken out of both versions only where it is byte for byte
-// the block the person approved (restoredAskBlocks), so a restore that returns other words, or
-// the same words in other bytes, than the approved ones is a difference no case carries. It holds
-// for the restore's own write alone (decisionStepCases.restore): an agent's write that makes the
-// same change carries nothing by it.
-//
-// kept for one release: decisions-step
-var restoreCase = carryCase{
-	change: "the ask blocks its Decisions part holds again, which changed where they stand and not their words",
-	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
-		if !input.steps.restore {
-			return tree, false
-		}
-		tree, took := withoutBlocks(tree, func(node *pmdoc.Node) bool {
-			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-			return node.Type == "ask" && input.restored[id]
-		})
-		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(approved), !approved && input.stepsOwnHeading())
-		return restored, took || restoredTook
-	},
-}
-
-// conversionCase is R9's (D6, E2): the decision blocks of the spec's `## Decisions` part, which the
-// conversion of the issue's decisions document writes in place of the part's pointer line to that
-// document, and the `shaped` pointers an answered ask's restored or present block takes from the
-// section that restated it. A decision, and an answered ask's ties, are outside what an approval
-// of a spec covers; the readings the conversion writes inside answered
-// asks are readingCase's. It takes out of N only the decisions and the pointers the conversion's
-// own write added (decisionStepCases.decisions, decisionStepCases.shaped), and out of A only the
-// pointer line that write took out (pointerLinesTaken): a decision A held, whose words an agent
-// changed since, and a pointer an agent gave an ask, stay differences. The `## Decisions` heading
-// is taken out of N with them where it is the step's doing (stepsOwnHeading) and the part holds
-// nothing else; a heading A held stays in both. It holds for the
-// conversion's own write alone (decisionStepCases.conversion): an agent's upload that adds the
-// same `shaped` pointers to an answered ask supersedes the approval as any other change does.
-//
-// kept for one release: decisions-step
-var conversionCase = carryCase{
-	change: "the decisions its Decisions part holds in place of the pointer line to the issue's decisions document, " +
-		"and the spec nodes its answered asks shaped, which an approval of a spec does not cover",
-	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
-		if !input.steps.conversion {
-			return tree, false
-		}
-		if approved {
-			return withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(true), false)
-		}
-		tree, took := withoutAddedShapedPointers(tree, input.steps.shaped, input.decided)
-		converted, convertedTook := withoutDecisionsPartBlocks(tree, func(node *pmdoc.Node) bool {
-			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-			return node.Type == decisionType && input.steps.decisions[id]
-		}, input.stepsOwnHeading())
-		return converted, took || convertedTook
-	},
-}
-
-// stepsOwnHeading reports whether N's `## Decisions` heading is the decisions step's doing, which
-// restoreCase and conversionCase take out of N once its part holds nothing else: A holds no such
-// part, and the step's write either added the heading (decisionStepCases.headingAdded) or took out
-// the pointer line it stood over (decisionStepCases.pointerLines), the heading and line an agent
-// of the release before wrote as one after the approval, which the step's blocks replace. Where A
-// holds a `## Decisions` part, empty or not, its heading stays in both versions, so a write that
-// leaves N without the heading a person approved is a difference no case carries.
-//
-// kept for one release: decisions-step
-func (input carryInput) stepsOwnHeading() bool {
-	return !hasDecisionsPart(input.approved) && (input.steps.headingAdded || len(input.steps.pointerLines) > 0)
-}
-
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
-var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, conversionCase}
-
-// decisionStepCases names the phases of the decisions step whose own write a version is - the
-// restore (restoreCase) and the conversion (conversionCase) - and what that write added to the
-// document, which is all those two cases take out of a version: the block id of each answered ask
-// block the restore wrote (restored), of each decision the conversion wrote (decisions), the
-// `shaped` pointers it gave an answered ask block the document held already, by that block's id
-// (shaped), whether it added the `## Decisions` heading to a document that held no such part
-// (headingAdded), and the markdown of each pointer line the write took out of the document's
-// `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
-// approved version. Only the step sets it, through a mark on its write's context no route can put
-// there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
-// (versionWrite.steps); every other version write leaves it zero, and its carry weighs the reading
-// case and the attribute-removal case alone.
-//
-// kept for one release: decisions-step
-type decisionStepCases struct {
-	restore, conversion bool
-	restored, decisions map[string]bool
-	shaped              map[string][]string
-	headingAdded        bool
-	pointerLines        []string
-}
-
-// any reports whether the version is the decisions step's own write.
-func (steps decisionStepCases) any() bool {
-	return steps.restore || steps.conversion
-}
-
-// decisionStepWriteKey marks a context as the decisions step's own write (withDecisionStepWrite).
-type decisionStepWriteKey struct{}
-
-// withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names and
-// with what it added.
-//
-// kept for one release: decisions-step
-func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context.Context {
-	return context.WithValue(ctx, decisionStepWriteKey{}, steps)
-}
-
-// decisionStepCasesOf is the phases ctx's mark names, and what their write added, zero for a
-// context the step did not mark.
-func decisionStepCasesOf(ctx context.Context) decisionStepCases {
-	steps, _ := ctx.Value(decisionStepWriteKey{}).(decisionStepCases)
-	return steps
-}
+var carryCases = [...]carryCase{readingCase, attributeRemovalCase}
 
 // carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, and
 // N's tree, each as its own read gives it, whether every ask block of N agrees with its node
-// (asksAgreeWithTheirNodes), which of N's ask blocks show an ask that holds an answer among those
-// closing with readings (answeredAskBlocks) and among them all (decided), the answered ask blocks
-// of N's `## Decisions` part the restore's write added that restoreCase takes out of both
-// versions (restoredAskBlocks), and the decisions step's phases whose own write N is, with what
-// that write added (steps), the only writes those two cases reach.
+// (asksAgreeWithTheirNodes), and which of N's ask blocks show an ask that holds an answer among
+// those closing with readings (answeredAskBlocks).
 type carryInput struct {
 	approved     *pmdoc.Node
 	approvedText string
 	version      *pmdoc.Node
 	agrees       bool
 	answered     map[string]bool
-	decided      map[string]bool
-	restored     map[string]bool
-	steps        decisionStepCases
-	// pointersLeft is, within one pass of the cases over the two versions (neutral), the pointer
-	// lines of the step's write that no case has taken out of A yet (pointerLinesTaken).
-	pointersLeft *[]string
-}
-
-// pointerLinesTaken is what restoreCase and conversionCase take out of the `## Decisions` part of
-// one of the two versions beside the blocks the step's write added: of A (approved), each pointer
-// line that write took out of the document (decisionStepCases.pointerLines), as the first
-// paragraph of the part whose markdown is that line's, once each in a pass of the cases between
-// the two of them (pointersLeft), however many paragraphs of A are that line; of N, none, since
-// the write left none of them there. A paragraph a person approved that the write did not take
-// out - one citing the decisions document among other words or citing a block of it, which the
-// restore keeps (isPointerLine), or a second copy of the pointer line - stays in A. The answer is
-// a drop for one call of withoutDecisionsPartBlocks, which it walks in order.
-func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
-	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
-		return func(*pmdoc.Node) bool { return false }
-	}
-	left := input.pointersLeft
-	return func(node *pmdoc.Node) bool {
-		if node.Type != "paragraph" || len(*left) == 0 {
-			return false
-		}
-		markdown, err := blockMarkdown(node)
-		if err != nil {
-			return false
-		}
-		index := slices.Index(*left, markdown)
-		if index < 0 {
-			return false
-		}
-		*left = slices.Delete(*left, index, index+1)
-		return true
-	}
 }
 
 // errApprovalCarriedTwice is the refusal a carry returns when the transaction it runs in has
@@ -387,9 +213,7 @@ func refuseSecondCarry(ctx context.Context, tx pgx.Tx, artifactID string) error 
 // (NamedDocumentsApproved), then artifact.approved - and appends nothing when the version carries
 // no approval. A version approved that holds an element this build does not know is a
 // NewerContentError, which fails the version write (skipUnreadableVersion). It reads rendered.tree
-// and never changes it: the tree is the live document's. steps names the decisions step's phases
-// whose own write the version is (versionWrite.steps), whose cases alone it weighs beside the
-// reading case and the attribute-removal case.
+// and never changes it: the tree is the live document's.
 //
 // Every read and every rule run where it is called, the transaction's read phase: the newest
 // review, the ask rows and the copies' sources the version's blocks are held to
@@ -401,7 +225,7 @@ func refuseSecondCarry(ctx context.Context, tx pgx.Tx, artifactID string) error 
 // own queued writes leave them (loadAskBlocks, openApprovalAsk). The answer and the review are
 // written through write, so a transaction whose writes are queued runs them in its write phase,
 // after the version they carry to.
-func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree, steps decisionStepCases, sink func(model.Event)) error {
+func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree, sink func(model.Event)) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
 	}
@@ -411,13 +235,13 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 	if err != nil || newest == nil || newest.State != "approved" {
 		return err
 	}
-	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest, steps, sink)
+	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest, sink)
 }
 
 // carryStandingApproval is carryApproval once newest, the document's newest review, is known to be
 // an approval (carryNewestApproval). It hands sink the events it appends, as carryApproval does.
-func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview, steps decisionStepCases, sink func(model.Event)) error {
-	return carryNewestApproval(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, steps, sink)
+func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview, sink func(model.Event)) error {
+	return carryNewestApproval(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, sink)
 }
 
 // CarryUploadedApproval is carryApproval for the route that writes a document version itself
@@ -425,11 +249,9 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // storeArtifact) - once that version, number, is queued with markdown (Ledger.QueueVersion) and
 // the open approval request has moved to it (MoveApprovalAsk). tree is markdown's read-back, which
 // the caller holds when its write left one, and nil otherwise, when markdown is parsed here. The
-// upload runs the same rules as every other version write but the decisions step's: an upload
-// that adds, edits or removes the readings of its decisions and answered asks, or that drops the
-// server-owned attributes of an ask block, as every upload does, carries its approval where those
-// are the whole change, and an upload that makes the change of the restore or of the conversion
-// carries nothing by their cases (restoreCase, conversionCase), which no route can reach. Its
+// upload runs the same rules as every other version write: an upload that adds, edits or removes
+// the readings of its decisions and answered asks, or that drops the server-owned attributes of an
+// ask block, as every upload does, carries its approval where those are the whole change. Its
 // reads run where it is called, the route's read phase, and its writes are queued there, as
 // carryApproval's are; the events it appends reach the ledger of the transaction it runs in
 // (eventSink), which publishes them after its Commit, beside the version move's own. Where the
@@ -450,7 +272,7 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 		}
 	}
 	return carryAfterRender(ctx, tx, artifactID, number, func() error {
-		return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
+		return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, eventSink(ctx))
 	})
 }
 
@@ -462,10 +284,8 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // carryApproval does. A version that holds A's text carries where carryRestored places the carry's
 // writes. A is read only for a version holding an ask block or a decision: every case
 // is a difference in one of those blocks, and a version holding neither either holds A's text or
-// holds none of A's decisions and ask blocks, which still have to stand. steps names the decisions
-// step's phases whose own write the version is, and what that write added, whose cases
-// (restoreCase, conversionCase) it weighs beside the other two; zero for every other write.
-func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, sink func(model.Event)) error {
+// holds none of A's decisions and ask blocks, which still have to stand.
+func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, sink func(model.Event)) error {
 	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
 	if err != nil || !agrees {
 		return err
@@ -494,13 +314,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if err != nil {
 		return err
 	}
-	input := carryInput{
-		approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered,
-		decided: decidedAskBlocks(shown), steps: steps,
-	}
-	if steps.restore {
-		input.restored = restoredAskBlocks(approved, tree, steps.restored)
-	}
+	input := carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered}
 	change, carried, err := carryVerdict(input)
 	if err != nil {
 		return skipUnreadableVersion(artifactID, number, err)
@@ -744,8 +558,8 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask, onNode model.Ask) bool {
 // nothing: none of the seven attributes a version can store, as a version an upload wrote holds;
 // the ones a version keeps once the fleet is one build (keptAskState), written from onNode, the
 // ask as its node holds it, as every write on a fleet of one build writes them (onItsNode) - which
-// differs from the row only while the decisions step's catch-up has not yet stated on the node what
-// a process of the release before wrote into the row; the roll window's write without the
+// differs from the row only where the row names no node, one an older build wrote that the boot's
+// backfill has not stated yet; the roll window's write without the
 // answer's words (rollWindowAskAttributesWithheld, the same form as keptAskState) from the row; or
 // the roll window's write with them (rollWindowAskAttributes) from the row, as a version written
 // while two builds serve, or by the release before, holds. Only a block every one of them would
@@ -1062,20 +876,16 @@ func carryVerdictOver(input carryInput, cases []carryCase) (string, bool, error)
 }
 
 // neutral is input's two trees, A's and N's, each taken through every case of cases in their
-// order but those skipped names, and whether any of those cases took something out of either. The
-// pass takes each pointer line of the step's write out of A once, whichever of restoreCase and
-// conversionCase takes it (pointersLeft).
+// order but those skipped names, and whether any of those cases took something out of either.
 func (input carryInput) neutral(cases []carryCase, skipped []bool) (approved, version *pmdoc.Node, took bool) {
-	left := slices.Clone(input.steps.pointerLines)
-	input.pointersLeft = &left
 	approved, version = input.approved, input.version
 	for index, carried := range cases {
 		if skipped[index] {
 			continue
 		}
 		var tookApproved, tookVersion bool
-		approved, tookApproved = carried.neutral(approved, input, true)
-		version, tookVersion = carried.neutral(version, input, false)
+		approved, tookApproved = carried.neutral(approved, input)
+		version, tookVersion = carried.neutral(version, input)
 		took = took || tookApproved || tookVersion
 	}
 	return approved, version, took

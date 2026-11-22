@@ -38,7 +38,7 @@ export interface BlockedByWrite {
 
 /**
  * Which of the page's sentences a refusal of the list `sent` is, by its `code`
- * (`packages/envoy/internal/dispatch/api/issue_parent.go`): `BLOCKED_BY_INPUT` names an issue
+ * (`packages/envoy/internal/dispatch/api/issue_parent.go`): `NEEDS_INPUT` names an issue
  * Dispatch has none of, the issue itself, or - naming none - a list over `MAX_ISSUE_BLOCKERS`;
  * and `DEPENDENCY_CYCLE` the issue the list would make wait on itself, or - naming none - a
  * chain longer than Dispatch follows.
@@ -57,16 +57,16 @@ export function blockedByRefusal(
   if (error.code === "DEPENDENCY_CYCLE") {
     return key === undefined ? { words: "too_deep" } : { key, words: "cycle" };
   }
-  if (error.code !== "BLOCKED_BY_INPUT") return undefined;
+  if (error.code !== "NEEDS_INPUT") return undefined;
   if (key !== undefined) return { key, words: key === issueKey ? "itself" : "not_found" };
   return sent.length > MAX_ISSUE_BLOCKERS ? { words: "too_many" } : undefined;
 }
 
 /**
- * The one way the panel writes the issues an issue waits on (`blocked_by`).
+ * The one way the panel writes the issues an issue waits on (`needs`).
  *
  * A refused list is refused for a reason the reader can mend - "CORE-9 not found", "CORE-1
- * cannot be blocked by itself" - so the write says what Dispatch refused and leaves the editor
+ * cannot wait on itself" - so the write says what Dispatch refused and leaves the editor
  * open with the typed list in it; there is no Retry, because sending the same refused list again
  * would be refused again
  * (`packages/dispatch/AGENTS.md`: a field's refusal belongs at its control).
@@ -81,7 +81,7 @@ export function blockedByRefusal(
  * the page's own line for it, as it says a stopped save's (`unansweredLine`), kept apart from
  * what Dispatch said (`error`) for the control to mark each as whose words it is.
  */
-export function useIssueBlockedBy(issueKey: string, onSaved: () => void): BlockedByWrite {
+export function useIssueNeeds(issueKey: string, onSaved: () => void): BlockedByWrite {
   const queryClient = useQueryClient();
   const guard = useSubmitGuard();
   // One write of the issue's line (`issue:<key>`), as every other field write is, so an older
@@ -91,7 +91,7 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     label: (keys: readonly string[]) =>
       keys.length === 0 ? `${issueKey} waits on nothing` : `${issueKey} waits on ${keys.join(" ")}`,
     target: () => `issue:${issueKey}`,
-    request: (keys: readonly string[]) => issuePatchRequest(issueKey, { blocked_by: [...keys] }),
+    request: (keys: readonly string[]) => issuePatchRequest(issueKey, { needs: [...keys] }),
     onSettled: () => guard.release(),
     onSuccess: (next) => {
       // The one landing every write of an issue's fields takes, the identity block's included.

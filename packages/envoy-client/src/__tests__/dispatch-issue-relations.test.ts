@@ -7,11 +7,9 @@ import { fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 
 // An issue's relations as the `dispatch` command writes and reads them (dispatch://INFRA-1253 R9,
-// R10). A wait is one relation, needs, which a Dispatch of the issue tree reads; a Dispatch of the
-// release before reads blocked_by alone and ignores a member it does not declare, so the create
-// and the update send both members with the same targets, and the CLI reads needs where the answer
-// holds it. No driver can tell that from a server that reads either member, so this fake Dispatch
-// answers needs and blocked_by with different targets and the test reads which one the CLI printed.
+// R10). A wait is one relation, needs, the one spelling Dispatch reads and answers
+// (dispatch://INFRA-1098 R27): the create and the update send it alone, and
+// dispatch-needs-spelling.test.ts holds that no request carries blocked_by.
 
 interface Recorded {
   readonly method: string;
@@ -22,8 +20,7 @@ interface Recorded {
 const requests: Recorded[] = [];
 const makeDirectory = temporaryDirectories("dispatch-issue-relations");
 
-/** DSP-1 as this fake answers it: needs and blocked_by naming different issues, so a reader of
- *  one is told from a reader of the other. */
+/** DSP-1 as this fake answers it, its waits under needs. */
 function issueBody() {
   return {
     key: "DSP-1",
@@ -38,7 +35,6 @@ function issueBody() {
     route: null,
     parent: null,
     needs: ["DSP-2", "OTHER-3"],
-    blocked_by: ["DSP-9"],
     duplicate_of: "DSP-4",
     filed_from: "dispatch://DSP-5/comment/0b6f3c3e-2f43-4a6c-9b0e-7a2f8e1d4c55",
     external_links: [],
@@ -153,7 +149,7 @@ describe("an issue's relations through the dispatch command", () => {
     }
   });
 
-  test("dispatch issue sends needs and blocked_by with the same targets, and its relations", async () => {
+  test("dispatch issue sends needs, and its relations", async () => {
     const { code } = await run([
       "issue",
       "--project",
@@ -173,12 +169,11 @@ describe("an issue's relations through the dispatch command", () => {
     expect(code).toBe(0);
     const body = sent("POST", "/api/v1/issues").body as Record<string, unknown>;
     expect(body.needs).toEqual(["DSP-2", "OTHER-3"]);
-    expect(body.blocked_by).toEqual(body.needs);
     expect(body.duplicate_of).toBe("DSP-4");
     expect(body.filed_from).toBe("dispatch://DSP-5/comment/0b6f3c3e-2f43-4a6c-9b0e-7a2f8e1d4c55");
   });
 
-  test("dispatch issue-update sends both members alike and reads needs before blocked_by", async () => {
+  test("dispatch issue-update sends needs and prints the waits the answer holds", async () => {
     const { code, stdout } = await run([
       "issue-update",
       "--issue",
@@ -192,10 +187,8 @@ describe("an issue's relations through the dispatch command", () => {
     expect(code).toBe(0);
     const body = sent("PATCH", "/api/v1/issues/DSP-1").body as Record<string, unknown>;
     expect(body.needs).toEqual(["DSP-2", "OTHER-3"]);
-    expect(body.blocked_by).toEqual(body.needs);
-    // The answer's needs and blocked_by name different issues: the line reads needs.
+    expect(body).not.toHaveProperty("blocked_by");
     expect(stdout).toContain("blocked by DSP-2, OTHER-3");
-    expect(stdout).not.toContain("DSP-9");
   });
 
   test("dispatch issue-update sends duplicate_of and filed_from, and clears each with an empty value", async () => {

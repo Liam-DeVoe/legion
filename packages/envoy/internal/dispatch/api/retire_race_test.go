@@ -46,12 +46,12 @@ func retireDuring(t *testing.T, database *store.Store, artifactID string, write 
 }
 
 // A write of new text whose first read of its document found it standing, and whose document's
-// retirement (the decisions step's, docs.RetireDocument) commits before the write takes the lock of
-// the document's owner, is refused under that lock as a write to a document retired before it came
-// is: 409 DOCUMENT_RETIRED, 409 DECISIONS_ARE_NODES for an issue's decisions document, and no
-// version written. The edit route tests the row before its transaction (editArtifact) and a
-// project's upload finds its document before it takes that lock (uploadArtifactFor), so each reads
-// the row again under it; an issue's upload finds its document under its issue's lock, the lock the
+// retirement (docs.RetireDocument) commits before the write takes the lock of the document's owner,
+// is refused under that lock as a write to a document retired before it came is: 409
+// DOCUMENT_RETIRED, 409 DECISIONS_ARE_NODES for an issue's decisions document, and no version
+// written. The edit route tests the row before its transaction (editArtifact) and a project's
+// upload finds its document before it takes that lock (uploadArtifactFor), so each reads the row
+// again under it; an issue's upload finds its document under its issue's lock, the lock the
 // retirement takes, and reads the retirement there.
 func TestAWriteRacingItsDocumentsRetirementIsRefusedUnderTheOwnersLock(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})

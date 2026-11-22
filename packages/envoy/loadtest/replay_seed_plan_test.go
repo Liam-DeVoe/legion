@@ -261,12 +261,12 @@ func TestIssuePatchAndClaim(t *testing.T) {
 		BlockedBy: []string{"PRJ-2"}, Route: new("session:s1"), Claim: &replayClaim{Actor: replayActor{Kind: "session", ID: "s1"}}}
 	cur := liveIssue{Status: "triage", Labels: []string{}}
 	patch := issuePatch(cur, want)
-	for _, k := range []string{"status", "priority", "labels", "parent", "blocked_by", "route"} {
+	for _, k := range []string{"status", "priority", "labels", "parent", "needs", "route"} {
 		if _, ok := patch[k]; !ok {
 			t.Errorf("patch lacks %s", k)
 		}
 	}
-	same := liveIssue{Status: "in_progress", Priority: new(2), Labels: []string{"a", "b"}, Parent: new("PRJ-1"), BlockedBy: []string{"PRJ-2"}, Route: new("session:s1")}
+	same := liveIssue{Status: "in_progress", Priority: new(2), Labels: []string{"a", "b"}, Parent: new("PRJ-1"), Needs: []string{"PRJ-2"}, Route: new("session:s1")}
 	if p := issuePatch(same, want); p != nil {
 		t.Fatalf("an issue that already matches needs no patch, got %v", p)
 	}

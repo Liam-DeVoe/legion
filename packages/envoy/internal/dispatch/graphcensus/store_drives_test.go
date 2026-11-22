@@ -328,10 +328,10 @@ const (
 	askFollowerBatchDrive = "graphcensus/backfill_asks.go#writeAskFollowerBatch"
 )
 
-// askBackfillDrives are the drives of the boot step's two ask passes, over a database of their
+// askBackfillDrives are the drives of the backfill's two ask passes, over a database of their
 // own: an ask of ASKS-1 that a session asked and the person bob answered, written by a build
-// before the store, whose node the object pass writes first (backfillObjectNodes), as the boot
-// step's first phase runs it (BackfillAsks), and then a follow of it that build recorded. The asks
+// before the store, whose node the object pass writes first (backfillObjectNodes), as the
+// backfill runs it, and then a follow of it that build recorded. The asks
 // pass states who asked it, its answer and its answerer's node; the follower pass the follower's
 // node and its followed_by.
 func askBackfillDrives(t *testing.T) []StoreDrive {

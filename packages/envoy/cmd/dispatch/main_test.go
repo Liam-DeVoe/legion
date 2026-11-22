@@ -620,7 +620,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 }
 
 func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -638,7 +638,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 // failed with the bus would take every server process out of service at once.
 func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
 	database := storetest.Open(t)
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -666,7 +666,7 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
 	response := httptest.NewRecorder()
-	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("GET /livez status = %d, want %d", response.Code, http.StatusNoContent)
 	}
@@ -688,7 +688,7 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	failures.Inc([2]string{"reason", "denied"})
 
 	response := httptest.NewRecorder()
-	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /metrics status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -709,7 +709,7 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -739,7 +739,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, configured, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -778,7 +778,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil)
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -816,7 +816,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
@@ -925,7 +925,7 @@ type gitHubReadsHealth struct {
 func probeGitHubReads(t *testing.T, database *store.Store, reads *gitHubReads) (int, gitHubReadsHealth) {
 	t.Helper()
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, issuers{}, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health gitHubReadsHealth
 	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
 		t.Fatalf("decode health response %s: %v", response.Body.String(), err)
@@ -1007,7 +1007,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		go func() { publisher.Run(ctx); close(done) }()
 		stop := func() { cancel(); <-done }
 		t.Cleanup(stop)
-		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, nil, issuers{}, nil), stop: stop}
+		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil), stop: stop}
 	}
 	probe := func(p *process) bool {
 		t.Helper()
@@ -1071,7 +1071,7 @@ func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 		"no database":       {nil, http.StatusServiceUnavailable},
 	} {
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if response.Code != probe.status {
 			t.Errorf("healthz with %s: status %d, want %d", name, response.Code, probe.status)
 		}
@@ -1132,7 +1132,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		defer connection.Release()
 	}
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
 	client := &http.Client{Timeout: 3 * time.Second}
 	started := time.Now()
@@ -1183,7 +1183,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -1243,7 +1243,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		database.Pool.Close()
 	})
 	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil))
 	defer server.Close()
 
 	client := &http.Client{Timeout: 3 * time.Second}

@@ -1,0 +1,61 @@
+# The expected end of every section of every decisions.md in the fixture of c-decisions-converted,
+# which decision-conversion.sh reads. It is the check's own inventory, recorded before any run: the
+# driver joins it with the sections the old release's Decisions read answers, and fails on a
+# section it does not name and on a line no section answers.
+#
+# One line a section, four fields separated by a tab:
+#   1. the issue: a T1 fixture by its file name under e2e/fixtures/ (acme-1042, acme-1115), or one
+#      of the driver's own two issues (own-carried, own-superseded);
+#   2. the section's heading, as the old release's Decisions read answers it, with {key} for the
+#      issue's key in this run and {ask:NAME} for the id the replay gave the own ask NAME;
+#   3. the state the section ends in (R9 of INFRA-1150, and the check's own sentences):
+#        decision   a decision block of the spec, under the section's heading block id
+#        unsure     such a decision whose `Unsure:` paragraph became uncertainty high and its reason
+#        unplaced   such a decision the conversion could not place under one ask: it cites more
+#                   than one answered ask, or one whose block stands in no document, so it carries
+#                   uncertainty high and waits for a person's review
+#        replaced   such a decision marked replaced, from under `## Replaced`
+#        reading    a reading under the answered ask in field 4, holding the section's words
+#        dropped    no block at all: the body was the answer of the ask in field 4 and nothing
+#                   more, or nothing beside that ask's own block, so no reading is written and the
+#                   heading's address moves to that ask's block
+#   4. the source ask: for reading and dropped the one ask the section restates, for unplaced each
+#      answered ask it cites (comma separated), for a decision or a replaced decision that cites one
+#      answered ask the ask its from_ask names, and - for a section that cites none.
+#
+# A section a converter matched on text alone would drop: the two own-carried sections whose body
+# is the word "Yes", the answer the person gave two other questions, cite no ask and are the
+# agent's own decisions; the section that carries the reasons no ask holds is a reading. A section
+# that cites an approval ask cites no answered question (the conversion reads asks of kind
+# question), so it is a decision. A section under `## Replaced` is a decision marked replaced
+# whatever it cites, as the architect ruled: the acme-1115 section "microVM pods with a cgroup per
+# command" cites the answered ask it restates, so its decision takes that ask as its from_ask.
+
+acme-1042	Simplified 2026-11-06, after Sami's directive to cut over-engineering	unplaced	97f0bca7-afc9-45ec-b6df-ab7cae6c7cb1,c60a4b39-f0d7-45a0-897c-131a4187509c
+acme-1042	A chart is drawn unasked when the decision model chooses that display	decision	-
+acme-1042	The item rows stay on the server's keyword path, with no browser-held store	decision	-
+acme-1042	The design of 2026-11-04 was withdrawn and rebuilt with him	decision	-
+acme-1042	What he decided	unplaced	d4fd6b70-9269-4730-b476-191998141455,40120134-1282-4fc3-9ce7-781e45042f9c
+acme-1042	What this design decided alone	decision	-
+acme-1042	What four lanes agreed, 2026-11-05	decision	-
+acme-1042	Still open	decision	-
+acme-1115	ACME-898 is the design	decision	-
+acme-1115	The pods stay in gVisor	reading	d2243640-02eb-4dd3-b6e7-fda919c46112
+acme-1115	The route is the farm's own skill, installed by configuration	decision	-
+acme-1115	Generic rule in Legion's guide, the route in ACME's instructions	decision	-
+acme-1115	The route is named when a pod runs out of memory	decision	-
+acme-1115	The size: ACME-898's CPU rule, and a memory rule of this issue's own	unsure	-
+acme-1115	No cost gate	decision	-
+acme-1115	Request equal to limit while pods are alone on nodes	decision	-
+acme-1115	How two common jobs are proven	decision	-
+acme-1115	A memory guard in the pod under gVisor	replaced	-
+acme-1115	microVM pods with a cgroup per command	replaced	d2243640-02eb-4dd3-b6e7-fda919c46112
+acme-1115	`singleProcessOOMKill`	replaced	-
+own-carried	Weekends too: dispatch://{key}/ask/{ask:q-weekend}	dropped	q-weekend
+own-carried	Why the census runs at night	reading	q-nightly
+own-carried	Does the census count closed issues	decision	-
+own-carried	Does the census count open asks	decision	-
+own-carried	Which store the census reads first	dropped	q-doc
+own-carried	The census keeps no file	decision	-
+own-carried	The census once printed in colour	replaced	-
+own-superseded	The census waits for the backups	decision	-

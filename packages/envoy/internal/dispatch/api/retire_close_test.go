@@ -9,14 +9,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
-// INFRA-1150, test round 6: the decisions step retires every issue's decisions.md, and a retired
+// INFRA-1150, test round 6: that release retired every issue's decisions.md, and a retired
 // document takes no live write (docs' joinLiveWrite refuses it under the owner's lock). An issue's
 // close and reopen write the state they give its asks into every document of the issue
 // (docs.WriteIssueAskStates, over issueDocumentIDs), the retired one included, so once an issue's
-// decisions.md is retired a person can no longer close the issue while it holds an open ask: the
+// decisions.md was retired a person could no longer close the issue while it held an open ask: the
 // close answered 409 DOCUMENT_RETIRED, with advice to write a document of another name. Driven on
-// two builds of the head (SEED-1 of the decisions corpus, after the step), and held here with any
-// retired document of the issue in place of the step's: the close and the reopen are taken, and the
+// two builds of that release's head (SEED-1 of the decisions corpus, after the retirement), and
+// held here with any retired document of the issue: the close and the reopen are taken, and the
 // open ask is withdrawn by the close and open again after the reopen.
 func TestAnIssueWithARetiredDocumentClosesAndReopensWithItsOpenAsk(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})

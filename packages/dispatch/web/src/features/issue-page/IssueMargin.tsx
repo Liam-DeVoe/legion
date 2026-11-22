@@ -73,8 +73,8 @@ import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./p
 import { ROW_LINK } from "./row-references";
 import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
-import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+import { useIssueNeeds } from "./useIssueNeeds";
 import { useMarginSections } from "./useMarginSections";
 import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
@@ -244,7 +244,7 @@ export function IssueMarginPanel({
   // (`BlockedByControl`).
   const [blockedByEditing, setBlockedByEditing] = useState(false);
   const [blockedByDraft, setBlockedByDraft] = useState("");
-  const blockedByWrite = useIssueBlockedBy(issue.key, () => setBlockedByEditing(false));
+  const blockedByWrite = useIssueNeeds(issue.key, () => setBlockedByEditing(false));
   // The row's own control takes the focus back as the reader leaves its editor - by a save, by
   // Cancel or by Escape - since the box that held it goes with the editor; only where the focus
   // fell to the document, the one focus the page takes back for the reader (`shell/roving.ts`).
@@ -309,7 +309,7 @@ export function IssueMarginPanel({
   // section's other rows make their own reads, as they do while Details itself is closed.
   const readingDevelopment = reading && sections.isOpen("development");
   const readingReferences = reading && sections.isOpen("references");
-  const blockers = issue.blocked_by ?? [];
+  const blockers = issue.needs ?? [];
   // The titles of the issues this one waits on, and below them those of the issues that wait on
   // it, are each a names read of the issues' addresses. The event of an issue whose title changes
   // (`issue.updated` naming `title` among its changes, or naming none, as an older server sends
@@ -328,29 +328,27 @@ export function IssueMarginPanel({
     placeholderData: keptUntilFailed(queryClient, blockerRead.queryKey),
   });
   const titleOf = (key: string) => issueTitleIn(blockerTitles.data, key);
-  // What waits on this issue is the other direction of `blocked_by`: the references of that kind
+  // What waits on this issue is the other direction of `needs`: the references of that kind
   // that point at it. It is kept under the backlink panels' `["references", "to", <reference>]`,
   // so the event that starts or stops an issue waiting on this one reads it again
-  // (`api/event-refresh.ts`'s rule for a moved `child_of` or `blocked_by`, which reads again each
+  // (`api/event-refresh.ts`'s rule for a moved `child_of` or `needs`, which reads again each
   // panel under that prefix whose read passes its test: those of the new parent and of each new
   // blocker the event names, this one where an issue starts waiting on it, and those that list an
   // edge from the issue, this one where it stops). Its age never reads it again, and a window
   // focus does only while its last read failed (`EVENT_FRESH`). It says which issues wait and not
-  // what they are called: the rename of one of them moves no `blocked_by`, and the panel the
+  // what they are called: the rename of one of them moves no `needs`, and the panel the
   // server names for it (`references_changed`) is read again by its exact key, which is not this
   // one, so the title an edge carries here would stay the old one.
   const blocking = useQuery({
     enabled: readingDevelopment,
-    queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
-    queryKey: ["references", "to", issueReference, "blocked_by"],
+    queryFn: () => api.getReferences(issueReference, { kind: "needs" }),
+    queryKey: ["references", "to", issueReference, "needs"],
     ...EVENT_FRESH,
   });
-  // This Dispatch answers an issue's wait on this one as `needs`, which the read's kind reads, so
-  // the row takes an edge of `needs` as well as of the kind it asks for.
+  // The read asks for `needs` alone, and the row draws an edge of that kind alone: an edge of
+  // another kind into this issue, such as a mention, is no wait on it.
   const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>
-    (edge.kind !== "needs" && edge.kind !== "blocked_by") || edge.node.issue_key === undefined
-      ? []
-      : [edge.node.issue_key]
+    edge.kind !== "needs" || edge.node.issue_key === undefined ? [] : [edge.node.issue_key]
   );
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))

@@ -6,7 +6,8 @@
  * read it.
  */
 
-/** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
+/** Maximum entries in an issue's waits input (`needs`, which the issue tools take as their
+ *  `blocked_by` argument), before duplicate keys are removed. */
 export const MAX_ISSUE_BLOCKERS = 20;
 
 /**

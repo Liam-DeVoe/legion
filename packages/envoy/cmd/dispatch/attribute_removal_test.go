@@ -869,7 +869,7 @@ func agentReplace(t *testing.T, p *dispatchProcess, issue, artifactID, content s
 	t.Helper()
 	artifacts := "/api/v1/issues/" + issue + "/artifacts"
 	name := documentName(t, p, artifactID)
-	body := map[string]any{"name": name, "content": content, "actor": map[string]string{"kind": "session", "id": restoreSession}}
+	body := map[string]any{"name": name, "content": content, "actor": map[string]string{"kind": "session", "id": basebuildAgentSession}}
 	if base := p.uploadBase(t, artifacts, name); base != nil {
 		body["precondition"] = base
 	}

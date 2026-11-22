@@ -57,7 +57,6 @@ const summary: IssueSummary = {
   advances: [],
   advances_revision: 0,
   assignee: issue.assignee,
-  blocked_by: [],
   claim: null,
   closed_at: issue.closed_at,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

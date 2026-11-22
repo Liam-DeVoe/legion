@@ -188,11 +188,11 @@ func TestAdvancesRelation(t *testing.T) {
 	blocker := createAdvancingIssue(t, handler, map[string]any{"project": "CORE", "title": "The blocker", "force": true}, "alice")
 	child := createAdvancingIssue(t, handler, map[string]any{
 		"project": "CORE", "title": "The child", "force": true,
-		"parent": parent.Key, "blocked_by": []string{blocker.Key}, "repo": "acme/widgets",
+		"parent": parent.Key, "needs": []string{blocker.Key}, "repo": "acme/widgets",
 		"components": map[string]any{"mode": "none", "reason": "process"},
 	}, "alice")
-	if child.Parent == nil || *child.Parent != parent.Key || !slices.Equal(child.BlockedBy, []string{blocker.Key}) {
-		t.Fatalf("the child stands under %v behind %v, want %s and %s", child.Parent, child.BlockedBy, parent.Key, blocker.Key)
+	if child.Parent == nil || *child.Parent != parent.Key || !slices.Equal(child.Needs, []string{blocker.Key}) {
+		t.Fatalf("the child stands under %v behind %v, want %s and %s", child.Parent, child.Needs, parent.Key, blocker.Key)
 	}
 	if child.Repo == nil || *child.Repo != "acme/widgets" || child.Components.Mode != "none" {
 		t.Fatalf("the child's repository is %v and its components %+v, want acme/widgets and mode none", child.Repo, child.Components)
@@ -207,9 +207,9 @@ func TestAdvancesRelation(t *testing.T) {
 	if got := advanceEntries(written.Advances); !slices.Equal(got, []string{priority + " own"}) {
 		t.Fatalf("the child advances %v, want its own relation to %s", got, priority)
 	}
-	if !stringPointersEqual(written.Parent, child.Parent) || !slices.Equal(written.BlockedBy, child.BlockedBy) {
+	if !stringPointersEqual(written.Parent, child.Parent) || !slices.Equal(written.Needs, child.Needs) {
 		t.Fatalf("the write moved the parent to %v and the blockers to %v, want %v and %v",
-			written.Parent, written.BlockedBy, child.Parent, child.BlockedBy)
+			written.Parent, written.Needs, child.Parent, child.Needs)
 	}
 	if !stringPointersEqual(written.Repo, child.Repo) || !stringPointersEqual(written.ResolvedRepo, child.ResolvedRepo) {
 		t.Fatalf("the write moved the repository to %v (resolved %v), want %v (%v)",
@@ -233,7 +233,7 @@ func TestAdvancesRelation(t *testing.T) {
 	if !slices.Contains(changed, "advances") {
 		t.Fatalf("the issue.updated's changed list = %v, want it to name advances", changed)
 	}
-	for _, field := range []string{"parent", "blocked_by", "repo", "components"} {
+	for _, field := range []string{"parent", "needs", "repo", "components"} {
 		if slices.Contains(changed, field) {
 			t.Fatalf("the issue.updated's changed list names %s: %v, want advances alone", field, changed)
 		}

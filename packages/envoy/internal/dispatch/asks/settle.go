@@ -82,10 +82,8 @@ func Restored(state string, answer *model.AskAnswer) Change {
 	return Change{State: state, Answer: answer}
 }
 
-// Recorded is the whole answer state an event or a row recorded - state, answer and resolution -
-// as the catch-up of the boot step reads it off an event a process of another build appended
-// (docs' decision step), and as the boot step's backfill reads it off an asks row written before
-// this release (AnswerFacts).
+// Recorded is the whole answer state a row recorded - state, answer and resolution - as the boot
+// step's backfill reads it off an asks row written before this release (AnswerFacts).
 func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolution) Change {
 	return Change{State: state, Answer: answer, Resolution: resolution}
 }
@@ -97,7 +95,7 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 // holds that the change takes away. It then writes the asks row from what it appended, in the same
 // transaction: state, and answer and resolution where the change states them. The node is the
 // record and the row its projection, which every reader of an ask's state but a reading's check
-// of its ask (docs' askAnswers) and the decisions step's count still reads.
+// of its ask (docs' askAnswers) still reads.
 //
 // The node holds the answer only once the row names it (asks.node_kind): a row a process of the
 // release before wrote names none until the boot step's backfill states the whole row on the node

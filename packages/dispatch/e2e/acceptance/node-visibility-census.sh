@@ -468,7 +468,7 @@ readonly -a populated_kinds=("${decision_kinds[@]}" "${edge_kinds[@]}")
 
 # wait_settled SECTION WHAT: waits, 120 s at most, until no document owes a settlement
 # (doc_settlements_pending) or its block index (a document_block_versions row with a null version),
-# so the census that follows reads every write before it, as decision-nodes.sh waits.
+# so the census that follows reads every write before it.
 readonly owed_sql="select (select count(*) from doc_settlements_pending)
   + (select count(*) from document_block_versions where version is null)"
 wait_settled() {
@@ -993,15 +993,15 @@ pass H2 "$key is routed to the role $role, and this head's events outbox wrote t
 
 # The eight kinds of cybermonklabs/legion#4173 (decision_kinds): no write above gives any of them a
 # row, and the census refuses none of them for holding none, so each would be read over no row.
-# Through this head, as decision-nodes.sh writes its own half: the agent bearer creates a second
-# issue of the project and writes an ask block into its spec, whose row settlement opens and places
-# in that spec (ask_parent, ask_anchor); alice answers it (ask_answer), and the session
-# $follower_session follows it (followed_by). The bearer then writes into the same spec a decision
-# with a shaped pointer at its requirement r1 (shaped) and a from_ask to that ask (from_ask), whose
-# decided_by the server takes from the write that introduced the block (decided_by), and a reading
-# under it (reading_parent). They stand in a second issue's spec, which no later write of this
-# driver edits, so the base build's version of the first issue's spec (B2) moves none of them. The
-# driver waits until no document owes a settlement or its block index, so the census reads them.
+# Through this head: the agent bearer creates a second issue of the project and writes an ask block
+# into its spec, whose row settlement opens and places in that spec (ask_parent, ask_anchor); alice
+# answers it (ask_answer), and the session $follower_session follows it (followed_by). The bearer
+# then writes into the same spec a decision with a shaped pointer at its requirement r1 (shaped)
+# and a from_ask to that ask (from_ask), whose decided_by the server takes from the write that
+# introduced the block (decided_by), and a reading under it (reading_parent). They stand in a second
+# issue's spec, which no later write of this driver edits, so the base build's version of the first
+# issue's spec (B2) moves none of them. The driver waits until no document owes a settlement or its
+# block index, so the census reads them.
 request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" '{project: $p,
   title: "Census check: an ask and a decision", force: true, actor: $a,
   spec: ":::requirement{#r1}\nThe decision of this spec shapes this requirement.\n:::\n\n:::requirement{#r2}\nThe ask of this spec stands below this requirement.\n:::\n"}')"

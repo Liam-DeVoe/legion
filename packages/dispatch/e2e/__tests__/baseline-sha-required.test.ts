@@ -4,9 +4,9 @@
  *  branch lands after, has no default, and that a run which leaves it unset is refused, naming the
  *  variable. A default lets an unset run boot or read some other base, such as main's merge base
  *  or whatever binary $TMPDIR/base-dispatch holds, and pass on that base without being able to
- *  fail. This file runs `lib-baseline.sh --selftest` and each of the four drivers that boot the
- *  base with BASELINE_SHA unset, and holds that each exits 2, says that BASELINE_SHA is unset,
- *  names no default (no `merge-base`), and starts nothing.
+ *  fail. This file runs `lib-baseline.sh --selftest` and answer-attribute-removal.sh, the driver
+ *  that boots the base, with BASELINE_SHA unset, and holds that each exits 2, says that
+ *  BASELINE_SHA is unset, names no default (no `merge-base`), and starts nothing.
  *
  *  Nothing real starts in any row. The base binary and the head binary each row hands the driver
  *  are scripts of the row's own that leave a marker file and exit 1, and a `go` of the row's own
@@ -47,21 +47,6 @@ const scripts: Record<string, Script> = {
     argv: ["e2e/acceptance/lib-baseline.sh", "--selftest"],
     requires: ["env", "git", "openssl", "psql", "python3", "sleep", "tar"],
     givesBinary: false,
-  },
-  "restore-redirects.sh": {
-    argv: ["e2e/acceptance/restore-redirects.sh"],
-    requires: ["cmp", "curl", "git", "jq", "psql", "sed", "sort", "tr"],
-    givesBinary: true,
-  },
-  "decision-nodes.sh": {
-    argv: ["e2e/acceptance/decision-nodes.sh"],
-    requires: ["cmp", "curl", "date", "diff", "jq", "psql", "sed", "sort", "tr"],
-    givesBinary: true,
-  },
-  "answered-decisions.sh": {
-    argv: ["e2e/acceptance/answered-decisions.sh"],
-    requires: ["cmp", "curl", "jq", "psql", "sed", "sort"],
-    givesBinary: true,
   },
   "answer-attribute-removal.sh": {
     argv: ["e2e/acceptance/answer-attribute-removal.sh"],

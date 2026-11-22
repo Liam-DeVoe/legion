@@ -50,10 +50,8 @@ import (
 // heartbeat drops its row from the live window, and a fleet of base processes alone lists one
 // commit then, though the base's pages read every block's attributes. And a later release deployed
 // over this one lists two commits while both read answers from the server, so comparing commits
-// would open a roll window that serves no page. The decisions step compares commits with its own
-// (DecisionStep.anotherBuildLive), since any other build, whatever schema it reads, can write a
-// row without its node; this guard is the ask attributes' alone. A database no process registers
-// in, as a docs test's is, lists none and holds no other build either.
+// would open a roll window that serves no page. A database no process registers in, as a docs
+// test's is, lists none and holds no other build either.
 //
 // kept for one release: roll-window-attributes
 func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) {
@@ -155,9 +153,8 @@ func keptAskState(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 // is one build holds - the answer's words and selection (answerWords), and an open state, which a
 // version keeps of no ask (keptAskState) - and reports whether it held any. It is that write, for
 // a block that has an ask (askBlocksWithAnAsk), of a writer that reads no ask's state: a version
-// written without settling (storableVersionTree) and the decisions step's restore (writePresent).
-// The rest stays as the live tree holds it, which every write of an ask's state keeps in step with
-// it (keptAskState).
+// written without settling (storableVersionTree). The rest stays as the live tree holds it, which
+// every write of an ask's state keeps in step with it (keptAskState).
 //
 // kept for one release: stored-ask-state
 func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
@@ -370,8 +367,7 @@ func askStringItems(value any) ([]string, bool) {
 // withoutStoredAskAttributes takes the seven attributes a version can store
 // (storedAskAttributes) off node, an ask block, and reports whether it held any: the write once
 // the fleet is one build to a block whose ask no write knows - one settlement cannot read and no
-// row indexes, one the decisions step moves that no row names, or one a version or the decisions
-// step's restore writes that has no ask row and is no copy (storableVersionTree, writePresent,
+// row indexes, or one a version writes that has no ask row and is no copy (storableVersionTree,
 // withoutAsklessAskAttributes) - whose state is no ask's, a forged state or answerer among them
 // where a browser put them on it.
 func withoutStoredAskAttributes(node *pmdoc.Node) bool {

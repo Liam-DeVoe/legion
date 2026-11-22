@@ -1,0 +1,5 @@
+kind: Removed
+body: blocked_by leaves every answer of Dispatch, and a create or a PATCH naming blocked_by without needs is refused 400 BLOCKED_BY_INPUT naming needs.
+time: 2026-11-21T17:17:40.554327743Z
+custom:
+    Issue: pr3142

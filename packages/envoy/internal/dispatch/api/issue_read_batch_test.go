@@ -47,7 +47,7 @@ func buildFullIssueRead(t *testing.T, handler http.Handler) fullIssueRead {
 
 	blocker := createReferenceAPIIssue(t, handler, "BATCH")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
-		"blocked_by":     []string{blocker.Key},
+		"needs":          []string{blocker.Key},
 		"external_links": []map[string]string{{"url": "https://example.com/batched-issue-read"}},
 	}, "alice"); patched.Code != http.StatusOK {
 		t.Fatalf("block and link the issue: status=%d body=%s", patched.Code, patched.Body.String())

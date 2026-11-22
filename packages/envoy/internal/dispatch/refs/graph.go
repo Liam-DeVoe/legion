@@ -1056,23 +1056,35 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 	return rows.Err()
 }
 
-// RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
-// retires: the address `dispatch://KEY/artifact/<this slug>` of a
-// retired one resolves to the issue KEY, as every retired document's address does
-// (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
-// document that would take it.
+// RetiredDecisionsSlug is the slug of an issue's decisions document, which an earlier release
+// retired: the address `dispatch://KEY/artifact/<this slug>` of a retired one resolves to the
+// issue KEY, as every retired document's address does (loadArtifactNodes). It is the one place
+// the server spells that slug: api refuses a new document that would take it.
 const RetiredDecisionsSlug = "decisions-md"
 
 // DecisionsDocumentOf is the FROM and WHERE of a read of the issue's decisions document while it
 // stands, issue the SQL that names the issue's key (a parameter, or a column of an outer query),
-// with the document's artifacts row aliased `a`: of the documents decisions_documents() answers
-// for the issue, the oldest, by created_at and then id. Every read that names the issue's decisions
-// document - the issue's decisions_artifact_id, the Decisions read's `document` and the decisions
-// step's restore - selects through it, so for an issue that holds two they name the same one.
-// kept for one release: decisions-documents-fn
+// with the document's artifacts row aliased `a`: of the documents of the issue that stand and that
+// DecisionsDocumentSQL holds true of, the oldest, by created_at and then id. The Decisions read's
+// `document` selects through it. It reads the rule rather than the function decisions_documents(),
+// which the boot's retirement drops once that function answers no document.
+// kept for one release: compat-objects
 func DecisionsDocumentOf(issue string) string {
-	return `from decisions_documents() d join artifacts a on a.id = d.id
-		where d.issue_key = ` + issue + ` order by a.created_at, a.id limit 1`
+	return `from artifacts a
+		where a.issue_key = ` + issue + ` and a.retired_at is null and ` + DecisionsDocumentSQL("a") + `
+		order by a.created_at, a.id limit 1`
+}
+
+// DecisionsDocumentSQL is true of the artifacts row a when it is an issue's decisions document an
+// earlier release stored, standing or retired: a document of an issue that plays the role
+// `decisions`, or, stored before the role existed, whose role is null and whose slug is
+// RetiredDecisionsSlug. It is the rule the function decisions_documents() of migration
+// 20261117093337 holds, written here for the reads that outlive that function, which the boot's
+// retirement drops (startup.Retirements): a retirement keeps the slug, so a retired document
+// still reads as one, and once artifacts_role_check is narrowed no row plays the role.
+func DecisionsDocumentSQL(a string) string {
+	return a + `.issue_key is not null and ` + a + `.kind = 'doc' and (` + a + `.role = 'decisions' or (` + a + `.role is null and ` +
+		a + `.slug = '` + RetiredDecisionsSlug + `'))`
 }
 
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change

@@ -327,7 +327,7 @@ func TestIssueEventsSayWhatTheWriteChanged(t *testing.T) {
 	}
 }
 
-// A blocker's referenced_by_count counts the blocked_by edges that point at it, so an issue event
+// A blocker's referenced_by_count counts the needs edges that point at it, so an issue event
 // names every blocker its write added or removed, and no other: a create every blocker it holds, a
 // PATCH the ones that came or went. A retitle that also moves blockers names each once.
 func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
@@ -335,7 +335,7 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 	create := func(title string, blockedBy []string) model.Issue {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": "TEST", "title": title, "blocked_by": blockedBy, "force": true,
+			"project": "TEST", "title": title, "needs": blockedBy, "force": true,
 		}, "alice")
 		if response.Code != http.StatusCreated {
 			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
@@ -366,7 +366,7 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 	dependent := create("Dependent", []string{kept.Key, dropped.Key})
 
 	if got, want := named("issue.created", dependent.Key), sorted(kept.Key, dropped.Key); !slices.Equal(got, want) {
-		t.Errorf("issue.created with blocked_by names %v, want its blockers %v", got, want)
+		t.Errorf("issue.created with needs names %v, want its blockers %v", got, want)
 	}
 
 	patch := func(body map[string]any) issueEventFields {
@@ -376,19 +376,18 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 		}
 		return newestEventPayload[issueEventFields](t, database, "issue.updated", dependent.Key)
 	}
-	// An issue's waits are one relation the issue read answers under both spellings, blocked_by
-	// and needs (model.Issue.Needs, this branch's plan), so a PATCH of either moves both fields,
-	// and changed names each field whose value differs: both, and no other.
-	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by", "needs"}) {
-		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by needs]", updated.Changed)
+	// An issue's waits are one relation, needs (R27 of dispatch://INFRA-1098), so a PATCH of them
+	// names needs in changed, and no other field.
+	if updated := patch(map[string]any{"needs": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"needs"}) {
+		t.Fatalf("a needs-only PATCH's changed = %v, want [needs]", updated.Changed)
 	}
 	if got, want := named("issue.updated", dependent.Key), sorted(dropped.Key, added.Key); !slices.Equal(got, want) {
-		t.Errorf("a blocked_by-only PATCH names %v, want the removed and the added blocker %v", got, want)
+		t.Errorf("a needs-only PATCH names %v, want the removed and the added blocker %v", got, want)
 	}
 
 	// The retitle names every blocker it still holds, whose panels show the title; the blocker
 	// change names the one it adds back and the one it drops.
-	patch(map[string]any{"title": "Renamed dependent", "blocked_by": []string{kept.Key, dropped.Key}})
+	patch(map[string]any{"title": "Renamed dependent", "needs": []string{kept.Key, dropped.Key}})
 	if got, want := named("issue.updated", dependent.Key), sorted(kept.Key, dropped.Key, added.Key); !slices.Equal(got, want) {
 		t.Errorf("a retitle that moves blockers names %v, want %v, each once", got, want)
 	}

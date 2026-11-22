@@ -110,7 +110,7 @@ func TestTheFirstBootRefillsTheCopyFromAListingOnce(t *testing.T) {
 // none), with no label and no claim, which admission takes nothing of.
 func listedBacklog(key, parent string, seq int64) map[string]any {
 	summary := map[string]any{"key": key, "title": "The copy's " + key, "status": "backlog", "rank": "a0",
-		"labels": []string{}, "last_seq": seq, "blocked_by": []string{}}
+		"labels": []string{}, "last_seq": seq, "needs": []string{}}
 	if parent != "" {
 		summary["parent"] = parent
 	}

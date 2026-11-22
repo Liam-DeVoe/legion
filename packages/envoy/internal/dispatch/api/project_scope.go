@@ -17,7 +17,7 @@ package api
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
 //     migrations and the tests, and the three writes that take another issue's project into
 //     account move nothing: a parent and a rank neighbour outside the issue's own project are
-//     refused, while a `blocked_by` target may be an issue of any project, which the write
+//     refused, while a `needs` target may be an issue of any project, which the write
 //     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
 //     inside the write because this check reads the project of the object the path names and no
 //     key in the body). So the project this check reads before the handler runs is the project

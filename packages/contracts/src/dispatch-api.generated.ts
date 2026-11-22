@@ -373,7 +373,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection. Until the decisions step retires it, the block may also be a section heading of an issue's decisions document an earlier release stored, outside `## Replaced`, whose sum is that of the section's markdown from the heading to its last block; that Keep writes the decision_keeps row, which the conversion carries onto the section's decision node. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, a heading of a retired decisions document, and any other block are 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
+    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, a heading of a decisions document an earlier release stored, and any other block are 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
     post: operations["postApiV1ArtifactsByIdBlocksByBlockIdKeep"];
     delete?: never;
     options?: never;
@@ -1350,7 +1350,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. A spec that holds a requirement block, on an issue born converted under a parent whose chain's nearest issue holding requirements and no view itself is not done - so the new issue is a view on that issue's spec, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that issue, and creates nothing; a spec holding one that is taken makes the new issue's spec its own, so the issue is never a view. needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. A spec that holds a requirement block, on an issue born converted under a parent whose chain's nearest issue holding requirements and no view itself is not done - so the new issue is a view on that issue's spec, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that issue, and creates nothing; a spec holding one that is taken makes the new issue's spec its own, so the issue is never a view. needs is the issues the issue waits on, of any project, sorted; a list refused for its count or its keys is 400 NEEDS_INPUT. blocked_by is no longer taken: a body that names it and no needs is refused 400 BLOCKED_BY_INPUT, naming needs, and stores nothing, and a body that names both is served from needs alone. A wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1389,7 +1389,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), needs ([] clears it), duplicate_of and filed_from (null clears either), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), needs ([] clears it), duplicate_of and filed_from (null clears either), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). needs is the issues the issue waits on, of any project, sorted; a list refused for its count or its keys is 400 NEEDS_INPUT. blocked_by is no longer taken: a body that names it and no needs is refused 400 BLOCKED_BY_INPUT, naming needs, and stores nothing, and a body that names both is served from needs alone. A wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1548,6 +1548,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/chain": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The chain of the issue from each decision to the result that proves what it shaped, read in one read of the issue's tree over the tuples as the caller may see it, writing and storing nothing: {issue, at, requirements, decisions, checks, plan_tasks, results, gaps}. Every node is listed once under its one store id, and every hop names its far end by that id. A requirement is a requirement node of the issue's tree, with its words, its node state and its parent, and it names the decisions whose shaped tuple reaches it and the checks and plan tasks whose serves tuple does, never the nodes placed under it, so a check serving three requirements is one entry of checks that all three name; a check or a plan task at node state proposed or overtaken serves nothing. A decision is an agent's decision block, with its words, or an ask a person answered, with its question and the answer, each with the requirements it shaped. A check is each check node of the issue's tree and each check of an issue under it whose serves names one of the issue's requirements, with its words, its parent (its one placement, its part_of, read apart from what it serves), the requirements it serves, and, as GET /api/v1/issues/{key}/results answers it over the results the caller may see, its version and digest, compared_with, compared_nothing and pass_stands; proved is pass_stands yes, and a check not proved says in unproven why: no_result, compared_nothing, and for a result failed, retracted, check_words_moved, other_commit or commit_unknown. A plan task is each plan_task node of the issue's tree and each one of an issue under it that serves one of the issue's requirements, with its words, its node state, its parent and the requirements it serves. Each result is the results read's, with commit_stands, check_words_moved and retracted, the walk back from it (its check, the requirements that check serves, the decisions that shaped those) and proves, whether it is a pass whose commit stands at a basis under the check's words now with no retraction against it; a result reserved for its author is answered to that author alone. ?at=<commit> compares every check with that one commit, as the results read's ?at= does, and at echoes it, null where none was named; a value that is not 40 lowercase hex characters is 400 INVALID_QUERY. gaps is each thing the chain lacks, {kind, node, line}: no_decision and no_check of a requirement, no_result of a check, and serves_nothing of a check or a plan task whose serves names nothing; a node at proposed or overtaken raises none. 404 NOT_FOUND for no such issue. */
+    get: operations["getApiV1IssuesByKeyChain"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/claim": {
     parameters: {
       query?: never;
@@ -1661,7 +1678,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. An entry of the retired step decisions, which a daemon of the release before still publishes, is taken and dropped, so the issue's stored row of that step goes with the set it replaces. A body without gates, a step that is none of these, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of these, the retired step decisions among them, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE naming the step; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyDesignGates"];
     post?: never;
     delete?: never;
@@ -2948,7 +2965,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. The retired step decisions, which a page of the release before still sends, is taken and stored nowhere: the list is stored without it, and a list of decisions alone is stored as [spec]. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
+    /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, the retired step decisions among them, is 400 INVALID_PROJECT naming the step, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
     put: operations["putApiV1ProjectsByKeyGatedSteps"];
     post?: never;
     delete?: never;
@@ -3052,7 +3069,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Edges of one node in the reference graph: ?to=<dispatch ref> backlinks or ?from= links; ?kind= (an issue's wait on an issue is answered as needs, which ?kind=needs and ?kind=blocked_by both read; an issue's child_of, duplicate_of and filed_from are kinds of their own, a filed_from's node the item's canonical reference), ?since=<events.id> (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. An unpinned reference to a block of a document names the block node its address resolves to - its moved_to tuples first, then the same block id in the issue room its document is a fragment of, then the address itself - and lists the edges at the address and those at that node, newest first: a block of a document converted into its issue's room, written at the document's own address, is the room's node, which holds the links its pointers write. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://<KEY>/ask/<prefix>, the document of a #b-<prefix>; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was. */
+    /** @description Edges of one node in the reference graph: ?to=<dispatch ref> backlinks or ?from= links; ?kind= (an issue's wait on an issue is needs, the kind ?kind=needs reads; an issue's child_of, duplicate_of and filed_from are kinds of their own, a filed_from's node the item's canonical reference), ?since=<events.id> (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. An unpinned reference to a block of a document names the block node its address resolves to - its moved_to tuples first, then the same block id in the issue room its document is a fragment of, then the address itself - and lists the edges at the address and those at that node, newest first: a block of a document converted into its issue's room, written at the document's own address, is the room's node, which holds the links its pointers write. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://<KEY>/ask/<prefix>, the document of a #b-<prefix>; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was. */
     get: operations["getApiV1References"];
     put?: never;
     post?: never;
@@ -4331,7 +4348,6 @@ export interface components {
       /** Format: int64 */
       advances_revision: number;
       assignee: null | string;
-      blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
       closed_at: null | string;
@@ -4339,7 +4355,6 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
-      decisions_artifact_id: string;
       duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
       filed_from?: null | string;
@@ -5613,7 +5628,6 @@ export interface components {
       /** Format: int64 */
       advances_revision: number;
       assignee: null | string;
-      blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
       closed_at: null | string;
@@ -5621,7 +5635,6 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
-      decisions_artifact_id: string;
       duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
       filed_from?: null | string;
@@ -5690,6 +5703,95 @@ export interface components {
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
+    };
+    IssueChain: {
+      at: null | string;
+      checks: components["schemas"]["IssueChainCheck"][] | null;
+      decisions: components["schemas"]["IssueChainDecision"][] | null;
+      gaps: components["schemas"]["IssueChainGap"][] | null;
+      issue: string;
+      plan_tasks: components["schemas"]["IssueChainPlanTask"][] | null;
+      requirements: components["schemas"]["IssueChainRequirement"][] | null;
+      results: components["schemas"]["IssueChainResult"][] | null;
+    };
+    IssueChainCheck: {
+      block_id: string;
+      /** @enum {string} */
+      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_with: components["schemas"]["CheckBasis"][] | null;
+      id: string;
+      issue: string;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      pass_stands: components["schemas"]["CheckPassStands"];
+      proved: boolean;
+      ref: string;
+      results: string[] | null;
+      serves: string[] | null;
+      sha256: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+      unproven: components["schemas"]["IssueChainUnproven"][] | null;
+      version: number;
+      when: string;
+    };
+    IssueChainDecision: {
+      answer?: string;
+      block_id?: string;
+      id: string;
+      /** @enum {string} */
+      kind: "block" | "ask";
+      shaped: string[] | null;
+      text: string;
+    };
+    IssueChainGap: {
+      /** @enum {string} */
+      kind: "no_decision" | "no_check" | "no_result" | "serves_nothing";
+      line: string;
+      node: string;
+    };
+    IssueChainPlanTask: {
+      block_id: string;
+      id: string;
+      issue: string;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      ref: string;
+      serves: string[] | null;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+    };
+    IssueChainRequirement: {
+      block_id: string;
+      checks: string[] | null;
+      decisions: string[] | null;
+      id: string;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      plan_tasks: string[] | null;
+      proved: boolean;
+      ref: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+    };
+    IssueChainResult: {
+      check: string;
+      decisions: string[] | null;
+      proves: boolean;
+      requirements: string[] | null;
+      result: components["schemas"]["CheckResult"];
+    };
+    IssueChainUnproven: {
+      /** @enum {string} */
+      reason:
+        | "no_result"
+        | "compared_nothing"
+        | "failed"
+        | "retracted"
+        | "check_words_moved"
+        | "other_commit"
+        | "commit_unknown";
+      result?: string;
     };
     IssueCheckResults: {
       checks: components["schemas"]["CheckBlock"][] | null;
@@ -5780,7 +5882,7 @@ export interface components {
     IssueDesignGate: {
       artifact_id: string;
       /** @enum {string} */
-      step: "decisions" | "criteria" | "spec";
+      step: "criteria" | "spec";
     };
     IssueDesignGates: {
       gates: components["schemas"]["IssueDesignGate"][] | null;
@@ -5796,7 +5898,6 @@ export interface components {
       advances_revision: number;
       artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
-      blocked_by: string[] | null;
       children: components["schemas"]["IssueChild"][] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
@@ -5805,7 +5906,6 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
-      decisions_artifact_id: string;
       design_gates: components["schemas"]["IssueDesignGate"][] | null;
       duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
@@ -5952,7 +6052,6 @@ export interface components {
       /** Format: int64 */
       advances_revision: number;
       assignee: null | string;
-      blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
       closed_at: null | string;
@@ -6872,7 +6971,7 @@ export interface components {
     };
     ProjectGatedStepsInput: {
       actor?: components["schemas"]["Actor"] | null;
-      steps: null | ("decisions" | "criteria" | "spec")[];
+      steps: null | ("criteria" | "spec")[];
     };
     ProjectPlans: {
       issues: components["schemas"]["FinishedIssue"][] | null;
@@ -11598,6 +11697,41 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1IssuesByKeyChain: {
+    parameters: {
+      query?: {
+        at?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueChain"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -16452,6 +16586,14 @@ export type InboxRow = components["schemas"]["InboxRow"];
 export type Issue = components["schemas"]["Issue"];
 export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];
+export type IssueChain = components["schemas"]["IssueChain"];
+export type IssueChainCheck = components["schemas"]["IssueChainCheck"];
+export type IssueChainDecision = components["schemas"]["IssueChainDecision"];
+export type IssueChainGap = components["schemas"]["IssueChainGap"];
+export type IssueChainPlanTask = components["schemas"]["IssueChainPlanTask"];
+export type IssueChainRequirement = components["schemas"]["IssueChainRequirement"];
+export type IssueChainResult = components["schemas"]["IssueChainResult"];
+export type IssueChainUnproven = components["schemas"]["IssueChainUnproven"];
 export type IssueCheckResults = components["schemas"]["IssueCheckResults"];
 export type IssueChild = components["schemas"]["IssueChild"];
 export type IssueClaim = components["schemas"]["IssueClaim"];

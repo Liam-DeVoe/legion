@@ -153,7 +153,7 @@ function issueBody() {
     components: { mode: "inherit", ids: [], inherited_from: null, unknown: [] },
     route: null,
     parent: null,
-    blocked_by: [],
+    needs: [],
     external_links: [],
     artifacts: [],
     open_asks: [],

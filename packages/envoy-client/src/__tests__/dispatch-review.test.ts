@@ -45,7 +45,7 @@ const ISSUE = {
   assignee: PERSON,
   route: null,
   parent: null,
-  blocked_by: [],
+  needs: [],
   components: [],
   repo: null,
   resolved_repo: null,

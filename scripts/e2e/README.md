@@ -4400,7 +4400,7 @@ Each child read back as started is in `planning` in T on a slot of its own with 
 
 What the proof stands in for lies outside the change:
 the broker is a native `nats-server`;
-Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), fronted by the driver's own `linkedDispatch`, which adds to each read of an issue the `blocked_by` links the driver's last event of it carried, since the daemon prepares a todo event of an unrecorded issue from Dispatch's own view of it;
+Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), fronted by the driver's own `linkedDispatch`, which adds to each read of an issue the `needs` links the driver's last event of it carried, since the daemon prepares a todo event of an unrecorded issue from Dispatch's own view of it;
 Envoy's listener is the package's `noticeListener`;
 GitHub knows each repository's default branch and takes each issue branch the workflow creates;
 the two Apps' tokens are placeholders;

@@ -828,7 +828,7 @@ func (r *subArchitectLive) publishIssueBy(actor map[string]string, key, status, 
 		"labels": liveDispatchLabels(false), "last_seq": r.seq, "project": r.cfg.Project, "resolved_repo": liveRepo,
 	}
 	if len(blockers) > 0 {
-		issue["blocked_by"] = blockers
+		issue["needs"] = blockers
 	}
 	payload, err := json.Marshal(map[string]any{
 		"id": r.seq, "issue_key": key, "project": r.cfg.Project, "seq": r.seq, "type": "issue.updated",
@@ -1041,7 +1041,7 @@ func (d *linkedDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = w.Write(read.Body.Bytes())
 		return
 	}
-	issue["blocked_by"] = blockers
+	issue["needs"] = blockers
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(issue); err != nil {
 		d.board.t.Errorf("write the Dispatch issue %s: %v", key, err)

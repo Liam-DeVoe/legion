@@ -86,10 +86,9 @@ Two decisions stay with people:
   is the block's `state`, answerer and time, and Dispatch carries the approval across it, so it
   leaves the gate as it stands. Dispatch carries the approval to a later version only when that version's text
   is the approved text, or when its only changes are ones that change no decision: the readings of
-  decisions and answered asks, attributes of ask blocks the server owns, or what Dispatch's
-  decisions step moved into the spec. Then Dispatch records the approval in the person's name at
-  the new version, and the gate opens again. The gate is on by default; a deployment can turn it
-  off.
+  decisions and answered asks, or attributes of ask blocks the server owns. Then Dispatch records
+  the approval in the person's name at the new version, and the gate opens again. The gate is on
+  by default; a deployment can turn it off.
 - **The merge.** The merger reads the pull request and merges it itself, at the head it read and
   under a message it writes. The repository's own rules decide
   whether and when it lands, so a check it requires, or a review a person must give, stays

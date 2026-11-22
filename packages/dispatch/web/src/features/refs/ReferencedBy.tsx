@@ -66,9 +66,6 @@ const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   anchored_to: "Anchored item",
   answers: "Answer",
   attached_to: "Attached document",
-  // An issue's wait as a Dispatch of the release before names it; this Dispatch answers it as
-  // needs, below.
-  blocked_by: "Blocked issue",
   child_of: "Child issue",
   duplicate_of: "Duplicate issue",
   filed_from: "Issue filed from it",
@@ -90,7 +87,6 @@ const RENDERED_EDGE_KINDS: Record<GraphEdge["kind"], true> = {
   answers: true,
   attached_to: true,
   authored_by: true,
-  blocked_by: true,
   changed_by_run: true,
   child_of: true,
   constrained_by: true,

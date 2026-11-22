@@ -25,14 +25,14 @@ import (
 //     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
 //     node; with the store-only lines of copied_from and moved_to, which no table projects,
 //     refusing a far end of either that does not resolve; with the dangling-citation counter's
-//     line and the collision census over the restore's work (graphcensus.DanglingCitations,
-//     CollisionsOf); and with what the decisions step's third phase still owes
-//     (graphcensus.DecisionsCensus:
-//     the decisions documents, their unconverted sections and the specs whose answered asks left
-//     them), none of which refuses; and with the census of the versions version_renders holds
-//     (graphcensus.VersionRenderCensus), each one's stored markdown held to a render of the tree
-//     as of its row's time, which refuses on a difference. `--verbose` adds one line for each
-//     citation the counter counted.
+//     line and the collision census over an earlier release's restore
+//     (graphcensus.DanglingCitations, CollisionsOf); and with what is left of the decisions
+//     documents an earlier release converted (graphcensus.DecisionsCensus: the decisions
+//     documents that still stand, their unconverted sections and the specs whose answered asks
+//     left them), none of which refuses; and with the census of the versions version_renders
+//     holds (graphcensus.VersionRenderCensus), each one's stored markdown held to a render of the
+//     tree as of its row's time, which refuses on a difference. `--verbose` adds one line for
+//     each citation the counter counted.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
@@ -95,14 +95,14 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one
 // read-only snapshot of its own, so a deployment can take it before it rolls, exactly as it
 // takes the migration census. verbose prints each citation the dangling-citation counter counted,
-// whose returning set holds the returns the restore makes, judged by the restore's own test of a
-// person's removal (docs.ReturnDeclined), which graphcensus cannot read itself.
-// Beside the store's lines it prints what the decisions step's third phase still owes
-// (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its own, since only
-// docs reads a decisions document's sections; it refuses nothing. It prints too the census of the
-// versions version_renders holds (graphcensus.VersionRenderCensus), each one's stored markdown
-// against docs' render of the tree as of its row's time, read the same way, since only docs
-// renders; a version whose two differ refuses the census.
+// whose returning set holds the returns an earlier release's restore made, judged by that
+// restore's own test of a person's removal (docs.ReturnDeclined), which graphcensus cannot read
+// itself. Beside the store's lines it prints what is left of the decisions documents an earlier
+// release converted (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its
+// own, since only docs reads a decisions document's sections; it refuses nothing. It prints too the
+// census of the versions version_renders holds (graphcensus.VersionRenderCensus), each one's
+// stored markdown against docs' render of the tree as of its row's time, read the same way, since
+// only docs renders; a version whose two differ refuses the census.
 func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, out, errOut io.Writer) int {
 	report, err := graphcensus.StoreCensus(ctx, databaseURL, sizing, docs.ReturnDeclined)
 	if err != nil {

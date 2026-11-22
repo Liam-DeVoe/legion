@@ -700,12 +700,11 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
-			// An issue's wait on an issue is blocked_by in graph_edges through this release, the
-			// kind a process of the release before reads it by, and needs in this read's answer
-			// (answerIssueWaitsAsNeeds), so needs reads that edge as well as a plan node's needs,
-			// and blocked_by reads it too (R10 of dispatch://INFRA-1253).
+			// An issue's wait on an issue is stored in graph_edges under graphEdgesIssueWaitKind
+			// until the view is one select, and answered as needs (answerIssueWaitsAsNeeds), so
+			// needs reads that edge as well as a plan node's needs.
 			if kind == model.EdgeKindNeeds {
-				query.Kinds = append(query.Kinds, blockedByMember)
+				query.Kinds = append(query.Kinds, graphEdgesIssueWaitKind)
 			}
 		}
 		slices.Sort(query.Kinds)
@@ -736,13 +735,18 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	return query, ref, unknownKinds, nil
 }
 
+// graphEdgesIssueWaitKind is the kind graph_edges stores an issue's wait on an issue under, in its
+// old arm over issue_links and in its tuple arm alike, until the view is one select. No read
+// answers it and no `?kind=` takes it (R27 of dispatch://INFRA-1098): model.GraphEdgeKinds holds
+// no such kind.
+const graphEdgesIssueWaitKind = "blocked_by"
+
 // answerIssueWaitsAsNeeds names each edge of an issue's wait on an issue needs, the one relation an
-// issue and a plan node wait by (R10 of dispatch://INFRA-1253): graph_edges names it blocked_by in
-// both its arms through this release, which a process of the release before reads, and this
-// build's references read answers it as the store states it.
+// issue and a plan node wait by (R10 of dispatch://INFRA-1253), as the store states it: graph_edges
+// stores it under graphEdgesIssueWaitKind.
 func answerIssueWaitsAsNeeds(edges []model.GraphEdge) {
 	for index := range edges {
-		if edges[index].Kind == blockedByMember {
+		if edges[index].Kind == graphEdgesIssueWaitKind {
 			edges[index].Kind = model.EdgeKindNeeds
 		}
 	}

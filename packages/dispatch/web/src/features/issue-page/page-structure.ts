@@ -63,10 +63,10 @@ export const PROPERTY_LABELS = freeze({
    *  reviewer sent it back (R13, R31): Details' row of the approval steps and their reasons. */
   approval: "Approval",
   assignee: "Assignee",
-  /** The issues this one waits on (`blocked_by`). */
+  /** The issues this one waits on (`needs`). */
   blocked_by: "Blocked by",
-  /** The issues that wait on this one: the other direction of `blocked_by`, which Dispatch
-   *  reads as the references of kind `blocked_by` that point at the issue. */
+  /** The issues that wait on this one: the other direction of `needs`, which Dispatch reads as
+   *  the references of kind `needs` that point at the issue. */
   blocks: "Blocks",
   /** Who is working the issue, which is not where its messages go. */
   claim: "Claimed by",
