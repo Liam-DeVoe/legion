@@ -403,6 +403,10 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/daemon.githubPullRequest",
         "test": "print-daemon.githubPullRequest"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.RateLimitError",
+        "test": "print-githubapp.RateLimitError"
       }
     ],
     "reflection": [
@@ -5129,6 +5133,13 @@
       "package": "./internal/dispatch/githubapp",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.limitEntryWords",
       "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.limitEntryWords: every printer at every placement"
+    },
+    {
+      "id": "print-githubapp.RateLimitError",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.RateLimitError",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.RateLimitError: every printer at every placement"
     },
     {
       "id": "print-delivery.searchPullRequestsResponse",

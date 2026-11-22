@@ -149,6 +149,10 @@ type RateLimitError struct {
 	// wording is GitHub's wording of a limit answered at a 2xx status (graphQLLimitWording),
 	// which answeredLimit alone sets.
 	wording string
+	// message is the `message` of the answer's JSON, decoded from the answer as it came with the
+	// record of its request (answerMessage), which answeredLimit alone sets: a body past the rule's
+	// reach keeps its message, which Body, the rule's reading of the whole body, may not parse to.
+	message redact.RemoteText
 }
 
 func (e *RateLimitError) Error() string {
@@ -169,10 +173,15 @@ func limitAnswered(status int, wait time.Duration) string {
 	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s", status, wait)
 }
 
-// Message is the `message` of Body, the JSON GitHub answers a refused request with, as Body
-// prints it, and "" for a body that is not JSON or names none, as a held error's empty Body does,
-// and so does the empty Body of a 2xx limit that answeredLimit built (responseMessage).
+// Message is the `message` of the JSON GitHub answers a refused request with, as the rule prints
+// it, and "" for a body that is not JSON or names none, as a held error's empty Body does, and so
+// does the empty Body of a 2xx limit that answeredLimit built. A limit answeredLimit built from an
+// answer names the message it decoded from that answer (answerMessage); one built with a Body
+// alone names the message of that text (responseMessage).
 func (e *RateLimitError) Message() string {
+	if !e.message.IsEmpty() {
+		return e.message.String()
+	}
 	return responseMessage([]byte(e.Body))
 }
 
@@ -215,6 +224,7 @@ func answeredLimit(status int, header http.Header, body redact.Answer) *RateLimi
 		limited.wording = graphQLLimitWording(header, body)
 	} else {
 		limited.Body = body.Words().String()
+		limited.message = answerMessage(body)
 	}
 	return limited
 }

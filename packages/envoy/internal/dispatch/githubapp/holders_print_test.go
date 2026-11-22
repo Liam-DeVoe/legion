@@ -3,6 +3,7 @@ package githubapp
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -21,6 +22,24 @@ func (e *statusErrorTwin) Error() string { return fmt.Sprintf("status %d: %s", e
 
 type statusErrorExported struct {
 	Status  int
+	Body    string
+	Message string
+}
+
+// rateLimitTwin is RateLimitError's shape had it kept GitHub's text as it came: its Body the body
+// whole, where answeredLimit sets the rule's reading, and its message the probe as a string.
+type rateLimitTwin struct {
+	Status  int
+	Wait    time.Duration
+	Body    string
+	message string
+}
+
+func (e *rateLimitTwin) Error() string { return withBody(limitAnswered(e.Status, e.Wait), e.Body) }
+
+type rateLimitExported struct {
+	Status  int
+	Wait    time.Duration
 	Body    string
 	Message string
 }
@@ -69,6 +88,13 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    limitEntryWords{Type: words, Message: words},
 			Same:     entryTwin{redacttest.Words, redacttest.Words},
 			Exported: entryTwin{redacttest.Words, redacttest.Words},
+		},
+		{
+			Name:     "githubapp.RateLimitError",
+			Kind:     "error",
+			Boxed:    &RateLimitError{Status: 429, Wait: time.Minute, Body: redact.NewRemoteText(body).String(), message: words},
+			Same:     &rateLimitTwin{429, time.Minute, body, redacttest.Words},
+			Exported: &rateLimitExported{429, time.Minute, body, redacttest.Words},
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })
