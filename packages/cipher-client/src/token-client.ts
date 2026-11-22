@@ -839,13 +839,21 @@ export class BrokerTokenClient {
    * left, and {@link EXPIRES_IN_STEP_MS} more: the broker ends a read token no later than its
    * subject and writes its life in whole seconds, so one traded from a subject with less left
    * would land with less than the window and be renewed at its half life ({@link renewalAt}),
-   * with less of its subject left each time. The cost of that second: a refresh at this bound can
-   * end another process's read token of the same subject up to a second before that process
-   * renews it, which that process cures by dropping the token at Dispatch's
-   * `401 BROKER_TOKEN_NOT_ACTIVE` and trading again (`brokerCredential`,
-   * `packages/envoy-client/src/broker-credential.ts`). A device login caps the ask at half the
-   * life its last refresh gave the access token (`DeviceLoginIdentity.spend`), so an access token
-   * fresh from a refresh meets it wherever that life is over the minute every trade keeps.
+   * with less of its subject left each time. A device login caps that ask
+   * (`DeviceLoginIdentity.spend` says at what, and why).
+   *
+   * A refresh this ask brings on ends the read tokens other processes traded from the access
+   * token it replaces. Where such a process renews its read token at the window, the token can
+   * end up to a second before that renewal. Where it renews at the token's half life, as a read
+   * token that lands with under two windows left does (every one, where the access token lives
+   * under two windows), the token can end before that renewal by up to the cap less half the
+   * token's own life: 20 s, 10 s and 5 s early were measured at an access-token life of 302 s.
+   * Either way that process's next request is refused once with Dispatch's
+   * `401 BROKER_TOKEN_NOT_ACTIVE`: its credential drops the token and trades again, and the
+   * request goes again (`brokerCredential` in `packages/envoy-client/src/broker-credential.ts`,
+   * and `DispatchClient`'s `#send` in `packages/envoy-client/src/dispatch-http.ts`, which sends a
+   * read once more after that answer), so its caller meets no failure, at the cost of one more
+   * trade and one more request.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const source = this.#subject;

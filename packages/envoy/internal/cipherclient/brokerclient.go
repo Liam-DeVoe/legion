@@ -15,6 +15,11 @@
 // Each process makes its own key and sends only its public half: the proof embeds the public JWK,
 // and no code here marshals a private member onto the wire.
 //
+// When it trades again: Token and Run alike hold a token until RenewBefore ahead of its expiry,
+// and never before half of what it had left when it landed (RenewalAt), a moment worked out once
+// as it lands. The TypeScript client holds a token to the same moment, and testdata/renewal.json
+// holds both clients to the rule (TestRenewalCorpus).
+//
 // What it refuses to do: hand out a token it could not renew. Token answers the held token while
 // that token is live and the broker is merely unreachable, and answers the error once the broker
 // has refused the identity or the held token has run out, so a caller that writes only with what
@@ -298,6 +303,8 @@ type Client struct {
 
 	mu   sync.Mutex
 	held *Token
+	// renewsAt is when Token trades again for held: renewalAt as of the moment held landed.
+	renewsAt time.Time
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -361,8 +368,12 @@ func New(cfg Config) (*Client, error) {
 // under the minted credential signs with it.
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
-// Token is a live access token: the held one while it is good for longer than RenewBefore, and
-// otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
+// Token is a live access token: the held one until the renewal moment worked out as it landed
+// (renewalAt: RenewBefore ahead of its expiry, and never before half of what it had left), and
+// otherwise a fresh trade. That is the rule Run renews by, and the one the TypeScript client
+// holds a token to (HeldToken.renewsAt in packages/cipher-client/src/token-client.ts), so a
+// token that lands with RenewBefore or less left is held to its half life rather than traded
+// again at every call. A trade the broker did not answer, or answered with a refusal a later
 // trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
 // Dispatch holds), while the held token is still live answers that token, since a client that
 // already holds an identity need not stop for a broker that is merely down or busy; a refusal no
@@ -372,12 +383,12 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.held.Expiry.Add(-c.renewBefore)) {
+	if c.held != nil && c.now().Before(c.renewsAt) {
 		return c.held, nil
 	}
 	token, err := c.trade(ctx)
 	if err == nil {
-		c.held = token
+		c.held, c.renewsAt = token, c.renewalAt(token, c.now())
 		return token, nil
 	}
 	var refused *RefusedError
@@ -416,7 +427,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Lock()
 		token, err := c.trade(ctx)
 		if err == nil {
-			c.held = token
+			c.held, c.renewsAt = token, c.renewalAt(token, c.now())
 		}
 		c.mu.Unlock()
 		switch {

@@ -16,12 +16,13 @@
 // milliseconds. This file takes from the package's source only what a build before these rules
 // had too, so it runs against such a build as a control.
 
-import { afterAll, afterEach, beforeAll, expect, setSystemTime, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { stubDeviceLoginBroker, writeDeviceLoginFile } from "../../test/device-logins";
+import { serveMetadataIdentity } from "../../test/metadata-server";
 import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
 import { DEVICE_LOGIN_FILE_VAR } from "../device-login-file";
 import {
@@ -33,7 +34,6 @@ import {
   MACHINE_AUDIENCE_VAR,
   SESSION_VAR,
 } from "../environment";
-import { METADATA_HOST_VAR } from "../metadata-identity";
 import {
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
@@ -201,24 +201,8 @@ afterEach(() => {
 });
 
 /** The metadata server a person's machine asks for its own Google identity token, the actor of a
- *  person's trade; the metadata identity reads `GCE_METADATA_HOST` from the process. */
-let stopMetadata = () => {};
-let previousMetadataHost: string | undefined;
-beforeAll(() => {
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => new Response(`${fixtureSecret("machine")}\n`),
-  });
-  stopMetadata = () => server.stop(true);
-  previousMetadataHost = process.env[METADATA_HOST_VAR];
-  process.env[METADATA_HOST_VAR] = `127.0.0.1:${server.port}`;
-});
-afterAll(() => {
-  stopMetadata();
-  if (previousMetadataHost === undefined) delete process.env[METADATA_HOST_VAR];
-  else process.env[METADATA_HOST_VAR] = previousMetadataHost;
-});
+ *  person's trade. */
+serveMetadataIdentity(fixtureSecret("machine"));
 
 /**
  * A device login whose broker mints access tokens of `life` seconds, as a laptop's first

@@ -6,7 +6,8 @@
 // that refuses the identity stops the loop with a plain error, because no retry cures that; and
 // a caller is handed no identity it cannot use, so nothing of its writes lands unauthenticated.
 // When it trades again once a trade lands is the other half, held by testdata/renewal.json
-// (TestRenewalCorpus), which the TypeScript client's suite replays too.
+// (TestRenewalCorpus, and TestTokenTradesAgainAtTheCorpusMoment through Token itself), which the
+// TypeScript client's suite replays too.
 
 package cipherclient
 
@@ -15,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -74,8 +76,9 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	}
 
-	// The held token is still live, so the caller keeps writing while the broker is down.
-	client.held.Expiry = time.Now().Add(30 * time.Second)
+	// The held token is due for renewal and still live, so the caller keeps writing while the
+	// broker is down.
+	client.held.Expiry, client.renewsAt = time.Now().Add(30*time.Second), time.Now()
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is down = %v, %v; want the token in hand, which is still live", held, err)
@@ -83,7 +86,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 
 	// Once it has run out there is no identity to write with, and the client says so rather
 	// than handing its caller a token the broker will refuse.
-	client.held.Expiry = time.Now().Add(-time.Second)
+	client.held.Expiry, client.renewsAt = time.Now().Add(-time.Second), time.Now()
 	if token, err := client.Token(ctx); err == nil {
 		t.Fatalf("Token with nothing live left = %+v, want the failure", token)
 	}
@@ -119,8 +122,9 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	}
 
-	// A 429 while the token in hand is live is no reason to stop writing with it.
-	client.held.Expiry = time.Now().Add(30 * time.Second)
+	// A 429 while the token in hand is due for renewal and still live is no reason to stop
+	// writing with it.
+	client.held.Expiry, client.renewsAt = time.Now().Add(30*time.Second), time.Now()
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is busy = %v, %v; want the token in hand, which is still live", held, err)
@@ -196,6 +200,85 @@ type renewalCorpus struct {
 // landed, so a token between one and two windows renews at its half life rather than soon after
 // it lands, and the TypeScript client, which replays the same file, renews at the same moment.
 func TestRenewalCorpus(t *testing.T) {
+	corpus := readRenewalCorpus(t)
+	now := time.Now()
+	for _, row := range corpus.Rows {
+		t.Run(row.Name, func(t *testing.T) {
+			client, err := New(Config{BrokerURL: cipheraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
+				RenewBefore: corpusSeconds(row.RenewBeforeSeconds), Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			token := &Token{Expiry: now.Add(corpusSeconds(row.LifeSeconds))}
+			if got, want := client.renewalAt(token, now).Sub(now), corpusSeconds(row.RenewsAfterSeconds); got != want {
+				t.Errorf("a token of %v s with a window of %v s renews %s after it lands, want %s", row.LifeSeconds, row.RenewBeforeSeconds, got, want)
+			}
+		})
+	}
+}
+
+// TestTokenTradesAgainAtTheCorpusMoment drives Token with a stepped clock across a token of each
+// life testdata/renewal.json names under the default window: Token trades as the token lands,
+// answers that token at every call a step apart before the corpus's renewal moment, and trades
+// again at exactly that moment, which is when Run renews it and when the TypeScript client trades
+// again. A Token that held a token only until RenewBefore ahead of its expiry traded one between
+// one and two windows again before its half life, and one of the window or less at every call.
+func TestTokenTradesAgainAtTheCorpusMoment(t *testing.T) {
+	const step = 500 * time.Millisecond
+	ran := 0
+	for _, row := range readRenewalCorpus(t).Rows {
+		// The broker writes a token's life in whole seconds, and read refuses an answer with none
+		// left, so only a row of a whole, positive life can land through Token.
+		if corpusSeconds(row.RenewBeforeSeconds) != DefaultRenewBefore || row.LifeSeconds <= 0 || row.LifeSeconds != math.Trunc(row.LifeSeconds) {
+			continue
+		}
+		ran++
+		t.Run(row.Name, func(t *testing.T) {
+			broker := newStubBroker(t, func(n int, _ url.Values) (int, map[string]any) {
+				return 200, map[string]any{"access_token": "token-" + strconv.Itoa(n), "token_type": "DPoP", "expires_in": int64(row.LifeSeconds)}
+			})
+			landed := time.Now()
+			clock := landed
+			client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(),
+				Now: func() time.Time { return clock }})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			ctx := context.Background()
+			if token, err := client.Token(ctx); err != nil || token.AccessToken != "token-0" {
+				t.Fatalf("the first Token = %+v, %v; want the trade that lands the token", token, err)
+			}
+			renews := corpusSeconds(row.RenewsAfterSeconds)
+			for elapsed := time.Duration(0); elapsed < renews; elapsed += step {
+				clock = landed.Add(elapsed)
+				token, err := client.Token(ctx)
+				if trades := len(broker.Requests()); trades != 1 {
+					t.Fatalf("Token %s after a token of %v s landed made %d trades; want the one it landed by, and none before the corpus's moment, %s after it landed",
+						elapsed, row.LifeSeconds, trades, renews)
+				}
+				if err != nil || token.AccessToken != "token-0" {
+					t.Fatalf("Token %s after a token of %v s landed = %+v, %v; want the token in hand", elapsed, row.LifeSeconds, token, err)
+				}
+			}
+			clock = landed.Add(renews)
+			token, err := client.Token(ctx)
+			if trades := len(broker.Requests()); trades != 2 {
+				t.Fatalf("Token at the corpus's moment, %s after a token of %v s landed, made %d trades in all; want two, the one it landed by and one at that moment",
+					renews, row.LifeSeconds, trades)
+			}
+			if err != nil || token.AccessToken != "token-1" {
+				t.Fatalf("Token at the corpus's moment, %s after a token of %v s landed = %+v, %v; want the fresh trade", renews, row.LifeSeconds, token, err)
+			}
+		})
+	}
+	if ran == 0 {
+		t.Fatalf("%s holds no row of a whole, positive life under a window of %s", renewalCorpusPath, DefaultRenewBefore)
+	}
+}
+
+// readRenewalCorpus is testdata/renewal.json, refused where it is not version 1 with rows.
+func readRenewalCorpus(t *testing.T) renewalCorpus {
+	t.Helper()
 	data, err := os.ReadFile(renewalCorpusPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", renewalCorpusPath, err)
@@ -207,22 +290,11 @@ func TestRenewalCorpus(t *testing.T) {
 	if corpus.Version != 1 || len(corpus.Rows) == 0 {
 		t.Fatalf("%s is version %d with %d rows, want version 1 with rows", renewalCorpusPath, corpus.Version, len(corpus.Rows))
 	}
-	seconds := func(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
-	now := time.Now()
-	for _, row := range corpus.Rows {
-		t.Run(row.Name, func(t *testing.T) {
-			client, err := New(Config{BrokerURL: cipheraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
-				RenewBefore: seconds(row.RenewBeforeSeconds), Now: func() time.Time { return now }})
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			token := &Token{Expiry: now.Add(seconds(row.LifeSeconds))}
-			if got, want := client.renewalAt(token, now).Sub(now), seconds(row.RenewsAfterSeconds); got != want {
-				t.Errorf("a token of %v s with a window of %v s renews %s after it lands, want %s", row.LifeSeconds, row.RenewBeforeSeconds, got, want)
-			}
-		})
-	}
+	return corpus
 }
+
+// corpusSeconds is one of the corpus's times, written in seconds, as a duration.
+func corpusSeconds(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
 
 // TestADPoPRefusalKeepsTheRenewalLoopTrading: a proof the broker refuses for its own clock, or
 // for a nonce it wanted, is nothing a restart cures and everything the next trade may. A helper
@@ -307,7 +379,7 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				broker.server.Close()
 			}
 
-			client.held.Expiry = time.Now().Add(30 * time.Second)
+			client.held.Expiry, client.renewsAt = time.Now().Add(30*time.Second), time.Now()
 			if held, err := client.Token(ctx); err != nil || held.AccessToken != mintedToken(1)["access_token"] {
 				t.Fatalf("Token = %+v, %v; want the token in hand, which is still live", held, err)
 			}

@@ -8,13 +8,14 @@
 // turns the person trade off (`PERSON_SIGNIN_TRADE=off`), which is the machine's own client
 // whatever the sign-in store holds, and reads none of it.
 
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, importJWK, type JWK } from "jose";
+import { serveMetadataIdentity } from "../../test/metadata-server";
 import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
 import {
   BROKER_URL_VAR,
@@ -25,7 +26,6 @@ import {
   PROJECTS_VAR,
   SESSION_VAR,
 } from "../environment";
-import { METADATA_HOST_VAR } from "../metadata-identity";
 import {
   PERSON_TRADE_VAR,
   PERSON_VAR,
@@ -64,28 +64,8 @@ const READ_TOKENS = [fixtureSecret("read1"), fixtureSecret("read2"), fixtureSecr
 
 const makeDirectory = temporaryDirectories("person-route");
 
-/**
- * The metadata server this file's machine asks for its own Google identity token. The metadata
- * identity reads `GCE_METADATA_HOST` from the process's environment, so the variable is set for
- * this file and put back after it.
- */
-let stopMetadata = () => {};
-let previousMetadataHost: string | undefined;
-beforeAll(() => {
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => new Response(`${MACHINE_TOKEN}\n`),
-  });
-  stopMetadata = () => server.stop(true);
-  previousMetadataHost = process.env[METADATA_HOST_VAR];
-  process.env[METADATA_HOST_VAR] = `127.0.0.1:${server.port}`;
-});
-afterAll(() => {
-  stopMetadata();
-  if (previousMetadataHost === undefined) delete process.env[METADATA_HOST_VAR];
-  else process.env[METADATA_HOST_VAR] = previousMetadataHost;
-});
+/** The metadata server this file's machine asks for its own Google identity token. */
+serveMetadataIdentity(MACHINE_TOKEN);
 
 const stops: (() => void)[] = [];
 afterEach(() => {
