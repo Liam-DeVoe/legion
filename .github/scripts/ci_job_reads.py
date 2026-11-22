@@ -1639,11 +1639,11 @@ hold_supervise_table_tests()
 
 
 # ---------------------------------------------------------------- the envoy race lane
-# The three jobs that run packages/envoy's concurrent packages under the race detector, declared
-# once: each job's step name, its -timeout, and the packages the step names, in the order it names
-# them. Everything the lane decides is built from this list - the three steps' own texts, the
-# envoy-go unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists
-# of the plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
+# The jobs that run packages/envoy's concurrent packages under the race detector, declared once:
+# each job's step name, its -timeout, and the packages the step names, in the order it names
+# them. Everything the lane decides is built from this list - the steps' own texts, the envoy-go
+# unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists of the
+# plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
 # check-ci-filters.sh fails when ci.yaml's text for any of them differs from the text built here,
 # so a package added to the lane reaches all of them or the check goes red. internal/dispatch/pmdoc
 # is not in the lane: it runs plain only.
@@ -1659,23 +1659,27 @@ class RacePackage(NamedTuple):
 
 
 class RaceJob(NamedTuple):
-    """One job of the lane: the ci.yaml job, its race step's name and -timeout, and its packages."""
+    """One job of the lane: its id, its race step's name and -timeout, and its packages. A job with
+    a `caller` is a second job of the file ci.yaml's job of that id calls, on a runner of its own,
+    selected and gated with it; any other is ci.yaml's job of its own id."""
 
     job: str
     step: str
     timeout: str
     packages: tuple
+    caller: str = ""
 
 
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
-            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials and the sign-in code flow",
-            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
-                    RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
-                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout", counted=True),
-                    RacePackage("internal/oidc"))),
+            "Race-test delivery, the bus, the listener, the registry store, the session cache, kvwatch, the NATS "
+            "credentials and the sign-in code flow",
+            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/bus"),
+                    RacePackage("cmd/listener"), RacePackage("internal/store"), RacePackage("internal/session"),
+                    RacePackage("internal/kvwatch", tree=True), RacePackage("natscred"),
+                    RacePackage("internal/cipher/natscallout", counted=True), RacePackage("internal/oidc"))),
+    RaceJob("envoy-go-race-store", "Race-test the Dispatch store", "60m",
+            (RacePackage("internal/dispatch/store", tree=True),), caller="envoy-go-race"),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -1689,20 +1693,23 @@ def race_pkgs(job, counted=False):
 
 
 def race_step(job):
-    """The one go command of a race job's race step, pinned to the text this declaration builds."""
+    """The one go command of a race job's race step, pinned to the text this declaration builds and
+    cited in the file that holds the job: its caller's, where it has one."""
     pkgs = race_pkgs(job)
     text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
-    return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
+    where = at(job.job, job.step, job_file(job.caller or job.job))
+    return run(ENVOY, pkgs, f"{where}: {text}", step=job.step, text=text, race=True)
 
 
 # envoy-go-race runs its counted package, the NATS auth service (internal/cipher/natscallout), in a
 # step of its own through database-skips.sh, which counts the skips of that same run and fails on
 # any: a test of that package opens the broker's Postgres (hold_budget_test.go) and skips without
 # BROKER_TEST_DATABASE_URL, and a step that runs without -v prints nothing for a skip. The job's
-# race step keeps its other packages, some of whose tests skip in every CI run by design (a
-# measurement run by hand, a stored shape a later migration refuses), which the counter would
-# count. The step's -timeout is its own: the package took 46 s under -race on a dev box, so 10
-# minutes still names a hung test before the job's timeout-minutes cuts it off.
+# race step keeps its other packages, and the envoy-go-race-store job's step the store's, some of
+# whose tests skip in every CI run by design (a measurement run by hand, a stored shape a later
+# migration refuses), which the counter would count. The step's -timeout is its own: the package
+# took 46 s under -race on a dev box, so 10 minutes still names a hung test before the job's
+# timeout-minutes cuts it off.
 RACE = RACE_JOBS["envoy-go-race"]
 RACE_COUNTED_STEP = "Race-test the NATS auth service and count its skips"
 RACE_COUNTED_TIMEOUT = "10m"
@@ -1819,7 +1826,7 @@ def hold_database_skips_packages():
 
 hold_database_skips_packages()
 
-# The unit step runs the module less six things: the lane's packages, which the three race jobs
+# The unit step runs the module less six things: the lane's packages, which the race lane's jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
 # checks, which the text-check job runs, the architecture-note and spec-file packages and
 # LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
@@ -1843,6 +1850,10 @@ UNIT_TEST_PATTERN = "|".join(
 RACE_API = RACE_JOBS["envoy-go-race-api"]
 RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
                    f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
+
+# envoy-go-race-store, the second job of ci-job-envoy-go-race.yaml: race_step's plain go test of the
+# store's tree on a runner of its own, under a -timeout of its own (that file says how it is sized).
+RACE_STORE = RACE_JOBS["envoy-go-race-store"]
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -3361,8 +3372,9 @@ GATES = [
         # The Run names the packages the step's own `grep -Ev` keeps (packages_kept over
         # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
         # beside it. A Run saying more would credit this job with tests other jobs run: the race
-        # lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks
-        # are the text-check job's, those packages are envoy-go-checks', and the closure of ./...
+        # lane's are envoy-go-race's, envoy-go-race-store's, envoy-go-race-api's and
+        # envoy-go-race-docs', the text checks are the text-check job's, those packages are
+        # envoy-go-checks', and the closure of ./...
         # would put their test files and the files only those tests read on this job's filter, so a
         # change to one of them would start a job that does not run the test it touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
@@ -3620,15 +3632,19 @@ GATES = [
         ]),
     ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod")),
 
-    # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
-    # envoy-go unit step and its plain companion are built from too. Three steps are not race_step's
+    # The lane's jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
+    # envoy-go unit step and its plain companion are built from too. envoy-go-race's file runs two
+    # jobs, each on a runner of its own: envoy-go-race and envoy-go-race-store, the Dispatch store
+    # alone (RACE_STORE), whose race step is this gate's second Run, since ci.yaml's job of this
+    # filter calls that file and both jobs run under it. Three steps are not race_step's
     # text, and each gate pins its whole line: envoy-go-race's counted step runs the NATS auth
     # service through database-skips.sh (RACE_COUNTED_SCRIPT) and envoy-go-race-api's its package
     # (RACE_API_SCRIPT), each counting that run's skips, and envoy-go-race-docs' runs the package
     # under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
-    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE), ceiling_run("envoy-go-race")], exact=[
+    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE), race_step(RACE_STORE),
+                                                 ceiling_run("envoy-go-race")], exact=[
         pinned_step("envoy-go-race", RACE_COUNTED_STEP, ENVOY, RACE_COUNTED_SCRIPT, [
             (ENVOY, race_pkgs(RACE, counted=True),
              f"{DATABASE_SKIPS_SCRIPT}'s go test -json -race -timeout {RACE_COUNTED_TIMEOUT} of the package", {"race": True}),
