@@ -38,7 +38,7 @@ import {
 } from "./capture";
 import { type Case, type Profile, pathHash } from "./cases";
 import { type ContextRecord, localSource, skillFrontmatter } from "./context";
-import { BudgetSpent } from "./gateway";
+import { BudgetSpent, type MessagesBody } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
 import { BLOCK_REASON, MESSAGES_VARIABLE } from "./replay-hook";
 
@@ -1313,6 +1313,185 @@ export default function bootProbe(pi) {
       // Well within the 180 s the hint run's turn waits for a hint it is owed.
       expect(performance.now() - started).toBeLessThan(120_000);
       expect(existsSync(path.join(dir, "out-budget"))).toBe(false);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // The rows on a hint reply Oh My Pi does not keep. gamma is a skill of their own, whose
+  // description has a first sentence of at least 40 characters within its first 99.
+  const GAMMA_COMMIT = "89abcdef0123456789abcdef0123456789abcdef";
+  const GAMMA_SKILL =
+    "---\nname: gamma\ndescription: Use when a task asks for the gamma report of the made-up project. Not for the alpha checklist or the beta greeting.\n---\n\n# Gamma\n\nReport in one line.\n";
+  /** The cut-down description Oh My Pi lists in place of a hint (skill-descriptions.ts at the
+   *  pinned tag, `previewSkillDescription`): alpha's 108 characters cut at the last space within
+   *  the first 99, beta's 66 whole, and gamma's first sentence. */
+  const PREVIEWS = {
+    alpha:
+      "Use when a task asks for the alpha checklist of the made-up fixture project; it lists the three…",
+    beta: "Use when a task asks for the beta greeting of the made-up project.",
+    gamma: "Use when a task asks for the gamma report of the made-up project.",
+  };
+  /** A reply for each skill that Oh My Pi does not keep: one line of 184 characters, two lines,
+   *  and an empty one. */
+  const UNKEPT_REPLIES: Record<string, string> = {
+    alpha:
+      "Use for the alpha checklist of the made-up fixture project, when a task asks for its three steps, the reference file it reads first, one line per result, and the stop after step three.",
+    beta: "Use for the beta greeting.\nNot for the alpha checklist.",
+    gamma: "",
+  };
+  /** The skill each hint request of these rows named, and its body. */
+  const unkeptAsked: string[] = [];
+  const unkeptBodies: MessagesBody[] = [];
+  /** A stand-in hint writer that answers each skill with its reply above. */
+  const unkeptHints: HintWriter = async (body) => {
+    const skill = /Skill: ([^\\]+)\\nDescription: /.exec(JSON.stringify(body.messages))?.[1] ?? "";
+    unkeptAsked.push(skill);
+    unkeptBodies.push(body);
+    return { text: UNKEPT_REPLIES[skill] ?? "", model: body.model };
+  };
+  let unkeptMade:
+    | Promise<{ readonly first: Captured; readonly second: Captured; readonly asked: number }>
+    | undefined;
+  /** The captures these rows read, made once: the old arm of a case whose profile adds gamma, with
+   *  a cache of its own, so every hint is owed; then the old arm of a second case of the same
+   *  texts and cache, under another hint model. */
+  function unkeptCaptures() {
+    unkeptMade ??= (async () => {
+      await captures();
+      const repos = path.join(dir, "repos");
+      writeTree(path.join(repos, "acme/skills", GAMMA_COMMIT), {
+        "skills/gamma/SKILL.md": GAMMA_SKILL,
+      });
+      const models = path.join(dir, "models-unkept.yml");
+      writeFileSync(
+        models,
+        `${MODELS}      - {id: claude-haiku-5-5, name: Claude Haiku 5.5, reasoning: true, input: [text, image], contextWindow: 200000, maxTokens: 64000, cost: {input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25}}\n`
+      );
+      const capture = async (id: string, hintModel?: string): Promise<Captured> => {
+        const base = f1Case(id);
+        const gamma = {
+          repo: "acme/skills",
+          commit: GAMMA_COMMIT,
+          path: "skills/gamma",
+          name: "gamma",
+        };
+        const c: Case = {
+          ...base,
+          profile: { ...base.profile, skills: [...base.profile.skills, gamma] },
+        };
+        const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+        const made = await captureBody(c, buildArm(c, "old", dirs, dir), {
+          omp: binary(),
+          outDir: path.join(dir, "out-unkept"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache-unkept"),
+          source: localSource(repos),
+          models,
+          hints: unkeptHints,
+          ...(hintModel === undefined ? {} : { hintModel }),
+          session: SESSION,
+        });
+        return { capture: made, profile: profileHints(made) };
+      };
+      const first = await capture("unkept-1");
+      const asked = unkeptAsked.length;
+      const second = await capture("unkept-2", "anthropic/claude-haiku-5-5");
+      return { first, second, asked };
+    })();
+    return unkeptMade;
+  }
+
+  // Catches: a hint reply Oh My Pi does not keep (over 160 characters, more than one line, or
+  // empty) failing the capture; such a skill listed other than under the cut-down description Oh
+  // My Pi lists in place of a hint; or that outcome left out of the cache or the record.
+  test(
+    "a hint reply Oh My Pi does not keep, over 160 characters, two lines or empty, fails no capture: the skill is listed under Oh My Pi's cut-down description, asked once, and the cache and the record say no hint was kept, the reply and why",
+    async () => {
+      const { first, asked } = await unkeptCaptures();
+      const { record, body } = first.capture;
+      expect(Object.fromEntries(skillListing(body))).toEqual(PREVIEWS);
+      // Oh My Pi asked once for each skill's hint, and the capture run asked for none.
+      expect(unkeptAsked.slice(0, asked).sort()).toEqual(["alpha", "beta", "gamma"]);
+      expect(record.runs).toBe(2);
+      expect(record.otherRequests).toEqual([]);
+      // Each request asks for at most 1024 tokens and names no temperature: claude-sonnet-5-5
+      // takes none, so the API's default holds.
+      expect(
+        unkeptBodies
+          .slice(0, asked)
+          .map((each) => ({ temperature: each.temperature, maxTokens: each.max_tokens }))
+      ).toEqual(Array(3).fill({ temperature: undefined, maxTokens: 1024 }));
+      expect(record.hints).toMatchObject([
+        {
+          skill: "alpha",
+          hint: PREVIEWS.alpha,
+          written: true,
+          kept: false,
+          reply: UNKEPT_REPLIES.alpha,
+          reason: "the reply is 184 characters long, and Oh My Pi keeps a hint of at most 160",
+        },
+        {
+          skill: "beta",
+          hint: PREVIEWS.beta,
+          written: true,
+          kept: false,
+          reply: UNKEPT_REPLIES.beta,
+          reason: "the reply is more than one line",
+        },
+        {
+          skill: "gamma",
+          hint: PREVIEWS.gamma,
+          written: true,
+          kept: false,
+          reply: "",
+          reason: "the reply is empty",
+        },
+      ]);
+      for (const entry of record.hints) {
+        // Oh My Pi's record of the reply: the skill's key, its rule's revision and the hint model,
+        // holding the cut-down description, as the capture's scratch database has it.
+        expect(entry.ompKey).toMatch(/^[0-9a-f]{64}:v\d+:anthropic\/claude-sonnet-5-5$/);
+        expect(first.profile.get(entry.ompKey)).toBe(entry.hint);
+        const cached = JSON.parse(
+          readFileSync(path.join(dir, "cache-unkept", "hints", `${entry.key}.json`), "utf8")
+        );
+        expect(cached).toMatchObject({
+          name: entry.skill,
+          hint: entry.hint,
+          ompKey: entry.ompKey,
+          kept: false,
+          reply: entry.reply as string,
+          reason: entry.reason as string,
+        });
+      }
+      // Oh My Pi stored no hint.
+      expect([...first.profile.keys()].filter((key) => /^[0-9a-f]{64}$/.test(key))).toEqual([]);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a later capture of a skill text whose reply Oh My Pi did not keep asking for a hint
+  // again, or listing that skill other than the first capture did, under another hint model too.
+  test(
+    "a later capture of the same skill texts reads the cached outcome of a reply Oh My Pi did not keep and asks for no hint, under another hint model too",
+    async () => {
+      const { first, second, asked } = await unkeptCaptures();
+      const { record, body } = second.capture;
+      expect(unkeptAsked).toHaveLength(asked);
+      expect(record.hintModel).toBe("anthropic/claude-haiku-5-5");
+      expect(record.runs).toBe(1);
+      expect(record.hintCalls).toEqual([]);
+      expect(record.otherRequests).toEqual([]);
+      expect(skillListing(body)).toEqual(skillListing(first.capture.body));
+      expect(record.hints.map(({ skill, written, kept }) => ({ skill, written, kept }))).toEqual(
+        ["alpha", "beta", "gamma"].map((skill) => ({ skill, written: false, kept: false }))
+      );
+      // The capture's scratch database holds Oh My Pi's record of each reply under this capture's
+      // own hint model, so Oh My Pi asked it for no hint.
+      for (const entry of record.hints) {
+        const own = entry.ompKey.replace(/claude-sonnet-5-5$/, "claude-haiku-5-5");
+        expect(second.profile.get(own)).toBe(entry.hint);
+      }
     },
     ROW_TIMEOUT_MS
   );

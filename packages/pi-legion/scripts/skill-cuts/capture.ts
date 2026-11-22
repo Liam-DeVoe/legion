@@ -38,19 +38,44 @@
  * model to write from the name and the description (packages/coding-agent/src/extensibility/
  * skill-descriptions.ts at the pinned tag: a one-message request of the prompt
  * `prompts/skills/compress-description.md`, which ends `Skill: <name>` / `Description: <text>`,
- * 1024 tokens at most, temperature 0, no reasoning). It keeps each hint in the profile's
- * `skill-descriptions.db` (`skill_descriptions(key, description)`, the key the SHA-256 of the
- * prompt, the name and the description) and lists a cut-down `description` in its place until the
- * hint is written, which it does in the background once the session exists. So the arm's listing
- * is the hint Oh My Pi would list for the arm's text: each hint is kept in the runner's cache
- * (`<cacheDir>/hints/<key of the Oh My Pi version, the name and the description>.json`) with the
- * key Oh My Pi gave it, and written into the scratch profile's database before the run. A skill
- * the cache lacks needs one run more first, in which the recorder sends each hint request to
- * `options.hints` (the real gateway, `gatewayHints`) and holds the turn until every missing hint
- * is written; Oh My Pi then stores each hint itself, and the capture keeps it. Every capture of one
- * skill text under one Oh My Pi version therefore lists the same hint. A skill whose frontmatter
- * sets `hide` or `disable-model-invocation` is installed but never listed, so it gets no hint. A
- * capture whose listing is not exactly the profile's listed skills under their hints is refused.
+ * 1024 tokens at most, no reasoning, lines 124-144). It asks for temperature 0, but its Anthropic
+ * provider sends a temperature only to a model that takes one (packages/ai/src/providers/
+ * anthropic.ts, lines 5531-5540), and Opus 4.7 on, Sonnet, Fable and Mythos 5 on and Haiku 5.5 on
+ * take none (packages/catalog/src/compat/rules/classes/anthropic.kdl, lines 127-161): their hint
+ * request holds no `temperature`, so the model samples at the API's default, 1. It keeps each hint
+ * in the profile's `skill-descriptions.db` (`skill_descriptions(key, description)`, the key the
+ * SHA-256 of the prompt, the name and the description) and lists a cut-down `description` in its
+ * place until the hint is written, which it does in the background once the session exists. So
+ * the arm's listing is the hint Oh My Pi would list for the arm's text: each hint is kept in the
+ * runner's cache (`<cacheDir>/hints/<key of the Oh My Pi version, the name and the
+ * description>.json`) with the key Oh My Pi gave it, and written into the scratch profile's
+ * database before the run. A skill the cache lacks needs one run more first, in which the
+ * recorder sends each hint request to `options.hints` (the real gateway, `gatewayHints`) and holds
+ * the turn until every missing hint is written; Oh My Pi then stores each hint itself, and the
+ * capture keeps it. Every capture of one skill text under one Oh My Pi version therefore lists the
+ * same hint. A skill whose frontmatter sets `hide` or `disable-model-invocation` is installed but
+ * never listed, so it gets no hint.
+ *
+ * **A reply Oh My Pi keeps no hint of.** Oh My Pi keeps a reply, trimmed, only when it is not
+ * empty, is one line and has at most 160 characters (`validCompression`, lines 191-195). A reply
+ * cut off at its token limit is not kept either (lines 150-152 and 537-542); the recorder sends
+ * every reply as an end of turn, but one cut off at 1024 tokens is longer than 160 characters, so
+ * Oh My Pi keeps no hint of it all the same. For a reply it does not keep, it stores the cut-down
+ * description under `<key>:v<revision of that rule>:<provider>/<model id>` (`unusableKey`, lines
+ * 197-200, and `compressSkill`, lines 543-552) and goes on listing that cut-down description
+ * (`render`, lines 448-477), which is `previewSkillDescription` (lines 174-185): the description
+ * on one line when it has at most 100 characters, else its first sentence within the first 99
+ * when that sentence has at least 40, else those 99 characters cut at their last space when that
+ * space is at index 40 or later, followed by `…`. A later session asks that model no more for that
+ * skill text: Oh My Pi asks again only under another model or a new revision of its rule (lines
+ * 522-532). So such a reply fails no capture, and the runner asks no more either. The skill is
+ * listed under the cut-down description, and that outcome is cached under the same key as a hint,
+ * with `kept: false`, the reply, and why Oh My Pi did not keep it (`reason`), which the record's
+ * `hints` repeats. Every arm and case of that skill text then lists the same line: a later capture
+ * writes Oh My Pi's record of the reply into its scratch database under its own hint model, so Oh
+ * My Pi asks that model for no hint either. A capture whose listing is not exactly the profile's
+ * listed skills under their hints, or under the cut-down description where Oh My Pi kept none, is
+ * refused.
  *
  * **A recorded prompt.** A subagent's case carries the system prompt and tools its session
  * recorded (`profile.systemPrompt`, `profile.tools`), and its capture sends those blocks in place
@@ -152,6 +177,15 @@ const HINT_WAIT_MS = 180_000;
 const RUN_TIMEOUT_MS = 600_000;
 /** Oh My Pi's own bound on a hint it keeps (`MAX_COMPRESSED_CHARS`). */
 const MAX_HINT_CHARS = 160;
+/** Oh My Pi's bounds on the cut-down description it lists where it holds no hint
+ *  (`MAX_PREVIEW_CHARS`, `MIN_PREVIEW_CUT`). */
+const MAX_PREVIEW_CHARS = 100;
+const MIN_PREVIEW_CUT = 40;
+/** The key of a hint Oh My Pi keeps in its `skill_descriptions`: a SHA-256 in hex. */
+const HINT_ROW = /^[0-9a-f]{64}$/;
+/** The key under which Oh My Pi records a reply it kept no hint of: the hint's key, the revision
+ *  of its rule and the model's `<provider>/<id>` (`unusableKey`); the match is all but the model. */
+const UNKEPT_ROW = /^[0-9a-f]{64}:v\d+:/;
 /** What the scratch profile gives Oh My Pi as its provider credential: the recorder reads none,
  *  and no gateway ever gets this one. */
 // fixture-secret-next-line: a placeholder the recorder never reads, and never a credential
@@ -391,14 +425,21 @@ export interface CaptureRecord {
     readonly extra: readonly string[];
     readonly leftOut: readonly { readonly name: string; readonly reason: string }[];
   } | null;
-  /** Each listed skill's hint (an installed skill that is not hidden): the runner's cache key, Oh
-   *  My Pi's key, and whether this capture had it written. */
+  /** Each listed skill's hint (an installed skill that is not hidden): the text the body lists it
+   *  under, the runner's cache key, Oh My Pi's key, and whether this capture had it written. Where
+   *  Oh My Pi kept no hint of the model's reply (`kept` false), the text is the cut-down
+   *  description, Oh My Pi's key is that of its record of the reply, and `reply` and `reason` say
+   *  what the model wrote and why Oh My Pi did not keep it. `kept` is absent from a capture saved
+   *  before this field. */
   readonly hints: readonly {
     readonly skill: string;
     readonly hint: string;
     readonly key: string;
     readonly ompKey: string;
     readonly written: boolean;
+    readonly kept?: boolean;
+    readonly reply?: string;
+    readonly reason?: string;
   }[];
   /** Each hint request sent to `options.hints`. */
   readonly hintCalls: readonly {
@@ -474,7 +515,11 @@ export interface Capture {
   readonly made: boolean;
 }
 
-/** A hint in the runner's cache. */
+/** A hint in the runner's cache: the text Oh My Pi lists the skill under, and Oh My Pi's key of
+ *  it. Where Oh My Pi kept no hint of the model's reply (`kept` false), the text is the cut-down
+ *  description, the key is that of Oh My Pi's record of the reply, and `reply` and `reason` say
+ *  what the model wrote and why Oh My Pi did not keep it. A hint cached before `kept` has none: it
+ *  was kept. */
 interface CachedHint {
   readonly omp: string;
   readonly name: string;
@@ -483,6 +528,9 @@ interface CachedHint {
   readonly hint: string;
   readonly model: string;
   readonly writtenAt: string;
+  readonly kept?: boolean;
+  readonly reply?: string;
+  readonly reason?: string;
 }
 
 /** The files of the capture of `caseId`'s arm `arm` under `outDir`. */
@@ -1139,6 +1187,33 @@ function hintSkill(body: Record<string, unknown>): string | undefined {
   return /\nSkill: ([^\n]+)\nDescription: /.exec(text)?.[1];
 }
 
+/** Why Oh My Pi keeps no hint of the reply `text`, or undefined when it keeps one: it keeps the
+ *  reply, trimmed, when that is not empty, is one line and has at most MAX_HINT_CHARS characters
+ *  (skill-descriptions.ts at the pinned tag, `validCompression`). */
+function unkeptReason(text: string): string | undefined {
+  const line = text.trim();
+  if (line === "") return "the reply is empty";
+  if (/[\r\n]/.test(line)) return "the reply is more than one line";
+  if (line.length > MAX_HINT_CHARS) {
+    return `the reply is ${line.length} characters long, and Oh My Pi keeps a hint of at most ${MAX_HINT_CHARS}`;
+  }
+  return undefined;
+}
+
+/** The cut-down description Oh My Pi lists a skill under where it holds no hint of it
+ *  (skill-descriptions.ts at the pinned tag, `previewSkillDescription`; the file's header, "A reply
+ *  Oh My Pi keeps no hint of"). */
+function previewDescription(description: string): string {
+  const text = description.replace(/\s+/g, " ").trim();
+  if (text.length <= MAX_PREVIEW_CHARS) return text;
+  const boundary = text.slice(0, MAX_PREVIEW_CHARS - 1);
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(boundary)?.[0];
+  if (sentence !== undefined && sentence.length >= MIN_PREVIEW_CUT) return sentence;
+  const space = boundary.lastIndexOf(" ");
+  const cut = space >= MIN_PREVIEW_CUT ? boundary.slice(0, space).trimEnd() : boundary;
+  return `${cut}…`;
+}
+
 const versions = new Map<string, Promise<string>>();
 
 /** What `omp --version` prints for `binary`. */
@@ -1273,7 +1348,9 @@ export type CaptureCase = Pick<
  * when no capture is saved and `options` gives no Oh My Pi binary or no `models.yml` to make one,
  * when Oh My Pi fails or sends no turn, when a hint cannot be written (the error `options.hints`
  * threw, as it is, the moment it throws: the gateway's BudgetSpent stays one), or when the body
- * does not list exactly the arm's installed skills under their hints.
+ * does not list exactly the arm's installed skills under their hints, or under the cut-down
+ * description where Oh My Pi kept no hint of the model's reply. A reply Oh My Pi does not keep
+ * fails no capture (the file's header, "A reply Oh My Pi keeps no hint of").
  */
 export async function captureBody(
   c: CaptureCase,
@@ -1332,8 +1409,8 @@ export async function captureBody(
   const messagesFile = path.join(root, "messages.json");
   writeWhole(messagesFile, JSON.stringify(arm.messages));
 
-  // Each listed skill's hint, from the cache where it holds one. A hidden skill is not listed, so
-  // Oh My Pi writes it no hint.
+  // Each listed skill's hint, from the cache where it holds one, or the cut-down description
+  // where Oh My Pi kept no hint. A hidden skill is not listed, so Oh My Pi writes it no hint.
   const hintDir = path.join(options.cacheDir, "hints");
   const listed = context.skills.filter((skill) => !skill.hidden);
   const hints = listed.map((skill) => {
@@ -1355,8 +1432,12 @@ export async function captureBody(
       const put = db.prepare("INSERT OR REPLACE INTO skill_descriptions VALUES (?, ?)");
       for (const { cached } of hints) {
         if (cached === undefined) continue;
-        put.run(cached.ompKey, cached.hint);
-        seeded.add(cached.ompKey);
+        // Oh My Pi's record of a reply it kept no hint of names the model that wrote it. This run
+        // records it under its own hint model, so Oh My Pi asks that model for no hint either.
+        const unkept = cached.kept === false ? UNKEPT_ROW.exec(cached.ompKey)?.[0] : undefined;
+        const key = unkept === undefined ? cached.ompKey : `${unkept}${hintModel}`;
+        put.run(key, cached.hint);
+        seeded.add(key);
       }
       put.finalize();
     } finally {
@@ -1665,22 +1746,34 @@ export async function captureBody(
             `case ${c.id} arm ${arm.name}: Oh My Pi asked for no hint of skill ${entry.skill.name} within ${HINT_WAIT_MS} ms`
           );
         }
-        const hint = reply.text.trim();
-        const row = rows.find((r) => r.description === hint && !taken.has(r.key));
-        if (hint === "" || /[\r\n]/.test(hint) || hint.length > MAX_HINT_CHARS || !row) {
+        const name = entry.skill.name;
+        // A reply Oh My Pi keeps, it stores under the skill's key. Of any other it keeps no hint,
+        // and it records the reply under that key, its rule's revision and the model, with the
+        // cut-down description it lists instead. The row it wrote shows which it did.
+        const reason = unkeptReason(reply.text);
+        const shown =
+          reason === undefined ? reply.text.trim() : previewDescription(entry.skill.description);
+        const rowKey = reason === undefined ? HINT_ROW : UNKEPT_ROW;
+        const row = rows.find(
+          (r) => r.description === shown && rowKey.test(r.key) && !taken.has(r.key)
+        );
+        if (row === undefined) {
           throw new Error(
-            `case ${c.id} arm ${arm.name}: Oh My Pi kept no hint of skill ${entry.skill.name}: the model wrote ${JSON.stringify(reply.text)}, and Oh My Pi keeps one line of at most ${MAX_HINT_CHARS} characters`
+            reason === undefined
+              ? `case ${c.id} arm ${arm.name}: Oh My Pi stored no hint of skill ${name}: the model wrote ${JSON.stringify(reply.text)}, a hint Oh My Pi keeps, and its database holds no row of it`
+              : `case ${c.id} arm ${arm.name}: Oh My Pi stored no record of the reply it kept no hint of for skill ${name}: the model wrote ${JSON.stringify(reply.text)} (${reason}), and its database holds no row of the cut-down description ${JSON.stringify(shown)} under the skill's key and a model`
           );
         }
         taken.add(row.key);
         const cached: CachedHint = {
           omp: version,
-          name: entry.skill.name,
+          name,
           description: entry.skill.description,
           ompKey: row.key,
-          hint,
+          hint: shown,
           model: reply.model,
           writtenAt: new Date().toISOString(),
+          ...(reason === undefined ? { kept: true } : { kept: false, reply: reply.text, reason }),
         };
         writeWhole(entry.file, json(cached));
         entry.cached = cached;
@@ -1730,7 +1823,8 @@ export async function captureBody(
 
     // A recorded prompt must be sent as the arm's blocks, byte for byte (in a Responses body, as
     // Oh My Pi joins them into its `instructions`: the blocks not blank, a blank line between).
-    // Otherwise the listing must be the installed skills Oh My Pi lists, each under its hint.
+    // Otherwise the listing must be the installed skills Oh My Pi lists, each under its hint, or
+    // under its cut-down description where Oh My Pi kept no hint.
     const listing = skillListing(body);
     const faults: string[] = [];
     if (recorded !== undefined) {
@@ -1751,7 +1845,13 @@ export async function captureBody(
         const shown = listing.get(skill.name);
         if (shown === undefined) faults.push(`it does not list ${skill.name}`);
         else if (shown !== cached?.hint) {
-          faults.push(`it lists ${skill.name} as ${JSON.stringify(shown)}, not under its hint`);
+          const under =
+            cached?.kept === false
+              ? "the cut-down description Oh My Pi lists in place of a hint"
+              : "its hint";
+          faults.push(
+            `it lists ${skill.name} as ${JSON.stringify(shown)}, not under ${under} ${JSON.stringify(cached?.hint)}`
+          );
         }
       }
       const names = new Set(listed.map((skill) => skill.name));
@@ -1825,6 +1925,8 @@ export async function captureBody(
         key,
         ompKey: cached?.ompKey ?? "",
         written: was,
+        kept: cached?.kept !== false,
+        ...(cached?.kept === false ? { reply: cached.reply, reason: cached.reason } : {}),
       })),
       hintCalls,
       otherRequests,
