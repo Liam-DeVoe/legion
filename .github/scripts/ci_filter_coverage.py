@@ -1237,6 +1237,10 @@ ENV_ALLOWED = frozenset({
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL",
+    # Read at run time by storetest's xid window rig (XidRequireGapsEnv): it turns a run that
+    # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
+    # the same tests with it set as without.
+    "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
     # ci-job-dispatch-memory-group.yaml's switch for the memory-group test: the test reads it, go
     # does not, and it moves nothing go compiles.
     "DISPATCH_TEST_MEMORY_GROUP",
