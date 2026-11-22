@@ -23,13 +23,19 @@ type keptRow struct {
 
 // The shadow keeper keeps, for the release before (R22 of dispatch://INFRA-3320), one open
 // tree_lifecycles row with a bound epoch for each value issues.tree stores while an issue that
-// stores it is in Legion's work, and reserves none. A value with no row gets epoch one under the
+// stores it is in Legion's work and has started (it holds its own issue_lifecycles row, which the
+// promotion that starts it opens), and reserves none. A value with no row gets epoch one under the
 // workflow, and one whose cleanup confirmed its next epoch; a row already open stays as it is,
 // and so do the two it cannot open, a cleanup the release before reserved and a lifetime the
-// operator holds, which it answers with their reasons. A tree no issue in work stores — every
-// issue storing it at phase done, or out of work on the backlog — gets no row, and nor does a
-// tree only another project's issue stores. Its second run changes nothing. The keeper's runner
-// logs each tree it leaves once, and again only after the tree was kept in between.
+// operator holds, which it answers with their reasons. A tree no started issue in work stores —
+// every issue storing it at phase done, or out of work on the backlog, or a root in the line that
+// never started — gets no row, and nor does a tree only another project's issue stores: the
+// release before opens a tree's row at the promotion that starts it, and reads a root whose key
+// has a row as one that ran as a tree of its own, which no ancestry hold holds. Its second run
+// changes nothing. The keeper's runner logs each tree it leaves once, and again only after the tree
+// was kept in between. Negative control, run when this was written, failing this test and then
+// reverted: with the keeper opening a row for every stored tree of an issue in work, LEGION-770,
+// a root that never started, gets one.
 func TestTheKeeperOpensARowForEachStoredTreeOfAnIssueInWorkAndReservesNone(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -46,6 +52,7 @@ func TestTheKeeperOpensARowForEachStoredTreeOfAnIssueInWorkAndReservesNone(t *te
 		{"LEGION-740", "LEGION-740", "LEGION", "needs_review", phase.Reviewing},   // its tree's cleanup reserved
 		{"LEGION-750", "LEGION-750", "LEGION", "retro", phase.Retro},              // the operator holds its tree
 		{"LEGION-760", "LEGION-760", "LEGION", "in_progress", phase.Implementing}, // its tree's row is open already
+		{"LEGION-770", "LEGION-770", "LEGION", "todo", phase.Admitted},            // a root in the line that never started
 		{"OTHER-7", "OTHER-7", "OTHER", "in_progress", phase.Implementing},        // another project's
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -53,6 +60,15 @@ func TestTheKeeperOpensARowForEachStoredTreeOfAnIssueInWorkAndReservesNone(t *te
 			issue := issueFixture(seed.key)
 			issue.Tree, issue.Project, issue.Status, issue.Phase = seed.tree, seed.project, seed.status, seed.at
 			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		for _, started := range []struct{ project, issue string }{
+			{"legion", "LEGION-700"}, {"legion", "LEGION-701"}, {"legion", "LEGION-710"}, {"legion", "LEGION-720"},
+			{"legion", "LEGION-730"}, {"legion", "LEGION-740"}, {"legion", "LEGION-750"}, {"legion", "LEGION-760"}, {"other", "OTHER-7"},
+		} {
+			if _, err := tx.Exec(ctx, `insert into issue_lifecycles (project, issue, epoch, authority) values ($1, $2, 1, 'workflow')`,
+				started.project, started.issue); err != nil {
+				t.Fatalf("seed the lifecycle of %s, which started: %v", started.issue, err)
+			}
 		}
 		for _, row := range []struct {
 			tree, authority    string

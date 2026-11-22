@@ -47,7 +47,8 @@ const (
 	// (record.HoldIssuesOfOperatorTrees).
 	convertOperatorHolds
 	// convertReservations makes each tree cleanup still reserved the reservation of each issue of
-	// it, and queues what finishes each (reserveIssuesOfTreeCleanups).
+	// it whose hand-over is not still to decide, and queues what finishes each
+	// (reserveIssuesOfTreeCleanups).
 	convertReservations
 	// convertTreeDraws copies each tree's tree-unit draws onto its started issues
 	// (record.CarryTreeDraws).
@@ -244,20 +245,52 @@ func (w *workflowRuntime) runConversionStep(ctx context.Context, step conversion
 
 // reserveIssuesOfTreeCleanups is step 5: each tree cleanup the release before reserved and has not
 // confirmed becomes the reservation of each issue of that tree's lifecycle
-// (record.ReserveIssuesOfTreeCleanups). That release finished such a cleanup through its tree's
-// close rows, which step 8 deletes, so for each issue the workflow reserved and records, each claim
-// of it that has not retired is closed (an issue_close row, which retires it with its session kept,
-// as the tree's close did) and its own cleanup is queued (an issue_suspend row, whose executor
-// finishes a reserved cleanup once every claim of the issue has retired: it deletes the issue's
-// pod and confirms the reservation, the outbox's cleanupClosedIssue). Each row is fenced at the run
-// and the phase entry the issue stands at. A reservation the operator took is finished by the
-// operator's own close, as the release before's was, so nothing is queued for it.
+// (record.ReserveIssuesOfTreeCleanups), and what finishes each is queued
+// (queueReservedCleanups). An issue whose hand-over the release before would still apply once its
+// write landed (handOverStands) is left out, with its lifecycle opened: whether it carries on as a
+// root of its own is step 7's, which reads the listing, and that step reserves it where it does
+// not (convertHandOvers). A reservation would hold such an issue's start and every launch of its
+// claims until a cleanup that its next run fences out confirms, which none ever does.
 func (w *workflowRuntime) reserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx) error {
-	reserved, err := record.ReserveIssuesOfTreeCleanups(ctx, tx, w.dispatchProject)
+	handovers, err := record.ReleaseBeforeHandovers(ctx, tx, w.dispatchProject)
+	if err != nil {
+		return err
+	}
+	var undecided []string
+	for _, handover := range handovers {
+		issue, err := w.records.Issue(ctx, tx, handover.Issue)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			continue
+		}
+		stands, err := w.handOverStands(ctx, tx, *issue, handover)
+		if err != nil {
+			return err
+		}
+		if stands {
+			undecided = append(undecided, issue.Key)
+		}
+	}
+	reserved, err := record.ReserveIssuesOfTreeCleanups(ctx, tx, w.dispatchProject, undecided)
 	if err != nil {
 		return err
 	}
 	w.logConverted(ctx, "issues reserved", int64(len(reserved)))
+	return w.queueReservedCleanups(ctx, tx, reserved)
+}
+
+// queueReservedCleanups queues what finishes each reservation the conversion made of an issue a
+// tree cleanup of the release before covered. That release finished such a cleanup through its
+// tree's close rows, which step 8 deletes, so for each issue the workflow reserved and records,
+// each claim of it that has not retired is closed (an issue_close row, which retires it with its
+// session kept, as the tree's close did) and its own cleanup is queued (an issue_suspend row, whose
+// executor finishes a reserved cleanup once every claim of the issue has retired: it deletes the
+// issue's pod and confirms the reservation, the outbox's cleanupClosedIssue). Each row is fenced at
+// the run and the phase entry the issue stands at. A reservation the operator took is finished by
+// the operator's own close, as the release before's was, so nothing is queued for it.
+func (w *workflowRuntime) queueReservedCleanups(ctx context.Context, tx pgx.Tx, reserved []record.ReservedIssue) error {
 	for _, r := range reserved {
 		if r.Authority != treelifecycle.AuthorityWorkflow {
 			continue
@@ -332,10 +365,12 @@ func (w *workflowRuntime) enqueueFenced(ctx context.Context, tx pgx.Tx, issue st
 // convertHandOvers is step 7: the listing's reading of each hand-over's issue decides it. Where
 // the hand-over's write landed — Dispatch shows the issue todo with the label, which is what the
 // release before's own outbox read to apply it, and the release before would still have applied
-// it: its fence is not cancelled, the issue still stands in the tree it names, and that tree's
-// root still lingers at the generation it names — the issue is made the root of its own the
-// release before's consumeHandover would have made it (finishHandOver). Every other hand-over is
-// cancelled: the issue is left to R19 of dispatch://INFRA-3320 and waits for a person's handover.
+// it (handOverStands) — the issue is made the root of its own the release before's
+// consumeHandover would have made it (finishHandOver), and carries on as a run of its own, its
+// cleanup not reserved (step 5 left it out). Every other hand-over is cancelled: the issue is left
+// to R19 of dispatch://INFRA-3320 and waits for a person's handover, and where a tree cleanup the
+// release before reserved covers it, its own cleanup is reserved and what finishes it queued, as
+// step 5 does for the tree's other issues (record.ReserveIssueOfTreeCleanup, queueReservedCleanups).
 // Either way the release before's row goes. No hand-over is made after this step, so the later
 // echo of a landed one's write is the daemon's own write, which finds the record already at the
 // status it carries and changes nothing.
@@ -359,6 +394,14 @@ func (w *workflowRuntime) convertHandOvers(ctx context.Context, tx pgx.Tx, listi
 			if err := w.finishHandOver(ctx, tx, *issue, handover); err != nil {
 				return err
 			}
+		} else {
+			reserved, err := record.ReserveIssueOfTreeCleanup(ctx, tx, w.dispatchProject, handover.Issue)
+			if err != nil {
+				return err
+			}
+			if err := w.queueReservedCleanups(ctx, tx, reserved); err != nil {
+				return err
+			}
 		}
 		if err := record.DeleteReleaseBeforeHandover(ctx, tx, handover.Issue); err != nil {
 			return err
@@ -376,7 +419,19 @@ func (w *workflowRuntime) convertHandOvers(ctx context.Context, tx pgx.Tx, listi
 func (w *workflowRuntime) handOverLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, handover record.ReleaseBeforeHandover,
 	listing map[string]dispatch.IssueSummary) (bool, error) {
 	summary, listed := listing[issue.Key]
-	if handover.Cancelled || !listed || summary.Status != "todo" || !summary.HandedOver || issue.Tree != handover.Tree {
+	if !listed || summary.Status != "todo" || !summary.HandedOver {
+		return false, nil
+	}
+	return w.handOverStands(ctx, tx, issue, handover)
+}
+
+// handOverStands says whether handover, of issue, is one the release before would still have
+// applied once its write landed: its fence is not cancelled, the issue still stands in the tree it
+// names, and that tree's root still lingers at the generation it names. Only the listing decides
+// such a hand-over (handOverLanded), so step 5 leaves its issue to step 7
+// (reserveIssuesOfTreeCleanups).
+func (w *workflowRuntime) handOverStands(ctx context.Context, tx pgx.Tx, issue record.Issue, handover record.ReleaseBeforeHandover) (bool, error) {
+	if handover.Cancelled || issue.Tree != handover.Tree {
 		return false, nil
 	}
 	root, err := w.records.Issue(ctx, tx, handover.Tree)

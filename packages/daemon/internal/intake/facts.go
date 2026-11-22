@@ -1626,6 +1626,20 @@ type PodBackstopDue struct {
 
 func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 
+// IssueCleanedUp is the confirmation of Issue's own cleanup at the lifecycle epoch Epoch
+// (store.Store.CleanupReservedIssue): never decoded from an event. The daemon applies it once the
+// confirmation has committed — the outbox's cleanup of a closed issue, and the operator's close —
+// because a reserved cleanup is what an admission pass waits for (admit's promote, which leaves an
+// issue whose cleanup is reserved in the line): the issue's next start, a todo set while its
+// cleanup was reserved, then takes a free slot at once, rather than at the next fact or tick.
+// Admission's look at what Legion can start, which every fact runs, is all it asks for.
+type IssueCleanedUp struct {
+	Issue string
+	Epoch uint64
+}
+
+func (f IssueCleanedUp) namedIssue() (string, bool) { return f.Issue, true }
+
 // WorkerSilent is one claim the daemon's minute sweep read as a silent phase worker: up and
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live

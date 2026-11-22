@@ -266,9 +266,30 @@ type ReservedIssue struct {
 // issue bound to no epoch of it binds that one; a lifecycle of the issue already reserved, or whose
 // cleanup confirmed, is left as it stands. So no claim of such an issue starts again until its own
 // cleanup, which deletes its pod, confirms, as none of the tree's would have until the tree's.
+//
+// Each issue of undecided is left out: a hand-over the release before had in flight for it would
+// still apply once its write landed, and whether it carries on as a root of its own or waits for a
+// person is the conversion's step that reads the listing (the daemon's convertHandOvers), which
+// reserves it where it does not carry on (ReserveIssueOfTreeCleanup). Its lifecycle is opened
+// instead, under the tree's authority at epoch one, as the migration of 20261120095128 opens the
+// lifecycle of each issue of a tree whose cleanup is not reserved, and each claim of it bound to no
+// epoch binds that one; a lifecycle it already has is left as it stands.
+//
 // The tree's row is left as it is, for the release before. It answers each issue it reserved, in
 // key order; its caller queues what finishes each (the daemon's conversion).
-func ReserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx, project string) ([]ReservedIssue, error) {
+func ReserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx, project string, undecided []string) ([]ReservedIssue, error) {
+	return reserveIssuesOfTreeCleanups(ctx, tx, project, "", undecided)
+}
+
+// ReserveIssueOfTreeCleanup is ReserveIssuesOfTreeCleanups for issue alone, which it reserves
+// whatever hand-over it had: the conversion calls it for an issue whose hand-over it cancelled.
+func ReserveIssueOfTreeCleanup(ctx context.Context, tx pgx.Tx, project, issue string) ([]ReservedIssue, error) {
+	return reserveIssuesOfTreeCleanups(ctx, tx, project, issue, nil)
+}
+
+// reserveIssuesOfTreeCleanups is the work of both: over only, or every issue where only is empty,
+// it reserves each issue covered and opens each of undecided.
+func reserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx, project, only string, undecided []string) ([]ReservedIssue, error) {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		return nil, fmt.Errorf("reserve the issues of the tree cleanups of %s: %w", project, err)
@@ -276,22 +297,32 @@ func ReserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx, project string)
 	if err := treelifecycle.Serialize(ctx, tx); err != nil {
 		return nil, err
 	}
+	if undecided == nil {
+		undecided = []string{}
+	}
 	rows, err := tx.Query(ctx, `with covered as (
-			select distinct on (c.issue) c.issue, l.authority from claims c
+			select distinct on (c.issue) c.issue, l.authority, c.issue = any($3::text[]) as undecided from claims c
 			join tree_lifecycles l on l.project = c.project and l.tree = c.tree and l.epoch = c.tree_epoch
-			where c.project = $1 and c.issue <> '' and l.cleanup_started and l.cleanup_confirmed_at is null
+			where c.project = $1 and c.issue <> '' and ($2 = '' or c.issue = $2)
+				and l.cleanup_started and l.cleanup_confirmed_at is null
 			order by c.issue, l.authority = 'workflow' desc
 		), reserved as (
 			insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started)
-			select $1, issue, 1, authority, true from covered
+			select $1, issue, 1, authority, true from covered where not undecided
 			on conflict (project, issue) do update set cleanup_started = true, authority = excluded.authority, updated_at = now()
 				where not issue_lifecycles.cleanup_started
 			returning issue, epoch, authority
+		), opened as (
+			insert into issue_lifecycles (project, issue, epoch, authority)
+			select $1, issue, 1, authority from covered where undecided
+			on conflict (project, issue) do nothing
+			returning issue, epoch
 		), bound as (
-			update claims c set issue_epoch = reserved.epoch from reserved
-			where c.project = $1 and c.issue = reserved.issue and c.issue_epoch = 0
+			update claims c set issue_epoch = held.epoch
+			from (select issue, epoch from reserved union all select issue, epoch from opened) held
+			where c.project = $1 and c.issue = held.issue and c.issue_epoch = 0
 		)
-		select issue, authority from reserved order by issue`, token)
+		select issue, authority from reserved order by issue`, token, only, undecided)
 	if err != nil {
 		return nil, fmt.Errorf("reserve the issues of the tree cleanups of %s: %w", project, err)
 	}

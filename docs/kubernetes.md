@@ -1737,7 +1737,7 @@ a confirmed epoch admits nothing until a fresh start of the issue opens the next
 Admission passes over an issue whose epoch the operator holds and starts the issues behind it, and when such an issue leaves Legion's work the workflow queues nothing for it:
 the operator's claims and pod carry the issue's tokens and names, so no stop, no `issue_suspend` and no cleanup of the workflow's reaches them (`record.OperatorHolds`, read by `leave` in `internal/workflow/leave.go`).
 The release before kept one such record for each tree (`tree_lifecycles`, bound by `claims.tree_epoch`).
-This release keeps writing it for that release, one open row for each tree that `issues.tree` stores while an issue that stores it is in Legion's work, and reads it for no decision ([Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree)).
+This release keeps writing it for that release, one open row for each tree that `issues.tree` stores while an issue that stores it is in Legion's work and has started, and reads it for no decision ([Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree)).
 
 A stop or a close of an issue queues that issue's own `issue_suspend` effect after its per-role stops:
 a move of the issue to `backlog`, `icebox` or `triage` and a close as `done` each act on that one issue, whatever stands above or below it.
@@ -1760,6 +1760,7 @@ A stop reserves nothing: the issue keeps its lifecycle, and its claims stay susp
 An operator's close of an issue its own spawn opened reserves after it authenticated the close (`ReserveOperatorIssueCleanup`).
 Either reservation comes before the census, which then reads every stored claim of the issue, including one that persisted before the reservation but has not launched yet, and deletes nothing until all of them retired.
 A reservation that is not confirmed resumes on the next attempt, whatever the issue has done since, and stays the new start's wait until API confirmation.
+Each confirmation, the outbox's and the operator's close's, is applied as a fact of its own (`intake.IssueCleanedUp`), so a start that waited for that cleanup takes a free slot at once rather than at the next fact or tick.
 A launch checks its issue's epoch again just before it records `launching` and calls the runtime, so a reservation committed after the claim bound refuses it there, with the same uncharged wait.
 Every lifecycle step takes the global serializer before it reads the lifecycle row.
 
@@ -2916,7 +2917,7 @@ A rollback moves each project's worker image back with its daemon image.
 #### Rolling back the release that stores no tree
 
 This release stores no tree: it reads every parent and child question from its copy of Dispatch's issues, keeps each issue's own facts on the issue, and acts on each issue's own status (dispatch://INFRA-3320 R15 to R26, dispatch://INFRA-4730).
-It still writes the old tree columns for the release before: `issues.tree` once, when it first records an issue, `claims.tree` as that stored tree, and one open `tree_lifecycles` row with a bound epoch for each stored tree while an issue that stores it is in Legion's work.
+It still writes the old tree columns for the release before: `issues.tree` once, when it first records an issue, `claims.tree` as that stored tree, and one open `tree_lifecycles` row with a bound epoch for each stored tree while an issue that stores it is in Legion's work and has started, as the release before opens one at the promotion that starts a run, so a root in the line that never started reads to that release as one that never ran.
 Its migration `20261120091044_issue_holds_gate` adds `issues.holds_gate`, set on every record whose key is its stored tree.
 Its migration `20261120095128_issue_facts` adds six columns of `issues` (`retained_until`, `carried_generation`, `carried_gate`, `pending_close`, `seen_seq` and `held_session_writes`), five of `claims` (`launch_tree`, `issue_epoch`, `holds_gate`, `published_since` and `unpublished_since`) and two of `outbox` (`attempt_key` and `attempt_body`), the tables `issue_lifecycles` and `tree_conversions`, and the outbox kind `retention_end` to the kind check.
 The release also queues the architect notice kind `reparented` and the controller notice kind `status-scope`, a `dispatch_status` row that carries an option of Dispatch's status-change route (`includeChildren`, `unlinkChildren` or `includeParent`), and new keys on the payloads of kinds the release before reads.

@@ -3488,7 +3488,8 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // and the close is the end of the issue's run there, so a close its fence does not refuse ends
 // what a pod's end ends (endPods): each issue's own close is where its run ends, since no close
 // ends a tree's. A close of an issue Dispatch shows done then cleans up the issue's own lifecycle
-// (cleanupClosedIssue).
+// (cleanupClosedIssue), under either runtime whatever its fence says, since a reservation an
+// earlier try of the row made is the row's to finish.
 //
 // The row is fenced by its issue's own run, phase entry and pod (record.IssueSuspend), read under
 // that same lock (podStands), and the runtime holds it to the pod it was queued for as well
@@ -3502,10 +3503,13 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 	}
 	suspender, ok := r.supervisor.deps.Runtime.(runtime.IssueSuspender)
 	if !ok {
-		if stands, err := r.podStands(ctx, row, value); err != nil || !stands {
+		stands, err := r.podStands(ctx, row, value)
+		if err != nil {
 			return err
 		}
-		r.endPods(ctx, row.Issue)
+		if stands {
+			r.endPods(ctx, row.Issue)
+		}
 		return r.cleanupClosedIssue(ctx, row, value)
 	}
 	closing := store.IssueClose{Issue: row.Issue, Generation: value.Generation, Row: row.ID}
@@ -3551,7 +3555,8 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 // issue alone, at the run the row is of, and only while no production check of it is open, whose
 // look still starts a role. A reservation an earlier try of the row made is finished whatever the
 // issue has done since, which is the store's own rule. Nothing of another issue is reserved or
-// deleted.
+// deleted. The confirmation is applied as a fact (cleanedUp), which an admission pass waiting for
+// that cleanup reads at once.
 func (r *outbox) cleanupClosedIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
 	if r.pool == nil {
 		return nil
@@ -3570,7 +3575,22 @@ func (r *outbox) cleanupClosedIssue(ctx context.Context, row record.OutboxRow, v
 	if !reserved {
 		return nil
 	}
-	return r.trees.CleanupReservedIssue(ctx, r.project, row.Issue, lifecycle.Epoch, r.supervisor.deps.Runtime)
+	if err := r.trees.CleanupReservedIssue(ctx, r.project, row.Issue, lifecycle.Epoch, r.supervisor.deps.Runtime); err != nil {
+		return err
+	}
+	r.cleanedUp(ctx, row.Issue, lifecycle.Epoch)
+	return nil
+}
+
+// cleanedUp applies the confirmation of issue's cleanup at epoch (intake.IssueCleanedUp), once
+// per epoch, so an admission pass that waited for that cleanup runs now rather than at the next
+// fact. The cleanup is confirmed whatever the fact does, so a failure is logged and is not the
+// row's: the next fact or tick looks again.
+func (r *outbox) cleanedUp(ctx context.Context, issue string, epoch uint64) {
+	fact := intake.IssueCleanedUp{Issue: issue, Epoch: epoch}
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("issue-cleaned-up:%s:%d", issue, epoch), fact, r.handlers...); err != nil {
+		r.log.Warn("outbox: apply the confirmation of an issue's cleanup failed", "issue", issue, "epoch", epoch, "error", err)
+	}
 }
 
 // endPods runs the end of issues' pods (podEnded), where attach set it.

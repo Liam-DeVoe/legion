@@ -1031,3 +1031,80 @@ func TestACleanupDeletesOnlyItsOwnIssuesPod(t *testing.T) {
 		})
 	}
 }
+
+// A root that comes back into Legion's work while its own cleanup is reserved waits in the line
+// for that cleanup, and takes a free slot as soon as the cleanup confirms, with no other event (R17
+// of dispatch://INFRA-3320): the confirmation is a fact of its own (intake.IssueCleanedUp), and
+// admission looks again on it as on every fact. The close's cleanup row (record.IssueSuspend) made
+// the reservation at its first try and waited; the root is set back to todo; the row's next try
+// runs under a runtime that holds no pod of the issue (tmux, the fake). A root a person closed at
+// work keeps its run, and the row stands. A root closed at done starts a new run with its todo, so
+// the row is of a run that has ended, and still finishes the reservation its earlier try made: a
+// fence keeps a row off a pod, never off the cleanup it already holds. Negative controls, run when
+// this was written, failing this test and then reverted: with no fact applied once the cleanup
+// confirms, neither root takes a slot; with the row of an ended run finishing nothing, the root
+// closed at done keeps its cleanup reserved.
+func TestARootBackInTodoTakesASlotOnceItsCleanupConfirms(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		at   phase.Phase
+	}{
+		{name: "a root closed at work", at: phase.Admitted},
+		{name: "a root closed at done", at: phase.Done},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const key = "CAPTURE-40"
+			pool := isolatedOutboxPool(t)
+			w := copyRuntime(t, pool, &copyBoard{}, 3)
+			w.projectID = "capture"
+			st, err := store.Open(ctx, pool.Config().ConnString())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(st.Close)
+			closed := conversionIssue(key, key, tc.at, "done", 1)
+			closed.HandedOver = true
+			putOutboxIssue(t, pool, w.records, closed)
+			if _, err := pool.Exec(ctx, `insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started)
+				values ('capture', $1, 1, 'workflow', true)`, key); err != nil {
+				t.Fatalf("reserve the cleanup of %s: %v", key, err)
+			}
+			enqueueOutbox(t, pool, w.records, mustOutboxRow(t, key, record.IssueSuspend{Tree: key, Generation: 1, TreeGeneration: 1}, time.Now()))
+			queued := claimDueOutboxRowOf(t, pool, record.OutboxKindIssueSuspend)
+
+			if _, err := intake.ApplyFact(ctx, pool, "dispatch", "back-in-todo", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 5,
+				Type: "issue.updated", Status: "todo", Title: key, Rank: key, HandedOver: true, Labels: []string{"legion"}}, w.handlers...); err != nil {
+				t.Fatalf("apply the todo of %s: %v", key, err)
+			}
+			slotted := func() bool {
+				t.Helper()
+				var slotted bool
+				if err := pool.QueryRow(ctx, `select exists (select 1 from slots where issue = $1)`, key).Scan(&slotted); err != nil {
+					t.Fatal(err)
+				}
+				return slotted
+			}
+			if slotted() {
+				t.Fatalf("%s took a slot while its cleanup is reserved, want it waiting for the cleanup", key)
+			}
+
+			sup, _ := newOutboxSupervisor(t, "capture", t.TempDir())
+			runner := &outbox{log: quietLogger(), pool: pool, records: w.records, supervisor: sup, trees: st, project: "capture",
+				dispatchProject: "CAPTURE", now: time.Now, handlers: w.handlers}
+			if err := runner.execute(ctx, queued); err != nil {
+				t.Fatalf("run the cleanup of %s: %v", key, err)
+			}
+			// The confirmation's own pass may open the issue's next epoch at once, so the
+			// reservation's end is read, not the row of the epoch it confirmed.
+			var reserved bool
+			if err := pool.QueryRow(ctx, `select cleanup_started and cleanup_confirmed_at is null from issue_lifecycles
+				where project = 'capture' and issue = $1`, key).Scan(&reserved); err != nil || reserved {
+				t.Fatalf("the cleanup of %s is still reserved: %t (%v), want the reservation the row's first try made finished", key, reserved, err)
+			}
+			if !slotted() {
+				t.Fatalf("%s holds no slot once its cleanup confirmed, with every slot free: want the confirmation to start it", key)
+			}
+		})
+	}
+}

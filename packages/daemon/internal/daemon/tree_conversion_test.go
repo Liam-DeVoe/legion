@@ -520,6 +520,110 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 	}
 }
 
+// A hand-over the release before had in flight in a tree whose cleanup it reserved is decided by
+// the listing, not by the reservation (R22 of dispatch://INFRA-3320, steps 5 and 7 of decision 21
+// of dispatch://INFRA-4730). CAPTURE-60 lingers at generation 2 with its tree cleanup reserved;
+// CAPTURE-61 and CAPTURE-62, members in implementing whose implementers still work, were handed
+// over, and CAPTURE-63 is a done member whose suspended implementer the cleanup waits for. The
+// listing shows CAPTURE-61's write landed (todo with the label) and CAPTURE-62's not. After the
+// first boot's conversion and its first admission pass, CAPTURE-61 carries on as a root of its own:
+// its lifecycle is open, its implementer is bound to it, nothing closes or cleans it up, and it
+// takes one of the free slots. CAPTURE-62, whose hand-over is cancelled, and CAPTURE-63 are
+// reserved as the tree's cleanup covered them, with what finishes each queued. Negative control,
+// run when this was written, failing this test and then reverted: with step 5 reserving every
+// issue the tree cleanup covers, its hand-overs too, CAPTURE-61's cleanup is reserved, which no
+// row of its new run ever confirms, and admission leaves it waiting for that cleanup.
+func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	const root, landed, cancelled, done = "CAPTURE-60", "CAPTURE-61", "CAPTURE-62", "CAPTURE-63"
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	lingering := conversionIssue(root, root, phase.Done, "done", 2)
+	deadline := time.Now().Add(48 * time.Hour).UTC()
+	lingering.LingerUntil = &deadline
+	for _, issue := range []record.Issue{
+		lingering,
+		conversionIssue(landed, root, phase.Implementing, "in_progress", 1),
+		conversionIssue(cancelled, root, phase.Implementing, "in_progress", 1),
+		conversionIssue(done, root, phase.Done, "done", 1),
+	} {
+		putOutboxIssue(t, pool, records, issue)
+	}
+	seedConversionClaim(t, pool, landed, claim.RoleImplementer, root, "working", "")
+	seedConversionClaim(t, pool, cancelled, claim.RoleImplementer, root, "working", "")
+	seedConversionClaim(t, pool, done, claim.RoleImplementer, root, "suspended", "")
+	for _, statement := range []string{
+		`insert into tree_lifecycles (project, tree, epoch, authority, cleanup_started) values ('capture', 'CAPTURE-60', 1, 'workflow', true)`,
+		`insert into handovers (issue, tree, linger_generation) values ('CAPTURE-61', 'CAPTURE-60', 2), ('CAPTURE-62', 'CAPTURE-60', 2)`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("seed what the release before left: %v", err)
+		}
+	}
+	board := &copyBoard{listing: []map[string]any{
+		conversionSummary(root, "done", 3, ""),
+		conversionSummary(landed, "todo", 3, root, "legion"),
+		conversionSummary(cancelled, "in_progress", 3, root),
+		conversionSummary(done, "done", 3, root),
+	}}
+	w := copyRuntime(t, pool, board, 3)
+	w.projectID = "capture"
+	w.consumers = bootClaimConsumers(t, pool)
+	if err := w.convertStore(ctx); err != nil {
+		t.Fatalf("the conversion's steps that read the store: %v", err)
+	}
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("the first boot's reconcile: %v", err)
+	}
+
+	lifecycles := map[string]string{}
+	rows, err := pool.Query(ctx, `select issue, concat_ws(' ', epoch, authority, cleanup_started) from issue_lifecycles where project = 'capture'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var issue, lifecycle string
+		if err := rows.Scan(&issue, &lifecycle); err != nil {
+			t.Fatal(err)
+		}
+		lifecycles[issue] = lifecycle
+	}
+	rows.Close()
+	want := map[string]string{landed: "1 workflow f", cancelled: "1 workflow t", done: "1 workflow t"}
+	if !maps.Equal(lifecycles, want) {
+		t.Fatalf("the issue lifecycles read %v (epoch, authority, cleanup reserved), want %v: the landed hand-over's open, the others' reserved", lifecycles, want)
+	}
+	var bound int
+	if err := pool.QueryRow(ctx, `select issue_epoch from claims where issue = $1`, landed).Scan(&bound); err != nil || bound != 1 {
+		t.Fatalf("the implementer of %s is bound to epoch %d (%v), want 1, its open lifecycle's", landed, bound, err)
+	}
+	effects := map[string][]string{}
+	for _, kind := range []record.OutboxKind{record.OutboxKindSupervise, record.OutboxKindIssueSuspend} {
+		for _, row := range rowsOfKind(t, pool, kind) {
+			payload, err := record.DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("decode outbox row %d: %v", row.ID, err)
+			}
+			effect := string(kind)
+			if request, ok := payload.(record.SuperviseRequest); ok {
+				if request.Op != "issue_close" {
+					continue
+				}
+				effect = string(request.Op) + " " + string(request.Role)
+			}
+			effects[row.Issue] = append(effects[row.Issue], effect)
+		}
+	}
+	wantEffects := map[string][]string{cancelled: {"issue_close implementer", "issue_suspend"}, done: {"issue_close implementer", "issue_suspend"}}
+	if !maps.EqualFunc(effects, wantEffects, slices.Equal[[]string]) {
+		t.Fatalf("the conversion queued %v, want %v: what finishes each reserved cleanup, and nothing for the landed hand-over", effects, wantEffects)
+	}
+	var slotted bool
+	if err := pool.QueryRow(ctx, `select exists (select 1 from slots where issue = $1)`, landed).Scan(&slotted); err != nil || !slotted {
+		t.Fatalf("%s holds a slot: %t (%v), want it started in one of the free slots as a root of its own", landed, slotted, err)
+	}
+}
+
 // errStoppedAfterStep is what the test's hook stops a boot with after the step it names.
 var errStoppedAfterStep = errors.New("the test stopped the boot after a step of its conversion")
 

@@ -2487,9 +2487,9 @@ type Store interface {
 	IssueLifecycles(ctx context.Context, tx pgx.Tx, project string, issues []string) (map[string]treelifecycle.Lifecycle, error)
 	// KeepTreeLifecyclesOpen keeps one open tree_lifecycles row with a bound epoch for each value
 	// issues.tree stores while an issue of the Dispatch project key project that stores it is in
-	// Legion's work, in one statement, and reserves none; it answers each value whose row it left
-	// as it stands, and why (Postgres.KeepTreeLifecyclesOpen). TreeKeeper is how a decision pass
-	// runs it.
+	// Legion's work and has started (holds its own issue lifecycle), in one statement, and reserves
+	// none; it answers each value whose row it left as it stands, and why
+	// (Postgres.KeepTreeLifecyclesOpen). TreeKeeper is how a decision pass runs it.
 	KeepTreeLifecyclesOpen(ctx context.Context, tx pgx.Tx, project string) ([]UnkeptTree, error)
 	// ControllerRegistered says whether a session holds the current controller registration of the
 	// Dispatch project key project (controller.Record.Registered's rule), reading the controllers

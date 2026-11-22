@@ -869,7 +869,9 @@ func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, to
 // claims name first, by that issue's own lifecycle (store.Store.ReserveOperatorIssueCleanup), so
 // no claim of it can bind or launch meanwhile; after every claim stopped, the store's reserved
 // cleanup has the runtime release each issue (Options.Releaser) and confirms it: what is deleted is
-// each issue's own, by its identity, never a tree's whole (R17 of dispatch://INFRA-3320). A
+// each issue's own, by its identity, never a tree's whole (R17 of dispatch://INFRA-3320). Each
+// confirmation is applied as a fact (intake.IssueCleanedUp), so an admission pass that waited for
+// that cleanup runs at once; a failure of that fact is logged, since the cleanup stands. A
 // release failure leaves the reservation durable for the same close to resume; a claim the daemon
 // supervises no machine for cannot be stopped that way, since the stop route answers 404 for it,
 // until the daemon restarts and builds a machine for every stored claim; the 500 says so for that
@@ -955,6 +957,12 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 			s.logFailure("api: cleanup an issue of an operator-closed tree", "tree", c.Tree, "issue", issue, "error", err)
 			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but the durable resource cleanup of issue %s is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, issue, err))
 			return
+		}
+		if s.pool != nil {
+			fact := intake.IssueCleanedUp{Issue: issue, Epoch: epoch}
+			if _, err := s.apply(ctx, "api", fmt.Sprintf("issue-cleaned-up:%s:%d", issue, epoch), fact); err != nil {
+				s.log.Warn("api: apply the confirmation of an issue's cleanup failed", "tree", c.Tree, "issue", issue, "epoch", epoch, "error", err)
+			}
 		}
 	}
 	s.operatorDone(r, token)

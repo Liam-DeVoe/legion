@@ -44,6 +44,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"CheckLookEnded":          CheckLookEnded{Issue: issue},
 		"CheckBound":              CheckBound{Issue: issue},
 		"PodBackstopDue":          PodBackstopDue{Issue: issue},
+		"IssueCleanedUp":          IssueCleanedUp{Issue: issue},
 		"WorkerSilent":            WorkerSilent{Issue: issue},
 		"WorkerBackgroundStalled": WorkerBackgroundStalled{Issue: issue},
 	}

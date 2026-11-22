@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -707,6 +708,13 @@ func (c closeAuthority) IssueSuspension(context.Context, string, store.IssueClos
 // EndPausePodHold: the stand-in holds no pause, so the end of a pod's hold finds none.
 func (c closeAuthority) EndPausePodHold(context.Context, string, string, store.PausePodHoldEnd, time.Time) (bool, error) {
 	return false, nil
+}
+
+// ReserveIssueCleanup: the stand-in holds no lifecycle of the issue, as the records the test
+// seeds hold none, so the close's cleanup reserves nothing, which is the store's own answer for an
+// issue that never had a lifecycle (store.Store.ReserveIssueCleanup), and the close ends there.
+func (c closeAuthority) ReserveIssueCleanup(context.Context, string, string, uint64, func(phase.Phase, string) bool) (treelifecycle.Lifecycle, bool, error) {
+	return treelifecycle.Lifecycle{}, false, nil
 }
 
 // An issue close the store authorizes ends the issue's pod, and its end writes the new name and

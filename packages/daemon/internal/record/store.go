@@ -579,7 +579,7 @@ func (s *Postgres) IssueLifecycles(ctx context.Context, tx pgx.Tx, project strin
 	return treelifecycle.Issues.ReadMany(ctx, tx, project, issues)
 }
 
-// UnkeptTree is a value issues.tree stores, while an issue that stores it is in Legion's work,
+// UnkeptTree is a value issues.tree stores, while a started issue that stores it is in Legion's work,
 // whose tree_lifecycles row the shadow keeper left as it stands, and why (Reason): a cleanup the
 // release before reserved and has not confirmed, or a lifetime the operator holds.
 type UnkeptTree struct {
@@ -596,8 +596,12 @@ const (
 // KeepTreeLifecyclesOpen is the shadow keeper (R22 of dispatch://INFRA-3320, decision 16 of
 // dispatch://INFRA-4730): for every value issues.tree stores while an issue of project that stores
 // it is in Legion's work (InLegionsWork, its phase and its five statuses passed to the statement
-// rather than spelled in it), the tree's lifecycle row stands open with a bound epoch, so a claim
-// the release before admits after a rollback binds it. One statement does it however many trees:
+// rather than spelled in it) and has started, the tree's lifecycle row stands open with a bound
+// epoch, so a claim the release before admits after a rollback binds it. An issue has started once
+// it holds its own issue_lifecycles row, which the promotion that starts it opens, as the release
+// before opens a tree's row at that promotion: a root in the line that never started keeps no row,
+// so the release before, which reads a root whose key has a row as one that ran as a tree of its
+// own, still holds it by its ancestry after a rollback. One statement does it however many trees:
 // a value with no row gets epoch one under the workflow, and one whose cleanup confirmed gets its
 // next epoch, as treelifecycle.Open would give either. It reserves no row, ever. A row it cannot
 // open is left as it stands and answered, by tree, with its reason (UnkeptTree): a cleanup the
@@ -614,8 +618,9 @@ func (s *Postgres) KeepTreeLifecyclesOpen(ctx context.Context, tx pgx.Tx, projec
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `with stored as (
-			select distinct tree from issues
-			where project = $1 and tree <> '' and phase <> $3 and status = any($4::text[])
+			select distinct i.tree from issues i
+			where i.project = $1 and i.tree <> '' and i.phase <> $3 and i.status = any($4::text[])
+				and exists (select 1 from issue_lifecycles l where l.project = $2 and l.issue = i.key)
 		), opened as (
 			insert into tree_lifecycles (project, tree, epoch, authority)
 			select $2, tree, 1, 'workflow' from stored

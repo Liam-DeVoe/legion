@@ -1151,6 +1151,28 @@ func TestOperatorCloseAfterConfirmedCleanupAnswersWithoutCleaning(t *testing.T) 
 	}
 }
 
+// The operator's close applies the confirmation of each issue cleanup it confirms as a fact
+// (intake.IssueCleanedUp), which an admission pass waiting for that cleanup reads at once; the
+// close asked again, after the confirmation, confirms nothing and applies none.
+func TestTheOperatorsCloseAppliesEachCleanupItConfirms(t *testing.T) {
+	r := newAwaitRig(t)
+	r.h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	for range 2 {
+		if recorder := r.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil); recorder.Code != http.StatusOK {
+			t.Fatalf("close = %d, want 200; body %s", recorder.Code, recorder.Body)
+		}
+	}
+	var cleaned []intake.IssueCleanedUp
+	for _, fact := range r.facts.recorded() {
+		if fact, ok := fact.(intake.IssueCleanedUp); ok {
+			cleaned = append(cleaned, fact)
+		}
+	}
+	if want := []intake.IssueCleanedUp{{Issue: "LEGION-208", Epoch: 1}}; !slices.Equal(cleaned, want) {
+		t.Fatalf("the closes applied %+v, want %+v: the one cleanup they confirmed", cleaned, want)
+	}
+}
+
 // The operator's close is the whole tree's, as the workflow's tree_close is: the root claim first,
 // whose close asks whether the tree may be closed, then every other claim of the tree, whatever its
 // state. A worker left running would stay on a tree volume that is being deleted. Another tree's

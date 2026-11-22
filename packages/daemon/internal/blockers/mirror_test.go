@@ -83,6 +83,9 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		// A turn with nothing waiting reads nothing from Dispatch, which is almost every turn.
 		{name: "ControllerTick with no observation", fact: intake.ControllerTick{}},
 		{fact: intake.DispatchClaim{Key: "LEGION-903", Seq: 3, ClaimedBy: "user:alice"}, claims: []string{"LEGION-903"}},
+		// A status call writes what its read of Dispatch saw, as the turn's re-read does.
+		{name: "StatusCall with its read", fact: intake.StatusCall{Op: intake.SetStatusCall, Readings: []intake.IssueStatus{
+			{Key: "LEGION-904", Project: testProject, Status: "in_progress", Seq: 7}}}, rows: []string{"LEGION-904"}},
 	}
 	for _, fact := range []intake.Fact{
 		intake.DispatchArtifact{}, intake.GateAboveDispatch{},
@@ -98,7 +101,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.CatchUpApplied{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
-		intake.ReparentRead{},
+		intake.ReparentRead{}, intake.IssueCleanedUp{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}
