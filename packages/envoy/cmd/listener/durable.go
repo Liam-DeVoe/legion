@@ -157,9 +157,11 @@ func correctListenerDurable(ctx context.Context, client *bus.Client, consumer st
 	if info == nil {
 		// The deliver subject is a random inbox, not a derivable name: on a shared NATS account a
 		// predictable subject would let any client hold interest on it, shadow-reading deliveries.
+		// It is the connection's own inbox, under the connection's inbox prefix, which an edge
+		// listener's grant subscribes in place of every reply inbox.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
-			DeliverSubject: nats.NewInbox(),
+			DeliverSubject: client.Connection().NewInbox(),
 		}
 		applyListenerConsumerPolicy(&config)
 		return client.JS().AddConsumer(bus.Stream, &config, nats.Context(ctx))

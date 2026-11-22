@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
@@ -1190,12 +1189,24 @@ func natsConnectionError(err error) bool {
 // a NATS that cannot be reached (natsConnectionError) every startRetry for as long as it takes, so
 // a listener started before its NATS waits for it rather than exiting. Any other failure ends the
 // process after one ERROR naming it.
-func connectListener(cfg config.Service, instance string, logger *logging.Logger) *bus.Client {
+//
+// An edge listener (edge) owns no stream (connectListenerBus): its connect follows the same rule,
+// and once it is connected its start reads the stream, and ends naming it when the server holds
+// none or the read fails (edgeStreamPresent), since its grant may not create one and every reply
+// it asks for comes under its own inbox prefix.
+func connectListener(cfg config.Service, edge *edgeGrant, instance string, logger *logging.Logger) *bus.Client {
 	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
 	for {
-		options := append(listenerStreamOptions(cfg), bus.WithName("envoy-listener "+instance))
-		client, err := bus.ConnectOwningStream(cfg.NATSURLs, options...)
+		client, err := connectListenerBus(cfg, edge, instance)
 		if err == nil {
+			if edge != nil {
+				if err := edgeStreamPresent(client, edgeStreamRead); err != nil {
+					client.Close()
+					// Named, because a reader of a log that holds only "context deadline exceeded"
+					// cannot tell which step of the start timed out.
+					log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
+				}
+			}
 			return client
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
@@ -1264,9 +1275,11 @@ func openStartStore[T any](client *bus.Client, logger *logging.Logger, what stri
 // server's text.
 const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS grant; retrying"
 
-// openSpentProofBucket opens the spent-proof bucket of tokens, the broker-token credential
-// (brokerTokens.open), on client's connection at replicas copies, and returns once it is open; nil
-// tokens, a listener that takes no broker token, has no bucket to open. It follows the start rule
+// openSpentProofBucket opens the spent-proof bucket on client's connection at replicas copies, and
+// on a listener that takes broker tokens builds the credential's verifier over it (tokens,
+// brokerTokens.open), and returns once it is open. Every listener opens it, nil tokens, a listener
+// that takes no broker token, among them, so an edge listener, whose grant creates no bucket
+// (natsgrant.Edge), finds the one a full listener of this build made. It follows the start rule
 // (cmd/listener/README.md, "Start"): the start waits here, so /healthz answers 503 "starting",
 // /livez 204 and /v1 stays unopened, and every broker-token presentation is answered 503 "service
 // starting" until the bucket is open (brokerTokens.verify), so no token is accepted without the
@@ -1277,13 +1290,10 @@ const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS gran
 // with a WARN. An open the NATS grant refuses (bus.ErrPublishDenied, which bus.EnsureKeyValue
 // returns as the server's refusal arrives) is tried again after waitOutGrantRefusal, each try
 // logging spentProofBucketRefusedLine at ERROR with the refused subject and the server's text, as
-// a refused durable's tries do (durableReceiver.prepare). Any other failure is one no try gets
-// past, an origin ciphertoken.New refuses among them, and ends the process after one ERROR naming
-// it.
+// a refused durable's tries do (durableReceiver.prepare): an edge listener started before any full
+// listener made the bucket waits so for one. Any other failure is one no try gets past, an origin
+// ciphertoken.New refuses among them, and ends the process after one ERROR naming it.
 func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, tokens *brokerTokens, replicas int) {
-	if tokens == nil {
-		return
-	}
 	refusedWait, clusterWait := durableBindPoll, clusterStateWait{next: durableBindPoll}
 	for {
 		conn := client.Conn
@@ -1513,8 +1523,12 @@ const ledgerReconnectWait = 5 * time.Second
 // the one the listener state bucket is on: it waits, polling, until conn is connected, for at most
 // ledgerReconnectWait and while ctx lasts. A listener that started without the bucket keeps that
 // connection to open the bucket on later (openDeliveryLease), and its ledger in process asks
-// nothing of it until then.
+// nothing of it until then. An edge listener dials no lease connection (conn nil), and its ledger
+// stays in process, so it has none to wait for (nil).
 func ledgerConnected(conn *nats.Conn) func(ctx context.Context) bool {
+	if conn == nil {
+		return nil
+	}
 	return func(ctx context.Context) bool {
 		ctx, cancel := context.WithTimeout(ctx, ledgerReconnectWait)
 		defer cancel()
@@ -1821,6 +1835,20 @@ func main() {
 
 	// Metrics registry — /metrics available during startup (like /healthz).
 	met := metrics.New()
+	// An edge listener (ENVOY_EDGE_PROJECTS) holds itself to its own NATS grant from its first
+	// connection on (edgeGrant): every connection names its inboxes under its machine's prefix, the
+	// main client reads the stream and owns none, no delivery lease and no role lane open, no wake
+	// report is published, and its delivery handlers keep no role message and publish no exception
+	// on a lane the grant leaves out. Every other listener has none (edge nil).
+	var edge *edgeGrant
+	if len(cfg.EdgeProjects) > 0 {
+		grant, err := newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+		if err != nil {
+			logger.Error("edge listener grant refused", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		edge = grant
+	}
 	messagesReceived := met.NewCounter("envoy_messages_received_total", "Total messages received by the listener")
 	messagesDelivered := met.NewCounter("envoy_messages_delivered_total", "Total message delivery attempts")
 	messagesNAKed := met.NewCounter("envoy_messages_naked_total", "Total messages NAK'd for retry")
@@ -1913,10 +1941,11 @@ func main() {
 	// server both own ENVOY_NOTIFICATIONS: this client ensures the stream on this connect and after
 	// every reconnect, at the deployment's replica count and byte limit (listenerStreamOptions), and
 	// leaves as it is a stream that a newer build stamped with a higher generation
-	// (bus.ConnectOwningStream). From here until /v1 serves, each failure of the start ends it,
-	// waits out the cluster's state or waits for NATS by the start rule (cmd/listener/README.md,
-	// "Start").
-	client := connectListener(cfg, instance, logger)
+	// (bus.ConnectOwningStream). An edge listener owns no stream: it reads it, and its start ends
+	// here when the server has none (connectListener, edgeStreamPresent). From here until /v1
+	// serves, each failure of the start ends it, waits out the cluster's state or waits for NATS by
+	// the start rule (cmd/listener/README.md, "Start").
+	client := connectListener(cfg, edge, instance, logger)
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. Each open waits on the cluster until
 	// it answers (a bucket's create, a raise's copies, a member applying a create, a stream's
@@ -1932,13 +1961,15 @@ func main() {
 	// start is. Making stopping here instead would change that for the whole start, the NATS
 	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
 	starting := context.Background()
-	// The spent-proof bucket, before anything of /v1 can be served. A listener configured to take
-	// broker access tokens waits here until the bucket is open, and never exits while NATS does not
-	// answer its open, answers it from the cluster's state or refuses it under the grant
-	// (openSpentProofBucket): /healthz answers 503 "starting" and /livez 204 meanwhile, /v1 stays
-	// unopened, and every broker-token presentation is answered 503 "service starting"
-	// (brokerTokens.verify), so no token is accepted without the check of its proof, and no spent
-	// proof is recorded anywhere this listener's other replicas cannot see it.
+	// The spent-proof bucket, before anything of /v1 can be served. Every listener opens it,
+	// whether or not it takes broker tokens, so an edge listener, whose grant creates no bucket,
+	// finds the one a full listener of this build made. The start waits here until the bucket is
+	// open, and never exits while NATS does not answer its open, answers it from the cluster's
+	// state or refuses it under the grant (openSpentProofBucket): /healthz answers 503 "starting"
+	// and /livez 204 meanwhile, /v1 stays unopened, and every broker-token presentation is answered
+	// 503 "service starting" (brokerTokens.verify), so no token is accepted without the check of
+	// its proof, and no spent proof is recorded anywhere this listener's other replicas cannot see
+	// it.
 	openSpentProofBucket(starting, client, logger, brokerTokenAuth, cfg.NATSReplicas)
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
@@ -1962,7 +1993,20 @@ func main() {
 	// keeps the lease's connection and joins the lease once a grant lets it open the bucket
 	// (joinDeliveryLease, below); podLease is the lease from whichever of the two, and what reads
 	// the lease outside the receive loop reads it there, so it follows the join.
-	deliveryLease, leaseConn := openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
+	//
+	// An edge listener opens no lease and dials no lease connection: its grant holds no call of the
+	// listener state bucket (natsgrant.Edge), so every request of that connection would be refused,
+	// and none is ever granted to join on. It delivers as a listener without a lease does, the
+	// machine's one deliverer, receiving from the durable only while no other subscriber holds it,
+	// with its ledger and last-seen times in process: one edge pod runs per machine id.
+	var deliveryLease *lease
+	var leaseConn *nats.Conn
+	if edge == nil {
+		deliveryLease, leaseConn = openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
+	} else {
+		logger.Info("delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease",
+			slog.String("bucket", bus.ListenerStateBucket))
+	}
 	var podLease atomic.Pointer[lease]
 	if deliveryLease != nil {
 		podLease.Store(deliveryLease)
@@ -2213,15 +2257,21 @@ func main() {
 	// Wake reports are published off the paths that raise them, under a lifetime of the
 	// listener's own — the shutdown ends every retry still running — and a cap on how many
 	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
-	// this configuration by value, so every seam of it must be set before they are built.
+	// this configuration by value, so every seam of it must be set before they are built. An edge
+	// listener reports none: its grant may not publish the wake topic (natsgrant.Edge), and the
+	// shared listeners report every wake.
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
-	wakes := newWakeReporter(wakesCtx, client)
+	var wakes *wakeReporter
+	if edge == nil {
+		wakes = newWakeReporter(wakesCtx, client)
+	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then start the lease and the durable's
 	// receive loop.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
 		wakes:             wakes,
+		edge:              edge,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
@@ -2277,7 +2327,8 @@ func main() {
 	// refuse every registration. They open before the role lane, so a nats-server release the
 	// listener refuses, which the connection asks of its server as it opens, leaves the pod
 	// delivering nothing at all: no role message is forwarded, no frame relayed, and /v1 stays
-	// closed.
+	// closed. An edge listener's connection names its inboxes under the edge's prefix and reads
+	// its buckets by stream message gets (edgeGrant.connectOptions).
 	//
 	// The threshold the server removes an idle session consumer after is derived from this
 	// deployment's own windows first and given to that connection, so every consumer the
@@ -2295,7 +2346,7 @@ func main() {
 	// its machine's receive term (below).
 	relays := openStartConnection(logger, "session consumer connection failed; retrying", relayRepliesRefusedLine, func() (*sessionRelays, error) {
 		var err error
-		if delivery, err = connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger); err != nil {
+		if delivery, err = connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, edge.connectOptions()...); err != nil {
 			return nil, err
 		}
 		relays, err := startSessionRelays(delivery, deliveryConfig)
@@ -2315,30 +2366,12 @@ func main() {
 		return 0
 	}
 
-	// The role lane is a core-NATS queue subscription on a connection of its own with finite pending
-	// limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes; bus.ConnectRoleLane), in the queue
-	// group every listener shares, or this machine's group on a hub whose grant predates it. Every
-	// pod of this machine id, the lease holder and each standby, is a member, and during a rolling
-	// deploy the task being replaced is one too; NATS hands each role message to one member of a
-	// group, so no message is forwarded twice whichever pods run, and opening the lane before the
-	// durable binds forwards none twice either. Its connection opens by the start rule too
-	// (openStartConnection).
-	var roleQueue string
-	roleLaneClient := openStartConnection(logger, "role lane connection failed; retrying", roleLaneRefusedLine, func() (*bus.Client, error) {
-		laneClient, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
-		roleQueue = queue
-		return laneClient, err
-	})
-	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", roleQueue))
-	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
-		return int64(roleLaneClient.SlowConsumers())
-	})
+	// The role lane (startRoleLane), whose connection opens by the start rule too; an edge
+	// listener opens none.
+	lane := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger)
 	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
 		return int64(roleForwards.outstanding())
 	})
-	roleLaneWatchCtx, roleLaneWatchCancel := context.WithCancel(context.Background())
-	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
-	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
@@ -2465,7 +2498,9 @@ func main() {
 			// every takeover record that is not finished (handOverTakenRole), each copy and
 			// record write of them held to this receive term and to the lease's loss deadline, so
 			// none is sent once the lease has stepped down or another pod may hold it
-			// (keptSweepConfig, takeoverWriteContext).
+			// (keptSweepConfig, takeoverWriteContext). An edge listener runs none, since its grant
+			// writes no kept lane: the shared listeners' sweeps hand over the lanes of roles held
+			// at the edge too.
 			startKeptRoleSweep(ctx, keptSweepConfig(deliveryConfig, relays), roleWakeInterval),
 			// The session consumer sweep frees the slot every session consumer whose session
 			// ended without deregistering holds. The deregistration route deletes the consumer
@@ -2546,7 +2581,7 @@ func main() {
 
 	ready = &listenerDeps{
 		client:       client,
-		roleLane:     roleLaneClient,
+		roleLane:     lane.client,
 		consumers:    delivery,
 		registry:     registry,
 		sessions:     sessions,
@@ -2583,8 +2618,9 @@ func main() {
 	// receiving by the receive loop's signal. The lease's first rounds then take the record or
 	// read another pod's (lease.Contend), before anything this pod delivers is given up; its loop
 	// starts, and the receive loop hands the term it receives on to it, which takes that term as
-	// it stands or, when another pod holds the lease, ends it (durableReceiver.join).
-	if deliveryLease == nil {
+	// it stands or, when another pod holds the lease, ends it (durableReceiver.join). An edge
+	// listener, which dialled no lease connection, joins none.
+	if deliveryLease == nil && leaseConn != nil {
 		go func() {
 			joined := joinDeliveryLease(leaseCtx, leaseConn, cfg.NATSReplicas, cfg.MachineID, instance, logger)
 			if joined == nil {
@@ -2610,8 +2646,12 @@ func main() {
 	// of the machine runs it, the standby included, because every pod serves the publish route
 	// and so raises role wakes of its own; a report says one listener is alive and reporting,
 	// which is what the daemon's window asks, and two pods saying it is the same answer twice.
-	// It runs under the wake reports' own lifetime, which the shutdown ends (parts.stopWakes).
-	startListenerReadyReports(wakesCtx, client, logger, listenerReadyInterval)
+	// It runs under the wake reports' own lifetime, which the shutdown ends (parts.stopWakes). An
+	// edge listener reports no wake (its grant may not publish the wake topic, natsgrant.Edge),
+	// so it says nothing here either.
+	if edge == nil {
+		startListenerReadyReports(wakesCtx, client, logger, listenerReadyInterval)
+	}
 
 	// Phase 6b4: Log the old-form counter and the start-time gauge, now and every
 	// legacySubjectsLogInterval, for legacy-subjects-gate.sh's reader of a listener in a cluster,

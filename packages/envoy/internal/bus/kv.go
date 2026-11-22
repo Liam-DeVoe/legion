@@ -140,6 +140,12 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	request := "KV_" + kv.Bucket() + " handle open"
 	owner := clientOwning(conn)
+	if owner != nil && owner.streamMessageReads {
+		kv, err = newStreamMessageReads(conn, kv)
+		if err != nil {
+			return KeyValue{}, err
+		}
+	}
 	// The open is one STREAM.INFO of the bucket's stream, read for the server's refusal as every
 	// request of a start is (refusedBy): the jetstream API has no context to wrap, so the send is.
 	open := func() (jetstream.KeyValue, error) {
@@ -457,8 +463,11 @@ type LatestEntry struct {
 // (Get states why each carries it), read here with its KV-Operation header (kvOperationHeader).
 // So the grant that lets a process Get a key lets it read this (natsgrant.KVWrite holds
 // $JS.API.DIRECT.GET.KV_<bucket>.> beside the bucket's writes, and natsgrant.ListenerState the
-// direct get of each key family of the listener state bucket beside that family's write), and it
-// goes out on the connection the handle's jetstream context holds, the one BoundedOn watches; it
+// direct get of each key family of the listener state bucket beside that family's write). A
+// handle whose client reads by stream message gets (WithStreamMessageReads, an edge listener's,
+// whose grant holds no direct get) reads the marker as its Get reads the key, with a stream
+// message get, `$JS.API.STREAM.MSG.GET.KV_<bucket>`, which carries the same header. Either goes
+// out on the connection the handle's jetstream context holds, the one BoundedOn watches; it
 // waits RequestTimeout, the MaxWait the listener and Dispatch open their legacy handles with. A
 // value that read finds was stored after Get answered none, and answers revision 0, so the write
 // is refused over it and its caller reads again; a marker stored between the two reads names a key
@@ -483,7 +492,11 @@ func (kv KeyValue) GetLatest(key string) (LatestEntry, error) {
 // newestMarker is the revision of key's newest entry where that is a delete or purge marker, and 0
 // where it is a value or the bucket holds no entry for key (GetLatest).
 func (kv KeyValue) newestMarker(key string) (uint64, error) {
-	message, marker, err := kv.newestMessage(key, nats.MaxWait(RequestTimeout), nats.DirectGet())
+	opts := []nats.JSOpt{nats.MaxWait(RequestTimeout)}
+	if kv.owner == nil || !kv.owner.streamMessageReads {
+		opts = append(opts, nats.DirectGet())
+	}
+	message, marker, err := kv.newestMessage(key, opts...)
 	switch {
 	case errors.Is(err, nats.ErrMsgNotFound):
 		return 0, nil

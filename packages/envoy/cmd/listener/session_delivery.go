@@ -262,13 +262,14 @@ type sessionDelivery struct {
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
 // whose read of the deployed stream's subjects decides only which topics a registration's answer
-// warns that no stream subject captures (sessionDelivery.stream).
+// warns that no stream subject captures (sessionDelivery.stream). options are the connection's own
+// beside its name: in edge mode, the listener's inbox prefix (edgeGrant.connectOptions).
 //
 // Every session takes its messages from the consumer this connection manages, so the start waits
 // until it opens: main tries it again, with the relay's reply subscription on it, by the start rule
 // (openStartConnection; cmd/listener/README.md, "Start").
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
 		return nil, err
 	}

@@ -579,7 +579,7 @@ func (f *relayFrame) envelope() contracts.Envelope {
 // subscription the server refuses, under the NATS grant or otherwise, is its error, and it starts
 // nothing then: main closes delivery and tries both again (openStartConnection).
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
-	inbox := nats.NewInbox()
+	inbox := delivery.consumers.NewInbox()
 	m := &sessionRelays{
 		delivery:    delivery,
 		cfg:         cfg,

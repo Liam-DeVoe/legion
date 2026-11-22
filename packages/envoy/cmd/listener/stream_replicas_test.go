@@ -110,14 +110,15 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 }
 
 // On a single server with the default settings, the listener binary creates the stream and its
-// seven buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
-// state; the GitHub route opens that one; and the listener state bucket its lease and ledger live
-// in) at one copy, and its next start creates and updates nothing.
+// eight buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
+// state, the spent-proof bucket and the listener state bucket its lease and ledger live in; every
+// listener opens the spent-proof bucket, and the GitHub route opens CI state) at one copy, and its
+// next start creates and updates nothing.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")
-	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket, "KV_" + bus.ListenerStateBucket}
+	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket, "KV_" + bus.DPoPProofBucket, "KV_" + bus.ListenerStateBucket}
 
 	bustest.RequireFirstStartAtOneCopyAndNoSecondWrite(t, uri, streams, func() {
 		t.Helper()

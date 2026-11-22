@@ -488,6 +488,13 @@ A grant applied after the pod started is so taken within one wait, with no resta
 Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;
 for a host, its NATS authorization) before running a second pod of a machine id.
 
+An edge listener (`ENVOY_EDGE_PROJECTS` set) always runs in this mode.
+Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no lease connection, logs one INFO, `delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease`, and never tries the bucket again (`main.go`).
+`/healthz` says `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"` as above.
+Run one edge pod per machine id, since a second one has no lease to stand by under:
+a second edge pod for one machine id, a rolling update's surge pod included, can deliver a message twice, as an edge listener of a build before this release can.
+So an edge Deployment runs one replica under the `Recreate` strategy.
+
 ## Environment
 
 The settings every listener reads are listed on the docs site's Envoy page ("Running the listener").
