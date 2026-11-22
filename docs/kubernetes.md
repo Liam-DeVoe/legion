@@ -16,7 +16,7 @@ Its runtime's section below is kept for reference until someone removes it (LEGI
 
 ## Worker image
 
-Every Legion agent process under `runtime: kubernetes` — architect, planner, implementer, tester, reviewer, merger
+Every Legion agent process under `runtime: kubernetes` — architect, planner, implementer, tester, reviewer, merger, the fresh agent of `acceptance`, and each role a deployment or a plan defines
 — runs from one image, `ghcr.io/cybermonklabs/legion-worker` (public), on Oh My Pi or, for a phase worker `worker_backends` puts on `claude`, on Claude Code.
 It carries:
 
@@ -362,7 +362,7 @@ Each item below names an option and its measurement, then the verdict on it.
   that is the withheld `operator-setup` capability (`packages/daemon/internal/capabilities/capabilities.go`, decision dispatch://LEGION-200) under the test in `skills/legion-worker/references/withheld-capability.md`, "What the withheld capability is, and what it is not", and it is fragile for exactly the client this change exists for.
   The same unpacking inside a test harness's own environment passes that test and is a different verdict — and it would not have got a role `psql` either way
 
-- `runtime.kubernetes.setup`, the operator-set command run before each role's agent starts — it runs on every start of every role, six times per issue
+- `runtime.kubernetes.setup`, the operator-set command run before each role's agent starts — it runs on every start of every role, once for each agent an issue starts, six times per issue on the default steps
 
   **rejected**: it buys nothing the image does not, since it is still an unprivileged container
 
@@ -1681,7 +1681,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
 an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Issue pods in microVMs](#issue-pods-in-microvms)).
 The pod holds two init containers and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
-— `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
+— `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, then each role the deployment defines and each other agent the issue's plan names, the fresh agent of `acceptance` among them:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
 Every role of the issue shares the issue's checkout, the pod's own disk it sits on, the temporary directory every role's agent is told (`TMPDIR=/legion/scratch/tmp`, one directory of the issue's scratch, below) and the pod's network, and every one of their sessions is a row in the session database rather than a file any of them holds;
 each slot of the pod keeps its own home, config home, `/tmp`, `/var/tmp`, `/run/lock` and `/dev/shm` mounts, state directory, agent-secrets key, GitHub App credential and launch credentials, and a slot is named for the agent that runs in it, so a keyed agent keeps its slot and its state directory across the roles of its steps.
@@ -2314,6 +2314,7 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
 The last two sentences of each task a reviewer is sent are always the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.` or ` Review entry: none.`, in every phase and whatever queued the task.
 A stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
+Since the release whose owner does a step, the column also holds the commit that a review step no review on GitHub decides reported with its verdict (a reviewer of an issue with no pull request, the fresh agent of `acceptance`, and the owner in a review step of its own), and the pull request's head where the owner's `sign_off` or `request_backward_move` ended a review step of its own; each role but the reviewer whose step is of the type review is told its row's commit, ` Last reviewed commit: <sha>.`, in the phase its step runs as.
 A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.
 A task of the reviewer without that fact, which a start row or a pending delivery of the earlier release and an operator's own task are, is sent with ` Last reviewed commit: none. Review entry: none.` at its end, so its reviewer reads the whole change and keeps the entry of its round.
 All three statements run in the migration's one transaction: the two adds take a short lock on their tables and rewrite no row, and the update writes the reviewer's rows that store a task.
@@ -2359,7 +2360,7 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
-A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
+A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the agent of the implementer's step merge the base forward: the implementer, or the owner where that step was its own.
 
 **The rows of the two new kinds, and the two columns, must be cleared before the earlier image is pinned.**
 An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never runs a row of either kind, and such a row would wait through the rollback and run at the roll forward, when the head it names has long moved.
@@ -5005,14 +5006,14 @@ On such a volume a provision is not always the issue's first: `workspace-init` k
 The feed is its `feed` directory: `workspace-fetch` mounts that `subPath` alone, read-write, at `/legion/feed`, and `workspace-init` and `roles` mount the same `subPath` again, read-only, at `/legion/feed` over their whole-disk mount.
 The clone's object store owns its links to that feed, and no agent writes what the token-holding container reads.
 The kubelet makes the directory on first use.
-Each slot's Secret, `<sandbox>-<slot>-boot`, holds that slot's launcher token and the gh bundle of the App of the role its process was launched as (at the pod's build, each slot no claim is launched in holds its own name's App):
+Each slot's Secret, `<sandbox>-<slot>-boot`, holds that slot's launcher token and the gh bundle of the App of the role its process was launched as, or of the step's role while the architect in it does a step of its own plan (at the pod's build, each slot no claim is launched in holds its own name's App):
 for every directory of the bundle, `github-hosts-<dir>`, gh's `hosts.yml` carrying a GitHub App installation token under user `x-access-token`, and `github-config-<dir>`, a `config.yml` of `version: "1"`, then `github-renames`, the configured renames the bundle's root holds as `renames.txt`, and `github-default`, the directory the issue's repository routes to.
 A directory names a GitHub owner, and the bundle holds no repository directory.
 The bundle holds one directory per owner the role's App is installed on, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's recorded owner, less every directory GitHub refuses the role's App a lease for: an owner whose installation GitHub answers for as not installed, suspended, granted none of the permissions a lease asks for, or refusing those permissions is left out of that role's bundle, said once on the daemon's stderr, where the directory of the role's own repository refused fails its launch instead.
 A directory is named for its owner's login, lowercased, and takes every login GitHub serves an account under: up to 39 letters, digits, hyphens and underscores, beginning with a letter or digit, so a managed user's login, which ends in `_<shortcode>` (`mona-cat_octo`), names one too.
 So the login of every owner a repository can be configured or recorded under is a directory's name, the issue's own owner among them.
 A login GitHub lists that is no such name is left out the same way: no lease is asked for it, it is said once on the daemon's stderr naming it, and only where it is the owner a controller's bundle is asked for does it fail the bundle instead.
-Every directory's token is the role's own App's: the implement App's for the implementer and the merger, the review App's for every other role.
+Every directory's token is the App's of the role the slot acts as: the implement App's for the implementer and the merger, the review App's for every other role, and in the architect's slot, while it does a step of its own plan, the App of that step's role.
 Each one is the installation lease of the owner its directory is named for, minted at the role's own permissions — the implement App's write set, the review App's review set.
 No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
 A role therefore pushes to, opens a pull request in and reviews a pull request of every repository its App reaches, whichever owner's it is.
@@ -5046,7 +5047,7 @@ The daemon keeps one record per project of what its mints found refused, and the
 A repository added under an owner the pod already projects is not a reason either: the pod keeps running until something else replaces it.
 Until then it works that repository through that owner's directory, whose token reaches every repository that owner's installation holds, the new one included.
 Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation: it keeps no list of owners.
-An account that installs the implement App gets a directory with that App's write token in the Secret of every implementer and merger, from the next bundle the daemon builds, and an install of the review App gives every other role's Secret that App's token the same way and the controller's its read-only one.
+An account that installs the implement App gets a directory with that App's write token in the Secret of every slot that acts as that App (each implementer and merger, and an architect while it does an implementer step of its own), from the next bundle the daemon builds, and an install of the review App gives every other slot's Secret that App's token the same way and the controller's its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 An issue pod gets one update round once both role Apps are installed on the account, as said above, and until the round replaces it the new directory is in its roles' Secrets and in no pod.
 The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
@@ -5232,7 +5233,7 @@ The `legion` in the helper resolves on the PATH of whichever process runs git.
 No container is told `LEGION_GIT_PATH` or `LEGION_JJ_PATH` (for the credential helper and the grant file, see the table above), and nothing is installed under the issue's volume for a pod to run:
 a pod's `git` and `jj` are the image's, resolved on its PATH.
 The daemon renders the gh keys when it writes the role Secret at the pod's start, logging `sandbox runtime: github credential
-written` with the sandbox, role, App, `expiresAt` and directories, and a refresher walks every live slot each minute, re-rendering its bundle — of the App of the role its process was launched as, else of the role its stored claim holds, and of its own name's App where no stored claim runs in it — for the pod's own repository, which its `workspace-fetch` argument names (for the controller, which works none, the owner its `github-default` records), from the daemon's cached leases and updating the Secret only for the directories whose `hosts.yml` changed (`sandbox runtime:
+written` with the sandbox, role, App, `expiresAt` and directories, and a refresher walks every live slot each minute, re-rendering its bundle — of the App of the step's role while the architect in it does a step of its own plan, else of the role its process was launched as, else of the role its stored claim holds, and of its own name's App where no stored claim runs in it — for the pod's own repository, which its `workspace-fetch` argument names (for the controller, which works none, the owner its `github-default` records), from the daemon's cached leases and updating the Secret only for the directories whose `hosts.yml` changed (`sandbox runtime:
 github credential refreshed`, the same fields); the kubelet rewrites the projection in place, so the next `gh` runs with the new token.
 The `appauth` lease re-mints 20 minutes before its token expires, so a new token lands at least 15 minutes before the old one lapses, and GitHub keeps the old token valid until its own expiry.
 `gh config set`, `gh alias set` and `gh auth login` cannot write the read-only directory, and `gh auth status` reports the account as `x-access-token`.
@@ -6312,8 +6313,8 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot past its review, in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue before then (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
-So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue in a phase that holds one (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through `accepting`, `retro` and `merging`; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing in `accepting`, `retro` or `merging`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk (a [kept volume](#a-kept-volume-on-a-microvm-pod) stays) while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
@@ -6323,7 +6324,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 500m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue past its review, by an issue that released its slot to wait on another issue and by a production check.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -7751,12 +7752,12 @@ The worker image's jj is 0.45; on the tmux runtime, which runs the host's jj thr
 
 The boundary above protects the provisioning token alone.
 Since LEGION-631 each role holds its own App's tokens in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
-an implement role (the implementer, the merger) holds the implement App's tokens, and a review role (the architect, planner, tester, reviewer) the review App's.
+an implement role (the implementer, the merger) holds the implement App's tokens, and a review role (the architect, planner, tester, reviewer) the review App's, save the architect while it does a step of its own plan, which holds the App of that step's role.
 Every directory of the bundle holds that owner's installation lease at the role's own permissions: the implement App's write set, or the review App's review set.
 No directory holds a reading lease of another owner.
 The provisioning token is the implement App's token on the issue owner's installation narrowed to reading.
 That is what makes it and an implement role's own token two different leases.
-No review role holds the implement App's token, and no implement role the review App's (the review App cannot resolve a review thread on the implementer's pull request, so the reviewer names the bot threads it accepted to the implementer, which resolves them with its own `gh`; the daemon serves no thread route).
+No review role holds the implement App's token, save the architect during an implementer step of its own, and no implement role the review App's (the review App cannot resolve a review thread on a pull request the implement App opened, so where an implementer agent opened it the reviewer names the bot threads it accepted to that implementer, which resolves them with its own `gh`; the daemon serves no thread route).
 That split keeps each role's tokens out of a sibling's own reads.
 It is not a boundary against code an agent of the same issue plants:
 each role's `gh`, `git`, jj, Oh My Pi and tools run on the issue's volume, with whatever an agent of the issue planted there, and the plant runs with the credentials of the role that runs it.
@@ -8113,9 +8114,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The stop leaves the issue where it stood, in its phase, and the stop frees no slot: an admission slot the issue held stays held, with no worker in it;
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
-  What starts a stopped phase worker again is the workflow's own next start of its role:
-  a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
-  the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
+  What starts a stopped phase worker again is the workflow's own next start of its agent:
+  a move into a later step that agent does (one agent can do two steps of a task), a backward move into its step, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  the retry of a held issue is one more, and it starts the worker only after something else has held the issue, since the stop holds nothing.
   Each of these brings the worker back in the session the claim kept.
 
 - **The Legion machine-user sign-in.**

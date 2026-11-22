@@ -1,9 +1,11 @@
 # Legion
 
-Legion runs teams of coding agents on the issues you hand it, and brings each one back as a pull
-request that is ready to merge. Root processes own issue trees: each root issue gets an architect
-that writes its spec and splits the work, and the daemon runs a planner, an implementer, a tester, a
-reviewer and a merger over each change. The Legion daemon keeps the durable state, gives each agent
+Legion runs teams of coding agents on the issues you hand it, and brings each one back done: as a
+pull request that is ready to merge, where the work changes code. Root processes own issue trees:
+each root issue gets an architect that writes its spec and splits the work, and the daemon runs the
+steps of each issue's plan, by default a planner, an implementer, a tester, a reviewer and the
+architect's acceptance, then a merger where there is a pull request; the architect can do any step
+itself. The Legion daemon keeps the durable state, gives each agent
 its credentials and routes the events between them. Issues, specs and every decision a person makes
 live in Dispatch. Legion is for people who want agents to work tracked issues end to end while they
 keep the decisions: what to build, whether the spec is right, the answers to the agents' questions,
