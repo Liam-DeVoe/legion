@@ -28,18 +28,25 @@ const (
 	ciEachHeadH3 = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
 )
 
+// TestCIReadBoundHasDeadline holds ciReadBound to ciReadDeadline from both sides and with no
+// allowance: the bound starts inside the call, so its deadline is ciReadDeadline after a moment
+// between the clock read before the call and the one after it. A bound of another length passes
+// it only where the call itself took as long as the difference, nine seconds for a bound of a
+// second and ten for GitHub's twenty seconds, and a bound with no deadline never does.
 func TestCIReadBoundHasDeadline(t *testing.T) {
 	before := time.Now()
 	bound, cancel := ciReadBound(context.Background())
+	after := time.Now()
 	defer cancel()
 	deadline, ok := bound.Deadline()
 	if !ok {
 		t.Fatal("ciReadBound gives a context with no deadline")
 	}
-	// The bound starts inside ciReadBound. The allowance is scheduler delay before it starts, not
-	// time the test waits; it still rejects a caller that gives this read GitHub's 20-second bound.
-	if deadline.After(before.Add(ciReadDeadline + time.Second)) {
-		t.Fatalf("ciReadBound deadline %s is later than its %s bound", deadline, ciReadDeadline)
+	if earliest := before.Add(ciReadDeadline); deadline.Before(earliest) {
+		t.Fatalf("ciReadBound deadline %s is earlier than %s, %s after the call started", deadline, earliest, ciReadDeadline)
+	}
+	if latest := after.Add(ciReadDeadline); deadline.After(latest) {
+		t.Fatalf("ciReadBound deadline %s is later than %s, %s after the call returned", deadline, latest, ciReadDeadline)
 	}
 }
 
