@@ -23,6 +23,7 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
+import { decisionsFoot } from "./issue-page-q";
 import {
   drawnRowReadings,
   fixtureSeed,
@@ -47,7 +48,6 @@ import {
   decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
-  decisionTimes,
   drawnNodes,
   footLineGate,
   headerStatus,
@@ -167,7 +167,6 @@ interface OutlineRead {
   readonly opened: readonly RowReading[];
   readonly reads: TreeIdReads;
   readonly rows: readonly RowReading[];
-  readonly slugs: readonly string[];
 }
 
 /** Opens the seeded issue and reads it as the recorder did: the rows as the page opens, once two
@@ -201,7 +200,6 @@ async function readOutline(
     opened,
     reads,
     rows,
-    slugs,
   };
 }
 
@@ -417,29 +415,26 @@ function differences(
       found.push(`${where}, ${rowName(row)} is a row of the fixture the page does not draw`);
     }
   }
-  return [...found, ...timeDifferences(where, readings, drawn, outline, held)];
+  return [...found, ...timeDifferences(where, readings, drawn, held)];
 }
 
 /** Each drawn time that is not its source's in this run, as the page's short day: a node's
- *  `made_at` in the tree read the page received, a decision's `changed_at` in the decisions read
- *  the page received. */
+ *  `made_at` in the tree read the page received, and a decision's `changed_at` on its node there
+ *  (`decision.changed_at`), the time `draftDecision` draws for it. */
 function timeDifferences(
   where: string,
   readings: readonly RowReading[],
   drawn: readonly KeyedRow[],
-  outline: OutlineRead,
   held: ReadonlyMap<string, HeldNode>
 ): string[] {
-  const decided = decisionTimes(outline.decisions, outline.slugs);
   return readings.flatMap((reading, index) => {
     const row = drawn[index];
     if (reading.time === null || row === undefined) return [];
     const decision = reading.kind.type === "decision";
-    const id = reading.id ?? "";
-    const source = decision ? decided.get(id) : held.get(id)?.node.made_at;
+    const node = held.get(reading.id ?? "")?.node;
+    const source = decision ? node?.decision?.changed_at : node?.made_at;
     if (source === undefined || source === null) {
-      const read = decision ? "decisions read" : "tree read";
-      return [`${where}, ${rowName(row)} draws a time, and the ${read} holds none for it`];
+      return [`${where}, ${rowName(row)} draws a time, and the tree read holds none for it`];
     }
     const want = shortDay(source);
     return reading.time === want
@@ -917,7 +912,7 @@ test("each filter draws its view read's rows, and each decision that shaped a st
 // view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
 // settled row 3's gap for Decisions, and a press that sends no view read fails the row.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
-// still, and released.
+// still, its foot unfolded and read again until it holds still, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
   browser,
 }) => {
@@ -932,7 +927,18 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       const reads = await idReadsOf(seeded.key);
       const view = PRESET_NAMES.decisions;
       const where = `${name} under ${view}`;
-      const drawn = await pressFilter(page, traffic, "decisions");
+      await pressFilter(page, traffic, "decisions");
+      const foot = decisionsFoot(page);
+      // `pressFilter` above read the view once its rows and count held still with the network
+      // quiet, so its foot is drawn by now or not at all, and one read says which.
+      if ((await foot.count()) > 0) {
+        await expect(foot, `${where}, the view's foot draws its control`).toBeVisible();
+        await foot.click();
+      }
+      const drawn = await steadily(page, traffic, `${where} with its foot open`, async () => ({
+        count: await presetCount(page, "decisions").textContent(),
+        nodes: await drawnNodes(page),
+      }));
       const answer = await heldAnswer(decisions, `the ${view} view read`);
       const expected = viewNodeIds(answer, "decisions", reads);
       expect(
