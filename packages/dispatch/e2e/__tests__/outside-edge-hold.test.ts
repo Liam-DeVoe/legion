@@ -524,11 +524,6 @@ function socketsOpened(edge: HoldEdge, session: string): number[] {
     .map((one) => one.at);
 }
 
-// One row after another, not at once: the edge stand-in answers from this process, and each
-// bounded child that ends holds this process's event loop while it reads the process table
-// (`stopTree`), about 1 s a child on a box of 19,739 processes on 2026-11-21. Nine rows at once
-// stacked those reads until the stand-in answered a hold's trade too late and `held` came after
-// the short bound; one row at a time, no other row's children end while a hold waits on it.
 describe.skipIf(!existsSync("/proc/self/stat"))(
   "hold and release, against an edge stand-in",
   () => {

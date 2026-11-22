@@ -310,9 +310,8 @@ export function liveStandInDispatches(): number {
 }
 
 /** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
- *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
- *  the bounded runner's synchronous stop of a sibling run included. It answers before this
- *  returns. */
+ *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers.
+ *  It answers before this returns. */
 function standInDispatch(
   state: string,
   controls: StandIns["controls"],

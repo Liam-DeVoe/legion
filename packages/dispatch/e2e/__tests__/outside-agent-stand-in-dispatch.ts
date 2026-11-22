@@ -1,9 +1,9 @@
 /** The stand-in Dispatch the tailnet leg's tests run against, as a process of its own, so a test
- *  worker's event loop that something holds (the bounded runner's synchronous stop of a sibling
- *  run) never holds its answers. `outside-agent-tailnet-stand-ins.ts` starts it with its settings
- *  in the environment, `OUTSIDE_STAND_IN_DISPATCH` (JSON): the port, the state directory, whether
- *  the full member's controls are answered or refused, the commits /healthz names, the full
- *  member's login and the repository of the GitHub proxy's read.
+ *  worker's event loop that something holds never holds its answers.
+ *  `outside-agent-tailnet-stand-ins.ts` starts it with its settings in the environment,
+ *  `OUTSIDE_STAND_IN_DISPATCH` (JSON): the port, the state directory, whether the full member's
+ *  controls are answered or refused, the commits /healthz names, the full member's login and the
+ *  repository of the GitHub proxy's read.
  *
  *  Its /healthz names the commit and fleet_commit the settings say. It answers the full member's
  *  browser session (cookie `session=full`, with the origin's own Origin) on the routes the leg's

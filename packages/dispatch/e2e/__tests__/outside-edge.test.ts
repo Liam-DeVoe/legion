@@ -90,7 +90,9 @@ import { legacyAgentSubject } from "@legion/contracts";
 import { startRelaySocketStandIn } from "@legion/envoy-client/test/relay-socket-stand-in";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { chromium } from "@playwright/test";
+import { readInPage } from "../acceptance/outside-edge-page-read";
 import {
+  type BoundedRun,
   type BoundName,
   beforeDeadline,
   eventually,
@@ -119,7 +121,7 @@ function drive(
   args: readonly string[],
   env: Record<string, string>,
   bound: BoundName
-): Promise<DriverRun> {
+): Promise<BoundedRun> {
   return runBounded({
     argv: ["bun", driver, ...args],
     bound,
@@ -394,6 +396,36 @@ describe("the inputs", () => {
       }
     },
     rowLimit({ atOnce: ["short", "short", "short", "short"] })
+  );
+});
+
+describe("the read through the page", () => {
+  test(
+    "ends at the deadline the driver set as it asked, however late the page started it, as a read that got no answer",
+    async () => {
+      // A listener that takes the connection and never answers a byte. The script `pageRead`
+      // hands the page runs here as the page would run it, started as late as a page whose main
+      // thread was busy when the driver asked: 1 s of the driver's deadline left. Counted from
+      // its own start, the read would wait its 30 s, past the driver's 35 s for the script.
+      const silent = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: { data: () => undefined },
+      });
+      try {
+        const started = Date.now();
+        const read = await readInPage({
+          at: `http://127.0.0.1:${silent.port}/auth/whoami`,
+          until: started + 1_000,
+        });
+        const took = Date.now() - started;
+        expect(read).toEqual({ unanswered: expect.stringMatching(/^TimeoutError: /) });
+        expect(took, "the read's time").toBeLessThan(10_000);
+      } finally {
+        silent.stop(true);
+      }
+    },
+    rowLimit("short")
   );
 });
 
@@ -821,7 +853,8 @@ describe("the controls, against an outside origin stand-in", () => {
           },
           "outsideEdgePageWait"
         );
-        const endedAt = Date.now() / 1000;
+        // The driver's own end, before the harness killed what it left (`BoundedRun`).
+        const endedAt = run.endedAt / 1000;
         const passkey = rowsOf({ ...run, stdout: readFileSync(tsv, "utf8") }).get("T5-passkey");
         const got =
           /^POST \/auth\/passkey\/login\/finish answered 401 at=([0-9]{10}), and its body did not come in the [0-9]+ s left before the deadline, so no refusal of the passkey was read$/.exec(
@@ -866,7 +899,8 @@ describe("the controls, against an outside origin stand-in", () => {
           },
           "outsideEdgePageWait"
         );
-        const endedAt = Date.now() / 1000;
+        // The driver's own end, before the harness killed what it left (`BoundedRun`).
+        const endedAt = run.endedAt / 1000;
         const passkey = rowsOf({ ...run, stdout: readFileSync(tsv, "utf8") }).get("T5-passkey");
         const got =
           /^POST \/auth\/passkey\/login\/finish answered 200 at=([0-9]{10}), a sign-in after the cookie's 401, though its body did not come in the [0-9]+ s left before the deadline$/.exec(

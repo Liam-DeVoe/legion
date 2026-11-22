@@ -231,6 +231,7 @@ import {
   type Row,
   verdictOf,
 } from "./outside-edge-limits";
+import { type PageAnswer, readInPage } from "./outside-edge-page-read";
 
 /** The name every device login of this driver gives its machine, in place of this machine's own
  *  host name, which its output must not carry. Every registration at the listener names it too, as
@@ -241,8 +242,9 @@ const DEVICE_HOST = deviceLoginHost("outside-edge-e2e");
 /** How long one page step waits for what it waits on. */
 const PAGE_MS = 30_000;
 /** How long the driver waits on a read the page's own script makes (`pageRead`): the read's own
- *  deadline, PAGE_MS, which the script runs, and 5 s more for its answer to come back from the
- *  page, so where the page's main thread is free the read's own deadline answers first. */
+ *  deadline, PAGE_MS from the driver's ask by the driver's clock, which the script runs
+ *  (`readInPage`), and 5 s more for its answer to come back from the page, so where the page's
+ *  main thread is free the read's own deadline answers first, however late the page started it. */
 const PAGE_SCRIPT_MS = PAGE_MS + 5_000;
 /** How long the driver waits for its browser to close. Chromium closes in a second or two, but
  *  its close waits on a page whose main thread loops (the driver's own test measured such closes
@@ -532,46 +534,18 @@ async function closeBrowser(browser: Browser | undefined): Promise<void> {
   }
 }
 
-/** What a page's own JSON read got: its answer, its status alone where its body did not come
- *  (`cut`, why), or why no answer came. */
-type PageAnswer =
-  | { readonly status: number; readonly body: unknown; readonly cut?: string }
-  | { readonly unanswered: string };
-
 /** A JSON read the page's own script makes, from its origin with its cookie, so the browser
- *  counts it as it counts the page's other requests. It waits PAGE_MS at most: a read that got no
- *  answer by then, or none at all, is `unanswered`, with why; one whose status came and whose
- *  body did not is that status, the far end's answer, with `cut` saying why the body did not
- *  come. The page's script runs the read and that deadline, so a page that holds its main thread
- *  (a script that loops, or a `fetch` it replaced that never returns) runs neither, and
- *  Playwright's `evaluate` has no deadline of its own: the driver waits PAGE_SCRIPT_MS for the
- *  script at most, and a read the script held past that is `unanswered` too, naming the script. */
+ *  counts it as it counts the page's other requests (`readInPage`). It waits until PAGE_MS after
+ *  the driver asked, by the driver's clock, at most: a read that got no answer by then, or none at
+ *  all, is `unanswered`, with why; one whose status came and whose body did not is that status,
+ *  the far end's answer, with `cut` saying why the body did not come. The page's script runs the
+ *  read and that deadline, so a page that holds its main thread (a script that loops, or a
+ *  `fetch` it replaced that never returns) runs neither, and Playwright's `evaluate` has no
+ *  deadline of its own: the driver waits PAGE_SCRIPT_MS for the script at most, and a read the
+ *  script held past that is `unanswered` too, naming the script. */
 async function pageRead(page: Page, path: string): Promise<PageAnswer> {
   // One read is the measurement: the request's own answer, which no later page state changes.
-  const evaluated = page.evaluate(
-    async ({ at, ms }) => {
-      let status: number | undefined;
-      try {
-        const response = await fetch(at, {
-          headers: { Accept: "application/json" },
-          signal: AbortSignal.timeout(ms),
-        });
-        status = response.status;
-        const text = await response.text();
-        let body: unknown = text;
-        try {
-          body = JSON.parse(text);
-        } catch {
-          // Not JSON: the text itself is what a refusal says.
-        }
-        return { status, body };
-      } catch (error) {
-        const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        return status === undefined ? { unanswered: why } : { status, body: undefined, cut: why };
-      }
-    },
-    { at: path, ms: PAGE_MS }
-  );
+  const evaluated = page.evaluate(readInPage, { at: path, until: Date.now() + PAGE_MS });
   const read = await within(evaluated, PAGE_SCRIPT_MS);
   return read === TIME_UP
     ? { unanswered: `the page's script held the read past ${PAGE_SCRIPT_MS / 1000} s` }
