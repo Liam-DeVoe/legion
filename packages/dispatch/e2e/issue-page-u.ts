@@ -16,27 +16,25 @@ import { drawnRowReadings, type RowReading, steadily } from "./issue-page-t";
 import {
   type DecisionsRead,
   type DecisionsReadWatch,
-  type Gate,
-  OWED_BY,
   type TreeView,
+  treePath,
+  treeReadRoute,
 } from "./issue-page-t-tree";
 import type { ApiRequests } from "./traffic";
 
 /**
  * What the decision rows (`e2e/issue-page-u.e2e.ts`) read of the new issue page beside what the
- * other rows' helpers already read (`e2e/issue-page.ts` and `e2e/issue-page-{g,i,p,q,t}.ts`):
- * the rows' own helper file, which reuses those readers where their files export them. It keeps
- * its own `treePath`, `idReadsOf` and `releaseFilter`, since the files that hold the originals
- * export none of them (`e2e/issue-page-t.ts`' `treePath`) or are spec files
- * (`e2e/issue-page-t.e2e.ts`' `idReadsOf` and `releaseFilter`).
+ * other rows' helpers already read (`e2e/issue-page.ts`, `e2e/issue-page-{g,i,p,q,t}.ts` and
+ * `e2e/issue-page-t-tree.ts`): the rows' own helper file, which reuses those readers where their
+ * files export them. It keeps its own `releaseFilter`, since the file that holds the original is
+ * a spec file (`e2e/issue-page-t.e2e.ts`).
  *
  * - **The server's answer.** `decisionNodesOf` is the decision nodes the tree read
  *   (`GET /api/v1/issues/{key}/tree`) answers for some blocks, every page its cursor names read
  *   once as alice; `decisionSumOf` is the `text_sha256` one of them carries, and `decisionSum`
  *   that of one block as the tree read answers it now. `viewNodesOf` is the nodes one view of
  *   the tree answers (`?view=`). `heldDecisionsRead` is the decisions read that the gate on the
- *   seeds written as decision nodes (`decisionNodesGate`) reads, and `decisionsViewServedGate`
- *   the gate on the server serving the tree read's Decisions view.
+ *   seeds written as decision nodes (`decisionNodesGate`) reads.
  * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (the
  *   `<slug>#b-<block id>`), `askRowId` an ask's (its block's node where the asks read names its
  *   block, as `tree-read/tree-nodes.ts` names it), and `askOfNode` the asks read's row of an ask
@@ -53,11 +51,6 @@ import type { ApiRequests } from "./traffic";
  *   `:::decision` block whose `shaped` names `r1`, as the planner; `rewordThirdDecision` changes
  *   its words.
  */
-
-/** The path of issue `key`'s tree read. */
-function treePath(key: string): string {
-  return `/api/v1/issues/${encodeURIComponent(key)}/tree`;
-}
 
 /**
  * Issue `key`'s tree read, or the read of one of its views, as alice reads it: every page its
@@ -143,20 +136,6 @@ export async function heldDecisionsRead(
   watch: DecisionsReadWatch
 ): Promise<DecisionsRead> {
   return watch.read() ?? { answer: await readTree(key, "decisions"), kind: "view" };
-}
-
-/** The model's Decisions view of the tree read, as the server serves it: issue `key`'s tree read
- *  with `view=decisions` answers, read through the signed-in page's own request context. It is
- *  met by the server's answer, never by whether the page asked for the view, so a press of
- *  Decisions that sends no view read fails its row. */
-export async function decisionsViewServedGate(page: Page, key: string): Promise<Gate> {
-  const response = await page.request.get(`${treePath(key)}?view=decisions`);
-  return {
-    met: response.ok(),
-    owed:
-      "owed until the server serves the tree read's Decisions view on this branch's base: the " +
-      `tree read answers ${response.status()} to view=decisions here; ${OWED_BY}`,
-  };
 }
 
 /** The issue read and the asks read, as alice reads them: what `treeIdOf` names a node by. */
@@ -336,9 +315,8 @@ export interface HeldReads {
 /** Holds every request of issue `key`'s tree route the page sends from now on, its views' with
  *  it, until `release`. */
 export async function holdTreeReads(page: Page, key: string): Promise<HeldReads> {
-  const path = treePath(key);
   const held: Route[] = [];
-  const matches = (url: URL): boolean => url.pathname === path;
+  const matches = treeReadRoute(key);
   const hold = (route: Route): void => {
     held.push(route);
   };

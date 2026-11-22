@@ -74,7 +74,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useTreeRead, useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
-import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
+import { issueAsksQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
@@ -208,13 +208,11 @@ export function SpecFilterBody({
   // watched by an observer that is never enabled, under the key the page reads it by
   // (`ViewReadProvider`). A change of the issue marks the view stale and reads it again with its
   // answer kept (`subscribeTreeFreshness`); a new load, a Keep and a Change drop it
-  // (`dropViews`), and the column then draws the answer it last held (`last`) until the next one
-  // lands. A read again that fails keeps its answer, which leaves the body an answer to draw too.
+  // (`dropViews`), and the column then draws the answer it last held (`useLastAnswer`) until the
+  // next one lands. A read again that fails keeps its answer, which leaves the body an answer to
+  // draw too.
   const specRead = useQuery({ ...specQuery, enabled: false });
-  const answered = root.views?.spec;
-  const [last, setLast] = useState(answered);
-  if (answered !== undefined && answered !== last) setLast(answered);
-  const held = answered ?? last;
+  const held = useLastAnswer(root.views?.spec);
   const decisions = useMemo(
     () => (held === undefined ? [] : decisionNodes(held, { asks, issue })),
     [asks, held, issue]

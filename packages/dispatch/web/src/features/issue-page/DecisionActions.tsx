@@ -277,13 +277,6 @@ function DecisionControls({
   );
 }
 
-/** A Change's anchor: the decision's document, its words, and the decision node's own block.
- *  The API's anchor input (`AnchorInput`) does not declare `block_id` yet, and the server
- *  ignores a member it does not declare, so until it declares it the quote is found in the
- *  whole document; once it does, the server finds the quote inside that block alone, so words
- *  the decision shares with another place in the document still name the decision. */
-type ChangeAnchor = AnchorInput & { block_id: string };
-
 /** The change itself: a comment of the issue's, anchored to the decision's own block and words,
  *  which is the write the Decisions tab made. */
 function ChangeComposer({
@@ -315,9 +308,11 @@ function ChangeComposer({
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    // The anchor names the decision node's own block beside its words (`ChangeAnchor`).
+    // The anchor names the decision node's own block beside its words: the server finds the
+    // quote inside that block alone, so words the decision shares with another place in the
+    // document still name the decision, and it refuses a block that does not hold the quote.
     write: (input: { body: string }, bounds) => {
-      const anchor: ChangeAnchor = { artifact: documentId, block_id: decision.block_id, quote };
+      const anchor: AnchorInput = { artifact: documentId, block_id: decision.block_id, quote };
       return api.createComment(issueKey, { anchor, body: input.body }, bounds);
     },
     // The change is a comment the tree read hangs under its decision (`decision-review.ts`), so

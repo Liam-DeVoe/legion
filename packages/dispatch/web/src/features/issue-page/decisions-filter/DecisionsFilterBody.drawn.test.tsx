@@ -2769,8 +2769,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await waitFor(() => expect(create).toHaveBeenCalled());
     // The comment is anchored to the decision's own block and words in the spec, the document
     // the decision is a block of.
-    // Compared as `unknown`: the API's `AnchorInput` does not declare the `block_id` it carries.
-    expect<unknown>(create.mock.calls[0]?.slice(0, 2)).toEqual([
+    expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
         anchor: { artifact: SPEC_DOCUMENT.id, block_id: "second", quote: "The decision second." },

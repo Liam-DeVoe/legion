@@ -1245,26 +1245,13 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree, or of one of its views
    *  (`view`), from the node `cursor` names on (`IssueTreeRead.cursor`). A caller passes the
-   *  `signal` of the read it is still interested in, so a read given up ends its page in flight.
-   *
-   *  The model's tree route serves only the views `spec`, `verification` and `plan` today
-   *  (`issue_tree_read.go`'s `issueTreeViews`), which are the views the document lists. The page
-   *  reads the Decisions view by the same route (`tree-read.ts`' `TREE_VIEWS`), and
-   *  `?view=decisions` is the model's task t16c (cybermonklabs/legion#4180), the decisions query
-   *  and its view, which this widening waits on: so `view` takes `decisions` beside the
-   *  document's three, and the read goes through `json` with `routeUrl`, its answer the
-   *  document's. */
+   *  `signal` of the read it is still interested in, so a read given up ends its page in flight. */
   getIssueTree(
     key: string,
-    query: Omit<Query<"/api/v1/issues/{key}/tree", "get">, "view"> & {
-      view?: Query<"/api/v1/issues/{key}/tree", "get">["view"] | "decisions";
-    } = {},
+    query: Query<"/api/v1/issues/{key}/tree", "get"> = {},
     init: { signal?: AbortSignal } = {}
   ) {
-    return this.json<Json200<Op<"/api/v1/issues/{key}/tree", "get">>>(
-      routeUrl("/api/v1/issues/{key}/tree", { key }, query),
-      init
-    );
+    return this.read("/api/v1/issues/{key}/tree", { key }, query, init);
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in

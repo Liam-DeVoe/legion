@@ -22,6 +22,7 @@ import {
   askOfNode,
   type DecisionNode,
   decisionNodes,
+  isSpecBlock,
   issueAsks,
   type Lookup,
   nodeReference,
@@ -30,9 +31,9 @@ import {
   tieTargetReference,
   tuplesByFrom,
 } from "../decision-nodes/decision-nodes";
-import { blockIdOfNode, decisionNodeChanges, inReviewList } from "../decision-review";
+import { blockIdOfNode, decisionNodeChanges, inReviewList, reviewState } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
-import { blockAttributeLabel, type DecisionState, type NodeType } from "../page-words";
+import { blockAttributeLabel, type NodeType } from "../page-words";
 import {
   addDocumentChips,
   answerOf,
@@ -100,7 +101,6 @@ export interface KeptReads {
   readonly checks: ReadonlyMap<string, CheckBlock>;
   /** Each child of the issue read, by its key. */
   readonly children: ReadonlyMap<string, IssueChild>;
-
   /** Each requirement of the coverage read: the statements, with their counts and gaps. */
   readonly requirements: ReadonlyMap<string, RequirementCoverage>;
   /** Each result of the results read, by its own id. */
@@ -569,21 +569,12 @@ function draftServing(
   return draft;
 }
 
-/** Whether `node` is a statement: a `requirement` block of the issue's spec (`isSpecBlock`),
- *  whose blocks the coverage read's rows are too (`KeptReads.requirements`). A `requirement`
- *  block of any other document is a block and nothing more: nothing stands under it. */
+/** Whether `node` is a statement: a `requirement` block of the issue's spec
+ *  (`decision-nodes.ts`' `isSpecBlock`), whose blocks the coverage read's rows are too
+ *  (`KeptReads.requirements`). A `requirement` block of any other document is a block and nothing
+ *  more: nothing stands under it. */
 function isStatementNode(node: TreeAnswerNode, context: TreeDraftContext): boolean {
-  return node.supertag === "requirement" && isSpecBlock(node, context);
-}
-
-/** Whether `node` is a block of this issue's spec, the document the issue read names
- *  (`TreeContext.specSlug`), as the read places it (`document`). */
-function isSpecBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean {
-  return (
-    context.specSlug !== "" &&
-    !isForeign(node, context.key) &&
-    node.document?.slug === context.specSlug
-  );
+  return node.supertag === "requirement" && isSpecBlock(node, context.key, context.specSlug);
 }
 
 /** A result of a check of this issue: who recorded it and when, and what it recorded, from the
@@ -861,7 +852,7 @@ function referenceOf(
 ): string | undefined {
   const kept = keptReference(node, context);
   if (kept !== undefined) return kept;
-  const ask = context.askOf(node);
+  const ask = node.supertag === "ask" ? context.askOf(node) : undefined;
   return specBlocks === "spec"
     ? tieTargetReference(node, context.key, ask, context.specSlug)
     : nodeReference(node, context.key, ask);
@@ -992,24 +983,6 @@ function namesAny(node: TreeAnswerNode, kind: string, context: TreeDraftContext)
   return pointersOf(node, kind).length > 0;
 }
 
-/**
- * How a decision node stands with the reader, in the states the page draws
- * (`NODE_STATE_WORDS.decision`), from the review state the read answers on the node's
- * `decision`: replaced by a later one first, since nothing waits on it any longer; then a change
- * the reader asked for, which waits on its agent and not on the reader (`decision-review.ts`);
- * then waiting for review; then kept, by the person whose name the row draws after it
- * (`TreeNode.keptBy`).
- */
-function reviewState(
-  decision: Partial<Pick<Decision, "kept" | "replaced" | "waiting_review">>,
-  changed: boolean
-): DecisionState | undefined {
-  if (decision.replaced === true) return "replaced";
-  if (changed) return "change_requested";
-  if (decision.waiting_review === true) return "waiting_review";
-  return decision.kept == null ? undefined : "kept";
-}
-
 /** Whether the read marks `node` as another issue's. */
 function isForeign(node: TreeAnswerNode, key: string): boolean {
   return node.issue !== undefined && node.issue !== key;
@@ -1044,7 +1017,6 @@ function keptReads(
   return {
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
-
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
     ),

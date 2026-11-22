@@ -124,14 +124,15 @@ const NO_MORE_TARGETS: { readonly targets: readonly ReferenceTarget[] } = { targ
 const NO_REFS: readonly string[] = [];
 
 /**
- * The answer a names read gave last: its own while it holds one, and the last one it held while
- * its read under a new set of addresses is out or has failed. TanStack's `placeholderData` would
- * hold that answer only while the read is out: a read under a new key that fails holds no data,
- * where a refetch that fails under the same key keeps its own. The ref is written during render
- * only with the answer the read holds in that render, so it never stands over a newer one: a read
- * that holds an answer is drawn from it.
+ * The answer a read gave last: its own while it holds one, and the last one it held while its
+ * read under a new set of addresses is out or has failed. The names reads here hold theirs by
+ * it, and so does the Spec view's column (`spec-filter/SpecFilterBody.tsx`), whose view read a
+ * Keep or a Change drops. TanStack's `placeholderData` would hold that answer only while the read
+ * is out: a read under a new key that fails holds no data, where a refetch that fails under the
+ * same key keeps its own. The ref is written during render only with the answer the read holds in
+ * that render, so it never stands over a newer one: a read that holds an answer is drawn from it.
  */
-function useLastAnswer<T>(answer: T | undefined): T | undefined {
+export function useLastAnswer<T>(answer: T | undefined): T | undefined {
   const last = useRef(answer);
   if (answer !== undefined) last.current = answer;
   return last.current;

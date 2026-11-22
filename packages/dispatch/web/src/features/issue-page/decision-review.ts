@@ -10,6 +10,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { ownTree, ownWords } from "../issue/decision-text";
 import { parseNodeReference } from "../refs/routes";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
+import type { DecisionState } from "./page-words";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -65,6 +66,25 @@ export function inReviewList(
       (link) => link.to.ref !== undefined && isCoverageStatement(link.to.ref)
     )
   );
+}
+
+/**
+ * How a decision node stands with the reader, in the states the page draws
+ * (`NODE_STATE_WORDS.decision`), from the review state the read answers on the node's
+ * `decision`: replaced by a later one first, since nothing waits on it any longer; then a change
+ * the reader asked for, which waits on its agent and not on the reader (`decisionNodeChanges`);
+ * then waiting for review; then kept, by the person whose name the row draws after it
+ * (`TreeNode.keptBy`). It is the one rule the outline (`tree-read/tree-nodes.ts`'
+ * `draftDecision`) and the Decisions filter (`decisions-filter/decisions-parts.ts`) read.
+ */
+export function reviewState(
+  decision: Partial<Pick<Decision, "kept" | "replaced" | "waiting_review">>,
+  changed: boolean
+): DecisionState | undefined {
+  if (decision.replaced === true) return "replaced";
+  if (changed) return "change_requested";
+  if (decision.waiting_review === true) return "waiting_review";
+  return decision.kept == null ? undefined : "kept";
 }
 
 /**

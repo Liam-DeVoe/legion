@@ -4,7 +4,7 @@ import { shortDay } from "../web/src/features/issue-page/node-time";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { wordsOf } from "../web/src/features/refs/tree-fragment";
-import { getIssue, listIssueAsks } from "./api";
+import { getIssue } from "./api";
 import { seedReviewList, seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import {
   closeDetails,
@@ -47,6 +47,7 @@ import {
   decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
+  decisionsViewServedGate,
   decisionTimes,
   drawnNodes,
   footLineGate,
@@ -66,7 +67,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t-tree";
-import { decisionsViewServedGate } from "./issue-page-u";
+import { idReadsOf } from "./issue-page-u";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -137,12 +138,6 @@ const REPLY_WORDS = "The tree read draws this reply with no reload.";
 
 /** A decision row's state word once alice kept it. */
 const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
-
-/** The reads `treeIdOf` names a node by: the issue read and the asks read, as alice reads them. */
-async function idReadsOf(key: string): Promise<TreeIdReads> {
-  const [issue, asks] = await Promise.all([getIssue(key), listIssueAsks(key)]);
-  return { asks, issue };
-}
 
 /** The ids, each once and sorted, so two lists of drawn ids compare as sets. */
 function idSet(ids: readonly string[]): string[] {

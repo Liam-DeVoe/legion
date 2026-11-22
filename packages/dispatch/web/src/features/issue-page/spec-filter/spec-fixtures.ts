@@ -12,10 +12,11 @@ import {
   READER,
   READER_ACTOR,
   SPEC_SLUG,
+  treeAnswer,
 } from "../decisions-filter/decisions-fixtures";
 import type { TreeAsk, TreeNode } from "../issue-tree";
-import { type TreeNodeExtra, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
+import { type TreeNodeExtra, treeNode } from "../tree-read/tree-fixtures";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
  * What the Spec filter's two unit tests are given: one issue, one tree and one answer of the
@@ -141,19 +142,11 @@ export function decision(block: string, extra: TreeNodeExtra = {}): TreeAnswerNo
   });
 }
 
-/** The Spec view read's answer (`?view=spec`), on one page: `nodes` under the issue's own node,
- *  with `tuples` between them, each node and each end named as the route names it
- *  (`tree-read/tree-fixtures.ts`' `treeAnswer`). It is what the page holds on the issue's node
+/** The Spec view read's answer (`?view=spec`), on one page: the Decisions filter's own answer
+ *  of the issue's tree (`decisions-filter/decisions-fixtures.ts`' `treeAnswer`), `nodes` under
+ *  the issue's own node with `tuples` between them. It is what the page holds on the issue's node
  *  (`TreeNode.views.spec`), whose decisions the column draws. */
-export function specViewAnswer(
-  nodes: readonly TreeAnswerNode[],
-  tuples: readonly TreeTuple[] = []
-): TreeAnswer {
-  return treeAnswer(
-    [treeNode(KEY, "issue", null, { text: "The issue page draws one ordered body" }), ...nodes],
-    tuples
-  );
-}
+export const specViewAnswer = treeAnswer;
 
 /** The address of one statement, which is one block of the issue's spec. */
 export const statementRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;

@@ -2,6 +2,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import type { Decision, DecisionLink, DisplayTree, IssueDetails } from "../../../api/types";
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
+import { blockIdOfNode } from "../decision-review";
 import type { IssueTreeReads, TreeAsk } from "../issue-tree";
 import { storedReading } from "../stored-reading";
 import { blockNodeId } from "../tree-drafts";
@@ -215,7 +216,7 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
  */
 function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
   const ask = lookup.askOf(node);
-  const ref = referenceOf(node, lookup);
+  const ref = nodeReference(node, lookup.key, ask);
   const answered = node.decision !== undefined || ask?.state === "answered";
   if (!answered || ref === undefined) return undefined;
   if (!lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")) return undefined;
@@ -247,7 +248,7 @@ function blockAndWords(
   node: TreeAnswerNode
 ): Pick<DecisionNode, "block_id" | "heading" | "node" | "text" | "text_tree" | "unsure"> {
   return {
-    block_id: node.block_id ?? node.id,
+    block_id: blockIdOfNode(node),
     // A converted decision's old `##` heading is its first paragraph, so the
     // heading every accessible name reads ("Keep <heading>") is that paragraph's words.
     heading: decisionQuote(node) ?? "",
@@ -279,7 +280,7 @@ function shapedLinks(node: TreeAnswerNode, lookup: Lookup): DecisionLink[] {
         changed_since_tie: false,
         created_at: node.made_at ?? "",
         created_version: 0,
-        from_block: node.block_id ?? node.id,
+        from_block: blockIdOfNode(node),
         stale: false,
         to: {
           changed_at: null,
@@ -343,7 +344,7 @@ export function nodeReference(
   return node.document === undefined
     ? undefined
     : buildDispatchReference({
-        block: { id: node.block_id ?? node.id },
+        block: { id: blockIdOfNode(node) },
         key: issue,
         kind: "artifact",
         slug: node.document.slug,
@@ -365,11 +366,22 @@ export function tieTargetReference(
   specSlug: string
 ): string | undefined {
   const asked = node.supertag === "ask" && askIdOf(node, ask) !== undefined;
-  const ofThisIssue = node.issue === undefined || node.issue === key;
-  if (!asked && ofThisIssue && specSlug !== "" && node.document?.slug === specSlug) {
-    return buildDispatchReference({ block: { id: node.block_id ?? node.id }, key, kind: "spec" });
+  if (!asked && isSpecBlock(node, key, specSlug)) {
+    return buildDispatchReference({ block: { id: blockIdOfNode(node) }, key, kind: "spec" });
   }
   return nodeReference(node, key, ask);
+}
+
+/** Whether `node` is a block of issue `key`'s spec, the document whose slug is `specSlug` (`""`
+ *  where the caller holds none, which makes no block one), as the read places it (`document`):
+ *  the one rule a tie's address (`tieTargetReference`) and the outline's statements
+ *  (`tree-read/tree-nodes.ts`' `isStatementNode`) read. */
+export function isSpecBlock(node: TreeAnswerNode, key: string, specSlug: string): boolean {
+  return (
+    specSlug !== "" &&
+    (node.issue === undefined || node.issue === key) &&
+    node.document?.slug === specSlug
+  );
 }
 
 /** The id of the ask an ask node is: that of `ask`, the row of the issue's asks it is
@@ -419,7 +431,7 @@ export function askOfNode(reads: DecisionReads): (node: TreeAnswerNode) => TreeA
   const asks = issueAsks(reads);
   const placed = new Map([...asks.values()].map((ask) => [askNodeId(ask, slugOf), ask]));
   return (node) => {
-    const blockId = node.block_id ?? node.id;
+    const blockId = blockIdOfNode(node);
     if (node.issue !== undefined && node.issue !== reads.issue.key) return placed.get(blockId);
     if (node.document !== undefined) return placed.get(blockNodeId(node.document.slug, blockId));
     const own = asks.get(node.id);
@@ -427,9 +439,10 @@ export function askOfNode(reads: DecisionReads): (node: TreeAnswerNode) => TreeA
   };
 }
 
-/** The node's own address (`nodeReference`), with the row of the issue's asks an ask is. */
+/** The node's own address (`nodeReference`), with the row of the issue's asks an ask is: the
+ *  ask is looked up for an ask node alone, the one kind `nodeReference` reads it for. */
 function referenceOf(node: TreeAnswerNode, lookup: Lookup): string | undefined {
-  return nodeReference(node, lookup.key, lookup.askOf(node));
+  return nodeReference(node, lookup.key, node.supertag === "ask" ? lookup.askOf(node) : undefined);
 }
 
 /** The answer's nodes and tuples, each looked up by the read's own ids (`nodesById`,

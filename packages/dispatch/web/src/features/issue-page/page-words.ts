@@ -132,11 +132,11 @@ export const BLOCK_TYPE_NAMES = freeze({
  * A decision's states are spec R2's, "wherever a decision is drawn": `waiting_review` is an
  * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
  * the row draws the name of who kept it after the word - and `replaced` one a later decision
- * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by `tree-nodes.ts`'s
- * `reviewState`). `change_requested` is a decision the reader sent a Change on since it last
- * changed, which waits on its agent and no longer on the reader (`decision-review.ts`). A
- * decision in none of them - an agent's that nobody has reviewed and nothing replaced, or a
- * person's own section - draws no state.
+ * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by
+ * `decision-review.ts`' `reviewState`). `change_requested` is a decision the reader sent a Change
+ * on since it last changed, which waits on its agent and no longer on the reader
+ * (`decision-review.ts`). A decision in none of them - an agent's that nobody has reviewed and
+ * nothing replaced, or a person's own section - draws no state.
  */
 export const NODE_STATE_WORDS = freeze({
   ask: {
