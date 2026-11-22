@@ -27,8 +27,9 @@ import (
 // the room is the last thing to go (releaseUnloadedRoom).
 //
 // What a release drops - the unrecorded marks' first sightings and their authors' departures, the
-// writes that have logged leaving the document alone at the decode cap, and the closed flag - is
-// what a restart drops too.
+// count of the unrecorded-mark sweep's refusals, whose end the release logs, the writes that have
+// logged leaving the document alone at the decode cap, and the closed flag - is what a restart
+// drops too.
 type roomState struct {
 	mu        sync.Mutex
 	connected map[uint64]model.Actor
@@ -99,6 +100,12 @@ type roomState struct {
 	// document alone because the write would carry it past the decode cap (logPastDecodeCap), nil
 	// until one has.
 	pastDecodeCap map[string]struct{}
+	// sweepRefusals counts the unrecorded-mark sweep's refusals in a row on this document - no
+	// opening in the room budget for a room gone, or a busy refusal - each of which arms the
+	// document's next settlement (sweepUnrecordedMarks). The first is logged at Warn and the rest
+	// at Debug with this count, and the run's end - the sweep running, or this state's release -
+	// is logged once naming it (endSweepRefusalsLocked).
+	sweepRefusals int
 	// departed is when each user whose browsers have all left this room lost the last of them,
 	// under both spellings a mark's `by` can carry (recordMarkAuthorDeparture). An unrecorded
 	// mark ages from its author's entry rather than from the sweep that last saw that author, so
@@ -350,9 +357,11 @@ func (s *Service) releaseIfUnusedLocked(room string, state *roomState) {
 
 // forgetLocked takes state, room's, out of the service: a lookup that already found it skips it
 // (lookUpState). Its one caller, releaseIfUnusedLocked, forgets only a state nothing holds
-// (unusedLocked), so no in-flight credit is on it. Its caller holds state.mu.
+// (unusedLocked), so no in-flight credit is on it. A run of the unrecorded-mark sweep's refusals
+// ends with the state, and its end is logged (endSweepRefusalsLocked). Its caller holds state.mu.
 func (s *Service) forgetLocked(room string, state *roomState) {
 	state.released = true
+	endSweepRefusalsLocked(room, state, "the document's state was released")
 	s.rooms.CompareAndDelete(room, state)
 }
 
@@ -378,6 +387,9 @@ func (s *Service) forgetLocked(room string, state *roomState) {
 // the connection id the service gave it. Its caller holds state.mu.
 func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	state.released = true
+	// A run of the unrecorded-mark sweep's refusals ends with this record, which the successor
+	// does not carry.
+	endSweepRefusalsLocked(room, state, "the document's state was released")
 	// A wait for the room's appends on this record looks the room up again, and waits on the
 	// record that counts the room's updates from now on, if any does.
 	state.idle.wake()

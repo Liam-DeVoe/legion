@@ -124,12 +124,11 @@ func RunIssueAskRepair(ctx context.Context, deps Deps, leases duty.Leases) {
 }
 
 // repairIssueAsksOnTick is one interval pass of RunIssueAskRepair, bounded by
-// issueAskRepairTimeout, logging what it changed and why it failed: at Warn where every issue it
-// failed met a busy refusal of the document service (refusedBusyOnly), which the next pass
-// retries, and at Error otherwise. It sweeps the documents marked owing after markedSince (all,
-// when it is nil) and the closed issues of retry, and answers the next pass's bound and retry: one
-// interval before the pass began, by the database's clock, and the issues it did not repair; or
-// markedSince and retry as they were, when it could not list its candidates.
+// issueAskRepairTimeout, logging what it changed and why it failed (LogIssueAskRepairFailure). It
+// sweeps the documents marked owing after markedSince (all, when it is nil) and the closed issues
+// of retry, and answers the next pass's bound and retry: one interval before the pass began, by
+// the database's clock, and the issues it did not repair; or markedSince and retry as they were,
+// when it could not list its candidates.
 func (s *server) repairIssueAsksOnTick(ctx context.Context, markedSince *time.Time, retry []string) (*time.Time, []string) {
 	passCtx, cancel := context.WithTimeout(ctx, issueAskRepairTimeout)
 	defer cancel()
@@ -138,17 +137,26 @@ func (s *server) repairIssueAsksOnTick(ctx context.Context, markedSince *time.Ti
 		slog.Info("dispatch: repaired the asks of closed and reopened issues", repair.LogArgs()...)
 	}
 	if err != nil && ctx.Err() == nil {
-		if refusedBusyOnly(err) {
-			slog.Warn("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "retry", "the next pass repairs the issues", "error", err)...)
-		} else {
-			slog.Error("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "error", err)...)
-		}
+		LogIssueAskRepairFailure(repair, err)
 	}
 	if began.IsZero() {
 		return markedSince, retry
 	}
 	since := began.Add(-IssueAskRepairInterval)
 	return &since, unrepaired
+}
+
+// LogIssueAskRepairFailure logs err, a RepairIssueAsks pass's failure, with the counts of repair,
+// what the pass repaired: at Warn, naming the next pass that retries it, where every issue the
+// pass failed met a busy refusal of the document service (refusedBusyOnly), and at Error
+// otherwise. The interval pass (repairIssueAsksOnTick) and the boot's pass (cmd/dispatch) log
+// their failures through it.
+func LogIssueAskRepairFailure(repair IssueAskRepair, err error) {
+	if refusedBusyOnly(err) {
+		slog.Warn("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "retry", "the next pass repairs the issues", "error", err)...)
+		return
+	}
+	slog.Error("dispatch: repair the asks of closed and reopened issues", append(repair.LogArgs(), "error", err)...)
 }
 
 // refusedBusyOnly reports whether err, a pass's failure to repair some of its issues

@@ -690,9 +690,10 @@ func heldGrant(ctx context.Context) *loadSlot {
 // context.DeadlineExceeded); or a cold read's refusal once its wait for its turn passed its bound
 // (foldDocument, errGrantShort). Each is the 503 its caller retries and none is the document's own
 // failure, so no room is failed for it, and a background duty that meets one logs it at Warn with
-// what retries it, keeping Error for every other error (LogDutyFailure). A first fork whose
-// caller went away (errWriteBusy wrapping context.Canceled) is not one: nobody waits for its
-// retry.
+// what retries it, keeping Error for every other error (LogDutyFailure); the unrecorded-mark sweep,
+// which meets it again each settle delay while it lasts, logs only the first of a run at Warn
+// (sweepUnrecordedMarks). A first fork whose caller went away (errWriteBusy wrapping
+// context.Canceled) is not one: nobody waits for its retry.
 func RefusedBusy(err error) bool {
 	return errors.Is(err, errGrantShort) || errors.Is(err, errFoldSlotsBusy) || errors.Is(err, errRoomLoadUnderGrant) ||
 		errors.Is(err, errWriteBusy) && errors.Is(err, context.DeadlineExceeded)

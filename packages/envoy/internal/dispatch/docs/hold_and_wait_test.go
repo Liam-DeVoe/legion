@@ -1360,6 +1360,116 @@ func TestACopyOfARoomWeighedBeforeItsWaitIsCoveredAsTheRoomStandsOnceTheWaitIsOv
 	}
 }
 
+// A whole copy of a resident room weighed (copyOfRoom) as its take begins to wait for the pool,
+// whose room grows by a browser's commit during that wait, is refused busy where the pool gives the
+// take what it weighed but not what the room grew: the copy weighs the room again once the wait is
+// over, takes the difference only at once (loadSlot.take), and is otherwise answered errGrantShort,
+// the 503 its caller retries, rather than made under a grant short of the room it copies. A write's
+// warm fork clones nothing and is refused errWriteBusy (forkPoint), and the rebuild route's check of
+// a live room near its caps reads nothing, which RebuildDocument answers ErrServiceUnavailable, the
+// route's 503 DOC_SERVICE_UNAVAILABLE (nearACapOfRoom). Each keeps the grant its wait took as it
+// was, and neither fails the room. The test before this one makes the same wait where the pool has
+// the difference. With either take of the difference taken out, the copy is made under the first
+// weight and answers no refusal.
+func TestACopyOfARoomThatGrewWhileItWaitedIsRefusedBusyWhereThePoolLacksTheGrowth(t *testing.T) {
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, _ := residentGrantDocuments(t, service, []int{75, 76}, []int{16 << 10, 16 << 10})
+	for index, site := range []struct {
+		name string
+		// copy starts the copy of live on a goroutine of its own and answers what the copy
+		// answers, with held, the bytes its grant holds, read once the copy has answered.
+		copy func(t *testing.T, document string, live *crdt.Doc) (answered <-chan error, held func() int64)
+		// refused is what the refusal wraps beside errGrantShort, nil for nothing more.
+		refused error
+	}{
+		{"a write's warm fork, a clone of the room's replica", func(t *testing.T, document string, live *crdt.Doc) (<-chan error, func() int64) {
+			write := &liveWrite{artifactID: document, clientID: crdt.NewClientID(), state: newRoomState(), slot: &forkSlot{slot: newLoadSlot()}}
+			t.Cleanup(write.slot.slot.release)
+			answered := make(chan error, 1)
+			go func() {
+				fork, err := service.warmFork(write.carriedBy(context.Background()), write, live)
+				if err == nil && fork == nil {
+					err = errors.New("the warm fork answered no fork and no error")
+				}
+				answered <- err
+			}()
+			return answered, func() int64 { return write.slot.slot.bytes }
+		}, errWriteBusy},
+		{"the rebuild route's check of a live room near its caps", func(t *testing.T, _ string, live *crdt.Doc) (<-chan error, func() int64) {
+			slot := newLoadSlot()
+			t.Cleanup(slot.release)
+			answered := make(chan error, 1)
+			go func() {
+				_, _, err := service.nearACapOfRoom(slot.carriedBy(context.Background()), live, service.roomWeighingOf(live).roomStateBytes())
+				answered <- err
+			}()
+			return answered, func() int64 { return slot.bytes }
+		}, nil},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			document := documents[index]
+			live := service.srv.GetDoc(document)
+			if live == nil {
+				t.Fatalf("no room of %s is resident", document)
+			}
+			before := service.copyOfRoom(live)
+			pool, waits := poolWaits(t)
+			filler := fillPoolBut(t, pool, before-1)
+			// Once armed, the first grant the pool gives - the copy's, of the room's weight before
+			// its wait - has every byte left free taken at once, so none of what the room grew
+			// meanwhile is free when the copy weighs the room again.
+			var armed atomic.Bool
+			var rest *loadSlot
+			pool.taken = func(int64) {
+				if !armed.CompareAndSwap(true, false) {
+					return
+				}
+				taker := newLoadSlot()
+				if taker.tryTake(pool.poolBytes() - pool.held.Load()) {
+					rest = taker
+				}
+			}
+			answered, held := site.copy(t, document, live)
+			select {
+			case <-waits:
+			case err := <-answered:
+				t.Fatalf("%s finished (%v) while the pool lacked the room's weight, want it waiting for that", site.name, err)
+			case <-time.After(holdAndWaitBound):
+				t.Fatalf("%s never came to wait for the pool within %s", site.name, holdAndWaitBound)
+			}
+			// A browser's commit lands in the room while the copy's take waits.
+			if _, applied := newRoomCommitter(t, live).commitKeys(200); <-applied != nil {
+				t.Fatal("the commit to the room was refused")
+			}
+			after := service.copyOfRoom(live)
+			if after <= before {
+				t.Fatalf("the room weighs %d after the commit and %d before it, want more after, or nothing here is tested", after, before)
+			}
+			armed.Store(true)
+			filler.release()
+			err := answeredWithin(t, answered, site.name)
+			if rest == nil {
+				t.Fatalf("the pool's free bytes were not taken once %s's wait was over (it answered %v), so the pool had what the room grew and nothing here is tested", site.name, err)
+			}
+			t.Cleanup(rest.release)
+			requireGrantShort(t, err, site.name+", whose room grew by more than the pool had free once its wait was over")
+			if site.refused != nil && !errors.Is(err, site.refused) {
+				t.Fatalf("%s was answered %v, want it to wrap %v", site.name, err, site.refused)
+			}
+			if got := held(); got != before {
+				t.Fatalf("%s's grant holds %d bytes once it was refused, want the %d its wait took, as it was", site.name, got, before)
+			}
+			if total := pool.held.Load(); total != rest.bytes+before {
+				t.Fatalf("the pool holds %d bytes once %s was refused, want the %d its grant holds beside the test's %d: the refusal took part of the room's growth", total, site.name, before, rest.bytes)
+			}
+			if service.roomFailed(document) {
+				t.Fatalf("%s's refusal failed the room, whose document is sound", site.name)
+			}
+		})
+	}
+}
+
 // A server write's decode-cap count (leavesPastDecodeCap) whose top-up waits a second time weighs
 // the room again once that wait is over, and copies the room on a grant covering it as it stands
 // then: what the room committed during the second wait is in the copy. Here the count's first

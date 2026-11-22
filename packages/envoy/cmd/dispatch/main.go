@@ -1929,16 +1929,21 @@ const issueAskRepairBootTimeout = 30 * time.Second
 // withdrawn, and withdrawn asks on open issues are restored. It sweeps only the closed issues'
 // documents marked owing a settlement within the last api.IssueAskRepairInterval, so a boot does
 // not read every closed issue's documents before it serves; the interval pass's first run sweeps
-// them all. Each issue it repairs has its own line; this logs the counts. A repair that fails or
-// runs out of time is logged and the start goes on, since api.RunIssueAskRepair repairs the rest
-// every api.IssueAskRepairInterval.
+// them all. Each issue it repairs has its own line; this logs the counts at INFO. A repair that
+// fails or runs out of time is logged as the interval pass logs one, at WARN naming the next pass
+// where every issue it failed met a busy refusal of the document service, and at ERROR otherwise
+// (api.LogIssueAskRepairFailure), and the start goes on, since api.RunIssueAskRepair repairs the
+// rest every api.IssueAskRepairInterval.
 func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
-		func(ctx context.Context) ([]any, error) {
-			markedSince := time.Now().Add(-api.IssueAskRepairInterval)
-			repair, err := api.RepairIssueAsks(ctx, deps, &markedSince)
-			return repair.LogArgs(), err
-		})
+	repairCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	markedSince := time.Now().Add(-api.IssueAskRepairInterval)
+	repair, err := api.RepairIssueAsks(repairCtx, deps, &markedSince)
+	if err != nil {
+		api.LogIssueAskRepairFailure(repair, err)
+		return
+	}
+	slog.Info("dispatch: repaired the asks of closed and reopened issues", repair.LogArgs()...)
 }
 
 // bootTask runs task, a repair the boot makes before it serves, bounded by timeout, and logs what

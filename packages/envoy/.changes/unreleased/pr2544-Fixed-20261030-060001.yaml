@@ -183,6 +183,17 @@ body: |-
     pool has no whole slot free at once. A document read that waits a minute for its turn - for the
     pool, a fold slot or a database connection - before it has begun reading the document's stored
     history is answered `503` for its caller to retry and fails nothing.
+    The cursors and presence another Dispatch process relays are applied only to a room this
+    process has published, by an apply that loads no room and waits at most 3 seconds on a load
+    another caller began, and a frame refused either way is dropped. Seven log lines of the
+    server's background work - the close's sweep of an issue's asks, the ask repair of an issue and
+    of the closed and reopened issues at boot and every 10 minutes, the block index's reconciliation
+    and its skip of a document it could not index, the reference excerpts' deferral of a document
+    they could not read, and the sweep of unrecorded marks - are written at `level=WARN` with a
+    `retry` field naming what does the work again, rather than at `level=ERROR`, where the failure
+    is such a busy refusal, and the sweep of unrecorded marks then arms the document's next
+    settlement, writing a run of such refusals' first at `level=WARN`, the rest at `level=DEBUG`
+    with the count so far, and the run's end once at `level=INFO` with its count.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

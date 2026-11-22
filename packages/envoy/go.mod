@@ -329,7 +329,14 @@ require (
 // took that room out before ygo looked it up, its Apply is answered the 503 its caller retries
 // rather than loading the room on its goroutine under a grant of the load's own - unless another
 // caller's load of that room is already under way by then, which the Apply waits on holding its
-// grant, a stated risk allowApply's doc describes (internal/dispatch/docs/websocket.go). It is
+// grant, a stated risk allowApply's doc describes (internal/dispatch/docs/websocket.go). The
+// adapter refuses the same way, before it reads anything, a load whose context the awareness
+// relay's Inject of another process's update marks (withNoRoomLoad): the relay injects only into a
+// room ygo has published (holdsRoomForReaders), so its Inject creates a room only where ygo's idle
+// sweep or a close the service makes took that room out in between, and the frame is dropped
+// rather than its load waiting for the pool on the awareness lane, which every room's relayed
+// awareness waits behind; its wait on another caller's load of that room ends at its bound of 3 s
+// (awarenessInjectBound), and drops the frame too. It is
 // cut with knives on cybermonklabs/ygo as the member rel/v1.55.1-load-context; the tag is on
 // 4004ab70, the head of release/v1.55.1/2026-11-22.
 replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.2

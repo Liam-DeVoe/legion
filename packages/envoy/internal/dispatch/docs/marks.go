@@ -732,6 +732,11 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 		return
 	}
 	switch err := s.unmarkExpired(room, expired); {
+	case err == nil:
+		if state := s.lockExistingState(room); state != nil {
+			endSweepRefusalsLocked(room, state, "the sweep ran")
+			s.unlockState(room, state)
+		}
 	case errors.Is(err, errPastDecodeCap):
 		// The marks stay, and stay expired: every later settlement's pass finds them again and is
 		// refused again, which is why the refusal is logged once rather than on each.
@@ -746,12 +751,36 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 		// settlement itself, a settle delay from now, which takes the room - booking the budget's
 		// opening where no room is resident (awaitServerRoom) - and sweeps the marks with the room
 		// held. While the refusal lasts each such settlement arms the next one, one a settle
-		// delay, each logged here.
-		slog.Warn("dispatch: sweep unrecorded marks", "room", room, "retry", "the settlement this arms sweeps them", "error", err)
+		// delay. The run's first refusal is logged at Warn and each after it at Debug, with the
+		// count so far (roomState.sweepRefusals), so a document whose marks stay unswept for an
+		// hour writes one Warn line, not one a settle delay; the run's end is logged once, naming
+		// the count (endSweepRefusalsLocked).
+		state := s.lockState(room)
+		state.sweepRefusals++
+		refusals := state.sweepRefusals
+		s.unlockState(room, state)
+		if refusals == 1 {
+			slog.Warn("dispatch: sweep unrecorded marks", "room", room, "retry", "the settlement this arms sweeps them", "error", err)
+		} else {
+			slog.Debug("dispatch: sweep unrecorded marks", "room", room, "retry", "the settlement this arms sweeps them", "refusals", refusals, "error", err)
+		}
 		s.scheduleSettle(room)
 	case err != nil:
 		slog.Error("dispatch: sweep unrecorded marks", "room", room, "error", err)
 	}
+}
+
+// endSweepRefusalsLocked ends the run of the unrecorded-mark sweep's refusals on state, room's
+// (roomState.sweepRefusals), and logs its end once at Info, naming how many refusals the run
+// counted and what ended it: the sweep running on the room (sweepUnrecordedMarks), or the state's
+// release (forgetLocked, handOverFailedRoomLocked), after which no settlement of this state arms
+// another. A state with no refusals logs nothing. Its caller holds state.mu.
+func endSweepRefusalsLocked(room string, state *roomState, ended string) {
+	if state.sweepRefusals == 0 {
+		return
+	}
+	slog.Info("dispatch: the unrecorded-mark sweep's refusals ended", "room", room, "refusals", state.sweepRefusals, "ended", ended)
+	state.sweepRefusals = 0
 }
 
 // connectedMarkAuthors is every spelling of a mark's `by` attribute that names a user with a
