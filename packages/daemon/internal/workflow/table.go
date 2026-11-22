@@ -88,10 +88,14 @@ var Table = TableOf(phase.Order)
 
 // stepRows are the rows each phase of a line carries on its own role's trigger, in the table's
 // order: the step's move on to the next phase of the line (to ""), whichever phase the line puts
-// there, and the three returns, the tester's fail, a review's request for changes and the fail of
-// a step that runs as step, to implementing. A phase the line does not hold carries none of them,
-// and a phase the line holds at two places carries them at each. The retro's two moves on are no
-// step's: TableOf appends them after these rows (retroRows).
+// there, and the four returns, the tester's fail, a review's request for changes, the fail of the
+// fresh agent of acceptance (a step of the type review, whose verdict ends it, so its fail is a
+// request for changes too) and the fail of a step that runs as step, to implementing. A phase the
+// line does not hold carries none of them, and a phase the line holds at two places carries them
+// at each. The retro's two moves on are no step's: TableOf appends them after these rows
+// (retroRows). The return out of accepting is never taken on a line no plan picked: its accepting
+// is the architect's, whose completion moves nothing (ACCEPTANCE_IS_SIGN_OFF), and no review
+// settles a round outside reviewing (reviewRound).
 var stepRows = []struct {
 	from    phase.Phase
 	trigger TriggerKind
@@ -105,6 +109,7 @@ var stepRows = []struct {
 	{phase.Reviewing, TriggerReviewApproved, allow, ""},
 	{phase.Accepting, TriggerSignOff, allow, ""},
 	{phase.Reviewing, TriggerReviewRejected, allow, phase.Implementing},
+	{phase.Accepting, TriggerReviewRejected, allow, phase.Implementing},
 	{phase.Step, TriggerStepPassed, allow, ""},
 	{phase.Step, TriggerStepFailed, allow, phase.Implementing},
 }

@@ -1,9 +1,11 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -90,6 +92,52 @@ func TestAnOwnersReviewStepEndsByItsReport(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 		if after := len(issueOutboxOf(t, pool, root.Key, string(record.OutboxKindNotice))); after != notices {
 			t.Fatalf("the person's review wrote %d notices, want none", after-notices)
+		}
+	})
+}
+
+// taskRounds is the review rounds counted on task a of key's run at generation 1
+// (record.Store.ReturnCounts).
+func taskRounds(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) int {
+	t.Helper()
+	var counts record.ReturnCounts
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		counts, err = engine.store.ReturnCounts(ctx, tx, key, 1, "a")
+		return err
+	})
+	return counts.Rounds
+}
+
+// A failed review step of the owner counts no review round: the owner reviewed nothing another
+// agent wrote, so its fail is no round review_round_cap bounds. A reviewer's request for changes on
+// GitHub that rejects its round counts one, as it always has. The control is the round counted on
+// every request for changes: the owner's fail raises the count to 1.
+func TestAFailedReviewStepOfTheOwnerCountsNoRound(t *testing.T) {
+	t.Run("the owner's fail", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := ownerAtReviewStep(t, pool, engine)
+		if result := applyFacts(t, pool, engine)("fail", ownersReview(t, pool, engine, root.Key, "fail", 1)); result.Refusal != nil {
+			t.Fatalf("the owner's fail was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+		if rounds := taskRounds(t, pool, engine, root.Key); rounds != 0 {
+			t.Fatalf("task a counts %d rounds after the owner's fail, want 0", rounds)
+		}
+	})
+
+	t.Run("a reviewer's request for changes on GitHub", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Implementing)
+		seedStepsAt(t, pool, root.Key, root.Generation, 1, nil, "implementer", "reviewer")
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		applyFacts(t, pool, engine)("person-requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 3,
+			State: "changes_requested", CommitID: "head", HeadSHA: "head", Author: "a-writer", AuthorCanWrite: true, Body: "rename it"})
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+		if rounds := taskRounds(t, pool, engine, root.Key); rounds != 1 {
+			t.Fatalf("task a counts %d rounds after the request for changes, want 1", rounds)
 		}
 	})
 }

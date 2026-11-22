@@ -42,7 +42,9 @@ var testLines = [][]phase.Phase{
 // it, to done with none, is never taken on today's line. The row into accepting starts its agent,
 // as every row into a phase does: no code reads a row's effects but these tests (the engine's
 // start decides who starts), and that start, for an issue with no plan rows, is today's start
-// record of the architect alone.
+// record of the architect alone. The return out of accepting, the fail of the fresh agent of
+// acceptance, is never taken on today's line either: its accepting is the architect's, whose
+// completion moves nothing, and no review settles a round outside reviewing.
 func todaysTable() []Row {
 	rows := []Row{
 		{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: phase.Planning, Effects: []EffectKind{EffectStart, EffectNotice}},
@@ -53,6 +55,7 @@ func todaysTable() []Row {
 		{From: phase.Reviewing, Trigger: TriggerReviewApproved, Guard: allow, To: phase.Accepting, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
+		{From: phase.Accepting, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: func(s Snapshot) bool { return s.HasPullRequest }, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: func(s Snapshot) bool { return !s.HasPullRequest }, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
@@ -359,8 +362,10 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 		return in(phase.Implementing)
 	case TriggerTesterPassed, TriggerTesterFailed:
 		return in(phase.Testing)
-	case TriggerReviewApproved, TriggerReviewRejected:
+	case TriggerReviewApproved:
 		return in(phase.Reviewing)
+	case TriggerReviewRejected:
+		return in(phase.Reviewing) || in(phase.Accepting)
 	case TriggerStepPassed, TriggerStepFailed:
 		return in(phase.Step)
 	case TriggerRetroCompleted:

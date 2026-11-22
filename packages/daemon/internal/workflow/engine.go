@@ -1228,6 +1228,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
+	// The pass of the fresh agent of acceptance is the step's sign-off (accept), refused while an
+	// issue beneath this one is still in the workflow, as the owner's sign-off is (signOffRefusal).
+	// It is judged before anything is written, and leaves the fact unspent, so the same report
+	// applies once the issues beneath have left.
+	if current && issue.Phase == phase.Accepting && fact.Verdict == "pass" {
+		if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+			return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
+		}
+	}
 	// The round as the completion found it is what a notice is deduped against (settleRound): a
 	// round already stuck at this head before the completion was told then, and the completion
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
@@ -1285,6 +1294,22 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
+	case phase.Accepting:
+		// A completion current at accepting is the fresh agent of acceptance's (Walk.RoleAt names
+		// that role at a step of acceptance no owner does): the architect's own is refused above
+		// (ACCEPTANCE_IS_SIGN_OFF), and the owner accepts with sign_off and request_backward_move.
+		// It ends its step by its verdict, keeping the commit it read (recordStepReview): its pass
+		// is the sign-off's own move (accept), and its fail returns the work as a review's request
+		// for changes does, to the step its returnTo names or to the one its plan reads.
+		if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
+			return intake.Result{}, err
+		}
+		switch fact.Verdict {
+		case "fail":
+			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerReviewRejected, returnTo, row, pr, "")
+		case "pass":
+			return intake.Result{}, e.accept(ctx, tx, *issue)
+		}
 	case phase.Step:
 		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
 		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget). A
@@ -2498,27 +2523,43 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
 	}
-	open, err := e.openBeneath(ctx, tx, *issue)
-	if err != nil {
-		return intake.Result{}, err
+	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
-	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, strings.Join(open, ", "))), nil
+	return intake.Result{}, e.accept(ctx, tx, *issue)
+}
+
+// signOffRefusal is why issue, standing in accepting, is not accepted now, nil where it is: an
+// issue beneath it still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW). The owner's sign-off and the
+// pass of the fresh agent of acceptance are both judged by it (signOff, handoff), before either
+// writes anything.
+func (e *Engine) signOffRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
+	open, err := e.openBeneath(ctx, tx, issue)
+	if err != nil || len(open) == 0 {
+		return nil, err
 	}
-	accepted, err := e.acceptedRole(ctx, tx, *issue)
+	return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
+		issue.Key, strings.Join(open, ", "))).Refusal, nil
+}
+
+// accept is the move of an accepted step, issue standing in accepting: on to the task's next step,
+// or to the retro, told the report of the step the acceptance accepted (acceptedRole) with the
+// pull request. The owner's sign-off and the fresh agent of acceptance's pass both move by it,
+// past signOffRefusal.
+func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	accepted, err := e.acceptedRole(ctx, tx, issue)
 	if err != nil {
-		return intake.Result{}, err
+		return err
 	}
 	report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
 	if err != nil {
-		return intake.Result{}, err
+		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
-		return intake.Result{}, err
+		return err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, record.TaskPlace{}, report, pr, "")
+	return e.transition(ctx, tx, issue, TriggerSignOff, record.TaskPlace{}, report, pr, "")
 }
 
 // acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
@@ -2610,9 +2651,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// The fail of a step of the type review that runs as step and whose agent is not the owner
-	// counts a review round too (Walk.reviewFails).
-	if trigger == TriggerReviewRejected || trigger == TriggerStepFailed && w.reviewFails() {
+	// A review's request for changes counts a review round, and so does the fail of a step of the
+	// type review that runs as step (Walk.reviewFails), each only where the step's agent is not the
+	// owner, whose own step reviews nothing another agent wrote: the owner's fail of its review step
+	// counts none. An issue with no plan rows has no owner's step.
+	if trigger == TriggerReviewRejected && !w.OwnerAt(w.Place) || trigger == TriggerStepFailed && w.reviewFails() {
 		if err := e.recordRound(ctx, tx, issue, w.Task, pr); err != nil {
 			return err
 		}
