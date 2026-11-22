@@ -54,8 +54,11 @@ revision:
   one whose delete failed stays there for the cleanup. A cleanup drops a retired name the server
   does not hold, except an abandoned candidate read absent before its time has passed: its create
   can still land, and the consumer it makes must stay named, so the next cleanup deletes it. Names
-  ends each create at the family's `Config.CreateBound`, the bound its requests run under: the
-  session family's consumer requests' 10 s, the listener's durable calls' 10 s. A create the server
+  ends each create once the family's `Config.CreateBound` has passed since the operation's
+  reservation, its `Config.Reserved` hook's time included, and sends no create past it: the bound
+  its requests run under, the session family's consumer requests' 10 s, the listener's durable
+  calls' 10 s. A retirement comes after the reservation, so its `until` is no earlier than the
+  create's end. A create the server
   applies later still, past the bound its client waited, is a stated limit: the consumer it leaves
   is named by no record, and the stream's inactive threshold removes it.
 - **Where records live, and their keys.** A store reads and writes only its own family's

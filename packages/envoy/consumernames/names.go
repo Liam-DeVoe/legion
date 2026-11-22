@@ -104,10 +104,11 @@ type Config struct {
 	// Poll is how often a call waiting on such an operation reads again: 50 ms when 0.
 	Poll time.Duration
 	// CreateBound is the longest one create of the family's CreateFunc can run, the bound its
-	// requests already run under (the creator's own constant). Names ends each create at it, and
-	// records it in each operation it reserves (Op.CreateWithin), so a process that retires the
-	// candidate without seeing its create end keeps the name in the record until the create can no
-	// longer land (Record.Abandoned, Cleanup). Required.
+	// requests already run under (the creator's own constant). Names ends each create once it has
+	// passed since the operation's reservation, the Reserved hook's time included, and sends none
+	// past it (boundedCreate); it records it in each operation it reserves (Op.CreateWithin), so a
+	// process that retires the candidate without seeing its create end keeps the name in the record
+	// until the create can no longer land (Record.Abandoned, Cleanup). Required.
 	CreateBound time.Duration
 	// CheckKey refuses a logical name before anything is written: CheckKey when nil. A
 	// creator takes it from its family's Naming (FamilyNaming), whose rule is the family's own:
@@ -539,7 +540,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 	for attempt := 0; ; attempt++ {
 		op := sel.Record.Op
 		start := Start{Seq: sel.Record.Start, Native: op.Native}
-		info, err := n.boundedCreate(ctx, create, op.Candidate, start)
+		info, err := n.boundedCreate(ctx, create, *op, start)
 		switch {
 		case err == nil:
 			return n.publish(ctx, sel, info, operation, OutcomeOK)
@@ -593,13 +594,27 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 	}
 }
 
-// boundedCreate runs create of candidate at start for at most the family's create bound
-// (Config.CreateBound), which the operation records (Op.CreateWithin): a candidate retired without
-// its create's end seen can land no later than that bound after its retirement.
-func (n *Names) boundedCreate(ctx context.Context, create CreateFunc, candidate string, start Start) (*jetstream.ConsumerInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, n.cfg.CreateBound)
+// boundedCreate runs create of op's candidate at start until op's create bound (Op.CreateWithin,
+// else the family's Config.CreateBound) has passed since op's reservation (Op.ReservedAt), on this
+// process's clock. The time the reserver spends after its reservation (its Config.Reserved hook
+// among it) spends the create's budget, so the create ends no later than the bound after the
+// reservation: a retirement, which comes after the reservation, keeps the candidate until no
+// earlier than that (Record.Abandoned). A budget spent before the create is sent sends nothing and
+// answers context.DeadlineExceeded, on which launch reads the candidate absent and goes on to a
+// fresh one.
+func (n *Names) boundedCreate(ctx context.Context, create CreateFunc, op Op, start Start) (*jetstream.ConsumerInfo, error) {
+	within := op.CreateWithin
+	if within <= 0 {
+		within = n.cfg.CreateBound
+	}
+	left := within - n.cfg.Now().Sub(op.ReservedAt)
+	if left <= 0 {
+		return nil, fmt.Errorf("consumer names: the create of %s was not sent: its bound %s since its reservation at %s has passed: %w",
+			op.Candidate, within, op.ReservedAt.Format(time.RFC3339Nano), context.DeadlineExceeded)
+	}
+	ctx, cancel := context.WithTimeout(ctx, left)
 	defer cancel()
-	return create(ctx, candidate, start)
+	return create(ctx, op.Candidate, start)
 }
 
 // rereserve retires sel's open operation's candidate and reserves a fresh one, keeping native as
