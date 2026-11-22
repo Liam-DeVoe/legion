@@ -1,9 +1,10 @@
 package main
 
 // starting_gate.go is the gate a route waits behind until its dependencies are open, /v1 as main
-// mounts it behind that gate (v1API), and /readyz, which reads that gate alone.
+// mounts it behind that gate (v1API), and /readyz, which reads that gate and the bus.
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -99,20 +100,35 @@ func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
 	return gate.ahead(apiAuth(auth, gate))
 }
 
-// readyzHandler is the listener's /readyz. `GET /readyz` reflects only whether /v1 serves: 503
-// until the /v1 gate opens, 200 after; a load balancer's health check reads it. Its bodies are
-// {"status":"starting"} and {"status":"serving"}. It takes no credential and reads nothing but
-// the gate, so it tells a listener whose /v1 serves from one whose /v1 still answers the closed
-// gate's 503, which /healthz does not: that answers 200 "starting" from the listener's first
+// readyzHandler is the listener's /readyz. `GET /readyz` answers whether /v1 can serve, and a load
+// balancer's health check reads it: 503 {"status":"starting"} until the /v1 gate opens and its
+// dependencies are published to served (openV1Routes); after that, 503
+// {"status":"unavailable","error":"nats unavailable"} while the bus does not answer, the check
+// that turns /healthz 503 (busAnswers, within healthzBudget), since /v1's routes then answer
+// bus-unavailable 503s; and 200 {"status":"serving"} otherwise, again as soon as the bus answers.
+// It takes no credential and reads no store: the gate, and one core PING on the listener's
+// connection.
+//
+// The balancer reads this path because the pod's readiness does not take a replica out of its
+// backends. GKE's standalone NEGs keep a NOT-READY endpoint: ingress-gce's
+// EndpointsDataFromEndpointSlices drops only terminating endpoints and records Ready without
+// reading it (pkg/neg/types/types.go:394-417 at ba5195c), and toZoneNetworkEndpointMap adds every
+// address with no Ready check (pkg/neg/syncers/utils.go:254). So a replica whose /healthz answers
+// 503 for a cut bus stays in the NEG, and only this answer stops the balancer sending it /v1
+// requests. /healthz does not serve here: it answers 200 "starting" from the listener's first
 // answer (healthzHandler), since the probes that read it must not take a starting listener out of
-// service, and its bus checks answer for delivery rather than for /v1. The gate never closes
-// again, so once /v1 opens this answers 200 also while the bus is down and /v1 answers
-// bus-unavailable 503s: the pod's readiness probe stays on /healthz, which answers 503 then, so
-// such a replica still leaves the balancer's backends.
-func readyzHandler(gate *startingGate) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		if gate.mux.Load() == nil {
+// service.
+func readyzHandler(gate *startingGate, served *atomic.Pointer[listenerDeps]) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		d := served.Load()
+		if gate.mux.Load() == nil || d == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "starting"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
+		defer cancel()
+		if err := busAnswers(ctx, d); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": "nats unavailable"})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "serving"})
