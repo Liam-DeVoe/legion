@@ -287,6 +287,7 @@ func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string
 		Server:   freshServer{d},
 		Prefix:   naming.Prefix,
 		Fixed:    naming.Fixed,
+		Metadata: naming.Metadata,
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: fresh.streamID,
 		MissingRecord: func(_ context.Context, logical string) error {
@@ -474,7 +475,8 @@ func converted[To any](from any) (*To, error) {
 
 // createConfig is the config createFresh sends candidate name, its start aside: this build's, or
 // deployed's own where that consumer carries a higher configuration generation (newestConfig, as
-// takeOverConfig keeps a newer build's), named name and marked with the durable's logical name.
+// takeOverConfig keeps a newer build's), named name and marked with the family table's metadata of
+// the durable's logical name (consumernames.LogicalNaming), which Names.Owns reads.
 func (d *heldDurable) createConfig(name string, deployed *natsgo.ConsumerInfo) natsgo.ConsumerConfig {
 	config := d.config()
 	if deployed != nil {
@@ -485,7 +487,7 @@ func (d *heldDurable) createConfig(name string, deployed *natsgo.ConsumerInfo) n
 	if config.Metadata == nil {
 		config.Metadata = map[string]string{}
 	}
-	config.Metadata[consumernames.LogicalMetadataKey] = d.fresh.logical
+	maps.Copy(config.Metadata, consumernames.LogicalNaming().Metadata(d.fresh.logical))
 	return config
 }
 
