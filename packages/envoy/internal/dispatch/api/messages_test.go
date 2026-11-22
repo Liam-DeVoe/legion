@@ -551,6 +551,7 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 		}))
 		defer listener.Close()
 		clock := clocktest.New(time.Now())
+		calls.on(clock)
 		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 		issue := createInteractionIssue(t, handler, "TEST", "Timeout listener", "before")
 		sent := make(chan *httptest.ResponseRecorder, 1)
@@ -1709,6 +1710,7 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 	}))
 	defer listener.Close()
 	clock := clocktest.New(time.Now())
+	calls.on(clock)
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A send that landed then timed out", "before")
 

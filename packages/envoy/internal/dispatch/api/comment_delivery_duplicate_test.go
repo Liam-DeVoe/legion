@@ -77,6 +77,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 	}))
 	defer listener.Close()
 	clock := clocktest.New(time.Now())
+	calls.on(clock)
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A mention that landed then timed out", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -150,6 +151,7 @@ func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 		listener.Close()
 	}()
 	clock := clocktest.New(time.Now())
+	calls.on(clock)
 	handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A resolution that timed out", "before")
 
