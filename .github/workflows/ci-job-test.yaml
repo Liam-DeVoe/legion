@@ -222,6 +222,10 @@ on:
           dispatch-browser-run-reads.test.sh and what it tests.
         type: string
         required: true
+      gh_read_test:
+        description: "ci.yaml's needs.changes.outputs.gh_read_test: gh-read.test.sh and what it tests."
+        type: string
+        required: true
       race_memory_test:
         description: "ci.yaml's needs.changes.outputs.race_memory_test: race_memory.test.sh and what it tests."
         type: string
@@ -265,12 +269,14 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the forty-three shell-script harnesses
+    # left is the Bun install, the Claude Code plugin build, the forty-four shell-script harnesses
     # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
     # the hour.
     timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -499,6 +505,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
         run: .github/scripts/dispatch-browser-run-reads.test.sh
 
+      # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
+      # GitHub; its last case reads this job's own Runner.Worker, which only a runner has.
+      - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
+        if: inputs.changes-result != 'success' || inputs.gh_read_test == 'true'
+        run: .github/scripts/gh-read.test.sh
+
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
@@ -585,6 +597,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.

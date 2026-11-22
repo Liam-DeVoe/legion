@@ -1345,20 +1345,28 @@ bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, a
 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
 that step carries. The rule's two-minute floor does not bind.
 
-GitHub's rate limit is the one refusal the ladder waits out for longer, and the 3 min is what
-bounds that wait. Twice the jobs read was refused `API rate limit exceeded for installation` on
-all three attempts and failed the job on a read that would have answered minutes later: job
-136922567868 of run 44926842882 at 17:22Z on 2026-11-21, and job 137064876909 of pull request
-run 44974625499 at 02:21Z on 2026-11-22. The read now runs gh_read with
-GH_READ_WAIT_CAP_SECONDS set, so a refusal that names the rate limit is followed by a read of
-`gh api rate_limit`, and where that shows no call left, the ladder waits until 3 s past its
-reset and asks again. gh-read.sh's head says why the reset is read that way. The cap is the
-step's 180 s less the work left in the step after a wait: the attempt the wait is followed by,
-which `timeout 30` bounds, and the step's own work, 4.6 s as above. Its own work was 2.6 s in
-job 137066953032 of run 44974729436 on 2026-11-22: the step started at 02:30:00.76Z and the
-next one at 02:30:03.35Z. So 180 - 30 - 4.6 = 145.4 s, and the cap is 145 s. A reset further
-off than that fails the step as before, after one attempt, with a line naming the reset and the
-cap. A 403 that names no rate limit fails it at once.
+A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
+waits for GitHub to answer again only when that falls at least 30 s before this step's limit and
+the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as
+STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So the
+wait never outlives either budget, and the budgets need no room for it: a step that would have to
+wait past them fails by name instead, and a re-run after the reset reads the jobs again.
+
+That is the one rule both of the browser lane's readers of GitHub follow for a rate limit: this
+jobs read through gh-read.sh, and packages/dispatch/e2e/tools/quarantine-check.ts, the nightly's
+quarantine check (.github/ci-notes/dispatch-browser-nightly.md#the-quarantine-checks-measured-steps-and-its-budget).
+Each waits for the time GitHub names only when that time falls at least 30 s (gh-read.sh's
+GH_WAIT_MARGIN) before the earlier of two deadlines: JOB_TIMEOUT_MINUTES after the job's start
+and STEP_TIMEOUT_MINUTES after the step's, both starts read off the runner's process tree, the
+job's from the Runner.Worker process GitHub's runner starts for it and the step's from that
+process's child. With neither set, or no Runner.Worker among its parents, a reader has no
+deadline and waits for nothing. In this step the step's limit binds: the steps before it take
+30 s at most by the maxima above, so its 180 s end before the job's 240 s do. A wait ends no later
+than 150 s after the step's start, which leaves 30 s for the read after it and the step's own
+4.6 s. The wait was made for two refusals of the jobs read, `API rate limit exceeded for
+installation` on all three attempts, that failed the job on a read that would have answered
+minutes later: job 136922567868 of run 44926842882 at 17:22Z on 2026-11-21, and job
+137064876909 of pull request run 44974625499 at 02:21Z on 2026-11-22.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: 40 s less reading

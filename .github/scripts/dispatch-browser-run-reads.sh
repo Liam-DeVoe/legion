@@ -48,9 +48,9 @@
 # what this endpoint answers today, not a promise: a bigger matrix pages again, and `--paginate`
 # is what keeps that a longer array rather than a short list nothing reports.
 #
-# The read goes through gh-read.sh's ladder, which waits out GitHub's rate limit up to the cap
-# set beside the call below, and each attempt is bounded by `timeout 30`, which the ladder does
-# not bound: a host that accepts the connection and then sends nothing would hang the step.
+# The read goes through gh-read.sh's ladder, whose gh_wait_reset waits out GitHub's rate limit
+# within the job's and the step's limits, and each attempt is bounded by `timeout 30`, which the
+# ladder does not bound: a host that accepts the connection and sends nothing would hang the step.
 # A read refused after the ladder names the endpoint, which attempt decided the failure - the
 # last one the ladder made - and what that attempt did, what each earlier attempt did where it
 # did something else, how many attempts that was and the run attempt, and says in those words
@@ -64,7 +64,7 @@
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the step "Reading one, the
 # rows" sets GH_TOKEN in its `env:`, a key ci_filter_coverage.py's ENV_ALLOWED holds, and the
-# tests' GH_READ_WAIT_CAP_SECONDS - never an argument, which every process of the runner reads.
+# job's and the step's limits for gh-read.sh's wait - never an argument, which any process reads.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, or
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused
@@ -186,24 +186,26 @@ case "$mode" in
     # refusal line below has no other way to tell that case from a refusal gh printed no
     # status for.
     #
-    # The ladder waits out GitHub's rate limit, up to GH_READ_WAIT_CAP_SECONDS seconds in all
-    # (gh-read.sh's gh_read_waiting says how), and the cap is 145 s where the environment sets
-    # none, which only the tests do. It is the budget of the step that runs this read, "Reading
-    # one, the rows" of dispatch-browser.yaml's merge job, `timeout-minutes: 3`, less the work
-    # left in that step after a wait: 180 s - 30 s, the bound of the attempt the wait is followed
-    # by - 4.6 s, the step's own work, 4 s at most over the 32 merge jobs
-    # .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget measured,
-    # x 1.15 = 145.4 s, so 145 s. The step's own work was 2.6 s in job 137066953032 of run
-    # 44974729436 on 2026-11-22, from its start at 02:30:00.76Z to the next step's at 02:30:03.35Z.
-    # Before the cap, a rate limit failed the step after its three attempts and 30 s of waits: job
-    # 136922567868 of run 44926842882 at 17:22Z on 2026-11-21, and job 137064876909 of run
+    # gh_read takes each attempt through gh-read.sh's gh_wait_reset, which waits out a spent API
+    # budget or a secondary rate limit only when GitHub will answer again at least GH_WAIT_MARGIN
+    # (30 s) before the earlier of the job's limit and the step's, and fails the read by name at
+    # once otherwise; gh-read.sh's head says how it reads both. In "Reading one, the rows" of
+    # dispatch-browser.yaml's merge job the step's limit binds, `timeout-minutes: 3` from the
+    # step's start, so a wait ends no later than 150 s after it, which leaves 30 s for the
+    # attempt after the wait and the step's own work, 4.6 s at most
+    # (.github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget): an
+    # attempt that ran to its `timeout 30` bound there would meet the step's limit, which names
+    # the step. The attempt after a wait is a second run of the wrapper below, so the count of
+    # attempts holds it.
+    # Before the wait, a rate limit failed the step after its three attempts and 30 s of waits:
+    # job 136922567868 of run 44926842882 at 17:22Z on 2026-11-21, and job 137064876909 of run
     # 44974625499 at 02:21Z on 2026-11-22, each refused `API rate limit exceeded for
     # installation` three times.
     work=$(mktemp -d)
     trap 'rm -rf "$pages" "$work"' EXIT
     printf '0' > "$work/attempts"
     set +e
-    GH_READ_WAIT_CAP_SECONDS=${GH_READ_WAIT_CAP_SECONDS:-145} gh_read bash -c '
+    gh_read bash -c '
       attempt=$(( $(cat "$1/attempts") + 1 ))
       printf "%s" "$attempt" > "$1/attempts"
       timeout 30 gh api --paginate --slurp "$2" 2> "$1/stderr.$attempt"
