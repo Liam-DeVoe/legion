@@ -8,7 +8,11 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
-import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import {
+  FREEZE_WAIT_DEADLINES_MS,
+  RECOVERY_BOUND_MS,
+  runFreezeScenario,
+} from "@legion/envoy-client/test/stall-scenario"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
@@ -36,10 +40,11 @@ interface ChannelServer {
   readonly home: string
   /** The channel messages Claude Code would be shown, in the order the server sent them. */
   readonly channel: readonly string[]
-  /** Resolves once `condition` holds; throws when the server exits or `deadline` passes first. */
+  /** Resolves once `condition` holds; throws when the server exits or `deadline`, where one is
+   *  given, passes first. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
-    deadline: number,
+    deadline: number | undefined,
     what: string,
   ): Promise<void>
   /** Stops the server (SIGTERM, then SIGKILL after 10 s), closes the proxy, removes its home. */
@@ -131,7 +136,9 @@ async function startChannelServer(
             `the channel server exited ${server.exitCode} waiting for ${what}: ${stderr}`,
           )
         }
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}: ${stderr}`)
+        if (deadline !== undefined && Date.now() > deadline) {
+          throw new Error(`timed out waiting for ${what}: ${stderr}`)
+        }
         await Bun.sleep(100)
       }
     },
@@ -198,6 +205,7 @@ describe.skipIf(!envoyStackEnabled)(
           proxy,
           shown: (marker) => channel.filter((content) => content.includes(marker)),
           waitFor,
+          waitDeadlinesMs: FREEZE_WAIT_DEADLINES_MS,
         })
       } finally {
         await stop()

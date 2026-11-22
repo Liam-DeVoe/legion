@@ -21,13 +21,34 @@ export interface FreezeScenarioHost {
   readonly proxy: StallProxy;
   /** The text of every message the host showed the session that holds `marker`, in order. */
   shown(marker: string): readonly string[];
-  /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first. */
+  /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first. A
+   *  wait given no deadline ends at the row's own limit, the host's hang guard. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
-    deadline: number,
+    deadline: number | undefined,
     what: string
   ): Promise<void>;
+  /** Deadlines for the waits whose time the scenario does not assert: the first registration
+   *  (`registered`), the live message before the freeze (`live`) and the message after the
+   *  reconnect (`after`), each from the wait's start. A host that passes none waits each out to
+   *  its row's limit. The recovery within `RECOVERY_BOUND_MS` is asserted, so it always has its
+   *  deadline. */
+  readonly waitDeadlinesMs?: FreezeWaitDeadlines;
 }
+
+/** {@link FreezeScenarioHost.waitDeadlinesMs}. */
+export interface FreezeWaitDeadlines {
+  readonly registered: number;
+  readonly live: number;
+  readonly after: number;
+}
+
+/** The deadlines the scenario's waits had before a host could leave them out. */
+export const FREEZE_WAIT_DEADLINES_MS: FreezeWaitDeadlines = {
+  registered: 30_000,
+  live: 10_000,
+  after: 10_000,
+};
 
 /** The fields of the listener's session entry (`envoy_sessions`) the scenario reads. */
 const SessionEntrySchema = z.object({
@@ -86,7 +107,10 @@ async function subscribedSince(monitorUrl: string, subject: string, since: numbe
  * real time.
  */
 export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void> {
-  const { label, stack, sessionID, proxy, shown, waitFor } = host;
+  const { label, stack, sessionID, proxy, shown, waitFor, waitDeadlinesMs } = host;
+  /** `now` plus the wait's deadline when the host gave one; otherwise none. */
+  const deadline = (now: number, wait: keyof FreezeWaitDeadlines): number | undefined =>
+    waitDeadlinesMs === undefined ? undefined : now + waitDeadlinesMs[wait];
   // The subject the session's own connection takes every message on.
   const sessionSubject = deliverSubject(sessionID);
   const send = async (marker: string) => {
@@ -112,13 +136,13 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
         if (firstEpoch === undefined) return false;
         return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
       },
-      started + 30_000,
+      deadline(started, "registered"),
       "the session's registration answered consumer, with its relay subject subscribed"
     );
 
     const live = `stall-live-before-${run}`;
     await send(live);
-    await waitFor(() => shown(live).length > 0, Date.now() + 10_000, "the live message");
+    await waitFor(() => shown(live).length > 0, deadline(Date.now(), "live"), "the live message");
 
     const frozenAt = proxy.freeze();
     const missed = `stall-missed-${run}`;
@@ -153,7 +177,7 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     await send(after);
     await waitFor(
       () => shown(after).length > 0,
-      Date.now() + 10_000,
+      deadline(Date.now(), "after"),
       "the message after the reconnect"
     );
 
