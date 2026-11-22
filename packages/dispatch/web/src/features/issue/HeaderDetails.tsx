@@ -23,14 +23,15 @@ const readOpen = (stored: string | null) => stored === "open";
 const writeOpen = (open: boolean) => (open ? "open" : "closed");
 
 /**
- * The end of today's issue header: the row that holds `leading` (the header's labels) and the
- * one disclosure, Details, then its panel. Open, the panel lists every property of the issue a
- * reader does not act on in the header itself, as a definition list of a name and a value per
- * row (`rows`), and then `after`, the panels a row's own control opens (who is subscribed, what
- * references the issue).
+ * The end of today's issue header: the row that holds `leading` (the header's labels), then
+ * `trailing` (its actions) and the one disclosure, Details, at the row's right end, then the
+ * panel. Open, the panel lists every property of the issue a reader does not act on in the header
+ * itself, as a definition list of a name and a value per row (`rows`), and then `after`, the
+ * panels a row's own control opens (who is subscribed, what references the issue).
  *
- * The groups of the row, in this order: Labels (`leading`) and Details. When the row is too
- * narrow, Details moves to the next line whole.
+ * The groups of the row, in this order: Labels (`leading`), Actions (`trailing`) and Details.
+ * When the row is too narrow, Actions and Details move to the next line together and whole, and
+ * stay at its right end.
  *
  * The panel lays its rows out by its own width, not the viewport's: one row per line, and two per
  * line from 56 rem (about 900 px), since the header's width at one viewport depends on the
@@ -44,26 +45,31 @@ export function HeaderDetails({
   after,
   leading,
   rows,
+  trailing,
 }: {
   after?: ReactNode;
   leading: ReactNode;
   rows: readonly HeaderDetailsRow[];
+  trailing?: ReactNode;
 }): ReactNode {
   const [open, setOpen] = useUserPreference("issue.details", readOpen, writeOpen);
   const panelId = useId();
   return (
     <>
-      <div className="flex min-w-0 flex-wrap items-end gap-x-4 gap-y-2">
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-x-4 gap-y-2">
         {leading}
-        <button
-          aria-controls={panelId}
-          aria-expanded={open}
-          className={`min-h-11 shrink-0 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-          onClick={() => setOpen(!open)}
-          type="button"
-        >
-          Details
-        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {trailing}
+          <button
+            aria-controls={panelId}
+            aria-expanded={open}
+            className={`min-h-11 shrink-0 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+            onClick={() => setOpen(!open)}
+            type="button"
+          >
+            Details
+          </button>
+        </div>
       </div>
       {open ? (
         <div

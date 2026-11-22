@@ -64,7 +64,7 @@ import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
+import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -124,10 +124,11 @@ const headerGroup = "flex min-w-0 max-w-full flex-wrap items-center gap-2";
  *    approval chip of the primary document or the gate's steps.
  * 3. Attention: whose turn it is (waiting on you, or on agents), a route that reaches nobody
  *    (unreachable, unresponsive, or unknown and why), and the claim with Release beside it.
- * 4. Actions: Close issue.
- * 5. Labels: the labels, at most 10 and then "+N", and the control that edits them.
- * 6. Details: one disclosure (`HeaderDetails`), whose panel holds every other property as a name
- *    and a value, each with the control that edits it.
+ * 4. Labels: the labels, at most 10 and then "+N", and the control that edits them, at the left
+ *    of the header's last line.
+ * 5. Actions: Close issue, at the right end of that line.
+ * 6. Details: one disclosure (`HeaderDetails`) beside Actions, whose panel holds every other
+ *    property as a name and a value, each with the control that edits it.
  */
 export function IssueHeader({
   documentArtifact,
@@ -513,14 +514,23 @@ export function IssueHeader({
     {
       id: "referenced-by",
       label: "Referenced by",
-      value: (
-        <ReferencedByToggle
-          controls={referencesPanelId}
-          count={issue.referenced_by_count}
-          expanded={referencesOpen}
-          onToggle={() => setReferencesOpen((open) => !open)}
-        />
-      ),
+      // The row names the property, so the control draws the count alone; its name keeps the
+      // words, the count in them. A count of none is a fact, not a control.
+      value:
+        issue.referenced_by_count === 0 ? (
+          <span className={textMutedOnSurface}>0</span>
+        ) : (
+          <button
+            aria-controls={referencesPanelId}
+            aria-expanded={referencesOpen}
+            aria-label={`Referenced by (${issue.referenced_by_count})`}
+            className={`inline-flex min-h-11 items-center rounded-full px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 md:min-h-8 md:py-1 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+            onClick={() => setReferencesOpen((open) => !open)}
+            type="button"
+          >
+            {issue.referenced_by_count}
+          </button>
+        ),
     },
     {
       id: "parent",
@@ -844,26 +854,6 @@ export function IssueHeader({
               </span>
             )}
           </div>
-          {isClosed ? null : (
-            <div className={headerGroup} data-testid="issue-actions">
-              <button
-                aria-label="Close issue"
-                className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                disabled={updateIssue.isPending}
-                onClick={() => drafts.requestStatusSubmit("done")}
-                type="button"
-              >
-                {pendingStatus === "done" ? (
-                  "Closing…"
-                ) : (
-                  <>
-                    <span className="sm:hidden">Close</span>
-                    <span className="hidden sm:inline">Close issue</span>
-                  </>
-                )}
-              </button>
-            </div>
-          )}
         </div>
       </div>
       <HeaderDetails
@@ -895,6 +885,28 @@ export function IssueHeader({
               saving={labelsMutation.isPending}
             />
           </div>
+        }
+        trailing={
+          isClosed ? null : (
+            <div className={headerGroup} data-testid="issue-actions">
+              <button
+                aria-label="Close issue"
+                className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+                disabled={updateIssue.isPending}
+                onClick={() => drafts.requestStatusSubmit("done")}
+                type="button"
+              >
+                {pendingStatus === "done" ? (
+                  "Closing…"
+                ) : (
+                  <>
+                    <span className="sm:hidden">Close</span>
+                    <span className="hidden sm:inline">Close issue</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )
         }
         rows={detailsRows}
       />
