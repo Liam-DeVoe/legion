@@ -859,16 +859,18 @@ func samePullRequest(got, want PullRequest) bool {
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
-// that works it and the wake it named among them — with its null columns (the wake times, the
-// close and the outcome) absent until written; it is keyed by its issue, so a second write of the
-// same issue replaces the first. The open lists leave a closed check out,
-// OpenProductionChecksOfTree those of other trees too, and both order by the open.
+// that works it, the wake it named and the time of the report that named it among them — with its
+// null columns (the wake times, the report's time, the close and the outcome) absent until
+// written; it is keyed by its issue, so a second write of the same issue replaces the first. The
+// open lists leave a closed check out, OpenProductionChecksOfTree those of other trees too, and
+// both order by the open.
 func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	opened := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
 	woke, lastWoke, wakeAt, closed := opened.Add(time.Minute), opened.Add(2*time.Hour), opened.Add(4*time.Hour), opened.Add(3*time.Hour)
+	reported := opened.Add(150 * time.Minute)
 	root, child, other := issueFixture("LEGION-300"), issueFixture("LEGION-301"), issueFixture("LEGION-310")
 	child.Tree, other.Tree = root.Key, other.Key
 	// fresh carries no wake: nothing has named one and no look has gone unreported.
@@ -880,7 +882,7 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		Issue: root.Key, Project: "LEGION", Tree: root.Key, Repo: "sjawhar/legion", Number: 1300, MergeSHA: "d4e5f6", Role: claim.RoleTester,
 		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 2, LookOpen: true, LookWakeAt: &woke,
 		LastWakeKind: "check wake", LastWakeDetail: "the tester's own wake", LastWakeAt: &lastWoke,
-		WakeAt: &wakeAt, Last: true,
+		WakeAt: &wakeAt, ReportedAt: &reported, Last: true,
 	}
 	done := ProductionCheck{
 		Issue: other.Key, Project: "LEGION", Tree: other.Key, Repo: "sjawhar/legion", Number: 1310, MergeSHA: "e5f6a7", Role: claim.RoleImplementer,
@@ -940,7 +942,7 @@ func sameProductionCheck(got *ProductionCheck, want ProductionCheck) bool {
 		got.Number == want.Number && got.MergeSHA == want.MergeSHA && got.OpenedAt.Equal(want.OpenedAt) && got.BoundAt.Equal(want.BoundAt) &&
 		got.Role == want.Role && got.Looks == want.Looks && got.LookOpen == want.LookOpen && sameInstant(got.LookWakeAt, want.LookWakeAt) &&
 		got.LastWakeKind == want.LastWakeKind && got.LastWakeDetail == want.LastWakeDetail && sameInstant(got.LastWakeAt, want.LastWakeAt) &&
-		sameInstant(got.WakeAt, want.WakeAt) && got.Last == want.Last &&
+		sameInstant(got.WakeAt, want.WakeAt) && sameInstant(got.ReportedAt, want.ReportedAt) && got.Last == want.Last &&
 		sameInstant(got.ClosedAt, want.ClosedAt) && got.Outcome == want.Outcome
 }
 
@@ -2340,7 +2342,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
-		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
+		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "reported_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "told_changes_by"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words", "person_answer_words", "person_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",

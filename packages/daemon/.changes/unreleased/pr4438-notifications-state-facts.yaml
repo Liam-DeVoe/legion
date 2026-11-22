@@ -34,7 +34,10 @@ body: |-
   its verdict beside `last: true` (`pending: only_with_no_deploy_only_requirement`) and that a last
   look nobody reported closes the check as not run (`unreported: not_run`). A look's task names a
   bound that is not whole days in hours (`bound_hours`, a decimal where it is one) rather than cut
-  to whole days. An update-stalled notice names who suspended each suspended claim it lists
+  to whole days. The look that a pending report's wake starts names when the daemon recorded that
+  report on the block of its summary (`at`), which the check keeps (`production_checks.reported_at`,
+  migration `20261122011615_production_check_reported_at`); the look of a check recorded before it
+  names no time. An update-stalled notice names who suspended each suspended claim it lists
   (`suspended_by: operator` for the claims the operator must resume, an operator's suspension held
   for a claim's turn among them, and `suspended_by: pause` for a claim a project's pause stopped
   and still owes a launch, apart from an idle release's `released`), a phase-finished notice of a

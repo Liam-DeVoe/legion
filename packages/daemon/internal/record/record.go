@@ -1364,8 +1364,13 @@ func (m MergeState) Mergeable() bool {
 // LastWakeDetail are what woke the latest look (the merge, the bound, the agent's own wake) and
 // LastWakeAt when; WakeAt is when the check is next looked at — the time the checking agent
 // named on a pending report, or the retry of a look nobody reported — and is nil when neither
-// stands. Last marks the bound's look, after which no look starts. A closed check has ClosedAt
-// and its Outcome.
+// stands. ReportedAt is when the daemon recorded the check's latest pending report, in the
+// transaction that names that report's wake (workflow.checkReported, which writes the check_wake
+// row where the wake falls before the bound), and the look that wake starts names it as the time
+// of the report's summary (workflow.CheckLook). A look nobody reported clears it, since the wake
+// its end names is a retry no report named (workflow.endLook), and it is nil on a check an
+// earlier release recorded, whose named look names no time. Last marks the bound's look, after
+// which no look starts. A closed check has ClosedAt and its Outcome.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1389,6 +1394,7 @@ type ProductionCheck struct {
 	LastWakeDetail string
 	LastWakeAt     *time.Time
 	WakeAt         *time.Time
+	ReportedAt     *time.Time
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome

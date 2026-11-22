@@ -154,11 +154,12 @@ const retryOfLook = "the retry of a look nobody reported: "
 // What woke it is the cause (texts.WokenByMerge and the others): the merge that opened the check
 // (wakeMerge), its bound (wakeBound), or a check_wake row (wakeNamed), whose reason is either the
 // summary the pending report gave (checkReported), carried in the summary block by the checking
-// role, or the retry of
-// a look nobody reported (endLook), whose cause is named. The rest of the rules of the check —
-// each requirement only the deploy can show observed as it names it, the three verdicts and what
-// each asks of the pull request, the wake a pending names, and nothing to wait for in the session
-// — are the checking role's prompt's, which also says what the fields of the rule name.
+// role at the time the daemon recorded that report (record.ProductionCheck.ReportedAt; a check an
+// earlier release recorded holds none, and its block then names no time), or the retry of a look
+// nobody reported (endLook), whose cause is named. The rest of the rules of the check — each
+// requirement only the deploy can show observed as it names it, the three verdicts and what each
+// asks of the pull request, the wake a pending names, and nothing to wait for in the session — are
+// the checking role's prompt's, which also says what the fields of the rule name.
 func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) texts.CheckLookRecord {
 	look := texts.CheckLookRecord{Issue: issue.Key, Title: issue.Title, Kind: texts.CheckLook, Look: check.Looks, Last: last,
 		NotMetRequirement: texts.LookNotMetRequirement, UnobservedRequirement: texts.LookUnobservedRequirement,
@@ -187,6 +188,9 @@ func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail s
 		look.WokenBy = texts.WokenByNamed
 		if detail != "" {
 			look.Summary = &texts.Words{Text: detail, By: string(check.Role)}
+			if check.ReportedAt != nil {
+				look.Summary.At = *check.ReportedAt
+			}
 		}
 	default:
 		look.WokenBy = cause
@@ -220,9 +224,10 @@ func boundText(bound time.Duration) string {
 // as one with nothing to show (endLookPending), named for the next look at the time the report
 // carries (intake.CheckReport.WakeAt, which the route holds a pending to), clamped into the
 // record with the look's close, and the summary as its reason, which the route requires of every
-// report (api.handoffComplete, before it reaches its checkReport). A pending that names no time
-// is woken as a look nobody reported is, a look bound out, so the check is never left with no row
-// to wake it.
+// report (api.handoffComplete, before it reaches its checkReport); the record keeps the moment it
+// recorded the report (record.ProductionCheck.ReportedAt), which the look that wake starts names as
+// the time of the summary. A pending that names no time is woken as a look nobody reported is, a
+// look bound out, so the check is never left with no row to wake it.
 //
 // How the current look ended does not matter: a report of it counts while the check is open,
 // however that look ended — its bound came due, an operator's hold met its start, or the
@@ -261,6 +266,8 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 			wake = *fact.WakeAt
 		}
 		check.WakeAt = e.clampWake(*check, wake)
+		reported := e.now()
+		check.ReportedAt = &reported
 	}
 	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
 		return intake.Result{}, err
@@ -276,10 +283,11 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 // endLook ends the open look of a check nobody reported — its bound came due, the outbox met an
 // operator's hold on its start, or the checking role's claim failed in it — as a report of pending
 // would (endLookPending), and names the next look a look bound out, the retry with cause as its
-// reason. cause is why, for the log.
+// reason. No report named that wake, so the record keeps no report's time for it
+// (record.ProductionCheck.ReportedAt). cause is why, for the log.
 func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string) error {
 	check.LookOpen = false
-	check.WakeAt = e.clampWake(*check, e.lookRetry())
+	check.WakeAt, check.ReportedAt = e.clampWake(*check, e.lookRetry()), nil
 	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
 		return err
 	}

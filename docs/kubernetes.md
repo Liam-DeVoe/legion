@@ -2690,11 +2690,11 @@ Its migration `20261118092930_person_words` adds four columns, three `jsonb` col
   The resume of a root that waited on the person names that person beside the reason of the request.
 
 **The order with the release that merges a conflicting head forward.**
-This release's two migrations, `20261118092930_person_words` and `20261118101218_update_drift_items`, come before `20261119003157_conflict_reads_and_merge_forward` of cybermonklabs/legion#4464.
+This release's first two migrations, `20261118092930_person_words` and `20261118101218_update_drift_items`, come before `20261119003157_conflict_reads_and_merge_forward` of cybermonklabs/legion#4464, and its third, `20261122011615_production_check_reported_at`, comes after it.
 `Migrate` applies every migration that a database has not recorded, in version order.
-So an upgrade of a database that neither release migrated applies the two of this release first and that one last.
-An upgrade of a database that release migrated finds that one recorded and applies the two of this release after it, although their versions are lower.
-None of the three touches what another adds: the two of this release add columns and touch no `outbox_kind_check`, and that one writes the kind check, which holds every kind this release queues.
+So an upgrade of a database that neither release migrated applies the first two of this release, then that one, then the third of this release.
+An upgrade of a database that release migrated finds that one recorded and applies the three of this release, although the versions of the first two are lower.
+None of the four touches what another adds: the three of this release add columns and touch no `outbox_kind_check`, and that one writes the kind check, which holds every kind this release queues.
 A rollback past this release is a roll forward (below).
 A rollback past that release alone, to a daemon that sends a conflicting head back, takes the steps of [its own section](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase), which touch none of this release's columns.
 
@@ -2730,6 +2730,26 @@ A claim that the earlier image writes keeps the items it held.
 This release reads the items only when their round is the round that the claim is in (`claims.update_round`).
 So it never gives the items of one round as those of a round that the earlier image opened after it.
 A round that the earlier image opened has no items, and its ask and its notice give its text in one field.
+
+**The time of a production check's pending report needs one statement.**
+The migration `20261122011615_production_check_reported_at` adds one `timestamptz` column, `production_checks.reported_at`.
+It holds when the daemon recorded the latest pending report of the check.
+The look that the wake of that report starts carries the report's summary in a block of its own, and the block names that time.
+A look that nobody reported sets the column to null, because no report named the retry that the end of that look names.
+A check recorded before the migration holds null, and the look that its standing wake starts gives the summary and its author with no time, as the earlier release did.
+An earlier image names the column in none of its reads or writes, so it reads every check and ignores the time.
+Its writes also do not clear the column.
+When it records a pending report, or ends a look that nobody reported, the check keeps the time of the earlier report.
+After a roll forward, this release can then give that earlier time on the summary of a later report.
+To prevent this, run this statement with the daemon stopped, before the roll forward:
+
+```sql
+-- The time that an earlier daemon's writes can leave beside the summary of a later report.
+update production_checks set reported_at = null;
+```
+
+A check whose time is cleared costs one thing: the look that its standing wake starts gives the summary and its author with no time.
+This migration adds no key to an outbox payload.
 
 **The earlier release refuses the outbox rows that this release writes.**
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
@@ -3346,6 +3366,7 @@ The migrations recorded above this one are these.
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
+20261122011615_production_check_reported_at, of dispatch://INFRA-3686 too, adds `production_checks.reported_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

@@ -557,7 +557,13 @@ func (b *goldenBuild) checkLooks(r goldenRendering) {
 	summary := r.words("look/summary", 500) + " " + goldenHostile[r.n-1][5]
 	named := want(texts.WokenByNamed)
 	named["summary"], named["summary@by"] = summary, string(check.Role)
-	b.task(r, "named", check.Role, issue.Key, workflow.CheckLook(issue, check, "check wake", summary, false), named)
+	reported := check
+	reportedAt := r.at(7)
+	reported.ReportedAt = &reportedAt
+	for key, value := range goldenWant("summary@at", reportedAt) {
+		named[key] = value
+	}
+	b.task(r, "named", check.Role, issue.Key, workflow.CheckLook(issue, reported, "check wake", summary, false), named)
 	retry := r.words("look/retry", 80)
 	retried := want(texts.WokenByRetry)
 	retried["retry_of"] = retry
