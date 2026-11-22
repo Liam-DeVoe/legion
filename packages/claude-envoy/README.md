@@ -374,8 +374,9 @@ Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux ru
 - registers the session with the daemon once its transcript exists, claims the issue's Envoy role
   and reports ready (`src/legion-claim.ts`, over the claim boot `@sjawhar/pi-legion` shares);
 - serves the `legion` tool: the phase ops (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`)
-  that `@sjawhar/pi-legion`'s tool serves, on the same schema and executor, `review_verdict` to a
-  reviewer's claim alone (`src/legion-tool.ts`);
+  that `@sjawhar/pi-legion`'s tool serves, on the same schema and executor, `review_verdict` to
+  the claim of a review step's agent alone, the reviewer's or the owning architect's
+  (`src/legion-tool.ts`);
 - hands each Envoy delivery to the bridge's socket (`LEGION_CLAUDE_INBOX`), which sends it to
   Claude Code as a user turn (`src/legion-inbox.ts`): the bridge
   starts a turn with it when Claude Code is idle, and sends it as the next user message of the

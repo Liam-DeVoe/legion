@@ -1,8 +1,8 @@
 kind: Changed
 body: |-
-    The MCP `legion` tool serves `review_verdict` to a reviewer session, from the same shared
-    definition the pi `legion` tool uses, and its `handoff_complete` takes `approve` or `changes`
-    with the commit reviewed and a `testedCommit`. Each needs a daemon of the matching contract.
+    The MCP `legion` tool serves `review_verdict` to the agent of a review step, from the same
+    shared definition the pi `legion` tool uses, and its `handoff_complete` takes `approve` or
+    `changes` with the commit reviewed. Each needs a daemon of the matching contract.
 time: 2026-11-21T23:55:33Z
 custom:
     Issue: pr4802

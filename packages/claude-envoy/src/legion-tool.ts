@@ -27,15 +27,19 @@ export const LEGION_TOOL_NAME = "legion"
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
  * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`), the list pi-legion's `legion` tool serves
  * too. The schema is the same for every claim, since the server builds its tool list once, before
- * the pane's claim registers; the shared executor refuses review_verdict to every claim but a
- * reviewer's. */
+ * the pane's claim registers; the shared executor refuses review_verdict to every claim whose
+ * role runs no review step (`REVIEW_STEP_ROLES` of `@legion/pi-shared/legion-phase-ops`), by the
+ * role the claim registered (`ClaimCapability.role`). */
 export function legionToolDefinition() {
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.reviewVerdict + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.reviewVerdict +
+        PHASE_OP_SENTENCES.readBuild,
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }

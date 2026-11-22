@@ -2,8 +2,9 @@ kind: Changed
 body: |-
     The contracts of the one-App deployment: `GITHUB_MERGE_GROUP_KIND` and `githubMergeGroupSubject`
     for `notifications.github.OWNER.REPO.merge_group`; `handoff_complete`'s verdict takes `approve`
-    and `changes` beside `pass`, `pending` and `fail`, and a `testedCommit`; the bodies of
-    `POST /legion/v1/review-verdict`, `/pull-request-reviewer` and `/pull-request-verdict`; and a
+    and `changes` beside `pass`, `pending` and `fail`; the bodies of
+    `POST /legion/v1/review-verdict`, where an architect names the `issue` it accepted,
+    `/pull-request-reviewer` and `/pull-request-verdict`; and a
     GitHub credential's `app` names the role's token set in place of the two Apps' `implement` and
     `review`.
 time: 2026-11-21T23:55:33Z

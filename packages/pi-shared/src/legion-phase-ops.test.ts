@@ -152,7 +152,6 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       since: { type: "string" },
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail", "approve", "changes"] },
-      testedCommit: { type: "string" },
       commit: {
         type: "string",
         description:
@@ -174,6 +173,22 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       .filter((f) => f !== "op")
   );
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
+  // The exact fields, in the order the ops first take them: no completion and no verdict names the
+  // commit of a tester's pass, since the check states at each head decide each testing step there.
+  expect(Object.keys(phaseOpParameters(z))).toEqual([
+    "issue",
+    "since",
+    "summary",
+    "verdict",
+    "wake_at",
+    "plan_rating",
+    "plan_reason",
+    "return_to",
+    "to",
+    "reason",
+    "round",
+    "commit",
+  ]);
 });
 
 test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
@@ -231,10 +246,6 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     [
       { op: "handoff_complete", summary: "x", verdict: "maybe" },
       "handoff_complete's verdict is pass, pending, fail, approve or changes",
-    ],
-    [
-      { op: "handoff_complete", summary: "x", verdict: "approve", testedCommit: " " },
-      "handoff_complete requires testedCommit",
     ],
     [
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: " " },
@@ -373,18 +384,15 @@ const reviewer: ClaimCapability = {
 };
 
 // The reviewer ends its review with its own verdict, approve or changes, on the head its review
-// record names, and names in testedCommit the commit of the tester's pass that verdict carries to
-// that head; the tool posts the verdict and testedCommit as given, beside the record and the head
-// the pane found for the reviewer's phase.
-test("handoff_complete takes a reviewer's verdict approve, with testedCommit", async () => {
-  const tested = "7".repeat(40);
+// record names; the tool posts the verdict as given, beside the record and the head the pane found
+// for the reviewer's phase, which the body names as `commit`.
+test("handoff_complete takes a reviewer's verdict approve, with the commit its record names", async () => {
   const { ops, routes, posted, lookups } = runtime(reviewer, stateAtPhase("reviewing"));
   await expect(
     executePhaseOp(ops, {
       op: "handoff_complete",
       summary: "Reviewed; no finding stands.",
       verdict: "approve",
-      testedCommit: tested,
     })
   ).resolves.toEqual(daemonFixture("handoff-complete.json"));
   expect(lookups).toEqual(["reviewing reviewer"]);
@@ -397,7 +405,6 @@ test("handoff_complete takes a reviewer's verdict approve, with testedCommit", a
     grantId: "grant-for-one-command",
     summary: "Reviewed; no finding stands.",
     verdict: "approve",
-    testedCommit: tested,
     ...REPORT,
   });
 
@@ -416,116 +423,176 @@ test("handoff_complete takes a reviewer's verdict approve, with testedCommit", a
   });
 });
 
-// A head that moves while its issue stands past its review (accepting, retro or merging) gets the
-// verdict of the round's recorded reviewer through review_verdict, which every host's `legion`
-// tool serves from this one definition: a fresh grant with the verdict, the head and the tester's
-// pass the verdict carries there, posted to `POST /legion/v1/review-verdict`. The call writes no
-// handoff, so it reads no record and looks no handoff report up.
-test("review_verdict is one phase op, defined once, that posts the verdict, the commit and testedCommit to /legion/v1/review-verdict", async () => {
+/** LEGION-208's tree architect, which owns its children and runs each one's acceptance step. */
+const owner: ClaimCapability = {
+  ...implementer,
+  sessionID: "ses_architect",
+  role: "architect",
+  claimToken: "legion-legion-legion-208-architect",
+};
+
+// A head that moves while its issue stands past its review (accepting, retro or merging) gets a
+// verdict from the agent of each review step of its task that has passed: the reviewer, and the
+// architect that owns the issue and ran its acceptance. Each sends it through review_verdict,
+// which every host's `legion` tool serves from this one definition: a fresh grant with the
+// verdict, the head and the summary, posted to `POST /legion/v1/review-verdict`. An architect's
+// grant serves its whole tree, so its call names the issue it accepted; a reviewer's grant names
+// its own issue, so its call names none. The call writes no handoff, so it reads no record and
+// looks no handoff report up.
+test("review_verdict is one phase op, defined once, that posts a review step's agent's verdict and commit to /legion/v1/review-verdict", async () => {
   expect(PHASE_OPS.filter((op) => op === "review_verdict")).toEqual(["review_verdict"]);
   expect(
     PhaseOpArguments.options.filter((option) => option.shape.op.value === "review_verdict")
   ).toHaveLength(1);
 
   const head = "e".repeat(40);
-  const tested = "7".repeat(40);
-  const { ops, routes, posted, lookups } = runtime(reviewer, stateAtPhase("retro"));
+  const reviewing = runtime(reviewer, stateAtPhase("retro"));
   await expect(
-    executePhaseOp(ops, {
+    executePhaseOp(reviewing.ops, {
       op: "review_verdict",
       verdict: "approve",
       commit: head,
-      testedCommit: tested,
       summary: "The retro commit changes no code that runs.",
     })
   ).resolves.toEqual({});
-  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/review-verdict"]);
-  expect(posted).toEqual([
+  expect(reviewing.routes).toEqual(["/legion/v1/grants", "/legion/v1/review-verdict"]);
+  expect(reviewing.posted).toEqual([
     { sessionId: "ses_reviewer", secret: "U2VjcmV0", tree: "LEGION-208", issue: "LEGION-208" },
     {
       grantId: "grant-for-one-command",
       verdict: "approve",
       commit: head,
-      testedCommit: tested,
       summary: "The retro commit changes no code that runs.",
     },
   ]);
-
-  // A verdict that carries no tester's pass names no testedCommit, and the body carries none.
+  // A reviewer that names its own issue sends none: its grant names it.
   await expect(
-    executePhaseOp(ops, {
+    executePhaseOp(reviewing.ops, {
       op: "review_verdict",
+      issue: " LEGION-208 ",
       verdict: "changes",
       commit: head,
       summary: "The retro commit breaks the parser.",
     })
   ).resolves.toEqual({});
-  expect(posted.at(-1)).toEqual({
+  expect(reviewing.posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     verdict: "changes",
     commit: head,
     summary: "The retro commit breaks the parser.",
   });
-  expect(lookups).toEqual([]);
+  expect(reviewing.lookups).toEqual([]);
+
+  // The owner's acceptance session: the tree's architect, and a sub-architect, whose role is
+  // architect too, each naming the child whose acceptance it ran.
+  for (const architect of [owner, { ...owner, issue: "LEGION-209" }]) {
+    const owning = runtime(architect, stateAtPhase("merging"));
+    await expect(
+      executePhaseOp(owning.ops, {
+        op: "review_verdict",
+        issue: "LEGION-210",
+        verdict: "approve",
+        commit: head,
+        summary: "The merge forward changes no code that runs.",
+      })
+    ).resolves.toEqual({});
+    expect(owning.routes).toEqual(["/legion/v1/grants", "/legion/v1/review-verdict"]);
+    expect(owning.posted.at(-1)).toEqual({
+      grantId: "grant-for-one-command",
+      issue: "LEGION-210",
+      verdict: "approve",
+      commit: head,
+      summary: "The merge forward changes no code that runs.",
+    });
+    expect(owning.lookups).toEqual([]);
+  }
 });
 
-// review_verdict is the reviewer's alone, whichever host runs it: every other claim, an
-// architect's among them, is refused it by its role before its arguments are read, after any field
-// the op never takes, as a root architect's completion is. A reviewer's call is refused naming each
-// wrong argument. Nothing is minted or posted for any of them.
-test("review_verdict is refused to every session but a reviewer's, and a reviewer's wrong arguments, before any daemon request", async () => {
+// review_verdict is a review step's agent's alone, whichever host runs it: the reviewer's, and the
+// architect's that owns the issue and runs its acceptance. Every other claim, the planner's, the
+// implementer's, the tester's and the merger's, is refused it by its role before its arguments are
+// read, after any field the op never takes, as a root architect's completion is. A review step's
+// agent's call is refused naming each wrong argument: an architect's that names no issue, and a
+// reviewer's that names an issue other than its own. Nothing is minted or posted for any of them.
+test("review_verdict is refused to every session but a review step's agent's, and that agent's wrong arguments, before any daemon request", async () => {
   const call = { op: "review_verdict", verdict: "approve", commit: "e".repeat(40), summary: "s" };
-  for (const role of LEGION_ROLES.filter((each) => each !== "reviewer")) {
+  const others = LEGION_ROLES.filter((each) => each !== "reviewer" && each !== "architect");
+  expect(others).toEqual(["planner", "implementer", "tester", "merger"]);
+  for (const role of others) {
     const { ops, routes } = runtime({ ...implementer, role });
-    const refusal = `review_verdict is the reviewer's alone, and this session is the ${role}'s`;
+    const refusal = `review_verdict is the verdict of a review step's agent, the reviewer or the architect that owns the issue, and this session is the ${role}'s`;
     for (const input of [call, { op: "review_verdict" }]) {
       await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(refusal));
     }
     await expect(executePhaseOp(ops, { ...call, round: "pod:1" })).rejects.toThrow(
       new Error(
-        `review_verdict does not accept field "round"; it takes verdict, commit, testedCommit, summary; ${refusal}`
+        `review_verdict does not accept field "round"; it takes issue, verdict, commit, summary; ${refusal}`
       )
     );
     expect(routes).toEqual([]);
   }
 
-  const { ops, routes } = runtime(reviewer);
+  const reviewing = runtime(reviewer);
+  const owning = runtime(owner);
   const refusals = [
-    [{ ...call, verdict: "pass" }, "review_verdict requires verdict approve or changes"],
-    [{ ...call, commit: " " }, "review_verdict requires commit"],
-    [{ ...call, testedCommit: " " }, "review_verdict requires testedCommit"],
-    [{ ...call, summary: "" }, "review_verdict requires summary"],
+    [reviewing, { ...call, verdict: "pass" }, "review_verdict requires verdict approve or changes"],
+    [reviewing, { ...call, commit: " " }, "review_verdict requires commit"],
+    [reviewing, { ...call, summary: "" }, "review_verdict requires summary"],
     [
+      reviewing,
       { op: "review_verdict" },
       "review_verdict requires verdict approve or changes; review_verdict requires commit; review_verdict requires summary",
     ],
     [
+      reviewing,
       { ...call, round: "pod:1" },
-      'review_verdict does not accept field "round"; it takes verdict, commit, testedCommit, summary',
+      'review_verdict does not accept field "round"; it takes issue, verdict, commit, summary',
     ],
+    [reviewing, { ...call, issue: 44 }, "review_verdict's issue is an issue key, as LEGION-208 is"],
+    [
+      reviewing,
+      { ...call, issue: "LEGION-209" },
+      "a reviewer sends its verdict on its own issue LEGION-208, not LEGION-209",
+    ],
+    [owning, call, "review_verdict requires issue"],
+    [owning, { ...call, issue: " " }, "review_verdict requires issue"],
   ] as const;
-  for (const [input, message] of refusals) {
-    await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
+  for (const [session, input, message] of refusals) {
+    await expect(executePhaseOp(session.ops, input)).rejects.toThrow(new Error(message));
   }
-  expect(routes).toEqual([]);
+  expect(reviewing.routes).toEqual([]);
+  expect(owning.routes).toEqual([]);
 });
 
 // One description serves every role, so it says who sends which verdict word, that no other
-// phase completion carries one, and what the daemon refuses of a verdict.
-test("the description says who sends which verdict word, and testedCommit's", () => {
+// phase completion carries one, and what the daemon refuses of a verdict; review_verdict's
+// sentence names the agent of each review step.
+test("the description says who sends which verdict word, and review_verdict's sentence names each review step's agent", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   for (const words of [
-    "`verdict` on a phase completion is the reviewer's alone, approve|changes",
+    "`verdict` on a phase completion, which is a review step's alone, approve|changes",
     "approve: the head you reviewed may merge; changes: it needs changes",
-    "`testedCommit`, from the reviewer alone",
-    "Every other phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN)",
+    "on the head your record names, which the call reports as `commit`",
+    "The reviewer sends it on its completion of reviewing.",
+    "its sign_off is its approve, and its move of the issue back to an earlier phase is its changes",
+    "VERDICT_NOT_TAKEN",
+    "VERDICT_ROLE_FORBIDDEN",
     "REVIEWER_VERDICT_REQUIRED",
     "VERDICT_COMMIT_REQUIRED",
-    "VERDICT_ROLE_FORBIDDEN",
   ]) {
     expect(description).toContain(words);
   }
-  expect(description).not.toContain("tester's pass|fail");
+  expect(description).not.toContain("tester's pass");
+  expect(description).not.toContain("the reviewer's alone");
+  for (const words of [
+    "the reviewer, and the owning architect on the issue whose acceptance it ran",
+    "an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out",
+    "VERDICT_CALLER_FORBIDDEN",
+    "VERDICT_HEAD_NOT_CURRENT",
+  ]) {
+    expect(PHASE_OP_SENTENCES.reviewVerdict).toContain(words);
+  }
+  expect(PHASE_OP_SENTENCES.reviewVerdict).not.toContain("tester's pass");
 });
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the
@@ -909,7 +976,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, testedCommit, wake_at, plan_rating, plan_reason, return_to; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -932,7 +999,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, testedCommit, wake_at, plan_rating, plan_reason, return_to',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to',
     ],
   ] as const;
   for (const [input, message] of refusals) {
