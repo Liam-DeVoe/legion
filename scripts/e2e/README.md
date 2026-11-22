@@ -932,7 +932,8 @@ the round-two reviewer adjudicates it, replying in its own words and naming its 
 this one it already had), so the thread then carries the reviewer's reply and stays resolved.
 No word of a reply resolves anything.
 Each round names one concrete correction the spec permits (a distinct line appended to the smoke file, the one product file the implementer's pull request changed, which the run records and requires to be exactly one;
-the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing, and the pushed commit carrying the handoff that every planner, implementer, tester, and reviewer completion reported is authored and committed by that role's own App, read from the issue's workspace).
+the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing;
+every planner, implementer, tester and reviewer completion names a Dispatch handoff record its role's own claim session wrote, and the implementer's pushed tip, which its completion reports, is authored and committed by the implement App, read from the issue's workspace).
 It also proves `pr-blocked` and a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
 the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
 the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
@@ -969,7 +970,7 @@ the daemon holds that suspension until the architect's turn ends and names it no
 After the first look's report, `smoke-main-clean` first holds that the merged pull request carried no handoff:
 no commit of it changes only `.legion/` (`pull_request_legion_only_commits`) and no file it merged is under `.legion/`, since every role's handoff is a record on the Dispatch issue, which each phase's `assert_handoff_record` read back as written by that role's claim session.
 The proof human then removes every `.legion/` file and `docs/solutions/` learning from the smoke `main` through one merged fixture pull request, and the run checks that `main` carries none:
-a proof merge carries only its retro learnings, and the cleanup removes those and any `.legion/` a merge from before handoffs moved to Dispatch left, so the next run starts from a base carrying no other issue's files.
+no proof merge carries a retro learning or a handoff (retro commits nothing, and every handoff is a record on the Dispatch issue), so the cleanup removes the `docs/solutions/` learnings and `.legion/` handoffs that merges from before those changes left, and the next run starts from a base carrying no other issue's files.
 The smoke `main` requires the `gate` check, which has not started when the fixture pull request is created, and GitHub refuses a merge before it passes, so the cleanup first waits up to 600 s, named in the transcript, for the pull request's merge state to read `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (`smoke_pr_mergeable` in `lib/workflow.sh`).
 A failed read is a poll that has not seen it yet, and a timeout names the last state read.
 The fixture pull request's branch is `proof/clean-main-<project, lowercased>`, and the cleanup fails, naming it, when a branch of that name is there before it makes its own:
@@ -1320,7 +1321,7 @@ that command runs here, once, in this shell's own environment, and the review Ap
 no token and no key passes through this shell either way, and the proof human is the devbox's ordinary `gh` acting as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)), so the run starts from the operator's own Oh My Pi session.
 
 Everything the run creates in namespace `legion` carries its own `legion.dev/project` label
-— the run's Dispatch project lowercased, which is the daemon's own claim token for it
+— the run's Dispatch project lowercased, the daemon's project token for it (`ProjectToken(project)`), which each of its claim tokens carries after `legion-`
 — and [`lib/namespace-rig.sh`](#libnamespace-rigsh) owns it:
 `prerequisites` refuses to start while the namespace holds anything under that label, `snapshot` records the run's own objects before it, and the `EXIT` trap copies the implementer's transcript out of the session table, stops the daemon, removes its container and then (under `bridge`) stops the token refresher and removes the App credential files, stops the scratch services, removes the other containers, deletes everything under that label, closes any pull request of the run's project and deletes the issue's branch, and then compares the namespace with its snapshot.
 Under `bridge`, the bridge's own pod, Service and auth Secret carry the same label, and `bridge_stop` deletes them by their one exact name before that comparison runs.
@@ -2461,7 +2462,7 @@ A signal to the whole process group does not stop the removal:
 
   - A SIGKILLed driver runs no trap, and the next run of the same identity's preflight names what it left; a different identity's run never sees it.
 
-- **Production Dispatch, project `LEGSMOKE` by default**: three root issues per run.
+- **Production Dispatch, project `LEGSMOKE` by default**: a whole run files four root issues, tree 4 once tree 3 has been taken out, and a run under `STAGE4B_DESIGN_GATE` files tree 1 alone.
   The preflight moves stale todo issues to backlog, roots and the children a failed run left todo alike.
   The proof human's writes use the agents' bearer and name the session `legion-e2e4b-proof-human-<pid>` as their actor, which production Dispatch requires;
   it holds no claim, so the daemon sets back its status write on a live root as it does any outside session's.
@@ -4395,7 +4396,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A run took 60 s in a Legion worker pod, 53 s of it building the driver and 7 s the proof's seven steps.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
@@ -7012,7 +7013,7 @@ Each harness's GitHub teardown (Stage 3's `close_unpassed_run_pull_requests`, 4b
 `lib/proof-human.test.ts` drives the check and Stage 3's teardown against a fake `gh` (`bun test scripts/e2e/lib`, which CI runs).
 
 `read_app_logins` proves the run's two role Apps against GitHub and reads the bot login of each, as GitHub names it today, and every check that names an App compares with it:
-no script carries an App's name or id, so an App renamed on GitHub changes what the run reads and no line of it, and a name another App takes over later is never mistaken for Legion's.
+no check of the run carries an App's name, login or id of its own: each compares with the App ids the run's inputs give, whose defaults the lib holds in one place (below), and with the logins this read finds, so an App renamed on GitHub changes what the run reads and no line of it, and a name another App takes over later is never mistaken for Legion's.
 It runs [`check_github_apps`](#libgithub-appssh) over the run's `$work/github-apps.yaml`, whose `lib/app-logins.ts` runs each App's one credential command as the daemon runs that one (`sh -c`, stdin closed, the NATS seed variables dropped; for the implement App's `github_apps.implement.token_command` the owner, repositories and read-only flag set empty, and for the review App's `github_apps.review.private_key_command` none of those three touched, since the daemon sets none of them for a key command), reads the bot login from GraphQL's viewer under an installation token of the App — the first of the release the token command printed, or the one the key mints below — and reads the App's id and permissions from `GET /apps/<slug>` under the same token, so the login is `<slug>[bot]`, the one the daemon reads at boot for the identity each role commits, pushes and reviews as.
 The review App's key stays in that process: it signs an RS256 App JWT there, `GET /app/installations` names an installation of the App under that JWT, and `POST /app/installations/<id>/access_tokens` mints the token the two observations above are made with, so the key path proves at least what the token path proves.
 The two Apps resolving to one login fail it, as the daemon refuses at boot, and so does a read of either App whose credential command fails, whose release holds no live installation token, whose key signs no App JWT GitHub mints a token for, whose viewer is no App's bot, or whose answer names another App id or lacks the write permission the role's work needs, the run failing with the reason the helper names by the App's role and id:
