@@ -305,6 +305,10 @@ After each fact, a worker stub runs the outbox rows that the daemon's lanes woul
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
 A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.
+Under a rule whose conflicting head moves back, an issue whose stretch draws a conflict runs a recorded conflict loop, drawn with `--seed` among the loops of the window whose conflict left the same phase.
+Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
+Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
+Where the issue's own work holds no segment in the phase that such a loop returns to, the issue runs no drawn loop and goes on with its own recorded work.
 `run` asks nothing outside: no Dispatch, no GitHub and no NATS.
 
 | Flag | What it gives |
@@ -1449,7 +1453,8 @@ A merge forward shorter than a conflict's implementing round makes the conflict 
 **Evidence in a recorded window.** _The recorded conflict loops._
 A window of a release whose conflicting head moves back holds each conflict loop: the move back by `conflict`, and the implementing round after it.
 Under `main`, a drawn conflict keeps its phase, and the replay adds a merge-forward segment, with the implementer in a turn.
-The replay draws the length of that segment from the implementing rounds of the recorded conflict loops.
+The replay draws the length of that segment from the implementing rounds of the recorded conflict loops that left the same phase.
+Where the window records no loop from that phase, the replay draws from the loops that left a later phase, and where it records none of those either, from the loops that left an earlier phase.
 The fixture window `conflict-from-fitted-rate` replays one under `main` and `legion-v20.42.5`.
 
 **If it is wrong.**

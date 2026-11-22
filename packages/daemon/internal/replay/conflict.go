@@ -458,12 +458,13 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 	return m
 }
 
-// conflictLoop is one recorded conflict loop of a window's script: the pieces of its issue's work
-// from the conflict move to the issue's return to the phase the conflict left (the return's own
-// piece not among them), and the implementing round among them, the first piece of the loop in
-// implementing, nil where the loop holds none.
+// conflictLoop is one recorded conflict loop of a window's script: the phase its conflict move
+// left, the pieces of its issue's work from the conflict move to the issue's return to that phase
+// (the return's own piece not among them), and the implementing round among them, the first piece
+// of the loop in implementing, nil where the loop holds none.
 type conflictLoop struct {
 	issue  string
+	left   phase.Phase
 	pieces []*piece
 	round  *piece
 }
@@ -491,7 +492,7 @@ func recordedLoops(s script) []conflictLoop {
 			if move := p.move(); p.ends != endMove || move == nil || move.Trigger != workflow.TriggerConflict {
 				continue
 			}
-			loop := conflictLoop{issue: key}
+			loop := conflictLoop{issue: key, left: p.phase}
 			own, _ := loopAfter(pieces, p)
 			loop.pieces = slices.Clone(own)
 			for _, q := range loop.pieces {
@@ -548,8 +549,8 @@ func (d *driver) drawConflict(p *piece) (bool, error) {
 // phase and the engine asks the merge forward, which the replay runs as a merge-forward segment
 // (openMergeForward, assumption 23); under a rule whose conflicting head moves back, the engine
 // moves the issue back to implementing by the rule's trigger, and the loop's work is drawn from the
-// window's recorded conflict loops (drawLoop). A conflict the daemon does not act on is counted
-// as a refused move, and the stretch ends as recorded.
+// window's recorded conflict loops that left the same phase (drawLoop). A conflict the daemon does
+// not act on is counted as a refused move, and the stretch ends as recorded.
 func (d *driver) conflictFor(p *piece) (bool, error) {
 	key := p.issue
 	if err := d.ensurePullRequest(key); err != nil {
@@ -623,25 +624,71 @@ func (d *driver) newHead(key string) string {
 	return fmt.Sprintf("replay-head-%s-%d", key, d.heads)
 }
 
-// drawnLoop is a recorded conflict loop of the window drawn with the run's seeded source, nil where
-// the window records none.
-func (d *driver) drawnLoop() *conflictLoop {
-	if len(d.loops) == 0 {
-		return nil
+// The sides of the phase a recorded loop's conflict left from the phase of a drawn conflict
+// (loopSide), in the order the drawn conflict draws its loop from them: the same phase, a later
+// one in phase.Order, an earlier one.
+const (
+	leftSame = iota
+	leftLater
+	leftEarlier
+	loopSides
+)
+
+// loopSide is the side of the phase loop's conflict left from left.
+func loopSide(loop *conflictLoop, left phase.Phase) int {
+	switch cmp.Compare(slices.Index(phase.Order, loop.left), slices.Index(phase.Order, left)) {
+	case 0:
+		return leftSame
+	case 1:
+		return leftLater
 	}
-	return &d.loops[d.draws.IntN(len(d.loops))]
+	return leftEarlier
+}
+
+// drawnLoop is a recorded conflict loop of the window drawn with the run's seeded source for a
+// conflict drawn in left: drawn among the loops whose conflict left the same phase, the record's
+// work of a conflict there; where the window records none from it, among those that left a later
+// phase; and where it records none of those either, among those that left an earlier one. Nil
+// where it records none at all.
+func (d *driver) drawnLoop(left phase.Phase) *conflictLoop {
+	var sides [loopSides]int
+	for i := range d.loops {
+		sides[loopSide(&d.loops[i], left)]++
+	}
+	for side, n := range sides {
+		if n == 0 {
+			continue
+		}
+		nth := d.draws.IntN(n)
+		for i := range d.loops {
+			if loopSide(&d.loops[i], left) != side {
+				continue
+			}
+			if nth == 0 {
+				return &d.loops[i]
+			}
+			nth--
+		}
+	}
+	return nil
 }
 
 // openMergeForward runs the merge-forward segment of p's drawn conflict under the daemon's own
 // conflict path (record.ConflictMergeForward): inside the phase p worked, its implementer in a turn
 // from its start to its end, as long as the implementing round of a recorded conflict loop drawn
-// with the run's seed (assumption 23), and unended where that round is; a window that records no
-// round gives one with no end. It follows p in the issue's work, and its end is mergedForward.
+// with the run's seed among the loops that left that phase (drawnLoop, assumption 23), and unended
+// where that round is; a window that records no round gives one with no end. The phase chooses the
+// round as it chooses a moved-back conflict's loop, so a conflict in a phase costs either conflict
+// path what the record's conflicts in that phase cost, and the two paths replayed on one window
+// draw their conflicts' work from the same loops. A loop drawn from another phase, where the window
+// records none from that phase, gives its round whole: a merge forward reads the round alone, which
+// comes before every phase a stretch draws in. It follows p in the issue's work, and its end is
+// mergedForward.
 func (d *driver) openMergeForward(p *piece) {
 	now := d.clock.Instant()
 	forward := &piece{issue: p.issue, visit: p.visit, phase: p.phase, role: claim.RoleImplementer, opens: opensOnStart, ends: endMergeForward,
 		drew: p, stretchDrawn: true, start: now, m: d.script.inFlightAt(now)}
-	if loop := d.drawnLoop(); loop != nil && loop.round != nil {
+	if loop := d.drawnLoop(p.phase); loop != nil && loop.round != nil {
 		forward.start, forward.end, forward.m = loop.round.start, loop.round.end, loop.round.m
 	}
 	forward.acts = []act{{kind: actTurnStart, rec: forward.start, role: claim.RoleImplementer}}
@@ -676,11 +723,17 @@ func (d *driver) mergedForward(forward *piece) error {
 }
 
 // drawLoop gives the issue of p, moved back to implementing by a conflict drawn at the end of p's
-// stretch, the work of a conflict loop drawn with the run's seed from the window's recorded loops,
-// in place of its own recorded loop where the record ended the stretch in a conflict too: the
-// loop's pieces, each the drawn issue's work given to this one, up to the return to the phase the
-// conflict left; where the record ended the stretch otherwise, p's own work follows the loop
-// again, ending as the record ended it. A drawn loop that is the issue's own runs as recorded.
+// stretch, the work of a conflict loop drawn with the run's seed from the window's recorded loops
+// (drawnLoop), in place of its own recorded loop where the record ended the stretch in a conflict
+// too: the loop's pieces, each the drawn issue's work given to this one, up to the return to the
+// phase the conflict left; where the record ended the stretch otherwise, p's own work follows the
+// loop again, ending as the record ended it. A loop that left p's phase returns the issue to it. One
+// that left a later phase is cut where its work reaches p's phase (returnTo), rather than going on
+// with the work of its own return. After one that left an earlier phase the issue goes back from
+// that phase to p's through its own most recent work in each phase between (wayBack); where its
+// work before p holds none in that phase, it is given no drawn loop and goes on with its own work.
+// Each start of the issue's workers so opens the next piece of its work, passing over none. A
+// drawn loop that is the issue's own runs as recorded.
 func (d *driver) drawLoop(p *piece) {
 	pieces := d.script.pieces[p.issue]
 	own, back := []*piece(nil), p.index+1
@@ -688,11 +741,23 @@ func (d *driver) drawLoop(p *piece) {
 	if recordedConflict {
 		own, back = loopAfter(pieces, p)
 	}
-	loop := d.drawnLoop()
-	if loop == nil || len(loop.pieces) == 0 || len(own) > 0 && own[0] == loop.pieces[0] {
+	loop := d.drawnLoop(p.phase)
+	if loop == nil {
 		return
 	}
-	work := clonePieces(loop.pieces, p.issue)
+	drawn, way := loop.pieces, []*piece(nil)
+	switch loopSide(loop, p.phase) {
+	case leftLater:
+		drawn = returnTo(drawn, p.phase)
+	case leftEarlier:
+		if way = wayBack(pieces, p, loop.left); way == nil {
+			return
+		}
+	}
+	if len(drawn) == 0 || len(own) > 0 && own[0] == drawn[0] {
+		return
+	}
+	work := append(clonePieces(drawn, p.issue), clonePieces(way, p.issue)...)
 	if !recordedConflict {
 		work = append(work, clonePieces([]*piece{p}, p.issue)...)
 	}
@@ -700,6 +765,40 @@ func (d *driver) drawLoop(p *piece) {
 		dropped.state = pieceSkipped
 	}
 	d.replacePieces(p.issue, p.index+1, back, work)
+}
+
+// returnTo is pieces up to the first in left or a phase after it in phase.Order: the part of a run
+// of work that takes an issue to left and no further.
+func returnTo(pieces []*piece, left phase.Phase) []*piece {
+	from := slices.Index(phase.Order, left)
+	for i, q := range pieces {
+		if slices.Index(phase.Order, q.phase) >= from {
+			return pieces[:i]
+		}
+	}
+	return pieces
+}
+
+// wayBack is the work that takes p's issue from to, a phase before p's that a drawn conflict loop
+// returned it to, back to p's phase: its own most recent work before p in each phase between, the
+// pieces of its work from the first of its last visit to to before p up to its first piece in p's
+// phase or a later one (returnTo). Nil where its work before p holds no piece in to.
+func wayBack(pieces []*piece, p *piece, to phase.Phase) []*piece {
+	last := -1
+	for i := p.index - 1; i >= 0; i-- {
+		if pieces[i].phase == to {
+			last = i
+			break
+		}
+	}
+	if last < 0 {
+		return nil
+	}
+	first := last
+	for first > 0 && pieces[last].visit != nil && pieces[first-1].visit == pieces[last].visit {
+		first--
+	}
+	return returnTo(pieces[first:p.index], p.phase)
 }
 
 // replacePieces replaces the pieces from index from up to index to of key's work with work, in a

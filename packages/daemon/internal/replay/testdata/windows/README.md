@@ -180,13 +180,15 @@ reconstruction error the tool reports; these windows hold the exact one.
 - In a replay each stretch draws once, at the moment its recorded end falls by its segments, with M
   counted over the replayed stretch: a draw u from the run's seeded source makes a conflict where
   u < the chance. A recorded `conflict` move is never injected: the draw makes it.
-- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict moves the issue back to
-  implementing by `conflict`, and the loop's work is drawn from the window's recorded conflict
-  loops: the segments from a recorded conflict move to the issue's return to the phase it left.
-- Under `main` (`ConflictMergeForward`) a drawn conflict keeps the phase: a merge-forward segment
-  follows, its length drawn from the recorded conflict loops' implementing rounds (assumption 23)
-  and its implementer in a turn, and then the issue goes on with the work the record shows after the
-  loop returned to the phase the conflict left. The stretch is not drawn a second time.
+- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict moves the issue back to implementing by `conflict`, and the loop's work is drawn from the window's recorded conflict loops: the segments from a recorded conflict move to the issue's return to the phase it left.
+  The loop is drawn with the run's seed among the loops of the window whose conflict left the same phase.
+  Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
+  Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
+  Where the issue's own work holds no segment in the phase that such a loop returns to, the issue runs no drawn loop and goes on with its own recorded work.
+- Under `main` (`ConflictMergeForward`) a drawn conflict keeps the phase: a merge-forward segment follows, its implementer in a turn, and then the issue goes on with the work the record shows after the loop returned to the phase the conflict left.
+  The replay draws the length of that segment from the implementing rounds of the recorded conflict loops that left the same phase (assumption 23).
+  Where the window records no loop from that phase, the replay draws from the loops that left a later phase, and where it records none of those either, from the loops that left an earlier phase.
+  The stretch is not drawn a second time.
 - `conflict-from-fitted-rate`'s stretches separate perfectly: none with M = 0 conflicted and the one
   with M = 1 did, so the maximum-likelihood chance is 0 at M = 0 and 1 at M = 1. The tool's fit must
   reach those limits to within 10⁻⁶; a draw then differs from them with a chance below 10⁻⁶ under
