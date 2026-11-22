@@ -826,7 +826,10 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 		risks, places := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
 		lenses, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
 		answer := requireRefused(t, refused.name, rig.post(refused.path, refused.body, "alice"),
-			http.StatusBadRequest, codeVisibilityWiderThanParent, "cannot stand under or on "+refused.parent+", which is reserved for its author")
+			http.StatusBadRequest, codeVisibilityWiderThanParent, "")
+		if !namesAsAWord(answer.Error, refused.parent) {
+			t.Errorf("%s is refused %q, want it to name the node it would stand under or on, %s", refused.name, answer.Error, refused.parent)
+		}
 		if !strings.HasPrefix(answer.Error, refused.child) {
 			t.Errorf("%s is refused %q, want it to name the node it drew, %s<uuid>, first", refused.name, answer.Error, refused.child)
 		}

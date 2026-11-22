@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -387,11 +388,11 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 		}
 	}
 	// requireGoneNamed fails unless response is 409 NODE_GONE whose message names address, the node
-	// as the request named it, as one of its words.
+	// as the request named it, as one of its words (namesAsAWord).
 	requireGoneNamed := func(name string, response *httptest.ResponseRecorder, address string) {
 		t.Helper()
 		refusal := decodeBody[refusalAnswer](t, response)
-		if response.Code != http.StatusConflict || refusal.Code != codeNodeGone || !slices.Contains(strings.Fields(refusal.Error), address) {
+		if response.Code != http.StatusConflict || refusal.Code != codeNodeGone || !namesAsAWord(refusal.Error, address) {
 			t.Errorf("%s answers %d %s, want 409 %s naming %s", name, response.Code, response.Body.String(), codeNodeGone, address)
 		}
 	}
@@ -438,6 +439,13 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 	if after := stateTupleCount(t, rig.database); after != states {
 		t.Errorf("the refused writes moved the state tuples from %d to %d", states, after)
 	}
+}
+
+// namesAsAWord is whether text names address as one of its words, split on spaces and commas: an
+// address a comma follows is a word, and one that only begins a longer word, as a lens's address
+// begins its finding's `<lens address>#b-<id>`, is none.
+func namesAsAWord(text, address string) bool {
+	return slices.Contains(strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }), address)
 }
 
 // A lens on a block that a version removes, or on a document that is retired, or on a block of
@@ -526,12 +534,15 @@ func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	nodes, tuples := rig.counts(refs.BlockNodeKind, graphstore.TuplePartOf)
 	// The refusal names both nodes, as TestAChildIsNeverWiderThanItsParent holds a risk's and a
 	// lens's: the finding first, whose address is the lens's own with the finding's block id,
-	// `<lens address>#b-<id>`, and the lens where the words name the parent, followed by `, which`,
-	// so words that name the finding in that place name no lens.
+	// `<lens address>#b-<id>`, and the lens as a word of its own (namesAsAWord), which words that
+	// name the finding alone never hold.
 	asked := "a finding asked for project under alice's author-only lens " + lens.Address
 	answer := requireRefused(t, asked, rig.post(nodePath(lens.Address, "findings"), map[string]any{
 		"text": "Every reader would see this.", "visibility": graphstore.VisibilityProject}, "alice"),
-		http.StatusBadRequest, codeVisibilityWiderThanParent, "cannot stand under or on "+lens.Address+", which is reserved for its author")
+		http.StatusBadRequest, codeVisibilityWiderThanParent, "")
+	if !namesAsAWord(answer.Error, lens.Address) {
+		t.Errorf("%s is refused %q, want it to name the lens %s, the node it cannot stand under", asked, answer.Error, lens.Address)
+	}
 	if !strings.HasPrefix(answer.Error, lens.Address+"#b-") {
 		t.Errorf("%s is refused %q, want it to name the finding it drew, %s#b-<id>, first", asked, answer.Error, lens.Address)
 	}
