@@ -178,7 +178,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 		}
 		secret := g.secret(roleSecretName(loc.Sandbox.Name, role))
 		_, holdsAcme := secret.Data[GitHubHostsKey("acme")]
-		if want := appauth.SetFor(role) != appauth.SetReviewer; holdsAcme != want {
+		if want := roleSet(role) != appauth.SetReviewer; holdsAcme != want {
 			t.Errorf("%s's Secret holds acme's gh files %v, want %v: each role's Secret holds its own bundle", role, holdsAcme, want)
 		}
 	}
@@ -196,7 +196,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 			// Each set's mints answer for themselves, so the bundles share nothing: the
 			// reviewer's holds acme's directory alone, which is then that role's own default,
 			// and every other role's the issue owner's alone.
-			if appauth.SetFor(role) == appauth.SetReviewer {
+			if roleSet(role) == appauth.SetReviewer {
 				return ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{"acme": bundle.Dirs["acme"]}}, nil
 			}
 			delete(bundle.Dirs, "acme")

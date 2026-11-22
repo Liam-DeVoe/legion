@@ -227,7 +227,7 @@ func TestGitHubCredentialBundlesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 			if err := bundle.Validate(); err != nil {
 				t.Errorf("the bundle does not validate: %v", err)
 			}
-			sets := []TokenSet{SetFor(tc.role)}
+			sets := []TokenSet{roleSet(t, tc.role)}
 			if dirs := GitHubDirs(repos, ghrepo.Renames{}, installed, nil, sets, tc.repo); !slices.Equal(dirs, bundle.DirNames()) {
 				t.Errorf("GitHubDirs = %q, want the bundle's own directories %q", dirs, bundle.DirNames())
 			}
@@ -273,7 +273,7 @@ func TestOneWalksBundlesReadTheInstallationsOnce(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
 		}
-		if want := string(SetFor(role)) + "-token-for-acme"; bundleTokens(t, bundle)["acme"] != want {
+		if want := string(roleSet(t, role)) + "-token-for-acme"; bundleTokens(t, bundle)["acme"] != want {
 			t.Errorf("the %s's bundle holds %q for acme, want %q: each role's own set", role, bundleTokens(t, bundle)["acme"], want)
 		}
 	}
@@ -617,7 +617,7 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			if err := bundle.Validate(); err != nil {
 				t.Errorf("the bundle does not validate: %v", err)
 			}
-			roles := []TokenSet{SetFor(tc.role)}
+			roles := []TokenSet{roleSet(t, tc.role)}
 			if dirs := GitHubDirs(repos, renames, installed, nil, roles, tc.repo); !slices.Equal(dirs, bundle.DirNames()) {
 				t.Errorf("GitHubDirs = %q, want the bundle's own directories %q", dirs, bundle.DirNames())
 			}

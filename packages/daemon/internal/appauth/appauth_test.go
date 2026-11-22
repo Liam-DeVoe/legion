@@ -30,9 +30,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 func testAppKey(t *testing.T) (*rsa.PrivateKey, string) {
@@ -220,6 +222,9 @@ func TestGenerateJWTExpiresInsideGitHubsCapWithMargin(t *testing.T) {
 	}
 }
 
+// Each of Legion's own roles has a set: the owner (the architect), the merger and the project
+// controller, which no step names, each their own, and each role a step names (plan.BuiltinRoles)
+// the set of its type.
 func TestSetForEveryRole(t *testing.T) {
 	for _, tc := range []struct {
 		role claim.Role
@@ -234,10 +239,83 @@ func TestSetForEveryRole(t *testing.T) {
 		{claim.RoleController, SetController},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
-			if got := SetFor(tc.role); got != tc.want {
-				t.Errorf("SetFor(%q) = %q, want %q", tc.role, got, tc.want)
+			if got, err := SetFor(tc.role); err != nil || got != tc.want {
+				t.Errorf("SetFor(%q) = %q, %v; want %q", tc.role, got, err, tc.want)
 			}
 		})
+	}
+}
+
+// roleSet is SetFor of one of Legion's own roles, each of which has a set (TestSetForEveryRole).
+func roleSet(t *testing.T, role claim.Role) TokenSet {
+	t.Helper()
+	set, err := SetFor(role)
+	if err != nil {
+		t.Fatalf("SetFor(%q): %v", role, err)
+	}
+	return set
+}
+
+// A role SetFor keeps no set for is refused with ErrNoTokenSet, never with a panic: a role that
+// is none of Legion's own and no role a step names, and a role a plan defines whose type no set
+// is kept for. The refusal names the role, and the type where the type is what it lacks. A
+// role's gh bundle, the mint a claim's launch and every refresh of it ask for, fails with that
+// error before it reads the App's installations or asks for a lease, and so does a walk's.
+func TestSetForRefusesARoleOutsideTheSets(t *testing.T) {
+	// refused holds that answer is ErrNoTokenSet, naming each of names, with nothing answered
+	// beside it, and reports a panic as this test's failure rather than the test binary's.
+	refused := func(t *testing.T, what string, answer func() (bool, error), names ...string) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("%s panicked (%v), want the refusal ErrNoTokenSet", what, r)
+			}
+		}()
+		answered, err := answer()
+		if !errors.Is(err, ErrNoTokenSet) || answered {
+			t.Errorf("%s = %v, answering something %v; want nothing and ErrNoTokenSet", what, err, answered)
+			return
+		}
+		for _, name := range names {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("%s's refusal %q does not name %s", what, err, name)
+			}
+		}
+	}
+	set := func(answer func() (TokenSet, error)) func() (bool, error) {
+		return func() (bool, error) {
+			set, err := answer()
+			return set != "", err
+		}
+	}
+	for _, role := range []claim.Role{"deployer", ""} {
+		refused(t, fmt.Sprintf("SetFor(%q)", role), set(func() (TokenSet, error) { return SetFor(role) }), fmt.Sprintf("%q", role))
+	}
+	deployer := plan.RoleDef{Name: "deployer", Type: "deploy"}
+	refused(t, "the set of a role of the type deploy", set(func() (TokenSet, error) { return setForStep(deployer) }), `"deployer"`, `"deploy"`)
+
+	widgets := ghrepo.MustParse("acme/widgets")
+	installs := installedOnOwners("acme")
+	var minted []string
+	credential := GitHubCredential(sourceOf(countingTokens{minted: &minted}, installs), projectRepos("acme/widgets"),
+		ghrepo.Renames{}, NewInstalled(), NewLeftOut(), quietBundleLog())
+	bundle := func(build func() (ghconfig.Bundle, error)) func() (bool, error) {
+		return func() (bool, error) {
+			bundle, err := build()
+			return bundle.Default != "" || len(bundle.Dirs) != 0, err
+		}
+	}
+	refused(t, "the deployer's gh bundle", bundle(func() (ghconfig.Bundle, error) {
+		return credential(context.Background(), "deployer", widgets)
+	}), `"deployer"`)
+	refused(t, "a walk's gh bundle of the deployer", bundle(func() (ghconfig.Bundle, error) {
+		return NewBundles(credential).Bundle(context.Background(), "deployer", widgets)
+	}), `"deployer"`)
+	installs.mu.Lock()
+	reads := installs.reads
+	installs.mu.Unlock()
+	if reads != 0 || len(minted) != 0 {
+		t.Errorf("the refused bundles read the App's installations %d times and minted for %q, want neither", reads, minted)
 	}
 }
 
@@ -1534,59 +1612,91 @@ func mintedOnce(t *testing.T, mint func(*Manager) (Lease, error)) (string, map[s
 	return github.exchangeTexts()[0], asked[0].Permissions, stderr.String()
 }
 
-// Each role's write token asks GitHub for exactly that role's set, and the daemon's verdict
-// token for its own: the implementer and the merger write actions, contents, issues, pull
-// requests and workflows and read attestations, checks, metadata, code scanning and commit
-// statuses; the architect, the planner, the reviewer and the controller write actions, contents,
-// issues, pull requests and code scanning and read attestations, checks, metadata and commit
-// statuses; the tester writes actions, issues, pull requests and code scanning and reads
-// attestations, checks, contents, metadata and commit statuses, so the code it runs under its
-// token cannot push a commit; and the verdict token writes checks and commit statuses and reads
-// contents, metadata and pull requests. No set beside these eight exists, and no request names a
-// repository: what a token reaches is what the account chose when it installed the App.
+// Each role's write token asks GitHub for exactly the set of its role's type, and the daemon's
+// verdict token for its own. A role a step names takes the default set of its type
+// (plan.RoleDef.Type): the type implementation writes actions, contents, issues, pull requests
+// and workflows and reads attestations, checks, metadata, code scanning and commit statuses; the
+// types planning, design and review write actions, contents, issues, pull requests and code
+// scanning and read attestations, checks, metadata and commit statuses; and the type testing
+// writes actions, issues, pull requests and code scanning and reads attestations, checks,
+// contents, metadata and commit statuses, so the code it runs under its token cannot push a
+// commit. Of the roles no step names, the merger takes the implementation set, and the owner (the
+// architect) and the controller take the review set. The verdict token writes checks and commit
+// statuses and reads contents, metadata and pull requests. No set beside these eight exists, and
+// no request names a repository: what a token reaches is what the account chose when it installed
+// the App.
 func TestRoleWritePermissions(t *testing.T) {
-	worker := map[string]string{
+	implementation := map[string]string{
 		"actions": "write", "contents": "write", "issues": "write", "pull_requests": "write", "workflows": "write",
 		"attestations": "read", "checks": "read", "metadata": "read", "security_events": "read", "statuses": "read",
 	}
-	reviewing := map[string]string{
+	review := map[string]string{
 		"actions": "write", "contents": "write", "issues": "write", "pull_requests": "write", "security_events": "write",
 		"attestations": "read", "checks": "read", "metadata": "read", "statuses": "read",
 	}
-	sets := map[TokenSet]map[string]string{
-		SetImplementer: worker,
-		SetMerger:      worker,
-		SetArchitect:   reviewing,
-		SetPlanner:     reviewing,
-		SetReviewer:    reviewing,
-		SetController:  reviewing,
-		SetTester: {
+	types := map[plan.Type]map[string]string{
+		plan.TypeImplementation: implementation,
+		plan.TypePlanning:       review,
+		plan.TypeDesign:         review,
+		plan.TypeReview:         review,
+		plan.TypeTesting: {
 			"actions": "write", "issues": "write", "pull_requests": "write", "security_events": "write",
 			"attestations": "read", "checks": "read", "contents": "read", "metadata": "read", "statuses": "read",
 		},
-		SetVerdict: {"checks": "write", "statuses": "write", "contents": "read", "metadata": "read", "pull_requests": "read"},
 	}
-	if got := slices.Sorted(maps.Keys(writePermissions)); !slices.Equal(got, slices.Sorted(maps.Keys(sets))) {
-		t.Errorf("writePermissions holds the sets %v, want exactly %v", got, slices.Sorted(maps.Keys(sets)))
-	}
-	for set, want := range sets {
-		t.Run(string(set), func(t *testing.T) {
-			text, asked, stderr := mintedOnce(t, func(m *Manager) (Lease, error) {
-				if set == SetVerdict {
-					return m.VerdictToken(context.Background(), "acme")
-				}
-				return m.Token(context.Background(), set, "acme")
-			})
-			if !maps.Equal(asked, want) {
-				t.Errorf("the %s token asks for %v, want exactly %v", set, asked, want)
+	verdict := map[string]string{"checks": "write", "statuses": "write", "contents": "read", "metadata": "read", "pull_requests": "read"}
+	asks := func(t *testing.T, what string, set TokenSet, want map[string]string) {
+		t.Helper()
+		text, asked, stderr := mintedOnce(t, func(m *Manager) (Lease, error) {
+			if set == SetVerdict {
+				return m.VerdictToken(context.Background(), "acme")
 			}
-			if strings.Contains(text, "repositor") {
-				t.Errorf("the %s token's request body is %s, want the permissions and no repository", set, text)
-			}
-			if stderr != "" {
-				t.Errorf("stderr = %q, want nothing: the installation is granted every permission the set asks for", stderr)
-			}
+			return m.Token(context.Background(), set, "acme")
 		})
+		if !maps.Equal(asked, want) {
+			t.Errorf("%s (%s) asks for %v, want exactly %v", what, set, asked, want)
+		}
+		if strings.Contains(text, "repositor") {
+			t.Errorf("%s's request body is %s, want the permissions and no repository", what, text)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want nothing: the installation is granted every permission the set asks for", stderr)
+		}
+	}
+	for typ, want := range types {
+		t.Run("type "+string(typ), func(t *testing.T) {
+			set, err := setForStep(plan.RoleDef{Name: "a-" + string(typ) + "-step", Type: typ})
+			if err != nil {
+				t.Fatalf("the set of the type %s: %v", typ, err)
+			}
+			asks(t, "the set of the type "+string(typ), set, want)
+		})
+	}
+	// Each role a step names (plan.BuiltinRoles) is given its type's set by SetFor, the one
+	// decision every mint for a claim reads.
+	for name, def := range plan.BuiltinRoles() {
+		t.Run("step role "+name, func(t *testing.T) {
+			set, err := SetFor(claim.Role(name))
+			if err != nil {
+				t.Fatalf("SetFor(%q): %v", name, err)
+			}
+			asks(t, "the "+name+"'s token, of the type "+string(def.Type), set, types[def.Type])
+		})
+	}
+	for role, want := range map[claim.Role]map[string]string{
+		claim.RoleMerger:     implementation,
+		claim.RoleArchitect:  review,
+		claim.RoleController: review,
+	} {
+		t.Run(string(role), func(t *testing.T) {
+			asks(t, "the "+string(role)+"'s token", roleSet(t, role), want)
+		})
+	}
+	t.Run("verdict", func(t *testing.T) { asks(t, "the verdict token", SetVerdict, verdict) })
+
+	eight := []TokenSet{SetImplementer, SetMerger, SetArchitect, SetPlanner, SetTester, SetReviewer, SetController, SetVerdict}
+	if got := slices.Sorted(maps.Keys(writePermissions)); !slices.Equal(got, slices.Sorted(slices.Values(eight))) {
+		t.Errorf("writePermissions holds the sets %v, want exactly %v", got, slices.Sorted(slices.Values(eight)))
 	}
 }
 
@@ -1607,7 +1717,7 @@ func TestOnlyTheVerdictSetWritesChecksOrStatuses(t *testing.T) {
 		return written
 	}
 	for _, role := range append(slices.Clone(claim.Roles), claim.RoleController) {
-		set := SetFor(role)
+		set := roleSet(t, role)
 		_, asked, _ := mintedOnce(t, func(m *Manager) (Lease, error) { return m.Token(context.Background(), set, "acme") })
 		if written := writes(asked); len(written) != 0 {
 			t.Errorf("the %s's token (%s) asks to write %v, want neither checks nor statuses at write", role, set, written)

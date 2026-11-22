@@ -137,7 +137,11 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	opts.Conns, opts.StreamURL, opts.Store = listener, listener.Addr(), firstLaunchStore{}
 	opts.Tokens = publicCloneTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		rendered := ghconfig.Render("ghs_placeholder", string(appauth.SetFor(role)), time.Now().Add(time.Hour))
+		set, err := appauth.SetFor(role)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
+		rendered := ghconfig.Render("ghs_placeholder", string(set), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 	}

@@ -26,6 +26,12 @@ import (
 // nothing rather than leaving that one out. One App serves every set, so the set is the whole of
 // what tells one role's token from another's.
 //
+// A role's set follows the type of its work (SetFor), and three sets hold every role's: the
+// implementation set, which the implementer and the merger ask for; the review set, which the
+// architect, the planner, the reviewer and the controller ask for, as does any role of the type
+// planning, design or review; and the testing set, the review set with contents:read, which the
+// tester asks for, as does any role of the type testing.
+//
 // Every entry has its user. workflows:write is a push that touches `.github/workflows`, which
 // GitHub refuses from a token without it, and only the implementer and the merger, who write the
 // work's commits, ask for it: a wording fix another role finds in a workflow takes an

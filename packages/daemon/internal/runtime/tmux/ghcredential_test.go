@@ -26,26 +26,41 @@ import (
 // staticCredentialExpiry is the lease expiry every rendered test credential carries.
 var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 
+// roleSet is appauth.SetFor of one of Legion's own roles, each of which has a set (appauth's
+// TestSetForEveryRole). A role without one is a test's own mistake, and panics as
+// ghrepo.MustParse does on a name a test wrote wrong.
+func roleSet(role claim.Role) appauth.TokenSet {
+	set, err := appauth.SetFor(role)
+	if err != nil {
+		panic(err)
+	}
+	return set
+}
+
 // staticCredentialToken is the write token staticCredential renders for role: one per token set,
 // so a reviewer's files and an implementer's differ as their sets' tokens do.
 func staticCredentialToken(role claim.Role) string {
-	return "ghs_" + string(appauth.SetFor(role)) + "_token"
+	return "ghs_" + string(roleSet(role)) + "_token"
 }
 
 // staticOwnerToken is the lease staticCredential renders for role on an owner other than the
 // pane's own: that owner's own installation lease, which a role's bundle holds at the role's
 // own permissions and no narrower (appauth.GitHubCredential, INFRA-2543).
 func staticOwnerToken(role claim.Role, owner string) string {
-	return "ghs_" + string(appauth.SetFor(role)) + "_lease_" + owner
+	return "ghs_" + string(roleSet(role)) + "_lease_" + owner
 }
 
 // staticCredential is the runtime's GitHubCredential in every test that needs one: a bundle of
 // the two owners acme and sjawhar (and repo's own, when it is another), the token of the role's
 // set for repo's owner (appauth.SetFor) in that owner's directory — acme when repo is the zero
 // Repository — and each other owner's own lease in its own, rendered as gh's files with a fixed
-// expiry.
+// expiry. A role SetFor keeps no set for has no bundle, as appauth.GitHubCredential answers it.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app := string(appauth.SetFor(role))
+	set, err := appauth.SetFor(role)
+	if err != nil {
+		return ghconfig.Bundle{}, err
+	}
+	app := string(set)
 	owner := strings.ToLower(repo.Owner())
 	if owner == "" {
 		owner = "acme"
@@ -493,12 +508,12 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 			return staticCredential(ctx, role, ghrepo.MustParse("acme/widgets"))
 		}
 		bundle, err := staticCredential(ctx, role, repo)
-		bundle.Dirs["acme"] = ghconfig.Render("ghs_acme_second", string(appauth.SetFor(role)), staticCredentialExpiry)
+		bundle.Dirs["acme"] = ghconfig.Render("ghs_acme_second", string(roleSet(role)), staticCredentialExpiry)
 		return bundle, err
 	}
 	r.controllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		bundle, err := staticControllerCredential(ctx, defaultOwner)
-		bundle.Dirs["acme"] = ghconfig.Render("ghs_acme_second", string(appauth.SetFor(claim.RoleController)), staticCredentialExpiry)
+		bundle.Dirs["acme"] = ghconfig.Render("ghs_acme_second", string(roleSet(claim.RoleController)), staticCredentialExpiry)
 		return bundle, err
 	}
 	r.refreshGitHubCredentials(ctx)
@@ -623,7 +638,7 @@ func TestAControllerPaneIsRefreshedForTheOwnerItsLaunchRecorded(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
 	var asked []string
-	app := string(appauth.SetFor(claim.RoleController))
+	app := string(roleSet(claim.RoleController))
 	// The project served sjawhar alone when the pane was launched, and has since gained acme,
 	// which sorts before it.
 	r := &Runtime{
@@ -865,10 +880,14 @@ func TestAWalkBuildsOneBundlePerSetAndRepository(t *testing.T) {
 		tracked:              map[string]*trackedProcess{},
 	}
 	r.gitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		set, err := appauth.SetFor(role)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
 		mu.Lock()
-		builds[built{appauth.SetFor(role), strings.ToLower(repo.String())}]++
+		builds[built{set, strings.ToLower(repo.String())}]++
 		mu.Unlock()
-		if fail.Load() && appauth.SetFor(role) == appauth.SetTester {
+		if fail.Load() && set == appauth.SetTester {
 			return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 		}
 		return credential(ctx, role, repo)

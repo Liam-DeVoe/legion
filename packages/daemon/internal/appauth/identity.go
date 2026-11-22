@@ -1,9 +1,11 @@
 package appauth
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // TokenSet names the permissions a write token is minted with (writePermissions): one set per
@@ -26,25 +28,54 @@ const (
 	SetVerdict TokenSet = "verdict"
 )
 
-// SetFor is the one role-to-set decision: each role's token holds its own role's set. Keep this
-// switch exhaustive over claim.Role, plus the one non-claim role it also decides: the project
-// controller. No role maps to SetVerdict.
-func SetFor(role claim.Role) TokenSet {
+// ErrNoTokenSet is SetFor's refusal of a role it keeps no set for: a role that is none of
+// Legion's own and no role a step can name, or a role whose type no set is kept for. Every mint
+// for such a role fails with it (GitHubCredential, Bundles.Bundle, and internal/daemon's git
+// identity of a launch), so a claim on that role fails its start, and the daemon goes on.
+var ErrNoTokenSet = errors.New("no token set")
+
+// stepRoles are the roles a step can name, by name (plan.BuiltinRoles), each with its type. It is
+// read once and never changed.
+var stepRoles = plan.BuiltinRoles()
+
+// SetFor is the one role-to-set decision: the set every token of role's claim is minted with. The
+// three roles no step names hold their own sets: the owner of an issue (the architect) and the
+// project controller the review set, and the merger the implementation set. A role a step can
+// name takes the default set of its type (setForStep), so a role a plan defines needs no set of
+// its own. Any other role has no set: SetFor answers ErrNoTokenSet naming it, and never panics,
+// so the mint asked for it fails and the daemon does not. No role maps to SetVerdict.
+func SetFor(role claim.Role) (TokenSet, error) {
 	switch role {
-	case claim.RoleImplementer:
-		return SetImplementer
-	case claim.RoleMerger:
-		return SetMerger
 	case claim.RoleArchitect:
-		return SetArchitect
-	case claim.RolePlanner:
-		return SetPlanner
-	case claim.RoleTester:
-		return SetTester
-	case claim.RoleReviewer:
-		return SetReviewer
+		return SetArchitect, nil
+	case claim.RoleMerger:
+		return SetMerger, nil
 	case claim.RoleController:
-		return SetController
+		return SetController, nil
 	}
-	panic(fmt.Sprintf("SetFor: unsupported claim role %q", role))
+	if def, ok := stepRoles[string(role)]; ok {
+		return setForStep(def)
+	}
+	return "", fmt.Errorf("%w for the role %q: it is not the architect, the merger, the controller or a role a step can name", ErrNoTokenSet, role)
+}
+
+// setForStep is the default set of the type of def, a role a step can name (plan.RoleDef.Type):
+// the implementer's for the type implementation, the tester's for the type testing, and the
+// review set for the types planning, design and review, under the name of the role that does
+// that type's work in Legion's own line: the planner's, the architect's and the reviewer's. A
+// type outside these has no set: ErrNoTokenSet, naming the role and its type.
+func setForStep(def plan.RoleDef) (TokenSet, error) {
+	switch def.Type {
+	case plan.TypeImplementation:
+		return SetImplementer, nil
+	case plan.TypeTesting:
+		return SetTester, nil
+	case plan.TypePlanning:
+		return SetPlanner, nil
+	case plan.TypeDesign:
+		return SetArchitect, nil
+	case plan.TypeReview:
+		return SetReviewer, nil
+	}
+	return "", fmt.Errorf("%w for the role %q: its type %q is none of implementation, testing, planning, design and review", ErrNoTokenSet, def.Name, def.Type)
 }

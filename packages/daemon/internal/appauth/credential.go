@@ -106,17 +106,24 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // A directory left out is recorded in left (LeftOut), which GitHubDirs reads, so the drift check
 // never asks a pod for a directory no mint produces.
 //
+// A role SetFor keeps no set for has no bundle: the build fails with SetFor's refusal
+// (ErrNoTokenSet) before it reads the App's installations or asks for any lease.
+//
 // A Manager holds every lease and re-mints it as it nears its expiry, so a launch and every
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
 // directories carry it: a configured rename's two owner directories hold the one lease.
 func GitHubCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		set, err := SetFor(role)
+		if err != nil {
+			return ghconfig.Bundle{}, fmt.Errorf("the %s's gh bundle: %w", role, err)
+		}
 		layout, err := installedLayout(ctx, source, role, served, renames, installed, repo)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
-		return mintBundle(ctx, source, role, false, layout.dflt, layout, left, log)
+		return mintBundle(ctx, source, role, set, false, layout.dflt, layout, left, log)
 	}
 }
 
@@ -168,9 +175,14 @@ func NewBundles(credential runtime.GitHubCredential) *Bundles {
 
 // Bundle is role's gh bundle for repo, built once per set and repository of the walk, with the
 // walk's one read of the App's installations. A walk is one goroutine, so the memo needs no lock
-// of its own.
+// of its own. A role SetFor keeps no set for has no bundle, and is refused with SetFor's error
+// before anything is built.
 func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	key := bundleKey{set: SetFor(role), repo: strings.ToLower(repo.String())}
+	set, err := SetFor(role)
+	if err != nil {
+		return ghconfig.Bundle{}, fmt.Errorf("the %s's gh bundle: %w", role, err)
+	}
+	key := bundleKey{set: set, repo: strings.ToLower(repo.String())}
 	if built, held := b.built[key]; held {
 		return built, nil
 	}
@@ -219,7 +231,7 @@ func ControllerCredential(source Source, served func(ghrepo.Repository) bool, re
 		if owner != "" && slices.Contains(layout.refused, owner) {
 			return ghconfig.Bundle{}, noDirectoryName(owner)
 		}
-		return mintBundle(ctx, source, claim.RoleController, true, owner, layout, left, log)
+		return mintBundle(ctx, source, claim.RoleController, SetController, true, owner, layout, left, log)
 	}
 }
 
@@ -770,8 +782,7 @@ func leaveOutReason(err error) string {
 //
 // A layout with no owner at all is an App installed on no account, and no configured rename's
 // owner beside it: runtime.ErrNoGitHubOwner, for both credentials.
-func mintBundle(ctx context.Context, tokens Tokens, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
-	set := SetFor(role)
+func mintBundle(ctx context.Context, tokens Tokens, role claim.Role, set TokenSet, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
 	if len(layout.owners) == 0 {
 		return ghconfig.Bundle{}, fmt.Errorf("the %s's gh bundle: %w", role, runtime.ErrNoGitHubOwner)
 	}
