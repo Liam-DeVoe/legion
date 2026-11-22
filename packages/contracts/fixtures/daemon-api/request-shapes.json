@@ -1165,14 +1165,6 @@
   },
   {
     "contract": 221,
-    "route": "POST /legion/v1/children/park",
-    "fieldPaths": [
-      "grantId",
-      "issue"
-    ]
-  },
-  {
-    "contract": 221,
     "route": "POST /legion/v1/children/rerun",
     "fieldPaths": [
       "grantId",
@@ -1414,14 +1406,6 @@
       "grantId",
       "issues",
       "issues.*"
-    ]
-  },
-  {
-    "contract": 224,
-    "route": "POST /legion/v1/children/park",
-    "fieldPaths": [
-      "grantId",
-      "issue"
     ]
   },
   {
