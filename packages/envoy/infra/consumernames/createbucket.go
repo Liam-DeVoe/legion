@@ -1395,16 +1395,53 @@ func createBucketAwaitGone(ctx context.Context, read func(context.Context) (bool
 // stream's leader (createBucketAwaitLeader), counting the create in left: unsure until the create
 // is answered, created once it is. createBucketCutoverHeld and createBucketMake both create the
 // bucket through it.
+//
+// The create is bounded by createBucketLeaderWait, not jetstream's default of 5 s: on three servers
+// the server picks a new stream's preferred leader (nats-server v2.15.1 jetstream_cluster.go
+// jsClusteredStreamRequest, rg.setPreferred), and a create answered only after an election can
+// take longer. A
+// create with no answer by then is never sent again blind: the bucket is read back first
+// (createBucketReadBackCreate), and only a bucket with create-bucket's configuration and no
+// message, so no sentinel, is taken as the create's.
 func createBucketCreate(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, replicas int, left *createBucketLeft) error {
 	left.unsure = "the bucket, if its unanswered create landed"
-	if _, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(replicas)); err != nil {
+	bounded, cancel := context.WithTimeout(ctx, createBucketLeaderWait)
+	_, err := js.CreateKeyValue(bounded, selection.SessionBucketConfig(replicas))
+	cancel()
+	switch {
+	case err != nil && ctx.Err() == nil && noAnswer(err):
+		if err := createBucketReadBackCreate(ctx, nc, replicas, err); err != nil {
+			return err
+		}
+	case err != nil:
 		return fmt.Errorf("create %s: %w", selection.SessionBucket, err)
 	}
 	left.unsure, left.created = "", true
 	return createBucketAwaitLeader(ctx, nc)
 }
 
-// createBucketLeaderWait bounds createBucketAwaitLeader.
+// createBucketReadBackCreate decides a create of the selection bucket that drew no answer within
+// createBucketLeaderWait (unanswered) by reading the bucket back: a stream STREAM.INFO finds with
+// create-bucket's configuration (createBucketConfigDiff) and no message, so no sentinel, is the
+// create's, and nil; anything else is UNKNOWN, naming the bucket, so the stop records that the
+// create may have landed: no stream, another configuration or messages, or a read with no answer.
+func createBucketReadBackCreate(ctx context.Context, nc *nats.Conn, replicas int, unanswered error) error {
+	info, present, err := createBucketStream(ctx, nc, false)
+	switch {
+	case err != nil:
+		return unknownf(err, "the create of %s drew no answer within %s (%v), and STREAM.INFO read it back", selection.SessionBucket, createBucketLeaderWait, unanswered)
+	case !present:
+		return unknownf(unanswered, "the create of %s drew no answer within %s, and STREAM.INFO finds no bucket; the create may still land", selection.SessionBucket, createBucketLeaderWait)
+	}
+	if diff := createBucketConfigDiff(info.Config, replicas); len(diff) > 0 || info.State.Msgs > 0 {
+		return unknownf(unanswered, "the create of %s drew no answer within %s, and the bucket STREAM.INFO finds is not one this create makes: %d messages, configuration %s",
+			selection.SessionBucket, createBucketLeaderWait, info.State.Msgs, strings.Join(diff, ", "))
+	}
+	return nil
+}
+
+// createBucketLeaderWait bounds a create of the selection bucket (createBucketCreate) and
+// createBucketAwaitLeader: each covers the election of the new stream's leader.
 var createBucketLeaderWait = 30 * time.Second
 
 // createBucketAwaitLeader waits until the selection bucket's stream, just created, names its

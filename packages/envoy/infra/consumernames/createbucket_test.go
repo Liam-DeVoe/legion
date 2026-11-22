@@ -739,6 +739,89 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 	})
 }
 
+// createBucketSlowHub is a server with no JetStream on which the test answers the JetStream API
+// requests a create of the selection bucket sends: $JS.API.INFO at once, STREAM.CREATE of
+// KV_envoy_session_consumers after createDelay (never, when createDelay is negative), and its
+// STREAM.INFO with the stream as create-bucket creates it, empty, when present, else 10059. It
+// answers the client's connection and a JetStream on it.
+func createBucketSlowHub(t *testing.T, createDelay time.Duration, present bool, replicas int) (*nats.Conn, jetstream.JetStream) {
+	t.Helper()
+	_, url := testnats.StartConfig(t, "authorization {\n  users = [ { user: \"admin\", password: \"admin\" } ]\n}\nno_auth_user: \"admin\"\n", nil, true)
+	responder, err := nats.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(responder.Close)
+	info := func() []byte {
+		raw, err := json.Marshal(jetstream.StreamInfo{Config: createBucketStreamConfig(replicas), Created: time.Now().UTC()})
+		require.NoError(t, err)
+		return raw
+	}
+	_, err = responder.Subscribe("$JS.API.INFO", func(m *nats.Msg) { _ = m.Respond([]byte(`{}`)) })
+	require.NoError(t, err)
+	_, err = responder.Subscribe("$JS.API.STREAM.CREATE."+selectionStreamName, func(m *nats.Msg) {
+		if createDelay < 0 {
+			return
+		}
+		go func() {
+			time.Sleep(createDelay)
+			_ = m.Respond(info())
+		}()
+	})
+	require.NoError(t, err)
+	_, err = responder.Subscribe("$JS.API.STREAM.INFO."+selectionStreamName, func(m *nats.Msg) {
+		if present {
+			_ = m.Respond(info())
+			return
+		}
+		_ = m.Respond([]byte(`{"error":{"code":404,"err_code":10059,"description":"stream not found"}}`))
+	})
+	require.NoError(t, err)
+	require.NoError(t, responder.Flush())
+	nc, err := nats.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	return nc, js
+}
+
+// The create of the selection bucket is bounded by createBucketLeaderWait, which covers the
+// election of a new stream's leader (on three servers the server picks the preferred leader,
+// nats-server v2.15.1 jetstream_cluster.go:11096-11097), not by jetstream's default of 5 s. A create
+// answered after 6 s completes. A create never answered is read back before anything is decided:
+// the bucket STREAM.INFO finds, with create-bucket's configuration and no message (so no sentinel),
+// is the create's, which went on; none found is UNKNOWN, naming the bucket, the run left unsure
+// whether the create landed. Control: aca652d622's create, which ran on jetstream's 5 s and
+// answered each as a plain refusal, "create envoy_session_consumers: context deadline exceeded".
+func TestASlowCreateOfTheBucketIsWaitedForAndReadBack(t *testing.T) {
+	wait := createBucketLeaderWait
+	createBucketLeaderWait = 8 * time.Second
+	t.Cleanup(func() { createBucketLeaderWait = wait })
+	ctx := context.Background()
+	t.Run("answered after 6 s", func(t *testing.T) {
+		nc, js := createBucketSlowHub(t, 6*time.Second, true, 3)
+		left := &createBucketLeft{}
+		require.NoError(t, createBucketCreate(ctx, nc, js, 3, left))
+		require.True(t, left.created)
+		require.Empty(t, left.unsure)
+	})
+	t.Run("never answered, the bucket read back", func(t *testing.T) {
+		nc, js := createBucketSlowHub(t, -1, true, 3)
+		left := &createBucketLeft{}
+		require.NoError(t, createBucketCreate(ctx, nc, js, 3, left))
+		require.True(t, left.created, "the bucket read back with the create's configuration and no message is the create's")
+		require.Empty(t, left.unsure)
+	})
+	t.Run("never answered, no bucket read back", func(t *testing.T) {
+		nc, js := createBucketSlowHub(t, -1, false, 3)
+		left := &createBucketLeft{}
+		err := createBucketCreate(ctx, nc, js, 3, left)
+		require.True(t, isUnknown(err), "a create neither answered nor read back: %v", err)
+		require.ErrorContains(t, err, "the create of "+selection.SessionBucket)
+		require.False(t, left.created)
+		require.Equal(t, "the bucket, if its unanswered create landed", left.unsure)
+	})
+}
+
 // createBucketStallAt pauses the restore run, once, at jsm.go's progress notice with chunks
 // chunks answered, for longer than the server's restore waits for its next chunk (5 s: nats-server
 // processStreamRestore's activityInterval), so the server ends the restore and drops its chunk

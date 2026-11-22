@@ -475,6 +475,10 @@ A bucket that holds records and no sentinel is UNKNOWN to `create-bucket`, `repa
 on it, and `create-bucket --after-loss` takes it only when each of its keys holds a walk's value
 (`--backup`): it adopts a bucket holding all of the walk's records, and deletes and loads again one
 holding some of them.
+Both create the bucket with 30 seconds for the create's answer, time for the election of the new
+stream's leader. A create with no answer by then is never sent again: the bucket is read back, and
+a stream with `create-bucket`'s configuration and no message is the create's; anything else is
+UNKNOWN, naming the bucket, and the stop records that the create may have landed.
 
 ### `backup`
 
