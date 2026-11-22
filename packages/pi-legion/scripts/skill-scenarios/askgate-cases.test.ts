@@ -11,7 +11,8 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { copyOfThisDirectory, rigFunctions } from "./catalog-copy";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN } from "./test-limit";
 
-// The row runs two rig.sh steps and one bun script as processes of their own.
+// The most a row runs as processes of their own: two rig.sh steps and one bun script, or three
+// bun scripts.
 setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, SCRIPT_RUN));
 
 const makeDirectory = temporaryDirectories("askgate-catalog");
@@ -113,4 +114,74 @@ test("a case added to the askgate catalog alone reaches rig.sh and score.ts", ()
       ["upload", "head"],
     ],
   });
+});
+
+// Catches: an askgate case the catalog lists and score.ts has no rule for, which it read by
+// another case's rule: a run of the case constructor by the rules check's, since
+// RULE_REFUSED_CASES["constructor"] is what every object inherits, and a run of any other such case
+// by upload's, the scorer's last. The case upload is the control: its run is scored by its rule.
+test("score.ts reads an askgate run of a case it has no rule for as a rig error, constructor among them", () => {
+  const read: [string, string][] = [];
+  for (const which of ["upload", "constructor", "upload-twice"]) {
+    const copy = copyOfThisDirectory(makeDirectory("tree"));
+    if (which !== "upload") appendFileSync(path.join(copy, "askgate-cases.txt"), `${which}\n`);
+    // A run as rig.sh's map holds it: its own Dispatch, its exit, the issue's asks and a transcript
+    // of a session whose agent did nothing.
+    const runs = path.join(makeDirectory("score"), "runs");
+    const run = path.join(runs, `askgate-${which}-on-1`);
+    mkdirSync(path.join(run, "sessions"), { recursive: true });
+    writeFileSync(
+      path.join(run, "dispatch.json"),
+      JSON.stringify({
+        postgres: "pg-1",
+        database: "run_1",
+        port: 20000,
+        url: "http://127.0.0.1:20000",
+      })
+    );
+    writeFileSync(path.join(run, "out.txt"), "exit=0\n");
+    writeFileSync(path.join(run, "asks.json"), "[]\n");
+    writeFileSync(
+      path.join(run, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc.jsonl"),
+      [
+        { type: "session", id: "01a0f2cc", cwd: "/rig/cwd" },
+        { type: "model_change", model: "anthropic/claude-opus-4-8" },
+        { type: "thinking_level_change", thinkingLevel: "high" },
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "Ask." }] } },
+        {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join("")
+    );
+    const scored = spawnWithin(
+      { ...SCRIPT_RUN, part: `score.ts runs, a run of the askgate case ${which}` },
+      [process.execPath, "score.ts", "runs", runs, "askgate"],
+      { cwd: copy, env: { PATH: process.env.PATH ?? "", HOME: makeDirectory("home") } }
+    );
+    read.push([
+      which,
+      scored.stdout
+        .toString()
+        .split("\n")
+        .find((line) => line.startsWith(`askgate-${which}-on-1\t`)) ??
+        `exit=${scored.exitCode} ${scored.stderr.toString()}`,
+    ]);
+  }
+  expect(read).toEqual([
+    [
+      "upload",
+      "askgate-upload-on-1\tpass=false\tref=false\tcase=upload reviewedUpload=none exit=0",
+    ],
+    [
+      "constructor",
+      "askgate-constructor-on-1\trig error: askgate-cases.txt lists the case constructor, which score.ts has no rule for",
+    ],
+    [
+      "upload-twice",
+      "askgate-upload-twice-on-1\trig error: askgate-cases.txt lists the case upload-twice, which score.ts has no rule for",
+    ],
+  ]);
 });

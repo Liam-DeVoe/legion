@@ -432,12 +432,18 @@ const NOT_SENT = "AskGate did not send this call.";
 /** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
  * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
 const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
+/** `entries` as a frozen record with no prototype: the shape of every table here that a catalog's
+ * or a scorer's name looks up. A name it does not hold reads undefined, `constructor` and
+ * `toString` among them, where an ordinary object hands back what Object.prototype holds. */
+function table<T>(entries: Readonly<Record<string, T>>): Readonly<Record<string, T>> {
+  return Object.freeze(Object.assign(Object.create(null) as Record<string, T>, entries));
+}
 /** The cases whose call the rules check must refuse, each with the gate's name for that call. */
-const RULE_REFUSED_CASES: Record<string, string> = {
+const RULE_REFUSED_CASES = table({
   nochange: "dispatch_ask",
   "nochange-block": "dispatch_doc_edit",
   untried: "dispatch_ask",
-};
+});
 /** The cases whose ask must post. */
 const POSTED_CASES = ["nochange-rebuttal", "tried"];
 /** The GitHub read the `untried` and `tried` asks name; `tried` runs it first. */
@@ -523,7 +529,8 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *     ask` call refused it (refusedCall);
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
- * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
+ * ask names, which tried runs and untried does not. Any other pair is a rig error naming why, and
+ * so is a case askgate-cases.txt lists that none of these rules is for. */
 function askgateReview(runDir: string, run: string, label: string, askCase: string): Row {
   const on = label !== "off";
   if (!on && askCase !== "facts")
@@ -613,6 +620,8 @@ function askgateReview(runDir: string, run: string, label: string, askCase: stri
       `asks=${asks} refusals=${refusals} gates=${shapes.join(",") || "none"}${read} notReviewed=${notReviewed}`
     );
   }
+  if (askCase !== "upload")
+    throw new Error(`askgate-cases.txt lists the case ${askCase}, which score.ts has no rule for`);
   const reviewed = gates.find((g) => g.tool === "dispatch_artifact" && g.outcome === "verdict");
   if (reviewed === undefined) return row(false, "reviewedUpload=none");
   const reason = reviewed.reason ?? "";
@@ -817,10 +826,10 @@ const HEADS_CASED_RUNS: Record<string, RegExp> = Object.fromEntries(
 /** The scenarios whose run directory names a case before its label, each with the pattern of its
  * directory's name, whose first group is the case: the one list of them that scoreRuns and
  * visible-world.ts both read. architect-pass-and-fail's own world names none, so its case is "". */
-export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
+export const CASED_RUNS: Readonly<Record<string, RegExp>> = table({
   askgate: ASKGATE_RUN,
   ...HEADS_CASED_RUNS,
-};
+});
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
 const LINE_OF_702 = /^ {2}- #702 at /m;
 
@@ -1116,7 +1125,7 @@ function dispatchOf(runDir: string): string | undefined {
  * and is a rig error for that. An older batch of ask-on-message, measure-before-ask or tester-proof
  * could hold several runs on its one Dispatch, so a run of another scenario with no dispatch.json
  * stays a rig error. */
-const BATCH_DISPATCH: Record<string, true> = { "spec-writing": true, "spec-rewrite": true };
+const BATCH_DISPATCH = table({ "spec-writing": true, "spec-rewrite": true });
 const BATCH_DISPATCH_NOTE =
   "no dispatch.json: an older rig's spec run, on its batch's Dispatch, alone in its batch";
 
@@ -3644,29 +3653,29 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
   // case, and that of a heads scenario's world that names one, comes from its directory
-  // (CASED_RUNS, from askgate-cases.txt and heads-scenarios.txt).
-  const scorers: Record<string, (dir: string, run: string, label: string, dirCase: string) => Row> =
-    {
-      "ask-on-message": askOnMessage,
-      "measure-before-ask": measureBeforeAsk,
-      "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
-      brainstorm: brainstormSurface,
-      askgate: askgateReview,
-      "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-      "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-      "reviewer-own-head": (dir, run, label, dirCase) =>
-        headsReview(dir, run, label, dirCase, "reviewer-own-head"),
-      "reviewer-pass-and-fail": (dir, run, label) =>
-        headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
-      "architect-pass-and-fail": (dir, run, label, dirCase) =>
-        headsArchitect(dir, run, label, "architect-pass-and-fail", dirCase),
-      "ci-pass-and-fail": (dir, run, label, role) =>
-        role === "reviewer"
-          ? headsReview(dir, run, label, "", "ci-pass-and-fail")
-          : role === "tester"
-            ? headsTester(dir, run, label)
-            : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
-    };
+  // (CASED_RUNS, from askgate-cases.txt and heads-scenarios.txt). A table, so a name it does not
+  // hold reads no scorer, whatever every object inherits.
+  const scorers = table<(dir: string, run: string, label: string, dirCase: string) => Row>({
+    "ask-on-message": askOnMessage,
+    "measure-before-ask": measureBeforeAsk,
+    "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+    brainstorm: brainstormSurface,
+    askgate: askgateReview,
+    "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
+    "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+    "reviewer-own-head": (dir, run, label, dirCase) =>
+      headsReview(dir, run, label, dirCase, "reviewer-own-head"),
+    "reviewer-pass-and-fail": (dir, run, label) =>
+      headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
+    "architect-pass-and-fail": (dir, run, label, dirCase) =>
+      headsArchitect(dir, run, label, "architect-pass-and-fail", dirCase),
+    "ci-pass-and-fail": (dir, run, label, role) =>
+      role === "reviewer"
+        ? headsReview(dir, run, label, "", "ci-pass-and-fail")
+        : role === "tester"
+          ? headsTester(dir, run, label)
+          : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
+  });
   // A catalog row whose scenario has no scorer here, such as a typo of one that has, would leave
   // its runs read as runs of a label: refused before any run is scored.
   const noScorer = HEADS_SCENARIOS.filter((scenario) => scorers[scenario] === undefined);

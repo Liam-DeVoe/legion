@@ -307,3 +307,51 @@ test("a catalog row whose scenario rig.sh does not run refuses every batch and r
     score: { failed: true, says: true },
   });
 });
+
+// Catches: a lookup of a catalog scenario that reads what every object inherits. scorers is an
+// object, so scorers["constructor"] was Object, a catalog row naming constructor passed the
+// scorer check, and its runs were neither scored nor refused. __proto__ and toString are names the
+// catalog's reader refuses (a name is lower-case words and hyphens); constructor is the inherited
+// name that shape lets through. The known scenario is the control: its run is listed, so a score
+// that reads no run cannot pass for a refusal.
+test("score.ts refuses a catalog scenario named after what every object inherits, and lists a known one's run", () => {
+  const read: [string, { failed: boolean; listed: boolean; refused: boolean }][] = [];
+  for (const scenario of ["architect-pass-and-fail", "constructor", "__proto__", "toString"]) {
+    const copy = copyOfThisDirectory(makeDirectory("tree"));
+    const catalog = path.join(copy, "heads-scenarios.txt");
+    writeFileSync(
+      catalog,
+      readFileSync(catalog, "utf8").replace(
+        "architect-pass-and-fail no-verdict-fail\n",
+        `${scenario} no-verdict-fail\n`
+      )
+    );
+    const runs = path.join(makeDirectory("score"), "runs");
+    const run = `${scenario}-no-verdict-fail-head-1`;
+    mkdirSync(path.join(runs, run), { recursive: true });
+    writeFileSync(path.join(runs, run, "fixture-only"), "");
+    const scored = spawnWithin(
+      { ...SCRIPT_RUN, part: `score.ts runs, the catalog naming ${scenario}` },
+      [process.execPath, "score.ts", "runs", runs],
+      { cwd: copy, env: { PATH: process.env.PATH ?? "", HOME: makeDirectory("home") } }
+    );
+    const stderr = scored.stderr.toString();
+    read.push([
+      scenario,
+      {
+        failed: scored.exitCode !== 0,
+        listed: scored.stdout.toString().includes(`${run}\tfixture only`),
+        refused:
+          stderr.includes(`lists the scenario ${scenario}, which score.ts has no scorer for`) ||
+          stderr.includes(`'${scenario} no-verdict-fail' is not <scenario> [<case>]`),
+      },
+    ]);
+  }
+  const refused = { failed: true, listed: false, refused: true };
+  expect(read).toEqual([
+    ["architect-pass-and-fail", { failed: false, listed: true, refused: false }],
+    ["constructor", refused],
+    ["__proto__", refused],
+    ["toString", refused],
+  ]);
+});
