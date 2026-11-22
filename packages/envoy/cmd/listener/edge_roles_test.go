@@ -441,7 +441,7 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 	rig := newEdgeRig(t)
 	var scope *edgeScope
 	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
 	}
 	const hidden, shown = "ses_edge_forward_pub", "ses_edge_forward_priv"
 	for _, holder := range []struct {
@@ -499,7 +499,7 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 	t.Helper()
 	var scope *edgeScope
 	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
 	}
 	rig.placeElsewhere(t, holder, project)
 	if _, err := rig.deps.registry.SetRole(holder, "shared-listener", role, false); err != nil {
