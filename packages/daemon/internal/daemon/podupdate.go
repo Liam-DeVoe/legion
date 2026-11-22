@@ -359,19 +359,9 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // there (waitingClaims). Which such claims a gone pod names as having lost work is lostClaims'
 // question, and which ones a replacement's line names is unwaitedOnThePod's. Where no claim
 // records a process in the pod, the pod is replaced through it (podProcess), and its next try,
-// within a minute, comes up in the pod that replaced it (dispatch://INFRA-4425 R4). No role
-// process ran in that pod, so that replacement makes no read of the workspace, and it tells the
-// issue of every member that had not answered, but a member with no session whose launch waits on
-// the pod, and tells it nothing where no member is left (lostClaims), as the replacement by issue
-// and at a launch do (replacePodForRound). Where a process of another claim runs in the pod, the
-// pod is replaced through that process, and the waiting claim's own try cannot replace it, since a
-// launch keeps a pod that a claim records a process in (roundPodEndsAtLaunch, keepAtLaunch). There
-// a member with a session that waits on the pod and has not answered makes a read of the workspace
-// due under the same conditions as a claim the round passed over, and it is named on the issue
-// beside the claims the round did not wait for only where that read found work or failed
-// (lostWaitingClaims, workspaceRead.tells). Where no claim records a process in the pod, a try of
-// the waiting claim that comes before the sweep's replacement reads the round as every launch into
-// the pod does, and replaces the pod itself where nothing holds it (roundPodEndsAtLaunch).
+// within a minute, comes up in the pod that replaced it (dispatch://INFRA-4425 R4). Which
+// replacement of the pod comes first, whether it reads the workspace, and what it tells the issue
+// of such a claim are written once, in the doc of lostWaitingClaims.
 //
 // A group whose claims record no pod at all, neither a process nor a pod a launch waits on,
 // decides nothing from its claims: no locator is no evidence either way — every claim of the
@@ -1072,34 +1062,22 @@ type podReplacement struct {
 // work on the pod's disk that no role was asked to push reads the issue's workspace once
 // (readRoundWorkspace): the round passed over a claim that has not answered (passedOverClaims: a
 // claim the daemon suspended that the round does not wait for, roundClock.passesOver, and which
-// runs no process in the pod), or a member of the round with a session whose launch waits on the
-// pod has not answered (lostWaitingClaims: its worker's process can have died in the pod, and no
-// ask of the round reaches such a claim, askRound). Both are read as the replacement's decision
-// reads the claims (live), where a claim whose machine is deciding counts as one that has not
-// answered (roundGroup's mask). The read goes through the role of the process the pod is replaced
-// through, since only a process in the pod can read the disk that the replacement takes from the
-// pod. The replacement deletes that disk unless it is a kept volume that the issue's next pod
-// mounts (roundKeptVolume). The read is made only once every claim the round asks has answered
-// and no turn runs (roundEnd.settled), so a replacement the bound let through over a claim the
-// round asks that had not answered, or over a turn, makes none; a replacement the bound let
-// through over a report of background work alone makes it. What it found is kept for the round
-// (podUpdateWorkspace): a replacement the last word refuses, or one that fails, reads nothing at
-// the next sweep that reaches the replacement, which names the same read. The read decides
-// nothing: the replacement is made at the same sweep whether the read found work, found none, or
-// failed.
+// runs no process in the pod), or lostWaitingClaims names a member whose launch waits on the
+// pod. The read goes through the role of the process the pod is replaced through, since only a
+// process in the pod can read the disk that the replacement takes from the pod. The replacement
+// deletes that disk unless it is a kept volume that the issue's next pod mounts (roundKeptVolume).
+// The read is made only once every claim the round asks has answered and no turn runs
+// (roundEnd.settled), so a replacement the bound let through over a claim the round asks that had
+// not answered, or over a turn, makes none; a replacement the bound let through over a report of
+// background work alone makes it. What it found is kept for the round (podUpdateWorkspace): a
+// replacement the last word refuses, or one that fails, reads nothing at the next sweep that
+// reaches the replacement, which names the same read. The read decides nothing: the replacement
+// is made at the same sweep whether the read found work, found none, or failed.
 //
-// A pod replaced through a claim whose launch waits on it (podProcess) has no role process in it,
-// so its replacement is the replacement of a pod no role process ran in, as the replacement by
-// issue and at a launch are, whatever the round passed over: no read is made (processlessRead),
-// and what may go with the pod is named instead, every member of the round that had not answered
-// it, except a member with no session whose launch waits on the pod (lostClaims), read unmasked
-// (noticeGroup) as those two read them. That names the waiting claim itself where it has a
-// session: its worker can have died in the pod before the runtime refused its relaunch, and what
-// that worker did not push was on the pod's disk. So the issue is told of that loss whichever
-// comes to the pod first, this replacement or the claim's own retry, which replaces the pod itself
-// where nothing holds it (roundPodEndsAtLaunch, endRoundALaunchReplaced). Where no member is left
-// to name, as for a waiting claim with no session that is the issue's only claim, the issue is
-// written nothing (tellWorkspaceLost).
+// A pod replaced through a claim whose launch waits on it (podProcess) has no role process to read
+// the workspace through, so its replacement makes no read (processlessRead). What each
+// replacement reads and names of a claim whose launch waits on the pod is written once, in the doc
+// of lostWaitingClaims.
 //
 // ReplacePod is called once, with the process of a claim that records this round's own pod or,
 // where none does, the locator of a claim whose launch waits on that pod (podProcess). A
@@ -1109,14 +1087,13 @@ type podReplacement struct {
 // bound has come (tellLateRound) and names what holds the round. One round is told once.
 //
 // A replacement made is logged on one line that holds for a round that ended either way, by its
-// answers or by its bound. The line reads the claims as the decision reads them (live), where a
-// claim whose machine is deciding counts as one that has not answered (roundGroup's mask). It
-// names each claim with a session that the round did not wait for and that had not answered
-// (notWaitedFor): a failed claim, and a claim the round passed over. Beside them, under
-// waitingOnThePodNotWaitedFor, it names each claim with a session whose launch waits on the
-// round's own pod and that had not answered (unwaitedOnThePod): the round waits on no answer of
-// such a claim either (waitingClaims). What each left unpushed went with the pod, unless the pod's
-// disk is a kept volume that the issue's next pod mounts (roundKeptVolume), where the work stays.
+// answers or by its bound. It names each claim with a session that the round did not wait for and
+// that had not answered (notWaitedFor): a failed claim, and a claim the round passed over. Beside
+// them, under waitingOnThePodNotWaitedFor, it names each claim with a session whose launch waits
+// on the round's own pod and that had not answered (unwaitedOnThePod): the round waits on no
+// answer of such a claim either (waitingClaims). What each left unpushed went with the pod, unless
+// the pod's disk is a kept volume that the issue's next pod mounts (roundKeptVolume), where the
+// work stays.
 // The line names too what the read of the workspace found, or why no read was made
 // (workspaceRead.attrs). One that the bound made — a claim had not answered, a turn ran, or a
 // claim's report named background work or was missing, when the last word let it through — is
@@ -1127,24 +1104,16 @@ type podReplacement struct {
 // replacement through. A runtime that found no pod to replace and returned nil without asking the
 // last word replaced nothing, so the bound replaced nothing either.
 //
-// Where the read found work that no branch or tag on origin holds, or failed, one message on the
-// issue names the claims the round did not wait for and, beside them, the members with a session
-// whose launch waits on the pod that had not answered, and what the read found (notAskedToPush,
-// workspaceLostMessage). The message only reports, so it reads the claims unmasked (noticeGroup):
-// a claim that answered while its machine was deciding is not named, and where no claim is left
-// to name, no message is written (tellWorkspaceLost), though the decision's read made the read due
-// and it found work. Where the pod was replaced through a claim whose launch waits on it, the
-// message names the members that had not answered the round, except a member with no session
-// whose launch waits on the pod, and says that no role process ran in the pod to read the
-// workspace; where no member is left to name, no message is written. Where a process of another
-// claim runs in the pod, a claim whose launch waits on the pod cannot replace it at its own retry,
-// since a launch keeps a pod that a claim records a process in (roundPodEndsAtLaunch,
-// keepAtLaunch). The replacement through that process names such a claim on the issue only where
-// its read found work or failed (workspaceRead.tells), as it names a claim the round passed over.
-// The message is written with the replacement made and with no other: a replacement refused or
-// failed ends nothing, and the round's end forgets the read (endPodUpdates). A read that found no
-// work writes nothing on the issue, and any other replacement that made no read writes nothing
-// either.
+// One message on the issue names what the pod may have taken with it, each claim with its state,
+// and what the read found (tellWorkspaceLost, workspaceLostMessage): the claims notAskedToPush
+// gives where the read found work that no branch or tag on origin holds, or failed, and the
+// members lostClaims gives where the pod was replaced through a claim whose launch waits on it,
+// which made no read. Where no claim is left to name, no message is written. How the decision, the
+// read's gate, the line and the message each read the claims is written once, in the comment
+// above the lines that build notWaited and told. The message is written with the replacement made
+// and with no other: a replacement refused or failed ends nothing, and the round's end forgets the
+// read (endPodUpdates). A read that found no work writes nothing on the issue, and a replacement
+// through a process that made no read writes nothing either.
 //
 // The call is bounded to one sweep interval. The bound costs the round nothing. The suspension
 // that displaces the pod has already landed when it hits, so the next sweep reads the Sandbox
@@ -1208,17 +1177,15 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod, "reading", int(reading.wait))
 		return
 	}
-	// The line names the claims the round did not wait for whoever the pod is replaced through
-	// (roundReplaced), and the read's gate reads the claims that make the read due
-	// (readRoundWorkspace), both as the decision reads them (live). The message on the issue only
-	// reports, so it reads the claims unmasked (noticeGroup): the decision reads a claim whose
-	// machine is deciding as one that has not answered (roundGroup's mask), and that is no fact
-	// about the claim, which may have answered. Over a pod no role process ran in, the message
-	// names the members that had not answered, except a member with no session whose launch waits
-	// on the pod (lostClaims), and no message is written where none is left. Over a read made
-	// through a process, it names the claims the round did not wait for and, beside them, the
-	// members with a session whose launch waits on the pod that had not answered, in the group's
-	// order (notAskedToPush): no role was asked to push what either left.
+	// This is the one statement of how this replacement reads the claims. The decision
+	// (readReplacement), the read's gate (readRoundWorkspace) and the line (notWaited, and
+	// roundReplaced over live) read them masked (live, viewedGroup): a claim whose machine is
+	// deciding counts as one that has not answered (roundGroup's mask says why). The message on the
+	// issue only reports, so it reads them unmasked (told, noticeGroup): the mask is no fact about
+	// the claim, which may have answered, and a claim that answered pushed its work first. So a
+	// claim that answered while its machine was deciding can make the read due and still be left
+	// out of the message, and a message left with no claim to name is not written, though the read
+	// found work (tellWorkspaceLost).
 	notWaited := notWaitedFor(live, round, clock)
 	told := s.noticeGroup(claimsOf(claims, issue))
 	var read workspaceRead
@@ -1264,20 +1231,12 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 // replacement (roundReplacer). The line of a replacement by issue or at a launch carries its
 // replacer's key as true right after atTheBound, "byIssue" or "atLaunch"; the line of the
 // replacement through a process, or through a claim whose launch waits on the pod, carries none.
-// named is the claims the line names. For the replacement through a process or a waiting claim,
-// named is the claims the round did not wait for (notWaitedFor), under notWaitedFor, and the line
-// names beside them, under waitingOnThePodNotWaitedFor, the claims of members unwaitedOnThePod
-// gives; for one by issue or at a launch, named is the members of the round that had not answered
-// it (lostClaims), under unansweredMembers. lost is the claims the message names
-// (tellWorkspaceLost), read over the group unmasked (noticeGroup): for the replacement through a
-// process, the claims the round did not wait for and, beside them, the members with a session
-// whose launch waits on the pod that had not answered (notAskedToPush), so a claim of named that
-// answered while its machine was deciding is not in lost; for the replacement through a waiting
-// claim, the members lostClaims gives, as the replacement of a pod no role process ran in by issue
-// or at a launch does (replacePodForRound); for one by issue or at a launch, named itself. Where
-// the pod's disk is a kept volume that is still there and that the issue's next launch keeps
-// (roundKeptVolume, read once the replacement is made, which may have marked the volume for a
-// reset), the line carries keptVolume and the message says the work is on that volume.
+// named is the claims the line names: under notWaitedFor where read.by is viaProcess, with the
+// claims unwaitedOnThePod gives of members beside them under waitingOnThePodNotWaitedFor, and
+// under unansweredMembers otherwise. lost is the claims the message names (tellWorkspaceLost).
+// Where the pod's disk is a kept volume that is still there and that the issue's next launch
+// keeps (roundKeptVolume, read once the replacement is made, which may have marked the volume for
+// a reset), the line carries keptVolume and the message says the work is on that volume.
 func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reasons string, ended roundEnd,
 	named, lost []supervise.Claim, read workspaceRead, members []supervise.Claim) {
 	bounded := ended.bounded()
@@ -1380,26 +1339,20 @@ const (
 )
 
 // readRoundWorkspace is the round's one read of the issue's workspace before its pod's
-// replacement through a process (replacePodForRound), or why the replacement makes none. live and
-// clock are what the replacement's own reading was taken over, and through is the claim the pod
-// is replaced through, whose process runs in the round's pod: the read goes through that claim's
-// role, since only a process in the pod can read the disk that the replacement takes from the pod
-// (runtime.WorkspaceWorkReader). The replacement deletes that disk unless it is a kept volume that
-// the issue's next pod mounts (roundKeptVolume). A pod replaced through a claim whose launch waits
-// on it has no process to read it through, and replacePodForRound asks no read of it
-// (processlessRead).
+// replacement through a process (replacePodForRound), or why the replacement makes none. through
+// is the claim the pod is replaced through, whose process runs in the round's pod: the read goes
+// through that claim's role, since only a process in the pod can read the disk that the
+// replacement takes from the pod (runtime.WorkspaceWorkReader). The replacement deletes that disk
+// unless it is a kept volume that the issue's next pod mounts (roundKeptVolume).
 //
 // A read is made only where three things hold, read in this order:
 //
-//   - The round passed over a claim that has not answered (passedOverClaims), or a member of the
-//     round with a session whose launch waits on the pod has not answered (lostWaitingClaims).
-//     What such a claim left unpushed is what the read is for: no role was asked to push it, since
-//     the round asks no claim it passes over (roundAsks) and publishes no ask to a claim whose
-//     launch waits on the pod, which never said it is ready (askRound). Both are read over live,
-//     as the decision reads the claims, so a claim of either kind whose machine is deciding counts
-//     as one that has not answered (roundGroup's mask), and the line reads the same group
-//     (roundReplaced). A failed claim the round did not wait for is named on the line, and it
-//     alone makes no read.
+//   - The round passed over a claim that has not answered (passedOverClaims), or lostWaitingClaims
+//     names a member whose launch waits on the pod. What such a claim left unpushed is what the
+//     read is for: no role was asked to push it, since the round asks no claim it passes over
+//     (roundAsks) and publishes no ask to a claim whose launch waits on the pod, which never said
+//     it is ready (askRound). A failed claim the round did not wait for is named on the line, and
+//     it alone makes no read.
 //   - Every claim the round asks has answered and no turn runs (roundEnd.settled). The round
 //     reads the workspace only then (dispatch://INFRA-4109 R1), so a replacement the bound let
 //     through over a claim the round asks that had not answered, or over a turn, makes no read. A
@@ -1903,13 +1856,13 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // A replacement made ends the round as a replacement the round made (endPodUpdates), and the
 // runtime's nil for a pod it found no longer there ends it the same way, as ReplacePod's does. No
 // process can read the issue's workspace before the replacement, so the round makes no read
-// (processlessRead), and what may go with the pod is named instead: every member of the round
-// that had not answered it, with a session or with none (lostClaims), read unmasked (noticeGroup)
-// as a gone pod's end reads them (endRoundOverAGonePod). The replacement's line names them as the
-// members that had not answered (unansweredMembers), says that the replacement was by issue and
-// why no read was made, and one message on the issue names each of them and says that no process
-// could read the workspace (roundReplaced, tellWorkspaceLost, workspaceLostMessage). A round every
-// member of which had answered writes nothing on the issue, as a gone pod's round writes nothing.
+// (processlessRead), and what may go with the pod is named instead: the members lostClaims names,
+// read unmasked (noticeGroup) as a gone pod's end reads them (endRoundOverAGonePod). The
+// replacement's line names them as the members that had not answered (unansweredMembers), says
+// that the replacement was by issue and why no read was made, and one message on the issue names
+// each of them and says that no process could read the workspace (roundReplaced,
+// tellWorkspaceLost, workspaceLostMessage). A round every member of which had answered writes
+// nothing on the issue, as a gone pod's round writes nothing.
 // A replacement that the bound let through over a claim that had not answered (unansweredClaims)
 // is logged on the bound's own line too, as replacePodForRound logs it.
 //
@@ -2225,14 +2178,14 @@ func (s *supervision) forgetLaunchRounds(byIssue map[string][]supervise.Claim) {
 // another pod in its place (endRoundWhosePodWent). The launch made the
 // replacement the sweep makes by issue (replaceIssuePodForRound), by the same rule, so the end is
 // that replacement's (roundReplaced): the line of a replacement the round made, here at a launch
-// (atLaunch), which names every member of the round that had not answered it, with a session or
-// with none (unansweredMembers: lostClaims, read unmasked as noticeGroup reads them), and says why
-// no read of the workspace was made, since no role process ran in the pod; the bound's own line
-// where the bound let the replacement through (ended, what the launch read under the pod's launch
-// turn); and one message on the issue that names those members and says that no process could
-// read the workspace (tellWorkspaceLost). It is not podWentWithoutItsRound's end, which tells the
-// issue that its pod went before its round was over: this round was over, and its own replacement
-// took the pod. The record goes with the end (endPodUpdates).
+// (atLaunch), which names the members of the round that lostClaims names (unansweredMembers, read
+// unmasked as noticeGroup reads them), and says why no read of the workspace was made, since no
+// role process ran in the pod; the bound's own line where the bound let the replacement through
+// (ended, what the launch read under the pod's launch turn); and one message on the issue that
+// names those members and says that no process could read the workspace (tellWorkspaceLost). It
+// is not podWentWithoutItsRound's end, which tells the issue that its pod went before its round
+// was over: this round was over, and its own replacement took the pod. The record goes with the
+// end (endPodUpdates).
 //
 // The record is in memory alone. A daemon that restarts between the launch and the sweep reads the
 // same end as a pod gone (podWentWithoutItsRound), whose message names the same members as having
@@ -3450,13 +3403,12 @@ func noticeClaims(group []supervise.Claim, round string) []supervise.Claim {
 // waits for. Over a group a replacement reads, which holds no retired claim (roundGroup), each is
 // a failed claim or a claim the round passes over at the clock's now (roundClock.passesOver).
 // Neither runs a process in the pod, so what either left unpushed on the pod's disk goes with the
-// pod, and the replacement names each of them on its line, over the group its decision reads, and,
-// where the read of the workspace found work or failed, on the issue, over the group unmasked
-// (notAskedToPush, replacePodForRound). A claim that answered pushed its work first, and a claim
-// that left the round's pod (supervise's Claim.LeftPodRound) has no work on this pod's disk, so
-// neither is named. A claim whose launch waits on the round's own pod is one the round asks, so it
-// is not named here either: the line names it apart (unwaitedOnThePod), and the message on the
-// issue names a member of that kind beside these claims (lostWaitingClaims, notAskedToPush).
+// pod, and the replacement names each of them on its line (roundReplaced) and, where the read of
+// the workspace found work or failed, on the issue (notAskedToPush). A claim that answered pushed
+// its work first, and a claim that left the round's pod (supervise's Claim.LeftPodRound) has no
+// work on this pod's disk, so neither is named. A claim whose launch waits on the round's own pod
+// is one the round asks, so it is not named here either: the line names it apart
+// (unwaitedOnThePod), and the message names it as lostWaitingClaims says.
 func notWaitedFor(group []supervise.Claim, round string, clock roundClock) []supervise.Claim {
 	var of []supervise.Claim
 	for _, c := range sessionClaims(group) {
@@ -3517,34 +3469,20 @@ func withoutRound(group []supervise.Claim, round string) []supervise.Claim {
 	return ended
 }
 
-// lostClaims is what the round's pod took with it: every member of the round that neither
-// answered it nor left it having answered, with a session or with none, but a member with no
-// session whose launch waits on the round's own pod. It names what a gone pod took
-// (podWentWithoutItsRound, endRoundOverAGonePod) and what the replacement of a pod no role process
-// ran in took: by issue, at a launch, or through a claim whose launch waits on the pod
-// (replaceIssuePodForRound, endRoundALaunchReplaced, replacePodForRound). Of a replacement through
-// a process in the pod, the message names the part of it whose launch waits on the pod
-// (lostWaitingClaims). That is a different question from whom the replacement waits for
-// (unansweredClaims): this one is about work that is already gone, and it is read from the round's
-// own record of each member rather than from where any claim's process is now.
+// lostClaims is what the round's pod took with it: each claim of the group that lostClaim reads as
+// lost, in the group's order. It names what a gone pod took (podWentWithoutItsRound,
+// endRoundOverAGonePod) and what the replacement of a pod no role process ran in took: by issue,
+// at a launch, or through a claim whose launch waits on the pod (replaceIssuePodForRound,
+// endRoundALaunchReplaced, replacePodForRound). Of a replacement through a process in the pod, the
+// message names the part of it whose launch waits on the pod (lostWaitingClaims). That is a
+// different question from whom the replacement waits for (unansweredClaims): this one is about
+// work that is already gone, and it is read from the round's own record of each member rather
+// than from where any claim's process is now.
 //
 // A member that answered pushed its work before the pod went and lost nothing, whether it
 // answered in the round's own pod or had already answered when it left: leaving records no
 // answer and withdraws none. One that never answered lost whatever it had not pushed. No turn
 // and no answer of the process that replaced it changes either reading.
-//
-// A member with no session is named too, but for that one kind. The round is posted to a claim
-// with no session only where its launch waits on the round's own pod (postedClaims), so any other
-// such member forgot its session after the post, as a launch that forgot its role's lost session
-// does (supervise's startFresh). It had a worker, and that worker's unpushed work was on the pod's
-// disk.
-//
-// A member whose launch waits on the round's own pod (awaitsRoundPod) is read as any member where
-// it has a session. The round waits on no answer of it, since it has no process to answer
-// (awaitsAnswer). But it had a worker, and what that worker did not push is on the pod's disk: its
-// process can have died in that pod before the runtime refused its relaunch. A member with no
-// session that waits on the pod is named nothing: the round is posted to it only as a way to the
-// pod (postedClaims), and no session of it records a worker that ran there.
 func lostClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var lost []supervise.Claim
 	for _, c := range group {
@@ -3555,20 +3493,49 @@ func lostClaims(group []supervise.Claim, round string) []supervise.Claim {
 	return lost
 }
 
-// lostClaim is lostClaims' reading of c: a member of the round that had not answered it, with a
-// session or with none, but a member with no session whose launch waits on the round's own pod.
+// lostClaim is lostClaims' reading of c: a member of the round (memberOf) that had not answered it
+// (answered), with a session or with none, but a member with no session whose launch waits on the
+// round's own pod (awaitsRoundPod). It is the one statement of that exception.
+//
+// A member with a session had a worker, and what that worker did not push was on the pod's disk.
+// That holds for a member whose launch waits on the round's own pod too, although the round waits
+// on no answer of it, since it has no process to answer (awaitsAnswer): its process can have died
+// in that pod before the runtime refused its relaunch.
+//
+// A member with no session is named but for that one kind: the round is posted to a claim with no
+// session only where its launch waits on the round's own pod (postedClaims), so any other such
+// member forgot its session after the post, as a launch that forgot its role's lost session does
+// (supervise's startFresh), and it had a worker whose unpushed work was on the pod's disk. A
+// member with no session whose launch waits on the pod is named nothing: the round is posted to it
+// only as a way to the pod (postedClaims), and no session of it records a worker that ran there.
+// So where no member is left to name, as where the sweep replaces the pod through a waiting claim
+// with no session that is the issue's only claim, nothing is written on the issue
+// (tellWorkspaceLost, endRoundWhosePodWent).
 func lostClaim(c supervise.Claim, round string) bool {
 	return memberOf(c, round) && !answered(c, round) && (c.Session != "" || !awaitsRoundPod(c, round))
 }
 
 // lostWaitingClaims is the part of lostClaims whose launch waits on the round's own pod
-// (awaitsRoundPod): every member of the round with a session whose launch waits on that pod and
-// that had not answered it. Its worker's process can have died in that pod before the runtime
-// refused its relaunch, and no ask of the round reaches such a claim (askRound), so no role was
-// asked to push what that worker left on the pod's disk. A replacement through a process in the
-// pod reads the workspace for such a claim, as for a claim the round passed over
-// (readRoundWorkspace), and its message names it beside the claims the round did not wait for
-// (notAskedToPush). A replacement of a pod no role process ran in names it among lostClaims.
+// (awaitsRoundPod): every claim with a session that records the round (memberOf), whose launch
+// waits on that pod, and that had not answered it (lostClaim). Its worker's process can have died
+// in that pod before the runtime refused its relaunch, and no ask of the round reaches such a
+// claim (askRound), so no role was asked to push what that worker left on the pod's disk. What the
+// round reads and tells the issue of such a claim turns on whether a process of another claim
+// runs in the pod, and this is the one statement of that rule:
+//
+//   - Where no claim records a process in the pod, the sweep replaces the pod through the waiting
+//     claim (podProcess), or the claim's own retry replaces it first where nothing holds the pod
+//     (roundPodEndsAtLaunch, endRoundALaunchReplaced). No role process ran in the pod, so neither
+//     replacement reads the workspace, whatever the round passed over (processlessRead), and its
+//     message names each claim lostClaims names, such a claim among them, and says that no role
+//     process ran in the pod to read the workspace.
+//   - Where a process of another claim runs in the pod, the claim's retry cannot replace the pod,
+//     since a launch keeps a pod that a claim records a process in (roundPodEndsAtLaunch,
+//     keepAtLaunch). The sweep replaces the pod through that process, and each claim this names
+//     makes the read of the workspace through it due, under the same conditions as a claim the
+//     round passed over (readRoundWorkspace). The message names the claim beside the claims the
+//     round did not wait for (notAskedToPush) only where that read found work or failed
+//     (workspaceRead.tells).
 func lostWaitingClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var waiting []supervise.Claim
 	for _, c := range group {
@@ -3579,9 +3546,8 @@ func lostWaitingClaims(group []supervise.Claim, round string) []supervise.Claim 
 	return waiting
 }
 
-// lostWaitingClaim is lostWaitingClaims' reading of c: a claim lostClaims names whose launch waits
-// on the round's own pod. Such a claim has a session, since lostClaims names no member with no
-// session whose launch waits on that pod.
+// lostWaitingClaim is lostWaitingClaims' reading of c: a claim lostClaim names whose launch waits
+// on the round's own pod. Such a claim has a session (lostClaim says why).
 func lostWaitingClaim(c supervise.Claim, round string) bool {
 	return lostClaim(c, round) && awaitsRoundPod(c, round)
 }
@@ -3591,8 +3557,7 @@ func lostWaitingClaim(c supervise.Claim, round string) bool {
 // claim notWaitedFor names and each claim lostWaitingClaims names, once each and in the group's
 // order. No role was asked to push what either left on the pod's disk: the round does not ask the
 // one (roundAsks), and its ask does not reach the other (askRound). Each claim either names has a
-// session (lostWaitingClaim), so one pass over the claims with a session reads both. The
-// replacement reads it over the group unmasked (noticeGroup), since the message only reports.
+// session (notWaitedFor, lostClaim), so one pass over the claims with a session reads both.
 func notAskedToPush(group []supervise.Claim, round string, clock roundClock) []supervise.Claim {
 	var of []supervise.Claim
 	for _, c := range sessionClaims(group) {
@@ -3831,12 +3796,10 @@ The daemon starts each role again, in the same session, on a new pod. Each role 
 // workspaceLostMessage is what the issue is told when its round replaced the pod without waiting
 // for every role, and the read of the workspace before the replacement found work that no branch
 // or tag on origin holds, or failed, or could not be made because no role process ran in the pod
-// (tellWorkspaceLost). It names each claim of named with its state — over a read made through a
-// process, each claim the round did not wait for (notWaitedFor) and each member with a session
-// whose launch waits on the pod that had not answered (lostWaitingClaims), which the round does
-// not wait for either; or, for the replacement of a pod no role process ran in (by issue, at a
-// launch, or through a claim whose launch waits on the pod), each member of the round that had not
-// answered it (lostClaims) — and what the read found (workspaceRead.found). The roles sentence
+// (tellWorkspaceLost). It names each claim of named with its state — the claims notAskedToPush
+// gives over a read made through a process, or the members lostClaims gives for the replacement
+// of a pod no role process ran in (by issue, at a launch, or through a claim whose launch waits
+// on the pod) — and what the read found (workspaceRead.found). The roles sentence
 // says which of the two named is: whether a role process ran in the pod chooses it
 // (workspaceRead.noProcess), not who replaced the pod, since the sweep replaces the pod through a
 // process and through a waiting claim alike (viaProcess). Where kept is true, the pod's disk is a
