@@ -214,8 +214,9 @@ type ConsumerSpec struct {
 	Names consumernames.Mode
 	// Connect opens a NATS connection named name, as the daemon's own connection is opened (its
 	// URLs, its user and its reconnect policy). On fresh names every call on a physical consumer
-	// name goes on a connection of that name's own, named GenerationConnection(physical), which the
-	// auth service may grant exactly that consumer (durable_names.go); fresh names refuse a spec
+	// name goes on a connection of that name's own, named
+	// natsgrant.DaemonGenerationConnection(physical), which the auth service may grant exactly that
+	// consumer (durable_names.go); fresh names refuse a spec
 	// with none. Connect may ignore ctx: the consumers stop waiting for a dial when their context
 	// ends and close the connection it makes late. Fixed names never call it.
 	Connect func(ctx context.Context, name string) (*nats.Conn, error)

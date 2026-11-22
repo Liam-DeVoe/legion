@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // The daemon's durables on fresh names (ConsumerSpec.Names, consumernames.ModeFresh). Each of the
@@ -79,7 +79,8 @@ func daemonStore(pool Pool, project string) (*consumernames.PGStore, error) {
 // durableNames is the daemon's side of the protocol for its three durables on fresh names.
 //
 // Every call on a physical name, <logical>~<generation>, goes on a NATS connection of its own,
-// named <logical>/<generation> (GenerationConnection), which the auth service may grant exactly
+// named <logical>/<generation> by the auth service's own rule (natsgrant.DaemonGenerationConnection),
+// which the auth service may grant exactly
 // that consumer's create, info, pull and acknowledgements: a grant held to the daemon's projects
 // names only the fixed names, and a fresh name is no fixed one. A create opens its candidate's
 // connection once the protocol has reserved it (consumernames.Config.Reserved), before the create
@@ -104,14 +105,6 @@ type durableNames struct {
 	// generations is JetStream on each open connection, by the physical name the connection is
 	// named for; Conn is that connection.
 	generations map[string]jetstream.JetStream
-}
-
-// GenerationConnection is the name of the NATS connection the daemon makes every call on physical,
-// <logical>~<generation>, on: <logical>/<generation>. The auth service reads the generation, and
-// the logical name's project and kind, back from it.
-func GenerationConnection(physical string) string {
-	logical := consumernames.LogicalOf(physical)
-	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
 // daemonNaming is the naming of project's daemon family (daemon/<project>) in the families' table,
@@ -177,7 +170,7 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 	if consumernames.LogicalOf(physical) == physical {
 		return nil, fmt.Errorf("consumer %s is no fresh name, which no generation's connection is granted", physical)
 	}
-	name := GenerationConnection(physical)
+	name := natsgrant.DaemonGenerationConnection(physical)
 	conn, err := d.dial(ctx, name)
 	if err != nil {
 		return nil, &readFailure{op: operationConnect, physical: physical, err: fmt.Errorf("connect %s: %w", name, err)}

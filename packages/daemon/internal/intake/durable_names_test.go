@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/natsversion"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -74,8 +75,8 @@ func TestFixedNamesAreTodaysNamesAndReadNoSelectionRecord(t *testing.T) {
 }
 
 // On fresh names each durable's consumer is reached on a NATS connection of its own, named for its
-// generation, <logical>/<generation> (GenerationConnection), which a grant held to the daemon's
-// projects admits that one consumer on: the boot opens one for each current, a consumer made again
+// generation, <logical>/<generation> (natsgrant.DaemonGenerationConnection), which a grant held to
+// the daemon's projects admits that one consumer on: the boot opens one for each current, a consumer made again
 // gets its own and the gone one's is closed, and Close closes them all. The control is the fixed
 // names, which open no connection beside the daemon's own.
 func TestEachFreshNameIsReachedOnAConnectionOfItsOwn(t *testing.T) {
@@ -107,7 +108,7 @@ func TestEachFreshNameIsReachedOnAConnectionOfItsOwn(t *testing.T) {
 		want := func() []string {
 			var names []string
 			for _, logical := range fixedNames(spec.Project) {
-				names = append(names, GenerationConnection(currentName(t, pool, logical)))
+				names = append(names, natsgrant.DaemonGenerationConnection(currentName(t, pool, logical)))
 			}
 			slices.Sort(names)
 			return names
@@ -120,13 +121,10 @@ func TestEachFreshNameIsReachedOnAConnectionOfItsOwn(t *testing.T) {
 		awaitConnections("one connection for each current, named for its generation", want())
 		wake := wakeConsumerName(spec.Project)
 		gone := currentName(t, pool, wake)
-		if GenerationConnection(gone) != wake+"/"+strings.TrimPrefix(gone, wake+"~") {
-			t.Fatalf("GenerationConnection(%s) = %s, want the logical name, '/' and the generation", gone, GenerationConnection(gone))
-		}
-		// The auth service's grant (natsgrant's DaemonGenerationConnection and its held scope)
-		// tests this very pair, so a change to either side's rule fails its own test.
-		if got, want := GenerationConnection("legion-go-PUB-github~RFuDfoOI3HLgXUdIZvZnZx"), "legion-go-PUB-github/RFuDfoOI3HLgXUdIZvZnZx"; got != want {
-			t.Fatalf("GenerationConnection = %s, want %s, the name the grant reads a generation from", got, want)
+		// The daemon dials no connection for a fixed name, which is no generation's: its
+		// connection would be named for the name itself (natsgrant.DaemonGenerationConnection).
+		if _, err := first.names.(*durableNames).on(context.Background(), wake); err == nil {
+			t.Fatalf("the daemon dialled a connection for the fixed name %s", wake)
 		}
 		first.Close()
 		awaitConnections("no connection once the consumers are closed", nil)
@@ -396,8 +394,8 @@ func TestAFreshDaemonAtTheConsumerCapDialsNoRetiredName(t *testing.T) {
 	}
 	dialMu.Lock()
 	defer dialMu.Unlock()
-	if slices.Contains(dialled, GenerationConnection(retired)) {
-		t.Fatalf("the daemon dialled %v, %s among them, the connection of a name it retired", dialled, GenerationConnection(retired))
+	if slices.Contains(dialled, natsgrant.DaemonGenerationConnection(retired)) {
+		t.Fatalf("the daemon dialled %v, %s among them, the connection of a name it retired", dialled, natsgrant.DaemonGenerationConnection(retired))
 	}
 	if heldInfo(t, stream, retired) == nil {
 		t.Fatalf("%s is gone: the daemon deleted a retired name", retired)

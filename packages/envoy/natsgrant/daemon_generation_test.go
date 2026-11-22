@@ -128,3 +128,25 @@ func TestDaemonGenerationConnectionRoundTrips(t *testing.T) {
 		require.Equal(t, without, got, name)
 	}
 }
+
+// A fixed name, legion-go-<P>-<kind>, is no generation, so the connection DaemonGenerationConnection
+// names for it is the name itself, never <name>/<name>: that form would read as a generation called
+// <name> of a consumer <name>~<name> that no daemon ever makes. A connection carrying the fixed
+// name gets the held grant alone, as the daemon's own connection does; the daemon dials no
+// connection for a fixed name (its durableNames.on refuses one). The control is the form
+// <name>/<name> the daemon's own rule once gave, which differs from the name for every kind.
+func TestTheConnectionOfAFixedNameIsTheNameItself(t *testing.T) {
+	without, err := natsgrant.WithinProjects(natsgrant.Daemon(), pubScope)
+	require.NoError(t, err)
+	for _, kind := range []string{"dispatch", "github", "wake", "ready"} {
+		fixed := "legion-go-PUB-" + kind
+		name := natsgrant.DaemonGenerationConnection(fixed)
+		require.Equal(t, fixed, name, "the connection of the fixed name %s", fixed)
+		require.NotEqual(t, fixed+"/"+fixed, name, "control: the doubled form for %s", fixed)
+		scope := pubScope
+		scope.Connection = name
+		got, err := natsgrant.WithinProjects(natsgrant.Daemon(), scope)
+		require.NoError(t, err)
+		require.Equal(t, without, got, "a connection named for the fixed name %s gets the held grant alone", fixed)
+	}
+}

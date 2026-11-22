@@ -24,8 +24,9 @@
 //     (durable_names.go). Every consumer call is refused until the operator's convert has marked
 //     the family's sentinel `done` and recorded the stream's identity in it. Every call on a
 //     physical name goes on a NATS connection of its own, named <logical>/<nuid>
-//     (GenerationConnection), which the auth service may grant that one consumer; a daemon NATS
-//     connection keeps no reconnect buffer (natsauth.Connect), so nothing sent while it is cut is
+//     (natsgrant.DaemonGenerationConnection), which the auth service may grant that one consumer; a
+//     daemon NATS connection keeps no reconnect buffer (natsauth.Connect, natsauth.ConnectService),
+//     so nothing sent while it is cut is
 //     sent after the reconnect. The daemon reads nothing of the stream for these names and deletes
 //     no consumer: a name it retires is the operator's `envoy-infra consumer-names cleanup` to
 //     delete.

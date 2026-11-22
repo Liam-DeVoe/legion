@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/testnatsinprocess"
 
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -530,8 +531,8 @@ func TestForcedOrderACreateNobodyAnsweredIsRetiredAndNeverSelected(t *testing.T)
 		t.Fatalf("no publish of %s was reported", parked.Subject)
 	}
 	for _, event := range published {
-		if event.Client != GenerationConnection(candidate) {
-			t.Fatalf("the create of %s was published on the connection %q, want %q", candidate, event.Client, GenerationConnection(candidate))
+		if event.Client != natsgrant.DaemonGenerationConnection(candidate) {
+			t.Fatalf("the create of %s was published on the connection %q, want %q", candidate, event.Client, natsgrant.DaemonGenerationConnection(candidate))
 		}
 	}
 
