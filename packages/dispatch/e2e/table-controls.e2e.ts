@@ -7374,3 +7374,65 @@ test("a bulk action that takes the marked rows out of the project List's view ha
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z;
+// measured in builds Job infra-3135-s-h-z2mdn at 3fce6150): with the Inbox narrowed to the
+// Planner's asks and to questions, the Type chip is the shared `Chip`, a `<button
+// data-control="chip">`, but the agent's is `<a aria-label="Clear agent filter" class="inline-flex
+// min-h-11 items-center rounded-full">` around a `LabelPill` reading "Asks from Planner · clear",
+// which `features/inbox/Inbox.tsx` builds, with no `data-control`, at 1440 and at 390 px alike.
+// Spec v8, R2: "no file under `features/` holds a search box, the panel of a narrowing control,
+// a chip, ... of its own". The agent's live link beside its chip, "Open live conversation with
+// Planner", opens the agent's page and is no chip. Read at 1440 alone: the chip's markup is the
+// same at every width.
+test("the Inbox's agent narrowing draws the shared chip, as the row's other narrowings do", async ({
+  page,
+}) => {
+  await seedAgents();
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto(`/?agent=${encodeURIComponent(plannerSession.session_id)}&type=question`);
+  const row = controlRow(page.getByTestId("main-content"));
+  const typeChip = row.getByRole("button", { exact: true, name: "Remove Type: Question filter" });
+  await expect(typeChip).toBeVisible();
+  // The agent narrowing's chip is drawn from the address, and names the agent by its title.
+  await expect(row.getByText(/Planner/).first()).toBeVisible();
+  // One read is the answer: both chips are drawn, and nothing redraws the row now.
+  const type = await typeChip.evaluate((chip) => ({
+    class: chip.getAttribute("class") ?? "",
+    tag: chip.tagName.toLowerCase(),
+  }));
+  // One read is the answer: both chips are drawn, and nothing redraws the row now.
+  const agentChips = await row.evaluate((node) =>
+    [...node.querySelectorAll("a, button")]
+      .map((chip) => ({
+        class: chip.getAttribute("class") ?? "",
+        control: chip.getAttribute("data-control"),
+        name: (chip.getAttribute("aria-label") ?? "").trim(),
+        tag: chip.tagName.toLowerCase(),
+        text: (chip.textContent ?? "").trim(),
+      }))
+      .filter(
+        (chip) =>
+          `${chip.name} ${chip.text}`.includes("Planner") &&
+          !chip.name.startsWith("Open live conversation with")
+      )
+  );
+  const wrong: string[] = [];
+  if (agentChips.length !== 1) {
+    wrong.push(
+      `the row draws ${agentChips.length} controls naming the Planner where its one chip is: ${agentChips.map((chip) => `${chip.tag} "${chip.name || chip.text}"`).join(", ")}`
+    );
+  }
+  for (const chip of agentChips) {
+    const what = `the agent's chip, ${chip.tag} "${chip.name || chip.text}"`;
+    if (chip.control !== CONTROL.chip) {
+      wrong.push(`${what}, carries data-control=${chip.control ?? "none"}, not "${CONTROL.chip}"`);
+    }
+    if (chip.tag !== type.tag || chip.class !== type.class) {
+      wrong.push(
+        `${what}, is not drawn as the Type chip is: <${chip.tag} class="${chip.class}"> against <${type.tag} class="${type.class}">`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
