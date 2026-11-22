@@ -131,13 +131,14 @@ const DOCUMENT_IS_MARKDOWN =
 
 /**
  * `--path` and what it stores, written to follow "with" in a rule or a refusal that offers it.
- * `dispatch artifact` sends a file under a name that ends in .md or .markdown as Markdown,
- * whatever its path, and under any other name with its path's own type, which only a path ending
- * in .md or .markdown makes Markdown. Dispatch stores a Markdown upload as a document, which it
- * parses and renders, and any other upload as its bytes.
+ * `dispatch artifact` sends a file as the type its name says (uploadTypeFrom): under a name that
+ * ends in .md or .markdown as Markdown, under a name with any other extension as that
+ * extension's own type, each whatever its path, and under a name with no extension as its path's
+ * type, which only a path ending in .md or .markdown makes Markdown. Dispatch stores a Markdown
+ * upload as a document, which it parses and renders, and any other upload as its bytes.
  */
 export const PATH_KEEPS_BYTES =
-  "path (--path <file>), which stores the file as its bytes, unchanged, when neither the name nor the path ends in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path)";
+  "path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path)";
 
 const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
@@ -216,18 +217,32 @@ function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E
 }
 
 /**
- * Whether `--path` would store a file under this name as the bytes it was written as: true for
- * every name that does not end in .md or .markdown, a name with no extension included. A name
- * that ends in .md or .markdown makes the upload Markdown whatever its path: `dispatch artifact`
- * sends it as `text/markdown`, and Dispatch stores a `text/markdown` upload as a document, which
- * it parses and renders. Under any other name the command sends the path's own type, so a path
- * that does not end in .md or .markdown is stored as its bytes (`PATH_KEEPS_BYTES`). A refusal of
- * inline text the store would change names `--path` for such a name, and never for a Markdown
- * one, which `--path` would change the same way.
+ * What decides the type `dispatch artifact --path` sends a file under, from the name it is sent
+ * as: `markdown` for a name that ends in .md or .markdown, sent as `text/markdown` whatever the
+ * path; `name` for a name with any other extension, sent as that extension's own type (an
+ * extension with none known is `application/octet-stream`) whatever the path; and `path` for a
+ * name with no extension, sent as the path's type. Dispatch stores a `text/markdown` upload as a
+ * document and any other as its bytes, so the name says the kind wherever it has an extension:
+ * `--name cases.txt --path cases.md` stores a file (INFRA-4071 R15).
+ */
+export function uploadTypeFrom(name: string): "markdown" | "name" | "path" {
+  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
+  if (extension === undefined) return "path";
+  return MARKDOWN_EXTENSION.test(extension) ? "markdown" : "name";
+}
+
+/**
+ * Whether `--path` can store a file under this name as the bytes it was written as: true for
+ * every name that does not end in .md or .markdown. Under a name with any other extension the
+ * upload keeps its bytes whatever its path, and under a name with no extension it keeps them when
+ * the path does not end in .md or .markdown (uploadTypeFrom, `PATH_KEEPS_BYTES`). A name that
+ * ends in .md or .markdown makes the upload Markdown whatever its path, and Dispatch stores a
+ * `text/markdown` upload as a document, which it parses and renders. A refusal of inline text the
+ * store would change names `--path` for a name this answers true, and never for a Markdown one,
+ * which `--path` would change the same way.
  */
 export function pathKeepsBytesOf(name: string): boolean {
-  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
-  return extension === undefined || !MARKDOWN_EXTENSION.test(extension);
+  return uploadTypeFrom(name) !== "markdown";
 }
 
 const artifactOwner = documentOwnerValidation(false);

@@ -2,9 +2,12 @@ kind: Fixed
 custom:
   Issue: pr4274
 body: |-
-  `dispatch artifact --path` sends a file under a `--name` that ends in `.md` or `.markdown` as
-  Markdown, whatever the path's extension, so `--name plan.md --path plan.txt` stores a document;
-  every other name keeps the path's type. Its answer names the kind Dispatch stored: `a document
+  `dispatch artifact --path` sends a file as the type its `--name` says. A name that ends in `.md`
+  or `.markdown` is Markdown, whatever the path's extension, so `--name plan.md --path plan.txt`
+  stores a document. A name with any other extension is that extension's type, whatever the path,
+  so `--name cases.txt --path cases.md` stores a file whose bytes are the bytes sent, which before
+  was stored as a document with its text changed. Only a name with no extension keeps the path's
+  type. Its answer names the kind Dispatch stored: `a document
   (kind doc; …)`, `a file (kind file; …)` or `a picture (kind image; …)`. `dispatch doc-read
   --version` reads a document's version stored as bytes as a file.
 

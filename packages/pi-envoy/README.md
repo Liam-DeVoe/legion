@@ -506,14 +506,16 @@ EOF
 Inline content is stored as a Markdown document, so `--content`, `--content-file` and a call with
 neither flag take only a `--name` that ends in `.md` or `.markdown` or has no extension. The
 command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it
-sends anything and names `--path`, which stores a file whose path does not end in `.md` or
-`.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
-takes `--content` once it ends in `.md`.
+sends anything and names `--path`, which stores the file as its bytes, unchanged, under that name,
+whatever its path. A document title with a dot near its end takes `--content` once it ends in `.md`.
 
-A `--path` upload under a `--name` that ends in `.md` or `.markdown` is sent as Markdown whatever
-the path's extension, so `--name plan.md --path plan.txt` stores a document. The answer names the
-kind Dispatch stored: `a document (kind doc; …)`, `a file (kind file; …)` or
-`a picture (kind image; …)`.
+A `--path` upload is sent as the type its `--name` says. A name that ends in `.md` or `.markdown`
+is sent as Markdown whatever the path's extension, so `--name plan.md --path plan.txt` stores a
+document. A name with any other extension is sent as that extension's type whatever the path, so
+`--name cases.txt --path cases.md` stores a file whose bytes are the file's. Only a name with no
+extension is sent as the path's type, so `--name 'Design notes' --path notes.md` stores a
+document. The answer names the kind Dispatch stored: `a document (kind doc; …)`,
+`a file (kind file; …)` or `a picture (kind image; …)`.
 
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.

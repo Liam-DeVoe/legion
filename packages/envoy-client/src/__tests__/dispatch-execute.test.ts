@@ -11501,18 +11501,25 @@ describe("executeDispatchTool", () => {
   });
 
   // INFRA-4071 R15: Dispatch stores an upload as the kind its declared type makes (text/markdown is
-  // a document), so the command's type decides whether plan.md is a document. A name that ends in
-  // .md or .markdown goes up as text/markdown whatever its path; any other name keeps the path's
-  // own type, so a Markdown path under a plain title is still a document. The stub stores each
-  // upload as the server's artifactKind does, and the answer names the kind it stored.
+  // a document), so the command's type decides the kind, and the name says it wherever it has an
+  // extension (uploadTypeFrom). A name that ends in .md or .markdown goes up as text/markdown
+  // whatever its path; a name with any other extension goes up as that extension's type whatever
+  // its path, so cases.txt sent from cases.md is a file of the bytes as written; only a name with
+  // no extension keeps the path's type, so a Markdown path under a plain title is still a
+  // document. The stub stores each upload as the server's artifactKind does, and the answer names
+  // the kind it stored.
   describe("the kind an upload is stored as", () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    const sha256 = (bytes: ArrayBuffer | Uint8Array) =>
+      new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
     /** Uploads `bytes` written at `file` under `name`, the bytes AskGate read passed too when
-     *  `gated` says so, and answers the type the upload declared and the command's answer. */
+     *  `gated` says so, and answers the type the upload declared, the sha256 of the bytes it
+     *  sent and the command's answer. */
     async function upload(name: string, file: string, bytes: Uint8Array, gated: boolean) {
       const cwd = makeDirectory();
       writeFileSync(path.join(cwd, file), bytes);
       const declared: string[] = [];
+      const sent: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const preflight = uploadPreflight(url, init);
         if (preflight !== undefined) return preflight;
@@ -11523,10 +11530,16 @@ describe("executeDispatchTool", () => {
         // The type the file part declares, which is what Go's multipart reader gives the server.
         // Bun's own formData() types a part by its filename (the name, plan.md) and drops the
         // header, so the header is read from the body as sent.
-        const body = new TextDecoder().decode(await new Response(init?.body).arrayBuffer());
+        const raw = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        const body = new TextDecoder().decode(raw);
         const fileHeader = /name="file"; filename="[^"]*"\r\nContent-Type: ([^\r\n]*)\r\n/;
         const type = fileHeader.exec(body)?.[1];
         declared.push(String(type));
+        // The file part's bytes as sent, by their sha256, which the server stores as they are.
+        const part = (
+          await new Response(raw, { headers: init?.headers as Record<string, string> }).formData()
+        ).get("file") as Blob;
+        sent.push(sha256(await part.arrayBuffer()));
         // What `artifactKind` (api/artifacts.go) stores the upload as: a declared text/markdown is
         // a document, a PNG is an image whatever it declares, and anything else is a file.
         const kind =
@@ -11561,7 +11574,7 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
         ...(gated ? { uploadBytes: bytes } : {}),
       });
-      return { declared, text: result.text };
+      return { declared, sent, text: result.text };
     }
     const text = (body: string) => new TextEncoder().encode(body);
 
@@ -11572,27 +11585,47 @@ describe("executeDispatchTool", () => {
         const plan = text("# Plan\n\n- [ ] Task one\n");
         expect(await upload("plan.md", "plan.txt", plan, gated)).toEqual({
           declared: ["text/markdown"],
+          sent: [sha256(plan)],
           text:
             "Uploaded plan.md as version 1, a document " +
             "(kind doc; artifact slug plan-md; dispatch://DSP-42/artifact/plan-md)",
         });
       });
 
-      test(`any other name keeps the path's type, ${read}`, async () => {
-        expect(await upload("rows.txt", "rows.txt", text("one\ntwo\n"), gated)).toEqual({
+      test(`a name of another extension goes up as its own type from a .md path, ${read}`, async () => {
+        // The reported case (dispatch://INFRA-2946/comment/723f3268-eb1f-487e-b51f-19748db8f585): a
+        // .txt name over a .md path was sent as text/markdown, so Dispatch stored a document and
+        // rewrote its text, and the bytes it kept were not the bytes sent.
+        const cases = text("# Cases\n\n* one\n*  two \n");
+        expect(await upload("cases.txt", "cases.md", cases, gated)).toEqual({
           declared: ["text/plain;charset=utf-8"],
+          sent: [sha256(cases)],
+          text:
+            "Uploaded cases.txt as version 1, a file " +
+            "(kind file; artifact slug cases-txt; dispatch://DSP-42/artifact/cases-txt)",
+        });
+      });
+
+      test(`a name with no extension keeps the path's type, as does one that names the path's own, ${read}`, async () => {
+        const rows = text("one\ntwo\n");
+        expect(await upload("rows.txt", "rows.txt", rows, gated)).toEqual({
+          declared: ["text/plain;charset=utf-8"],
+          sent: [sha256(rows)],
           text:
             "Uploaded rows.txt as version 1, a file " +
             "(kind file; artifact slug rows-txt; dispatch://DSP-42/artifact/rows-txt)",
         });
-        expect(await upload("Design notes", "notes.md", text("# Notes\n"), gated)).toEqual({
+        const notes = text("# Notes\n");
+        expect(await upload("Design notes", "notes.md", notes, gated)).toEqual({
           declared: ["text/markdown"],
+          sent: [sha256(notes)],
           text:
             "Uploaded Design notes as version 1, a document " +
             "(kind doc; artifact slug design-notes; dispatch://DSP-42/artifact/design-notes)",
         });
         expect(await upload("chart.png", "chart.png", png, gated)).toEqual({
           declared: ["image/png"],
+          sent: [sha256(png)],
           text:
             "Uploaded chart.png as version 1, a picture " +
             "(kind image; artifact slug chart-png; dispatch://DSP-42/artifact/chart-png)",
@@ -11874,7 +11907,7 @@ describe("executeDispatchTool", () => {
         }) as unknown as typeof fetch,
       })
     ).rejects.toThrow(
-      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, when neither the name nor the path ends in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path)`
+      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path)`
     );
     expect(requests).toEqual([]);
   });
@@ -12214,9 +12247,10 @@ describe("executeDispatchTool", () => {
       'Dispatch stores this text under another spelling: line 1 reads "* one" and is stored as "- one".' +
         " Send the text Dispatch stores, which is between the two marker lines below." +
         " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
-        " stores the file as its bytes, unchanged, when neither the name nor the path ends in .md" +
-        " or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever" +
-        " its path)." +
+        " stores the file as its bytes, unchanged, under a name whose extension is not .md or" +
+        " .markdown, whatever the path, and under a name with no extension when the path does not" +
+        " end in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown" +
+        " whatever its path)." +
         "\n--- the text Dispatch stores ---\n- one\n" +
         "--- end of the text Dispatch stores ---",
     ]);
