@@ -4481,7 +4481,10 @@ const (
 // processes run it at staggeredSweepPeriod (DISPATCH_TEST_COMPACTION_SWEEP_PERIOD), whose one
 // bucket holds both first ticks however long the starts take, so the row holds it to what the
 // lease and the period record give two ticks of one period: one pass across the two processes,
-// and the other process's tick skipping (requireLeasedOnce). reference-excerpts is a
+// and the other process's tick skipping (requireLeasedOnce). The pass's own line names the period
+// it served, and that must be staggeredSweepPeriod's first bucket, which opens at 1970's start: a
+// sweep main.go starts at docs.CompactionSweepPeriod's hour, not at the period the setting gives,
+// serves the hour its tick fell in. reference-excerpts is a
 // woken loop (docs.RunReferenceExcerptReconciliation) that runs a pass at start and again on the
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
@@ -4580,6 +4583,17 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// held while the first is still passing.
 	waitForLeaseTickInEach(t, pair, "document-compaction")
 	requireLeasedOnce(t, pair, "document-compaction")
+	// The period the pass served is read off its line, a record of the period the sweep was given,
+	// and no clock (staggeredSweepPeriod's first bucket opens at 1970's start).
+	firstBucket := time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
+	for name, process := range map[string]*dispatchProcess{"A": pair.a, "B": pair.b} {
+		for _, line := range process.logLines(leaseRan, "lease=document-compaction") {
+			if period := leasePeriodOf(t, line); period != firstBucket {
+				t.Errorf("%s's document-compaction pass served the period starting %s, want %s, staggeredSweepPeriod's first bucket: "+
+					"the sweep did not run at the period DISPATCH_TEST_COMPACTION_SWEEP_PERIOD gave it", name, period, firstBucket)
+			}
+		}
+	}
 	requireLeasedOncePerPeriod(t, pair, "search-term-stats")
 	for _, unobserved := range []struct{ lease, why string }{
 		{"issue-ask-repair", "its first leased pass is one IssueAskRepairInterval (10 min) after each process started"},

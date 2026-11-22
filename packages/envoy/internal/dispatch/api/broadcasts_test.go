@@ -832,12 +832,14 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
 	// Every listener send is blocked, so a handler that delivered inside the request could not
-	// answer at all.
-	var response *httptest.ResponseRecorder
+	// answer at all. The request is built here, on the test goroutine, and only the serving of it
+	// runs inside the wait.
+	request := newKeyedRequest(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner", "tester"},
+	}, "alice", uuid.NewString())
+	response := httptest.NewRecorder()
 	testwait.Returns(t, "the create to answer while every listener send is held (a create that delivered inside its request never does)", func() {
-		response = postBroadcast(t, handler, map[string]any{
-			"body": "Status?", "delivery": "btw", "session_ids": []string{"planner", "tester"},
-		}, "alice")
+		handler.ServeHTTP(response, request)
 	})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create broadcast: status=%d body=%s", response.Code, response.Body.String())

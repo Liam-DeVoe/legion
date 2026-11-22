@@ -112,12 +112,23 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	lapsing := newLapsingHold(t)
 	ctx := context.Background()
-	taken := testwait.Until(t, "the standby to take the hold once it lapsed", func() (*duty.Hold, bool) {
+	// The reading says what the last try saw, so a wait that gives up names it: a refused try is
+	// followed by Expiry's reading of the time the hold has left.
+	var taken *duty.Hold
+	testwait.Until(t, "the standby to take the hold once it lapsed", func() (string, bool) {
 		hold, err := duty.TryHold(ctx, lapsing.database.Pool, holdName, lapsing.standby, lapsing.opts)
 		if err != nil {
 			t.Fatalf("the standby's try: %v", err)
 		}
-		return hold, hold != nil
+		if hold != nil {
+			taken = hold
+			return "taken", true
+		}
+		remaining, held, err := duty.Expiry(ctx, lapsing.database.Pool, holdName)
+		if err != nil {
+			t.Fatalf("Expiry once the standby was refused: %v", err)
+		}
+		return fmt.Sprintf("refused; Expiry read %s left (held %v)", remaining, held), false
 	})
 	if after := lapsing.takenBy(t, taken); after < 0 || after > time.Second {
 		t.Fatalf("the standby took the hold %s after the lapse on the database's clock, want within [0, 1s]", after)

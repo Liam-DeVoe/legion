@@ -38,14 +38,18 @@ import (
 //
 // So the fix is held by what search_text leaves and by what each search trigger stores. search_text
 // leaves no run of more than searchTextRun underscore-joined segments in any body saved here
-// (requireShortSearchRuns), which is what keeps the parser's rescans short. Every trigger that
-// builds a search vector is saved, through a write a caller makes, a text that opens with a run
-// the parser reads as one token (searchProbe), and the vector it stored must hold that run broken
-// where search_text breaks it (requireShortVectorRuns): a trigger that hands the parser its text
-// without search_text stores the run whole. That reads what the trigger did, so it fails a trigger
-// that names search_text only in a comment, which a read of the function's source passes, and it
-// reads no source text. Beside them each save's indexing statement is counted in the shared buffers
-// it reads (indexingBuffers) and held to linear growth (growsLinearly), which bounds the statement's
+// (requireShortSearchRuns), which is what keeps the parser's rescans short. Each of the seven
+// triggers that build a search vector today - issues_search, artifact_versions_issues_search,
+// artifact_versions_search, artifact_versions_document_search, comments_search, asks_search and
+// messages_search - has a row that names it ("trigger <name>"), and the rows hold those seven and
+// no other: a trigger a later migration adds is held only once a row of its own names it. Each row
+// saves, through a write a caller makes, a text that opens with a run the parser reads as one token
+// (searchProbe), and the vector its trigger stored must hold that run broken where search_text
+// breaks it (requireShortVectorRuns): a trigger that hands the parser its text without search_text
+// stores the run whole. That reads what the trigger did, so it fails a trigger that names
+// search_text only in a comment, which a read of the function's source passes, and it reads no
+// source text. Beside them each save's indexing statement is counted in the shared buffers it
+// reads (indexingBuffers) and held to linear growth (growsLinearly), which bounds the statement's
 // own reads of the text: its TOAST and its index entries. A trigger that runs after its statement
 // does its work past the plan whose buffers EXPLAIN counts, so the two that do are held by what
 // they store alone: artifact_versions_document_search copies the vector artifact_versions_search
@@ -88,13 +92,14 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
 	documents := 0
-	// Each search trigger is held by what it stores: its row saves, through a write a caller makes
-	// to the trigger's table, a text that opens with searchProbe and runs on in `a_`, then reads the
-	// vector the trigger built of it (requireShortVectorRuns) and the runs search_text leaves in the
-	// text (requireShortSearchRuns). Where the trigger's text can be long enough to ladder, the row
-	// ladders it as the rungs after them do, its indexing statement held to linear growth. An
-	// issue's title is checked at its cap alone, and each trigger that runs after its statement at
-	// one size, for the reason the header gives. The rows run first: see the check after them.
+	// Each of the seven search triggers the header names is held by what it stores: its row saves,
+	// through a write a caller makes to the trigger's table, a text that opens with searchProbe and
+	// runs on in `a_`, then reads the vector the trigger built of it (requireShortVectorRuns) and
+	// the runs search_text leaves in the text (requireShortSearchRuns). Where the trigger's text can
+	// be long enough to ladder, the row ladders it as the rungs after them do, its indexing
+	// statement held to linear growth. An issue's title is checked at its cap alone, and each
+	// trigger that runs after its statement at one size, for the reason the header gives. The rows
+	// run first: see the check after them.
 	createIssue := func(t *testing.T, title, spec string) string {
 		t.Helper()
 		input := map[string]any{"project": "TEST", "title": title, "force": true}

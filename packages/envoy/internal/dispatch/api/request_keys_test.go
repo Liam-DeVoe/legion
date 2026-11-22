@@ -29,6 +29,15 @@ import (
 // sends a write.
 func keyedRequest(t *testing.T, handler http.Handler, method, target string, body any, login, key string) *httptest.ResponseRecorder {
 	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newKeyedRequest(t, method, target, body, login, key))
+	return response
+}
+
+// newKeyedRequest is the write keyedRequest sends, built on the calling goroutine, so a caller
+// that serves it off the test goroutine (testwait.Returns) builds it on the test goroutine first.
+func newKeyedRequest(t *testing.T, method, target string, body any, login, key string) *http.Request {
+	t.Helper()
 	var data []byte
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -45,9 +54,7 @@ func keyedRequest(t *testing.T, handler http.Handler, method, target string, bod
 	if key != "" {
 		request.Header.Set(contracts.IdempotencyKeyHeader, key)
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return request
 }
 
 // keyedRig is one write route behind the keyed layer, as register mounts every POST and PATCH

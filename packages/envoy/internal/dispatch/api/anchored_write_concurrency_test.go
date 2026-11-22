@@ -154,7 +154,7 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 				"body":   "held write",
 			}, "alice").Code
 	}()
-	<-gate.entered // the first write holds a connection and the issue row
+	testwait.Receive(t, "the first anchored write to reach MarkQuote, holding a connection and the issue row", gate.entered)
 
 	writes.Add(1)
 	go func() {
