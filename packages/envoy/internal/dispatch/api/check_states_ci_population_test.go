@@ -2,7 +2,9 @@
 // (deriveCIResults, eachSubjectStands): the state it publishes at an open head is the state GET
 // /api/v1/issues/{key}/results answers there, from the same results, whatever the run of a check CI
 // proves says at a former head, and the result a former head's own run derives counts at that
-// former head alone. The rig is check_states_test.go's, on resultsGitHubServed's server.
+// former head alone. A run's conclusion is its whole job's at a former head as at an open one, so
+// where the check's CI job recorded its own result of the check at a former head, the run derives
+// none there. The rig is check_states_test.go's, on resultsGitHubServed's server or newCIJobRig's.
 package api
 
 import (
@@ -117,4 +119,55 @@ func TestAFormerHeadsRunNeverChangesTheStateOfAnOpenHead(t *testing.T) {
 	if !held || former.state == nil || *former.state != model.PassStandsUnknown || former.reason != model.PassStandsReasonPassAndFail {
 		t.Fatalf("c1 at H1, a former head of #70 whose own run passed beside #71's fail, is published as %+v, want unknown/pass_and_fail", former)
 	}
+}
+
+// wantPublishedAt fails the test unless the settler publishes check at head of the rig's
+// repository as state, for reason, with the CI case ciCase.
+func wantPublishedAt(t *testing.T, what string, rig *checkStatesRig, head, check, state, reason, ciCase string) {
+	t.Helper()
+	row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, head, check)
+	published := "no state"
+	if held && row.state != nil {
+		published = *row.state
+	}
+	if published != state || row.reason != reason || row.ciCase != ciCase {
+		t.Fatalf("%s: %s at %s is published as %s/%s with the CI case %q (row held %t), want %s/%s with the CI case %q",
+			what, check, head[:6], published, row.reason, row.ciCase, held, state, reason, ciCase)
+	}
+}
+
+// TestAJobsOwnResultAtAFormerHeadTakesThePlaceOfItsRunsConclusion: c1 and c2 are both proved by
+// the go-checks job. At H1, the head of #70, the job recorded a pass of c1 and nothing of c2, and
+// its run there failed, as it does when c2's test fails: c1 reads yes at H1 from the job's own
+// pass, with the CI case job_recorded, and c2 no from the run's fail. #70 moves to H2, where the
+// job's run goes on, and H1 is a former head of #70 whose run the settler still reads. There too
+// the run's conclusion is the whole job's, so c1 at H1 still follows the job's pass: a resolution
+// that took the job's own results at the open heads alone would publish c1 at H1 unknown for a
+// pass and a fail, from the job's pass and the run's fail. c2 at H1 stays no, from the run.
+func TestAJobsOwnResultAtAFormerHeadTakesThePlaceOfItsRunsConclusion(t *testing.T) {
+	twoProved := ciJobVerification + "\n" + ciCheckBlock("c2", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`)
+	rig := newCheckStatesRig(t, twoProved)
+	rig.github.setBranch("legion/work", ciJobBranchHead{sha: eachHeadH1})
+	upsertHead(t, rig, 70, eachHeadH1, rig.issue, "A change")
+	jobRecorded(t, "the job's pass of c1 at H1", rig.post(t, rig.issue,
+		jobTokenOn(rig.ciJobRig, eachHeadH1, "refs/heads/legion/work", 99), jobResultAt(eachHeadH1, "pass")))
+	rig.github.listings.set(eachHeadH1, completedRun(11, ciJobName, "failure"))
+	settleOwed(t, rig)
+	wantPublishedAt(t, "#70 at H1", rig, eachHeadH1, "c1", model.PassStandsYes, "", ciCaseJobRecorded)
+	wantPublishedAt(t, "#70 at H1", rig, eachHeadH1, "c2", model.PassStandsNo, model.PassSubjectReasonFail, "failure")
+
+	rig.github.listings.set(eachHeadH2, pendingRun(12, ciJobName, "in_progress"))
+	rig.github.setBranch("legion/work", ciJobBranchHead{sha: eachHeadH2})
+	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	settleOwed(t, rig)
+	wantPublishedAt(t, "#70 moved to H2", rig, eachHeadH2, "c1", model.PassStandsNo, model.PassSubjectReasonNoResult, ciCaseNotCompleted)
+	wantPublishedAt(t, "#70 moved to H2", rig, eachHeadH1, "c1", model.PassStandsYes, "", ciCaseJobRecorded)
+	wantPublishedAt(t, "#70 moved to H2", rig, eachHeadH1, "c2", model.PassStandsNo, model.PassSubjectReasonFail, "failure")
+
+	if _, err := rig.database.Pool.Exec(context.Background(), `select check_states_owe($1)`, rig.issue); err != nil {
+		t.Fatalf("mark %s owed as the settlement of a pull request's checks does: %v", rig.issue, err)
+	}
+	settleOwed(t, rig)
+	wantPublishedAt(t, "the run at H1 read again after the move", rig, eachHeadH1, "c1", model.PassStandsYes, "", ciCaseJobRecorded)
+	wantPublishedAt(t, "the run at H1 read again after the move", rig, eachHeadH1, "c2", model.PassStandsNo, model.PassSubjectReasonFail, "failure")
 }
