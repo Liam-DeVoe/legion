@@ -15,7 +15,8 @@ import (
 
 // streamRefusal is the error of the 409 the listener answers a send or publish whose forward a
 // sealed stream refused, as writeBusUnavailable writes it (packages/envoy/cmd/listener/api.go):
-// streamRefusedPrefix, then the bus's own error.
+// streamRefusedPrefix, then the bus's own error. The answer's code, listenerwire.CodeStreamRefused,
+// is what the daemon reads it by.
 const streamRefusal = "envoy: the message bus stream refused the message, and refuses it however often it is sent: " +
 	"bus: the stream did not acknowledge storing the forward: nats: invalid operation on sealed stream"
 
@@ -57,7 +58,7 @@ func TestARoleMessageTheStreamRefusesEndsWithOneError(t *testing.T) {
 		publishes.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		_, _ = io.WriteString(w, `{"error":"`+streamRefusal+`"}`)
+		_, _ = io.WriteString(w, `{"code":"stream_refused","error":"`+streamRefusal+`"}`)
 	}))
 	t.Cleanup(listener.Close)
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())

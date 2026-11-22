@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A store write the stream refuses for the message itself reaches the store write routes' answer
@@ -46,7 +48,10 @@ func TestAStoreWriteASealedBucketRefusesIsAnsweredAsARefusal(t *testing.T) {
 		t.Fatalf("a claim the sealed claim bucket refuses: status %d, Retry-After %q, body %s; want 409 with no Retry-After",
 			recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), streamRefusedPrefix) {
-		t.Fatalf("the 409's body %q does not name the stream's refusal (%s)", recorder.Body.String(), streamRefusedPrefix)
+	var refusal listenerwire.APIError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil || refusal.Code != listenerwire.CodeStreamRefused ||
+		!strings.HasPrefix(refusal.Error, streamRefusedPrefix) {
+		t.Fatalf("the 409's body %q (%v) is not the stream's refusal: want code %q, which the claim boot reads it by, and words opening with %q",
+			recorder.Body.String(), err, listenerwire.CodeStreamRefused, streamRefusedPrefix)
 	}
 }

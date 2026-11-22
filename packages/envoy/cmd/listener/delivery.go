@@ -571,11 +571,13 @@ func keepFailureHolds(err error) bool {
 // and a lapsed holder and a failed claim read are delivery_failed, each under a log line that
 // names which it was. A holder that is not answering keeps its claim through all of them, kept
 // copy or not: the lane takes nothing from it. Role delivery answers no caller, so it resolves
-// under context.Background(), and each of its two reads is bounded on its own by
-// roleHolderReadTimeout: the claim read by roleLaneClaims and the holder's session read by
-// roleHolderSessions.Holder.
-func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, roleResolution, error) {
-	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+// under ctx, the forwarder's stop context (roleForwarder.stopCtx): each of its two reads is
+// bounded on its own by roleHolderReadTimeout - the claim read by roleLaneClaims and the holder's
+// session read by roleHolderSessions.Holder - and the keep by roleKeepPublishWindow, and the stop
+// cuts whichever is running. A read or keep the stop cut is one that failed on NATS, so the
+// message is held, and the hold parks it (roleForwarder.hold).
+func resolveCoreRoleHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, roleResolution, error) {
+	resolved, err := roles.ResolveHolder(ctx, roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -589,7 +591,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 			return sessionID, resolved.Entry, roleHolderLive, nil
 		}
 		if reason, keepable := roleKeptReason(resolved); keepable {
-			keepErr := keepRoleLaneMessage(context.Background(), cfg, role, item, reason, sessionID)
+			keepErr := keepRoleLaneMessage(ctx, cfg, role, item, reason, sessionID)
 			if keepErr == nil {
 				return "", session.SessionEntry{}, roleMessageEnded, nil
 			}
@@ -619,7 +621,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 	}
 	switch failure.Step {
 	case roles.ClaimRead:
-		keepErr := keepRoleLaneMessage(context.Background(), cfg, role, item, roleClaimUnread, "")
+		keepErr := keepRoleLaneMessage(ctx, cfg, role, item, roleClaimUnread, "")
 		if keepErr == nil {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
@@ -706,7 +708,11 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // on its role's kept lane at once, with no resolution and no slot to wait for
 // (roleForwarder.keepHeld), so the lane's drain takes every message its subscription holds within
 // its window; a held message parks, as every held message does at the stop, and is kept once the
-// lane has drained (roleForwarder.keepWhenTheLaneHasDrained).
+// lane has drained (roleForwarder.keepWhenTheLaneHasDrained). A delivery that is already running
+// when the stop comes makes its NATS steps - the pinned holder's session read, the resolution's
+// reads and its keep - under the forwarder's stop context (roleForwarder.stopCtx), so the stop
+// cuts the step it is in, the message is held, and the hold parks it: it ends under the stop's
+// deadline with its own line, rather than after the drain's wait with none.
 func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, held roleHeld) {
 	if err := roleLaneProjectError(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)); err != nil {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
@@ -729,7 +735,7 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 		return
 	}
 	if held.pinned != "" {
-		stands, err := pinnedHolderStands(context.Background(), cfg, held.pinned)
+		stands, err := pinnedHolderStands(cfg.roleForwards.stopCtx, cfg, held.pinned)
 		if err != nil {
 			cfg.roleForwards.hold(item, held.pinned, held, err)
 			return
@@ -745,7 +751,7 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 	}
 	role, _ := roleOfLaneTopic(item.Topic)
 	resolvedAt := cfg.now()
-	sessionID, holder, resolution, cause := resolveCoreRoleHolder(cfg, item, role)
+	sessionID, holder, resolution, cause := resolveCoreRoleHolder(cfg.roleForwards.stopCtx, cfg, item, role)
 	switch resolution {
 	case roleMessageHeld:
 		cfg.roleForwards.hold(item, sessionID, held, cause)

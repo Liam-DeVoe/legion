@@ -238,9 +238,11 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 // other failure, and a 504, 403 or 409 whose body is not that JSON — a proxy's gateway timeout, a
 // reason this daemon does not know — stays an ordinary failure.
 func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
-	// The listener's own 409 for a sealed stream, byte for byte as writeBusUnavailable writes it
-	// (streamRefusedPrefix, then the bus's error).
+	// The listener's own 409 for a sealed stream, byte for byte as writeBusUnavailable writes it:
+	// the code listenerwire.CodeStreamRefused, which the daemon reads it by, and the error
+	// (streamRefusedPrefix, then the bus's error), which it only carries.
 	const sealed = `envoy: the message bus stream refused the message, and refuses it however often it is sent: bus: the stream did not acknowledge storing the forward: nats: invalid operation on sealed stream`
+	streamRefusedBody := `{"code":"` + listenerwire.CodeStreamRefused + `","error":"` + sealed + `"}`
 	for _, tc := range []struct {
 		name          string
 		status        int
@@ -261,11 +263,12 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 		{"the listener's own grant denied the forward", http.StatusForbidden,
 			`{"error":"envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to \"notifications.agent.ses_a\": nats: permissions violation: Permissions Violation for Publish to \"notifications.agent.ses_a\""}`,
 			nil, nil, &ErrPublishDenied{Message: `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_a": nats: permissions violation: Permissions Violation for Publish to "notifications.agent.ses_a"`}, nil},
-		{"the stream refused the message", http.StatusConflict, `{"error":"` + sealed + `"}`, nil, nil, nil, &ErrStreamRefused{Message: sealed}},
+		{"the stream refused the message", http.StatusConflict, streamRefusedBody, nil, nil, nil, &ErrStreamRefused{Message: sealed}},
 		{"a conflict with another error", http.StatusConflict,
 			`{"error":"role legion-demo-architect is held by another process","holder":"ses_a"}`, nil, nil, nil, nil},
 		{"a conflict that is not JSON", http.StatusConflict, sealed, nil, nil, nil, nil},
-		{"the stream's refusal text under another status", http.StatusServiceUnavailable, `{"error":"` + sealed + `"}`, nil, nil, nil, nil},
+		{"the stream's refusal words with no code", http.StatusConflict, `{"error":"` + sealed + `"}`, nil, nil, nil, nil},
+		{"the stream's refusal under another status", http.StatusServiceUnavailable, streamRefusedBody, nil, nil, nil, nil},
 		{"a gateway timeout that is not JSON", http.StatusGatewayTimeout, `upstream request timeout`, nil, nil, nil, nil},
 		{"a gateway timeout with no reason", http.StatusGatewayTimeout, `{"error":"gateway timeout"}`, nil, nil, nil, nil},
 		{"a gateway timeout with another reason", http.StatusGatewayTimeout, `{"error":"not confirmed","reason":"not_confirmed"}`, nil, nil, nil, nil},

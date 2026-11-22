@@ -5,7 +5,12 @@ import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
-import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
+import {
+  bootLegionClaim,
+  claimRoleAgainOnBusy,
+  type LegionClaimHost,
+  STREAM_REFUSED_CODE,
+} from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
@@ -274,20 +279,35 @@ test("control: a claim the listener refuses with any other status still stops th
 });
 
 /** The listener's 409 to a claim whose write the message bus stream refused (a sealed role
- * bucket), byte for byte as its `writeBusUnavailable` writes it under `streamRefusedPrefix`
- * (`packages/envoy/cmd/listener/api.go`). The listener answered the same refusal 503 with
- * `Retry-After` before it told the two apart. */
+ * bucket), byte for byte as its `writeBusUnavailable` writes it: the code
+ * `listenerwire.CodeStreamRefused`, which the claim boot reads it by, and the words under
+ * `streamRefusedPrefix` (`packages/envoy/cmd/listener/api.go`), which it does not. The listener
+ * answered the same refusal 503 with `Retry-After` before it told the two apart. */
 function claimAnsweredStreamRefused(): EnvoyApiError {
   return new EnvoyApiError({
     method: "POST",
     url: "http://listener.test/v1/roles/set",
     status: 409,
     responseBody: JSON.stringify({
+      code: "stream_refused",
       error:
         "envoy: the message bus stream refused the message, and refuses it however often it is sent: nats: invalid operation on sealed stream",
     }),
   });
 }
+
+test("the stream-refused code the claim boot reads is the one the listener writes", () => {
+  // The listener's 409 carries listenerwire.CodeStreamRefused, and the claim boot reads that code
+  // from its own copy: this row reads the Go constant, so a change of either fails here rather
+  // than quietly sending the boot back to stopping the session on a sealed bucket.
+  const listenerwire = readFileSync(
+    path.resolve(import.meta.dir, "../../envoy/listenerwire/listenerwire.go"),
+    "utf8"
+  );
+  const written = /^const CodeStreamRefused = "([^"]*)"$/m.exec(listenerwire)?.[1];
+  expect(written).toBeDefined();
+  expect(STREAM_REFUSED_CODE).toBe(written as string);
+});
 
 test("a claim whose write the message bus stream refused (409) is claimed again on the 503's growing wait, and the session is not stopped", async () => {
   let refused = 0;
@@ -328,6 +348,34 @@ test("control: a claim the listener answers 409 with any other error still stops
           url: "http://listener.test/v1/roles/set",
           status: 409,
           responseBody: JSON.stringify({ error: "envoy: the role claim conflicts" }),
+        });
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "stop"]);
+  expect(lines).toHaveLength(1);
+});
+
+test("control: a 409 carrying the stream's refusal words with no code still stops the session at once", async () => {
+  // The boot reads the code, never the words, so a body with the words alone is any other 409.
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.test/v1/roles/set",
+          status: 409,
+          responseBody: JSON.stringify({
+            error:
+              "envoy: the message bus stream refused the message, and refuses it however often it is sent: nats: invalid operation on sealed stream",
+          }),
         });
       },
     },

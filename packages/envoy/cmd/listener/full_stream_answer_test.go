@@ -142,8 +142,9 @@ func TestAStreamRefusalIsAnsweredAndRecordedAsARefusal(t *testing.T) {
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}
-				if !strings.HasPrefix(refusal.Error, streamRefusedPrefix) {
-					t.Fatalf("the refusal reads %q, want it to open with %q", refusal.Error, streamRefusedPrefix)
+				if refusal.Code != listenerwire.CodeStreamRefused || !strings.HasPrefix(refusal.Error, streamRefusedPrefix) {
+					t.Fatalf("the refusal reads code %q, %q; want code %q, which a caller reads it by, and words opening with %q",
+						refusal.Code, refusal.Error, listenerwire.CodeStreamRefused, streamRefusedPrefix)
 				}
 				if record["outcome"] != "stream_refused" || record["status"] != float64(http.StatusConflict) {
 					t.Fatalf("the request record's outcome is %v with status %v, want stream_refused with 409; record = %v", record["outcome"], record["status"], record)

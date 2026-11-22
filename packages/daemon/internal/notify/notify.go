@@ -126,24 +126,19 @@ func (e ErrPublishDenied) Error() string {
 // ErrStreamRefused is a publish the listener answered 409 because the message bus stream refused
 // the message itself, its publish to the topic or its forward to the role's holder: a message or
 // headers past the stream's maxima, a message too large for the store, or a sealed stream
-// (bus.StreamRefusesMessage). Its body's error opens with streamRefusedPrefix
-// (writeBusUnavailable, packages/envoy/cmd/listener/api.go), and the answer carries no
-// Retry-After. Message is that error, which names the stream's own reason; it is bounded by
-// refusalBodyLimit as the refusal is. The stream refuses the same message however often it is
-// sent, so sending it again changes nothing until an operator changes the stream (replaces a
-// sealed one, or raises the maximum it refused the message under) or the message itself changes.
-// Any other 409 (one whose error does not open with the prefix, or whose body is not JSON) stays a
-// plain refusal, retried.
+// (bus.StreamRefusesMessage). Its body carries the code listenerwire.CodeStreamRefused
+// (writeBusUnavailable, packages/envoy/cmd/listener/api.go), which is what this reads it by, and
+// the answer carries no Retry-After. Message is the body's error, which names the stream's own
+// reason; it is bounded by refusalBodyLimit as the refusal is. The stream refuses the same message
+// however often it is sent, so sending it again changes nothing until an operator changes the
+// stream (replaces a sealed one, or raises the maximum it refused the message under) or the message
+// itself changes. Any other 409 (one with no such code, or whose body is not JSON) stays a plain
+// refusal, retried. Every listener since cybermonklabs/legion#4342, which added the 409, writes
+// the code; a listener before it answered the same refusal 503 with Retry-After or 504, which this
+// daemon reads as a plain refusal and retries.
 type ErrStreamRefused struct {
 	Message string
 }
-
-// streamRefusedPrefix mirrors the listener's streamRefusedPrefix
-// (packages/envoy/cmd/listener/api.go), the opening of every answer it gives a send or publish the
-// stream refuses for the message itself. Every listener since cybermonklabs/legion#4342, which
-// added the 409, writes it; a listener before it answered the same refusal 503 with Retry-After
-// or 504, which this daemon reads as a plain refusal and retries.
-const streamRefusedPrefix = "envoy: the message bus stream refused the message, and refuses it however often it is sent"
 
 func (e ErrStreamRefused) Error() string {
 	return fmt.Sprintf("the message bus stream refused the message (%s)", e.Message)
@@ -303,9 +298,9 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 // listenerwire.CapabilityRefusal, ErrRefusedByHolder for reason capability, or else the
 // listenerwire.APIError of a forward the listener's own NATS grant denied, ErrPublishDenied. A
 // 409 is the listenerwire.APIError of a message the stream refuses however often it is sent,
-// ErrStreamRefused when its error opens with streamRefusedPrefix. A listener of an earlier
-// release leaves some members out, which decodes as their zero values; a body that is not that
-// JSON, as a proxy in front of the listener could write, and every other status, is the plain
+// ErrStreamRefused when it carries the code listenerwire.CodeStreamRefused. A listener of an
+// earlier release leaves some members out, which decodes as their zero values; a body that is not
+// that JSON, as a proxy in front of the listener could write, and every other status, is the plain
 // refusal.
 func publishRefusal(status int, body []byte, refusal error) error {
 	switch status {
@@ -336,7 +331,7 @@ func publishRefusal(status int, body []byte, refusal error) error {
 		}
 	case http.StatusConflict:
 		var refused listenerwire.APIError
-		if json.Unmarshal(body, &refused) == nil && strings.HasPrefix(refused.Error, streamRefusedPrefix) {
+		if json.Unmarshal(body, &refused) == nil && refused.Code == listenerwire.CodeStreamRefused {
 			return fmt.Errorf("%w: %w", refusal, ErrStreamRefused{Message: refused.Error})
 		}
 	}

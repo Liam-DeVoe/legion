@@ -279,7 +279,9 @@ const streamFullPrefix = "envoy: the message bus refused the message because its
 // stays this listener's own payload bound (bus.ErrTooLarge), checked before anything is sent, and a
 // sealed or re-configured stream is not the caller's bytes being wrong. A publish to a role with no
 // live holder whose keep the stream refuses that way is not this answer: the keep is that route's
-// own give-up, and a keep a rule refuses is its no-holder 404 (roleSend.noHolder).
+// own give-up, and a keep a rule refuses is its no-holder 404 (roleSend.noHolder). The answer
+// carries listenerwire.CodeStreamRefused, which is what a caller reads it by; these words are for a
+// person reading the answer, and no caller matches them.
 const streamRefusedPrefix = "envoy: the message bus stream refused the message, and refuses it however often it is sent"
 
 // earlierAttemptInProcessPrefix opens the body of the 503 a send or publish gets when its request
@@ -354,7 +356,7 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	}
 	stored, full, inProcess := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull), earlierAttemptInProcess(err)
 	if streamRefusesForGood(err) {
-		writeJSONError(w, http.StatusConflict, fmt.Sprintf("%s: %s", streamRefusedPrefix, err))
+		writeJSON(w, http.StatusConflict, listenerwire.APIError{Code: listenerwire.CodeStreamRefused, Error: fmt.Sprintf("%s: %s", streamRefusedPrefix, err)})
 		return http.StatusConflict
 	}
 	prefix := busUnansweredPrefix

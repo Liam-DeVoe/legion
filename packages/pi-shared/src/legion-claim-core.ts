@@ -316,16 +316,16 @@ export async function claimRoleAgainOnBusy(
 }
 
 /**
- * The opening of the error the listener writes when the message bus stream refuses a write for the
- * message itself (`streamRefusedPrefix` in `packages/envoy/cmd/listener/api.go`, answered 409 with
- * no `Retry-After`): for a claim, a sealed role or interest bucket, or a record past its maximum.
+ * The code the listener's 409 carries when the message bus stream refuses a write for the message
+ * itself (`listenerwire.CodeStreamRefused` in `packages/envoy/listenerwire/listenerwire.go`,
+ * answered with no `Retry-After`): for a claim, a sealed role or interest bucket, or a record past
+ * its maximum. A row of this module's tests reads that Go constant and fails when the two differ.
  */
-const STREAM_REFUSED_PREFIX =
-  "envoy: the message bus stream refused the message, and refuses it however often it is sent";
+export const STREAM_REFUSED_CODE = "stream_refused";
 
 /**
  * Whether `error` is the listener asking for a role claim again: an `EnvoyApiError` whose status is
- * 503, or 409 with an error that opens with the stream's refusal (`STREAM_REFUSED_PREFIX`). A 409
+ * 503, or 409 whose body carries the stream's refusal code (`STREAM_REFUSED_CODE`). A 409
  * that names a holder is a claim not granted, which envoy-client's `setRole` reads itself, and any
  * other is a refusal. It is read by its name, status and body, not by class, because it crosses
  * plugin bundles: pi-envoy throws it from its own copy of envoy-client, behind the role-claim
@@ -350,17 +350,16 @@ function claimAgainStatus(error: unknown): 503 | 409 | undefined {
     : undefined;
 }
 
-/** Whether `body`, an answer's body as it came, is the listener's error JSON opening with the
- * stream's refusal. */
+/** Whether `body`, an answer's body as it came, is the listener's error JSON carrying the stream's
+ * refusal code. The error's words are for a person and are not read. */
 function streamRefused(body: string): boolean {
   try {
     const parsed: unknown = JSON.parse(body);
     return (
       typeof parsed === "object" &&
       parsed !== null &&
-      "error" in parsed &&
-      typeof parsed.error === "string" &&
-      parsed.error.startsWith(STREAM_REFUSED_PREFIX)
+      "code" in parsed &&
+      parsed.code === STREAM_REFUSED_CODE
     );
   } catch {
     return false;
