@@ -232,15 +232,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The role that works the issue's retro (record.Issue.RoleAt: the role of its agent's last step
 	// of the type implementation, a role of the deployment among them) reports it as the
 	// implementer reports its retro. What a report of a step carries is one rule, which the owner's
-	// complete_step takes too (stepReportRefusal).
+	// complete_step takes too (stepReportRefusal); a reviewer's verdict turns on whether the issue
+	// has a pull request record, read with the issue.
 	worksRetro := issue.Phase == phase.Retro && issue.RoleAt(phase.Retro) == grant.Role
-	if refusal := stepReportRefusal(grant.Role, worksRetro, false, req.Verdict, req.Commit, grant.Issue); refusal != nil {
+	if refusal := stepReportRefusal(grant.Role, worksRetro, false, position.pullRequest != nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The step a failed step's task returns to is named by a fail alone, the tester's or a role of
-	// the deployment's (returnToRefusal), refused here on every other completion before anything is
-	// read or recorded.
+	// The step a failed step's task returns to is named by a fail alone, of a report that carries a
+	// verdict (stepReportRefusal, returnToRefusal), refused here on every other completion before
+	// anything is read or recorded.
 	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -461,22 +462,26 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 // stepReportRefusal is the one rule of what a report of a step carries, which both reports of a
 // step take: a worker's completion (answerCompletion, owner false) and the owner's report of a
 // step of its own (completeStep, owner true). role is the role of the place the report ends, the
-// step's role or the role of the retro; retro is whether that place is the retro; issue names it
-// in a sentence. It is nil where the report carries what its place asks, and each refusal is a 400
-// its caller writes before anything is read further or recorded:
+// step's role or the role of the retro; retro is whether that place is the retro; hasPullRequest
+// is whether the issue has a pull request record, in any state; issue names it in a sentence. It
+// is nil where the report carries what its place asks, and each refusal is a 400 its caller writes
+// before anything is read further or recorded:
 //
 //   - MISSING_FIELD commit: the implementer, the merger and a role of the deployment report the
-//     commit they stand on or read.
+//     commit they stand on or read, and so does every step that reports a verdict but the tester's:
+//     a step of the type review records the commit it read.
 //   - VERDICT_ROLE_FORBIDDEN on the retro: a retro passes or fails nothing, so its report sends its
 //     commit and the rating of the plan and no verdict.
 //   - TESTER_VERDICT_REQUIRED: the tester reports pass or fail.
-//   - STEP_VERDICT_REQUIRED: a role of the deployment, the role acceptance among them (a role
-//     claim.IsBuiltin refuses), reports pass or fail, and so does the owner in a step of the role
-//     reviewer, which no review on GitHub ends (workflow's settleRound).
+//   - STEP_VERDICT_REQUIRED: a role claim.IsBuiltin refuses (a role of the deployment or of the
+//     plan, and the role acceptance) reports pass or fail, and so does a reviewer where no review
+//     on GitHub decides its step: on an issue with no pull request record, where none can exist,
+//     and in the owner's step, which no review on GitHub ends (workflow's settleRound).
 //   - VERDICT_ROLE_FORBIDDEN: any other report names no verdict.
-func stepReportRefusal(role claim.Role, retro, owner bool, verdict, commit, issue string) *intake.Refusal {
+func stepReportRefusal(role claim.Role, retro, owner, hasPullRequest bool, verdict, commit, issue string) *intake.Refusal {
 	deploymentRole := !claim.IsBuiltin(role)
-	if (role == claim.RoleImplementer || role == claim.RoleMerger || deploymentRole) && strings.TrimSpace(commit) == "" {
+	verdictStep := !retro && (deploymentRole || role == claim.RoleReviewer && (owner || !hasPullRequest))
+	if (role == claim.RoleImplementer || role == claim.RoleMerger || deploymentRole || verdictStep) && strings.TrimSpace(commit) == "" {
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "MISSING_FIELD", Message: "commit is required"}
 	}
 	if retro {
@@ -486,7 +491,6 @@ func stepReportRefusal(role claim.Role, retro, owner bool, verdict, commit, issu
 		}
 		return nil
 	}
-	verdictStep := deploymentRole || owner && role == claim.RoleReviewer
 	passOrFail := verdict == "pass" || verdict == "fail"
 	switch {
 	case role == claim.RoleTester && !passOrFail:
@@ -495,16 +499,17 @@ func stepReportRefusal(role claim.Role, retro, owner bool, verdict, commit, issu
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "STEP_VERDICT_REQUIRED", Message: fmt.Sprintf(
 			"a step of the role %s reports the verdict pass or fail; nothing was recorded", role)}
 	case role != claim.RoleTester && !verdictStep && verdict != "":
-		return &intake.Refusal{Status: http.StatusBadRequest, Code: "VERDICT_ROLE_FORBIDDEN", Message: "only a tester or a role of the deployment reports a verdict"}
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "VERDICT_ROLE_FORBIDDEN", Message: "only a tester, a role of the deployment or of the plan, " +
+			"the role acceptance, a reviewer of an issue with no pull request, and the owner in a review step report a verdict"}
 	}
 	return nil
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
 // names none or names one it may. failsAStep is whether the completion fails a step (the verdict
-// fail of a tester or of a role of the deployment, the roles VERDICT_ROLE_FORBIDDEN leaves a
-// verdict to), and what names the completion in a refusal. Every refusal is a 400 its caller
-// writes before anything is recorded, so the same completion sent again, corrected, is taken:
+// fail of a report VERDICT_ROLE_FORBIDDEN leaves a verdict to, stepReportRefusal), and what names
+// the completion in a refusal. Every refusal is a 400 its caller writes before anything is
+// recorded, so the same completion sent again, corrected, is taken:
 //
 //   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
 //   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's

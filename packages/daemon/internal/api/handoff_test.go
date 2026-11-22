@@ -730,7 +730,9 @@ func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
 // engine records it there for the next phase to read (workflow's leftItsPhase). So the route reads
 // its record back against that phase's word and the claim's session, as it reads a current
 // completion's: a record of another issue or of another phase is refused before the fact and
-// nothing is recorded, and the reviewer's own new review record is recorded on its row.
+// nothing is recorded, and the reviewer's own new review record is recorded on its row. The issue
+// has the pull request the reviewer reviewed, as every issue past its implementer on today's line
+// has: a reviewer of an issue with none reports a verdict.
 func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -757,6 +759,7 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
 			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 			named := tc.record(h, reviewer)
 			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
@@ -783,10 +786,11 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 // reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
 // so the route reads its own new review record back against reviewing's word rather than refusing
 // a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
-// accepting for the architect.
+// accepting for the architect. The issue has the pull request the reviewer approved.
 func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
+	seedPullRequest(t, h, "LEGION-208", "ccddee")
 	seedApproval(t, h, "LEGION-208", "ccddee")
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 	own := reviewer.writeHandoff("review", 1)

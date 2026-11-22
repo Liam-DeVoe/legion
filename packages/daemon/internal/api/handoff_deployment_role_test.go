@@ -69,7 +69,8 @@ func assertFailureText(t *testing.T, recorder *httptest.ResponseRecorder, status
 // names no handoff record: the checker at step with pass and a commit is taken, as one
 // HandoffComplete; with no verdict it is refused STEP_VERDICT_REQUIRED, with no commit
 // MISSING_FIELD, and with a handoff record HANDOFF_RECORD_MISMATCH; with fail and returnTo 1 it is
-// taken. A verdict of one of Legion's roles but the tester is refused VERDICT_ROLE_FORBIDDEN.
+// taken. A verdict of one of Legion's roles but the tester is refused VERDICT_ROLE_FORBIDDEN: the
+// reviewer's here, whose issue has an open pull request, so a review on GitHub settles its round.
 func TestADeploymentRoleReportsWithAVerdictAndACommit(t *testing.T) {
 	const key = "LEGION-208"
 	one := 1
@@ -91,7 +92,8 @@ func TestADeploymentRoleReportsWithAVerdictAndACommit(t *testing.T) {
 			text: "phase step of LEGION-208 ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing"},
 		{name: "fail naming returnTo 1", role: "checker", req: HandoffCompleteRequest{Summary: "a gap", Verdict: "fail", Commit: headSHA, ReturnTo: &one}, status: http.StatusOK},
 		{name: "a reviewer's verdict", role: claim.RoleReviewer, req: HandoffCompleteRequest{Summary: "looked", Verdict: "pass", Commit: headSHA},
-			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", text: "only a tester or a role of the deployment reports a verdict"},
+			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", text: "only a tester, a role of the deployment or of the plan, " +
+				"the role acceptance, a reviewer of an issue with no pull request, and the owner in a review step report a verdict"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _, facts := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,

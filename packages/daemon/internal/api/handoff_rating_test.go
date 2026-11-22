@@ -852,9 +852,11 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 // ending nothing. From a plugin that must rate, it is not asked for a rating; carrying one, it is
 // refused PLAN_RATING_UNEXPECTED, naming reviewing, with nothing recorded. The same completion
 // without the rating is then taken on the reviewer's row, and the issue stays in retro unrated.
+// The issue has the pull request the reviewer approved, as an issue past its implementer has.
 func TestALateCompletionWhileTheIssueStandsInRetroEndsNoRetro(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	seedPullRequest(t, h, "LEGION-208", "ccddee")
 	seedApproval(t, h, "LEGION-208", "ccddee")
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 	if got := pluginContractOf(t, h, reviewer.token); got < PlanRatingContract {
