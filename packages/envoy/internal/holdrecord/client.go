@@ -277,13 +277,16 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // reaches it), since a prepare row refuses no client, or after a held one whose hold's signed
 // journal shows it ended, and refuses it 400 `bad_transition` after any other held entry, so a
 // released row never lands mid-hold. Whatever the latest entry, the route refuses a released row
-// while any hold's journal, an ended hold's included, is below the broker's record floor or does
-// not verify (409 `below_floor`, naming the hold, the key id when the signing key is no longer
-// listed, and the hand repair), or while a hold the verified log does not show ended (a verified
-// released entry naming it, at any gen, while its journal shows no command's intent pending but
-// hold release's or hold abort's) has a journal showing `hold set` done and no end (400
-// `bad_transition`, which advises restoring the row held only when the route admits that restore,
-// and otherwise names the hand repair). The refusal's text is in RouteError.Message.
+// while any hold's journal, an ended hold's included, is below the broker's record floor, does not
+// verify, or holds an entry whose row (Operation.Row) the verified log does not hold or that names
+// none (409 `below_floor`, naming the hold, the key id when the signing key is no longer listed,
+// the entry, and the hand repair), or while a hold's journal shows `hold set` done and no end, or
+// `hold set` not done while the log holds the hold's held entry, unless the journal shows a done
+// `hold release` or `hold abort`, or a verified released entry names the hold and its journal shows
+// `hold release`'s or `hold abort`'s intent as that command's latest entry with no other intent
+// pending (400 `bad_transition`, which advises restoring the row held only when the route admits
+// that restore, and otherwise names the causes and the hand repair). The refusal's text is in
+// RouteError.Message.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Workflow is a hold's workflow, the name its `done` record carries.
@@ -27,12 +28,24 @@ const (
 // Operation is one journal entry. State is StateIntent, StateDone or StateStop. An `intent` entry
 // carries the command's inputs, a `done` entry its outputs, and a `stop` entry its reason in
 // Outputs["reason"] and, when AppendStopLeft wrote it, what the command left in Outputs["left"]:
-// LeftUnchanged, or what it changed. Done.Latest and Entry.Left read them.
+// LeftUnchanged, or what it changed. Done.Latest and Entry.Left read them. Row names the hold row
+// the entry was written under, which binds the journal to its history of the tables: the row
+// Admit read for an `intent`, and the row read when a `done` or `stop` entry is written. The
+// restore route reads a journal as unknown when an entry's row is not in its verified log, or an
+// entry names none.
 type Operation struct {
 	Command string            `json:"command"`
 	State   string            `json:"state"`
 	Inputs  map[string]string `json:"inputs,omitempty"`
 	Outputs map[string]string `json:"outputs,omitempty"`
+	Row     *RowRef           `json:"row,omitempty"`
+}
+
+// RowRef names one hold row, and so the log entry written with it: its gen and the time the
+// operator signed it.
+type RowRef struct {
+	Gen      uint64    `json:"gen"`
+	SignedAt time.Time `json:"signed_at"`
 }
 
 // Done is the `done` record, the hold's journal: its workflow, its entries in order, the

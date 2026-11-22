@@ -20,31 +20,89 @@ import (
 )
 
 // keyRead is infra/README.md's read of the rows a key signed ("Rotating the hold signing key",
-// step 3), with <old> the key's id, and keyDeletes its hand repair's deletes by name (step 4), with
-// each placeholder a value the read lists. readmeSays fails the test unless the README holds each
-// word for word, so a row that follows them follows the README as written.
+// step 3), with <old> the key's id, and keyDeletes its hand repair's deletes by name (step 4), for
+// each table the statements to run in order for one row the read lists, each placeholder a value
+// it lists: a log entry's hold's journal goes before the entry, since a journal names the log
+// entries its entries were written under. logDelete is the delete of one log entry by gen that
+// the repair of an entry put back from another history runs alone. readmeSays fails the test
+// unless the README holds each word for word, so a row that follows them follows the README as
+// written.
 const keyRead = `select 'nats_hold' as tbl, gen::text as row from nats_hold where split_part(sig, '.', 1) in ('<old>', sig)
    union all select 'nats_hold_log', gen::text from nats_hold_log where split_part(sig, '.', 1) in ('<old>', sig)
    union all select 'nats_hold_records', hold_id || ' ' || kind || ' ' || key from nats_hold_records where split_part(sig, '.', 1) in ('<old>', sig)
    union all select 'nats_hold_record_deletes', hold_id || ' ' || kind || ' ' || key from nats_hold_record_deletes where split_part(sig, '.', 1) in ('<old>', sig)
    union all select 'nats_cutover', family from nats_cutover where split_part(sig, '.', 1) in ('<old>', sig);`
 
-var keyDeletes = map[string]string{
-	"nats_hold":                "delete from nats_hold where gen = <gen>;",
-	"nats_hold_log":            "delete from nats_hold_log where gen = <gen>;",
-	"nats_hold_records":        "delete from nats_hold_records where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';",
-	"nats_hold_record_deletes": "delete from nats_hold_record_deletes where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';",
-	"nats_cutover":             "delete from nats_cutover where family = '<family>';",
+const logDelete = "delete from nats_hold_log where gen = <gen>;"
+
+var keyDeletes = map[string][]string{
+	"nats_hold": {"delete from nats_hold where gen = <gen>;"},
+	"nats_hold_log": {"delete from nats_hold_records where kind = 'done' and hold_id in (select hold_id from nats_hold_log where gen = <gen>);",
+		logDelete},
+	"nats_hold_records":        {"delete from nats_hold_records where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';"},
+	"nats_hold_record_deletes": {"delete from nats_hold_record_deletes where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';"},
+	"nats_cutover":             {"delete from nats_cutover where family = '<family>';"},
 }
 
-// readmeSays fails t unless infra/README.md holds text word for word.
+// readKeyRows runs keyRead with kid, answering each row it lists as its table and name.
+func readKeyRows(t *testing.T, r rig, kid string) [][2]string {
+	t.Helper()
+	rows, err := r.Pool.Query(context.Background(), strings.ReplaceAll(keyRead, "<old>", kid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var listed [][2]string
+	for rows.Next() {
+		var table, name string
+		if err := rows.Scan(&table, &name); err != nil {
+			t.Fatal(err)
+		}
+		listed = append(listed, [2]string{table, name})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return listed
+}
+
+// runKeyDeletes runs step 4's deletes, as keyDeletes writes them, for each listed row keep takes,
+// and answers the tables the read listed.
+func runKeyDeletes(t *testing.T, r rig, listed [][2]string, keep func(table, name string) bool) map[string]bool {
+	t.Helper()
+	tables := map[string]bool{}
+	for _, row := range listed {
+		tables[row[0]] = true
+		if !keep(row[0], row[1]) {
+			continue
+		}
+		fields := strings.Fields(row[1])
+		for _, statement := range keyDeletes[row[0]] {
+			switch row[0] {
+			case "nats_hold", "nats_hold_log":
+				statement = strings.ReplaceAll(statement, "<gen>", row[1])
+			case "nats_cutover":
+				statement = strings.ReplaceAll(statement, "<family>", row[1])
+			default:
+				statement = strings.NewReplacer("<hold>", fields[0], "<kind>", fields[1], "<key>", fields[2]).Replace(statement)
+			}
+			if _, err := r.Pool.Exec(context.Background(), statement); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+		}
+	}
+	return tables
+}
+
+// readmeSays fails t unless infra/README.md holds text word for word, with every run of spaces and
+// line breaks read as one space, so a sentence the README wraps still matches.
 func readmeSays(t *testing.T, text string) {
 	t.Helper()
 	readme, err := os.ReadFile("../../infra/README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(readme), text) {
+	if !strings.Contains(strings.Join(strings.Fields(string(readme)), " "), strings.Join(strings.Fields(text), " ")) {
 		t.Fatalf("infra/README.md does not hold, word for word:\n%s", text)
 	}
 }
@@ -128,7 +186,7 @@ func repairRows(t *testing.T) {
 		// Claude's round-9 probe REPAIR, B2's shape, followed by infra/README.md's repair. Fails
 		// while the refusal names only the other two causes, as at e481b26500, which leaves the
 		// operator no way to find the entry to delete.
-		readmeSays(t, keyDeletes["nats_hold_log"])
+		readmeSays(t, logDelete)
 		r := newRig(t)
 		c := r.client(t)
 		held := liveHold(t, c, "h-live")
@@ -142,7 +200,7 @@ func repairRows(t *testing.T) {
 		if !refusedWith(got, http.StatusBadRequest, "bad_transition", "hold h-live's journal", latest, "an entry from another history put back above a live hold", handRepair) {
 			t.Fatalf("the released restore answered %s; want 400 bad_transition naming the put-back entry (%s) and the hand repair", refusalText(got), latest)
 		}
-		exec(t, r, strings.ReplaceAll(keyDeletes["nats_hold_log"], "<gen>", fmt.Sprint(forkGen)))
+		exec(t, r, strings.ReplaceAll(logDelete, "<gen>", fmt.Sprint(forkGen)))
 		_, err := r.client(t).RestoreRow(ctx, held.Gen+1, natsgrant.OperatorPhaseHeld, "h-live", "the put-back entry deleted")
 		var refusal *holdrecord.RouteError
 		if !errors.As(err, &refusal) || refusal.Code != "below_floor" {
@@ -183,8 +241,10 @@ func repairRows(t *testing.T) {
 		// limited to journals and log entries, as e481b26500's README wrote it: the leaked key's
 		// row stays, the view reads unknown and the restore answers row_exists.
 		readmeSays(t, keyRead)
-		for _, statement := range keyDeletes {
-			readmeSays(t, statement)
+		for _, statements := range keyDeletes {
+			for _, statement := range statements {
+				readmeSays(t, statement)
+			}
 		}
 		r := newRig(t)
 		c := r.client(t)
@@ -202,45 +262,13 @@ func repairRows(t *testing.T) {
 		}
 		exec(t, r, `insert into nats_cutover (family, state, hold_id, hold_gen, written_at, written_by, sig) values ('session', 'done', 'h-1', $1, now(), 'op', $2)`, int64(held.Gen), cutover)
 		r.RestartListing(leaked)
-		kid := signedrecord.KeyID(leaked)
-		rows, err := r.Pool.Query(ctx, strings.ReplaceAll(keyRead, "<old>", kid))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var listed [][2]string
-		for rows.Next() {
-			var table, name string
-			if err := rows.Scan(&table, &name); err != nil {
-				t.Fatal(err)
-			}
-			listed = append(listed, [2]string{table, name})
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		tables := map[string]bool{}
-		for _, row := range listed {
-			tables[row[0]] = true
-			if !leakRepairDeletes(row[0], row[1]) {
-				continue
-			}
-			statement := keyDeletes[row[0]]
-			fields := strings.Fields(row[1])
-			switch row[0] {
-			case "nats_hold", "nats_hold_log":
-				statement = strings.ReplaceAll(statement, "<gen>", row[1])
-			case "nats_cutover":
-				statement = strings.ReplaceAll(statement, "<family>", row[1])
-			default:
-				statement = strings.NewReplacer("<hold>", fields[0], "<kind>", fields[1], "<key>", fields[2]).Replace(statement)
-			}
-			exec(t, r, statement)
-		}
+		listed := readKeyRows(t, r, signedrecord.KeyID(leaked))
+		tables := runKeyDeletes(t, r, listed, leakRepairDeletes)
 		if !tables["nats_hold"] || !tables["nats_cutover"] || !tables["nats_hold_log"] || !tables["nats_hold_records"] {
 			t.Fatalf("the read by the leaked id listed %v; want the hold row, log entries, records and the cutover row", listed)
 		}
 		r.RestartListing() // the leaked key removed, and the replica restarted
+		readmeSays(t, restoreWhenListed)
 		fresh := r.client(t)
 		err = fresh.Bootstrap(ctx)
 		var mismatch *holdrecord.RestoreGenError
@@ -262,7 +290,11 @@ func repairRows(t *testing.T) {
 // leakRepairDeletes reports whether the leaked key's hand repair deletes the row of table named
 // name that the read lists: every row of the five tables, the hold row and the cutover rows
 // included.
-func leakRepairDeletes(table, name string) bool { return keyDeletes[table] != "" && name != "" }
+func leakRepairDeletes(table, name string) bool { return len(keyDeletes[table]) > 0 && name != "" }
+
+// restoreWhenListed is infra/README.md's step-4 rule for the lost row's restore, which a row
+// follows: the restore runs only when the read listed the hold row.
+const restoreWhenListed = "restore the row, when the read listed the hold row"
 
 // signedBy re-signs the hold row, every log entry and every record with key: rows that key signed.
 func signedBy(t *testing.T, r rig, key ed25519.PrivateKey) {

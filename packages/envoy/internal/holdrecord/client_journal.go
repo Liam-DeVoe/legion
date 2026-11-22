@@ -50,7 +50,8 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 // keeps it. CommandAbort's entry also carries each stop entry's record of what its command left,
 // under `left.<the stop's index in the journal>` as `<command>: <left>`, so the operator ends the
 // hold knowing the state; any key of inputs' under `left.` is dropped, so those records are the
-// journal's alone, and Entry.Left reads them back. It returns the record's workflow.
+// journal's alone, and Entry.Left reads them back. The entry names the row Admit read
+// (Operation.Row), the log entry it was admitted under. It returns the record's workflow.
 //
 // Admit refuses another command while one's intent is pending (ErrBusy), but admits the same
 // command again, its rerun after a crash: a second process running the same command at once is
@@ -78,7 +79,7 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 		if req.Command == CommandAbort {
 			inputs = withStopRecords(inputs, d)
 		}
-		d.Ops = append(d.Ops, Operation{Command: req.Command, State: StateIntent, Inputs: inputs})
+		d.Ops = append(d.Ops, Operation{Command: req.Command, State: StateIntent, Inputs: inputs, Row: rowRef(row)})
 		if req.Command != CommandRelease {
 			d.Complete = false
 		}
@@ -91,23 +92,21 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 
 // AppendDone writes the command's `done` entry, with outputs, after the command's own checks
 // pass, by a PutRecord at the record's `gen`. It returns ErrNoIntent unless the command's latest
-// entry is its `intent`. When Final holds for the record's workflow and the command, the same
-// write sets `complete` to true, with `hold_gen` the row's current `gen`, so a final command's
-// `done` entry and the completion are one write. Every other command's `done` entry sets it to
-// false, but `hold release`'s, which keeps it, as its intent did: the hold ended as the record
-// stood. `hold release` prints `hold_gen` and does not compare it with the row's `gen`.
+// entry is its `intent`. It reads and verifies the row first, which the entry names
+// (Operation.Row), so it needs a row: a row lost mid-command is restored first. When Final holds
+// for the record's workflow and the command, the same write sets `complete` to true, with
+// `hold_gen` that row's `gen`, so a final command's `done` entry and the completion are one write.
+// Every other command's `done` entry sets it to false, but `hold release`'s, which keeps it, as
+// its intent did: the hold ended as the record stood. `hold release` prints `hold_gen` and does
+// not compare it with the row's `gen`.
 func (c *Client) AppendDone(ctx context.Context, holdID, command string, outputs map[string]string) error {
-	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
-		d.Ops = append(d.Ops, Operation{Command: command, State: StateDone, Outputs: outputs})
+	return c.appendEntry(ctx, holdID, command, func(d *Done, row Row) error {
+		d.Ops = append(d.Ops, Operation{Command: command, State: StateDone, Outputs: outputs, Row: rowRef(row)})
 		if command == CommandRelease {
 			return nil
 		}
 		d.Complete = false
 		if Final(d.Workflow, command) {
-			row, err := c.Row(ctx)
-			if err != nil {
-				return err
-			}
 			d.Complete, d.HoldGen = true, row.Gen
 		}
 		return nil
@@ -118,7 +117,7 @@ func (c *Client) AppendDone(ctx context.Context, holdID, command string, outputs
 // command's own check refuses. It ends the command's pending `intent` with no `done`, so another
 // command can be admitted, and it keeps `complete` as it was. It records nothing of what the
 // command left, which counts as changed: AppendStopLeft records it. It returns ErrNoIntent unless
-// the command's latest entry is its `intent`.
+// the command's latest entry is its `intent`. Like AppendDone it reads the row the entry names.
 func (c *Client) AppendStop(ctx context.Context, holdID, command, reason string) error {
 	return c.appendStop(ctx, holdID, command, map[string]string{"reason": reason})
 }
@@ -140,7 +139,7 @@ func (c *Client) AppendStopLeft(ctx context.Context, holdID, command, reason, le
 }
 
 func (c *Client) appendStop(ctx context.Context, holdID, command string, outputs map[string]string) error {
-	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
+	return c.appendEntry(ctx, holdID, command, func(d *Done, row Row) error {
 		if !Stoppable(d.Workflow, command) {
 			return fmt.Errorf("holdrecord: %s is not Stoppable in %s, so its refusal writes no stop entry", command, d.Workflow)
 		}
@@ -148,7 +147,7 @@ func (c *Client) appendStop(ctx context.Context, holdID, command string, outputs
 			return fmt.Errorf("holdrecord: %s's stop cannot record %q: an earlier run of %s in this hold ended with no entry, so what it left is unknown; the stop names what the runs left (LeftUnchanged's rule)",
 				command, LeftUnchanged, command)
 		}
-		d.Ops = append(d.Ops, Operation{Command: command, State: StateStop, Outputs: outputs})
+		d.Ops = append(d.Ops, Operation{Command: command, State: StateStop, Outputs: outputs, Row: rowRef(row)})
 		return nil
 	})
 }
@@ -179,10 +178,10 @@ func withStopRecords(inputs map[string]string, d Done) map[string]string {
 	return out
 }
 
-// appendEntry writes one `done` or `stop` entry of command, which change makes, at the record's
-// gen, when the command's latest entry is its intent, and reads and writes again after a write
-// that came between.
-func (c *Client) appendEntry(ctx context.Context, holdID, command string, change func(*Done) error) error {
+// appendEntry writes one `done` or `stop` entry of command, which change makes given the row it
+// reads and verifies (the row the entry names), at the record's gen, when the command's latest
+// entry is its intent, and reads and writes again after a write that came between.
+func (c *Client) appendEntry(ctx context.Context, holdID, command string, change func(*Done, Row) error) error {
 	for attempt := 1; ; attempt++ {
 		d, gen, err := c.Journal(ctx, holdID)
 		if err != nil {
@@ -197,7 +196,11 @@ func (c *Client) appendEntry(ctx context.Context, holdID, command string, change
 		if latest != StateIntent {
 			return wrap(ErrNoIntent, fmt.Sprintf("%s's latest entry is %q", command, latest))
 		}
-		if err := change(&d); err != nil {
+		row, err := c.Row(ctx)
+		if err != nil {
+			return err
+		}
+		if err := change(&d, row); err != nil {
 			return err
 		}
 		err = c.writeJournal(ctx, holdID, gen, d)
@@ -206,6 +209,9 @@ func (c *Client) appendEntry(ctx context.Context, holdID, command string, change
 		}
 	}
 }
+
+// rowRef names row, the row a journal entry is written under.
+func rowRef(row Row) *RowRef { return &RowRef{Gen: row.Gen, SignedAt: row.SignedAt} }
 
 // writeJournal writes d as the hold's `done` record at expectedGen.
 func (c *Client) writeJournal(ctx context.Context, holdID string, expectedGen uint64, d Done) error {

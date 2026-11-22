@@ -179,6 +179,9 @@ func forkRows(t *testing.T) {
 	})
 
 	t.Run("B3: a log cut back and restored, then a saved later prepare put back mid-hold: the released restore is refused", func(t *testing.T) {
+		// The writer cuts the log back to gen 4 and deletes h-k1's and h-k2's journals with it, as
+		// a cut consistent with the log does: a journal left naming rows the cut log no longer
+		// holds would refuse the first restore (journalBindingRows).
 		r := newRig(t)
 		c := r.client(t)
 		for _, id := range []string{"h-a", "h-k1", "h-k2"} {
@@ -186,6 +189,7 @@ func forkRows(t *testing.T) {
 		}
 		exec(t, r, `create table saved_log as select * from nats_hold_log`)
 		exec(t, r, `delete from nats_hold_log where gen > 4`)
+		exec(t, r, `delete from nats_hold_records where hold_id in ('h-k1', 'h-k2')`)
 		exec(t, r, `delete from nats_hold`)
 		r.Restart()
 		op := r.client(t)
