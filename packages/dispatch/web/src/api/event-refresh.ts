@@ -704,7 +704,7 @@ const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
 };
 
 /**
- * The issues above issue `key` that the page can place from what `cache` holds (decision 402): a
+ * The issues above issue `key` that the page can place from what `cache` holds: a
  * document event carries no `ancestors`, so the chain is read from the page's own reads. An
  * issue's parent is the one its held detail (`["issue", <key>]`) names, else the one a held tree
  * read or view names as the parent of the issue's node, where that parent is an issue's node;
@@ -751,7 +751,7 @@ function issuesAbove(key: string, cache: QueryCache | undefined): ReadonlySet<st
  *  the tree's is of that issue (`ofIssue`) - it names it (`issue`), or it is the issue's own node
  *  - and is judged by its own kind; a node standing under one names it as its parent, and is
  *  judged by its parent's kind. A document event of the issue reaches as well every answer that
- *  holds the node of an issue the page places above it (`issuesAbove`, decision 402): a
+ *  holds the node of an issue the page places above it (`issuesAbove`): a
  *  grandparent's outline holds its child's node and none of the grandchild's, and the
  *  grandchild's new check serving the grandparent's requirement comes into it. A view is judged
  *  by the outline of its issue as well: whatever marks an issue's outline stale marks every view
