@@ -1290,11 +1290,32 @@ function IssueScope(): null {
 
 const READ_THROUGH_TWO = readTo(2);
 
+/** How tall each entry of the history is that a case does not size: a line of a day's list,
+ *  `HISTORY_UNITS`. */
+const ENTRY_HEIGHT = 50;
+/** How tall each line is that the history draws outside its entries and that holds words: its
+ *  heading, a day's line, the loading line, Load older. */
+const HISTORY_LINE = 20;
+/** The history's entries as it lays them out one under another: each line of a day's list,
+ *  an event's, a thread's or the line that says what is new. Everything inside one stands in it. */
+const HISTORY_UNITS = "[data-history-day] > ol > li";
+/** The history's block in Details. */
+const HISTORY_BLOCK = '[data-testid="issue-history"]';
+
+/** What opens and shuts Details around the People rows, and takes the page to another address:
+ *  the test's hold on `PeopleInDrawer`. */
+interface PeopleHold {
+  navigate?: NavigateFunction;
+  open?: (open: boolean) => void;
+}
+
 /** Details as the new page draws it around its People rows: a drawer, shut, whose box scrolls
  *  what Details holds - a row above the People rows, the People rows, a row below them, and the
- *  history, which an address that opens Details waits for. */
-function PeopleInDrawer(): ReactNode {
+ *  history, which an address that opens Details waits for. `of` is the issue. */
+function PeopleInDrawer({ hold, of }: { hold: PeopleHold; of: IssueDetails }): ReactNode {
   const [open, setOpen] = useState(false);
+  hold.open = setOpen;
+  hold.navigate = useNavigate();
   const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
   return (
     <MarginSlotProvider drawer={drawer}>
@@ -1303,9 +1324,9 @@ function PeopleInDrawer(): ReactNode {
         <div data-testid="details-box" style={{ overflowY: "auto" }}>
           <div>
             <div data-testid="row-above" />
-            <DetailsPeople issue={issue} state={READ_THROUGH_TWO} />
+            <DetailsPeople issue={of} state={READ_THROUGH_TWO} />
             <div data-testid="row-below" />
-            <DetailsHistory issue={issue} state={READ_THROUGH_TWO} />
+            <DetailsHistory issue={of} state={READ_THROUGH_TWO} />
           </div>
         </div>
       </aside>
@@ -1313,16 +1334,44 @@ function PeopleInDrawer(): ReactNode {
   );
 }
 
+/** What a case can draw Details with beyond the People rows' own reads (`drawPeopleInDrawer`). */
+interface DetailsDrawn {
+  /** Whether the box moves as the browser's own scroll anchoring moves it, across a change of
+   *  height a case makes (`grow`), while the box's own anchoring is on: a place keeper that keeps
+   *  a place there turns it off (`overflow-anchor: none`). Off unless a case asks for it. */
+  browserAnchoring?: boolean;
+  /** The client the page reads through, `readsHeld()`'s unless a case gives one. */
+  client?: QueryClient;
+  /** Whether `performance.now`, which tells the reader's acts and scrolls from the page's
+   *  (`ViewportAnchor`), stands still but where the case moves it on (`later`). */
+  heldClock?: boolean;
+  /** The issue, the fixture's `issue` unless a case gives one. */
+  issue?: IssueDetails;
+  /** The answer to each read of a next page of the log, which Load older sends. */
+  older?: () => Promise<DispatchEvent[]>;
+}
+
 /**
  * `PeopleInDrawer` at `path`, laid out as Details stacks its rows: each row of the box's content
  * under the one before, from the box's top, moved up by the box's scroll, and each element as
- * the row it stands in. happy-dom lays nothing out and never calls a resize observer back, so
- * `grow` sets a row's height and `resized` calls every observer back, as the browser does once
- * a row's height has changed; `heightsChanged` calls back only the observers of an element whose
- * height changed, as the browser does. `log` is the answer to the history's read of the issue's
- * log, an empty log at once unless a case holds it back.
+ * the row it stands in. The history's block is laid out inside its row as blocks stack: each
+ * entry of the history under the one before (`HISTORY_UNITS`), everything inside an entry as the
+ * entry, and each line outside them one `HISTORY_LINE` tall. The box's view is `BOX_HEIGHT`
+ * tall (`clientHeight`), what it scrolls is its content's height (`scrollHeight`), a point of
+ * the page names what is drawn there (`elementFromPoint`), and `scrollIntoView` scrolls the box
+ * as the browser does. happy-dom lays nothing out, never calls a resize observer back and raises
+ * no scroll event, so `grow` sets a row's height, or an entry's by its `data-history-entry`, and
+ * `resized` calls every observer back, as the browser does once a row's height has changed;
+ * `heightsChanged` calls back only the observers of an element whose height changed, as the
+ * browser does; and `frame` is the next frame: the box's scroll event, where the box moved since
+ * the last one, then the observers of what changed height. `log` is the answer to the history's
+ * read of the issue's log, an empty log at once unless a case holds it back.
  */
-function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promise.resolve([])) {
+function drawPeopleInDrawer(
+  path: string,
+  log: Promise<DispatchEvent[]> = Promise.resolve([]),
+  drawn: DetailsDrawn = {}
+) {
   const heights = new Map([
     ["row-above", 200],
     ["row-below", 100],
@@ -1356,6 +1405,8 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
       this.#held.heights.clear();
     }
   } as unknown as typeof ResizeObserver;
+  let clock = performance.now();
+  const held = drawn.heldClock === true ? spyOn(performance, "now").mockReturnValue(clock) : null;
   const rectOf = (top: number, height: number) =>
     ({
       bottom: top + height,
@@ -1368,21 +1419,110 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
       x: 0,
       y: top,
     }) as DOMRect;
+  const detailsBox = () => document.querySelector<HTMLElement>('[data-testid="details-box"]');
+  /** The height of `element`, which stands in the history's block, laid out as a block: an
+   *  entry its own, an element that holds others theirs stacked, else a line where it holds words
+   *  and nothing where it holds none. */
+  const heightIn = (element: Element): number => {
+    if (element.matches(HISTORY_UNITS)) {
+      return heights.get(element.getAttribute("data-history-entry") ?? "") ?? ENTRY_HEIGHT;
+    }
+    if (element.childElementCount === 0) return element.textContent === "" ? 0 : HISTORY_LINE;
+    let height = 0;
+    for (const child of element.children) height += heightIn(child);
+    return height;
+  };
+  const rowHeight = (row: Element) =>
+    row.matches(HISTORY_BLOCK)
+      ? heightIn(row)
+      : (heights.get(row.getAttribute("data-testid") ?? "") ?? ROW_HEIGHT);
+  /** The top and height of `target` in `block`, whose top is `top`, where `block` holds it. */
+  const placeIn = (block: Element, top: number, target: Element): DOMRect => {
+    if (block === target || block.matches(HISTORY_UNITS)) return rectOf(top, heightIn(block));
+    let at = top;
+    for (const child of block.children) {
+      if (child.contains(target)) return placeIn(child, at, target);
+      at += heightIn(child);
+    }
+    return rectOf(top, heightIn(block));
+  };
+  /** What is drawn at `y` in `block`, whose top is `top`: the entry there, else the deepest
+   *  element there. */
+  const drawnAt = (block: Element, top: number, y: number): Element => {
+    if (block.matches(HISTORY_UNITS)) return block;
+    let at = top;
+    for (const child of block.children) {
+      const height = heightIn(child);
+      if (y < at + height) return drawnAt(child, at, y);
+      at += height;
+    }
+    return block;
+  };
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const box = document.querySelector<HTMLElement>('[data-testid="details-box"]');
+    const box = detailsBox();
     if (box === null) return rectOf(0, 0);
     if (this === box) return rectOf(BOX_TOP, BOX_HEIGHT);
     const start = BOX_TOP - box.scrollTop;
     let top = start;
     for (const row of box.firstElementChild?.children ?? []) {
-      const height = heights.get(row.getAttribute("data-testid") ?? "") ?? ROW_HEIGHT;
-      if (row.contains(this)) return rectOf(top, height);
+      const height = rowHeight(row);
+      if (row.contains(this)) {
+        return row.matches(HISTORY_BLOCK) ? placeIn(row, top, this) : rectOf(top, height);
+      }
       top += height;
     }
     return rectOf(start, top - start);
   });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((x, y) => {
+    const box = detailsBox();
+    if (box === null || x < 0 || x > 100 || y < BOX_TOP || y >= BOX_TOP + BOX_HEIGHT) {
+      return null;
+    }
+    let top = BOX_TOP - box.scrollTop;
+    for (const row of box.firstElementChild?.children ?? []) {
+      const height = rowHeight(row);
+      if (y < top + height) return row.matches(HISTORY_BLOCK) ? drawnAt(row, top, y) : row;
+      top += height;
+    }
+    return box;
+  });
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    how?: boolean | ScrollIntoViewOptions
+  ) {
+    const box = detailsBox();
+    if (box === null || !box.contains(this)) return;
+    const at = this.getBoundingClientRect();
+    const bottom = BOX_TOP + BOX_HEIGHT;
+    const block =
+      typeof how === "object" ? (how.block ?? "start") : how === false ? "end" : "start";
+    // `nearest` leaves an element wholly in the view, or over all of it, where it is.
+    const over = at.top < BOX_TOP;
+    const under = at.bottom > bottom;
+    const nearest =
+      over === under ? 0 : over ? at.top - BOX_TOP : Math.min(at.bottom - bottom, at.top - BOX_TOP);
+    box.scrollTop +=
+      block === "start"
+        ? at.top - BOX_TOP
+        : block === "end"
+          ? at.bottom - bottom
+          : block === "center"
+            ? at.top + at.height / 2 - (BOX_TOP + BOX_HEIGHT / 2)
+            : nearest;
+  });
+  /** The first element of `parent` the browser's own scroll anchoring anchors on: the first one
+   *  wholly in the box's view, looked for inside the first one only partly in it. */
+  const anchoredOn = (parent: Element): Element | null => {
+    for (const child of parent.children) {
+      const at = child.getBoundingClientRect();
+      if (at.height === 0 || at.bottom <= BOX_TOP || at.top >= BOX_TOP + BOX_HEIGHT) continue;
+      if (at.top >= BOX_TOP && at.bottom <= BOX_TOP + BOX_HEIGHT) return child;
+      return anchoredOn(child) ?? child;
+    }
+    return null;
+  };
   const reads = [
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
     spyOn(api, "getIssueCollaborators").mockResolvedValue({
@@ -1391,18 +1531,35 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
       legion_registry: "ok",
       people: [],
     }),
-    spyOn(api, "getIssueEvents").mockImplementation(() => log),
+    spyOn(api, "getIssueEvents").mockImplementation((_key, query) =>
+      query?.before !== undefined && drawn.older !== undefined ? drawn.older() : log
+    ),
   ];
+  const hold: PeopleHold = {};
   const view = render(
     <MemoryRouter initialEntries={[path]}>
-      <QueryClientProvider client={readsHeld()}>
+      <QueryClientProvider client={drawn.client ?? readsHeld()}>
         <KeymapProvider>
-          <PeopleInDrawer />
+          <PeopleInDrawer hold={hold} of={drawn.issue ?? issue} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
   const box = screen.getByTestId("details-box");
+  Object.defineProperty(box, "clientHeight", { configurable: true, get: () => BOX_HEIGHT });
+  Object.defineProperty(box, "scrollHeight", {
+    configurable: true,
+    get: () => {
+      let height = 0;
+      for (const row of box.firstElementChild?.children ?? []) height += rowHeight(row);
+      return Math.max(height, BOX_HEIGHT);
+    },
+  });
+  // The offset the box's last scroll event reported, which `frame` raises the next one after.
+  let reported = box.scrollTop;
+  box.addEventListener("scroll", () => {
+    reported = box.scrollTop;
+  });
   const control = () => {
     const found = box.querySelector<HTMLElement>('[data-details-row="collaborators"] button');
     if (found === null) throw new Error("Details drew no Collaborators control");
@@ -1426,8 +1583,24 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
         });
       }
     },
+    /** Sets the height of `row` - a row of the box by its `data-testid`, or an entry of the
+     *  history by its `data-history-entry` - `by` taller, and moves the box as the browser's own
+     *  scroll anchoring does across that change, where the case draws it (`browserAnchoring`). */
     grow(row: string, by: number): void {
-      heights.set(row, (heights.get(row) ?? ROW_HEIGHT) + by);
+      const entry = box.querySelector(`[data-history-entry="${CSS.escape(row)}"]`) !== null;
+      const anchoring =
+        drawn.browserAnchoring === true && box.style.getPropertyValue("overflow-anchor") !== "none";
+      const anchor = anchoring ? anchoredOn(box) : null;
+      const before = anchor?.getBoundingClientRect().top ?? 0;
+      heights.set(row, (heights.get(row) ?? (entry ? ENTRY_HEIGHT : ROW_HEIGHT)) + by);
+      if (anchor !== null) box.scrollTop += anchor.getBoundingClientRect().top - before;
+    },
+    /** The test's hold on Details: what opens it, and what takes the page to another address. */
+    hold,
+    /** Moves the held clock on by `ms` (`heldClock`). */
+    later(ms: number): void {
+      clock += ms;
+      held?.mockReturnValue(clock);
     },
     resized(): void {
       act(() => {
@@ -1435,25 +1608,39 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
       });
     },
     /** Calls back each observer an element of whose height changed since it began to watch that
-     *  element or was last called back for it, and only those, as the browser does. */
+     *  element or was last called back for it, and only those, as the browser does, each entry
+     *  with the element's box as it now stands. */
     heightsChanged(): void {
       act(() => {
         for (const held of [...observing]) {
           const changed: ResizeObserverEntry[] = [];
           for (const [target, height] of held.heights) {
-            const now = target.getBoundingClientRect().height;
-            if (now === height) continue;
-            held.heights.set(target, now);
-            changed.push({ target } as ResizeObserverEntry);
+            const now = target.getBoundingClientRect();
+            if (now.height === height) continue;
+            held.heights.set(target, now.height);
+            changed.push({ contentRect: now, target } as ResizeObserverEntry);
           }
           if (changed.length > 0) held.callback(changed, held.observer);
         }
       });
     },
+    /** The next frame: the box's scroll event, where something moved the box since the last one
+     *  was raised, and then the observers of each element whose height changed. */
+    frame(): void {
+      if (box.scrollTop !== reported) {
+        act(() => {
+          box.dispatchEvent(new Event("scroll"));
+        });
+      }
+      this.heightsChanged();
+    },
     restore(): void {
       view.unmount();
       globalThis.ResizeObserver = RealResizeObserver;
       rect.mockRestore();
+      point.mockRestore();
+      intoView.mockRestore();
+      held?.mockRestore();
       for (const read of reads) read.mockRestore();
     },
   };
@@ -1807,3 +1994,307 @@ test("a row below the focused Collaborators control that grows scrolls nothing",
     page.restore();
   }
 });
+
+/** Waits `count` frames of the page. */
+async function nextFrames(count: number): Promise<void> {
+  for (let frame = 0; frame < count; frame += 1) {
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => resolve());
+      await promise;
+    });
+  }
+}
+
+/** A claim of the issue made `secondsAgo` seconds before the cases' midday. */
+function claimMade(seq: number, secondsAgo: number): DispatchEvent {
+  return { ...claim(seq), created_at: new Date(NOON.getTime() - secondsAgo * 1000).toISOString() };
+}
+
+/** A log of `count` claims, newest first, each made 9 s before the one listed above it: the
+ *  agents' thread, a minute old (`AGENTS_THREAD`), stands in the history under the newest six. */
+function claimsNewestFirst(count: number): DispatchEvent[] {
+  return Array.from({ length: count }, (_, index) => claimMade(count - index, (index + 1) * 9));
+}
+
+/** How long the case lets pass for a scroll not to be taken for the reader's own: past the
+ *  window after a wheel turn, a key or a press in which `ViewportAnchor` still takes one for
+ *  theirs (`READER_SCROLL_MS`, 500 ms). */
+const READER_ACT_PASSED_MS = 1000;
+
+/** Where the reader had scrolled Details to, in a history of 30 claims, before a landing: the
+ *  history fills the view, and the People rows are above it. */
+const READER_SCROLLED_TO = 1000;
+
+/** The entry of a history of 30 claims the reader's earlier place names, the eighteenth line of
+ *  its list: in the middle of the view they scrolled to, and wholly below the view once any of
+ *  the landings has scrolled Details up to what it lands at. */
+const READER_ENTRY = 17;
+
+/** How far an entry grows while another shrinks by as much (`split` below): no more than an
+ *  entry is tall. */
+const SPLIT = 40;
+
+/** The earlier places the reader can have left in the history before a key or an address lands
+ *  them elsewhere in Details. */
+type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
+
+/**
+ * Draws Details with the history of `place`'s case open in it, and the reader's place left in
+ * that history by `place`: a log of 30 claims and the agents' thread, or, where the reader
+ * pressed Load older, of 200, a full page with older ones left to read, whose next page is never
+ * answered while the case runs. The box anchors its scroll as the browser does while its own
+ * scroll anchoring is on, and the clock the reader's acts are read by stands still until a case
+ * moves it on. Returns the page, the entry the reader's place names, and the point of the page
+ * the reader looked at: that entry's middle.
+ */
+async function readerLeftAPlace(place: EarlierPlace) {
+  const client = readsHeld();
+  client.setQueryData(["issue-messages", KEY], [AGENTS_THREAD]);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  const log = claimsNewestFirst(place === "older" ? 200 : 30);
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const reads = [
+    spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
+    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
+    // A pin reads the reader's state of the issue, and writes it with the line pinned.
+    spyOn(api, "getMyState").mockResolvedValue(READ_THROUGH_TWO),
+    spyOn(api, "putIssueState").mockResolvedValue({
+      dismissed: [],
+      last_read_seq: 2,
+      pinned: false,
+      seq: 1,
+    } as never),
+  ];
+  const page = drawPeopleInDrawer(`/issues/${KEY}`, Promise.resolve(log), {
+    browserAnchoring: true,
+    client,
+    heldClock: true,
+    issue: { ...issueDetails(), artifacts: [] },
+    older: () => older.promise,
+  });
+  const restore = () => {
+    page.restore();
+    older.resolve([]);
+    for (const read of reads) read.mockRestore();
+  };
+  try {
+    act(() => page.hold.open?.(true));
+    // Each claim is an entry, and so is the agents' thread.
+    await waitFor(() =>
+      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
+    );
+    const entries = [...page.box.querySelectorAll<HTMLElement>("[data-history-entry]")];
+    const entry =
+      place === "older"
+        ? entries.at(-1)
+        : page.box.querySelectorAll<HTMLElement>(HISTORY_UNITS).item(READER_ENTRY);
+    if (entry === undefined || entry === null) throw new Error("the history drew no such entry");
+    // The reader turns the wheel down the history: to the middle of it, or to its end, where Load
+    // older is.
+    const to = place === "older" ? page.box.scrollHeight - BOX_HEIGHT : READER_SCROLLED_TO;
+    act(() => {
+      page.box.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: to }));
+      page.box.scrollTop = to;
+      page.box.dispatchEvent(new Event("scroll"));
+    });
+    const seen = entry.getBoundingClientRect();
+    expect(
+      seen.top >= BOX_TOP && seen.bottom <= BOX_TOP + BOX_HEIGHT,
+      "the reader's entry is not in the view they scrolled to"
+    ).toBe(true);
+    const point = { x: 50, y: seen.top + seen.height / 2 };
+    if (place === "pin") {
+      const pin = within(entry).getByRole("button", { name: CONTROL_LABELS.pin });
+      act(() => pin.focus());
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() => expect(api.putIssueState).toHaveBeenCalledTimes(1));
+    } else if (place === "older") {
+      const loadOlder = screen.getByRole("button", { name: CONTROL_LABELS.load_older });
+      act(() => loadOlder.focus());
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() => expect(loadOlder).toHaveAttribute("aria-busy", "true"));
+    } else if (place === "pointer") {
+      act(() => {
+        const at = { bubbles: true, clientX: point.x, clientY: point.y };
+        entry.dispatchEvent(new PointerEvent("pointerover", at));
+        entry.dispatchEvent(new PointerEvent("pointermove", at));
+      });
+    }
+    return { entry, page, point, restore };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// `t o` lands the focus on the Collaborators control, outside the history's list, and the hold
+// keeps that control's place in Details' box, where the history's anchor kept the reader's place
+// before the landing: the entry the pointer rests on. A row above the view grows in the landing's
+// frame. The hold scrolls Details by as much in that frame's observation of it, and the landing's
+// own scroll and the hold's raise one scroll event in the next frame. The anchor, keeping its
+// entry too, read that event as one scroll with the growth on top of it, and moved Details by the
+// growth a second time: the control went up out of the view by as much. One keeper keeps the box
+// at a time: while the hold holds, the anchor keeps no place there and moves the box for nothing
+// (`holdBox`), so the growth is made good once, and the control stays exactly where it landed.
+test("with the hold on the Collaborators control t o landed on, a row above the view that grows in the landing's frame scrolls Details by exactly as much, the reader's pointer resting on an entry of the history", async () => {
+  const { page, restore } = await readerLeftAPlace("pointer");
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const top = page.control().getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    page.grow("row-above", GROWTH);
+    page.heightsChanged();
+    // The next frame raises the scroll event of the landing's scroll and the hold's, and the one
+    // after it moves nothing more.
+    page.frame();
+    page.frame();
+    expect(
+      page.box.scrollTop,
+      "the row above grew and Details did not scroll by exactly as much"
+    ).toBe(scrolled + GROWTH);
+    expect(
+      page.control().getBoundingClientRect().top,
+      "the row above grew and moved the focused Collaborators control"
+    ).toBe(top);
+    expect(document.activeElement).toBe(page.control());
+  } finally {
+    restore();
+  }
+});
+
+/** A landing of the sweep below: what puts the reader at a place of Details from the place they
+ *  left in the history. */
+type Landing = "t o" | "t v" | "turn";
+
+/** A change of height of the sweep below, made in the landing's frame. */
+type Growth = "above" | "between" | "split";
+
+const SWEEP_LANDINGS: readonly (readonly [Landing, string])[] = [
+  ["t o", "t o"],
+  ["t v", "t v"],
+  ["turn", "an agents' turn's address"],
+];
+const SWEEP_PLACES: readonly (readonly [EarlierPlace, string])[] = [
+  ["pin", "a history line's Pin pressed by keyboard"],
+  ["older", "Load older pressed"],
+  ["scroll", "a scroll of Details with the pointer resting on nothing"],
+  ["pointer", "the pointer resting on an entry"],
+];
+const SWEEP_GROWTHS: readonly (readonly [Growth, string])[] = [
+  ["between", "the entry above the reader's entry, between the landed control and it, grows"],
+  ["above", "a row above the view grows"],
+  ["split", "an entry in the view grows while one two lines under it shrinks by as much"],
+];
+const SWEEP_ORDERS: readonly (readonly ["after" | "before", string])[] = [
+  ["before", "before the landing scroll's own scroll event"],
+  ["after", "after the landing scroll's own scroll event"],
+];
+
+// Every landing - `t o`, `t v`, and an agents' turn's address, which marks the turn - from every
+// place the reader can have left in the history, with a change of height in the landing's frame,
+// observed before and after the scroll event of the landing's own scroll: the control the landing
+// put the reader at stays where it landed, wholly in view, and the focus with it. The two keepers
+// of Details' box keep one place between them: the hold keeps the control `t o` and `t v` focus,
+// and while it holds, the history's anchor keeps nothing there (`holdBox`); the history keeps the
+// turn an address lands it at (`keepRow`). Neither keeps a row the reader cannot see: the place
+// the reader left is wholly below the view once the landing has scrolled Details up, and a change
+// of height between the view and that place moves nothing in view (`rowToKeep`).
+for (const [landing, landingName] of SWEEP_LANDINGS) {
+  for (const [place, placeName] of SWEEP_PLACES) {
+    for (const [growth, growthName] of SWEEP_GROWTHS) {
+      for (const [order, orderName] of SWEEP_ORDERS) {
+        const name = `after ${placeName}, ${landingName} keeps where it landed when ${growthName}, ${orderName}`;
+        test(name, async () => {
+          const { entry, page, point, restore } = await readerLeftAPlace(place);
+          try {
+            let landed: HTMLElement;
+            if (landing === "t o") {
+              await userEvent.keyboard("to");
+              await page.focused("t o");
+              landed = page.control();
+            } else if (landing === "t v") {
+              await userEvent.keyboard("tv");
+              const history = screen.getByTestId("issue-history");
+              await waitFor(() =>
+                expect(document.activeElement, "t v did not focus the history").toBe(history)
+              );
+              await nextFrames(2);
+              // The history's top line, which its landing brings to the top of Details' view.
+              const heading = history.querySelector<HTMLElement>("h2");
+              if (heading === null) throw new Error("the history drew no heading");
+              landed = heading;
+            } else {
+              // The address arrives a while after the reader's last act: its landing's scroll
+              // is no scroll of theirs.
+              page.later(READER_ACT_PASSED_MS);
+              const id = AGENTS_THREAD.message.id;
+              act(() => page.hold.navigate?.(buildIssuePath({ id, key: KEY, kind: "message" })));
+              const turn = await waitFor(() => {
+                const marked = page.box.querySelector<HTMLElement>(`[data-history-item="${id}"]`);
+                expect(marked?.getAttribute("aria-current"), "the address marked no turn").toBe(
+                  "true"
+                );
+                return marked as HTMLElement;
+              });
+              await nextFrames(2);
+              landed = turn;
+            }
+            const focused = document.activeElement;
+            const top = landed.getBoundingClientRect().top;
+            expect(
+              entry.getBoundingClientRect().top,
+              "the landing left the reader's entry in the view, so the case proves nothing"
+            ).toBeGreaterThanOrEqual(BOX_TOP + BOX_HEIGHT);
+
+            const grows = () => {
+              if (growth === "above") {
+                page.grow("row-above", GROWTH);
+                return;
+              }
+              if (growth === "between") {
+                const above = entry.previousElementSibling?.getAttribute("data-history-entry");
+                if (above === null || above === undefined) throw new Error("no entry above");
+                page.grow(above, GROWTH);
+                return;
+              }
+              // The entry at the point the reader looked at before the landing, which the
+              // pointer rests on where it rests: the one above it grows, the one under it shrinks.
+              const at = document.elementFromPoint(point.x, point.y)?.closest(HISTORY_UNITS);
+              const over = at?.previousElementSibling?.getAttribute("data-history-entry");
+              const under = at?.nextElementSibling?.getAttribute("data-history-entry");
+              if (typeof over !== "string" || typeof under !== "string") {
+                throw new Error("no entries around the reader's point");
+              }
+              page.grow(over, SPLIT);
+              page.grow(under, -SPLIT);
+            };
+            if (order === "before") {
+              grows();
+              page.heightsChanged();
+              page.frame();
+            } else {
+              page.frame();
+              grows();
+              page.heightsChanged();
+            }
+            page.frame();
+
+            const at = landed.getBoundingClientRect();
+            expect(at.top, "what the landing put the reader at moved").toBe(top);
+            expect(
+              at.top >= BOX_TOP && at.bottom <= BOX_TOP + BOX_HEIGHT,
+              "what the landing put the reader at is not wholly in view"
+            ).toBe(true);
+            expect(document.activeElement, "the focus moved").toBe(focused);
+          } finally {
+            restore();
+          }
+        });
+      }
+    }
+  }
+}
