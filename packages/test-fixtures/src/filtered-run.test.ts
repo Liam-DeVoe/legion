@@ -1,7 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "./hang-guard";
 import { moduleRoot, temporaryDirectories } from "./temporary-directories";
+
+// Each row runs `bun test` on a file it writes, and waits for it to end. Its bound is a hang guard,
+// not a verdict, for every row of this file.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // The regression lock for the whole class this package's fixtures guard against: under
 // `bun test -t <pattern>` that selects no row of a file, Bun 1.4.4 evaluates that file's body and

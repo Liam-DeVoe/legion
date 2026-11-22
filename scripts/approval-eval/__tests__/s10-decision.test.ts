@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { moduleRoot, REMOVAL_HANG_MS } from "@legion/test-fixtures/temporary-directories";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import { moduleRoot } from "@legion/test-fixtures/temporary-directories";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "../reserve";
 import {
   closureDigestOf,
@@ -36,6 +37,11 @@ const HERE = join(import.meta.dir, "..");
 /** The digest of the pinned closure at this head, as `sha256sum` over its six files prints it. */
 const PINNED_DIGEST = "69054a419016dde5f1be9a73c910320202eafbabb0e593f962e029b3f8c00fad";
 
+// The rows copy the pinned closure and spawn its children, and the hooks make and remove the
+// copies: each ends when its child exits or its I/O answers. Their bound is a hang guard, not a
+// verdict, for every row and hook of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
+
 let scratch: string | undefined;
 
 // The children Bun runs import the closure's copies from here, and Bun loads no module from a
@@ -44,11 +50,9 @@ beforeAll(async () => {
   scratch = await realpath(await mkdtemp(join(moduleRoot(), "s10-decision-")));
 });
 
-// The removal's bound is a hang guard, not a verdict: removing the closure copies ends when they
-// are gone, which a loaded disk slows past Bun's 5 s hook default.
 afterAll(async () => {
   if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
-}, REMOVAL_HANG_MS);
+});
 
 /** A directory under this file's scratch directory, by its real path, as Bun resolves imports. */
 async function directory(name: string): Promise<string> {

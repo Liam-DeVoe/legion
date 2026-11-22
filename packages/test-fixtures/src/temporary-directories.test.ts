@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { HANG_GUARD_MS } from "./hang-guard";
 import {
   baseWithout,
   cleanAncestor,
@@ -23,6 +24,10 @@ import {
   temporaryDirectories,
   temporaryDirectory,
 } from "./temporary-directories";
+
+// Two rows run `bun test` on a file they write, and wait for it to end. Their bound is a hang
+// guard, not a verdict, for every row and hook of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
 

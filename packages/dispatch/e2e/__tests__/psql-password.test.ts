@@ -1,12 +1,16 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-
 import { handOverMessage, shellQuote } from "../local-instance-support";
 import { DatabaseUrlRefused, splitDatabaseUrl } from "../pg-url";
 import { resetSession, sql, sqlAt } from "../psql";
+
+// The rows run psql, the dev scripts and their stand-ins, and wait for them to end. Their bound is
+// a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /** A stand-in psql first on PATH, which writes each argument it was given on a line of its own
  *  and the PGPASSWORD it was given (`unset` for none), and exits. The rows read what psql was

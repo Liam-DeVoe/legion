@@ -23,6 +23,7 @@ import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { dispatchSettings } from "../dispatch-config";
@@ -36,10 +37,9 @@ const moduleDir = temporaryDirectories("device-login-child", { root: moduleRoot(
 
 // Each row's verdict is what the command printed and kept, and the rows with no bound of their own
 // below wait on no clock. Their bound is a hang guard, not a verdict: they ran 15 ms to 2 s, and
-// 6.7 s in a load stall on a dev box, past Bun's 5 s default, so the guard is far above that and
-// still names a row that never ends ("this test timed out after 60000ms"). It holds for this file
-// alone.
-setDefaultTimeout(60_000);
+// 6.7 s in a load stall on a dev box, past Bun's 5 s default; the guard is far above that and still
+// names a row that never ends. It holds for this file alone.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const PERSON = "ada@example.com";
 

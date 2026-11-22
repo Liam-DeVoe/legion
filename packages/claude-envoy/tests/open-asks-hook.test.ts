@@ -1,10 +1,15 @@
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { unresolvedNames } from "./unresolved-names"
+
+// The rows run the session hook, and some a jj stand-in, and wait for them to end. Their bound is a
+// hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */

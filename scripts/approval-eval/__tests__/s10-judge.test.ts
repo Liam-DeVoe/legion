@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import { ruleVerdictOf } from "../s10-analysis";
 import {
@@ -27,6 +28,11 @@ import {
   STARTED_REASON,
   UNJUDGED,
 } from "../s10-judged-io";
+
+// The rows below the Python suite's spawn Bun on the checks and the admission, and wait for them
+// to end. Their bound is a hang guard, not a verdict, for every row and hook of this file that
+// states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /**
  * The claim's judging stage. Its driver, `s10_judge.py`, and the modules beside it are tested by
