@@ -1652,6 +1652,59 @@ func (w *w5Rig) answeredSnapshot(label string) w5Snapshot {
 	}
 }
 
+// budgetWatch reads one claim's budgets every second, as the operator's listing gives them, from
+// the generation it was started at until the first read of a later generation: the budgets either
+// side of a relaunch's launch, read before a boot of the new process can be charged.
+type budgetWatch struct {
+	mu            sync.Mutex
+	from          uint64
+	before, after w5View
+	moved         bool
+	stop          chan struct{}
+}
+
+// watchBudgets starts a budgetWatch of token at its generation now.
+func (w *w5Rig) watchBudgets(token claim.Token) *budgetWatch {
+	first := w.snapshot().views[token]
+	b := &budgetWatch{from: first.generation, before: first, stop: make(chan struct{})}
+	go func() {
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-b.stop:
+				return
+			case <-tick.C:
+			}
+			v := w.snapshot().views[token]
+			b.mu.Lock()
+			switch {
+			case b.moved || !v.found:
+			case v.generation == b.from:
+				b.before = v
+			case v.generation > b.from:
+				b.after, b.moved = v, true
+			}
+			b.mu.Unlock()
+		}
+	}()
+	return b
+}
+
+// transition stops the watch and answers the last read at the generation it started at and the
+// first read of a later one; moved is false when it read no later generation.
+func (b *budgetWatch) transition() (before, after w5View, moved bool) {
+	close(b.stop)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.before, b.after, b.moved
+}
+
+// chargedNothing is whether a relaunch's launch moved neither budget.
+func chargedNothing(before, after w5View) bool {
+	return after.launchFailures == before.launchFailures && after.deaths == before.deaths
+}
+
 // snapshot reads read_state's state and the operator's claim listing now.
 func (w *w5Rig) snapshot() w5Snapshot {
 	snap := w5Snapshot{at: time.Now(), views: map[claim.Token]w5View{}}
@@ -1717,9 +1770,14 @@ func (w *w5Rig) snapshot() w5Snapshot {
 						view.pod, _ = sandbox["podUid"].(string)
 					}
 				}
-				if mark, ok := held["unreachable"].(map[string]any); ok && view.since == "" {
-					view.since, _ = mark["since"].(string)
-					view.lastSeen, _ = mark["lastSeen"].(string)
+				// Every mark is read_state's: a workflow claim's from its claim view above, and the
+				// controller's from the state's controllerLocator, never from this listing, so a
+				// check of what read_state shows cannot pass on the operator's view.
+				if s, _ := snap.controller["sessionId"].(string); s != "" && s == view.session {
+					if mark, ok := snap.controller["unreachable"].(map[string]any); ok {
+						view.since, _ = mark["since"].(string)
+						view.lastSeen, _ = mark["lastSeen"].(string)
+					}
 				}
 				_, view.pending = held["pending"]
 				snap.views[claim.Token(token)] = view

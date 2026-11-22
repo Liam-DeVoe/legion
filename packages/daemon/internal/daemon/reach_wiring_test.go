@@ -230,3 +230,39 @@ func TestALockOutNoticeIsToldNoMoreOnceItsLockOutEnds(t *testing.T) {
 		t.Fatalf("lock-out notices = %+v after the lock-out ended, want none", told)
 	}
 }
+
+// While the project is paused the daemon makes no relaunch of a workflow claim, since a paused
+// project starts no turn of a role but the controller's: the claim's generation does not move, no
+// line is written and no guard refusal is recorded. The sweep after the resume relaunches it.
+func TestTheDaemonsRelaunchOfAWorkflowClaimWaitsWhileTheProjectIsPaused(t *testing.T) {
+	r, sup := relaunchRig(t)
+	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
+		t.Fatal(err)
+	}
+	// The supervisor's own reading of the pause, which the daemon's relaunch path reads; set after
+	// the restore, so the machine is restored as it would be in a running project.
+	paused := &atomic.Bool{}
+	paused.Store(true)
+	sup.deps.Paused = func() (int64, bool) { return 7, paused.Load() }
+	m, _ := sup.Machine(worker.Token)
+	generation := m.Claim().Generation
+	for minute := 21; minute <= 25; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(m.Claim()))
+	}
+	got := r.reach(worker.Token)
+	if m.Claim().Generation != generation || !got.Unreachable() || got.Relaunched || !got.GuardRefusedAt.IsZero() {
+		t.Fatalf("while paused the claim is at generation %d with the record %+v, want generation %d, marked, not relaunched and no guard refusal",
+			m.Claim().Generation, got, generation)
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d lines for a claim whose relaunch waits for the resume, want none", lines)
+	}
+	paused.Store(false)
+	r.at(26 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 26 * time.Minute})
+	r.sweep(r.with(m.Claim()))
+	testwait.Eventually(t, "the relaunch after the resume to move the claim's generation", func() bool { return m.Claim().Generation > generation })
+}

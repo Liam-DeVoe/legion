@@ -668,7 +668,7 @@ func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec
 		}
 		k.relaunching[c.Token] = true
 		k.wg.Add(1)
-		go k.relaunchClaim(ctx, c, now)
+		go k.relaunchClaim(ctx, c, rec.Since, now)
 	}
 	return rec
 }
@@ -724,26 +724,32 @@ var errRelaunchWaitsForResume = errors.New("the project is paused, and a paused 
 // relaunchClaim runs the daemon's relaunch of c off the sweep, since a Sandbox relaunch waits
 // minutes on its pods, and records what it did. The relaunch's launch has written the relaunch
 // onto c's claim, so a write of the record the store refuses here is written again at the next
-// sweep and costs no part of the 6 hours.
-func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, at time.Time) {
+// sweep and costs no part of the 6 hours. since is the mark of the episode that asked for it: a
+// refusal that answers after a sweep ended that episode, the claim's session having registered
+// again, records nothing and writes no line.
+func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, since, at time.Time) {
 	defer k.wg.Done()
 	relaunched, err := k.relaunch(ctx, c, at)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	delete(k.relaunching, c.Token)
 	refused := linesOf(c)[1]
+	rec := k.recordOf(c)
+	asked := rec.Unreachable() && rec.Since.Equal(since)
 	switch {
 	case err == nil:
 		k.log.Warn("reach: the daemon relaunched a claim Envoy could not reach, on its same session", "claim", c.Token, "generation", relaunched.Generation)
 		k.alerts.Close(refused, string(c.Token))
-		k.storeEach(ctx, c.Token, relaunchTakenIn(relaunched, k.recordOf(c)))
+		k.storeEach(ctx, c.Token, relaunchTakenIn(relaunched, rec))
 	case errors.Is(err, supervise.ErrRelaunchGuard):
-		if rec := k.recordOf(c); rec.Unreachable() {
+		if asked {
 			k.storeEach(ctx, c.Token, k.guardRefuses(c, rec, err.Error(), at))
 		}
 	case errors.Is(err, runtime.ErrLauncherNotConnected), errors.Is(err, runtime.ErrRelaunchReplacesPod),
 		errors.Is(err, runtime.ErrProcessOutlivedStop):
-		k.alerts.Open(refused, string(c.Token), "reason", err.Error())
+		if asked {
+			k.alerts.Open(refused, string(c.Token), "reason", err.Error())
+		}
 	case errors.Is(err, errRelaunchWaitsForResume):
 	default:
 		if ctx.Err() == nil {

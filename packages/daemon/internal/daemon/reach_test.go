@@ -846,3 +846,35 @@ func TestAPodClaimNotYetMarkedButNotLiveReachesNoEnvoy(t *testing.T) {
 		t.Fatalf("R6 wrote %d refused lines for the implementer, want one naming the pod", lines)
 	}
 }
+
+// A relaunch the runtime refuses only after a later sweep found the claim's session registered
+// again answers an episode that has ended: it writes no line for a claim that is back in reach.
+func TestALateRefusalOfAnEndedEpisodeWritesNoLine(t *testing.T) {
+	r := newReachRig(t, false)
+	release := make(chan struct{})
+	asked := make(chan struct{}, 1)
+	r.k.relaunch = func(context.Context, supervise.Claim, time.Time) (supervise.Claim, error) {
+		asked <- struct{}{}
+		<-release
+		return supervise.Claim{}, runtime.ErrLauncherNotConnected
+	}
+	worker := settledWorker(t)
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+	r.k.sweep(context.Background(), []supervise.Claim{worker})
+	<-asked
+	if !r.reach(worker.Token).Unreachable() {
+		t.Fatalf("at 21 minutes the claim reads %+v, want it marked", r.reach(worker.Token))
+	}
+	r.at(22 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 22 * time.Minute, "ses_implementer": 22 * time.Minute})
+	r.k.sweep(context.Background(), []supervise.Claim{r.with(worker)})
+	if r.reach(worker.Token).Unreachable() {
+		t.Fatalf("with its session registered again at 22 minutes the claim reads %+v, want its mark ended", r.reach(worker.Token))
+	}
+	close(release)
+	r.k.wait()
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines for a claim back in reach before its relaunch was refused, want none", lines)
+	}
+}

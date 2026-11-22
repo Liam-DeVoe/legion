@@ -56,6 +56,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -292,13 +293,14 @@ func (r *w5Run) script() {
 
 func (r *w5Run) setup() {
 	r.boot()
+	// The controller is named before the sampler, which reads the names, starts.
+	r.names[r.ctl.token] = "controller"
 	r.startSampler(r.names)
 	go r.watchEnvoy()
 	for _, c := range r.ordered {
 		r.awaitLive(c.token)
 	}
 	r.awaitLive(r.ctl.token)
-	r.names[r.ctl.token] = "controller"
 	r.implFrozen = r.freezeFromServed("implementer", r.implWait)
 	r.freezeFromServed("fifth", r.fifthWait)
 	r.freezeFromServed("seventh", r.seventhWait)
@@ -1633,7 +1635,9 @@ func (r *w5Run) sixthFlow(f *w5Flows) {
 // ---- the daemon's restart ------------------------------------------------------------------------
 
 // daemonRestart restarts the daemon and reads the marks and the notices for 25 minutes: a claim
-// marked before the restart gets no new notice, no new R6 line and no relaunch after it.
+// marked before the restart gets no new notice, no new R6 line and no relaunch after it. The
+// implementer, blocked a second time and not relaunched, must be among the claims marked before
+// it, so the checks after it read at least that claim rather than an empty set.
 func (r *w5Run) daemonRestart() {
 	snap := r.answeredSnapshot("restart, before it")
 	var reported []claim.Token
@@ -1644,6 +1648,8 @@ func (r *w5Run) daemonRestart() {
 	}
 	sort.Slice(reported, func(i, j int) bool { return reported[i] < reported[j] })
 	r.record("restart: claims marked before the restart: %v", reported)
+	r.check("restart-reads-the-implementers-mark-before-it", r.covers(snap) && slices.Contains(reported, r.c("implementer").token),
+		"read_state before the restart answered: %t (%s); marked %v", snap.err == "", snap.err, reported)
 	stopped, serving := r.restartDaemon()
 	r.record("restart: the daemon stopped at %s and served again at %s", clockAt(stopped), clockAt(serving))
 	end := serving.Add(w5ReadFor)
@@ -1726,10 +1732,14 @@ func (r *w5Run) everySessionBlocked() {
 	blockedAt := time.Now()
 	r.record("blocked every session the listener holds at %s: %v", clockAt(blockedAt), all)
 	markedDuring := []string{}
+	unread := 0
 	for time.Now().Before(blockedAt.Add(w5AllBlocked)) {
 		time.Sleep(time.Minute)
 		snap := r.snapshot()
 		r.record("all blocked: %s", describeSnapshot(snap, r.names))
+		if !r.covers(snap) {
+			unread++
+		}
 		for token, v := range snap.views {
 			if v.marked() {
 				markedDuring = append(markedDuring, string(token))
@@ -1739,7 +1749,7 @@ func (r *w5Run) everySessionBlocked() {
 			markedDuring = append(markedDuring, "controller")
 		}
 	}
-	r.check("every-session-blocked-none-marked", len(markedDuring) == 0, "marked while every session was blocked: %v", markedDuring)
+	r.check("every-session-blocked-none-marked", len(markedDuring) == 0 && unread == 0, "marked while every session was blocked: %v; minutes whose read did not answer with the run's claims: %d", markedDuring, unread)
 	r.recordEmptyReads("every session blocked", blockedAt)
 	noLive := []w5Notice{}
 	for _, n := range r.controllerNoticesW5() {
@@ -1764,23 +1774,27 @@ func (r *w5Run) everySessionBlocked() {
 			markedAfter = append(markedAfter, string(token))
 		}
 	}
-	r.check("none-marked-or-relaunched-while-they-register-again", len(markedAfter) == 0 && len(r.runtime.Launches()) == launchesBefore,
-		"marked %v; launches since the block %d", markedAfter, len(r.runtime.Launches())-launchesBefore)
+	r.check("none-marked-or-relaunched-while-they-register-again", r.covers(snap) && len(markedAfter) == 0 && len(r.runtime.Launches()) == launchesBefore,
+		"read answered with the run's claims: %t (%s); marked %v; launches since the block %d", r.covers(snap), snap.err, markedAfter, len(r.runtime.Launches())-launchesBefore)
 	// The list fails for 25 minutes, then answers again.
 	failFrom := time.Now()
 	until := r.envoy.failFor(w5ListFailing)
 	r.record("the list fails from %s until %s (registrations all went through at %s)", clockAt(failFrom), clockAt(until), clockAt(registered))
 	markedFailing := []string{}
+	unread = 0
 	for time.Now().Before(until) {
 		time.Sleep(time.Minute)
 		snap := r.snapshot()
+		if !r.covers(snap) {
+			unread++
+		}
 		for token, v := range snap.views {
 			if v.marked() {
 				markedFailing = append(markedFailing, string(token))
 			}
 		}
 	}
-	r.check("failed-list-changes-no-mark", len(markedFailing) == 0, "marked while the list failed: %v", markedFailing)
+	r.check("failed-list-changes-no-mark", len(markedFailing) == 0 && unread == 0, "marked while the list failed: %v; minutes whose read did not answer with the run's claims: %d", markedFailing, unread)
 	answered := time.Now()
 	for time.Now().Before(answered.Add(w5MarkWindow)) {
 		time.Sleep(time.Minute)
@@ -1793,9 +1807,27 @@ func (r *w5Run) everySessionBlocked() {
 			markedAfter = append(markedAfter, string(token))
 		}
 	}
-	r.check("none-marked-or-relaunched-after-the-list-answers-again", len(markedAfter) == 0 && len(r.runtime.Launches()) == launchesBefore,
-		"marked %v; launches since the block %d", markedAfter, len(r.runtime.Launches())-launchesBefore)
+	r.check("none-marked-or-relaunched-after-the-list-answers-again", r.covers(snap) && len(markedAfter) == 0 && len(r.runtime.Launches()) == launchesBefore,
+		"read answered with the run's claims: %t (%s); marked %v; launches since the block %d", r.covers(snap), snap.err, markedAfter, len(r.runtime.Launches())-launchesBefore)
 	r.allBlockedAt, r.listFailedFrom, r.listAnswered = blockedAt, failFrom, answered
+}
+
+// covers is whether snap answered and holds a view of each claim of the run that still runs (the
+// fourth's claim retired, and the eighth's failed), so a clause that finds no mark in it read
+// those claims rather than nothing.
+func (r *w5Run) covers(snap w5Snapshot) bool {
+	if snap.err != "" {
+		return false
+	}
+	for _, c := range r.ordered {
+		if c.name == "fourth" || c.name == "eighth" {
+			continue
+		}
+		if !snap.views[c.token].found {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- totals --------------------------------------------------------------------------------------
@@ -1967,6 +1999,7 @@ func (f *w5Fresh) controllerWithAJob() {
 		f.record("R6: %s", w5Describe(rec))
 	}
 	ended := time.Now()
+	budgets := f.watchBudgets(ctl.token)
 	writeProofFile(f.t, done, "done\n")
 	f.record("the controller's job ended at %s", clockAt(ended))
 	f.await("the controller's turn on its job's end to end", 5*time.Minute, func() bool {
@@ -1983,14 +2016,15 @@ func (f *w5Fresh) controllerWithAJob() {
 		}
 		return false
 	})
+	time.Sleep(5 * time.Second)
+	beforeLaunch, afterLaunch, moved := budgets.transition()
 	after := f.claim(ctl.token)
 	gap := relaunched.Sub(last)
 	f.recordEmptyReads("controller with a job", t0)
 	f.check("controller-relaunched-20m-after-its-last-step", !relaunched.IsZero() && gap >= w5Unreachable && gap <= w5MarkWindow+time.Minute,
 		"the daemon relaunched the controller at %s, %s after its last step %s", clockAt(relaunched), gap.Round(time.Second), clockAt(last))
-	// The relaunch's own charge is what its stop charged, which the daemon says in its line; the
-	// relaunched controller's boot on the path still blocked is charged after it, and the budgets
-	// are recorded beside it.
+	// The relaunch's own charge is the budgets' move across its launch, read before the relaunched
+	// controller's boot on the path still blocked can be charged; the daemon's line says the same.
 	relaunchLines := f.logs(func(rec loggedRecord) bool {
 		return rec.Attrs["claim"] == string(ctl.token) && !rec.at.Before(t0) && strings.HasPrefix(rec.Message, "supervise: relaunching a claim Envoy cannot reach")
 	})
@@ -1998,8 +2032,10 @@ func (f *w5Fresh) controllerWithAJob() {
 	if len(relaunchLines) > 0 {
 		relaunchLine = w5Describe(relaunchLines[0])
 	}
-	f.check("controller-relaunch-charges-nothing", len(relaunchLines) == 1 && strings.Contains(relaunchLines[0].Message, "the stop charges nothing"),
-		"the daemon's relaunch line: %s; the claim's budgets just after, its boot on the path still blocked included: %+v", relaunchLine, after.Budgets)
+	f.check("controller-relaunch-charges-nothing", moved && chargedNothing(beforeLaunch, afterLaunch),
+		"across the relaunch's launch: before %s, after %s (a later generation read: %t); the claim's budgets a few seconds on: %+v", beforeLaunch, afterLaunch, moved, after.Budgets)
+	f.check("controller-relaunch-line-says-the-stop-charges-nothing", len(relaunchLines) == 1 && strings.Contains(relaunchLines[0].Message, "the stop charges nothing"),
+		"the daemon's relaunch line: %s", relaunchLine)
 	f.check("controller-with-a-job-r6-once", len(f.alertsOf(w5CaseControllerRefused, t0)) == 1, "R6 lines: %d", len(f.alertsOf(w5CaseControllerRefused, t0)))
 	f.front.unblock(session)
 	f.record("let the controller's registrations through again at %s", clockAt(time.Now()))
@@ -2034,6 +2070,7 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 	f.pods.setLauncher(ctl.token, w5LauncherNotConnected)
 	before := f.snapshot().views[ctl.token]
 	launches := len(f.runtime.launchesOf(ctl.token))
+	budgets := f.watchBudgets(ctl.token)
 	session := before.session
 	t0 := time.Now()
 	f.front.blockRegistrations(session)
@@ -2051,6 +2088,8 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 		}
 		return false
 	})
+	time.Sleep(5 * time.Second)
+	beforeLaunch, afterLaunch, moved := budgets.transition()
 	time.Sleep(time.Minute)
 	held := f.claim(ctl.token)
 	calls := f.pods.relaunchCalls(ctl.token, t0)
@@ -2059,9 +2098,9 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 		described = append(described, fmt.Sprintf("%s %s may=%t launcher=%q answered %q", clockAt(c.at), c.call, c.mayReplacePod, c.launcher, c.answer))
 	}
 	f.record("the controller's relaunch calls: %v", described)
-	// The relaunch's own charge is what its stop charged, which the daemon says in its line; the
-	// relaunched controller's boots that fail on its blocked path are charged after it, and the
-	// budgets a minute on are recorded beside it.
+	// The relaunch's own charge is the budgets' move across its launch, read before the relaunched
+	// controller's boots that fail on its blocked path can be charged; the daemon's line says the
+	// same, and the budgets a minute on are recorded beside it.
 	relaunchLines := f.logs(func(rec loggedRecord) bool {
 		return rec.Attrs["claim"] == string(ctl.token) && !rec.at.Before(t0) && strings.HasPrefix(rec.Message, "supervise: relaunching a claim Envoy cannot reach")
 	})
@@ -2071,8 +2110,10 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 	}
 	f.check("controller-relaunched-in-a-replaced-pod-of-its-own", !relaunched.IsZero() && newPod != "" && newPod != before.pod,
 		"relaunched at %s; its pod was %s and its relaunch runs in %s", clockAt(relaunched), before.pod, newPod)
-	f.check("controller-launcher-relaunch-charges-nothing", len(relaunchLines) == 1 && strings.Contains(relaunchLines[0].Message, "the stop charges nothing"),
-		"the daemon's relaunch line: %s; the claim's budgets a minute on, after its boots on the blocked path: %+v (state %s)", relaunchLine, held.Budgets, held.State)
+	f.check("controller-launcher-relaunch-charges-nothing", moved && chargedNothing(beforeLaunch, afterLaunch),
+		"across the relaunch's launch: before %s, after %s (a later generation read: %t); a minute on: %+v (state %s)", beforeLaunch, afterLaunch, moved, held.Budgets, held.State)
+	f.check("controller-launcher-relaunch-line-says-the-stop-charges-nothing", len(relaunchLines) == 1 && strings.Contains(relaunchLines[0].Message, "the stop charges nothing"),
+		"the daemon's relaunch line: %s", relaunchLine)
 	f.check("controller-launcher-relaunch-writes-no-r6", len(f.fleetAlerts()) == 0, "R6 lines so far: %d", len(f.fleetAlerts()))
 	sleepUntil(relaunched.Add(w5ReadFor))
 	gone := f.alertsOf(w5CaseControllerGone, relaunched)
