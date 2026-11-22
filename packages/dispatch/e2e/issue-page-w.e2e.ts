@@ -11,7 +11,7 @@ import {
   sentenceCase,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { getIssueCoverage } from "./api";
+import { createComment, getIssueCoverage } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { gotoIssue, issuePage, issueRead, phase } from "./issue-page";
@@ -96,6 +96,13 @@ import { assertPageFits } from "./unclipped";
  * too. The round that lands 5c85ffdc1b on the base gives the row back a title c-premortem's `-g`
  * matches, or adds the row to that pattern, and takes off `@owed`; until that round, no check
  * reads the clause.
+ *
+ * A row of its own, "a person invokes a lens from a link a row's words hold, through a read of
+ * the tree", proves that the link statement 2's words draw keeps the focus, and the row its Lens
+ * act, through the read of the tree a comment's event makes, and that a lens is invoked from
+ * there; without `RowText.tsx`'s keeping of the words a read hands again in new objects
+ * (decision 385), that read paints them again, the focus drops to `<body>`, and the row fails on
+ * `the link in statement 2's words does not keep the focus through a read of the tree again`.
  *
  * At a base that serves the tree read and holds none of the lens rows, each of rows 1 to 4 fails
  * on an assertion of its own, at the end of a 30 s poll and not at its deadline. Rows 1, 2 and 4
@@ -917,6 +924,82 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
       "an invocation answered 404 does not say the node is no longer here"
     ).toBeVisible();
     await page.unroute(INVOKE_ROUTE, goneWrite);
+  });
+});
+
+// Row 2's Lens act from a link a row's words hold, through a read of the tree again: the read a
+// comment's event makes hands statement 2's words in new objects, which `RowText.tsx` keeps
+// unpainted (decision 385), so the link keeps the focus and the row its Lens act.
+// SLOW(>=2s): a whole seeded issue with its lenses, a comment written through the API and the
+// tree read its event makes, and one invocation through the menu.
+test("a person invokes a lens from a link a row's words hold, through a read of the tree", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
+    const key = whole.key;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await convertedGate(page, key));
+    const tree = treeAnswerOf(page);
+    await gotoIssue(page, presetPath(key, "conversation"));
+    await expectOpeningLanded(page);
+    const answer = await heldAnswer(tree, `the tree read of ${key}`);
+    const ids = lensReadIds(answer, key, lenses);
+    const before = new Set(lensIdsIn(answer));
+
+    // The focus on the one link statement 2's words draw, for the document they cite, reached
+    // with `f` as a reader reaches it.
+    const statementTwo = await drawnId(page, ids.statements[1] ?? "", "statement 2");
+    const row = await focusRow(page, statementTwo);
+    const link = row.locator("[data-node-words] a[data-row-reference]");
+    await expect(link, "statement 2's words do not draw one link").toHaveCount(1);
+    await pressFTo(page, link, "f does not reach the link in statement 2's words");
+
+    // A comment written through the API raises an event the page reads the tree again for, and
+    // the new comment's row drawn is that read drawn: every row is drawn again from it.
+    const reread = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${key}/tree`
+    );
+    const comment = await createComment(key, {
+      body: "Written while the focus is on the link in statement 2's words.",
+    });
+    await reread;
+    await expect
+      .poll(() => drawnIdOf(page, comment.id), {
+        message: "the page does not draw the comment it read the tree again for",
+        timeout: 30_000,
+      })
+      .not.toBeNull();
+
+    // The link keeps the focus and the row its Lens act, from which a person invokes a lens as
+    // from the row: the new lens holds the focus, under statement 2.
+    await expect(
+      link,
+      "the link in statement 2's words does not keep the focus through a read of the tree again"
+    ).toBeFocused();
+    await pressFTo(
+      page,
+      lensAct(row),
+      "after a read of the tree again, statement 2's row offers no Lens act"
+    );
+    await page.keyboard.press("Enter");
+    await expect(menuItem(page, 0), "the Lens menu on statement 2 lists no kind").toBeFocused();
+    await page.keyboard.press("Enter");
+    const lens = await newLens(tree, before, "the invocation from statement 2's link");
+    await expect
+      .poll(() => focusedRowReadId(page), {
+        message: "the lens invoked from statement 2's link does not hold the focus",
+      })
+      .toBe(lens);
+    // The focus is the landing's on the new lens's address, which takes it back whenever nothing
+    // holds it until the reader acts (`IssueTree.tsx`): a Shift, which no key of the page binds.
+    await page.keyboard.press("Shift");
+    expect(
+      await drawnParentOf(page, lens),
+      "the lens invoked from statement 2's link does not stand under it"
+    ).toBe(statementTwo);
   });
 });
 
