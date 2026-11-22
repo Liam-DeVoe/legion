@@ -1115,7 +1115,14 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // a few documents, and keep the node_id index where they are few. Held to node_id alone, the
 // 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
 // once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
-// against 75 ms over the read-cost corpus (check c-read-cost).
+// against 75 ms over the read-cost corpus (check c-read-cost). The documents are an array the
+// read computes once (`artifact_id = any(array(...))`), and not a semi-join, whose selectivity the
+// planner multiplies into the ids' own as if the two were unrelated: it then reckoned 36 of 640
+// blocks of two documents, and scanned the whole table for them where the node_id index reads
+// them. Measured on a copy of a dispatch:local database grown to the read-cost corpus (63,560
+// blocks), 640 blocks of two documents read in 32 to 39 ms under the semi-join and 14 to 15 ms
+// under the array, as the base build's read of node_id alone reads them (14 to 17 ms), and 5,000
+// blocks of one document still read by the primary key under either.
 //
 // Two to blockNodesKeptPlan arrive as the same two arrays, each compared as a value Postgres reads
 // once, before the read - `(select $1::text[])::text[]`, the cast making it the array itself
@@ -1135,9 +1142,10 @@ func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
 }
 
 // blockNodesByIDs is the predicate of a read of two or more blocks: the ids, $1, held to the
-// documents they name, $3 (blockDocuments). blockNodesKeptPlanPredicate reads each array as a
-// value Postgres reads once, before the read; blockNodesDescribedPredicate binds them as they are.
-const blockNodesByIDs = `d.node_id = any(%[1]s) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any(%[2]s))`
+// documents they name, $3 (blockDocuments), as one array of their uuids the read computes once.
+// blockNodesKeptPlanPredicate reads each array as a value Postgres reads once, before the read;
+// blockNodesDescribedPredicate binds them as they are.
+const blockNodesByIDs = `d.node_id = any(%[1]s) and d.artifact_id = any(array(select named.id from artifacts named where named.ref_key = any(%[2]s)))`
 
 var (
 	blockNodesKeptPlanPredicate  = fmt.Sprintf(blockNodesByIDs, `(select $1::text[])::text[]`, `(select $3::text[])::text[]`)
