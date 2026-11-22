@@ -41,7 +41,7 @@ func goldenPath(name string) string {
 }
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set but `roles` and `role_types`, which
+// share: every key the loader models is set but `roles`, `role_types` and `models`, which
 // `internal/api/settings_test.go` pins, and every value a credential, its source or its file
 // could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
 // password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
@@ -1040,7 +1040,7 @@ func populatedState(t *testing.T) State {
 			}},
 		},
 		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry
-		// but `roles` and `role_types`, which the resolved maximal file sets none of and
+		// but `roles`, `role_types` and `models`, which the resolved maximal file sets none of and
 		// TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret (settings_test.go) pins.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
 		// The three durable consumers the daemon opens, in the order Lag answers them
