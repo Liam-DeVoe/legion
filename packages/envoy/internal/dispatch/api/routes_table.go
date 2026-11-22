@@ -425,6 +425,11 @@ var idRoutes = map[string]idRoute{
 	"POST /api/v1/issues/{key}/nodes/{id}/state":    {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":   {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 
+	// A node of a repository's approved spec, whose {id} is the node's own id in that repository:
+	// a statement's, check's, component's or interface's slug, which no prefix shortens. The route
+	// answers SPEC_NODE_NOT_FOUND wherever the approved spec holds no node of that id.
+	"GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {Reason: "a node id of the repository's approved spec, a slug of its own and no uuid at all"},
+
 	// The document test hooks, which address the live room this process holds under the
 	// document's own id and read no row of the artifacts table, so they answer no 404 of a
 	// document that does not exist and resolve no prefix: a short id written at one of them
