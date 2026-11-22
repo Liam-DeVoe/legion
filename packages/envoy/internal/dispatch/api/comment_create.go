@@ -260,26 +260,10 @@ func (s *server) normalizeCommentThreadTarget(
 	owner owner,
 	input commentInput,
 ) (commentThreadTarget, error) {
-	if input.ReplyTo != nil && input.AskID != nil {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to and ask_id cannot both be set")
-	}
-	if input.Anchor != nil && (input.ReplyTo != nil || input.AskID != nil) {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "replies cannot carry anchors")
-	}
-	if input.Suggestion != nil && (input.ReplyTo != nil || input.AskID != nil) {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "replies cannot carry suggestions")
-	}
-	if input.ReplyToBlock != nil && input.ReplyTo == nil && input.AskID == nil {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT",
-			"reply_to_block requires reply_to, the comment whose block it names, or ask_id, the ask whose part it names")
+	if err := commentThreadInputError(input); err != nil {
+		return commentThreadTarget{}, err
 	}
 	if input.ReplyTo != nil {
-		if strings.TrimSpace(*input.ReplyTo) == "" {
-			return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must be a full comment id")
-		}
-		if _, err := uuid.Parse(*input.ReplyTo); err != nil {
-			return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must be a full comment id")
-		}
 		parent, err := s.loadOwnedComment(ctx, tx, owner, *input.ReplyTo)
 		if err != nil {
 			return commentThreadTarget{}, err
@@ -312,6 +296,52 @@ func (s *server) normalizeCommentThreadTarget(
 		return commentThreadTarget{}, err
 	}
 	return target, nil
+}
+
+// commentThreadInputError is the refusal of a comment whose thread fields contradict each other
+// or cannot name an item, read off input alone: reply_to beside ask_id, an anchor or a suggestion
+// on a reply, reply_to_block naming neither, and a reply_to that is no full comment id. It is the
+// first check of normalizeCommentThreadTarget, which a comment beside a held parent makes at its
+// hold too (heldBeside), where no dry run makes it.
+func commentThreadInputError(input commentInput) error {
+	if input.ReplyTo != nil && input.AskID != nil {
+		return errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to and ask_id cannot both be set")
+	}
+	if input.Anchor != nil && (input.ReplyTo != nil || input.AskID != nil) {
+		return errorf(http.StatusBadRequest, "INVALID_COMMENT", "replies cannot carry anchors")
+	}
+	if input.Suggestion != nil && (input.ReplyTo != nil || input.AskID != nil) {
+		return errorf(http.StatusBadRequest, "INVALID_COMMENT", "replies cannot carry suggestions")
+	}
+	if input.ReplyToBlock != nil && input.ReplyTo == nil && input.AskID == nil {
+		return errorf(http.StatusBadRequest, "INVALID_COMMENT",
+			"reply_to_block requires reply_to, the comment whose block it names, or ask_id, the ask whose part it names")
+	}
+	if input.ReplyTo != nil {
+		if strings.TrimSpace(*input.ReplyTo) == "" {
+			return errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must be a full comment id")
+		}
+		if _, err := uuid.Parse(*input.ReplyTo); err != nil {
+			return errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must be a full comment id")
+		}
+	}
+	return nil
+}
+
+// commentTurnError is the refusal of a comment's turn: one on a comment in no ask's thread, askID
+// being the ask its thread climbs to, or one neither human nor agent (writeComment, and a comment
+// beside a held parent at its hold, heldBeside).
+func commentTurnError(turn, askID *string) error {
+	if turn == nil {
+		return nil
+	}
+	if askID == nil {
+		return errorf(http.StatusBadRequest, "TURN_REQUIRES_ASK", "turn is only valid on a reply to an ask")
+	}
+	if *turn != "human" && *turn != "agent" {
+		return errorf(http.StatusBadRequest, "INVALID_COMMENT", "turn must be human or agent")
+	}
+	return nil
 }
 
 // namedReplyBlock is the block reply_to_block names, read from the item the same request named:
@@ -376,7 +406,7 @@ func (s *server) threadHeadFrom(
 			return commentThreadTarget{ReplyTo: &root.ID, ReplyRoot: &root}, nil
 		}
 		if depth >= parentDepthCap {
-			return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+			return commentThreadTarget{}, replyToNotOnOwner()
 		}
 		next, err := s.loadOwnedComment(ctx, tx, owner, *root.ReplyTo)
 		if err != nil {
@@ -401,9 +431,20 @@ func (s *server) describeAsk(
 		  and a.artifact_id is not distinct from $3
 	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved, &target.AskAuthorSession)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
+		return commentThreadTarget{}, askIDNotOnOwner()
 	}
 	return target, err
+}
+
+// replyToNotOnOwner is the refusal of a reply_to that names no comment on the reply's owner, or a
+// thread that climbs past parentDepthCap.
+func replyToNotOnOwner() error {
+	return errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+}
+
+// askIDNotOnOwner is the refusal of an ask_id that names no ask on the reply's owner.
+func askIDNotOnOwner() error {
+	return errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
 }
 
 // askSessions is what a comment.created in askID's thread says about whose ask it is
@@ -786,13 +827,8 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	if err != nil {
 		return commentWritten{}, err
 	}
-	if input.Turn != nil {
-		if threadTarget.AskID == nil {
-			return commentWritten{}, errorf(http.StatusBadRequest, "TURN_REQUIRES_ASK", "turn is only valid on a reply to an ask")
-		}
-		if *input.Turn != "human" && *input.Turn != "agent" {
-			return commentWritten{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "turn must be human or agent")
-		}
+	if err := commentTurnError(input.Turn, threadTarget.AskID); err != nil {
+		return commentWritten{}, err
 	}
 	input.ReplyTo = threadTarget.ReplyTo
 	input.AskID = threadTarget.AskID

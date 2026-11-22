@@ -388,8 +388,16 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent st
 // reparent takes, so two writes cannot each pass alone and together pass the cap. Both walks stop
 // one link past the cap, so a chain that loops or is already too deep ends them.
 func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) error {
+	return refuseChainTooDeep(ctx, tx, child, parent, parent, 0)
+}
+
+// refuseChainTooDeep is refuseParentTooDeep for a parent whose chain up to its root starts with
+// held issues that no issues row holds yet: held of them, then from, the nearest issue of the
+// chain a row holds ("" for none), from which the walk up reads on (heldIssueCreateError). A
+// parent a row holds is its own from, with held 0.
+func refuseChainTooDeep(ctx context.Context, q queryer, child, parent, from string, held int) error {
 	var above, below int
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		with recursive up as (
 			select parent_key, 1 as depth from issues where key = $1
 			union all
@@ -404,9 +412,10 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 			where d.depth <= $3
 		)
 		select coalesce((select max(depth) from up), 0), coalesce((select max(depth) from down), 0)
-	`, parent, child, parentDepthCap).Scan(&above, &below); err != nil {
+	`, from, child, parentDepthCap).Scan(&above, &below); err != nil {
 		return err
 	}
+	above += held
 	if above+below <= parentDepthCap {
 		return nil
 	}

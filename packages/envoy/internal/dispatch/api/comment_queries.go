@@ -300,7 +300,7 @@ func (s *server) loadOwnedComment(
 ) (model.Comment, error) {
 	comment, err := s.loadComment(ctx, tx, id)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !commentHasOwner(comment, owner)) {
-		return model.Comment{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+		return model.Comment{}, replyToNotOnOwner()
 	}
 	if err != nil {
 		return model.Comment{}, err

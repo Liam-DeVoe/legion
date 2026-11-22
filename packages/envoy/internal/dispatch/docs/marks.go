@@ -120,6 +120,20 @@ func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpe
 	return anchored, nil
 }
 
+// QuoteInSeed is MarkQuote's search for quote, made in the document a seed of markdown starts
+// (SeedText) rather than in a room, and marking nothing: the refusal MarkQuote answers where that
+// document holds no such quote, or holds it in places occurrence does not choose between, else
+// nil. A text held beside a held issue checks the anchor it names in that issue's spec here,
+// before the issue's post seeds the spec.
+func QuoteInSeed(markdown, quote string, occurrence *int) error {
+	tree, err := parseReplacing(nil, markdown)
+	if err != nil {
+		return err
+	}
+	_, err = pmdoc.FindQuote(tree, quote, occurrence, nil)
+	return err
+}
+
 // readAnchored reads a persisted mark's covered text and containing block from tree;
 // ErrAnchorMissing when the mark is not there.
 func readAnchored(tree *pmdoc.Node, kind MarkKind, id string) (Anchored, error) {

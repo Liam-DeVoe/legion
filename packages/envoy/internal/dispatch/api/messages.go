@@ -656,10 +656,7 @@ func loadMessageReplyParent(
 	if inReplyTo == nil {
 		return messageReplyParent{}, nil
 	}
-	invalid := errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message on this issue")
-	if issueKey == nil {
-		invalid = errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message of this session's conversation")
-	}
+	invalid := replyParentInvalid(issueKey)
 	if strings.TrimSpace(*inReplyTo) == "" {
 		return messageReplyParent{}, invalid
 	}
@@ -702,6 +699,16 @@ func loadMessageReplyParent(
 	parent.ID = *inReplyTo
 	parent.ReplyBody = messageReplyPreview(parentBody)
 	return parent, nil
+}
+
+// replyParentInvalid is the refusal of an in_reply_to that names no message of the conversation a
+// reply joins: its issue's, or, for a reply on no issue, the session's (loadMessageReplyParent,
+// and a message beside a held parent at its hold, heldReplyParentError).
+func replyParentInvalid(issueKey *string) error {
+	if issueKey == nil {
+		return errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message of this session's conversation")
+	}
+	return errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message on this issue")
 }
 
 // messageReplyThread is what a message's event and its delivery frame both say about the

@@ -17,7 +17,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -340,9 +342,10 @@ type heldWriteOf struct {
 // is refused now, as with the reviewer off, and never fails at its post; a reply its route
 // answers with no new text is answered so now, and nothing is held. A text beside a held parent,
 // which no dry run can write before that parent posts, reads what its post writes off the held
-// texts it waits on instead (heldBeside), but for a reply to an attempt of its own, which runs
-// its dry run (dryRunsBeside). A text that waits only for its turn counts in its advice the held
-// texts it waits on, as its post will find them posted (countWaited).
+// texts it waits on instead (heldBeside), and is refused now where its post would refuse it, but
+// for a reply whose route writes it then as it writes it now, which runs its dry run
+// (dryRunsBeside). A text that waits only for its turn counts in its advice the held texts it
+// waits on, as its post will find them posted (countWaited).
 // The answer carries the advice the write's own answer carries (heldAdvice), worked out before
 // the id is reserved, and, for a new issue, the assignee its post writes: the one its dry run filed
 // it under, else heldIssueAssignee's. What else the post writes it reads off the dry run, or off
@@ -366,7 +369,14 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 	}
 	id := uuid.NewString()
 	var dry *heldDryRun
-	if of.parent == nil || dryRunsBeside(write) {
+	dryRuns := of.parent == nil
+	if !dryRuns {
+		if dryRuns, err = s.dryRunsBeside(ctx, write, of.parent.id); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if dryRuns {
 		if dry = s.heldDryRunOrAnswer(w, write, actor, id); dry == nil {
 			return
 		}
@@ -526,28 +536,39 @@ func (s *server) heldIssueAssignee(ctx context.Context, create issueCreate, acto
 //     (heldAskWaitingOn), and, where its anchor names that issue's spec, the quote it names and
 //     the document it quotes;
 //   - a comment: the thread it joins (heldBesideThread), so its reply_to, its ask_id, the comment
-//     it answers, its turn and whom its ask waits on once it posts;
+//     it answers, its turn and whom its ask waits on once it posts, and the block reply_to_block
+//     names in the comment reply_to names, else in the ask ask_id names (heldNamedBlock);
 //   - a new issue: its spec as sent, which its related-item check and its advice read;
-//   - a message: its advice alone;
-//   - a follow-up reply that waits on its writer's earlier held reply to the delivery: the reply
-//     it is filed under, the attempt's reply among them, and the delivery's issue and target
-//     (heldFollowUpBeside). Any other reply that waits on one runs its dry run (dryRunsBeside).
+//   - a message: the block in_reply_to_block names in the message it answers (heldNamedBlock);
+//   - a follow-up reply whose attempt its writer's earlier held reply answers: the reply it is
+//     filed under and the delivery's issue and target (heldFollowUpBeside). Any other reply that
+//     waits on one runs its dry run (dryRunsBeside).
 //
 // It leaves out what only the posts make: the anchor's document id, block and version in a held
-// issue's spec, the block node of a held text that a reply names, and the mentions a comment's
-// post resolves from the sessions the listener finds then.
+// issue's spec, the node id of the block a reply names in a held text, which only that text's
+// index makes, and the mentions a comment's post resolves from the sessions the listener finds
+// then.
+//
+// A write its post would refuse is refused now, as a dry run refuses a write that names no held
+// text, with the refusal its post gives, in the order its post makes the checks: what the
+// request says alone (commentThreadInputError, anchorInputError, an ask_id that is no ask id);
+// an item it names, a held one among waited off its record and any other as its post reads it
+// (a comment or an ask on another owner, a message on another issue, a block the item does not
+// hold); its turn (commentTurnError); an anchor in a held issue's spec, against the spec that
+// issue's post seeds (heldAnchorError); a new issue's parent (heldIssueCreateError); and a
+// follow-up that names a block (heldFollowUpBeside).
 func (s *server) heldBeside(ctx context.Context, write reviewedWrite, actor model.Actor, id string, parent *heldParent) (*heldDryRun, error) {
 	waited, err := s.heldWaitedOn(ctx, parent.id)
 	if err != nil {
 		return nil, err
 	}
 	if replay, isReplay := write.request.(heldReplay); isReplay {
-		return s.heldFollowUpBeside(ctx, write.kind, replay, waited)
+		return s.heldFollowUpBeside(ctx, replay, waited)
 	}
-	dry := &heldDryRun{}
-	if dry.advice, err = s.heldBesideAdvice(ctx, write, actor, id, waited); err != nil {
+	if err := s.heldBesideError(ctx, write, actor, id, waited); err != nil {
 		return nil, err
 	}
+	dry := &heldDryRun{}
 	switch c := write.request.(type) {
 	case askCreate:
 		dry.ask = &model.Ask{}
@@ -556,7 +577,7 @@ func (s *server) heldBeside(ctx context.Context, write reviewedWrite, actor mode
 		}
 		// An anchor in the held issue's spec, which that issue's post makes: the quote it names,
 		// and the document's address; its id, the block and the version are the post's own.
-		if issue, _, held := heldIssueIn(waited, deref(c.Owner.IssueKey)); held && c.Anchor != nil && strings.TrimSpace(c.Anchor.Artifact) == "spec" {
+		if issue, _, held := heldIssueIn(waited, deref(c.Owner.IssueKey)); held && c.Anchor != nil {
 			dry.ask.Anchor = &model.Anchor{Quote: deref(c.Anchor.Quote)}
 			dry.ask.AnchorArtifact = &model.AskAnchorArtifact{Project: issue.Project, Slug: "spec", Name: "spec.md", Primary: true}
 		}
@@ -565,35 +586,258 @@ func (s *server) heldBeside(ctx context.Context, write reviewedWrite, actor mode
 		if err != nil {
 			return nil, err
 		}
+		dry.comment = &model.Comment{ReplyTo: thread.ReplyTo, AskID: thread.AskID, Answers: thread.Answers}
+		// The item the request names, as namedReplyBlock reads it: a comment's reply_to, else its
+		// ask_id, one of which a request naming a block names (commentThreadInputError).
+		if c.Input.ReplyToBlock != nil {
+			kind, item := refs.ItemComment, c.Input.ReplyTo
+			if item == nil {
+				kind, item = refs.ItemAsk, c.Input.AskID
+			}
+			block, err := s.heldNamedBlock(ctx, kind, *item, *c.Input.ReplyToBlock, "reply_to_block", "INVALID_COMMENT", waited)
+			if err != nil {
+				return nil, err
+			}
+			issueKey, project, slug, err := s.ownerAddress(ctx, s.deps.Store.Pool, c.Owner)
+			if err != nil {
+				return nil, err
+			}
+			dry.comment.ReplyBlock = block.replyBlock(issueKey, project, slug)
+		}
+		if err := commentTurnError(c.Input.Turn, thread.AskID); err != nil {
+			return nil, err
+		}
+		if issue, _, held := heldIssueIn(waited, deref(c.Owner.IssueKey)); held {
+			if err := heldAnchorError(issue, c.Input.Anchor); err != nil {
+				return nil, err
+			}
+		}
 		turn := thread.replyTurn(actor, c.Input.Turn)
-		dry.comment = &model.Comment{ReplyTo: thread.ReplyTo, AskID: thread.AskID, Answers: thread.Answers, Turn: turn}
-		dry.askWaitingOn = thread.waitingOnAfter(turn)
+		dry.comment.Turn, dry.askWaitingOn = turn, thread.waitingOnAfter(turn)
+	case messageCreate:
+		if c.Input.InReplyToBlock != nil {
+			block, err := s.heldNamedBlock(ctx, refs.ItemMessage, deref(c.Input.InReplyTo), *c.Input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", waited)
+			if err != nil {
+				return nil, err
+			}
+			dry.message = &model.Message{ReplyBlock: block.replyBlock(c.IssueKey, "", "")}
+		}
 	case issueCreate:
 		if c.Spec != nil && strings.TrimSpace(*c.Spec) != "" {
 			dry.markdown = *c.Spec
 		}
 	}
+	if dry.advice, err = s.heldBesideAdvice(ctx, write, actor, id, waited); err != nil {
+		return nil, err
+	}
 	return dry, nil
 }
 
-// dryRunsBeside reports whether write, held beside a held parent, runs its dry run all the same: a
-// reply that waits on its writer's earlier held reply to the delivery and is no follow-up answers
-// an attempt of its own, which that reply's post leaves as it is, so its route writes it then as
-// it writes it now. A follow-up is filed under the attempt's reply, which only that post writes.
-func dryRunsBeside(write reviewedWrite) bool {
-	replay, isReplay := write.request.(heldReplay)
-	return isReplay && !replay.followUp()
+// heldNamedBlock is block blockID of the text itemID, of kind, that a reply beside a held parent
+// names (reply_to_block, in_reply_to_block), as that reply's post reads it (planReplyBlock): for
+// a held text among waited, which no index reaches before it posts, the block as that text's post
+// will index it, read off the text its record holds (refs.NewItemBlock: a comment's or a
+// message's body, an ask's question and options), with no node id, which only that index makes;
+// for a posted one, the block its index holds now. A block the text does not hold is refused now,
+// as its post would refuse it: 400 with code, naming field.
+func (s *server) heldNamedBlock(ctx context.Context, kind refs.ItemKind, itemID, blockID, field, code string, waited []heldRow) (*namedBlock, error) {
+	row, held := heldRowIn(waited, itemID)
+	if !held {
+		tx, err := s.begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback(ctx)
+		_, block, err := s.planReplyBlock(ctx, tx, kind, itemID, blockID, field, code)
+		return block, err
+	}
+	write, err := row.write()
+	if err != nil {
+		return nil, err
+	}
+	var blocks []itemblocks.Block
+	switch {
+	case row.kind != string(kind):
+		// A held text of another kind holds no block of this one.
+	case kind == refs.ItemAsk:
+		blocks = refs.AskParts(model.Ask{Question: write.text.Body, Options: write.text.Options})
+	default:
+		blocks = itemblocks.Split(write.text.Body)
+	}
+	excerpt, found := refs.NewItemBlock(blocks, blockID)
+	if !found {
+		return nil, notABlock(kind, itemID, blockID, field, code)
+	}
+	return &namedBlock{kind: kind, item: itemID, id: blockID, excerpt: excerpt}, nil
 }
 
-// heldFollowUpBeside is what the post of replay, a follow-up that waits on its writer's earlier
-// held reply to the same delivery, writes (insertSessionReply under the attempt's reply): the
-// reply it is filed under, the held reply to its attempt that is no follow-up, read off waited;
-// and the delivery's issue and target, which that reply carries over from the delivered message.
-// Nil where waited holds no such reply (it posted before), whose answer is the hold's alone.
-func (s *server) heldFollowUpBeside(ctx context.Context, kind reviewer.Kind, replay heldReplay, waited []heldRow) (*heldDryRun, error) {
-	if kind != reviewer.KindMessage || replay.Subject.InReplyTo == "" {
-		return nil, nil
+// heldBesideError is the refusal the post of write, beside a held parent, gives what the request
+// says alone and what the held texts it waits on hold, made before heldBeside reads what it
+// writes: a comment's thread fields (commentThreadInputError) and an ask_id that is no ask id
+// (askIDInputForOwner, naming the asks open on its owner now); an ask's anchor in a held issue's
+// spec (heldAnchorError); the message a message answers (heldReplyParentError); and a new issue's
+// parent and every other check of its post (heldIssueCreateError). A comment's item, block, turn
+// and anchor heldBeside checks as it reads them, in the order its post does.
+func (s *server) heldBesideError(ctx context.Context, write reviewedWrite, actor model.Actor, id string, waited []heldRow) error {
+	switch c := write.request.(type) {
+	case commentCreate:
+		if err := commentThreadInputError(c.Input); err != nil {
+			return err
+		}
+		if c.Input.AskID != nil {
+			if _, err := uuid.Parse(*c.Input.AskID); err != nil || strings.TrimSpace(*c.Input.AskID) == "" {
+				return s.askIDInputForOwner(ctx, s.deps.Store.Pool, c.Owner)
+			}
+		}
+	case askCreate:
+		if issue, _, held := heldIssueIn(waited, deref(c.Owner.IssueKey)); held {
+			return heldAnchorError(issue, c.Anchor)
+		}
+	case messageCreate:
+		return s.heldReplyParentError(ctx, c, waited)
+	case issueCreate:
+		return s.heldIssueCreateError(ctx, c, actor, id, waited)
 	}
+	return nil
+}
+
+// heldAnchorError is the refusal the post of a text anchored in create, a held issue, gives its
+// anchor (resolveAnchor), read before that issue's post seeds its spec: the anchor's own fields
+// (anchorInputError); any document but the spec, the one document that post makes, named by its
+// slug since its id is minted then, which loadAnchorArtifact finds none of; a mark id, since no
+// mark stands in a document not yet seeded (docs.ErrAnchorMissing, as VerifyMark answers one it
+// does not find); and a quote the spec that post seeds holds nowhere, or holds in places its
+// occurrence does not choose between (docs.QuoteInSeed). Nil for no anchor.
+func heldAnchorError(create issueCreate, input *model.AnchorInput) error {
+	if input == nil {
+		return nil
+	}
+	if err := anchorInputError(input); err != nil {
+		return err
+	}
+	if strings.TrimSpace(input.Artifact) != "spec" {
+		return pgx.ErrNoRows
+	}
+	if input.Quote == nil {
+		return docs.ErrAnchorMissing
+	}
+	return docs.QuoteInSeed(deref(create.Spec), *input.Quote, input.Occurrence)
+}
+
+// heldReplyParentError is the refusal the post of message, beside a held parent, gives the message
+// it answers (loadMessageReplyParent): a held message among waited on another issue than message,
+// as that message's post writes it (heldMessageIssue); any other, read as that post reads it, since
+// no held text message waits on writes it. Nil for a message that answers none.
+func (s *server) heldReplyParentError(ctx context.Context, message messageCreate, waited []heldRow) error {
+	if message.Input.InReplyTo == nil {
+		return nil
+	}
+	row, held := heldRowIn(waited, *message.Input.InReplyTo)
+	if !held {
+		tx, err := s.begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		_, err = loadMessageReplyParent(ctx, tx, message.IssueKey, message.Input.Target, message.Input.InReplyTo)
+		return err
+	}
+	issue, err := s.heldMessageIssue(ctx, row)
+	if err != nil {
+		return err
+	}
+	if issue != deref(message.IssueKey) {
+		return replyParentInvalid(message.IssueKey)
+	}
+	return nil
+}
+
+// heldMessageIssue is the issue the post of row, a held text, writes its message on: a new
+// message's own, and a reply to a delivery the delivered message's; "" for a text that is no
+// message.
+func (s *server) heldMessageIssue(ctx context.Context, row heldRow) (string, error) {
+	if reviewer.Kind(row.kind) != reviewer.KindMessage {
+		return "", nil
+	}
+	write, err := row.write()
+	if err != nil {
+		return "", err
+	}
+	switch c := write.request.(type) {
+	case messageCreate:
+		return deref(c.IssueKey), nil
+	case heldReplay:
+		var issue *string
+		err := s.deps.Store.Pool.QueryRow(ctx, `select issue_key from messages where id = $1`, c.Subject.InReplyTo).Scan(&issue)
+		return deref(issue), err
+	}
+	return "", nil
+}
+
+// heldIssueCreateError is the refusal the post of create, a new issue beside a held parent among
+// waited, gives it (writeIssue), made at its hold: a parent of another project; a parent too deep,
+// counting the held issues above it, which no issues row holds yet, and the chain of rows above
+// those (refuseChainTooDeep); and every other check of that post, which no held text decides, by
+// its dry run with no parent and with none of the held issues it waits on among its blockers,
+// whose answer is not read (heldBeside reads that). A parent posted meanwhile, its dry run reads
+// as its post does.
+func (s *server) heldIssueCreateError(ctx context.Context, create issueCreate, actor model.Actor, id string, waited []heldRow) error {
+	check := create
+	if parent, _, held := heldIssueIn(waited, create.Parent); held {
+		if parent.Project != create.Project {
+			return parentOtherProject()
+		}
+		above, from := heldIssuesAbove(create.Parent, waited)
+		if err := refuseChainTooDeep(ctx, s.deps.Store.Pool, "", create.Parent, from, above); err != nil {
+			return err
+		}
+		check.Parent = ""
+	}
+	check.Blockers = slices.DeleteFunc(slices.Clone(create.Blockers), func(key string) bool {
+		_, held := heldRowIn(waited, key)
+		return held
+	})
+	_, err := s.dryRunHeld(check.reviewed(), actor, id)
+	return err
+}
+
+// heldIssuesAbove is how many held issues among waited stand on the chain from parent up to its
+// root, parent first, and from, the nearest issue of that chain a row holds, "" for none.
+func heldIssuesAbove(parent string, waited []heldRow) (above int, from string) {
+	for from = parent; from != "" && above <= parentDepthCap; above++ {
+		create, _, held := heldIssueIn(waited, from)
+		if !held {
+			break
+		}
+		from = create.Parent
+	}
+	return above, from
+}
+
+// dryRunsBeside reports whether write, held beside the held text parent, runs its dry run all the
+// same, its route writing it then as it writes it now: a reply that waits on its writer's earlier
+// held reply to the delivery, but for a follow-up whose attempt such a reply answers
+// (heldAttemptReply), which is filed under that reply, written by its post alone
+// (heldFollowUpBeside). Any other such reply answers its attempt as it stands now, which those
+// posts leave as it is: one that is no follow-up answers an attempt of its own, and a follow-up
+// finds its attempt's reply posted already, or none.
+func (s *server) dryRunsBeside(ctx context.Context, write reviewedWrite, parent string) (bool, error) {
+	replay, isReplay := write.request.(heldReplay)
+	if !isReplay || write.kind != reviewer.KindMessage || !replay.followUp() {
+		return isReplay, nil
+	}
+	waited, err := s.heldWaitedOn(ctx, parent)
+	if err != nil {
+		return false, err
+	}
+	_, answered := heldAttemptReply(replay, waited)
+	return !answered, nil
+}
+
+// heldAttemptReply is the held reply among waited that answers replay's attempt: its writer's
+// reply to the same delivery attempt that is no follow-up, which its post makes the attempt's
+// reply.
+func heldAttemptReply(replay heldReplay, waited []heldRow) (heldRow, bool) {
 	attempt := replyAttemptOf(replay.Body)
 	for _, row := range waited {
 		var earlier heldReplay
@@ -601,14 +845,32 @@ func (s *server) heldFollowUpBeside(ctx context.Context, kind reviewer.Kind, rep
 			earlier.Subject.InReplyTo != replay.Subject.InReplyTo || replyAttemptOf(earlier.Body) != attempt {
 			continue
 		}
-		wrote := &model.Message{InReplyTo: &row.id}
-		if err := s.deps.Store.Pool.QueryRow(ctx, `select issue_key, target from messages where id = $1`,
-			replay.Subject.InReplyTo).Scan(&wrote.IssueKey, &wrote.Target); err != nil {
-			return nil, err
-		}
-		return &heldDryRun{message: wrote}, nil
+		return row, true
 	}
-	return nil, nil
+	return heldRow{}, false
+}
+
+// heldFollowUpBeside is what the post of replay, a follow-up whose attempt its writer's earlier
+// held reply answers (heldAttemptReply), writes (insertSessionReply under that reply): the reply
+// it is filed under, and the delivery's issue and target, which that reply carries over from the
+// delivered message. A follow-up that names a block of the delivered message is refused now, as
+// the route refuses one on an answered attempt (followUpNamesNoBlock). Nil where that reply posted
+// meanwhile, whose answer is the hold's alone.
+func (s *server) heldFollowUpBeside(ctx context.Context, replay heldReplay, waited []heldRow) (*heldDryRun, error) {
+	row, answered := heldAttemptReply(replay, waited)
+	if !answered {
+		return nil, nil
+	}
+	var input messageReplyInput
+	if json.Unmarshal(replay.Body, &input) == nil && input.InReplyToBlock != nil {
+		return nil, followUpNamesNoBlock(replay.Subject.InReplyTo)
+	}
+	wrote := &model.Message{InReplyTo: &row.id}
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select issue_key, target from messages where id = $1`,
+		replay.Subject.InReplyTo).Scan(&wrote.IssueKey, &wrote.Target); err != nil {
+		return nil, err
+	}
+	return &heldDryRun{message: wrote}, nil
 }
 
 // heldWaitedOn is the held text id and, in turn, each held text not yet posted that it waits on
@@ -855,7 +1117,8 @@ func (s *server) heldBesideThread(ctx context.Context, owner owner, input commen
 }
 
 // heldAskThread is the thread of the ask askID as a reply joins it: a held ask among waited as it
-// posts, open, and moved past no version; a posted one as describeAsk reads it.
+// posts, open, and moved past no version, refused where it is on another owner than the reply, as
+// describeAsk refuses a posted one; a posted one as describeAsk reads it.
 func (s *server) heldAskThread(ctx context.Context, tx pgx.Tx, owner owner, askID string, waited []heldRow) (commentThreadTarget, error) {
 	if row, held := heldRowIn(waited, askID); held {
 		write, err := row.write()
@@ -863,16 +1126,27 @@ func (s *server) heldAskThread(ctx context.Context, tx pgx.Tx, owner owner, askI
 			return commentThreadTarget{}, err
 		}
 		if create, isAsk := write.request.(askCreate); isAsk {
+			if !sameOwner(create.Owner, owner) {
+				return commentThreadTarget{}, askIDNotOnOwner()
+			}
 			return commentThreadTarget{AskID: &askID, AskQuestion: create.Question, AskState: "open"}, nil
 		}
 	}
 	return s.describeAsk(ctx, tx, owner, &askID)
 }
 
+// sameOwner reports whether a and b name one owner: the same issue, or the same document.
+func sameOwner(a, b owner) bool {
+	return deref(a.IssueKey) == deref(b.IssueKey) && deref(a.ArtifactID) == deref(b.ArtifactID)
+}
+
 // heldThreadHead is the head of the thread of the comment commentID as a reply's climb finds it
 // (threadHeadFrom): for a held comment among waited, the thread of the ask it names, else the
 // comment itself where it replies to none, else the head of the thread of the one it replies to;
-// for a posted comment, threadHeadFrom's.
+// for a posted comment, threadHeadFrom's. A held text that is no comment on the reply's owner is
+// refused, as loadOwnedComment refuses a posted one: a new comment on another owner, and any text
+// but a comment; a held reply to a mention is on the owner of the comment it answers, which the
+// climb reads next.
 func (s *server) heldThreadHead(ctx context.Context, tx pgx.Tx, owner owner, commentID string, waited []heldRow) (commentThreadTarget, error) {
 	for depth := 1; depth <= parentDepthCap; depth++ {
 		row, held := heldRowIn(waited, commentID)
@@ -890,9 +1164,17 @@ func (s *server) heldThreadHead(ctx context.Context, tx pgx.Tx, owner owner, com
 		var replyTo, askID string
 		switch c := write.request.(type) {
 		case commentCreate:
+			if !sameOwner(c.Owner, owner) {
+				return commentThreadTarget{}, replyToNotOnOwner()
+			}
 			replyTo, askID = deref(c.Input.ReplyTo), deref(c.Input.AskID)
 		case heldReplay:
+			if reviewer.Kind(row.kind) != reviewer.KindComment {
+				return commentThreadTarget{}, replyToNotOnOwner()
+			}
 			replyTo = c.Subject.ReplyTo
+		default:
+			return commentThreadTarget{}, replyToNotOnOwner()
 		}
 		switch {
 		case askID != "":
@@ -902,7 +1184,7 @@ func (s *server) heldThreadHead(ctx context.Context, tx pgx.Tx, owner owner, com
 		}
 		commentID = replyTo
 	}
-	return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+	return commentThreadTarget{}, replyToNotOnOwner()
 }
 
 // heldState is the `held` object a held write's answer carries beside the write's own shape.
@@ -930,8 +1212,8 @@ func (answer heldAnswer) MarshalJSON() ([]byte, error) {
 // what the hold stored under the reserved id, with the `held` object. A new issue is in triage, as
 // every create files it, under the assignee its create names (holdWrite sets the one its post
 // writes). dry is the write's dry run, or, for a text beside a held parent, what heldBeside read
-// off the held texts it waits on; nil where it read nothing (a follow-up whose earlier held
-// replies hold no reply to its attempt). What the post writes beside the request's own fields is read off it - an
+// off the held texts it waits on; nil where it read nothing (a follow-up whose earlier held reply
+// to its attempt posted meanwhile). What the post writes beside the request's own fields is read off it - an
 // ask's anchor, the document its anchor quotes and the person it waits on; a comment's anchor,
 // turn, mentions, the block it replies to, the agent text it answers and whom its ask waits on
 // once it posts; a message's block it replies to; an issue's repository, relations to priorities
@@ -1016,7 +1298,7 @@ func heldMessageWrites(message *model.Message, wrote *model.Message) {
 // heldAdvice is the advice a held write's answer carries, which is the advice the write's own
 // answer carries: a writer the reviewer holds is told what it would have been told without the
 // hold. dry is what the write's dry run found, or heldBeside's reading beside a held parent; nil
-// where it read nothing (a follow-up whose earlier held replies hold no reply to its attempt), and its write advice
+// where it read nothing (a follow-up whose earlier held reply to its attempt posted meanwhile), and its write advice
 // is then nil, as for a write with no issue state to report. An
 // issue and an ask also run their related-item check here, before the id is reserved, as the
 // write's own path runs it after its commit, and an issue's carries what the near-copy gate told

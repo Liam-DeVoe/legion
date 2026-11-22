@@ -1088,8 +1088,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case attempt.ReplyID != nil:
 		if followUp && input.InReplyToBlock != nil {
-			writeError(w, "INVALID_MESSAGE", http.StatusBadRequest,
-				"a follow-up is filed under the session's first reply, so it names no block of message "+message.ID)
+			s.writeHandlerError(w, followUpNamesNoBlock(message.ID))
 			return
 		}
 		answer, err := s.loadMessage(r.Context(), tx, messageIssueKey(message), *attempt.ReplyID)
@@ -1187,6 +1186,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.reviewPosted(r.Context(), after, postedID)
 	}
 	WriteJSON(w, status, response)
+}
+
+// followUpNamesNoBlock is the refusal of a follow-up that names a block of message messageID, the
+// delivered message: a follow-up is filed under the session's first reply (replyMessage, and a
+// follow-up held beside that reply at its hold, heldFollowUpBeside).
+func followUpNamesNoBlock(messageID string) error {
+	return errorf(http.StatusBadRequest, "INVALID_MESSAGE",
+		"a follow-up is filed under the session's first reply, so it names no block of message %s", messageID)
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.

@@ -506,7 +506,7 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 			return issueWritten{}, err
 		}
 		if parentProject != create.Project {
-			return issueWritten{}, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
+			return issueWritten{}, parentOtherProject()
 		}
 		if err := refuseParentTooDeep(ctx, tx, "", parentKey); err != nil {
 			return issueWritten{}, err
@@ -745,6 +745,12 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 		issue: issue, event: *event, advice: advice, artifactID: artifactID, markdown: markdown,
 		nearCopy: nearCopy,
 	}, nil
+}
+
+// parentOtherProject is the refusal of a new issue whose parent is in another project (writeIssue,
+// and a new issue beside its held parent at its hold, heldIssueCreateError).
+func parentOtherProject() error {
+	return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
 }
 
 // announceIssue is what follows an issue's commit, a held issue's post as much as the write's

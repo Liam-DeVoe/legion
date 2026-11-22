@@ -269,8 +269,8 @@ func TestAHeldMessageRepliesWholeAnswerIsItsPostsAnswer(t *testing.T) {
 // still its post's answer, whole, as each test below holds it: the parent is held, the write is
 // held beside it, the parent posts and the write waits on its writer, and the writer's typed copy
 // of the write, which posts at once once the parent is posted, gets the answer the held one must
-// equal. Whom it waits on, its thread and its advice are read off the held texts it waits on, as
-// its post will find them once they have posted (heldBeside).
+// equal. Whom it waits on, its thread, the block it names in a held text and its advice are read
+// off the held texts it waits on, as its post will find them once they have posted (heldBeside).
 
 // A held ask on a held issue answers as its post's answer does: whom it waits on, the assignee
 // the issue's post writes, and the advice of the issue the issue's post files, in triage.
@@ -444,4 +444,248 @@ func TestAHeldFollowUpBesideAHeldReplyAnswersAsItsPost(t *testing.T) {
 	requireHeldAnswerAsPosted(t, "the follow-up beside the held reply", held, posted,
 		map[string]string{answer.ID: "the follow-up", heldReply: "the reply", first: "the message"},
 		map[string]string{postedID(t, posted): "the follow-up", postedID(t, postedReply): "the reply", second: "the message"})
+}
+
+// heldBlockPostOnly are the fields of a reply's answer that only the post of the held text whose
+// block it names makes, which a held reply beside that text leaves out: the block's node id, which
+// that text's index makes, and the node id the reply stores (replies_to_block).
+var heldBlockPostOnly = []string{"reply_block.node", "replies_to_block"}
+
+// heldSecondParagraph is the body of a held text whose second paragraph, block b2, a reply beside
+// it names, and heldSecondParagraphText that block's text.
+const (
+	heldSecondParagraph     = "Status\nWe spin up the node.\n\n" + heldSecondParagraphText
+	heldSecondParagraphText = "The node answers on 8080. " + vacuousPhrase
+)
+
+// requireRefusedAsPosted fails t unless refused, a write beside a held text answered at its hold,
+// and posted, the same write sent once that text has posted, are one refusal, a 4xx with the same
+// body: a write its post refuses is refused at once, as its post refuses it.
+func requireRefusedAsPosted(t *testing.T, what string, refused, posted *httptest.ResponseRecorder) {
+	t.Helper()
+	if refused.Code < http.StatusBadRequest || refused.Code >= http.StatusInternalServerError ||
+		refused.Code != posted.Code || refused.Body.String() != posted.Body.String() {
+		t.Errorf("%s: answered at its hold %d %s; its post answers %d %s", what, refused.Code, refused.Body.String(), posted.Code, posted.Body.String())
+	}
+}
+
+// A held reply that names the second paragraph of a held comment answers as its post's answer
+// does: the block's id, its reference and its text, numbered as that comment's post indexes it,
+// less the block's node id, which only that index makes. One naming a block the comment does not
+// hold is refused at once.
+func TestAHeldReplyNamingABlockOfAHeldCommentAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, holdComments(), nil)
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	root := rig.held(rig.asWriter(http.MethodPost, comments, map[string]any{"body": heldSecondParagraph}), "the held comment").ID
+	reply := map[string]any{"body": "Status\nIt answers on 8081 now. " + vacuousPhrase, "reply_to": root, "reply_to_block": "b2"}
+	held := rig.asWriter(http.MethodPost, comments, reply)
+	id := rig.held(held, "the held reply to a block of the held comment").ID
+	missing := map[string]any{"body": reply["body"], "reply_to": root, "reply_to_block": "b3"}
+	refused := rig.asWriter(http.MethodPost, comments, missing)
+	rig.postedAsWritten(root)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, comments, reply)
+	requireReplyBlock(t, "the typed copy", decodeBody[model.Comment](t, posted).ReplyBlock, &model.ReplyBlock{
+		Node: "comment/" + root + "#b2", Ref: "dispatch://" + rig.issue + "/comment/" + root + "#b-b2", BlockID: "b2", Text: heldSecondParagraphText,
+	})
+	requireHeldAnswerAsPostedLess(t, "the reply to a block of the held comment", held, posted,
+		map[string]string{id: "the reply"}, map[string]string{postedID(t, posted): "the reply"}, heldBlockPostOnly)
+	requireRefusedAsPosted(t, "a reply naming a block the held comment does not hold", refused, rig.asWriterTyped(http.MethodPost, comments, missing))
+}
+
+// A held reply that names the second paragraph of a held message answers as its post's answer
+// does: the block's id, its reference and its text, numbered as that message's post indexes it,
+// less the block's node id, which only that index makes. One naming a block the message does not
+// hold is refused at once.
+func TestAHeldReplyNamingABlockOfAHeldMessageAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	messages := "/api/v1/issues/" + rig.issue + "/messages"
+	root := rig.held(rig.asWriter(http.MethodPost, messages, map[string]any{"body": heldSecondParagraph}), "the held message").ID
+	reply := map[string]any{"body": "Status\nIt answers on 8081 now. " + vacuousPhrase, "in_reply_to": root, "in_reply_to_block": "b2"}
+	held := rig.asWriter(http.MethodPost, messages, reply)
+	id := rig.held(held, "the held reply to a block of the held message").ID
+	missing := map[string]any{"body": reply["body"], "in_reply_to": root, "in_reply_to_block": "b3"}
+	refused := rig.asWriter(http.MethodPost, messages, missing)
+	rig.postedAsWritten(root)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, messages, reply)
+	requireReplyBlock(t, "the typed copy", decodeBody[model.Message](t, posted).ReplyBlock, &model.ReplyBlock{
+		Node: "message/" + root + "#b2", Ref: "dispatch://" + rig.issue + "/message/" + root + "#b-b2", BlockID: "b2", Text: heldSecondParagraphText,
+	})
+	requireHeldAnswerAsPostedLess(t, "the reply to a block of the held message", held, posted,
+		map[string]string{id: "the reply"}, map[string]string{postedID(t, posted): "the reply"}, heldBlockPostOnly)
+	requireRefusedAsPosted(t, "a reply naming a block the held message does not hold", refused, rig.asWriterTyped(http.MethodPost, messages, missing))
+}
+
+// A held comment that names a part of a held ask, its first option, answers as its post's answer
+// does: the part's id, its reference and its text, numbered as that ask's post indexes its
+// question and options, less the part's node id, which only that index makes. One naming a part
+// the ask does not hold is refused at once.
+func TestAHeldReplyNamingAPartOfAHeldAskAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Which port should the node use?\n" + vacuousPhrase,
+		"options":  []map[string]string{{"label": "Port 8080", "description": "The port it answers on now."}, {"label": "Port 8081", "description": "A free port."}},
+	}), "the held ask").ID
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	comment := map[string]any{"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "ask_id": ask, "reply_to_block": "b2"}
+	held := rig.asWriter(http.MethodPost, comments, comment)
+	id := rig.held(held, "the held comment on a part of the held ask").ID
+	missing := map[string]any{"body": comment["body"], "ask_id": ask, "reply_to_block": "b4"}
+	refused := rig.asWriter(http.MethodPost, comments, missing)
+	rig.postedAsWritten(ask)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, comments, comment)
+	requireReplyBlock(t, "the typed copy", decodeBody[model.Comment](t, posted).ReplyBlock, &model.ReplyBlock{
+		Node: "ask/" + ask + "#b2", Ref: askPartRef(rig.issue, ask, "b2"), BlockID: "b2", Text: "Port 8080 — The port it answers on now.",
+	})
+	requireHeldAnswerAsPostedLess(t, "the comment on a part of the held ask", held, posted,
+		map[string]string{id: "the comment"}, map[string]string{postedID(t, posted): "the comment"}, heldBlockPostOnly)
+	requireRefusedAsPosted(t, "a comment naming a part the held ask does not hold", refused, rig.asWriterTyped(http.MethodPost, comments, missing))
+}
+
+// besideWrite is a write held beside a held text that its post would refuse: what it is, its
+// route and its body.
+type besideWrite struct {
+	what, path string
+	body       map[string]any
+}
+
+// requireRefusedBeside sends each of writes beside the held texts the rig holds, posts held, each
+// as written and in order, and sends each write again as its writer's typed copy, which posts at
+// once: each must be refused at its hold as its typed copy is refused once those texts have
+// posted (requireRefusedAsPosted).
+func (rig *reviewRig) requireRefusedBeside(writes []besideWrite, held ...string) {
+	rig.t.Helper()
+	refused := make([]*httptest.ResponseRecorder, len(writes))
+	for index, write := range writes {
+		refused[index] = rig.asWriter(http.MethodPost, write.path, write.body)
+	}
+	for _, id := range held {
+		rig.postedAsWritten(id)
+	}
+	for index, write := range writes {
+		requireRefusedAsPosted(rig.t, write.what, refused[index], rig.asWriterTyped(http.MethodPost, write.path, write.body))
+	}
+}
+
+// A comment held beside a held text, which runs no dry run, is refused at once wherever its post
+// would refuse it: thread fields that contradict each other or name no item, a held comment or ask
+// on another issue, a held text that is no comment, a turn its thread takes none of or of no kind,
+// and an anchor in a held issue's spec that names another document, a mark, a quote the spec does
+// not hold, or nothing.
+func TestACommentBesideAHeldTextIsRefusedAtItsHoldAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, Comments: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	onIssue := "/api/v1/issues/" + rig.issue
+	comment := rig.held(rig.asWriter(http.MethodPost, onIssue+"/comments", map[string]any{"body": "Status\nWe spin up the node. " + vacuousPhrase}), "the held comment").ID
+	ask := rig.held(rig.asWriter(http.MethodPost, onIssue+"/asks", map[string]any{"question": "Which port should the node use?\n" + vacuousPhrase}), "the held ask").ID
+	message := rig.held(rig.asWriter(http.MethodPost, onIssue+"/messages", map[string]any{"body": "Status\nWe reseat the gnomon. " + vacuousPhrase}), "the held message").ID
+	body := "Status\nThe node answers on 8080. " + vacuousPhrase
+	onHeld := "/api/v1/issues/" + issue + "/comments"
+	rig.requireRefusedBeside([]besideWrite{
+		{"a reply naming a comment and an ask", onIssue + "/comments", map[string]any{"body": body, "reply_to": comment, "ask_id": ask}},
+		{"a reply carrying an anchor", onIssue + "/comments", map[string]any{"body": body, "reply_to": comment, "anchor": map[string]any{"artifact": "spec", "quote": "Seed paragraph"}}},
+		{"a reply carrying a suggestion", onIssue + "/comments", map[string]any{"body": body, "reply_to": comment, "suggestion": map[string]any{"replace_with": "Seed text"}}},
+		{"a block named with no item", onHeld, map[string]any{"body": body, "reply_to_block": "b1"}},
+		{"a reply_to that is no comment id", onHeld, map[string]any{"body": body, "reply_to": "not-a-comment"}},
+		{"an ask_id that is no ask id", onHeld, map[string]any{"body": body, "ask_id": "not-an-ask"}},
+		{"a reply to a held comment on another issue", onHeld, map[string]any{"body": body, "reply_to": comment}},
+		{"a reply to a held ask on another issue", onHeld, map[string]any{"body": body, "ask_id": ask}},
+		{"a reply to a held message", onIssue + "/comments", map[string]any{"body": body, "reply_to": message}},
+		{"a turn in no ask's thread", onIssue + "/comments", map[string]any{"body": body, "reply_to": comment, "turn": "human"}},
+		{"a turn of no kind", onIssue + "/comments", map[string]any{"body": body, "ask_id": ask, "turn": "sideways"}},
+		{"an anchor on a document the held issue's post makes none of", onHeld, map[string]any{"body": body, "anchor": map[string]any{"artifact": "notes", "quote": "constant offset"}}},
+		{"an anchor quoting what the held issue's spec does not hold", onHeld, map[string]any{"body": body, "anchor": map[string]any{"artifact": "spec", "quote": "no such words"}}},
+		{"an anchor naming a mark", onHeld, map[string]any{"body": body, "anchor": map[string]any{"artifact": "spec", "mark_id": "m1"}}},
+		{"an anchor naming no document", onHeld, map[string]any{"body": body, "anchor": map[string]any{"artifact": " ", "quote": "constant offset"}}},
+	}, issue, comment, ask, message)
+}
+
+// An ask held beside a held issue is refused at once wherever its post would refuse its anchor in
+// that issue's spec: another document, a quote the spec does not hold or holds twice, a mark, and
+// an anchor naming both a quote and a mark.
+func TestAnAskOnAHeldIssueIsRefusedAtItsHoldAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The gnomon offset is constant.\n\nThe offset drifts after each reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	asks := "/api/v1/issues/" + issue + "/asks"
+	anchored := func(anchor map[string]any) map[string]any {
+		return map[string]any{"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase, "anchor": anchor}
+	}
+	rig.requireRefusedBeside([]besideWrite{
+		{"an anchor on a document the held issue's post makes none of", asks, anchored(map[string]any{"artifact": "notes", "quote": "gnomon offset"})},
+		{"an anchor quoting what the spec does not hold", asks, anchored(map[string]any{"artifact": "spec", "quote": "no such words"})},
+		{"an anchor quoting what the spec holds twice", asks, anchored(map[string]any{"artifact": "spec", "quote": "offset"})},
+		{"an anchor naming a mark", asks, anchored(map[string]any{"artifact": "spec", "mark_id": "m1"})},
+		{"an anchor naming a quote and a mark", asks, anchored(map[string]any{"artifact": "spec", "quote": "gnomon offset", "mark_id": "m1"})},
+	}, issue)
+}
+
+// A message held beside a held text is refused at once wherever its post would refuse the message
+// it answers: a held message on another issue, and an id that is no message's.
+func TestAMessageBesideAHeldTextIsRefusedAtItsHoldAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	message := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/messages", map[string]any{"body": "Status\nWe reseat the gnomon. " + vacuousPhrase}), "the held message").ID
+	onHeld := "/api/v1/issues/" + issue + "/messages"
+	body := "Status\nThe gnomon sits square. " + vacuousPhrase
+	rig.requireRefusedBeside([]besideWrite{
+		{"a reply to a held message on another issue", onHeld, map[string]any{"body": body, "in_reply_to": message}},
+		{"a reply to an id that is no message's", onHeld, map[string]any{"body": body, "in_reply_to": "not-a-message"}},
+	}, issue, message)
+}
+
+// A new issue held beside its held parent is refused at once wherever its post would refuse it: a
+// parent in another project, a blocker that does not exist, and a parent so deep, counting the
+// held parent above a chain of posted issues, that the issue would sit past the depth cap.
+func TestAnIssueUnderAHeldIssueIsRefusedAtItsHoldAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	createTestProject(t, rig.handler, "OTH")
+	rig.settleTermStats("RVW")
+	rig.settleTermStats("OTH")
+	parent := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held parent").ID
+	// The deepest posted issue sits parentDepthCap-1 links below its root, so the held issue
+	// under it sits at the cap, and an issue under that one past it.
+	chain := createChain(t, rig.handler, "RVW", rig.issue, parentDepthCap-1)
+	deep := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Escapement wheel slips after each winding", "parent": chain[len(chain)-1],
+		"spec": "The escapement wheel slips a tooth after each winding.\n\n" + vacuousPhrase,
+	}), "the held issue at the depth cap").ID
+	rig.requireRefusedBeside([]besideWrite{
+		{"a parent in another project", "/api/v1/issues", map[string]any{"project": "OTH", "title": "Bellows valve chatter at idle", "parent": parent}},
+		{"a blocker that does not exist", "/api/v1/issues", map[string]any{"project": "RVW", "title": "Ratchet pawl slips under load", "parent": parent, "blocked_by": []string{"RVW-999"}}},
+		{"a parent past the depth cap", "/api/v1/issues", map[string]any{"project": "RVW", "title": "Balance spring loses its set", "parent": deep}},
+	}, parent, deep)
+}
+
+// A follow-up held beside its writer's held reply to the same delivery is refused at once wherever
+// its post would refuse it: one that names a block of the delivered message, filed under that reply
+// as it is, and one on an attempt the delivery never made, which no held reply answers and which
+// runs its dry run.
+func TestAFollowUpBesideAHeldReplyIsRefusedAtItsHoldAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	delivered := rig.messageToWriter("Is the first node up?")
+	reply := rig.held(rig.asWriter(http.MethodPost, "/api/v1/messages/"+delivered+"/reply", map[string]any{
+		"body": "Status\nWe spin up the node. " + vacuousPhrase, "attempt": 1,
+	}), "the held reply").ID
+	followUp := "/api/v1/messages/" + delivered + "/reply?follow_up=true"
+	rig.requireRefusedBeside([]besideWrite{
+		{"a follow-up naming a block", followUp, map[string]any{"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "attempt": 1, "in_reply_to_block": "b1"}},
+		{"a follow-up on an attempt never made", followUp, map[string]any{"body": "Status\nThe node answers on 8081. " + vacuousPhrase, "attempt": 9}},
+	}, reply)
 }

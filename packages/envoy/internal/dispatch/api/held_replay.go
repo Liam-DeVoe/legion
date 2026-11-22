@@ -449,16 +449,24 @@ func replyAttemptOf(body []byte) replyAttempt {
 // reply under row's id as its post writes it, read off a dry run of replay as row's hold read it
 // (heldAnswerOf), with its `held` object as it now stands, and a message marked duplicate as that
 // route marks one. As that route's repeat, it names no ask_waiting_on: whom the ask waits on once
-// a reply is its newest, which a repeated reply need no longer be. A row that is a follow-up and
-// waits on its writer's earlier reply to the delivery (heldReplay.EarlierReply) ran no dry run at
-// its hold and runs none here: what it states of its post is read off the held replies it waits on
-// again (heldFollowUpBeside). A dry run its route answers otherwise - a refusal, or the stored
-// reply of row, which posted meanwhile - is the repeat's answer, as with the reviewer off. Nothing
-// is held, and the writing check records nothing: the reply writes none of its words.
+// a reply is its newest, which a repeated reply need no longer be. A row that is a follow-up whose
+// attempt its writer's earlier held reply answers (dryRunsBeside) ran no dry run at its hold and
+// runs none here: what it states of its post is read off the held replies it waits on again
+// (heldFollowUpBeside). A dry run its route answers otherwise - a refusal, or the stored reply of
+// row, which posted meanwhile - is the repeat's answer, as with the reviewer off. Nothing is held,
+// and the writing check records nothing: the reply writes none of its words.
 func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, row heldRow, replay heldReplay) {
 	write := replay.reviewed(reviewer.Kind(row.kind))
+	dryRuns := replay.EarlierReply == ""
+	if !dryRuns {
+		var err error
+		if dryRuns, err = s.dryRunsBeside(r.Context(), write, replay.EarlierReply); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	var dry *heldDryRun
-	if replay.EarlierReply == "" || dryRunsBeside(write) {
+	if dryRuns {
 		if dry = s.heldDryRunOrAnswer(w, write, row.actor, row.id); dry == nil {
 			return
 		}
@@ -466,7 +474,7 @@ func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, ro
 	} else {
 		waited, err := s.heldWaitedOn(r.Context(), replay.EarlierReply)
 		if err == nil {
-			dry, err = s.heldFollowUpBeside(r.Context(), write.kind, replay, waited)
+			dry, err = s.heldFollowUpBeside(r.Context(), replay, waited)
 		}
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -805,12 +813,12 @@ func markKeptWritePosted(id string, marked *atomic.Bool) store.BeforeCommit {
 // comment states of its dry run (heldCommentWrites) and whom the ask of its thread waits on once
 // it posts (ask_waiting_on); a message reply's issue, target and the message it answers, a
 // follow-up's being the first reply it is filed under, and what a held message states of its dry
-// run (heldMessageWrites). Every held reply runs its dry run but one: a follow-up that waits on
-// its writer's earlier held reply to the same delivery (heldReplay.EarlierReply), whose dry
-// carries what heldFollowUpBeside read off the held replies it waits on - the reply it is filed
-// under, the delivery's issue and target - or nothing, where those hold no reply to its attempt.
-// A reply that waits only for its turn at its place (heldWriteOf.before), or on an earlier held
-// reply to another attempt (dryRunsBeside), runs its dry run.
+// run (heldMessageWrites). Every held reply runs its dry run but one: a follow-up whose attempt
+// its writer's earlier held reply to the same delivery answers (dryRunsBeside), whose dry carries
+// what heldFollowUpBeside read off the held replies it waits on - the reply it is filed under, the
+// delivery's issue and target - or nothing, where that reply posted meanwhile. A reply that waits
+// only for its turn at its place (heldWriteOf.before), or on an earlier held reply that answers
+// another attempt (dryRunsBeside), runs its dry run.
 func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
 	parent := replay.Subject.InReplyTo
 	if kind == reviewer.KindComment {
