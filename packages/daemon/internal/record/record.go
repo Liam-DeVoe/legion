@@ -2786,6 +2786,27 @@ func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 	return entry
 }
 
+// StartLeft says whether a start of role's phase entry entry, for the claim token, is of work the
+// role has left, read from an issue's phases rows, and answers the entry of the row it weighed the
+// start against: the role's row now (PhaseRowOf), the row of the step the task stands at, or stood
+// at last. A start is of that row's step only when it is for the claim that row names: two claims
+// of one role keep a row each, one for each of their steps, and each claim numbers its entries on
+// its own rows as well as its role's, so an entry of one claim says nothing of the other's, and a
+// start of another claim than the row now names is of another step, whatever its number reads.
+// For the row's own claim, the start is behind when its entry is below the row's. A start that
+// names no claim (token "") acts on the claim of the row now, and a row of no step (an issue with
+// no plan rows keeps one for each role) or one that names no claim is the role's one row, whose
+// claim is the role's (WorkerClaim), so each of them is weighed against the row's entry alone. The
+// outbox's two fences on a start ask it: before it runs one, and again under the claim's lock
+// before the start suspends or re-roles that claim.
+func StartLeft(rows []PhaseRow, role claim.Role, token claim.Token, entry int64) (int64, bool) {
+	now := PhaseRowOf(rows, role)
+	if token != "" && now.StepTask != "" && now.Claim != "" && now.Claim != token {
+		return now.Entry, true
+	}
+	return now.Entry, entry < now.Entry
+}
+
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
 // each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
@@ -2973,11 +2994,12 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
 // both (plan.Supported), and work queued for either reads the same here: the entry the work is of
-// tells the two apart, which the outbox's fence on a start (the entry of the role's row now,
-// PhaseRowOf) and the claim's given entry compare beside this. Away from step the phase alone is
-// compared: one role works several phases (the implementer implementing and retro), and a phase
-// names its one role. It is the one definition of that question, which the four judges of queued
-// work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
+// and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
+// now, its claim and its entry, StartLeft) and the claim's given entry compare beside this. Away
+// from step the phase alone is compared: one role works several phases (the implementer
+// implementing and retro), and a phase names its one role. It is the one definition of that
+// question, which the four judges of queued work ask, each on its own read: the outbox before it
+// runs a start (daemon's supervise), the
 // admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
 // brings a claim back for a start (supervise.StartWork, through PhaseHolds).

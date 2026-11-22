@@ -2433,7 +2433,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// entry's own start carries that entry's task, so running this one would hand the worker
 		// work the record has moved past. Finishing it here is what lets a start row be a message
 		// with no state of its own: a row that outlives its entry is harmless rather than
-		// something to rewrite.
+		// something to rewrite. Two claims of one role keep a row each and number their entries
+		// apart, so a start of another claim than the role's row now names is of a step the task
+		// has left, whatever its number reads, and no entry of one claim is weighed against the
+		// other's (record.StartLeft).
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
 		// look carries neither and is fenced on its check above, every start of no entry
@@ -2448,9 +2451,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			rowsRead = true
-			if entry := record.PhaseRowOf(rows, payload.Role).Entry; payload.Entry < entry {
+			if entry, left := record.StartLeft(rows, payload.Role, payload.Claim, payload.Entry); left {
 				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role, "claim", payload.Claim)
 				return nil
 			}
 		}
@@ -3213,7 +3216,7 @@ func (r *outbox) wakeTreeCloses(ctx context.Context, tree string) error {
 // move back's own start resumes it on its session in the role it holds.
 func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest) error {
 	role := payload.Role
-	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
+	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload, token) })
 	if held := machine.Claim(); !held.RunsNothing() {
 		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
 			Reason: fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role)})
@@ -3230,11 +3233,12 @@ func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, 
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
 // issue asks of the role, read from the record again: the issue runs the generation and stands in
-// the phase the start serves, and the role's phases row names no later entry than the start's. They
-// are the start's own fences (supervise), which the suspension and the re-role a start asks of its
-// claim judge again under the machine's lock (supervise.Standing, reroleForStep), since a move back
-// or a later entry can commit between the fences' read and that lock.
-func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
+// the phase the start serves, and the role's phases row now is the row of token, the claim the
+// start acts on, and names no later entry than the start's (record.StartLeft). They are the start's
+// own fences (supervise), which the suspension and the re-role a start asks of its claim judge
+// again under the machine's lock (supervise.Standing, reroleForStep), since a move back or a later
+// entry can commit between the fences' read and that lock.
+func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, token claim.Token) (bool, error) {
 	stands := false
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		issue, err := r.records.Issue(ctx, tx, row.Issue)
@@ -3245,7 +3249,8 @@ func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload r
 		if err != nil {
 			return err
 		}
-		stands = payload.Entry >= record.PhaseRowOf(rows, payload.Role).Entry
+		_, left := record.StartLeft(rows, payload.Role, token, payload.Entry)
+		stands = !left
 		return nil
 	})
 	if err != nil {
