@@ -6,7 +6,13 @@ import { connect, nkeys } from "nats";
 import { natsSeedFromEnvironment } from "../envoy-settings";
 import { natsAuthOptions } from "../nats-auth";
 import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
-import { type NatsServer, startNatsServer, useNatsServerDirectory } from "./nats-server";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServer,
+  useNatsServerDirectory,
+} from "./nats-server";
 
 interface TestKeyPair {
   getSeed(): Uint8Array;
@@ -49,23 +55,32 @@ async function connectWith(url: string, env: NodeJS.ProcessEnv) {
   return connection;
 }
 
+/** Settles every one of `steps` before it throws, naming each that failed: a step that fails
+ *  leaves the others to finish, so the afterAll finds each server as far as its own start got. */
+async function settleAll(steps: readonly Promise<void>[]): Promise<void> {
+  const failures = (await Promise.allSettled(steps)).flatMap((step) =>
+    step.status === "rejected"
+      ? [step.reason instanceof Error ? step.reason.message : String(step.reason)]
+      : []
+  );
+  if (failures.length > 0) throw new Error(failures.join("; "));
+}
+
 // Docker-backed: CI runs this package's tests with LEGION_E2E=1 after pulling the image.
 describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real NATS", () => {
   const user = createUser();
-  let open: NatsServer;
-  let authorized: NatsServer;
+  const open = natsServer(serverDirectory);
+  const authorized = natsServer(serverDirectory, user.publicKey);
 
+  // The two starts side by side, and the two removals, each whatever its start got to.
   beforeAll(async () => {
-    [open, authorized] = await Promise.all([
-      startNatsServer(serverDirectory),
-      startNatsServer(serverDirectory, user.publicKey),
-    ]);
-  }, 120_000);
+    const deadline = natsHookDeadline(NATS_START_HOOK_MS);
+    await settleAll([open.start(deadline), authorized.start(deadline)]);
+  }, NATS_START_HOOK_MS);
   afterAll(async () => {
-    // Both stop, whichever fails; each fails on a client a test left connected (nats-server.ts).
-    const stopped = await Promise.allSettled([open?.stop(), authorized?.stop()]);
-    for (const result of stopped) if (result.status === "rejected") throw result.reason;
-  }, 60_000);
+    const deadline = natsHookDeadline(NATS_STOP_HOOK_MS);
+    await settleAll([open.stop(deadline), authorized.stop(deadline)]);
+  }, NATS_STOP_HOOK_MS);
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});
@@ -87,23 +102,35 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
   });
 
   // The leak check's control: a client left connected, as a test that forgets to close one leaves
-  // it, reconnecting forever, fails its server's stop, which names it.
-  test("stopping a server a client is still connected to fails, naming the client", async () => {
-    const server = await startNatsServer(serverDirectory);
-    const leftover = await connect({
-      servers: [server.url],
-      name: "leftover-client",
-      maxReconnectAttempts: -1,
-      reconnectTimeWait: 50,
-    });
-    try {
-      await expect(server.stop()).rejects.toThrow(
-        /still had 1 client\(s\) connected .*leftover-client/
-      );
-    } finally {
-      await leftover.close();
-    }
-  }, 120_000);
+  // it, reconnecting forever, fails its server's stop, which names it once the stop's read of the
+  // server's clients has run to its bound. A row that fails before the stop removes the container
+  // all the same.
+  test(
+    "stopping a server a client is still connected to fails, naming the client",
+    async () => {
+      const server = natsServer(serverDirectory);
+      try {
+        await server.start(natsHookDeadline(NATS_START_HOOK_MS));
+        const leftover = await connect({
+          servers: [server.url],
+          name: "leftover-client",
+          maxReconnectAttempts: -1,
+          reconnectTimeWait: 50,
+        });
+        try {
+          await expect(server.stop(natsHookDeadline(NATS_STOP_HOOK_MS))).rejects.toThrow(
+            /still had 1 client\(s\) connected .*leftover-client/
+          );
+        } finally {
+          await leftover.close();
+        }
+      } catch (error) {
+        await server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)).catch(() => {});
+        throw error;
+      }
+    },
+    NATS_START_HOOK_MS + 2 * NATS_STOP_HOOK_MS
+  );
 });
 
 describe("natsAuthOptions", () => {

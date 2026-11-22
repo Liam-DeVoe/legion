@@ -127,20 +127,31 @@ function expectWithinBudget(elapsedMilliseconds: number, seconds: number) {
 }
 
 /**
- * The names of the clients still connected to this file's server, read from its monitor's /connz,
- * once none is left or two seconds have passed: a client's close is asynchronous, so one closed a
- * moment ago can still be counted. It polls a real container's own count, which no fake clock
- * advances. packages/envoy-client/src/__tests__/nats-server.ts holds the same check for that
- * package's servers.
+ * The bound of a read of this file's server's clients, a hang guard that no correct close comes
+ * near: on the shared development machine on 2026-11-22, at a one-minute load of 1,091 to 1,114,
+ * 600 clients of this image's server, each closed as a test closes it, left its /connz 0.3 ms
+ * after the close returned at the median and 10.8 ms at the slowest; the read has 30 s, over 2,700
+ * times that. packages/envoy-client/src/__tests__/nats-server.ts holds the same bound.
  */
-async function connectedClients(): Promise<string[]> {
-  const deadline = Date.now() + 2_000;
+const clientsReadMilliseconds = 30_000;
+
+/**
+ * The names of the clients connected to this file's server, read from its monitor's /connz once
+ * `settled` holds for them or once clientsReadMilliseconds have passed. A client's close is
+ * asynchronous, so one closed a moment ago can still be counted: the read polls a real container's
+ * own count, which no fake clock advances, until it is what the caller waits for. A client with no
+ * name is named by its connection id.
+ */
+async function connectedClients(settled: (names: string[]) => boolean): Promise<string[]> {
+  const until = performance.now() + clientsReadMilliseconds;
   for (;;) {
-    const response = await fetch(`http://${monitor}/connz`, { signal: AbortSignal.timeout(2_000) });
+    const response = await fetch(`http://${monitor}/connz`, {
+      signal: AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
+    });
     if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
     const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
     const open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
-    if (open.length === 0 || Date.now() > deadline) return open;
+    if (settled(open) || performance.now() >= until) return open;
     await Bun.sleep(100);
   }
 }
@@ -153,7 +164,7 @@ async function cleanup(): Promise<void> {
   let open: string[] = [];
   try {
     await nc?.close();
-    if (monitor) open = await connectedClients();
+    if (monitor) open = await connectedClients((names) => names.length === 0);
   } finally {
     removeContainer?.();
     removeContainer = undefined;
@@ -251,7 +262,8 @@ describe.skipIf(skip)("nats-stream last", () => {
   }, 120_000);
 
   // The leak check's control: a client left connected, reconnecting forever as a forgotten client
-  // does, is named by the check cleanup runs, and once closed is not.
+  // does, is named by the read cleanup runs, and once closed is not. Each read waits for what it
+  // looks for, the client's arrival and then its departure, bounded by clientsReadMilliseconds.
   test("the leak check names a client still connected, and not one closed", async () => {
     const leftover = await connect({
       servers: serverUrl,
@@ -260,10 +272,14 @@ describe.skipIf(skip)("nats-stream last", () => {
       reconnectTimeWait: 50,
     });
     try {
-      expect(await connectedClients()).toContain("nats-stream-leftover");
+      expect(await connectedClients((names) => names.includes("nats-stream-leftover"))).toContain(
+        "nats-stream-leftover"
+      );
     } finally {
       await leftover.close();
     }
-    expect(await connectedClients()).not.toContain("nats-stream-leftover");
+    expect(
+      await connectedClients((names) => !names.includes("nats-stream-leftover"))
+    ).not.toContain("nats-stream-leftover");
   }, 120_000);
 });
