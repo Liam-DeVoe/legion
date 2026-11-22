@@ -36,8 +36,10 @@ func PlacementRefused(err error) bool {
 // nothing it can read says every restarted peer is back, and the create's own refusal is the only
 // signal. Each retry waits the restart's poll (restartPoll) and prints one line on out naming op and
 // the refusal. Within bound (the restart's limit, PodRestartLimit when zero) it answers fn's first
-// other answer at once, nil or any other error; past bound it is UNKNOWN, naming op and the last
-// refusal. `envoy-infra buckets create`, `recreate` and `restore` run their creates through it.
+// other answer at once, nil or any other error. Past bound it is UNKNOWN, naming op, the code and
+// the last refusal, whose text an operator reads: JetStream answers the same code for a stream no
+// retry can place, such as more copies than the cluster has members. `envoy-infra buckets create`,
+// `recreate` and `restore` run their creates through it, and `streams update` its whole run.
 func RetryPlacement(ctx context.Context, bound time.Duration, op string, out io.Writer, fn func() error) error {
 	if bound == 0 {
 		bound = PodRestartLimit
@@ -52,7 +54,8 @@ func RetryPlacement(ctx context.Context, bound time.Duration, op string, out io.
 		fmt.Fprintf(out, "%s: JetStream could not place it yet (attempt %d): %v; trying again\n", op, attempt, err)
 		select {
 		case <-within.Done():
-			return unknownf(StepPostcheck, err, "%s: JetStream refused to place it for %s, the restart's limit", op, bound)
+			return unknownf(StepPostcheck, err, "%s: JetStream refused to place it (code %d) for %s, the restart's limit; a refusal that outlasts it may be one no retry mends, such as more copies than the cluster has members",
+				op, placementCode, bound)
 		case <-time.After(restartPoll):
 		}
 	}

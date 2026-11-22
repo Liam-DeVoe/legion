@@ -71,7 +71,8 @@ func TestRetryPlacement(t *testing.T) {
 	t.Run("still refused at the bound", func(t *testing.T) {
 		calls := 0
 		err := RetryPlacement(ctx, time.Second, "create KV_envoy_roles", &bytes.Buffer{}, func() error { calls++; return placementRefusal() })
-		requireUnknown(t, err, StepPostcheck, "create KV_envoy_roles", "refused to place it")
+		unknown := requireUnknown(t, err, StepPostcheck, "create KV_envoy_roles", "refused to place it", "code 10005")
+		require.ErrorContains(t, unknown, "no suitable peers for placement", "the last refusal's text")
 		require.Greater(t, calls, 1)
 	})
 }

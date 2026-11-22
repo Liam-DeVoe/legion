@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,17 +44,26 @@ func (h *heldStack) streamsRunWith(recorded RecordedSessionConsumers, stores Str
 // streamsRunReaders runs `envoy-infra streams <args>` in the stack with readers.
 func (h *heldStack) streamsRunReaders(readers CensusReaders, args ...string) (int, string, string) {
 	h.t.Helper()
-	full := append(append([]string{}, args...), commonArgs...)
-	full = append(full, "--minters-report", h.report, "--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null", "--replicas", "3")
-	if !strings.Contains(strings.Join(args, " "), "--reason") {
-		full = append(full, "--reason", "the row's streams "+args[0])
-	}
 	var stdout, stderr bytes.Buffer
 	d := h.d
 	d.Readers = readers
-	code := StreamsCommandOn(context.Background(), full, &stdout, &stderr, d)
+	code := StreamsCommandOn(context.Background(), h.streamsArgs(args...), &stdout, &stderr, d)
 	h.t.Logf("envoy-infra streams %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
+}
+
+// streamsArgs are args with the hold's flags of the stack, three copies unless args give
+// --replicas, and a reason unless they give one.
+func (h *heldStack) streamsArgs(args ...string) []string {
+	full := append(append([]string{}, args...), commonArgs...)
+	full = append(full, "--minters-report", h.report, "--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null")
+	if !slices.Contains(args, "--replicas") {
+		full = append(full, "--replicas", "3")
+	}
+	if !strings.Contains(strings.Join(args, " "), "--reason") {
+		full = append(full, "--reason", "the row's streams "+args[0])
+	}
+	return full
 }
 
 // noStores is a writer of the daemon stores' stream ids for a stack with no daemon store: it

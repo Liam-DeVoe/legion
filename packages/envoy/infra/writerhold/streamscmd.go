@@ -390,7 +390,26 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		c.Workflow, c.Command = holdrecord.WorkflowStreamsUpdate, CommandStreamsUpdate
 		c.Absent = ProtectedStreams()
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]Change, map[string]string, error) {
-			r, err := streams.Update(ctx, nc, settings, held)
+			// A create or raise JetStream cannot place yet, as for a while after the hold's restart
+			// (code 10005), is sent again (RetryPlacement): each attempt is a whole streams.Update,
+			// which finds in place what an earlier one made, so the run's changes are every attempt's.
+			var r streams.Report
+			var made []streams.Finding
+			err := RetryPlacement(ctx, op.RestartLimit, "streams update", stdout, func() error {
+				var err error
+				r, err = streams.Update(ctx, nc, settings, held)
+				made = append(made, r.Changes...)
+				if err != nil {
+					return err
+				}
+				return placementFailure(r)
+			})
+			r.Changes = made
+			// Past the limit the report reads UNKNOWN, as the command's exit does.
+			var unknown *Unknown
+			if errors.As(err, &unknown) && PlacementRefused(err) {
+				r.Unknown = append(r.Unknown, unknown.What)
+			}
 			result, reported = r, madeReport(r, err)
 			return streamChanges(r), nil, leftBy(r, nil, streamsRefusal(r, err))
 		}
@@ -668,6 +687,17 @@ func censusFamilies(ctx context.Context, records *holdrecord.Client, given []str
 		}
 	}
 	return recorded, nil
+}
+
+// placementFailure is the failure of an update's report that JetStream's refusal to place a stream
+// made (PlacementRefused of its Err, the server's own error), naming the stream; nil for none.
+func placementFailure(r streams.Report) error {
+	for _, f := range r.Failures {
+		if f.Err != nil && PlacementRefused(f.Err) {
+			return fmt.Errorf("%s: %w", f.Stream, f.Err)
+		}
+	}
+	return nil
 }
 
 // streamsRefusal is a streams run's error, or its report's verdict when it is not clean: an UNKNOWN
