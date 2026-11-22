@@ -245,7 +245,8 @@ which Claude Code sets fresh in every Bash command and moves to the new id on `/
 `DISPATCH_SESSION_ID` inherited from a parent session is ignored. A write that makes the session
 follow an ask prints `Following ask <id> on <issue>: …` once per ask, after its result; a result
 longer than 25,000 characters is written to a file the output names. It reads the envoy.json
-below on every call.
+below on every call. `dispatch login` acts as no session and reads no envoy.json, and
+`dispatch proxy` reads it only under `DISPATCH_TOKEN_BROKER=1`.
 
 Dispatch asks remain on native Dispatch.
 An Envoy delivery is one-way ingress, not a remote

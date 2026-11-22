@@ -1240,9 +1240,10 @@ the save holds, so of two logins made at once the one kept second names the othe
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process, or for `dispatch proxy` one proxy
-for the life of its command. The host plugin sets
-`DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
-Code, where claude-envoy's QA override `ENVOY_SESSION_ID` wins as it does on the
+for the life of its command. The rest of this paragraph is not about `dispatch login` (above),
+which reads no host, no session and no envoy.json. The host plugin sets `DISPATCH_HOST` (`omp` or
+`claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude Code, where claude-envoy's
+QA override `ENVOY_SESSION_ID` wins as it does on the
 session's claim; `DISPATCH_SESSION_ID` elsewhere); with either missing the command exits 2
 naming it, and an empty variable counts as unset. `DISPATCH_SESSION_TITLE`, or the session
 directory's `title` file, names the session on what it writes. It resolves Dispatch from the
@@ -1270,7 +1271,8 @@ whose follow notice was printed), and
 `results.jsonl` gets one line per call with the tool's `details` or its refusal, a refusal the CLI
 made before the call reached Dispatch included, which pi-envoy's run-end check reads; a line that
 is not JSON is named (file and line number) and skipped. `dispatch proxy` writes no line there, for
-itself or for a request it sends. Directories idle for 14 days are removed, at most once a day.
+itself or for a request it sends, and `dispatch login` none. Directories idle for 14 days are
+removed, at most once a day.
 
 `bun bin/stand-in-gateway.ts --status 502 --body html` serves one non-Dispatch answer (`html`,
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
@@ -1495,7 +1497,8 @@ Dispatch's code.
 `dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
 reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
 session's own credential as every Dispatch call presents it, and prints Dispatch's JSON answer for
-`jq`. It takes no method and no body: a write goes through the command named for it. The spec
+`jq`. It takes no method and no body: each write but a comment `dispatch proxy` sends goes through
+the command named for it. The spec
 refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
 backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
 plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A

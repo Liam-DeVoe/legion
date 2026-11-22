@@ -102,7 +102,7 @@ function stateWriteFailed(problem: string): string {
 const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
 
-/** A line that refuses a call before it reaches Dispatch, each at the start of the line:
+/** A line that refuses a spec command before it reaches Dispatch, each at the start of the line:
  *  `dispatch <command> was not called: …` (an argument problem, exit 2, wherever it is found;
  *  AskGate's block of a write wears the same line and exits 1), or a usage refusal
  *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
@@ -125,9 +125,9 @@ export interface CliRefusal {
 }
 
 /**
- * Each refusal the dispatch CLI printed in `text`, by its first line: what a reader of the CLI's
- * output (an agent's transcript, where a pipe can hide the exit) needs to tell a refused call from
- * one Dispatch answered. A line counts only at the start of a line of `text`.
+ * Each spec command's refusal the dispatch CLI printed in `text`, by its first line: what a reader
+ * of the CLI's output (an agent's transcript, where a pipe can hide the exit) needs to tell a
+ * refused call from one Dispatch answered. A line counts only at the start of a line of `text`.
  */
 export function cliRefusals(text: string): CliRefusal[] {
   const found: CliRefusal[] = [];
@@ -197,7 +197,7 @@ export function fitOutput(
 }
 
 /**
- * One `dispatch` command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
+ * One spec command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
  * the host session the environment names, and prints what the model reads. The host plugin sets
  * `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` (the envoy.json it chose) and the session's id in the
  * agent's shell (`CLAUDE_CODE_SESSION_ID` under Claude Code, where claude-envoy's QA override
@@ -441,9 +441,10 @@ export async function runDispatchCli(
       sleep: io.sleep,
     });
   }
-  // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
-  // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
-  // skill-scenario rig) sees a call whose output a pipe, `$(…)` or another program swallowed.
+  // A refusal before the call reaches Dispatch, but `dispatch proxy`'s, goes to the session's
+  // ledger too, whenever this call knows its session, so a reader of the ledger (pi-envoy's
+  // run-end check, the skill-scenario rig) sees a call whose output a pipe, `$(…)` or another
+  // program swallowed.
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.

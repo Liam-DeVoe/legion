@@ -1241,9 +1241,9 @@ function withPythonDispatch(code: string): string {
  * command ends the call, except one after `&&` that follows a shown refusal: the shell never ran
  * it.
  *
- * The refusals score does not rest on this attribution: the CLI logs each call it ran, refused or
- * not, in its ledger (refusalBlocks), and the attribution only says which command of a call a
- * ledger line belongs to. The output does not show:
+ * The refusals score does not rest on this attribution: the CLI logs each spec command it ran,
+ * refused or not, in its ledger (refusalBlocks), and the attribution only says which command of a
+ * call a ledger line belongs to. The output does not show:
  * - the end of another command's output (`cat`, `sed`, a `dispatch` command that succeeded), so a
  *   refusal after it could be that output's text;
  * - output a `$(…)` or a redirect to a file takes;
@@ -1454,11 +1454,12 @@ type LedgerLine = z.infer<typeof LedgerLine>;
  * The CLI logs every call it ran, refused or not, whatever the shell did with its output: a pipe,
  * `$(…)`, a loop or another program (Python's subprocess.run) hides nothing from it. A refusal the
  * CLI makes before the call reaches Dispatch is logged too whenever the call knows its session: a
- * refusal of a command's own arguments (`dispatch <command> was not called`, exit 1) under its
+ * refusal of a command's own arguments (`dispatch <command> was not called`, exit 2) under its
  * tool, and a usage refusal (`dispatch: …`, exit 2) under its tool, or under `dispatch` when the
- * CLI could not name the command. It logs no `--help` call that printed help and no dry run that
- * passed; a `--help` of an unknown command is a usage refusal and is logged. A run with
- * no ledger is the rig's fault: its CLI kept no record where the rig reads it. */
+ * CLI could not name the command. It logs no `--help` call that printed help, no dry run that
+ * passed and no `dispatch proxy` or `dispatch login` call; a `--help` of an unknown command is a
+ * usage refusal and is logged. A run with no ledger is the rig's fault: its CLI kept no record
+ * where the rig reads it. */
 function ledgerOf(runDir: string, session: string): LedgerLine[] {
   const state = { XDG_STATE_HOME: path.join(runDir, "home", ".local", "state") };
   const file = path.join(sessionDirectory(state, session), "results.jsonl");
@@ -2699,7 +2700,7 @@ const indented = (text: string, depth = 6) =>
  *     are not judged (SpecWork.unjudged: it pastes a sibling issue's spec) is printed with why, and
  *     the row is flagged `unjudged=N`: a write whose only check is one of these has no answer to
  *     whether the agent acted on what came back.
- *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's ledger,
+ *   - refusals: every refused spec command (refusalBlocks: an `error` line of the CLI's ledger,
  *     or a refusal a call's output shows that the ledger holds no line of: an `eval` cell's, whose
  *     kernel knows no session, or one the CLI made with no session) is followed by a call
  *     the ledger logs as a success, in a later tool call, with no skill file read between them. A

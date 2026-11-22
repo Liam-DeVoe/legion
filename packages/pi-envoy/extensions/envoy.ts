@@ -589,10 +589,10 @@ const UNASKED_WAIT_REMINDER =
  * One arming period of the run-end nudge. A person's typed input or Dispatch card arms a period.
  * `check_due` is the outstanding check, in the shape of the host's own todo reminder: arming owes
  * one, a completed check spends it, the agent's next real work — a successful tool call that ran
- * anything but `dispatch` commands — owes another, and opening the ask itself spends it, since the
- * nudge has nothing left to say about that stop. A turn that only replies and stops does no work,
- * so the nudge's own continuation can never owe one, which is what keeps it from nudging itself
- * forever. `checks` counts the ones spent, capped at `ASK_CHECKS_PER_PERIOD`.
+ * anything but `dispatch` commands the ledger records — owes another, and opening the ask itself
+ * spends it, since the nudge has nothing left to say about that stop. A turn that only replies and
+ * stops does no work, so the nudge's own continuation can never owe one, which is what keeps it
+ * from nudging itself forever. `checks` counts the ones spent, capped at `ASK_CHECKS_PER_PERIOD`.
  *
  * `baseline_as_of` is the server clock the period's next Dispatch read asks from, and it moves
  * after every self-check to that snapshot's `as_of`. This keeps the check's view current while the
@@ -1121,7 +1121,8 @@ export default function envoyExtension(hostApi: PiApi): void {
   };
 
   // Where this instance has read the `dispatch` command's ledger to (`results.jsonl` in the
-  // session's state directory, a line per call), so the run-end check sees each call once.
+  // session's state directory, a line per call, none for `dispatch proxy` or `dispatch login`), so
+  // the run-end check sees each call once.
   let dispatchLedger: { readonly sessionID: string; offset: number } | undefined;
 
   // Names the top-level session in the environment every later shell command takes, and starts
@@ -5261,9 +5262,10 @@ export default function envoyExtension(hostApi: PiApi): void {
       abortSelfCheck("the agent opened the ask itself");
     } else if (!owesNoCheck) {
       // Real work: it owes the period another check, the way finishing a step re-arms the
-      // host's todo reminder. A `dispatch` command is the agent talking to the humans this
-      // nudge is about, not work, so it owes nothing — and a turn that only replies calls no
-      // tool at all, which is what stops the nudge's own continuation from re-arming itself.
+      // host's todo reminder. A `dispatch` command the ledger records is the agent talking to the
+      // humans this nudge is about, not work, so it owes nothing — and a turn that only replies
+      // calls no tool at all, which is what stops the nudge's own continuation from re-arming
+      // itself.
       askAwareness = { ...askAwareness, check_due: true };
     }
   });

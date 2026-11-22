@@ -455,9 +455,10 @@ whose tasks reach nobody. When a
 section is off for a reason worth saying, the session says so once at its start:
 `envoy: no envoy.json at <path>: Dispatch and Envoy are off`, the lost `DISPATCH_URL` when
 `DISPATCH_TOKEN_FILE` is set and no server is named (`DISPATCH_TOKEN_FILE is set and DISPATCH_URL
-is not, so Dispatch is off: …`, which every `dispatch` command also prints), the section's error,
-what a checkout's file holds that is not read, or that inbound messages are off and why. Invalid configuration, an
-invalid URL, or an empty token makes every `dispatch` command exit 2 naming the source of the error.
+is not, so Dispatch is off: …`, which every `dispatch` command that reads Dispatch's configuration
+also prints), the section's error, what a checkout's file holds that is not read, or that inbound
+messages are off and why. Invalid configuration, an invalid URL, or an empty token makes every
+`dispatch` command that reads the configuration exit 2 naming the source of the error.
 
 `~/.config/opencode/envoy.json` and a checkout's `.opencode/envoy.json` are not read. While the old
 user file is there and the session's file is missing, Dispatch and Envoy stay off unless a variable
