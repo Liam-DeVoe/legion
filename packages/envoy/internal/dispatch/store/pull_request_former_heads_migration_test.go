@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -253,5 +254,146 @@ func TestTheFormerHeadsInstallSeedsTheResultsTheSettleOfTheIssueReads(t *testing
 				t.Fatalf("the install recorded the former heads %v and marked %v owed, want %v and %v: the candidates of the pull request of the issue whose settle reads the result", heads, owed, row.heads, row.owed)
 			}
 		})
+	}
+}
+
+// TestAResultCommittedWhileTheInstallRunsIsACandidate: before the install, CORE-1's open #70 left
+// 1111… and 2222… for 3333…, and no result was recorded at either, so the install's seed finds
+// nothing there. The install is held after its statements, before it records its version and
+// commits, and meanwhile a tester records a result at 1111… and a CI job one at 2222…. Each writer
+// either committed before the install read the result tables or waits for the install's commit;
+// either way the installed database holds both commits as #70's candidates, unverified, and the
+// settle of CORE-1, which they owe, confirms them against #70's commits.
+func TestAResultCommittedWhileTheInstallRunsIsACandidate(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	documents := installFixture(t, store)
+	connect := func(what string) *pgx.Conn {
+		t.Helper()
+		conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
+		if err != nil {
+			t.Fatalf("connect %s: %v", what, err)
+		}
+		t.Cleanup(func() { conn.Close(context.Background()) })
+		return conn
+	}
+	waiting := func(query string, args ...any) bool {
+		t.Helper()
+		var held bool
+		if err := store.Pool.QueryRow(ctx, query, args...).Scan(&held); err != nil {
+			t.Fatalf("read the lock waits: %v", err)
+		}
+		return held
+	}
+	holder, err := connect("the holder").Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer holder.Rollback(context.Background())
+	if _, err := holder.Exec(ctx, `lock table schema_migrations in share mode`); err != nil {
+		t.Fatalf("hold schema_migrations: %v", err)
+	}
+	migrated := make(chan error, 1)
+	go func() { migrated <- store.Migrate(ctx) }()
+	for deadline := time.Now().Add(30 * time.Second); !waiting(`
+		select exists (select 1 from pg_locks l join pg_class c on c.oid = l.relation
+			where c.relname = 'schema_migrations' and not l.granted)`); {
+		if time.Now().After(deadline) {
+			t.Fatal("the install never waited to record its version")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	type writer struct {
+		table, sha string
+		pid        uint32
+		done       chan error
+	}
+	writers := []*writer{{table: "check_results", sha: installH1}, {table: "ci_check_results", sha: installH2}}
+	for _, w := range writers {
+		conn := connect("the writer of " + w.table)
+		w.pid, w.done = conn.PgConn().PID(), make(chan error, 1)
+		go func() {
+			_, err := conn.Exec(ctx, installResult(w.table), "CORE-1", "CORE-1", documents["CORE-1"], w.sha)
+			w.done <- err
+		}()
+	}
+	// Each writer has committed, or waits for a lock: the install's, which waits behind the holder.
+	for _, w := range writers {
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			select {
+			case err := <-w.done:
+				if err != nil {
+					t.Fatalf("record the result in %s while the install runs: %v", w.table, err)
+				}
+				w.done <- nil
+			default:
+			}
+			if len(w.done) > 0 {
+				t.Logf("the writer of %s committed while the install waited to record its version", w.table)
+				break
+			}
+			if waiting(`select exists (select 1 from pg_locks where pid = $1 and not granted)`, w.pid) {
+				t.Logf("the writer of %s waits for a lock while the install waits to record its version", w.table)
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the writer of %s neither committed nor waited for a lock", w.table)
+			}
+		}
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the install: %v", err)
+	}
+	if err := <-migrated; err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, w := range writers {
+		if err := <-w.done; err != nil {
+			t.Fatalf("record the result in %s while the install runs: %v", w.table, err)
+		}
+	}
+	heads, owed := formerHeadsAndOwed(t, store)
+	if want := []string{"acme/widgets#70@1111 unverified", "acme/widgets#70@2222 unverified"}; !slices.Equal(heads, want) {
+		t.Fatalf("the installed database holds the former heads %v, want %v: a result committed while the install ran leaves no candidate, so no settle publishes the head #70 left", heads, want)
+	}
+	if !slices.Contains(owed, "CORE-1") {
+		t.Fatalf("the installed database marks %v owed, want CORE-1, whose settle confirms the candidates", owed)
+	}
+}
+
+// TestAResultAfterTheInstallAtAHeadLeftBeforeItIsACandidate: CORE-1's open #70 left 1111… and
+// 2222… for 3333… before the install, with no result at either, and the install seeds nothing. A
+// head move before the install is in no write a trigger saw, so a result recorded after it at a
+// commit that is no head of #70 Dispatch knows leaves that commit as a candidate, unverified, and
+// owes CORE-1 the settle that confirms it: a tester's at 1111… recorded on CORE-1 and a CI job's at
+// 2222… recorded on its child CORE-3, each against CORE-1's check. A result at #70's head
+// leaves none, and one at that head against CORE-2's check leaves it to CORE-2's #71, not to #70.
+func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsACandidate(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	documents := installFixture(t, store)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if heads, _ := formerHeadsAndOwed(t, store); len(heads) != 0 {
+		t.Fatalf("the install seeded %v with no result recorded, want nothing", heads)
+	}
+	for _, result := range []struct{ table, recordedOn, checkOf, sha string }{
+		{"check_results", "CORE-1", "CORE-1", installH1},
+		{"ci_check_results", "CORE-3", "CORE-1", installH2},
+		{"check_results", "CORE-1", "CORE-1", installH3},
+		{"check_results", "CORE-1", "CORE-2", installH3},
+	} {
+		if _, err := store.Pool.Exec(ctx, installResult(result.table), result.recordedOn, result.checkOf, documents[result.checkOf], result.sha); err != nil {
+			t.Fatalf("record a result at %s…: %v", result.sha[:4], err)
+		}
+	}
+	heads, owed := formerHeadsAndOwed(t, store)
+	if want := []string{"acme/widgets#70@1111 unverified", "acme/widgets#70@2222 unverified", "acme/widgets#71@3333 unverified"}; !slices.Equal(heads, want) {
+		t.Fatalf("after the results the former heads are %v, want %v: each result's commit a candidate of the open pull request of the issue whose settle reads it, but where it is that pull request's head", heads, want)
+	}
+	if !slices.Contains(owed, "CORE-1") {
+		t.Fatalf("the results marked %v owed, want CORE-1", owed)
 	}
 }

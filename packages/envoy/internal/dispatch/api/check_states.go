@@ -27,9 +27,10 @@ import (
 // migration 20261122071001), in the writer's own transaction, so a head is a former head whether
 // or not a settle ran while the pull request was there. A head an open pull request left before
 // that migration is known where a result was recorded at it: the migration seeds those commits as
-// candidates, which the settler checks against the pull request's commits once
-// (verifyFormerHeads). A head's states stop, and its rows go, once no open pull request is or was
-// at it: its pull requests closed or merged.
+// candidates, and a result recorded since at a commit that is no head of the pull request Dispatch
+// knows leaves one by its own trigger, each of which the settler checks against the pull
+// request's commits (verifyFormerHeads). A head's states stop, and its rows go, once no open pull
+// request is or was at it: its pull requests closed or merged.
 //
 // A write that can change a state does not publish anything itself: a row trigger on each table a
 // state is computed from marks the issue owed, in the writer's own transaction
@@ -354,15 +355,17 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 	return former, nil
 }
 
-// verifyFormerHeads confirms the candidates the install seeded (pull_request_former_heads rows
-// whose verified is false, migration 20261122071001): the commits of results the settle of an
-// open pull request's issue reads, recorded on any issue against a check of its Verification
-// document, which may or may not have been heads of that pull request. For
+// verifyFormerHeads confirms the candidates (pull_request_former_heads rows whose verified is
+// false, migration 20261122071001): the commits of results the settle of an open pull request's
+// issue reads, recorded on any issue against a check of its Verification document, which the
+// install seeded, or a result recorded since left at a commit that is no head of the pull request
+// Dispatch knows, and which may or may not have been heads of that pull request. For
 // each open pull request of heads holding one, it reads the pull request's commits from GitHub
 // once (delivery.PullRequestCommits, a page of 100 commits per read, and GitHub lists 250 at
 // most), keeps each candidate among them as a former head and deletes the rest, in one statement.
-// So the read happens once per such pull request, in the first settle of its issue after the
-// install, which the install's mark owes. Only a commit list GitHub answered deletes a candidate.
+// So the read happens once per such pull request and candidate set, in the first settle of its
+// issue after the install or the result, which the mark of either owes. Only a commit list GitHub
+// answered deletes a candidate.
 // Every other outcome, a deployment with no App key, a repository the App cannot read, a 404, a
 // 5xx or a bound that ended, says nothing about the commits: the candidates stay as they are,
 // unverified answers true, and the settle keeps a mark that reads them again after the backoff, so

@@ -7,9 +7,10 @@
 --
 --   pull_request_former_heads  one row per pull request (repo, number, as pull_request_heads keys
 --                              it) and head it left while open, with when it last left that head.
---                              verified is false on a head this migration seeded and no read of
---                              the pull request's commits has confirmed yet (below): the settler
---                              computes no state there until one does. No foreign key: a row takes
+--                              verified is false on a candidate, a commit this migration seeded or
+--                              a result recorded since left (below), which no read of the pull
+--                              request's commits has confirmed yet: the settler computes no state
+--                              there until one does. No foreign key: a row takes
 --                              no lock on the pull request's row. The rows of a pull request go
 --                              when it closes or merges, or when its row is deleted: its heads then
 --                              stop being computed, and a pull request reopened later has none of
@@ -55,11 +56,40 @@
 -- at the settler's first pass. A head left before this release with no result at it is not known,
 -- and needs no state.
 --
--- One transaction: the table, the function, both triggers and the seed commit together. The
--- triggers' catalog write takes pull_request_heads' SHARE ROW EXCLUSIVE, held to the commit, so a
--- head write waits for the seed rather than landing between it and the triggers. The seed reads
--- the open rows and the result tables, and writes only the new table and check_states_owed. The
--- census answers 0: nothing existing is refused or rewritten.
+-- The same holds for a result recorded after this release at such a head: no trigger saw the
+-- pull request leave it, and the pull request now names another head. So
+-- pull_request_former_heads_of_result(), an insert trigger on each result table, leaves the
+-- result's commit as a candidate of each open pull request of the issue whose settle reads the
+-- result, other than one at that commit, where the pull request holds no row of the commit yet,
+-- and marks that issue owed when it left one; the settler confirms it as it confirms the seed's.
+-- A head an open pull request left since this release already holds its row, verified, so a
+-- result there leaves nothing to read. The seed and the trigger draw from one population, the
+-- results of the issue's Verification document, so a result is a candidate whether it was
+-- committed before the install, while it ran, or after it.
+--
+-- One transaction: the tables, the functions, the triggers and the seed commit together, and the
+-- install holds the three tables they read and watch from the lock below to its commit: a writer
+-- of pull_request_heads, check_results or ci_check_results either committed before the seed's
+-- statement, which reads what it wrote, or waits for the install's commit and then fires the
+-- triggers. So no head move and no result lands between the seed's read and the triggers. The
+-- lock is SHARE ROW EXCLUSIVE, the one the triggers' catalog writes take anyway, taken in one
+-- statement in one order: a read of any of the three is not held, every write of them waits.
+--
+-- No writer of one of the three writes another of them in its transaction: a result's write
+-- (api/results.go, recordResultUnderOwnerLocks, a role's or a CI job's) reads pull_request_heads
+-- only, under ACCESS SHARE, which the lock leaves free, and a head's write
+-- (delivery.UpsertPullRequestHead and the re-key's delete) writes no result. The one write that
+-- holds two of them is the delete of an issue or a document, whose foreign keys cascade into both
+-- result tables and set pull_request_heads.issue_key to null, in an order of their own; the install
+-- holds each lock while it waits for the next, so such a delete can close a cycle with it. Half a
+-- second of lock_timeout, shorter than deadlock_timeout (1 s by default), makes the install give
+-- up first, before either deadlock check runs: it fails with 55P03 having applied nothing, the
+-- delete finishes, and the runner applies it again (store/store.go, RetryLockTimeouts), as
+-- 20261101182522 does for its five tables. The seed reads the open rows and the result tables, and
+-- writes only the new table and check_states_owed. The census answers 0: nothing existing is
+-- refused or rewritten.
+set local lock_timeout = '500ms';
+
 create table pull_request_former_heads (
     repo text not null,
     number integer not null,
@@ -115,11 +145,41 @@ begin
   return null;
 end $$;
 
+-- A result recorded, a role's or a CI job's: its commit is a candidate of each open pull request
+-- of the issue whose settle reads it, the issue of the Verification document its check is a block
+-- of, where that pull request is at another commit and holds no row of this one; that issue is
+-- marked owed where one was left (above).
+create function pull_request_former_heads_of_result() returns trigger language plpgsql as $$
+declare
+  owner text;
+begin
+  select document.issue_key into owner from artifacts document
+  where document.id = new.check_artifact_id
+    and (document.role = 'verification' or (document.role is null and document.issue_key is not null and document.slug = 'verification-md'));
+  if owner is null then
+    return null;
+  end if;
+  insert into pull_request_former_heads (repo, number, head_sha, verified)
+  select head.repo, head.number, new.commit_sha, false from pull_request_heads head
+  where head.issue_key = owner and head.state = 'open' and head.head_sha <> new.commit_sha
+  on conflict (repo, number, head_sha) do nothing;
+  if found then
+    perform check_states_owe(owner);
+  end if;
+  return null;
+end $$;
+
+lock table pull_request_heads, check_results, ci_check_results in share row exclusive mode;
+
 create trigger pull_request_former_heads_keep_update after update on pull_request_heads
   for each row when ((old.repo, old.number, old.head_sha, old.state) is distinct from (new.repo, new.number, new.head_sha, new.state))
   execute function pull_request_former_heads_keep();
 create trigger pull_request_former_heads_keep_delete after delete on pull_request_heads
   for each row execute function pull_request_former_heads_keep();
+create trigger pull_request_former_heads_of_check_results after insert on check_results
+  for each row execute function pull_request_former_heads_of_result();
+create trigger pull_request_former_heads_of_ci_check_results after insert on ci_check_results
+  for each row execute function pull_request_former_heads_of_result();
 
 insert into pull_request_former_heads (repo, number, head_sha, verified)
 select distinct head.repo, head.number, result.commit_sha, false

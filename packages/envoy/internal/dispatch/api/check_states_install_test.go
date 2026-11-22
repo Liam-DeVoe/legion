@@ -1,7 +1,8 @@
 // check_states_install_test.go holds the settler to the former heads the install of
-// pull_request_former_heads seeded (migration 20261122071001): the commits of results recorded on
-// an open pull request's issue, unverified until the settler has read that pull request's commits
-// once (verifyFormerHeads). The rig is check_states_test.go's.
+// pull_request_former_heads seeded (migration 20261122071001), and to the candidates a result
+// recorded since leaves: the commits of results the settle of an open pull request's issue reads,
+// unverified until the settler has read that pull request's commits (verifyFormerHeads). The rig
+// is check_states_test.go's.
 package api
 
 import (
@@ -136,5 +137,50 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 	settleOwed(t, rig)
 	if got := candidatesOf(t, rig); len(got) != 2 || !got[eachHeadH1] || got[eachHeadH3] {
 		t.Fatalf("#70 holds the former heads %v after GitHub answered 404 for its commits, want H1 verified and H3 still unverified: a 404 is no commit list", got)
+	}
+}
+
+// TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestListsIt: #70 left H1
+// for H2 before the install, so no trigger recorded H1, and no result was recorded at H1 then, so
+// the install seeded nothing there. After the install the tester records k1 passing at H1: on the
+// issue, or on a child of it against the issue's check, a result the settle of the issue reads as
+// its own either way. The result leaves H1 as a candidate of #70, unverified, and once #70's
+// commits list H1 the settle keeps it and publishes k1 yes there, in one read of #70's commits.
+func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestListsIt(t *testing.T) {
+	for _, child := range []bool{false, true} {
+		name := "recorded on the issue"
+		if child {
+			name = "recorded on a child of the issue against its check"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newCheckStatesRig(t, checkStatesTwoChecks)
+			upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+			settleOwed(t, rig)
+			rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
+			recorder := rig.issue
+			if child {
+				filed := rig.asPerson(t, http.MethodPost, "/api/v1/issues",
+					map[string]any{"project": ciJobProject, "title": "A child", "parent": rig.issue, "force": true, "spec": "A spec\n"})
+				if filed.Code != http.StatusCreated {
+					t.Fatalf("file a child of %s: status=%d body=%s", rig.issue, filed.Code, filed.Body.String())
+				}
+				recorder = decodeBody[model.Issue](t, filed).Key
+			}
+			eachHeadResult(t, rig.handler, recorder, "k1", "tester", "pass", eachHeadH1)
+			if got := candidatesOf(t, rig); len(got) != 1 || got[eachHeadH1] {
+				t.Fatalf("after a result at H1, a head #70 left before the install, #70 holds the former heads %v, want H1, unverified", got)
+			}
+			settleOwed(t, rig)
+			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
+				*row.state != model.PassStandsYes {
+				t.Fatalf("k1 at H1 once #70's commits list it is published as %s, want yes", publishedLine(row))
+			}
+			if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
+				t.Fatalf("#70 holds the former heads %v after the settle, want H1, verified", got)
+			}
+			if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
+				t.Fatalf("the settle read #70's commits %d times, want once", reads)
+			}
+		})
 	}
 }
