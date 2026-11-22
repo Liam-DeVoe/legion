@@ -29,14 +29,19 @@ test("each hook runs its own bundle, with the timeout its work needs: 20 s for t
   ])
 })
 
+/** The room the open-asks hook keeps beside its bounded steps: Bun's start-up of the bundle, the
+ *  session handoff and title writes, and resolving the config file, none of which has a bound of
+ *  its own. */
+const START_UP_ALLOWANCE_MS = 2_000
+
 // The open-asks hook's bounded steps run one after another (hooks/session-hook.ts `openAsks`): jj's
 // own user config chain for the attribution overlay (`JJ_BASE_CHAIN_TIMEOUT_MS`), the `!` token
 // command that resolving Dispatch may run (envoy-client's `commandTimeoutMs`), and the Dispatch
 // read of the session's open asks (`OPEN_ASKS_TIMEOUT_MS`). Claude Code kills the hook at its
-// hooks.json timeout and the summary is lost, so the three together end inside it, what is left
-// being Bun's start-up. A row that runs the hook cannot show this by a clock: a loaded machine
-// starting the hook slowly stretches the clock, and a hook given a raised bound still returns
-// inside that row's own timeout.
+// hooks.json timeout and the summary is lost, so the three, with the start-up allowance, end
+// inside it; a failure prints each step, so it names the one that grew. A row that runs the hook
+// cannot show this by a clock: a loaded machine starting the hook slowly stretches the clock,
+// and a hook given a raised bound still returns inside that row's own timeout.
 test("the open-asks hook's jj, token command and Dispatch read bounds, one after another, end inside its hooks.json timeout", () => {
   const timeouts = Object.values(hooks.hooks).flatMap((matchers) =>
     matchers.flatMap((matcher) =>
@@ -44,11 +49,19 @@ test("the open-asks hook's jj, token command and Dispatch read bounds, one after
     ),
   )
   expect(timeouts).toEqual([20])
-  const steps = {
+  const [timeoutSeconds = 0] = timeouts
+  const budget = {
     jj: JJ_BASE_CHAIN_TIMEOUT_MS,
     tokenCommand: commandTimeoutMs({}),
     dispatchRead: OPEN_ASKS_TIMEOUT_MS,
+    startUp: START_UP_ALLOWANCE_MS,
   }
-  const [timeoutSeconds = 0] = timeouts
-  expect(steps.jj + steps.tokenCommand + steps.dispatchRead).toBeLessThan(timeoutSeconds * 1_000)
+  const spent = budget.jj + budget.tokenCommand + budget.dispatchRead + budget.startUp
+  const timeout = timeoutSeconds * 1_000
+  expect({ ...budget, spent, timeout, fits: spent <= timeout }).toEqual({
+    ...budget,
+    spent,
+    timeout,
+    fits: true,
+  })
 })

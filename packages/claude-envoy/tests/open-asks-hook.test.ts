@@ -908,7 +908,9 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const jjPid = join(scratch, "jj.pid")
-  const bin = await jjDirectory(scratch, `echo $$ > '${jjPid}'\nexec sleep 86400`)
+  // The pid file's path reaches the stub through the environment the hook hands jj, never as
+  // script text: a quote in TMPDIR would end a quoted path there before the pid was written.
+  const bin = await jjDirectory(scratch, 'echo $$ > "$JJ_STUB_PID_FILE"\nexec sleep 86400')
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
   let pid: number | undefined
@@ -922,6 +924,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
       LEGION_ISSUE_TRAILER: "ACME-7",
       DISPATCH_URL: server.url.origin,
       DISPATCH_TOKEN,
+      JJ_STUB_PID_FILE: jjPid,
     })
 
     expect(result.exitCode).toBe(0)
