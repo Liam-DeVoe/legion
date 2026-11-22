@@ -22,32 +22,46 @@ import (
 )
 
 // The pull requests of acme/widgets these cases read: the issue's own, one stacked on its branch,
-// the other issue's pull request a body names, and the GitHub issue a body cites.
+// the other issue's pull request a body names, and the GitHub issue a body cites. citedElsewhereSHA
+// heads a pull request of another repository, and citedOldNameSHA one of acme/widgets stored under
+// its old name.
 const (
-	citedOwn    = 51
-	citedOnTop  = 52
-	citedPull   = 53
-	citedIssue  = 54
-	citedOwnSHA = "5151515151515151515151515151515151515151"
-	citedTopSHA = "5252525252525252525252525252525252525252"
-	citedPRSHA  = "5353535353535353535353535353535353535353"
+	citedOwn          = 51
+	citedOnTop        = 52
+	citedPull         = 53
+	citedIssue        = 54
+	citedOwnSHA       = "5151515151515151515151515151515151515151"
+	citedTopSHA       = "5252525252525252525252525252525252525252"
+	citedPRSHA        = "5353535353535353535353535353535353535353"
+	citedElsewhereSHA = "5454545454545454545454545454545454545454"
+	citedOldNameSHA   = "5555555555555555555555555555555555555555"
 )
+
+// citedPullRequest is a pull request GitHub names for a head commit, in whichever repository the
+// read asks about.
+type citedPullRequest struct {
+	number     int
+	head, base string
+	body       string
+}
 
 // citedWorld is a Dispatch whose GitHub names, for each head commit, one pull request of
 // acme/widgets: the issue's own #51 (branch legion/<issue>, base main, body ownBody), #52 stacked
 // on its branch (legion/<issue>-snippet-sentinels), and the other issue's #53 (legion/<other>).
 // Both issues carry siblingChecks; the other issue links acme/widgets#linked as Dispatch stores a
-// reference, in both URL forms.
+// reference, in both URL forms. Its App is installed on acme/other and acme/old-widgets too, and
+// a case names more pull requests with heads.
 type citedWorld struct {
 	t       *testing.T
 	handler http.Handler
 	issue   string
 	other   string
+	heads   map[string]citedPullRequest
 }
 
 func newCitedWorld(t *testing.T, project, ownBody string, linked int) citedWorld {
 	t.Helper()
-	handler, database, _, fake := readThroughGitHub(t, "acme/widgets")
+	handler, database, _, fake := readThroughGitHub(t, "acme/widgets", "acme/other", "acme/old-widgets")
 	issue := issueInRepository(t, handler, project, "acme/widgets", "A pull request that names another")
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": project, "title": "The other issue's work", "spec": "A spec\n"}, "alice")
@@ -64,17 +78,13 @@ func newCitedWorld(t *testing.T, project, ownBody string, linked int) citedWorld
 			($1, 'https://github.com/acme/widgets/pull/' || $2, 'url')`, other, strconv.Itoa(linked)); err != nil {
 		t.Fatalf("link acme/widgets#%d to %s: %v", linked, other, err)
 	}
-	pulls := map[string]struct {
-		number     int
-		head, base string
-		body       string
-	}{
+	heads := map[string]citedPullRequest{
 		citedOwnSHA: {citedOwn, "legion/" + issue.Key, "main", ownBody},
 		citedTopSHA: {citedOnTop, "legion/" + issue.Key + "-snippet-sentinels", "legion/" + issue.Key, ""},
 		citedPRSHA:  {citedPull, "legion/" + other, "main", ""},
 	}
 	fake.answers(func(repo, sha string) string {
-		pull, named := pulls[sha]
+		pull, named := heads[sha]
 		if !named {
 			return `[]`
 		}
@@ -87,7 +97,19 @@ func newCitedWorld(t *testing.T, project, ownBody string, linked int) citedWorld
 			"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}]`,
 			pull.number, body, repo, pull.number, pull.head, sha, repo, pull.base)
 	})
-	return citedWorld{t: t, handler: handler, issue: issue.Key, other: other}
+	return citedWorld{t: t, handler: handler, issue: issue.Key, other: other, heads: heads}
+}
+
+// holdIn makes Dispatch hold pull request number of repo, headed by sha: an issue of a project of
+// its own whose repository is repo, with siblingChecks, records a pass at sha, which stores the
+// pull request GitHub names there. It answers that issue's key.
+func (w citedWorld) holdIn(project, repo string, number int, sha string) string {
+	w.t.Helper()
+	holder := issueInRepository(w.t, w.handler, project, repo, "Work of "+repo)
+	uploadDocument(w.t, w.handler, "/api/v1/issues/"+holder.Key, "verification.md", siblingChecks)
+	w.heads[sha] = citedPullRequest{number, "legion/" + holder.Key, "main", ""}
+	w.pass(holder.Key, sha)
+	return holder.Key
 }
 
 // pass records the tester's pass of k1 of key at commit. The record route reads the pull requests
@@ -161,5 +183,28 @@ func TestABodyNamingAPullRequestByNumberLeavesThePullRequestItsBranchsIssue(t *t
 		world.requireCompared(world.issue,
 			fmt.Sprintf("#%d is no pull request Dispatch holds, so #%d's body cites the GitHub issue the other issue links, which ranks above the branch", citedIssue, citedOwn),
 			citedTopSHA)
+	})
+	t.Run("control: another repository holds a pull request of the cited number", func(t *testing.T) {
+		world := newCitedWorld(t, "CITEOR", fmt.Sprintf("Fixes #%d.", citedIssue), citedIssue)
+		world.holdIn("CITEOO", "acme/other", citedIssue, citedElsewhereSHA)
+		world.pass(world.issue, citedOwnSHA)
+		world.pass(world.issue, citedTopSHA)
+		world.requireCompared(world.issue,
+			fmt.Sprintf("Dispatch holds #%d of acme/other alone, so #%d of acme/widgets is still the GitHub issue the other issue links, which ranks above the branch", citedIssue, citedIssue),
+			citedTopSHA)
+	})
+	t.Run("the body names a pull request Dispatch holds under its repository's old name", func(t *testing.T) {
+		world := newCitedWorld(t, "CITERN",
+			fmt.Sprintf("#%d renamed the helper, so this change calls it by its new name.", citedPull), citedPull)
+		world.holdIn("CITEOW", "acme/old-widgets", citedPull, citedOldNameSHA)
+		if response := dispatchRequest(t, world.handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/old-widgets",
+			map[string]any{"project": "CITEOW", "renamed_to": "acme/widgets"}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("record acme/old-widgets as renamed to acme/widgets: status=%d body=%s", response.Code, response.Body.String())
+		}
+		world.pass(world.issue, citedOwnSHA)
+		world.pass(world.issue, citedTopSHA)
+		world.requireCompared(world.issue,
+			fmt.Sprintf("Dispatch holds #%d of acme/widgets under its old name acme/old-widgets, so #%d's body cites no GitHub issue and its branch names the issue", citedPull, citedOwn),
+			citedOwnSHA, citedTopSHA)
 	})
 }
