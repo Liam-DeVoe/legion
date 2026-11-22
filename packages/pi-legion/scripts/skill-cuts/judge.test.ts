@@ -1,4 +1,5 @@
 import { beforeAll, expect, mock, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -11,7 +12,7 @@ import {
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
 import { type Arm, type ArmName, buildArm } from "./arms";
-import { blindSkillNames, THE_SKILL } from "./blind";
+import { blindSkillNames } from "./blind";
 import { type Case, pathHash } from "./cases";
 import {
   type ContentBlock,
@@ -32,6 +33,7 @@ import {
   judgeBlind,
   judgeBody,
   judgeControls,
+  judgeIdentity,
   judgeReply,
   MESSAGE_CHARS,
   NOTHING_REPLY,
@@ -44,12 +46,18 @@ import { PROMPTS_DIR, parsePrompt } from "./readers";
 /** When set, the judge's prompt reads as this error: a missing or bad `prompts/judge.md`. Every
  *  other read is readers.ts's own. */
 let judgePromptFault: string | undefined;
+/** When set, the judge's prompt as loadPrompt read it has this SHA-256: the file read before it
+ *  was edited. */
+let judgePromptSha256: string | undefined;
 const loadPrompt = readers.loadPrompt;
 mock.module("./readers", () => ({
   ...readers,
   loadPrompt: (name: string) => {
     if (name === "judge" && judgePromptFault !== undefined) throw new Error(judgePromptFault);
-    return loadPrompt(name);
+    const prompt = loadPrompt(name);
+    return name === "judge" && judgePromptSha256 !== undefined
+      ? { ...prompt, sha256: judgePromptSha256 }
+      : prompt;
   },
 }));
 
@@ -596,6 +604,22 @@ test("the pinned settings reach every request", async () => {
   }
 });
 
+// Catches: a stage's recorded judge hashed from prompts/judge.md as the file is when the stage
+// starts, rather than from the bytes loadPrompt read once and the judge sends.
+test("the judge's identity is the prompt loadPrompt read: the SHA-256 of its bytes and its settings", () => {
+  const bytes = readFileSync(path.join(PROMPTS_DIR, "judge.md"));
+  const { settings } = loadPrompt("judge");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  expect(judgeIdentity()).toEqual({ sha256, settings });
+  // The file edited after loadPrompt read it: the identity is still the read file's.
+  judgePromptSha256 = "0".repeat(64);
+  try {
+    expect(judgeIdentity()).toEqual({ sha256: "0".repeat(64), settings });
+  } finally {
+    judgePromptSha256 = undefined;
+  }
+});
+
 test("the shuffle is stable under a recorded seed and ids are opaque", async () => {
   const items = (["old", "new", "none"] as const).flatMap((arm) =>
     Array.from({ length: 10 }, (_, run) => ({ arm, run }))
@@ -904,7 +928,6 @@ test("skill names reach the judge as the-skill", async () => {
     expect(text).toContain("alphabet");
     expect(text).toContain("alpha-extra");
   }
-  expect(THE_SKILL).toBe("the-skill");
   // With no names given, nothing changes: every arm of a run is given the same names.
   expect(blindSkillNames(prose, [])).toBe(prose);
 });

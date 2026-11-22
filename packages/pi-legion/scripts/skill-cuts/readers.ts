@@ -92,6 +92,7 @@
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
  * answer names that finding.
  */
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -187,13 +188,23 @@ export function parsePrompt(name: string, file: string): Prompt {
   return { name, settings: settings.data, text };
 }
 
-const prompts = new Map<string, Prompt>();
+/** A prompt as `loadPrompt` read it, with the SHA-256 of the file's bytes it parsed. */
+export interface LoadedPrompt extends Prompt {
+  readonly sha256: string;
+}
 
-/** The prompt `prompts/<name>.md`, read once per process. */
-export function loadPrompt(name: string): Prompt {
+const prompts = new Map<string, LoadedPrompt>();
+
+/** The prompt `prompts/<name>.md`, read once per process: its bytes parsed (`parsePrompt`) and
+ *  hashed, so the hash is of the text every request with it sends. */
+export function loadPrompt(name: string): LoadedPrompt {
   let prompt = prompts.get(name);
   if (prompt === undefined) {
-    prompt = parsePrompt(name, readFileSync(path.join(PROMPTS_DIR, `${name}.md`), "utf8"));
+    const bytes = readFileSync(path.join(PROMPTS_DIR, `${name}.md`));
+    prompt = {
+      ...parsePrompt(name, bytes.toString("utf8")),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
     prompts.set(name, prompt);
   }
   return prompt;
@@ -1305,6 +1316,27 @@ const ChangedFile = z.strictObject({
   hunks: z.array(z.string().min(1)),
 });
 
+/** The files of a diff by each path that names one, before or after the change: where a path
+ *  names two files (a file renamed away from it, and a new file at it), the file the diff shows at
+ *  that path (its path after the change, or before for a file the change deletes); else the first
+ *  file of the diff it names. The proposal-target answer check and proposals.ts's item read take
+ *  a hunk's file from it, so both take the same one. */
+export function diffFilesByPath<
+  F extends { readonly before: string | null; readonly after: string | null },
+>(files: readonly F[]): Map<string, F> {
+  const byPath = new Map<string, F>();
+  for (const file of files) {
+    const shown = file.after ?? file.before;
+    if (shown !== null && !byPath.has(shown)) byPath.set(shown, file);
+  }
+  for (const file of files) {
+    for (const name of [file.before, file.after]) {
+      if (name !== null && !byPath.has(name)) byPath.set(name, file);
+    }
+  }
+  return byPath;
+}
+
 export const ProposalTargetInput = z
   .strictObject({
     /** The closed pull request's diff: its number, its whole text and each of its files. */
@@ -1347,10 +1379,7 @@ const proposalTargetReader: Reader<ProposalTargetInput, ProposalTargetAnswer> = 
   input: ProposalTargetInput,
   answer: (input) =>
     ProposalTargetAnswer.superRefine((answer, ctx) => {
-      const files = new Map<string, z.infer<typeof ChangedFile>>();
-      for (const file of input.diff.files) {
-        for (const name of [file.before, file.after]) if (name !== null) files.set(name, file);
-      }
+      const files = diffFilesByPath(input.diff.files);
       const named = new Set<string>();
       for (const [index, { file: name, hunk }] of answer.hunks.entries()) {
         const file = files.get(name);

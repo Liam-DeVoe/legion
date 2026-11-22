@@ -246,11 +246,15 @@ export function controlCase(
 
 /** A skill that gets no verdict, and why. */
 export type NoVerdict = { verdict: null; reason: string };
+/** The reason of a skill whose planted-loss control is no loss, the deleted line named by `line`
+ *  (`NO_CONTROL_LOSS`: the case's line; cli.ts names a `--planted-line` so). */
+export function noControlLoss(line: string): string {
+  return `deleting ${line} showed no detectable change (planted-loss control not a loss)`;
+}
 /** The reason of a skill whose planted-loss control is no loss: deleting the case's line from the
  *  old text changed nothing the rule detects (the line may be redundant, or the instrument
  *  blind). */
-export const NO_CONTROL_LOSS =
-  "deleting the case's line showed no detectable change (planted-loss control not a loss)";
+export const NO_CONTROL_LOSS = noControlLoss("the case's line");
 /** A skill's verdict: the cut lost what a case's line makes agents do, or kept it; or no
  *  verdict. */
 export type SkillOutcome = { verdict: "loss" | "keeps" } | NoVerdict;

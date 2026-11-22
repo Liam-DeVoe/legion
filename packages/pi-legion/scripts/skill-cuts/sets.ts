@@ -8,8 +8,9 @@
  *   - `omp/plugins/package.json`: a dependency `"<package>": "github:<owner>/<repo>#<ref>"` whose
  *     owner and repository are the set's, in any case, whatever its package key (`packagePins`).
  *     Oh My Pi installs it under `node_modules/<package>/`.
- *   - `installers/omp.sh`: a line `ensure_vendor <url> <dir> [<commit>]` whose url is
- *     `https://github.com/<owner>/<repo>` with or without `.git` (`vendorPins`). The installer
+ *   - `installers/omp.sh`: a line `ensure_vendor <url> <dir> [<commit>]` whose url names the set's
+ *     repository on GitHub (`vendorPins`), read as copies.ts's `parseManifest` reads an installer
+ *     script's `vendors` (quotes taken off, a line that passes a variable skipped). The installer
  *     clones it into `vendor/<dir>/`.
  * A set pinned by no line, or by more than one, fails the read. A pin's ref resolves to a commit
  * (`SetReads.resolve`): a 40-hex ref is the commit; a tag is read with `git/ref/tags/<tag>`, whose
@@ -37,10 +38,11 @@
  * repos/<owner>/<repo>/contents/package.json -f ref=<commit>` is refused, `gh api
  * 'repos/<owner>/<repo>/contents/package.json?ref=<commit>'` answers).
  */
+import path from "node:path";
 import { z } from "zod";
 import { firstLine, type GhRetries, schemaFaults } from "./common";
 import type { SkillCutsConfig } from "./config";
-import { type Gh, type GhResult, parseJson } from "./copies";
+import { type Gh, type GhResult, parseJson, parseManifest } from "./copies";
 
 export const PLUGINS_MANIFEST = "omp/plugins/package.json";
 export const INSTALLER = "installers/omp.sh";
@@ -108,9 +110,6 @@ const COMMIT = /^[0-9a-f]{40}$/;
 const NOT_FOUND = /\b404\b|Not Found/;
 const RAW = "Accept: application/vnd.github.raw";
 const SKILL_FILE = /^skills\/([^/]+)\/SKILL\.md$/;
-/** `ensure_vendor <url> <dir> [<commit>]`, a comment after it allowed. */
-const ENSURE_VENDOR = /^\s*ensure_vendor\s+(\S+)\s+(\S+)(?:\s+([^\s#]+))?\s*(?:#.*)?$/;
-const GITHUB_URL = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i;
 const GITHUB_SPEC = /^github:([^/#\s]+)\/([^#\s]+?)(?:\.git)?(?:#(.*))?$/;
 
 // GitHub's answers and the manifests, parsed at the boundary: only the fields read here.
@@ -182,24 +181,26 @@ export function packagePins(text: string, sets: readonly SkillSet[]): PinLine[] 
   return pins;
 }
 
-/** The pins of `sets` in the text of an `installers/omp.sh`. */
+/** The pins of `sets` in the text of an `installers/omp.sh`: each line's `vendors` facts, as
+ *  copies.ts's `parseManifest` reads an installer script. Each line is read alone, so a pin keeps
+ *  its line; that is how copies.ts reads an `ensure_vendor` line too, one line at a time. */
 export function vendorPins(text: string, sets: readonly SkillSet[]): PinLine[] {
   const pins: PinLine[] = [];
   for (const [index, line] of text.split("\n").entries()) {
-    const vendor = ENSURE_VENDOR.exec(line);
-    const url = GITHUB_URL.exec(vendor?.[1] ?? "");
-    if (vendor === null || url === null) continue;
-    const set = sets.find((each) => sameRepo(each.repo, `${url[1]}/${url[2]}`));
-    if (set === undefined) continue;
-    pins.push({
-      kind: "vendor",
-      set: set.id,
-      manifest: INSTALLER,
-      line: index + 1,
-      text: line.trim(),
-      dir: vendor[2] ?? "",
-      ref: vendor[3] ?? "",
-    });
+    for (const fact of parseManifest("installer-script", INSTALLER, line).facts) {
+      if (fact.type !== "vendors") continue;
+      const set = sets.find((each) => sameRepo(each.repo, fact.repo));
+      if (set === undefined) continue;
+      pins.push({
+        kind: "vendor",
+        set: set.id,
+        manifest: INSTALLER,
+        line: index + 1,
+        text: line.trim(),
+        dir: path.posix.relative("vendor", fact.dir),
+        ref: fact.ref,
+      });
+    }
   }
   return pins;
 }

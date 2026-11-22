@@ -21,6 +21,7 @@ import {
   buildContext,
   type ContextOptions,
   cacheKey,
+  frontmatterBlock,
   ghSource,
   gitBlobId,
   legionRole,
@@ -694,6 +695,20 @@ test("comments inside the block are dropped in one left-to-right pass, as Oh My 
     description: "keep <!-- this",
     note: "open <!-- no end",
   });
+});
+
+// Catches: a SKILL.md body that keeps the frontmatter where readFrontmatter finds it past leading
+// HTML comments, or that loses the text after the block.
+test("frontmatterBlock gives the block readFrontmatter reads and the text after its closing line", () => {
+  expect(
+    frontmatterBlock("<!-- a made-up comment -->\r\n---\r\nname: x\r\n---\r\n\r\n# Body\r\n")
+  ).toEqual({ block: "name: x", rest: "\n# Body\n" });
+  expect(frontmatterBlock("---\nname: x<!-- kept -->\n---")).toEqual({
+    block: "name: x<!-- kept -->",
+    rest: "",
+  });
+  expect(frontmatterBlock("# No frontmatter\n---\n")).toBeUndefined();
+  expect(frontmatterBlock("---\nname: x\nno end\n")).toBeUndefined();
 });
 
 /** A stand-in `gh` that answers its first `fails` calls with a network timeout on stderr, then

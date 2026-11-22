@@ -541,9 +541,16 @@ function taskProfiles(
 
 /** The frontmatter `name` of the skill in `dir`, read as Oh My Pi reads a skill's frontmatter
  *  (context.ts's `readFrontmatter`, which repairs a plain value that holds `: `), or the
- *  directory's own name when it gives none. */
+ *  directory's own name when it gives none (`skillNameOf`). */
 export function skillName(dir: string): string {
-  const name = readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8")).name;
+  return skillNameOf(readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8")), dir);
+}
+
+/** The name of the skill in `dir` whose SKILL.md's frontmatter is `frontmatter`: its `name`,
+ *  trimmed, or the directory's own name when it gives none or a blank one. cli.ts's readers name a
+ *  skill by it too, so one directory has one name. */
+export function skillNameOf(frontmatter: Readonly<Record<string, unknown>>, dir: string): string {
+  const name = frontmatter.name;
   return typeof name === "string" && name.trim() !== "" ? name.trim() : path.basename(dir);
 }
 

@@ -138,6 +138,7 @@
  *   models-by-cut.tsv      With --models: MODELS_BY_CUT_COLUMNS, each cut's ranked changed skills
  *                          in rank order: cut, rank, skill, path, then the same model columns.
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -340,12 +341,15 @@ export interface QueryDir<O> {
   readonly log: RunLog | undefined;
   /** Each directory that the configuration names no store for. */
   readonly otherStores: readonly string[];
+  /** The SHA-256 of the bytes of each `.txt` parsed into an output, the bytes it was parsed from,
+   *  by its path in the directory, `<store>/<file>`. */
+  readonly digests: ReadonlyMap<string, string>;
 }
 export type CountRead = QueryDir<QueryOutput>;
 
-/** Reads the query directory `dir` for the stores `stores`, each `.txt` parsed by `parse`. A
- *  `.txt` that `parse` throws on is listed as unreadable, but for an EarlierCount, which ends the
- *  read. */
+/** Reads the query directory `dir` for the stores `stores`, each `.txt` read once and parsed by
+ *  `parse`. A `.txt` that `parse` throws on is listed as unreadable, but for an EarlierCount,
+ *  which ends the read. */
 export function readQueryDir<O>(
   dir: string,
   stores: readonly string[],
@@ -354,6 +358,7 @@ export function readQueryDir<O>(
   if (!existsSync(dir)) throw new Error(`the query directory ${dir} does not exist`);
   const outputs: O[] = [];
   const unreadable: { store: string; name: string; why: string }[] = [];
+  const digests = new Map<string, string>();
   for (const store of stores) {
     const storeDir = path.join(dir, store);
     if (!existsSync(storeDir)) continue;
@@ -361,7 +366,9 @@ export function readQueryDir<O>(
       if (!QUERY_FILE.test(file)) continue;
       const name = file.slice(0, -".txt".length);
       try {
-        outputs.push(parse(store, name, readFileSync(path.join(storeDir, file), "utf8")));
+        const bytes = readFileSync(path.join(storeDir, file));
+        outputs.push(parse(store, name, bytes.toString("utf8")));
+        digests.set(`${store}/${file}`, createHash("sha256").update(bytes).digest("hex"));
       } catch (error) {
         if (error instanceof EarlierCount) throw error;
         unreadable.push({ store, name, why: (error as Error).message });
@@ -374,7 +381,7 @@ export function readQueryDir<O>(
     .filter((entry) => entry.isDirectory() && !stores.includes(entry.name))
     .map((entry) => entry.name)
     .sort();
-  return { outputs, unreadable, log, otherStores };
+  return { outputs, unreadable, log, otherStores, digests };
 }
 
 /** Reads the count directory `dir` for the stores `stores`. */
@@ -2266,8 +2273,9 @@ export interface Output {
   err(text: string): void;
 }
 
-/** Whether `inner` is `outer` or a path inside it. */
-function inside(inner: string, outer: string): boolean {
+/** Whether `inner` is `outer` or a path inside it. set-count.ts refuses an `--out` inside its
+ *  `--rows` by it. */
+export function inside(inner: string, outer: string): boolean {
   const relative = path.relative(path.resolve(outer), path.resolve(inner));
   return (
     relative === "" ||

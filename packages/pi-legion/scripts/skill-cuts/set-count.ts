@@ -78,6 +78,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import {
   type CountRead,
   countOnce,
+  inside,
   parseSpans,
   type QueryOutput,
   readCount,
@@ -625,8 +626,7 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
       }
       return { name, reason };
     });
-    const relative = path.relative(path.resolve(given.rows), path.resolve(given.out));
-    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    if (inside(given.out, given.rows)) {
       throw new Refused(`--out ${given.out} is inside --rows ${given.rows}, which is only read`);
     }
     const storeNames = config.stores.map((store) => store.name);
@@ -661,22 +661,25 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
       config.windowEnd
     );
     // A read that a fork and its parent both hold counts in one session, as attribute counts it.
-    const counts = countSets(setRules(pins.sets), countOnce(count.outputs).outputs);
+    const once = countOnce(count.outputs).outputs;
+    const counts = countSets(setRules(pins.sets), once);
 
     const outputs = [...count.outputs].sort((a, b) => {
       const [x, y] = [`${a.store}/${a.name}`, `${b.store}/${b.name}`];
       return x < y ? -1 : x > y ? 1 : 0;
     });
+    // Each file's digest is of the bytes readCount parsed, so of the rows counted.
     const files = outputs.map((output) => {
       const file = `${output.store}/${output.name}.txt`;
-      const digest = createHash("sha256").update(readFileSync(path.join(given.rows, file)));
-      return { file, sha256: digest.digest("hex") };
+      const sha256 = count.digests.get(file);
+      if (sha256 === undefined) throw new Error(`the rows file ${file} has no digest`);
+      return { file, sha256 };
     });
     const stores = config.stores
       .filter(({ name }) => count.outputs.some((output) => output.store === name))
       .map(({ name, context }): StoreRead => {
         const span = spans.find((each) => each.store === name);
-        const mine = count.outputs.filter((output) => output.store === name);
+        const mine = once.filter((output) => output.store === name);
         const sessions = new Set(
           mine.flatMap((output) =>
             output.rows

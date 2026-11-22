@@ -338,7 +338,9 @@
  * `skill://<skill>` and its result from `--old`; its real step the written-case reader's
  * following step, which the audit
  * must call `follows` (else `written-not-followed`), in a task the restate reader finds no
- * statement of the line in (else `written-restates`); its `source.kind` `written`.
+ * statement of the line in (else `written-restates`); its `source.kind` `written`. The context
+ * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
+ * is refused (exit 2), since it would read neither `--sessions` nor `--seed`.
  *
  * **build-tasks** (the load test's tasks): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -4947,13 +4949,17 @@ const WRITTEN_EVIDENCE = "written case: ";
  *  the skill its call read; `--reprofile` builds the profile again from these. */
 const CONTEXT_READ = "context session read: ";
 
+/** What follows CONTEXT_READ in a written case's evidence item: the message's index and the
+ *  read's `[Skill file: …]` path. */
+const CONTEXT_READ_REST = /^message (\d+) reads \[Skill file: (\/.*)\]$/;
+
 /** The reads a written case's evidence names (CONTEXT_READ), in its order, as `shownReads` gives
  *  reads; undefined for a case whose evidence names none (a session case). */
 function contextReads(evidence: readonly Evidence[]): ShownRead[] | undefined {
   const reads = evidence.flatMap((each): ShownRead[] => {
-    const read = /^context session read: message (\d+) reads \[Skill file: (\/.*)\]$/.exec(
-      each.item
-    );
+    const read = each.item.startsWith(CONTEXT_READ)
+      ? CONTEXT_READ_REST.exec(each.item.slice(CONTEXT_READ.length))
+      : null;
     if (read === null) return [];
     const skill = /^a read of skill:\/\/([^/:?#\s]+) /.exec(each.source)?.[1];
     return [{ index: Number(read[1]), header: read[2] ?? "", skill }];
@@ -5558,6 +5564,17 @@ async function buildWrittenCases(
   const contextGiven = named === undefined ? undefined : contextSessionOption(named, config);
   const sessionsFile = text("sessions");
   const seed = text("seed");
+  // Both only choose the context session, so a build that names one reads neither.
+  for (const [flag, value] of [
+    ["sessions", sessionsFile],
+    ["seed", seed],
+  ] as const) {
+    if (contextGiven !== undefined && value !== undefined) {
+      throw new Refused(
+        `--written takes no --${flag} with --context-session: --sessions and --seed choose the context session, which --context-session names`
+      );
+    }
+  }
   let order: Candidate[] = [];
   if (contextGiven === undefined) {
     if (sessionsFile === undefined || seed === undefined) {

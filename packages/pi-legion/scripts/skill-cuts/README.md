@@ -82,7 +82,9 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   the reason `too few sessions on served models` and its served and total counts, and the walk of
   the cut's ranking goes on to the next skill; with written cases, the screen says the session
   cases are not screened and screens the written ones, and the skill's verdict, or its reason for
-  none, is theirs, never that refusal.
+  none, is theirs, never that refusal. A session case whose screen began before the refusal
+  applied is passed over too: its runs count for nothing, and `confirm`, `control` and `report`
+  take the screen as finished without it.
 - `confirm`: 40 fresh runs of old and the compared arm for each flagged case. `confirm --case
   <id>` makes 40 fresh runs of old and the compared arm on that one case, with no flag gate and
   no gate of 6 informative cases, and no screen or judge controls: give it its own `--out`. It
@@ -123,8 +125,9 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   over the cases; one case has none, and a kind with no screened case has no mean); and how many
   screened cases tie (old and the compared arm pass alike), floor (0 of 10 in both), ceil (10 of
   10 in both) and reverse (the compared arm passes more than old), a floor or a ceiling being a
-  tie too. It names the judge: the SHA-256 of `prompts/judge.md` and the settings its header pins,
-  and how many stages of the results record that judge, another one, or none. Each stage records
+  tie too. It names the judge: the SHA-256 of the bytes of `prompts/judge.md` the process read
+  (once, the text every judgement sends) and the settings its header pins, and how many stages of
+  the results record that judge, another one, or none. Each stage records
   the judge it was made with (`judge`) before its first judgement; a results file made before
   that records none and still loads. A skill whose planted-loss control is no loss gets the reason
   "deleting the case's line showed no detectable change (planted-loss control not a loss)" (with
@@ -277,7 +280,7 @@ was made before this rule and is refused.
 
 ```
 bun scripts/skill-cuts/cli.ts read --config <skill-cuts.json> --key-file <file> \
-  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks|craft|nearest|claim|written-case> \
+  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks|craft|nearest|claim|written-case|proposal-target|proposal> \
   --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>] \
   [--concurrency <n>]
 ```
@@ -528,7 +531,9 @@ Inputs:
 The pins. A set is pinned by a dependency `"<package>": "github:<owner>/<repo>#<ref>"` of
 `omp/plugins/package.json` (its owner and repository the set's, in any case, whatever the package
 key) or by a line `ensure_vendor <url> <dir> <commit>` of `installers/omp.sh` whose url is the
-set's repository on GitHub. A set that no line pins, or that two lines pin, fails the command. A
+set's repository on GitHub, each line read as `copies` reads an installer's clones (`copies.ts`'s
+`parseManifest`: quotes taken off, and a line that passes a variable or a command's output pins
+nothing). A set that no line pins, or that two lines pin, fails the command. A
 40-hex ref is the commit; a tag resolves to its commit (a lightweight tag's ref names it, an
 annotated tag's tag object names it); any other ref fails the command. The set's skills are the
 `skills/<name>/SKILL.md` of its repository's tree at that commit, so the place its installer reads
@@ -564,7 +569,8 @@ mtime range is not its query's. A configured store with no rows is named as not 
 Outputs under `--out`:
 
 - `exemplar-count.md`: the window; the rows read (the label as given, and one sha256 over the
-  files: of one line `<sha256>  <store>/<file>` per file, sorted by path); each store with its
+  files: of one line `<sha256>  <store>/<file>` per file, sorted by path, each file's sha256 of the
+  bytes it counted, read once); each store with its
   earliest record from the spans file; each store not read and each `--not-read` with its reason;
   the dotfiles commit and each pin with the commit it resolves to; the pin changes in the window;
   the rule; the sessions per skill in each column, and per skill and store; the skills with at
@@ -578,7 +584,8 @@ Outputs under `--out`:
 - `sessions/<set>/<skill>.jsonl`: each own-copy session, one line `{"store", "hash"}`, sorted by
   store then hash; an empty file for a skill with none.
 - `summary.json`: the numbers of each skill in total and per store, the rows' files with their
-  sha256, the stores, those not read, the pins, the pin changes, the skills at 20 or more
+  sha256, the stores (each with its queries and its sessions with a read, a read two files hold
+  counted once as above), those not read, the pins, the pin changes, the skills at 20 or more
   (`atLeast20`) and the commands.
 
 It exits 0 when the count is written, 1 when a GitHub read fails or a pin cannot be read as
@@ -731,9 +738,11 @@ bun scripts/skill-cuts/cli.ts nearest --config <skill-cuts.json> --key-file <fil
 ```
 
 One fresh request of the `nearest` reader (`prompts/nearest.md`). Its input is the skill's name,
-its whole description and its SKILL.md less the frontmatter, and every skill of each `--candidates`
-root (each `<root>/<name>/SKILL.md`), with its name, its whole description and the source the flag
-gives it; the frontmatter is read as `context.ts`'s `readFrontmatter` reads it. Two candidates of
+its whole description and its SKILL.md less the frontmatter block, and every skill of each
+`--candidates` root (each `<root>/<name>/SKILL.md`), with its name, its whole description and the
+source the flag gives it; the frontmatter is read as `context.ts`'s `readFrontmatter` reads it
+(past any HTML comments before it), and a name is the frontmatter's `name`, trimmed, else the
+directory's name, as `load` names a skill. Two candidates of
 different sources may have one name, so the answer names each candidate by its name and source:
 `{verdict, nearest: [{name, source, verdict, missing, reason}], reason}`, with at most two entries,
 each `equivalent` (it does the skill's job, for the same trigger) or `partial` (it does a material
@@ -811,7 +820,9 @@ of the skills roots (repository and name). It answers the hunks that make the it
 the diff, by either of its paths, and a hunk's index in it, from 0) and its targets: a `dotfiles`
 file of the repository by its path, a `skill` of the list by its repository and name, or `none`,
 each with why. An answer is refused that names a file the diff does not hold, a hunk past its
-file's last, a skill not in the list, or a target twice.
+file's last, a skill not in the list, or a target twice. A path that names two files of the diff
+(a file renamed away from it, and a new file at it) names the one the diff shows at that path, in
+the answer's check and in the entry alike.
 
 When every target is `none`, no second call is made: the entry says no target was found and gives
 the body's own words of the item. Else `proposal` (`prompts/proposal.md`) gets the item, its hunks,
@@ -859,10 +870,12 @@ bun scripts/skill-cuts/cli.ts control craft \
   [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
 ```
 
-The craft reader's control. It writes a changed copy of `--skill` under `<out>/copy/<skill dir
-name>/`, with SKILL.md changed: `--remove-section` removes the heading's line and every line up to
-the next heading of the same or a higher level; `--join-lines a-b` joins the list items of lines a
-to b into one paragraph at line a, their list markers removed. Then it runs `craft` on the copy
+The craft reader's control. It writes a changed copy of the directory `--skill` names (the one a
+link points at, so the skill itself is never written) under `<out>/copy/<skill dir name>/`, with
+SKILL.md changed: `--remove-section` removes the heading's line and every line up to the next
+heading of the same or a higher level (a line in a fenced code block is no heading);
+`--join-lines a-b` joins the list items of lines a to b into one paragraph at line a, their list
+markers removed. Then it runs `craft` on the copy
 and on the unchanged skill, each with the same `--nearest` (`<out>/copy.json` and
 `<out>/original.json`, each with its `.input.md`).
 
@@ -1156,24 +1169,16 @@ are there at once. When the build ends, each session still open is stopped befor
 reader call and recorded with what it spent, as `not-needed` (or, at the budget, as stopped by
 it).
 
-`build-cases --written <n>` writes up to n written cases of one skill, for a skill whose session
-cases give fewer than 6 informative cases in the screen:
-
-```
-bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
-  (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir> \
-  --count <count dir> --written <n> \
-  (--context-session <store>:<hash> | --sessions <sessions.jsonl> --seed <n>) --out <cases.jsonl> \
-  [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... \
-  [--budget-usd <n>]
-```
+`build-cases --written <n>` (the second form above) writes up to n written cases of one skill, for
+a skill whose session cases give fewer than 6 informative cases in the screen.
 
 A written case is a written task in a recorded session's context, not that session run again.
 The context session is the one `--context-session` names (`<store>:<file hash>`, the hash the
 sessions file names a file by), else the first of `--sessions` in the order `--seed` gives that is
 on a model the gateway serves and whose rebuilt profile installs the cut repository's (or the
 set's) copy of the skill; when no such session is on a served model, the first whose profile
-installs it, on any model. A session gives a context as a session gives a case: its first
+installs it, on any model. `--context-session` with `--sessions` or `--seed` is refused (exit 2),
+since the build would read neither. A session gives a context as a session gives a case: its first
 successful read of the skill must be placed at the cut repository's copy by `attribute.ts`'s
 rules, the model and thinking level are those in effect at that read, its context (`devbox`,
 its Legion role, or a subagent's recorded prompt and tools) is rebuilt as build-cases rebuilds a

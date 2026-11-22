@@ -309,6 +309,25 @@ function dropComments(text: string): string {
 }
 
 /**
+ * The frontmatter block of a SKILL.md's text as `readFrontmatter` finds it, its comments kept, and
+ * the text after the block's closing line (`""` when none follows): CRLF as LF; leading HTML
+ * comments before the opening `---` dropped; the block from after `---` to the next line that
+ * starts `---`. Undefined for a text with no block.
+ */
+export function frontmatterBlock(content: string): { block: string; rest: string } | undefined {
+  let text = content.replace(/\r\n?/g, "\n");
+  const comments = /^(?:(?:\s*<!--[\s\S]*?-->)+)/.exec(text);
+  if (comments && /^\s*---/.test(text.slice(comments[0].length))) {
+    text = text.slice(comments[0].length).replace(/^\s+/, "");
+  }
+  if (!text.startsWith("---")) return undefined;
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return undefined;
+  const after = text.indexOf("\n", end + 4);
+  return { block: text.slice(4, end), rest: after === -1 ? "" : text.slice(after + 1) };
+}
+
+/**
  * The frontmatter of a SKILL.md's text, read as Oh My Pi's `parseFrontmatter` reads a skill's
  * with its defaults (packages/utils/src/frontmatter.ts of cybermonklabs/oh-my-pi at the tag
  * v18.18.6-sami.20261117-013345, the pin): CRLF as LF; leading HTML comments before the opening
@@ -319,15 +338,9 @@ function dropComments(text: string): string {
  * text. Top-level kebab-case keys become camelCase. A text with no block has none (`{}`).
  */
 export function readFrontmatter(content: string): Record<string, unknown> {
-  let text = content.replace(/\r\n?/g, "\n");
-  const comments = /^(?:(?:\s*<!--[\s\S]*?-->)+)/.exec(text);
-  if (comments && /^\s*---/.test(text.slice(comments[0].length))) {
-    text = text.slice(comments[0].length).replace(/^\s+/, "");
-  }
-  if (!text.startsWith("---")) return {};
-  const end = text.indexOf("\n---", 3);
-  if (end === -1) return {};
-  const block = dropComments(text.slice(4, end));
+  const found = frontmatterBlock(content);
+  if (found === undefined) return {};
+  const block = dropComments(found.block);
   let read: Record<string, unknown> | null | undefined;
   try {
     read = yamlRecord(block);

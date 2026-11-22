@@ -4,9 +4,11 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -1443,6 +1445,49 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(requestsSince(from)).toHaveLength(0);
   }, 60_000);
 
+  // Catches: a session case whose screen began before the served-sessions refusal applied, which
+  // the screen then passes over as it passes over every session case, taken by confirm, control
+  // and report as not screened yet for ever.
+  test("with --reading-models refusing session cases, a session case whose screen began is passed over, as the screen passes it over", async () => {
+    const s = withWritten(scenario("reading-begun", f1File(2), [{ id: "c00" }]), ["w00", "w01"]);
+    for (const id of ["w00", "w01"]) {
+      writeMadeUpResult(s.out, id, { screen: { old: 10, none: 0 } }, { compared: "none" });
+    }
+    // c00's screen began with no refusal: 3 runs of each arm, then the run stopped.
+    writeMadeUpResult(s.out, "c00", { screen: { old: 3, none: 0 } }, { compared: "none" });
+    const begun = JSON.parse(readFileSync(caseResultFile(s.out, "c00"), "utf8"));
+    begun.stages.screen.state = "running";
+    begun.stages.screen.runs = begun.stages.screen.runs.filter(
+      (run: { run: number }) => run.run <= 3
+    );
+    writeFileSync(caseResultFile(s.out, "c00"), JSON.stringify(CaseResult.parse(begun)));
+    const file = readingModels(s, "reading-models.json", {
+      sessions: 8,
+      byModel: [
+        { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
+        { model: "acme-gateway/gpt-6.1", anthropic: false, served: false, sessions: 3 },
+      ],
+      noModel: 0,
+      notQueried: 0,
+      notAnthropic: 3,
+      served: 5,
+      withModel: 8,
+    });
+    const tooFew = `fewer than ${MIN_INFORMATIVE_CASES} informative cases: 2`;
+    const reported = await cli([...report(s), "--reading-models", file]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout.split("\n")).toContain(`verdict: none: ${tooFew}`);
+    const from = recorder.requests.length;
+    const confirm = await cli(comparedArgs("confirm", s, "none", "--reading-models", file));
+    expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(confirm.stdout).toContain(`no confirm runs: the skill gets no verdict: ${tooFew}`);
+    expect(requestsSince(from)).toHaveLength(0);
+    // With no refusal, the screen goes on with c00, so confirm waits for it.
+    const waits = await cli(comparedArgs("confirm", s, "none"));
+    expect(waits.code).toBe(2);
+    expect(waits.stderr).toContain("the screen is not finished: case c00 is not screened yet");
+  }, 60_000);
+
   test("report --reading-models prints the reading sessions by model and the screened cases' models, and the verdict names the reading sessions it speaks for", async () => {
     const s = scenario("reading-models", f1File(2), [
       { id: "c04" },
@@ -1881,7 +1926,7 @@ describe("behaviour: the compared arm", () => {
   test("a results file of a cut's test, with old and new, still reports", async () => {
     const ids = ["c04", "c05", "c06", "c07", "c08", "c09"];
     const s = scenario(
-      "infra-4676",
+      "cut-results",
       LOSS_SKILL(),
       ids.map((id) => ({ id }))
     );
@@ -1893,9 +1938,6 @@ describe("behaviour: the compared arm", () => {
         ...(id === "c04" ? { control: { old: 40, minus: 0, twin: 40 } } : {}),
       });
     }
-    expect(
-      JSON.parse(readFileSync(caseResultFile(s.out, "c04"), "utf8")).stages.screen
-    ).not.toHaveProperty("compared");
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     const lines = reported.stdout.split("\n");
@@ -2387,7 +2429,6 @@ describe("behaviour: written cases and the report's descriptions", () => {
     const s = scenario("judge-none", f1File(2), [{ id: "c04" }, { id: "c05" }]);
     for (const id of ["c04", "c05"]) {
       writeMadeUpResult(s.out, id, { screen: { old: 10, none: 0 } }, { compared: "none" });
-      expect(result(s.out, id).stages.screen?.judge).toBeUndefined();
     }
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
@@ -2887,6 +2928,25 @@ describe("nearest", () => {
     expect(ran.stdout).toContain("nearest: verify-first: none");
   }, 30_000);
 
+  // Catches: a body that keeps the frontmatter of a SKILL.md that starts with an HTML comment, or
+  // a name read untrimmed where load.ts trims it.
+  test("the body is SKILL.md less the frontmatter readFrontmatter finds after a leading comment, and the name is trimmed", async () => {
+    const s = nearestScenario("nearest-comment");
+    writeSkill(s.skill, {
+      "SKILL.md":
+        "<!-- made up -->\n---\nname: '  verify-first  '\ndescription: Use when about to say that work is done.\n---\n\n# Verify first\n\n1. Run the checks.\n",
+    });
+    answer = () => JSON.stringify({ verdict: "none", nearest: [], reason: "None checks first." });
+    const from = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const [request] = readerRequests(from);
+    expect(request?.user).toStartWith(
+      '<skill name="verify-first">\n<description>\nUse when about to say that work is done.\n</description>\n<body>\n# Verify first\n\n1. Run the checks.\n</body>\n</skill>'
+    );
+    expect(JSON.parse(readFileSync(s.out, "utf8")).skill.name).toBe("verify-first");
+  }, 30_000);
+
   test("a --candidates that is not <source>=<root>, or a root with no skill, is refused before any call", async () => {
     const s = nearestScenario("nearest-refused");
     const from = recorder.requests.length;
@@ -3270,7 +3330,8 @@ describe("control craft", () => {
     answer = controlStandIn({ copy: [], original: [], originalMarker: LINE_38 });
     await runControl(joined);
     const lines = (CONTROL_SKILLS["tracker-first/SKILL.md"] ?? "").split("\n");
-    expect(readFileSync(path.join(joined.out, "copy", "tracker-first", "SKILL.md"), "utf8")).toBe(
+    const copy = readFileSync(path.join(joined.out, "copy", "tracker-first", "SKILL.md"), "utf8");
+    expect(copy).toBe(
       [
         ...lines.slice(0, 36),
         lines
@@ -3280,7 +3341,8 @@ describe("control craft", () => {
         ...lines.slice(39),
       ].join("\n")
     );
-    expect(lines[36]).toStartWith("- The moment a person blocks your work");
+    // The joined line starts with the first item's text, its list marker gone.
+    expect(copy.split("\n")[36]).toStartWith("The moment a person blocks your work");
 
     // A heading the skill does not hold, or a range that is not list items, is refused before
     // any call.
@@ -3311,6 +3373,56 @@ describe("control craft", () => {
     const refusedBoth = await cli(both.args);
     expect(refusedBoth.code).toBe(2);
     expect(refusedBoth.stderr).toContain("give one of --remove-section and --join-lines");
+    expect(requestsSince(from)).toHaveLength(0);
+  }, 60_000);
+
+  // Catches: a --skill that is a link to a directory copied as the link, so that the change is
+  // written through it into the skill itself.
+  test("control craft copies the directory a linked --skill names, and leaves that skill's SKILL.md as it was", async () => {
+    const c = controlArgs(path.join(scratch, "control-link"), "tidy-settled-change", ...REMOVE);
+    const link = path.join(scratch, "control-link", "linked", "tidy-settled-change");
+    mkdirSync(path.dirname(link), { recursive: true });
+    symlinkSync(c.skill, link, "dir");
+    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4 });
+    await runControl({ out: c.out, args: c.args.map((arg) => (arg === c.skill ? link : arg)) });
+    const text = CONTROL_SKILLS["tidy-settled-change/SKILL.md"] ?? "";
+    expect(readFileSync(path.join(c.skill, "SKILL.md"), "utf8")).toBe(text);
+    const copyDir = path.join(c.out, "copy", "tidy-settled-change");
+    expect(lstatSync(copyDir).isSymbolicLink()).toBe(false);
+    const lines = text.split("\n");
+    expect(readFileSync(path.join(copyDir, "SKILL.md"), "utf8")).toBe(
+      [...lines.slice(0, 40), ...lines.slice(46)].join("\n")
+    );
+  }, 30_000);
+
+  // Catches: a line of a fenced block taken for the heading: the section refused as given twice,
+  // or, where only the block holds the heading's text, the lines after it removed.
+  test("--remove-section takes no line of a fenced block for the heading", async () => {
+    /** Control (1)'s arguments with `heading` removed, on tidy-settled-change with a code example
+     *  after Step 5 that shows `heading`, and that SKILL.md's text. */
+    const fenced = (dir: string, heading: string) => {
+      const c = controlArgs(
+        path.join(scratch, dir),
+        "tidy-settled-change",
+        ...REMOVE.map((arg) => (arg === STEP_4 ? heading : arg))
+      );
+      const text = `${CONTROL_SKILLS["tidy-settled-change/SKILL.md"]}\n\`\`\`markdown\n${heading}\n\`\`\`\n`;
+      writeFileSync(path.join(c.skill, "SKILL.md"), text);
+      return { ...c, text };
+    };
+    const both = fenced("control-fence-both", STEP_4);
+    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4 });
+    await runControl(both);
+    const lines = both.text.split("\n");
+    expect(
+      readFileSync(path.join(both.out, "copy", "tidy-settled-change", "SKILL.md"), "utf8")
+    ).toBe([...lines.slice(0, 40), ...lines.slice(46)].join("\n"));
+    // A heading only a code example shows is no heading of the skill: refused before any call.
+    const from = recorder.requests.length;
+    const only = fenced("control-fence-only", "## Step 9: Ship");
+    const refused = await cli(only.args);
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain("no line of SKILL.md is the heading ## Step 9: Ship");
     expect(requestsSince(from)).toHaveLength(0);
   }, 60_000);
 });

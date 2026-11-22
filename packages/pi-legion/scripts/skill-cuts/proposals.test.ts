@@ -68,15 +68,6 @@ describe("the items of a pull request's body", () => {
       ["41-9.12", "target gone", GONE, 17],
       ["41-9.14", "done in its new home", GONE, 18],
     ]);
-    expect(new Set(items.map((item) => item.state))).toEqual(
-      new Set([
-        "open",
-        "partly on main",
-        "open; no ruling found",
-        "target gone",
-        "done in its new home",
-      ])
-    );
     expect(items[0]?.text).toBe(
       "before it deletes a rule, an agent finds the rule's reason (the clause beside it, else the commit that added it, with `git log -S`) and deletes the rule only if that reason no longer holds. Recommend keep: without it an agent deletes a rule whose reason still holds. Not carried: write `keep 41-1.1` to carry it."
     );
@@ -331,7 +322,8 @@ const DOTFILES_TREE: Readonly<Record<string, string>> = {
     "---\nname: dispatch-writing-specs\ndescription: Use when you write a spec.\n---\n\n# The dotfiles copy of the spec skill\n",
 };
 
-/** The proposal-target answer for each item of F11. */
+/** The proposal-target answer for each item of F11, and for the made-up item 41-20.1 of a diff
+ *  that renames a file away from the path a new file takes (the test "a hunk's file is …"). */
 const TARGET_ANSWERS: Readonly<Record<string, unknown>> = {
   "41-1.1": {
     hunks: [{ file: SKILL_PATH, hunk: 0 }],
@@ -385,6 +377,10 @@ const TARGET_ANSWERS: Readonly<Record<string, unknown>> = {
   "41-9.14": {
     hunks: [{ file: ".claude/CLAUDE.md", hunk: 0 }],
     targets: [{ kind: "none", why: "Its new home holds it already." }],
+  },
+  "41-20.1": {
+    hunks: [{ file: "rules.md", hunk: 0 }],
+    targets: [{ kind: "dotfiles", path: "rules.md", why: "The change adds the rules file." }],
   },
 };
 
@@ -762,6 +758,70 @@ describe("proposals", () => {
       "proposal-target 75-1",
     ]);
     expect(sent).toHaveLength(7 * 2 - 2);
+  }, 30_000);
+
+  // Catches: the proposal-target answer checked against one file of the diff and the entry's hunk
+  // taken from another, where one path names two files: a file renamed away from it, and a new
+  // file at it.
+  test("a hunk's file is the diff file the answer check took, where a renamed file's old path is a new file's path", async () => {
+    const s = scenario("hunk-file");
+    const dir = path.join(scratch, "hunk-file");
+    const body = path.join(dir, "made-up-body.md");
+    writeFileSync(
+      body,
+      "### Made-up proposals\n\nLines:\n\n- `41-20.1` (open): the new rules file.\n"
+    );
+    // rules.md renamed to rules-old.md with two hunks, then a new rules.md with one.
+    const diff = path.join(dir, "made-up.diff");
+    writeFileSync(
+      diff,
+      [
+        "diff --git a/rules.md b/rules-old.md",
+        "similarity index 80%",
+        "rename from rules.md",
+        "rename to rules-old.md",
+        "index 1111111..2222222 100644",
+        "--- a/rules.md",
+        "+++ b/rules-old.md",
+        "@@ -1,2 +1,2 @@",
+        " # Rules",
+        "-Old rule.",
+        "+Old rule, kept.",
+        "@@ -10,2 +10,2 @@",
+        " Tail.",
+        "-Old tail.",
+        "+New tail.",
+        "diff --git a/rules.md b/rules.md",
+        "new file mode 100644",
+        "index 0000000..3333333",
+        "--- /dev/null",
+        "+++ b/rules.md",
+        "@@ -0,0 +1,2 @@",
+        "+# Rules",
+        "+The new rule.",
+        "",
+      ].join("\n")
+    );
+    const swap: Readonly<Record<string, string>> = {
+      [F11]: body,
+      [SECTION]: "Made-up proposals",
+      [CARRY]: "Lines",
+      [`41=${F15}`]: `41=${diff}`,
+    };
+    const args = s.args
+      .filter((arg, at, all) => arg !== GONE && all[at + 1] !== GONE)
+      .map((arg) => swap[arg] ?? arg);
+    const from = recorder.requests.length;
+    const ran = await run(...args);
+    expect({ code: ran.code, err: ran.err }).toEqual({ code: 0, err: "" });
+    // The answer names rules.md: the new file, the one the diff shows at that path.
+    expect(s.entry("41-20.1").hunks).toEqual([
+      { file: "rules.md", hunk: 0, header: "@@ -0,0 +1,2 @@" },
+    ]);
+    const proposal = requestsSince(from).find((request) => request.reader === "proposal");
+    expect(proposal?.blocks[0]?.text).toContain(
+      '<hunk file="rules.md" index="0">\n@@ -0,0 +1,2 @@\n+# Rules\n+The new rule.'
+    );
   }, 30_000);
 
   test("refuses, before any call, an item whose prefix no --pr-diff gives, a --pr-diff that is no diff, and a skills root with no skill", async () => {

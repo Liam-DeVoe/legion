@@ -1,8 +1,10 @@
 # How each fixture was captured
 
-Every fixture here came from a real system on 2026-11-20 (F10, F11 and F15 on 2026-11-22), with
-made-up skills (`alpha`, `beta`, `tool-loop-alpha`) and made-up prompts, but for F12, F13, F14, the
-style texts and the control skills, which are made up in the shapes their sections give.
+Every fixture here came from a real system on 2026-11-20, with made-up skills (`alpha`, `beta`,
+`tool-loop-alpha`) and made-up prompts, but for these: F10, F11 and F15 are GitHub's answers, a
+pull request's body and a pull request's diff of real repositories, read on 2026-11-22, with the
+names their sections give replaced; and F12, F13, F14, the style texts and the control skills are
+made up, read from no system, in the shapes their sections give.
 A test that reads a fixture cites its section of this file in its header. The scan at the end says
 how each file was checked for keys and private names.
 
@@ -626,17 +628,12 @@ in the same file; (e) `beta-skill-two` at `/opt/acme/plugin/dist/skills/`; (f) `
 (`/srv/acme/.claude/plugins/cache/acme-plugins/alpha-set/5.0.7/skills/`); a read of
 `alpha-skill-two` at `skill://alpha-skill-two`, with no path; and a read of `beta-skill-two` at the
 upstream's raw GitHub URL. A scratch script wrote the file: each row as psql prints count.sql's
-JSON (`"key" : value`, in count.sql's key order), under a header `total` and a rule of dashes as
-wide as the widest row, and the footer `(12 rows)`.
-
-The rows first had no `calls` and `unpaired_calls`, the shape of an earlier count.sql, which
-`attribute.ts`'s `readCount` now refuses. A second scratch script added both to each count row,
-in count.sql's key order and psql's shape (`"calls" : { "<hash>" : ["<key>"] }` after `hashes`,
-`"unpaired_calls" : {}` after `unpaired_hashes`, as in `F7-count-first.txt`): `calls` holds the
+JSON (`"key" : value`, in count.sql's key order, `calls` after `hashes` and `unpaired_calls` after
+`unpaired_hashes`, as in `F7-count-first.txt`), under a header `total` centred over a rule of
+dashes as wide as the widest row, and the footer `(12 rows)`. Each count row's `calls` holds the
 row's one file with a call key of the row's own, `f14c000000000001` to `f14c00000000000b` in the
 file's row order (so (a)'s file holds two keys, one in each of its rows, and so does (d)'s), and
-no row holds an unpaired call. It then widened the rule of dashes to the widest row again and
-centred `total` over it. No other value changed.
+its `unpaired_calls` is `{}`: no row holds an unpaired call.
 
 ## F12: a craft list, and GitHub's answers for its lines (`F12-*`)
 
@@ -691,13 +688,19 @@ at lines 37 to 39 under a heading at line 35. `check-before-claim` is a nearest 
 
 ## F11: a pull request body (`F11-body.md`)
 
-The body of the dotfiles repository's pull request #105, at its head `ac1b11e8`, read with
+The body of the dotfiles repository's pull request #105, at its head `ac1b11e8`, as it was read on
+2026-11-22 (its last edit then, of 01:46:58 UTC; the body has been edited since, after line 323),
+and the head, read with
 
 ```sh
-gh pr view 105 --repo <owner>/dotfiles --json body,headRefOid --jq .body
+gh api graphql -f query='{ repository(owner: "<owner>", name: "dotfiles") { pullRequest(number: 105) { userContentEdits(first: 50) { nodes { editedAt diff } } } } }' \
+  --template '{{range .data.repository.pullRequest.userContentEdits.nodes}}{{if eq .editedAt "2026-11-22T01:46:58Z"}}{{.diff}}{{end}}{{end}}' \
+  > pr105-body.md
+gh pr view 105 --repo <owner>/dotfiles --json headRefOid --jq .headRefOid
 ```
 
-(63,246 bytes; `.headRefOid` gave the head). Cut to: the heading `## Your choices` (line 23 of the
+(the body, 63,246 bytes, is what `gh pr view 105 --repo <owner>/dotfiles --json body --jq .body`
+gave then). Cut to: the heading `## Your choices` (line 23 of the
 body); the heading `### Open proposals of #41 and #75 (R5)` (line 44) and its first paragraph, less
 its last sentence (three links to comments of #41); each list's line and the blank lines around
 it, as the body has them; of the 45 items of `Lines this pull request can carry`, `41-1.1`
@@ -719,13 +722,18 @@ the organization and repository of the skills repository, twice (in `41-8.3` and
 The diff of the dotfiles repository's closed pull request #41, read with
 
 ```sh
-gh pr diff 41 --repo <owner>/dotfiles
+gh pr diff 41 --repo <owner>/dotfiles > pr41.diff
 ```
 
 (348,532 bytes: 79 files, 101 hunks; `splitDiff` reads it whole). #41 renames no file, so the
-renamed file comes from the diff of the same repository's pull request #93, read the same day
-with `gh api repos/<owner>/dotfiles/pulls/93 -H 'Accept: application/vnd.github.diff'` (the diff
-`gh pr diff` prints). Cut, in the path order gh gives, to: `.claude/CLAUDE.md` whole (two hunks,
+renamed file comes from the diff of the same repository's pull request #93, read the same day (the
+diff `gh pr diff` prints) with
+
+```sh
+gh api repos/<owner>/dotfiles/pulls/93 -H 'Accept: application/vnd.github.diff' > pr93.diff
+```
+
+Cut, in the path order gh gives, to: `.claude/CLAUDE.md` whole (two hunks,
 lines 1 to 36 of #41's diff); the rename of `plugins/<owner>/skills/product-demos/pipeline.md` to
 `…/product-demos/references/pipeline.md`, its header and the first of its three hunks (lines 4717
 to 4733 of #93's diff); and the header and the first two of the three hunks of
@@ -734,7 +742,7 @@ hunk left out naming a private term. With `$OWNER` the owner's name (left out of
 
 ```sh
 { sed -n '1,36p' pr41.diff; sed -n '4717,4733p' pr93.diff; sed -n '6866,6896p' pr41.diff; } \
-  | sed "s/$OWNER/acme/g"
+  | sed "s/$OWNER/acme/g" > F15-pr.diff
 ```
 
 Replaced: the owner's name in each path, `plugins/<owner>/skills/` to `plugins/acme/skills/`.
@@ -742,10 +750,12 @@ Every other byte is as captured.
 
 ## The canned reader answers
 
-The answers of the `craft`, `nearest`, `claim`, `proposal-target` and `proposal` readers are made
-up and written in the tests, as the other readers' are: `readers.test.ts`'s rows, each valid answer
-and each refused one with why, and the stand-ins of `cli.test.ts` and `proposals.test.ts`, which
-answer each request by its prompt (and, in `proposals.test.ts`, by its item's id).
+The answers of the `craft`, `nearest`, `claim`, `proposal-target`, `proposal` and `written-case`
+readers are made up and written in the tests, as the other readers' are: `readers.test.ts`'s rows,
+each valid answer and each refused one with why, and the stand-ins of `cli.test.ts`,
+`proposals.test.ts` and `build.test.ts`, which answer each request by its prompt (and, in
+`proposals.test.ts`, by its item's id; in `build.test.ts`, the `written-case` reader with its
+canned tasks).
 
 ## The scan
 

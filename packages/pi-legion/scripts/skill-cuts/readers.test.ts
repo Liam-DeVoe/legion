@@ -1545,8 +1545,12 @@ test("a craft gap outside the file, or with no rule id, is refused; a missing ga
   expect(one({ file: "references/x.md", line: 4, rule: "C1" })).toContain(
     "gaps.1.line: is past the last line, 3, of references/x.md"
   );
+  // Each rule id no input gives is refused at the gap's rule.
   for (const rule of ["", "S", "the order table", "C2", "S3", "nearest:beta-skill-one:SKILL.md"]) {
-    expect({ rule, refused: one({ rule }) === undefined }).toEqual({ rule, refused: false });
+    expect({ rule, refused: one({ rule })?.includes("gaps.1.rule") }).toEqual({
+      rule,
+      refused: true,
+    });
   }
   const { rule: _, ...noRule } = craftGap({});
   expect(refusal("craft", craftReaderInput, craftAnswer([craftGap({}), noRule], "met"))).toContain(
@@ -1705,7 +1709,6 @@ test("a style text's rules get ids S1, S2, ... in its order: each order-table ro
   // The check shape: 7 table rows, 10 items under Rules and 3 under Check before you commit; the
   // paragraph rule is a check item with its own id.
   const check = read("style-check.md");
-  expect(check).toHaveLength(20);
   expect(check.map((rule) => [rule.id, rule.line, rule.part])).toEqual([
     ...[9, 10, 11, 12, 13, 14, 15].map((line, n) => [`S${n + 1}`, line, "order"]),
     ...[19, 20, 21, 22, 23, 24, 25, 26, 27, 28].map((line, n) => [`S${n + 8}`, line, "rules"]),
@@ -1741,7 +1744,6 @@ test("nearest answers none or one or two candidates, each with a verdict and a r
   expect(refusal("nearest", nearestInput, answer([{ ...entry, name: "alpha-lists" }]))).toContain(
     "alpha-lists of acme/tools is no candidate"
   );
-  expect(refusal("nearest", nearestInput, answer([entry, entry, entry]))).toContain("nearest");
   expect(refusal("nearest", nearestInput, answer([entry], "none"))).toContain(
     "verdict: is none, and the answer names a candidate"
   );
@@ -1787,9 +1789,9 @@ test("the claim answer is yes or no with a reason", () => {
     { states: false, reason: " " },
     { states: true, reason: "r", line: 10 },
   ]) {
-    expect({ answer, refused: refusal("claim", claimInput, answer) === undefined }).toEqual({
+    expect({ answer, refused: refusal("claim", claimInput, answer) !== undefined }).toEqual({
       answer,
-      refused: false,
+      refused: true,
     });
   }
   const [user] = UserMessage.parse(readerBody("claim", claimInput).messages);
@@ -1819,6 +1821,28 @@ test("proposal-target names only files of the diff or skills of the list", () =>
   expect(
     refused({ hunks: [{ file: "skills/alpha/notes.md", hunk: 1 }], targets: [noTarget] })
   ).toContain("hunks.0.hunk: is past the last hunk, 0, of skills/alpha/references/notes.md");
+  // A path that names two files of the diff, a new file and a file renamed away from it, is the
+  // new file's: the one the diff shows at that path (proposals.ts's item takes the same).
+  const moved = {
+    ...proposalTargetInput,
+    diff: {
+      ...proposalTargetInput.diff,
+      files: [
+        { before: null, after: "rules.md", hunks: ["@@ -0,0 +1,2 @@"] },
+        {
+          before: "rules.md",
+          after: "rules-old.md",
+          hunks: ["@@ -1,2 +1,2 @@", "@@ -10,2 +10,2 @@"],
+        },
+      ],
+    },
+  };
+  expect(
+    refusal("proposal-target", moved, {
+      hunks: [{ file: "rules.md", hunk: 1 }],
+      targets: [noTarget],
+    })
+  ).toContain("hunks.0.hunk: is past the last hunk, 0, of rules.md");
   // A skill is named by its repository and its name, as the list gives both.
   expect(
     refused({

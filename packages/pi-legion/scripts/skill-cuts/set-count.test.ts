@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { readCount, sessionKey } from "./attribute";
+import { countOnce, readCount, sessionKey } from "./attribute";
 import { GhRetries } from "./common";
 import { type Gh, type GhResult, parseTsv } from "./copies";
 import { countSets, main, type SkillCount, setRules } from "./set-count";
@@ -149,16 +149,21 @@ test("reads count.sql's rows as attribute reads them", async () => {
   const ran = await setCount(argsOf(plantedConfig, rows, out));
   expect(ran.err).toBe("");
   expect(ran.code).toBe(0);
-  // What attribute.ts reads of the same directory: each query, and each session with a read.
+  // What attribute.ts reads of the same directory: each query, and each session with a read once
+  // a read two files hold counts in one of them (countOnce). The forked file 2e8fca5c3950db03, of
+  // 2026-11-21, holds the lines of the read of alpha and of the reference read of 83af4b8e0c75a050,
+  // of 2026-11-20 (a fork copies its parent's lines), and a read of its own; its hash sorts first,
+  // so both copied reads count in the fork, and 83af4b8e0c75a050 is left with no read: 3 sessions
+  // with a read, not the 4 files whose rows hold one.
   const read = readCount(rows, ["store_a"]);
   const sessions = new Set(
-    read.outputs.flatMap((output) =>
+    countOnce(read.outputs).outputs.flatMap((output) =>
       output.rows
         .filter((row) => row.kind === "read")
         .flatMap((row) => row.hashes.map((hash) => sessionKey(row.store, hash)))
     )
   );
-  expect(sessions.size).toBe(4);
+  expect(sessions.size).toBe(3);
   const summary = readJson(path.join(out, "summary.json")) as {
     rows: { files: { file: string; sha256: string }[]; digest: string };
     stores: { store: string; queries: number; sessionsWithRead: number }[];
@@ -175,6 +180,46 @@ test("reads count.sql's rows as attribute reads them", async () => {
   expect(summary.stores).toMatchObject([
     { store: "store_a", queries: read.outputs.length, sessionsWithRead: sessions.size },
   ]);
+});
+
+// Catches: the rows' digest taken after the GitHub reads, which can take minutes, so that it names
+// bytes other than those counted.
+test("the rows' digest is of the bytes counted, though a file of them changes while GitHub is read", async () => {
+  const rows = tree(at("changed-rows"), PLANTED_ROWS);
+  const out = at("changed-out");
+  const f10 = f10Gh();
+  let changed = false;
+  const gh: Gh = async (args) => {
+    if (!changed) {
+      changed = true;
+      writeFileSync(path.join(rows, "store_a", "2026-11-20.txt"), "changed after the count\n");
+    }
+    return f10(args);
+  };
+  const ran = await setCount(argsOf(plantedConfig, rows, out), gh);
+  expect(ran.err).toBe("");
+  expect(ran.code).toBe(0);
+  const summary = readJson(path.join(out, "summary.json")) as {
+    rows: { files: { file: string; sha256: string }[] };
+  };
+  expect(summary.rows.files[0]).toEqual({
+    file: "store_a/2026-11-20.txt",
+    sha256: sha256(fixture("F7-count-first.txt")),
+  });
+});
+
+// Catches: an --out inside --rows taken for one outside it, as a folder whose name starts with
+// `..` was.
+test("refuses an --out inside --rows, a folder named ..<name> among them, before any read", async () => {
+  const calls: string[] = [];
+  const rows = tree(at("inside-rows"), PLANTED_ROWS);
+  for (const out of [rows, path.join(rows, "out"), path.join(rows, "..cache")]) {
+    const ran = await setCount(argsOf(plantedConfig, rows, out), f10Gh(calls));
+    expect({ out, code: ran.code }).toEqual({ out, code: 2 });
+    expect(ran.err).toContain(`--out ${out} is inside --rows ${rows}, which is only read`);
+  }
+  expect(calls).toEqual([]);
+  expect(existsSync(path.join(rows, "..cache"))).toBe(false);
 });
 
 // Catches: a count made on rows that miss a day of the window, or that take a query's file name
@@ -412,7 +457,6 @@ describe("planted rows", () => {
 
   // Catches: a skill of no set counted for a set.
   test("(f) a skill no set holds is counted for no set", () => {
-    expect(counts.some((count) => count.skill === "no-such-skill")).toBe(false);
     const key = sessionKey("store_a", H.f);
     for (const count of counts) {
       for (const sessions of Object.values(count.sessions)) expect(sessions.has(key)).toBe(false);

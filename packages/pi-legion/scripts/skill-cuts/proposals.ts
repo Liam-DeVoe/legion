@@ -28,6 +28,7 @@ import type { CraftList } from "./craftlist";
 import { BudgetSpent, type Gateway, usdOf } from "./gateway";
 import {
   CraftGap,
+  diffFilesByPath,
   loadPrompt,
   type ProposalAnswer,
   type ProposalInput,
@@ -74,6 +75,18 @@ const ITEM = /^[-*+]\s+`([^`]+)`\s+\(((?:[^()]|\([^()]*\))+)\):\s+(.*\S)\s*$/;
 /** An id an entry's file can be named by. */
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** Whether each line of `lines` is in a fenced code block: a fence line (``` or ~~~) itself, or a
+ *  line between a fence and the next. A line in a fenced block is no heading and no list's line;
+ *  cli.ts's `removeSection` reads a SKILL.md's headings by this rule too. */
+export function fencedLines(lines: readonly string[]): boolean[] {
+  let fenced = false;
+  return lines.map((line) => {
+    const fence = FENCE_LINE.test(line);
+    if (fence) fenced = !fenced;
+    return fence || fenced;
+  });
+}
+
 /**
  * The items of each list of `body` that `lists` names, list by list in the order given, each in
  * its order. A list is the `- ` items after the one line of the section of the heading `section`
@@ -92,12 +105,7 @@ export function parseProposalItems(
 ): ProposalItem[] {
   const lines = body.replace(/\r\n?/g, "\n").split("\n");
   // A line in a fenced block is no heading and no list's line.
-  let fenced = false;
-  const inFence = lines.map((line) => {
-    const fence = FENCE_LINE.test(line);
-    if (fence) fenced = !fenced;
-    return fence || fenced;
-  });
+  const inFence = fencedLines(lines);
   const headings = lines.map((line, index) => {
     const heading = inFence[index] ? null : HEADING.exec(line);
     return heading === null ? undefined : { level: heading[1]?.length ?? 1, text: heading[2] };
@@ -463,13 +471,18 @@ function writeRefused(run: ProposalsRun, id: string, error: ReaderFailed, io: Pr
 async function readItem(
   run: ProposalsRun,
   item: ProposalItem,
-  shared: { readonly targetInputs: ReadonlyMap<string, ProposalTargetInput["diff"]> },
+  shared: {
+    readonly targetInputs: ReadonlyMap<string, ProposalTargetInput["diff"]>;
+    /** Each diff's files by path (readers.ts's `diffFilesByPath`), by its prefix. */
+    readonly files: ReadonlyMap<string, ReadonlyMap<string, DiffFile>>;
+  },
   gateways: ProposalsGateways,
   io: ProposalsIo
 ): Promise<boolean> {
   const diff = run.diffs.get(idPrefix(item.id));
   const diffInput = shared.targetInputs.get(idPrefix(item.id));
-  if (diff === undefined || diffInput === undefined) {
+  const files = shared.files.get(idPrefix(item.id));
+  if (diff === undefined || diffInput === undefined || files === undefined) {
     throw new Error(`item ${item.id} has no diff of its prefix ${idPrefix(item.id)}`);
   }
   const targetInput: ProposalTargetInput = {
@@ -498,7 +511,7 @@ async function readItem(
   const targetAnswer = target.answer as ProposalTargetAnswer;
   const targetUsd = usdOf(target.spent);
   const hunks = targetAnswer.hunks.map(({ file, hunk }) => {
-    const changed = diff.files.find((each) => each.before === file || each.after === file);
+    const changed = files.get(file);
     const at = changed?.hunks[hunk];
     if (changed === undefined || at === undefined) throw new Error(`no hunk ${hunk} of ${file}`);
     return {
@@ -685,12 +698,15 @@ export async function runProposals(
       },
     ])
   );
+  const files = new Map(
+    [...run.diffs].map(([prefix, diff]) => [prefix, diffFilesByPath(diff.files)])
+  );
   const firsts = new Map<string, ProposalItem>();
   for (const item of pending) {
     if (!firsts.has(idPrefix(item.id))) firsts.set(idPrefix(item.id), item);
   }
   const first = new Set(firsts.values());
-  const read = (item: ProposalItem) => readItem(run, item, { targetInputs }, gateways, io);
+  const read = (item: ProposalItem) => readItem(run, item, { targetInputs, files }, gateways, io);
   await settle([...first].map(read));
   await settle(pending.filter((item) => !first.has(item)).map(read));
   return run.items.flatMap((item) => (existsSync(entryFile(run.out, item.id)) ? [] : [item.id]));

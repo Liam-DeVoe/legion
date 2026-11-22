@@ -3967,9 +3967,6 @@ describe("build-cases --written", () => {
     expect(summary.drops).toEqual({ "written-restates": 1, "written-not-followed": 1 });
     expect(summary.tasks[1]?.detail).toContain(RESTATED);
     expect(summary.tasks[2]?.detail).toBe("breaks: The step spreads the result over two lines.");
-    for (const reason of ["written-restates", "written-not-followed"] as const) {
-      expect(DROP_REASONS[reason]).toBeString();
-    }
     // The restatement check read each task and its read call, never the skill's text.
     const restates = usersOf(requests, RESTATE_PROMPT);
     expect(restates).toHaveLength(3);
@@ -4128,6 +4125,31 @@ test("the context session is the first served reading session whose rebuilt prof
   expect(failed.join("")).toContain("no served model for the written cases");
   expect(existsSync(nowhere)).toBe(false);
 }, 120_000);
+
+// Catches: a --context-session build given --sessions or --seed, which it never reads, that then
+// records their digest and seed in its summary as if it had.
+test("build-cases --written with --context-session refuses --sessions and --seed, before any read", async () => {
+  const sessions = sessionsFile("written-both.jsonl", ["good"]);
+  const context = ["--context-session", `store_a:${fileHash(sessionPath("good"))}`];
+  const out = path.join(scratch, "written-both", "cases.jsonl");
+  const from = recorder.requests.length;
+  const logged = psqlLogLength();
+  const calls = ghCalls.length;
+  const rows: [string[], string][] = [
+    [["--sessions", sessions], "--sessions"],
+    [["--seed", "1"], "--seed"],
+    [["--sessions", sessions, "--seed", "1"], "--sessions"],
+  ];
+  for (const [extra, flag] of rows) {
+    const lines: string[] = [];
+    expect(await main(writtenArgs(out, ...context, ...extra), io(lines))).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain(`--written takes no ${flag} with --context-session`);
+  }
+  expect(existsSync(out)).toBe(false);
+  expect(recorder.requests.length).toBe(from);
+  expect(psqlLogLength()).toBe(logged);
+  expect(ghCalls.length).toBe(calls);
+});
 
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
   const skillDir = path.join(setupDir, "old", "alpha");

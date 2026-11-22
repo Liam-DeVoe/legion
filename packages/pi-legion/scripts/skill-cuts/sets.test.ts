@@ -85,7 +85,8 @@ test("reads the alpha-set pin from omp/plugins/package.json", () => {
 });
 
 // Catches: the ensure_vendor function's own lines, a line of another repository, or a line with
-// no commit taken for the set's pin.
+// no commit taken for the set's pin; or a line read otherwise than copies.ts reads it: its quotes
+// kept, or a line that passes a variable or a command's output taken for a pin.
 test("reads the beta-set pin from an ensure_vendor line", () => {
   const text = f10Text(`repos/${DOTFILES}/contents/${INSTALLER}?ref=${AT}`);
   expect(vendorPins(text, SETS)).toEqual([
@@ -104,6 +105,9 @@ test("reads the beta-set pin from an ensure_vendor line", () => {
     '    local url="$1" name="$2" ref="$3"',
     "# ensure_vendor https://github.com/acme/beta-set-plugin.git old-dir 1111111",
     "ensure_vendor https://github.com/Acme/Beta-Set-Plugin beta-two # unpinned",
+    `ensure_vendor "https://github.com/acme/beta-set-plugin.git" "beta-quoted" '${BETA_COMMIT}'`,
+    `ensure_vendor https://github.com/acme/beta-set-plugin.git "$BETA_DIR" ${BETA_COMMIT}`,
+    "ensure_vendor https://github.com/acme/beta-set-plugin.git `cat dir.txt`",
   ].join("\n");
   expect(vendorPins(variants, SETS)).toEqual([
     {
@@ -114,6 +118,15 @@ test("reads the beta-set pin from an ensure_vendor line", () => {
       text: "ensure_vendor https://github.com/Acme/Beta-Set-Plugin beta-two # unpinned",
       dir: "beta-two",
       ref: "",
+    },
+    {
+      kind: "vendor",
+      set: "beta-set",
+      manifest: INSTALLER,
+      line: 5,
+      text: `ensure_vendor "https://github.com/acme/beta-set-plugin.git" "beta-quoted" '${BETA_COMMIT}'`,
+      dir: "beta-quoted",
+      ref: BETA_COMMIT,
     },
   ]);
 });

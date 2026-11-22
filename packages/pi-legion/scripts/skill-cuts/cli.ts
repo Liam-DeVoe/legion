@@ -39,13 +39,13 @@
  *   bun scripts/skill-cuts/cli.ts craft-coverage --root <dir> [--source <text>]
  *       [--skip <name>]... --entries <reader-findings.jsonl>
  *   bun scripts/skill-cuts/cli.ts proposals --config <file> --key-file <file> --body <file>
- *       --body-source <text> --section <heading> --list <heading>... --pr-diff <prefix>=<file>...
+ *       --body-source <text> --section <heading> --list <text>... --pr-diff <prefix>=<file>...
  *       --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file>
  *       --style-source <text> --craft <craft-list.json> --craft-source <text>
  *       --findings <reader-findings.jsonl> --out <dir> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
  *   bun scripts/skill-cuts/cli.ts proposals --dry-run --body <file> --section <heading>
- *       --list <heading>...
+ *       --list <text>...
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>] [--query count|models]
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
@@ -65,6 +65,11 @@
  *       --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
  *       [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>]
  *       [--stop-zero-case-usd <n>]
+ *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file>
+ *       (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir>
+ *       --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>)
+ *       --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>]
+ *       [--model-pool <file>]... [--budget-usd <n>]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --old <dir> --copies <dir>
  *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
@@ -111,16 +116,18 @@
  *   each, every reply of the round judged blind (all arms shuffled under a recorded seed), and
  *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
  *   MAX_EXTRA_RUNS per arm. With `--reading-models <file>` (attribute.ts's
- *   `<cut id>/models/<skill>.json` of the skill: its reading sessions by model), a skill whose
- *   reading sessions on a model the gateway serves are fewer than MIN_READING_SESSIONS gets no
- *   session case screened (score.ts's `servedScreeningRefusal`: `too few sessions on served
+ *   `<cut or set id>/models/<skill>.json` of the skill: its reading sessions by model), a skill
+ *   whose reading sessions on a model the gateway serves are fewer than MIN_READING_SESSIONS gets
+ *   no session case screened (score.ts's `servedScreeningRefusal`: `too few sessions on served
  *   models`, with the served and total counts): with no written case it is refused before any
  *   model call, gets no verdict, and the walk of the cut's ranking goes on to its next skill;
- *   with written cases, they are screened, and the refusal is never its reason for no verdict.
+ *   with written cases, they are screened, and the refusal is never its reason for no verdict. A
+ *   session case whose screen began before the refusal applied is passed over too: its runs count
+ *   for nothing, and confirm, control and report take the screen as finished without it.
  * - `confirm`: FRESH_RUNS fresh runs of old and the compared arm for each flagged case. With
  *   `--case <id>`, FRESH_RUNS fresh runs of old and the compared arm on that case alone, with no
  *   flag gate and no gate of MIN_INFORMATIVE_CASES informative cases, into its own `--out`; an id
- *   the case file does not hold is refused.
+ *   the case file does not hold, and a case whose model the gateway does not serve, is refused.
  * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less every
  *   line of the case's file that is the case's line, trimmed, or less every line that is
  *   `--planted-line`: a rule written twice is still the rule, so each copy goes; arms.ts) and
@@ -216,7 +223,8 @@
  * not read again; it exits 1 naming an item line it cannot parse, and when an item has no entry
  * at the end. `--dry-run` parses the body and prints the items, and reads nothing else.
  *
- * **`control craft`** writes a copy of `--skill` with a section removed or list items joined, runs
+ * **`control craft`** writes a copy of the directory `--skill` names (the one a link points at, so
+ * the skill itself is never written) with a section removed or list items joined, runs
  * `craft` on the copy and on the unchanged skill, takes each side's candidates (gaps in its line
  * range, of its kinds and rules), asks the claim reader once a candidate where the side gives a
  * claim, and holds only when the copy has a candidate that states its claim (any, with none) and
@@ -245,10 +253,10 @@
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
  * did not hold, a call, a load test's task or an `--after-case` command that failed, a proposals
- * item line that does not parse or an item left with no entry); 2 refused before any model call;
- * 3 stopped (the budget is spent, or the peak memory passed 1 GiB, 1.5 GiB for `copies`); 4
- * stopped by build-cases' stop rule. The commands of the other files return their own status,
- * which `main` returns as it is.
+ * item line that does not parse or an item left with no entry, a skill `craft-coverage` finds with
+ * no entry); 2 refused before any model call; 3 stopped (the budget is spent, or the peak memory
+ * passed 1 GiB, 1.5 GiB for `copies`); 4 stopped by build-cases' stop rule. The commands of the
+ * other files return their own status, which `main` returns as it is.
  */
 import { createHash } from "node:crypto";
 import {
@@ -258,6 +266,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -293,6 +302,7 @@ import {
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
 import {
+  frontmatterBlock,
   ghSource,
   localSource,
   type RepoSource,
@@ -327,11 +337,12 @@ import {
   judgeIdentity,
   newSeed,
 } from "./judge";
-import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName } from "./load";
+import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName, skillNameOf } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
   type DiffFile,
   FindingsEntry,
+  fencedLines,
   ItemFaults,
   idPrefix,
   type ProposalItem,
@@ -387,6 +398,7 @@ import {
   meanDifference,
   NO_CONTROL_LOSS,
   type NoVerdict,
+  noControlLoss,
   type Passes,
   RunRecord,
   SCREEN_RUNS,
@@ -855,8 +867,9 @@ function textOr(value: unknown, otherwise: string): string {
   return typeof value === "string" && value !== "" ? value : otherwise;
 }
 
-/** A skill directory as the readers read it: its name (its frontmatter `name`, else the
- *  directory's) and every `.md` file under it (`skillFiles`), SKILL.md first. */
+/** A skill directory as the readers read it: its name (load.ts's `skillNameOf`: its frontmatter
+ *  `name`, trimmed, else the directory's) and every `.md` file under it (`skillFiles`), SKILL.md
+ *  first. */
 interface ReadSkill {
   readonly dir: string;
   readonly name: string;
@@ -874,7 +887,7 @@ function readSkill(dir: string, flag: string): ReadSkill {
   }
   const skill = files.find((file) => file.path === "SKILL.md");
   if (skill === undefined) throw new Refused(`${flag} ${dir} has no SKILL.md`);
-  return { dir, name: textOr(readFrontmatter(skill.text).name, path.basename(dir)), files };
+  return { dir, name: skillNameOf(readFrontmatter(skill.text), dir), files };
 }
 
 /** Each file of `skill`: its path inside the skill and the SHA-256 of its text. */
@@ -1110,13 +1123,11 @@ async function craftCommand(argv: readonly string[], io: CliIo): Promise<number>
 const NEAREST_USAGE =
   "usage: cli.ts nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]";
 
-/** The text of a SKILL.md less its frontmatter (the block readFrontmatter reads), with the blank
- *  lines before it and the white space after it trimmed. */
+/** The text of a SKILL.md less its frontmatter (context.ts's `frontmatterBlock`: the block
+ *  readFrontmatter reads, after any leading HTML comments), with the blank lines before it and the
+ *  white space after it trimmed. */
 function skillBody(text: string): string {
-  const plain = text.replace(/\r\n?/g, "\n");
-  const end = plain.startsWith("---") ? plain.indexOf("\n---", 3) : -1;
-  const after = end === -1 ? -1 : plain.indexOf("\n", end + 4);
-  const body = end === -1 ? plain : after === -1 ? "" : plain.slice(after + 1);
+  const body = frontmatterBlock(text)?.rest ?? text.replace(/\r\n?/g, "\n");
   return body.replace(/^\n+/, "").trimEnd();
 }
 
@@ -1145,14 +1156,14 @@ async function nearestCommand(argv: readonly string[], io: CliIo): Promise<numbe
   const text = readFileSync(skillMd, "utf8");
   const frontmatter = readFrontmatter(text);
   const skill = {
-    name: textOr(frontmatter.name, path.basename(given.skill)),
+    name: skillNameOf(frontmatter, given.skill),
     description: textOr(frontmatter.description, ""),
     body: skillBody(text),
   };
   const candidates = roots.flatMap(({ source, root, names }) =>
     names.map((name) => {
       const read = readFrontmatter(readFileSync(path.join(root, name, "SKILL.md"), "utf8"));
-      return { name: textOr(read.name, name), source, description: textOr(read.description, "") };
+      return { name: skillNameOf(read, name), source, description: textOr(read.description, "") };
     })
   );
   const checked = READERS.nearest.input.safeParse({ skill, candidates });
@@ -1312,8 +1323,8 @@ function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
 // `proposals`: the open proposals of closed pull requests (proposals.ts).
 
 const PROPOSALS_USAGE = [
-  "usage: cli.ts proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <heading>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]",
-  "       cli.ts proposals --dry-run --body <file> --section <heading> --list <heading>...",
+  "usage: cli.ts proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <text>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]",
+  "       cli.ts proposals --dry-run --body <file> --section <heading> --list <text>...",
 ].join("\n");
 
 /** `skill-cuts proposals`: each item of the named lists of a pull request's body, read with the
@@ -1457,7 +1468,6 @@ const CONTROL_CRAFT_USAGE = `usage: cli.ts control craft (--remove-section <head
 
 const HEADING_LINE = /^(#{1,6})\s/;
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
-const FENCE_LINE = /^\s*(?:```|~~~)/;
 
 /** `lines` as the text of a file, with a final newline where `text` had one. */
 function withLines(text: string, lines: readonly string[]): string {
@@ -1465,11 +1475,15 @@ function withLines(text: string, lines: readonly string[]): string {
 }
 
 /** `text`, a SKILL.md, with the section `heading` removed: the heading's line and every line up
- *  to the next heading of its level or a higher one (a `#` line in a fenced block is no heading).
- *  Throws a refusal when no line, or more than one, is that heading. */
+ *  to the next heading of its level or a higher one. A line in a fenced block is no heading
+ *  (proposals.ts's `fencedLines`). Throws a refusal when no line, or more than one, is that
+ *  heading. */
 function removeSection(text: string, heading: string): string {
   const lines = textLines(text);
-  const at = lines.flatMap((line, index) => (line.trim() === heading.trim() ? [index] : []));
+  const inFence = fencedLines(lines);
+  const at = lines.flatMap((line, index) =>
+    !inFence[index] && line.trim() === heading.trim() ? [index] : []
+  );
   if (at.length !== 1) {
     throw new Refused(
       at.length === 0
@@ -1481,11 +1495,8 @@ function removeSection(text: string, heading: string): string {
   const level = HEADING_LINE.exec(lines[start] ?? "")?.[1]?.length;
   if (level === undefined) throw new Refused(`--remove-section ${heading} is no markdown heading`);
   let end = start + 1;
-  let fenced = false;
   for (; end < lines.length; end++) {
-    const line = lines[end] ?? "";
-    if (FENCE_LINE.test(line)) fenced = !fenced;
-    const depth = fenced ? undefined : HEADING_LINE.exec(line)?.[1]?.length;
+    const depth = inFence[end] ? undefined : HEADING_LINE.exec(lines[end] ?? "")?.[1]?.length;
     if (depth !== undefined && depth <= level) break;
   }
   return withLines(text, [...lines.slice(0, start), ...lines.slice(end)]);
@@ -1747,7 +1758,8 @@ async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<
   });
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const copyDir = path.join(copies, path.basename(path.resolve(given.skill)));
-  cpSync(given.skill, copyDir, { recursive: true });
+  // The directory a link names, so that the change is never written through it into the skill.
+  cpSync(realpathSync(given.skill), copyDir, { recursive: true });
   writeWhole(path.join(copyDir, "SKILL.md"), changed);
   const copy = readSkill(copyDir, "the copy");
   const craftGateway = loggedGateway(gateway, log, "reader:craft");
@@ -2170,10 +2182,26 @@ function kindsOf(b: Behaviour): (caseId: string) => CaseKind {
   return (caseId) => kinds.get(caseId) ?? "session";
 }
 
+/** The run records of `b`'s `results` that its score counts (`runRecords`): while the
+ *  served-sessions refusal applies (`sessionRefusal`), none of a session case whose screen is not
+ *  counted or unscreened, since the screen takes no session case then (screenCommand) and a stage
+ *  still running would keep the verdict waiting for ever. */
+function scoredRecords(b: Behaviour, results: ReadonlyMap<string, CaseResult>): RunRecord[] {
+  if (sessionRefusal(b) === undefined) return runRecords(results.values());
+  const kindOf = kindsOf(b);
+  return runRecords(
+    [...results.values()].filter((result) => {
+      const state = result.stages.screen?.state;
+      return kindOf(result.caseId) !== "session" || state === "counted" || state === "unscreened";
+    })
+  );
+}
+
 /** Why the screen of `b`'s skill is not finished, or undefined when it is: each case is dropped
  *  or has its screen counted or unscreened, or the screen takes it no more: a session case the
- *  served-sessions refusal stops (`sessionRefusal`), or a case of a kind whose screening stopped
- *  (score.ts's `screeningDone`) before it. */
+ *  served-sessions refusal stops (`sessionRefusal`), whether or not its screen began, as
+ *  screenCommand passes it over; or a case of a kind whose screening stopped (score.ts's
+ *  `screeningDone`) before it. */
 function screenUnfinished(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -2187,7 +2215,7 @@ function screenUnfinished(
     const state = result?.stages.screen?.state;
     if (state === "counted" || state === "unscreened") continue;
     const kind = caseKind(c);
-    if (result === undefined && ((kind === "session" && refused) || screeningDone(counts, kind)))
+    if ((kind === "session" && refused) || (result === undefined && screeningDone(counts, kind)))
       continue;
     return `case ${c.id} is not screened yet`;
   }
@@ -2202,7 +2230,7 @@ function screened(
   keep: (score: SkillScore) => readonly (string | undefined)[]
 ): { results: Map<string, CaseResult>; score: SkillScore } {
   const results = readResults(b);
-  const score = scoreSkill(runRecords(results.values()), b.compared);
+  const score = scoreSkill(scoredRecords(b, results), b.compared);
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) {
     throw new Refused(`the screen is not finished: ${unfinished}; run behaviour screen first`);
@@ -2252,10 +2280,7 @@ function reasonWords(
     ? reason
     : reason.replace(
         NO_CONTROL_LOSS,
-        NO_CONTROL_LOSS.replace(
-          "the case's line",
-          `the planted line ${JSON.stringify(plantedLine)}`
-        )
+        noControlLoss(`the planted line ${JSON.stringify(plantedLine)}`)
       );
 }
 
@@ -3230,7 +3255,7 @@ function dropLines(b: Behaviour, score: SkillScore): string[] {
 function reportCommand(given: Behaviour): void {
   const results = readResults(given);
   const b = { ...given, compared: recordedCompared(given, results)?.compared ?? given.compared };
-  const score = scoreSkill(runRecords(results.values()), b.compared);
+  const score = scoreSkill(scoredRecords(b, results), b.compared);
   const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`];
   lines.push(comparedLine(b, results));
   for (const c of b.cases) {
@@ -3366,17 +3391,17 @@ const BEHAVIOUR_USAGE = [
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut or set id>/models/<skill>.json, written by attribute)",
-  "  confirm [--case <id>] (40 fresh runs of old and the compared arm on that case alone, into its own --out)",
+  `  confirm [--case <id>] (${FRESH_RUNS} fresh runs of old and the compared arm on that case alone, into its own --out)`,
   "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
 ].join("\n");
 
-/** The reading sessions by model `file` holds: attribute.ts's `<cut id>/models/<skill>.json` of a
- *  skill (ModelCountFile). Throws a refusal naming the file. */
+/** The reading sessions by model `file` holds: attribute.ts's `<cut or set id>/models/<skill>.json`
+ *  of a skill (ModelCountFile). Throws a refusal naming the file. */
 function readReadingModels(file: string): ModelCount {
   const parsed = ModelCountFile.safeParse(readJson(file, "the reading sessions by model"));
   if (!parsed.success) {
     throw new Refused(
-      `--reading-models ${file} is not a skill's reading sessions by model (attribute's <cut id>/models/<skill>.json): ${schemaFaults(parsed.error)}`
+      `--reading-models ${file} is not a skill's reading sessions by model (attribute's <cut or set id>/models/<skill>.json): ${schemaFaults(parsed.error)}`
     );
   }
   return parsed.data;
@@ -3757,14 +3782,15 @@ const USAGE = [
   "  craft-merge --entry <entry.json> --entry <entry.json> [--entry <entry.json>]... --out <merged.json>",
   "  nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> ...",
   "  craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>",
-  "  proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <heading>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> ...",
-  "  proposals --dry-run --body <file> --section <heading> --list <heading>...",
+  "  proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <text>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> ...",
+  "  proposals --dry-run --body <file> --section <heading> --list <text>...",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",
   "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
   "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",
