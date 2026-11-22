@@ -1056,7 +1056,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
-	if returned, err := pull.Release(); returned != 2 || err != nil {
+	if returned, err := pull.Release(ctx); returned != 2 || err != nil {
 		t.Fatalf("Release returned %d messages, %v; want the two the pull held unread and no error", returned, err)
 	}
 	again := pullSession(t, consumers, session)
@@ -1124,14 +1124,14 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	waitForQueued(t, pull, 2)
 	mine.Close()
 
-	detachErr := pull.Detach()
+	detachErr := pull.Detach(ctx)
 	if detachErr == nil {
 		t.Fatal("Detach on a closed connection reported nothing, while nats.go threw away every message the pull's inbox held unread")
 	}
 	if !strings.Contains(detachErr.Error(), "could not be drained") {
 		t.Fatalf("Detach reported %q, want it naming the drain that failed", detachErr)
 	}
-	returned, err := pull.Release()
+	returned, err := pull.Release(ctx)
 	if returned != 0 {
 		t.Fatalf("Release returned %d messages on a closed connection, want none: no nak of it reached the server", returned)
 	}
@@ -1184,7 +1184,7 @@ func TestAReleaseOnALinkThatStopsAnsweringEndsAtTheDrainsOwnBound(t *testing.T) 
 	answered := make(chan answer, 1)
 	started := time.Now()
 	go func() {
-		returned, err := pull.Release()
+		returned, err := pull.Release(context.Background())
 		answered <- answer{returned, err}
 	}()
 	got := testwait.Receive(t, "Release on a link that stopped answering to end", answered)

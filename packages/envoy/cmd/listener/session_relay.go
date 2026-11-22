@@ -219,6 +219,15 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// handOverWait is how long a stop gives every run's hand-over between them,
+	// bus.SessionPullDrainWait; a test lengthens it, so a row about a hand-over that a live hub
+	// confirms does not turn on how fast the machine is. Set before the first relay starts and
+	// read-only after. handOverOnce makes, at most once, the context of that one wait
+	// (stopHandOver), whose cancel stop runs once the runs have ended.
+	handOverWait   time.Duration
+	handOverOnce   sync.Once
+	handOver       context.Context
+	handOverCancel context.CancelFunc
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -510,23 +519,24 @@ type relayFrame struct {
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := nats.NewInbox()
 	m := &sessionRelays{
-		delivery:    delivery,
-		cfg:         cfg,
-		registry:    cfg.registry,
-		sessions:    cfg.sessions,
-		machineID:   cfg.machineID,
-		logger:      cfg.logger,
-		inbox:       inbox,
-		replyPrefix: inbox + ".",
-		pauseFirst:  relayPauseFirst,
-		pauseMax:    relayPauseMax,
-		receiptWait: relayReceiptWait,
-		loopDone:    make(chan struct{}),
-		events:      map[string]relayNotice{},
-		wake:        make(chan struct{}, 1),
-		relays:      map[string]*relayRun{},
-		restarts:    make(chan struct{}, relayRestartLimit),
-		frames:      map[string]*relayFrame{},
+		delivery:     delivery,
+		cfg:          cfg,
+		registry:     cfg.registry,
+		sessions:     cfg.sessions,
+		machineID:    cfg.machineID,
+		logger:       cfg.logger,
+		inbox:        inbox,
+		replyPrefix:  inbox + ".",
+		pauseFirst:   relayPauseFirst,
+		pauseMax:     relayPauseMax,
+		receiptWait:  relayReceiptWait,
+		handOverWait: bus.SessionPullDrainWait,
+		loopDone:     make(chan struct{}),
+		events:       map[string]relayNotice{},
+		wake:         make(chan struct{}, 1),
+		relays:       map[string]*relayRun{},
+		restarts:     make(chan struct{}, relayRestartLimit),
+		frames:       map[string]*relayFrame{},
 	}
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
@@ -594,6 +604,8 @@ func (m *sessionRelays) signal() {
 
 // stop stops every relay and waits, within ctx, for their goroutines to return, so no relay acks or
 // publishes after it; the session-consumer connection is drained after it (sessionDelivery.drain).
+// The runs' hand-overs share one wait, which starts here (stopHandOver), so a stop on a hub that
+// answers nothing spends no longer on them than handOverWait.
 func (m *sessionRelays) stop(ctx context.Context) {
 	if m == nil {
 		return
@@ -602,6 +614,8 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.eventsMu.Lock()
 	m.events = nil
 	m.eventsMu.Unlock()
+	m.stopHandOver()
+	defer m.handOverCancel()
 	m.cancel(relayCancelListenerStopping)
 	select {
 	case <-m.loopDone:
@@ -612,6 +626,17 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	if !waitWithin(ctx, &m.runs) {
 		m.logger.Warn("session relays still running at shutdown")
 	}
+}
+
+// stopHandOver is the context of the one wait a stop gives every run's hand-over between them: it
+// ends handOverWait after its first call, which stop makes before it cancels a run, or once stop
+// has returned. A run cancelled for the stop hands over under it (relayNATS), so the runs wait in
+// parallel and none past that end; the connection closing ends each run's own wait at once (Detach).
+func (m *sessionRelays) stopHandOver() context.Context {
+	m.handOverOnce.Do(func() {
+		m.handOver, m.handOverCancel = context.WithTimeout(context.Background(), m.handOverWait)
+	})
+	return m.handOver
 }
 
 // loop applies the relay's events in order until the relay stops, and prunes the lapsed entries of
@@ -997,6 +1022,20 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			pull.Stop()
 			return
 		}
+		// What the line says depends on the reason, because a session with no record is
+		// delivered these messages only when it registers again, and not at all where the
+		// delete that took the record took its consumer: the line for every other reason
+		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
+		reason := relayCancelledFor(ctx)
+		whole, failed := relayHandOverLines(reason)
+		// A stopping listener gives every run's hand-over one wait between them, which ends at
+		// SessionPullDrainWait after the stop began (stopHandOver); any other reason waits as
+		// long as nats.go makes the drain take. A hand-over the wait ended is written as failed,
+		// naming what the server had not confirmed.
+		handOver := context.Background()
+		if reason == relayCancelListenerStopping {
+			handOver = m.stopHandOver()
+		}
 		// The pull is detached before anything is naked. A cancelled pull still has a pull
 		// request standing at the server, so a nak sent while that pull is subscribed can be
 		// delivered straight back into the pull this run is giving up; its drain queues the
@@ -1007,19 +1046,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
 		// holds that order. The detach's error is not read here: Release calls Detach again,
 		// which answers the same result, and joins it into the error it returns.
-		_ = pull.Detach()
+		_ = pull.Detach(handOver)
 		// Every frame the run published was read from the pull's queue before anything still in
 		// it, so the frames are naked first and the queue after, each in the order it was sent or
 		// queued.
 		returned, err := m.release(run)
-		fromPull, pullErr := pull.Release()
+		fromPull, pullErr := pull.Release(handOver)
 		returned += fromPull
-		// What the line says depends on the reason, because a session with no record is
-		// delivered these messages only when it registers again, and not at all where the
-		// delete that took the record took its consumer: the line for every other reason
-		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
-		reason := relayCancelledFor(ctx)
-		whole, failed := relayHandOverLines(reason)
 		// The run writes its hand-over line itself rather than the loop that cancelled it: only
 		// once the run's goroutine has given the messages back is it true that this listener
 		// relays the session no more, so a reader, and a test waiting for the hand-over, can

@@ -53,6 +53,11 @@ const (
 	// to deliver. A pull that hears nothing from the server for twice as long ends with
 	// ErrSessionPullStalled.
 	sessionPullHeartbeat = 15 * time.Second
+	// SessionPullDrainWait is how long a caller that must not wait out a silent server -- a
+	// listener that is stopping -- gives its pulls' hand-overs to end (Detach's ctx). It was the
+	// bound Detach put on every drain, so it is what a stop on a silent hub spent on its relays'
+	// hand-overs, and a stop that gives them no longer than this is no slower.
+	SessionPullDrainWait = time.Second
 	// sessionPullDrainPoll is how often Detach reads whether the pull's inbox subscription has
 	// gone invalid, which is nats.go having handed over every message it held unread. It is the
 	// 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
@@ -339,69 +344,89 @@ func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 // again, as a further delivery and out of stream order. Release detaches by itself, so a caller
 // that only returns what the pull holds needs this not at all.
 //
-// It is idempotent: the drain runs once and every call answers its result. It returns once
-// nats.go has ended the drain, which sets the span: the flush the drain opens with carries
-// nats.go's own bound (10 s in nats.go v1.55.0), and a link that drops releases it at once. It
-// reports a drain the server did not confirm, on a link that stopped answering or across a
-// reconnect: the server may then still deliver into the inbox, and what it delivers there is not
-// returned.
-func (p *SessionPull) Detach() error {
-	p.detachOnce.Do(func() {
-		reconnects := p.conn.Stats().Reconnects
-		// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds
-		// unread, which is what Release returns. A drain hands those messages to receive, which
-		// queues them.
-		if err := p.sub.Drain(); err != nil {
-			// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed;
-			// its other error, a subscription with no connection, cannot arise here). The close
-			// has already ended the subscription and thrown away what nats.go held unread, so
-			// those messages reach neither Release nor the server and are delivered again only
-			// once their ack wait has passed. The poll below would end at once on the invalid
-			// subscription and report nothing, so the failure is returned here instead. Stop is
-			// kept as a guard for any other drain failure; on a closed connection it does
-			// nothing.
-			p.Stop()
-			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
-			return
-		}
-		// The server reads a connection in order, so its answer to a PING sent after the
-		// drain's UNSUB confirms it took the UNSUB. nats.go's drain flushes too but ends the
-		// drain whether or not the server answered, so Detach asks for itself, within nats.go's
-		// own bound on a flush.
-		confirmed := p.conn.Flush()
-		// The wait sets no span of its own. nats.go ends every drain (checkDrained): after the
-		// flush it opens with, at the first pass in which receive has taken what nats.go held,
-		// or once the subscription or the connection is closed. A span of Detach's own (1 s,
-		// until this wait replaced it) also ended the wait on a link that was live but slow,
-		// and Release then read the queue while nats.go still held messages: the drain queued
-		// them after that read, nobody returned them, and the next owner had them only once
-		// SessionConsumerAckWait had passed.
-		for p.sub.IsValid() {
-			time.Sleep(sessionPullDrainPoll)
-		}
-		switch {
-		case confirmed != nil:
-			p.detachErr = fmt.Errorf("bus: the server did not confirm the end of the inbox subscription of the pull of consumer %q, so it may still deliver into it what is then not returned: %w", p.name, confirmed)
-		case p.conn.Stats().Reconnects != reconnects:
-			// nats.go writes no UNSUB while it reconnects, and sends the draining subscription
-			// again once it has, so the server keeps the inbox's interest.
-			p.detachErr = fmt.Errorf("bus: the connection of the pull of consumer %q reconnected while its inbox subscription drained, so the server may still deliver into it what is then not returned", p.name)
-		}
-	})
+// It is idempotent: the drain runs once, under the first call's ctx, and every call answers its
+// result. It returns once nats.go has ended the drain, or once ctx ends: a caller that gives no
+// deadline waits as long as nats.go makes the drain take, which nats.go bounds (the flush the
+// drain opens with carries 10 s in nats.go v1.55.0, and a link that drops releases it at once). It
+// reports a drain it stopped waiting for, and one the server did not confirm, on a link that
+// stopped answering or across a reconnect: the server may then still deliver into the inbox, and
+// what it delivers there is not returned.
+func (p *SessionPull) Detach(ctx context.Context) error {
+	p.detachOnce.Do(func() { p.detachErr = p.detach(ctx) })
 	return p.detachErr
 }
 
+// detach is Detach's one drain.
+func (p *SessionPull) detach(ctx context.Context) error {
+	reconnects := p.conn.Stats().Reconnects
+	// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds unread,
+	// which is what Release returns. A drain hands those messages to receive, which queues them.
+	if err := p.sub.Drain(); err != nil {
+		// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed; its
+		// other error, a subscription with no connection, cannot arise here). The close has
+		// already ended the subscription and thrown away what nats.go held unread, so those
+		// messages reach neither Release nor the server and are delivered again only once their
+		// ack wait has passed. The poll below would end at once on the invalid subscription and
+		// report nothing, so the failure is returned here instead. Stop is kept as a guard for
+		// any other drain failure; on a closed connection it does nothing.
+		p.Stop()
+		return fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
+	}
+	// The server reads a connection in order, so its answer to a PING sent after the drain's
+	// UNSUB confirms it took the UNSUB. nats.go's drain flushes too but ends the drain whether or
+	// not the server answered, so Detach asks for itself.
+	confirmed := p.flushWithin(ctx)
+	// The wait sets no span of its own; nats.go ends every drain (checkDrained): after the flush
+	// it opens with, at the first pass in which receive has taken what nats.go held, or once the
+	// subscription or the connection is closed. A span of Detach's own on every drain (1 s,
+	// SessionPullDrainWait, until this wait replaced it) also ended the wait on a link that was
+	// live but slow, and Release then read the queue while nats.go still held messages: the
+	// drain queued them after that read, nobody returned them, and the next owner had them only
+	// once SessionConsumerAckWait had passed. Only a caller that must not wait gives one now.
+	tick := time.NewTicker(sessionPullDrainPoll)
+	defer tick.Stop()
+	for p.sub.IsValid() {
+		select {
+		case <-ctx.Done():
+			if confirmed != nil {
+				return fmt.Errorf("bus: the server had not confirmed the end of the inbox subscription of the pull of consumer %q when its caller stopped waiting (%w), so it may still deliver into it, and what nats.go still held there is not returned", p.name, context.Cause(ctx))
+			}
+			return fmt.Errorf("bus: the drain of the inbox subscription of the pull of consumer %q had not ended when its caller stopped waiting (%w), so what nats.go still held there is not returned", p.name, context.Cause(ctx))
+		case <-tick.C:
+		}
+	}
+	switch {
+	case confirmed != nil:
+		return fmt.Errorf("bus: the server did not confirm the end of the inbox subscription of the pull of consumer %q, so it may still deliver into it what is then not returned: %w", p.name, confirmed)
+	case p.conn.Stats().Reconnects != reconnects:
+		// nats.go writes no UNSUB while it reconnects, and sends the draining subscription again
+		// once it has, so the server keeps the inbox's interest.
+		return fmt.Errorf("bus: the connection of the pull of consumer %q reconnected while its inbox subscription drained, so the server may still deliver into it what is then not returned", p.name)
+	}
+	return nil
+}
+
+// flushWithin is the server's answer to a PING sent now: nil once it answered, else why it did
+// not before ctx's deadline, or before nats.go's own bound on a flush (10 s in nats.go v1.55.0)
+// for a ctx with no deadline.
+func (p *SessionPull) flushWithin(ctx context.Context) error {
+	if _, bounded := ctx.Deadline(); bounded {
+		return p.conn.FlushWithContext(ctx)
+	}
+	return p.conn.Flush()
+}
+
 // Release ends the pull and returns to the server, at once, every message it holds that Next did
-// not read, and reports how many it returned. It detaches the pull (Detach) before it naks any of
-// them, so the server has no interest of this pull's left to deliver them back into. The
-// consumer's next pull is delivered those messages at once rather than after
+// not read, and reports how many it returned. It detaches the pull (Detach, under ctx) before it
+// naks any of them, so the server has no interest of this pull's left to deliver them back into.
+// The consumer's next pull is delivered those messages at once rather than after
 // SessionConsumerAckWait, in the server's own order; a restart of the consumer at its ack floor
 // (RestartAtFloor) delivers them in stream order.
 //
 // Its error carries both halves of what can go wrong: the detach, and the naks, as how many of
 // them failed and the first of their errors. Every message is tried whatever the others did.
-func (p *SessionPull) Release() (int, error) {
-	detachErr := p.Detach()
+func (p *SessionPull) Release(ctx context.Context) (int, error) {
+	detachErr := p.Detach(ctx)
 	p.mu.Lock()
 	queue := p.queue
 	p.queue = nil
