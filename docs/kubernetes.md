@@ -8919,6 +8919,8 @@ The daemon's message on the issue names such a claim only where it records the r
 - Where no claim records a process in the pod, the sweep replaces the pod through the waiting claim, or the claim's own next try replaces it first where nothing holds the pod (`roundPodEndsAtLaunch`).
   No process runs in the pod to read the workspace through, so neither replacement reads it.
   Its message names each member of the round that had not answered, such a claim among them, but never a member with no session whose launch waits on the pod, since no session of it records a worker that ran there, and it says that no process of these roles ran in the pod (`lostClaims`).
+  Where the claim's own try replaced the pod, the message reads that claim as it stood at that launch (`launchRound`), since by the next sweep the claim records a process in the new pod, and a session once its new agent registers.
+  The daemon keeps that reading in memory only: after a daemon restart between that launch and the next sweep, the daemon ends the round as one whose pod went, and its message that the pod went names the claim.
   Where no member is left to name, as where the sweep replaces the pod through a waiting claim with no session that is its issue's only claim, the daemon writes nothing on the issue.
 
 - Where a process of another claim runs in the pod, the claim's next try cannot replace the pod, since a launch keeps a pod that a claim records a process in (`keepAtLaunch`).

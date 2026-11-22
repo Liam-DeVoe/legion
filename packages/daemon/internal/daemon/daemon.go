@@ -1739,7 +1739,9 @@ type supervision struct {
 	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
 	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
 	// round, whether a launch replaced its pod as the round's own replacement and what that launch
-	// read of the round's end, and each claim whose launch into the pod the hook kept the pod for.
+	// read of the round's end, the claim whose launch replaced it where lostClaim's exception held of
+	// that claim at that launch (launchRound's exempt), and each claim whose launch into the pod the
+	// hook kept the pod for.
 	// The hook writes it inside a launching machine's decision and under the pod's launch turn; the
 	// next launch into the pod reads the claims it kept the pod for (dispatch://INFRA-4109 R7), and
 	// the sweep that reads a replaced pod gone, or another pod in its place, ends the round as the

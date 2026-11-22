@@ -940,3 +940,103 @@ func TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod(
 		t.Errorf("the issue was written %q, want nothing: the implementer never had a worker in the round's pod", messages)
 	}
 }
+
+// The case of TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod, in the
+// order production runs it: the implementer's own retry replaces the round's pod and starts the
+// role in a new pod, and its agent registers there before the sweep that ends the round runs. A
+// claim records its session only when its agent registers (supervise's register), which comes
+// seconds after the launch, and the next sweep comes up to a minute after it. So the end reads a
+// claim with a session and a process in the new pod.
+//
+// The end reads lostClaim's exception of the claim as it stood at the launch that replaced the pod
+// (launchRound): no session, and its launch waiting on the round's pod. So the replacement's line
+// names no member, and the issue is written nothing. Read from the claim at the end, the exception
+// would not hold, since the claim has a session then, and the issue would be told that the
+// implementer lost work in a pod it never ran in.
+func TestPodUpdateNamesNothingForAClaimWhoseOwnRetryReplacesThePodAndRegistersBeforeTheSweep(t *testing.T) {
+	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued})
+	token := rig.tokens[claim.RoleImplementer]
+	rig.drifts(podUpdateExchangeDrift)
+	// The runtime refuses each start of the implementer for the identity until the retry is let
+	// through to the fake's own launch, which asks RoundPodEnds of the live pod first, as the
+	// Sandbox runtime does.
+	var letThrough atomic.Bool
+	rig.rt.OnSpawn = func(context.Context) error {
+		if letThrough.Load() || len(rig.rt.CallsOf("ReplacePod")) > 0 {
+			return nil
+		}
+		spawns := rig.rt.CallsOf("Spawn")
+		spec := spawns[len(spawns)-1].Spec
+		if spec.Claim != token {
+			return nil
+		}
+		return fmt.Errorf("launch %s: %w", token, &runtime.AwaitingPodRound{
+			Pod:    awaitedLocator(token, podUpdatePod, spec.Generation),
+			Reason: "pod legion-legion-484 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+		})
+	}
+	m, ok := rig.sup.Machine(token)
+	if !ok {
+		t.Fatal("the implementer is not supervised")
+	}
+	if _, err := m.ReleaseUncertainLaunch(rig.ctx); err != nil {
+		t.Fatalf("release the implementer's unfinished launch: %v", err)
+	}
+	if err := m.Handle(rig.ctx, supervise.RequestSpawn{Claim: token}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+		t.Fatalf("the implementer's first launch answered %v, want the runtime's wait for its pod's round", err)
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.Session != "" || c.Locator != nil || podOf(c.AwaitsPod) != podUpdatePod {
+		t.Fatalf("the refused implementer has session %q and process %+v, waiting on %+v; want no session and no process, waiting on pod %s",
+			c.Session, c.Locator, c.AwaitsPod, podUpdatePod)
+	}
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the sweep that opened the round replaced the pod through the implementer %+v, want no replacement before the next sweep: the retry is to come first", calls)
+	}
+
+	// The retry replaces the round's pod at the fake's own launch into it, which asks the daemon's
+	// hook (roundPodEndsAtLaunch) first, and starts the role in a new pod.
+	conn := fake.NewConn()
+	rig.conns.Register(token, conn)
+	rig.workers[claim.RoleImplementer] = conn
+	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
+	letThrough.Store(true)
+	rig.retryLaunch()
+	if atLaunch := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(atLaunch) != 1 {
+		t.Fatalf("the retry replaced the round's pod %d times %+v, want once", len(atLaunch), atLaunch)
+	}
+	c := rig.awaitClaim(claim.RoleImplementer, "its retry to record a process", func(c supervise.Claim) bool { return c.Locator != nil })
+	pod := podOf(c.Locator)
+	if pod == "" || pod == podUpdatePod {
+		t.Fatalf("the implementer came up in pod %q, want a pod other than the round's %s", pod, podUpdatePod)
+	}
+
+	// The new agent registers before any sweep runs, so the round is still open on a claim that
+	// records a session.
+	rig.registerInto(claim.RoleImplementer, pod)
+	if c := rig.claimOf(claim.RoleImplementer); c.Session == "" || c.UpdateRound != podUpdateRound {
+		t.Fatalf("the registered implementer has session %q in round %q, want a session with the round %s still open",
+			c.Session, c.UpdateRound, podUpdateRound)
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(lines) != 0 {
+		t.Fatalf("the round ended %+v before the agent registered, want its end at the sweep after the registration", lines)
+	}
+
+	rig.awaitSwept(claim.RoleImplementer, "its round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.tick()
+	rig.tick()
+	rig.settleAll()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Errorf("ReplacePod called %+v, want the retry's replacement alone", calls)
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 || lines[0]["atLaunch"] != true {
+		t.Fatalf("the replacement was logged %+v, want one line of a replacement at a launch", lines)
+	}
+	wantField(t, lines[0], "unansweredMembers")
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Errorf("the issue was written %q, want nothing: the implementer never had a worker in the round's pod", messages)
+	}
+}
