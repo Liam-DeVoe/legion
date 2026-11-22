@@ -24,9 +24,9 @@ body: |-
   member of the round that had not answered, but not a member with no session whose launch waits
   on the pod. The message says that no role process ran in the pod. When no member is left to
   name, the daemon writes no message. When the daemon replaces the pod through the process of
-  another claim, it reads the issue workspace for such a claim before the replacement, as it does
-  for a claim that the round passed over. The message on the issue names the claim if that read
-  found work or failed.
+  another claim, it reads the issue workspace before the replacement for a refused claim with a
+  session that had not answered, as it does for a claim that the round passed over. The message on
+  the issue names that claim if the read found work or failed.
   Each launch that carries the transition token is logged at Warn. `legion state --json`
   gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot
   that carried the transition token with the time of the last one, and

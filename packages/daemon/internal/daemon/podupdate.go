@@ -361,11 +361,12 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // records a process in the pod, the pod is replaced through it (podProcess), and its next try,
 // within a minute, comes up in the pod that replaced it (dispatch://INFRA-4425 R4). No role
 // process ran in that pod, so that replacement makes no read of the workspace, and it tells the
-// issue of every member that had not answered (lostClaims), as the replacement by issue and at a
-// launch do (replacePodForRound). Where a process of another claim runs in the pod, the pod is
-// replaced through that process, and the waiting claim's own try cannot replace it, since a launch
-// keeps a pod that a claim records a process in (roundPodEndsAtLaunch, keepAtLaunch). There a
-// member with a session that waits on the pod and has not answered makes a read of the workspace
+// issue of every member that had not answered, but a member with no session whose launch waits on
+// the pod, and tells it nothing where no member is left (lostClaims), as the replacement by issue
+// and at a launch do (replacePodForRound). Where a process of another claim runs in the pod, the
+// pod is replaced through that process, and the waiting claim's own try cannot replace it, since a
+// launch keeps a pod that a claim records a process in (roundPodEndsAtLaunch, keepAtLaunch). There
+// a member with a session that waits on the pod and has not answered makes a read of the workspace
 // due under the same conditions as a claim the round passed over, and it is named on the issue
 // beside the claims the round did not wait for only where that read found work or failed
 // (lostWaitingClaims, workspaceRead.tells). Where no claim records a process in the pod, a try of
