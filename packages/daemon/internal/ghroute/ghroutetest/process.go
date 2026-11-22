@@ -32,6 +32,15 @@ func RecordedHelper(pidFile, seconds string) (pid int, running bool) {
 	return pid, err == nil && HelperRunning(pid, seconds)
 }
 
+// HoldsStandIn is the end of a stand-in script that holds its work: it records its pid in pidFile,
+// written whole by a rename, and becomes `sleep <seconds>` under that pid, with a command line
+// HelperRunning tells from a pid the kernel has reused. Each row gives its stand-in a sleep of its
+// own, of about a day: longer than any test binary's deadline, so that the rows' waits, which the
+// deadline alone bounds, never see the stand-in end by itself and read that as the stop.
+func HoldsStandIn(pidFile, seconds string) string {
+	return "echo $$ >'" + pidFile + ".new'\nmv '" + pidFile + ".new' '" + pidFile + "'\nexec sleep " + seconds + "\n"
+}
+
 // KillRecordedHelper registers a cleanup that kills the helper pidFile names if it is still
 // running when the test ends, so a failure leaves nothing behind. It reads the file only then, so
 // it is registered before whatever starts the helper, and holds whichever check fails first.

@@ -9,8 +9,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -57,7 +58,7 @@ import (
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
 func ghRepoGitConfigRefusal(env []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&ghroute.GitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^include\.path$|^includeif\..*\.path$|^extensions\.worktreeconfig$`)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")

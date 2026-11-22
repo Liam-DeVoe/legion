@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
@@ -22,11 +23,16 @@ import (
 // it, with no shell between. It records every run in invocations.jsonl beside it, answers `<path>
 // --help` with gh 2.98.0's help of that command, and answers every other run as behaviour.json
 // beside it says. Every other run of this binary takes the package's migrated Postgres template,
-// which the one test that records calls in the store clones (testpg.Main).
+// which the one test that records calls in the store clones (testpg.Main), and gives the bounds
+// the tool's waits on a program take through programbound, its help reads' (ghroute.ReadHelp) and
+// its leak guard's reads among them, what is left of the binary's deadline
+// (ghroutetest.BoundByTheTestDeadline), so a stand-in a loaded machine makes slow is not stopped at
+// a product bound.
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "gh" {
 		os.Exit(standIn())
 	}
+	ghroutetest.BoundByTheTestDeadline()
 	os.Exit(testpg.Main("legion_ghtool_test", m.Run))
 }
 

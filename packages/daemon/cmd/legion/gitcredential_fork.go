@@ -15,10 +15,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
-// forkReadBound is the bound of the credential helper's whole fork read, the token read included;
-// only tests shorten it.
+// forkReadBound is the bound of the credential helper's whole fork read, the token read included:
+// the token read is a file and the fork read one request to GitHub, and the bound keeps the git
+// that asked for a credential from waiting without end on a read that does not answer. Tests
+// shorten it, and give it their own deadline otherwise (programbound).
 var forkReadBound = 10 * time.Second
 
 // forkUpstreamDir is the gh directory that answers for repo, a repository of an owner the bundle
@@ -64,7 +67,7 @@ func forkUpstreamDir(ctx context.Context, ownersDir string, repo ghrepo.Reposito
 func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
 	ctx, stopHangup := hangupCancels(ctx)
 	defer stopHangup()
-	ctx, cancel := context.WithTimeout(ctx, forkReadBound)
+	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&forkReadBound))
 	defer cancel()
 	token, err := forkReadToken(ownersDir, repo)
 	if err != nil {

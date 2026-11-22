@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // selectors is every repository a command's selectors name, and every owner one names with no
@@ -800,6 +801,16 @@ func ReadGitRemotes(env []string) ([]Remote, error) {
 	return remotes, nil
 }
 
+// GitReadBound is the longest `legion gh` waits for one of the git reads it makes of the
+// repository before gh runs: the configuration read (cmd/legion's ghRepoGitConfigRefusal) and the
+// remotes and their markers (gitLines). Each reads a few files of the repository and answers in
+// milliseconds. A git that has not answered in 30 s waits on something it will not get, a
+// configuration on a mount that hangs or a git wrapper that waits, and the person running `legion
+// gh` gets the read's refusal, which sends nothing, rather than a call that never returns; 30 s is
+// room for a loaded machine. It is a variable so that a test binary can give it its own deadline
+// (programbound), and exported so that both reads take this one bound.
+var GitReadBound = 30 * time.Second
+
 // gitLines runs git with args in the working directory, under env, and answers the lines it
 // prints: none for a directory that is no git repository, where no git runs, or, for `git config
 // --get-regexp`, where nothing matches.
@@ -810,7 +821,7 @@ func ReadGitRemotes(env []string) ([]Remote, error) {
 // stop to the two command runners of internal/workspace, whose git and jj do take locks, and
 // leaves a read that takes none as it is: this child needs neither the group nor the grace.
 func gitLines(env []string, args ...string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&GitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")

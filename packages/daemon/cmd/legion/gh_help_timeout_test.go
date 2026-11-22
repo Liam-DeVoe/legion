@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -19,7 +20,7 @@ import (
 // stand-in holds that work (signalWhileHeld).
 //
 // A SIGINT to the group, a Ctrl-C, cancels the command's context (main's signal.NotifyContext),
-// which stops the held work's group, and `legion gh` ends with 130 within a few seconds. A SIGHUP
+// which stops the held work's group, and `legion gh` ends with 130. A SIGHUP
 // to the group, a pane that closes, is caught until gh would start (hangupCancels) and stops the
 // held work's group the same way, and `legion gh` ends with 129.
 //
@@ -48,7 +49,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 	passes := func(string, string) string { return leakguardtest.Passes }
 	for _, held := range []struct {
 		name string
-		// seconds is the holding stand-in's sleep, one per row.
+		// seconds is the holding stand-in's sleep, one per row (ghroutetest.HoldsStandIn).
 		seconds string
 		// gh and check are the stand-in gh and the stand-in shared check, given the file the
 		// holding one records its pid in and its sleep.
@@ -58,24 +59,24 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		keepsNothing bool
 	}{
 		{
-			name: "the help read", seconds: "297", check: passes, keepsNothing: true,
+			name: "the help read", seconds: "86397", check: passes, keepsNothing: true,
 			gh: func(pidFile, seconds string) string {
 				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat '" + filepath.Join(help, "gh.txt") + "'\n" +
-					holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
+					ghroutetest.HoldsStandIn(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},
 		{
-			name: "the shared check", seconds: "296", check: holdsStandIn,
+			name: "the shared check", seconds: "86396", check: ghroutetest.HoldsStandIn,
 			gh: func(string, string) string { return ghStandInPrefix(help) + "exit 0\n" },
 		},
 		{
 			// The stand-in gh answers the outer `legion gh`'s help reads, and holds the guard's
 			// read, which reads no help of its own. It tells that read by its argv
 			// (ghVisibilityReadArgv): gh is handed no Legion variable naming it (ghChildEnviron).
-			name: "the guard's visibility read", seconds: "295", check: passes,
+			name: "the guard's visibility read", seconds: "86395", check: passes,
 			gh: func(pidFile, seconds string) string {
 				return ghStandInHelp(help) +
-					"case \" $* \" in\n" + ghVisibilityReadArgv + ")\n" + holdsStandIn(pidFile, seconds) + ";;\nesac\nexit 0\n"
+					"case \" $* \" in\n" + ghVisibilityReadArgv + ")\n" + ghroutetest.HoldsStandIn(pidFile, seconds) + ";;\nesac\nexit 0\n"
 			},
 		},
 	} {

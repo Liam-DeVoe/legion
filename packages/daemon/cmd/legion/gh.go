@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -741,6 +742,20 @@ func refuseLegionGhAsRealGh(gh string) error {
 		return fmt.Errorf("LEGION_GH_PATH %s is a wrapper that runs `legion gh`, not the real gh; set LEGION_GH_PATH to the real gh's install path", gh)
 	}
 	return nil
+}
+
+// The bounds legion sets on a program it starts and waits for, which this package's tests give
+// their own deadline through programbound. This package registers the three that live in it:
+// `legion gh`'s answer to the shared check's own visibility read (visibilityAnswerBound,
+// gh_visibility.go), the credential helper's fork read (forkReadBound, gitcredential_fork.go), and
+// the worker shim's grace for its agent (workerShimGrace, worker_shim.go). The git reads of
+// `legion gh` (ghroute.GitReadBound, which ghRepoGitConfigRefusal here reads too) and its read of
+// gh's help (ghroute.ReadHelp's helpTimeout) live in internal/ghroute, which registers them;
+// workspace-init's command budget (commandBudget) is registered in workspace_init.go, and the leak
+// guard's reads and the shim's warm-up floor in internal/leakguard and internal/shim. Each wait
+// reads its bound through programbound.Of.
+func init() {
+	programbound.Register(&visibilityAnswerBound, &forkReadBound, &workerShimGrace)
 }
 
 // ghRoutingKeys are the keys of a gh directory's files that send gh's requests, with the
