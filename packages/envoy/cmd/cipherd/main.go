@@ -1587,8 +1587,9 @@ type verifiers struct {
 	// the registration route reads it (api.Deps.PodRegistrationTokens).
 	PodRegistration enroll.PodVerifier
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
-	// which registers no Google subject token type.
-	GoogleKeys *oidc.Keys
+	// which registers no Google subject token type. It logs once when its key set cannot be read
+	// and once when it can be read again (googleKeySet), for every reader of it.
+	GoogleKeys *googleKeySet
 	// GoogleIdentities verifies a listed caller's own Google identity token, against the same
 	// issuer and audience as those keys, nil where GoogleKeys is. It is how a caller on a VM —
 	// the Envoy listener — authenticates on the routes BROKER_API_ACCOUNTS names it for,
@@ -1620,8 +1621,9 @@ type verifiers struct {
 // only when BROKER_GOOGLE_OIDC_AUDIENCE is set, and its key set serves both a listed caller's
 // Google verifier and the exchange, which resolves a machine's subject token against it; that
 // read logs one line naming the issuer, the audience, the machine services and how many machine
-// entries the exchange holds. With no Google audience it reads and logs nothing about Google, and
-// answers no Google keys, so the broker registers no Google subject token type.
+// entries the exchange holds, and the key set logs each change between read and not read once
+// (googleKeySet). With no Google audience it reads and logs nothing about Google, and answers no
+// Google keys, so the broker registers no Google subject token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
 	if len(cfg.K8sOIDCIssuers) > 0 {
@@ -1653,12 +1655,12 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	services := slices.Sorted(maps.Values(cfg.VMServicesByAccount))
 	slog.Info("google machine identity", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.GoogleOIDCAudience,
 		"services", strings.Join(slices.Compact(services), ","), "fleets", len(cfg.ExchangeGoogleAccounts))
-	found.GoogleKeys = googleKeys
+	found.GoogleKeys = newGoogleKeySet(googleKeys, cfg.GoogleOIDCIssuer)
 	// One verifier on that key set, for a listed caller that holds a Google identity rather
 	// than a Kubernetes one: the audience is BROKER_GOOGLE_OIDC_AUDIENCE, the one every machine
 	// of the deployment already holds a token for, so such a caller presents the token its
 	// metadata server already hands it.
-	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, googleKeys)
+	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, found.GoogleKeys)
 	return found, nil
 }
 

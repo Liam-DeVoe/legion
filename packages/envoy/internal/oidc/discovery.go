@@ -21,17 +21,18 @@ var ErrIssuerUnavailable = errors.New("oidc: the issuer cannot be reached")
 // IssuerUnavailableCode and IssuerUnavailableMessage are the error code and the sentence of the
 // answer, 503, to a service-account token whose issuer could not be asked (ErrIssuerUnavailable).
 // The broker's routes, its token exchange and Dispatch's API all answer that token with this
-// pair, and a client compares the code. A sign-in whose issuer could not be asked is answered in
-// the sign-in's own words, not these.
+// pair, and a client compares the code. The sentence names no wait of its own: every one of those
+// answers carries IssuerUnavailableRetryAfter, which it points to. A sign-in whose issuer could
+// not be asked is answered in the sign-in's own words, not these.
 const (
 	IssuerUnavailableCode    = "OIDC_ISSUER_UNAVAILABLE"
-	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again in a minute"
+	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again after Retry-After"
 )
 
-// IssuerUnavailableRetryAfter is the Retry-After, in seconds, that the broker's routes and its
-// token exchange send beside that pair: the Envoy listener's for the same fault. A key set whose
-// read failed is read again at most once per DefaultKeysFailureSpacing, however many tokens
-// arrive, so a client that tries again this soon costs the issuer nothing.
+// IssuerUnavailableRetryAfter is the Retry-After, in seconds, that the broker's routes, its token
+// exchange and Dispatch's API send beside that pair: the Envoy listener's for the same fault. A
+// key set whose read failed is read again at most once per DefaultKeysFailureSpacing, however
+// many tokens arrive, so a client that tries again this soon costs the issuer nothing.
 const IssuerUnavailableRetryAfter = 1
 
 // ErrGrantRefused means the issuer's token endpoint refused a refresh token (RFC 6749 section

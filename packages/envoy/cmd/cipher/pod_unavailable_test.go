@@ -71,7 +71,7 @@ func unavailableFirst(t *testing.T, unavailable map[string]int, retryAfter map[s
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"code": "OIDC_ISSUER_UNAVAILABLE", "error": "the service-account token issuer cannot be reached; try again in a minute",
+				"code": "OIDC_ISSUER_UNAVAILABLE", "error": "the service-account token issuer cannot be reached; try again after Retry-After",
 			})
 			return
 		}

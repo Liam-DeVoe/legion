@@ -180,7 +180,7 @@ Agents normally authenticate with a personal `dsp_` token minted in Settings, se
 With `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` set, a Kubernetes pod's projected service-account token is a third bearer credential:
 the server reads the issuer's discovery document in the background from boot, retrying after one second and doubling to thirty while it fails (each failure logged at ERROR at most once a minute), and an issuer that cannot be reached refuses nothing;
 it verifies a JWT-shaped bearer against the issuer's published keys, the configured audience, and the token's expiry.
-Until the document has been read, a JWT-shaped bearer is `503 OIDC_ISSUER_UNAVAILABLE`, never a 401, and every other credential is served.
+Until the document has been read, and while a token's key cannot be read from the issuer's key set, a JWT-shaped bearer is `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, as the secrets broker answers it, never a 401, and every other credential is served.
 Half the pair refuses to boot, naming the missing variable; neither leaves bearer handling exactly as it is without them.
 A verified caller acts as the `session` it names in the request body, and every actor it writes carries `service`, the token's verified subject (`system:serviceaccount:<namespace>:<name>`)
 — set from the token, never from the body.
