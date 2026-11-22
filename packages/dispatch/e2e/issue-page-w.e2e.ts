@@ -134,6 +134,20 @@ const CATALOGUE_READ = "**/api/v1/schema/blocks";
 /** The invocation of a lens (`POST /api/v1/issues/{key}/lenses`). */
 const INVOKE_ROUTE = "**/api/v1/issues/*/lenses";
 
+/** The reads the page's shell sends on a timer of its own, on every page and whatever the page
+ *  does: the agents and the credential requests waiting on the reader. A count of the requests
+ *  an act sends leaves these out, since a window that spans one says nothing of the act. */
+const SHELL_TIMED_READS: Readonly<Record<string, true>> = {
+  "/api/v1/agents": true,
+  "/api/v1/credential-requests": true,
+};
+
+/** `counts` with the shell's timed reads left out (`SHELL_TIMED_READS`): a load that lasts past
+ *  the shell's next tick reads them once more, which says nothing of the load's own requests. */
+function ownRoutes(counts: readonly RouteCount[]): readonly RouteCount[] {
+  return counts.filter((one) => SHELL_TIMED_READS[one.route] !== true);
+}
+
 /** A uuid in any text the page draws. */
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu;
 
@@ -1041,7 +1055,7 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     await gotoIssue(page, presetPath(whole.key, "conversation"));
     await expectLoadSettled(traffic);
     await heldAnswer(tree, `the tree read of ${whole.key}`);
-    without = traffic.byRoute();
+    without = ownRoutes(traffic.byRoute());
   });
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
     const key = whole.key;
@@ -1054,7 +1068,7 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     await expectOpeningLanded(page);
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
     expect(
-      traffic.byRoute(),
+      ownRoutes(traffic.byRoute()),
       "the load with lenses sends the requests of the load without them"
     ).toEqual(without);
     expect(chainReads(traffic.requests), "the load sends a read of a lens").toEqual([]);
@@ -1139,6 +1153,8 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     ).toHaveLength(1);
 
     // An invocation sends its write and one read of the tree, one request for each page of it.
+    // The shell's own timed reads (`SHELL_TIMED_READS`) are left out: a window that spans one
+    // says nothing of the invocation, and every other request in it is counted.
     const before = new Set(lensIdsIn(answer));
     const treePages = treePagesOf(page);
     traffic.reset();
@@ -1152,9 +1168,13 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     await expectLoadSettled(traffic);
     const read = await treePages();
     expect(
-      traffic.requests.map((request) => {
+      traffic.requests.flatMap((request) => {
         const url = new URL(request.path, "http://page.invalid");
-        return `${request.method} ${url.pathname}${url.searchParams.has("view") ? " with a view" : ""}`;
+        return SHELL_TIMED_READS[url.pathname] === true
+          ? []
+          : [
+              `${request.method} ${url.pathname}${url.searchParams.has("view") ? " with a view" : ""}`,
+            ];
       }),
       "an invocation sends more than its write and one read of the tree"
     ).toEqual([
