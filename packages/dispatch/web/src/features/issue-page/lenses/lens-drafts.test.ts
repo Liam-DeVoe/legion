@@ -607,10 +607,9 @@ test("a risk's fact lines that name a node the answer holds carry a chip of that
   const named = factsOf(rowOf(root, "risk-1"));
   const unheld = factsOf(rowOf(root, "risk-2"));
 
-  expect([named.earlyWarning, named.prevention, unheld.earlyWarning].map(lineText)).toEqual([
+  expect([named.earlyWarning, named.prevention].map(lineText)).toEqual([
     "A reply breaks RFC 9110 first.",
     "Run this lens again.",
-    "Watch risk closely.",
   ]);
   expect({ earlyWarning: named.earlyWarning, prevention: named.prevention }).toEqual({
     earlyWarning: [
@@ -620,7 +619,9 @@ test("a risk's fact lines that name a node the answer holds carry a chip of that
     ],
     prevention: ["Run ", { address: toLens, id: FIRST, words: "this lens" }, " again."],
   });
-  expect(typeof unheld.earlyWarning, "a line that names no held node has no parts").toBe("string");
+  expect(unheld.earlyWarning, "a line that names no held node has no parts").toBe(
+    "Watch risk closely."
+  );
 });
 
 // A risk the answer does not hold has no row to link and no words to read: its address reads as

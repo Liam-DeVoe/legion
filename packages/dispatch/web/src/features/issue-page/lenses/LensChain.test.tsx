@@ -803,15 +803,19 @@ test("a lens row draws its verdict's author's link to a risk as a link to the ri
   }
 });
 
-// A risk's early warning that cites a constraint the tree read holds by its bare address,
-// `dispatch://constraint/<uuid>`, draws the constraint's words in its line as a link that opens
-// the constraint's row (`?node=`), as the risk's row draws its lines from the tree read
-// (`buildIssueTree`).
-test("a risk row draws its early warning's address of a constraint as a link to the constraint's row", async () => {
+/** The ids of the risk row the early-warning cases draw: a lens on the issue, a risk under it,
+ *  and a constraint of the issue the risk's early warning cites. */
+const WARNING_ROW = {
+  constraint: "e5000000-0000-4000-8000-000000000005",
+  lens: "c3000000-0000-4000-8000-000000000003",
+  risk: "d4000000-0000-4000-8000-000000000004",
+} as const;
+
+/** The early warning `earlyWarning` of a risk row drawn from the tree read (`buildIssueTree`),
+ *  as its line draws it: its author's words, and each link in it as its words and its address. */
+async function earlyWarningDrawn(earlyWarning: string): Promise<[string, [string, string][]]> {
   await warmMarkdownRenderer();
-  const lens = "c3000000-0000-4000-8000-000000000003";
-  const risk = "d4000000-0000-4000-8000-000000000004";
-  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const { constraint, lens, risk } = WARNING_ROW;
   const root = buildIssueTree({
     issue: issueDetails(),
     tree: treeAnswer(
@@ -819,10 +823,7 @@ test("a risk row draws its early warning's address of a constraint as a link to 
         treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
         treeNode(lens, "lens", KEY),
         treeNode(risk, "risk", lens, {
-          attributes: {
-            early_warning: `A reply breaks dispatch://constraint/${constraint} first.`,
-            heading: "Replies break the HTTP rule",
-          },
+          attributes: { early_warning: earlyWarning, heading: "Replies break the HTTP rule" },
         }),
         treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
       ],
@@ -836,64 +837,51 @@ test("a risk row draws its early warning's address of a constraint as a link to 
   if (drawn === undefined) throw new Error("the tree draws no row of the risk");
   const view = renderOnIssue(<LensRow drawn={drawn} />);
   try {
+    let read: [string, [string, string][]] = ["", []];
     await waitFor(() => {
       const line = view.container.querySelector('[data-lens-line="early_warning"]');
-      expect(line?.querySelector("[data-author-text]")?.textContent).toBe(
-        "A reply breaks RFC 9110 first."
-      );
+      const words = line?.querySelector("[data-author-text]")?.textContent ?? "";
+      expect(words).not.toBe("");
       const links = [...(line?.querySelectorAll("a") ?? [])];
-      expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
-        ["RFC 9110", `/issues/${KEY}?node=${constraint}`],
-      ]);
+      read = [
+        words,
+        links.map((link): [string, string] => [
+          link.textContent ?? "",
+          link.getAttribute("href") ?? "",
+        ]),
+      ];
     });
+    return read;
   } finally {
     view.unmount();
   }
+}
+
+// A risk's early warning that cites a constraint the tree read holds by its bare address,
+// `dispatch://constraint/<uuid>`, draws the constraint's words in its line as a link that opens
+// the constraint's row (`?node=`), as the risk's row draws its lines from the tree read
+// (`buildIssueTree`).
+test("a risk row draws its early warning's address of a constraint as a link to the constraint's row", async () => {
+  const { constraint } = WARNING_ROW;
+  expect(
+    await earlyWarningDrawn(`A reply breaks dispatch://constraint/${constraint} first.`)
+  ).toEqual([
+    "A reply breaks RFC 9110 first.",
+    [["RFC 9110", `/issues/${KEY}?node=${constraint}`]],
+  ]);
 });
 
 // A risk's early warning whose author's link to a constraint the tree read holds has words that
 // carry a mark, `[the **HTTP** rule](dispatch://constraint/<uuid>)`, draws those words as one link
 // that opens the constraint's row (`?node=`), not one link for each run of them.
 test("a risk row draws its early warning's author's link of marked words as one link", async () => {
-  await warmMarkdownRenderer();
-  const lens = "c3000000-0000-4000-8000-000000000003";
-  const risk = "d4000000-0000-4000-8000-000000000004";
-  const constraint = "e5000000-0000-4000-8000-000000000005";
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY),
-        treeNode(risk, "risk", lens, {
-          attributes: {
-            early_warning: `A reply breaks [the **HTTP** rule](dispatch://constraint/${constraint}) first.`,
-            heading: "Replies break the HTTP rule",
-          },
-        }),
-        treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children
-    .find((row) => row.id === lens)
-    ?.children.find((row) => row.id === risk);
-  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
-  const view = renderOnIssue(<LensRow drawn={drawn} />);
-  try {
-    await waitFor(() => {
-      const line = view.container.querySelector('[data-lens-line="early_warning"]');
-      expect(line?.querySelector("[data-author-text]")?.textContent).toBe(
-        "A reply breaks the HTTP rule first."
-      );
-      const links = [...(line?.querySelectorAll("a") ?? [])];
-      expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
-        ["the HTTP rule", `/issues/${KEY}?node=${constraint}`],
-      ]);
-    });
-  } finally {
-    view.unmount();
-  }
+  const { constraint } = WARNING_ROW;
+  expect(
+    await earlyWarningDrawn(
+      `A reply breaks [the **HTTP** rule](dispatch://constraint/${constraint}) first.`
+    )
+  ).toEqual([
+    "A reply breaks the HTTP rule first.",
+    [["the HTTP rule", `/issues/${KEY}?node=${constraint}`]],
+  ]);
 });

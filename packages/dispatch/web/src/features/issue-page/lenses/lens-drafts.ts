@@ -170,7 +170,7 @@ export function storedRowWords(node: TreeAnswerNode, type: "lens" | "risk"): str
 
 /** The fact lines of `node`, of kind `type`, whose words one stored attribute holds
  *  (`STORED_WORDS`): each one its rule draws, as `read` answers it - its words, or its parts where
- *  it names a node - where its words (`factText`) are not empty. */
+ *  it names a node - where it has words to draw (`filled`). */
 export function storedFacts(
   node: TreeAnswerNode,
   type: LensType,
@@ -180,7 +180,7 @@ export function storedFacts(
   for (const stored of STORED_WORDS) {
     if (stored.type !== type || stored.drawn?.(node) === false) continue;
     const line = read(node.attributes?.[stored.attribute] ?? "");
-    if (factText(line) !== "") facts[stored.fact] = line;
+    if (filled(line)) facts[stored.fact] = line;
   }
   return facts;
 }
