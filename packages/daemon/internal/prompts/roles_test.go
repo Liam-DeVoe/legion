@@ -333,6 +333,27 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A pull request in one of GitHub's stacks merges only through the asynchronous merge call
+// (docs.github.com/en/pull-requests/reference/stacked-pull-requests-apis-and-webhooks: "A stack
+// cannot be merged with the legacy synchronous merge endpoints or mutations"), so the merger is
+// told that call: held to the head it read (`sha`), with its own subject and empty body on a
+// direct merge, nothing but the head on a queue, and the result read back by its uuid, since an
+// accepted request is no merge (dispatch://INFRA-5217, R3).
+func TestTheMergerLandsAStackedPullRequestThroughTheAsynchronousMergeCall(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh api -X PUT repos/<o>/<r>/pulls/<n>/merge-async -f sha=<head> -f merge_action=direct_merge -f merge_method=squash",
+		"-f commit_title='<pull request title> (#<n>)' -f commit_message=''",
+		"`-f sha=<head> -f merge_action=merge_queue`",
+		"gh api repos/<o>/<r>/pulls/<n>/merge-async/<uuid>",
+		"`gh stack merge` makes the same call but names no head and writes no message",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+}
+
 // Every update round a part describes is one a daemon of this release can open. The stale-plugin
 // lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
 // plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),

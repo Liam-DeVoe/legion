@@ -31,6 +31,7 @@ Read a database outside your pod through the read-only login whose URL is in the
 
 - `command -v psql redis-cli sqlite3 nc dig unzip yq legion-testpg` shows which your digest has. `yq` is mikefarah's v4, not Debian's Python `yq`.
 - `command -v gcloud bq az mise tmux busybox` shows the cloud CLIs and rig tools. `gsutil` is not on `PATH`; `az` is a wrapper that defaults `REQUESTS_CA_BUNDLE` to Debian's roots; run `busybox <applet>`, and download nothing with `busybox wget`, which checks no certificate.
+- `gh stack` (github/gh-stack, pinned by the image) makes and keeps GitHub's stacked pull requests: a chain of branches, each pull request based on the one below, which GitHub reviews layer by layer, rebases on its own side when a lower one changes or merges, and merges or queues together. It helps when one change reads better as dependent layers. `gh stack <command> --help` has its flags; pass `--json`, `--auto`, `--yes` and explicit branch names, since its prompts and full-screen views block or fail in an agent's shell. The pod's `gh` wrapper does not run extensions yet, so it refuses the command until the wrapper is replaced.
 
 ## A tool the image lacks
 
