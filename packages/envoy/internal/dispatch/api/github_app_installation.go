@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -92,9 +94,9 @@ var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause(
 // repositoriesHidden answers, for each of repositories (owner/name), whether reader may not see it:
 // whether it fails refs.RepositoryClause, read in one statement and keyed by the name as given. A
 // reader that sees every object (seesEveryObject) sees every repository, and nothing is read for
-// it (R9); nothing is read for no repository either. The App-installation route, and delivery's
-// pull requests that name no issue and its runs that ship none (deliveryPopulation.cutTo), hold a
-// repository to it, as the GitHub proxy does (routes' repositoryHidden).
+// it (R9); nothing is read for no repository either. The App-installation route, the GitHub proxy
+// (githubGate), and delivery's pull requests that name no issue and its runs that ship none
+// (deliveryPopulation.cutTo), hold a repository to it.
 func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, repositories []string) (map[string]bool, error) {
 	hidden := make(map[string]bool, len(repositories))
 	if len(repositories) == 0 || seesEveryObject(reader) {
@@ -117,4 +119,62 @@ func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, rep
 		return nil, fmt.Errorf("read whether the caller sees %d repositories: %w", len(repositories), err)
 	}
 	return hidden, nil
+}
+
+// RepositoryGate is the GitHub proxy's gate for the caller Background.GitHubGate resolved
+// (githubGate): for one repository, owner/name as the proxy's path spells it, whether the caller
+// may not see it and whether a read of it is held to it (githubapi.Gate's Hidden and Held). An
+// error is the proxy's 500.
+type RepositoryGate func(repository string) (hidden, held bool, err error)
+
+// githubGate is the GitHub proxy's caller check (Background.GitHubGate), which routes'
+// apiGithubRest asks before the proxy reads anything (githubapi.ProxyREST), and the gate it then
+// holds each read to. The caller is the request's own credential, resolved as every row of the
+// table resolves one (optionalActor): a person's cookie or trusted header, a personal token, or a
+// token the secrets broker issued. A caller that does not resolve is refused as every gate refuses
+// one (writeAuthenticationError); a read-only token is 403 READ_ONLY_TOKEN, as every row the read
+// list does not name answers it (refuseReadOnlyToken); and a credential that does not hold the
+// person scope is 403 OAUTH_SCOPE_REQUIRED naming it, as gateRouteScopes answers: the deployment's
+// shared token, a service account's, a token an operator's entry mapped to one project, a
+// machine's that names no person and a restricted member's broker token hold none. So the proxy
+// reads GitHub for a person alone, at their browser or through a token acting as them.
+//
+// The gate is the App-installation route's (repositoriesHidden): hidden is whether the caller's
+// viewer, its credential's list applied (access.Resolve), fails refs.RepositoryClause, and held is
+// that viewer's private flag, the one the clause's R9 arm reads. The viewer is resolved when the
+// proxy first asks, after the method, the path and the App key, so a read refused for any of those
+// reads nothing, and without the listener refresh readerFor makes first, since the clause reads no
+// session's content. A server with no store has no viewer to resolve: every repository is hidden
+// and every read held, as the closed viewer reads.
+func (s *server) githubGate(w http.ResponseWriter, r *http.Request) (RepositoryGate, bool) {
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return nil, false
+	}
+	if actor.Credential != nil && actor.Credential.ReadOnly {
+		writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, s.readOnlyRefusal)
+		return nil, false
+	}
+	if !actor.Credential.Holds(model.ScopePerson) {
+		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+			"this request's credential does not hold the %s scope, which the GitHub proxy requires", model.ScopePerson))
+		return nil, false
+	}
+	return func(repository string) (bool, bool, error) {
+		if s.deps.Store == nil || s.deps.Store.Pool == nil {
+			return true, true, nil
+		}
+		viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, actor)
+		if err != nil {
+			return false, false, fmt.Errorf("resolve what the caller sees: %w", err)
+		}
+		reader := actor.Reader()
+		reader.Viewer = &viewer
+		hidden, err := s.repositoriesHidden(r.Context(), reader, []string{repository})
+		if err != nil {
+			return false, false, err
+		}
+		return hidden[repository], viewer.AnyPrivate, nil
+	}, true
 }
