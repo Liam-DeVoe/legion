@@ -341,6 +341,7 @@ daemon_go_tests:
   - 'packages/contracts/fixtures/classification/**'
   - 'packages/contracts/fixtures/daemon-api/*'
   - 'packages/contracts/fixtures/dispatch-events/check-state-changed.json'
+  - 'packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json'
   - 'packages/contracts/fixtures/dispatch-public-url.json'
   - 'packages/contracts/fixtures/github-envelopes/*'
   - 'packages/contracts/fixtures/project-tokens.json'

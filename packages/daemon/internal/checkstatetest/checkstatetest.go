@@ -4,7 +4,10 @@
 // test names written over it, wrapped as Dispatch's event log serves an event and its durable
 // stream carries one, and decoded by the intake's own decoder of a Dispatch event (the one the
 // live consumer's envelope decoder and the boot catch-up both call). So no test writes a state to
-// the store: each goes through the decoder and intake.ApplyFact as a live one does.
+// the store: each goes through the decoder and intake.ApplyFact as a live one does. AfterAMove
+// reads the states of a second fixture, the events Dispatch published in two cases of a pull
+// request's head moving while its tester tested the head before, which a test applies the same
+// way.
 //
 // It is an ordinary package rather than a _test.go file so the tests of api, daemon and workflow
 // can share it; Go cannot share test-only code across packages.
@@ -36,28 +39,66 @@ type Fixture struct {
 	SetForm   json.RawMessage `json:"set_form"`
 }
 
-// ReadFixture reads the shared fixture. It is found from this file's own compiled path, not from
-// the working directory: `go test` runs a package's tests in its own directory, but a live proof's
-// driver, the daemon package's test binary, runs from wherever its script started it
-// (scripts/e2e/lib/live-daemon-proof.sh).
+// ReadFixture reads the shared fixture.
 func ReadFixture(t testing.TB) Fixture {
 	t.Helper()
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate the source of checkstatetest, from which the shared fixture of check.state_changed is found")
-	}
-	encoded, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
-	if err != nil {
-		t.Fatalf("read the shared fixture of check.state_changed: %v", err)
-	}
 	var fixture Fixture
-	if err := json.Unmarshal(encoded, &fixture); err != nil {
-		t.Fatalf("decode the shared fixture of check.state_changed: %v", err)
-	}
+	readDispatchEvents(t, "check-state-changed.json", &fixture)
 	if fixture.Type == "" || len(fixture.CheckForm) == 0 || len(fixture.SetForm) == 0 {
 		t.Fatalf("the shared fixture of check.state_changed = %+v, want its type and both forms", fixture)
 	}
 	return fixture
+}
+
+// AfterAMoveEvent is one check.state_changed event of
+// packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json, which Envoy's
+// TestAFormerHeadOfAnOpenPullRequestKeepsItsStates writes from the events Dispatch published when
+// a pull request moved from H1 to H2 while its tester tested H1: each field of the payload the
+// daemon reads.
+type AfterAMoveEvent struct {
+	Check        string   `json:"check"`
+	Head         string   `json:"head"`
+	PullRequests []int    `json:"pull_requests"`
+	Checks       []string `json:"checks"`
+	State        string   `json:"state"`
+	Reason       string   `json:"reason"`
+	Roles        []string `json:"roles"`
+	CICase       string   `json:"ci_case"`
+	Serial       int64    `json:"serial"`
+}
+
+// AfterAMove is the events of the case named in that fixture, oldest first: fail_after_the_move,
+// where the tester records a fail of k2 at H1 after the move, or passes_after_the_move, where it
+// records passes of k1 and k2 there.
+func AfterAMove(t testing.TB, name string) []AfterAMoveEvent {
+	t.Helper()
+	var cases map[string][]AfterAMoveEvent
+	readDispatchEvents(t, "check-states-after-a-move.json", &cases)
+	events := cases[name]
+	if len(events) == 0 {
+		t.Fatalf("the fixture of the events after a move holds no events of %q", name)
+	}
+	return events
+}
+
+// readDispatchEvents decodes the file name of packages/contracts/fixtures/dispatch-events into
+// into. The file is found from this file's own compiled path, not from the working directory: `go
+// test` runs a package's tests in its own directory, but a live proof's driver, the daemon
+// package's test binary, runs from wherever its script started it
+// (scripts/e2e/lib/live-daemon-proof.sh).
+func readDispatchEvents(t testing.TB, name string, into any) {
+	t.Helper()
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("locate the source of checkstatetest, from which %s is found", name)
+	}
+	encoded, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "contracts", "fixtures", "dispatch-events", name))
+	if err != nil {
+		t.Fatalf("read the Dispatch events fixture %s: %v", name, err)
+	}
+	if err := json.Unmarshal(encoded, into); err != nil {
+		t.Fatalf("decode the Dispatch events fixture %s: %v", name, err)
+	}
 }
 
 // Seq is the sequence of an issue's Dispatch event log of its state event of serial: a later

@@ -558,9 +558,13 @@ RULES = {
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
     f"{DAEMON}/internal/checkstatetest/checkstatetest.go": reads(
         (f"{FIX}/dispatch-events/check-state-changed.json",
-         "internal/checkstatetest/checkstatetest.go:49 ReadFixture os.ReadFile (runtime.Caller at :45 + "
-         "../../../contracts/fixtures/dispatch-events): each state event the api, daemon and workflow tests "
-         "apply is the payload Envoy's golden writes")),
+         "internal/checkstatetest/checkstatetest.go:95 readDispatchEvents os.ReadFile (runtime.Caller at :91 + "
+         "../../../contracts/fixtures/dispatch-events), called by ReadFixture: each state event the api, daemon "
+         "and workflow tests apply is the payload Envoy's golden writes"),
+        (f"{FIX}/dispatch-events/check-states-after-a-move.json",
+         "internal/checkstatetest/checkstatetest.go:95 readDispatchEvents os.ReadFile, called by AfterAMove: the "
+         "events Envoy's TestAFormerHeadOfAnOpenPullRequestKeepsItsStates writes, which workflow's "
+         "TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove applies")),
     f"{DAEMON}/internal/claim/claim_test.go": reads((f"{FIX}/project-tokens.json", "internal/claim/claim_test.go:196")),
     f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:119,128 (fixtureDirectory :143, runtime.Caller :148)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:214 LoadController reads it (config.ControllerConfigExample, joined at :213)")),

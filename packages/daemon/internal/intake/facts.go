@@ -434,8 +434,10 @@ type DispatchClaim struct {
 func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchCheckState is Dispatch's check.state_changed, which it appends on a check's issue each
-// time the state of one of the issue's `before_merge` checks at an open head changes: the state of
-// Check at Head of Repo, the head of PullRequests, with the head's whole set of checks (Checks).
+// time the state of one of the issue's `before_merge` checks changes at an open head, or at a head
+// an open pull request has left, where the tester may have tested while the pull request moved on:
+// the state of Check at Head of Repo, the head of PullRequests or a head they were at, with the
+// head's whole set of checks (Checks).
 // In the set form, which tells a head's set of checks where no check's own event tells it (a head
 // with no check, a check removed), Check and State are "" and CheckVersion is 0. State is `yes`,
 // `no` or `unknown`; Reason is why it is not yes (`fail`, `no_result`, `pass_and_fail`,

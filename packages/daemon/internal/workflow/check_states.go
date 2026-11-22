@@ -74,7 +74,10 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 // while the tester worked (a merge forward asked of the implementer while the issue stays in
 // testing, say), so a completion that reported no commit has no tested head, "", and the move
 // reads no state for it (decideTesting). The completion route refuses such a completion
-// (TESTED_HEAD_REQUIRED), so only a row the engine was handed directly can name none.
+// (TESTED_HEAD_REQUIRED), so only a row the engine was handed directly can name none. Dispatch
+// keeps publishing the states at a head the pull request has left while the pull request is open,
+// so a result the tester records at the tested head after such a move reaches the move as any
+// other state event does.
 func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) (repo, head string) {
 	repo, head = issue.Repo, row.HandoffCommit
 	if pr != nil {
