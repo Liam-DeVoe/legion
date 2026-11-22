@@ -4,7 +4,7 @@
  * one row per skill copy with its sessions, the report beside it, and each cut's ranking.
  *
  *   bun scripts/skill-cuts/attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir>
- *     --spans <file> --out <dir> [--models <dir>] [--changed <cut id>=<file>]...
+ *     --spans <file> --out <dir> [--models <dir>] [--changed <cut or set id>=<file>]...
  *
  * `main(argv, io)` is exported so that cli.ts runs it as `skill-cuts attribute`; attribute.test.ts
  * calls the pure parts. It only reads its inputs, and it writes only under `--out`, which must not
@@ -27,9 +27,11 @@
  *   --models   The models query's raw output (models.sql), in `--count`'s layout and with its own
  *              run.log: `<store>/<YYYY-MM-DD>[T<HH>].txt`, each one models.sql result, a row per
  *              file `{hash, model, source}` and a summary.
- *   --changed  `<cut id>=<file>`, once for each cut of the configuration to rank. The file holds
- *              the cut's changed skills: one skill directory of the cut's repository per line, as
- *              skill-copies.tsv's `path` writes it.
+ *   --changed  `<cut or set id>=<file>`, once for each cut of the configuration to rank, or each
+ *              skill set (`sets`, config.ts's `cutOrSet`), ranked as a cut is, its repository the
+ *              set's `repo`. The file holds the cut's changed skills, or the set's skills to rank:
+ *              one skill directory of its repository per line, as skill-copies.tsv's `path`
+ *              writes it. Below, a set's id stands where a cut's does.
  *
  * Rules.
  *   A session is one transcript file: a 16-hex file hash of a count row, with its store. Each one
@@ -141,7 +143,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { schemaFaults } from "./common";
-import { loadConfig, type SkillCutsConfig } from "./config";
+import { cutOrSet, loadConfig, type SkillCutsConfig } from "./config";
 import {
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
@@ -2256,7 +2258,7 @@ export function readCountMarkdown(report: Report): string {
 // the command
 
 const USAGE =
-  "usage: attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--models <dir>] [--changed <cut id>=<file>]...";
+  "usage: attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--models <dir>] [--changed <cut or set id>=<file>]...";
 
 /** What `main` writes to. */
 export interface Output {
@@ -2345,19 +2347,23 @@ export function main(argv: readonly string[], io: Output): number {
     const id = at < 0 ? "" : item.slice(0, at);
     const file = at < 0 ? "" : item.slice(at + 1);
     if (id === "" || file === "")
-      return refuse(`--changed ${JSON.stringify(item)} is not <cut id>=<file>`);
-    const cut = config.cuts.find((candidate) => candidate.id === id);
-    if (cut === undefined) {
+      return refuse(`--changed ${JSON.stringify(item)} is not <cut or set id>=<file>`);
+    const measured = cutOrSet(config, id);
+    if (measured === undefined) {
+      const named = (kind: string, each: readonly { id: string }[]) =>
+        each.length === 0 ? `no ${kind}` : `the ${kind}s ${each.map((c) => c.id).join(", ")}`;
       return refuse(
-        `--changed names the cut ${JSON.stringify(id)}, which the configuration does not; it names ${config.cuts.map((c) => c.id).join(", ")}`
+        `--changed names ${JSON.stringify(id)}, which is no cut or set of the configuration; it names ${named("cut", config.cuts)} and ${named("set", config.sets ?? [])}`
       );
     }
     if (!/^[A-Za-z0-9._-]+$/.test(id) || id === "." || id === "..") {
-      return refuse(`the cut id ${JSON.stringify(id)} cannot name a directory under --out`);
+      return refuse(
+        `the ${measured.kind} id ${JSON.stringify(id)} cannot name a directory under --out`
+      );
     }
     if (changed.some((entry) => entry.cut === id))
-      return refuse(`--changed names the cut ${id} twice`);
-    changed.push({ cut: id, repository: cut.repo, file });
+      return refuse(`--changed names the ${measured.kind} ${id} twice`);
+    changed.push({ cut: id, repository: measured.repo, file });
   }
   try {
     const stores = config.stores.map((store) => store.name);

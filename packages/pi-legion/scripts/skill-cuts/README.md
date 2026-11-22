@@ -74,8 +74,8 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
   served model runs as that served `provider/model`, so an Anthropic model behind another
   gateway prefix runs as `anthropic/<id>`. With `--reading-models` (the skill's
-  `<cut id>/models/<skill>.json` that `attribute` writes: its reading sessions by model), a skill
-  with fewer than 6 reading sessions on models the gateway serves is refused before any call
+  `<cut or set id>/models/<skill>.json` that `attribute` writes: its reading sessions by model), a
+  skill with fewer than 6 reading sessions on models the gateway serves is refused before any call
   (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
   and total counts, and the walk of the cut's ranking goes on to the next skill.
 - `confirm`: 40 fresh runs of old and the compared arm for each flagged case. `confirm --case
@@ -425,8 +425,8 @@ session's start, they read the repository's default branch then.
 
 ```
 bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <count dir> \
-  --copies <copies out dir> --spans <spans.jsonl> --out <dir> [--changed <cut id>=<file>]... \
-  [--models <models dir>]
+  --copies <copies out dir> --spans <spans.jsonl> --out <dir> \
+  [--changed <cut or set id>=<file>]... [--models <models dir>]
 ```
 
 The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
@@ -441,6 +441,14 @@ copy's reading sessions by model, and writes each ranked skill's
 sessions whose file's head names no model; `notQueried`, those no models query held;
 `notAnthropic`; `served`, those on a model the gateway serves; `withModel`), which `behaviour
 --reading-models` reads. Without `--models` it writes no models file.
+`--changed` takes a skill set of the configuration (`sets`) as it takes a cut: `--changed
+<set id>=<file>`, the file one skill directory of the set's repository per line (the set's skills
+to rank), ranks them by the sessions the rules above place at that repository's copies, and
+writes `<out>/<set id>/ranking.json`, `<out>/<set id>/sessions/<skill>.jsonl` and, with
+`--models`, `<out>/<set id>/models/<skill>.json`. A read of a set's skill at
+`node_modules/<package>/skills/<name>/` goes to the set's copy by the prefix row `copies` gives
+the set's package (when `targets` names the set's repository), not to a skill of ours of the same
+name.
 A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, a
 package under `node_modules/`, a plugin under `plugins/cache/`) is a checkout only of a repository
 the copy's own directories name, and a read inside an `ensure_vendor` clone that no prefix row
@@ -462,12 +470,13 @@ bun scripts/skill-cuts/cli.ts set-count --config <skill-cuts.json> --rows <count
 ```
 
 The read count of each skill set's skills (`set-count.ts`, with the pins read by `sets.ts`). It
-reads no store and calls no model. The configuration must give two keys that only this command
-reads: `sets`, `[{id, repo}]`, each skill set measured against our skills (`id` the set's name,
-which is also its Claude Code plugin name and the `<id>:` prefix of its skills in a Claude Code
-`Skill` call, and may not be a cut's id or another set's; `repo` its upstream repository,
-`owner/name`); and `dotfilesRepo`, the `owner/name` whose `omp/plugins/package.json` and
-`installers/omp.sh` pin the sets (required when `sets` is given).
+reads no store and calls no model. The configuration must give two keys: `sets`, `[{id, repo}]`,
+each skill set measured against our skills (`id` the set's name, which is also its Claude Code
+plugin name and the `<id>:` prefix of its skills in a Claude Code `Skill` call, and may not be a
+cut's id or another set's; `repo` its upstream repository, `owner/name`), which `attribute
+--changed`, `build-cases --set` and `build-cases --reprofile` also take where they take a cut; and
+`dotfilesRepo`, the `owner/name` whose `omp/plugins/package.json` and `installers/omp.sh` pin the
+sets (required when `sets` is given), which only this command reads.
 
 Inputs:
 
@@ -848,10 +857,11 @@ one rule'`.
 ### `build-cases` and `build-tasks`
 
 ```
-bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
-  --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
-  --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] \
-  [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
+  (--cut <id> | --set <id>) --skill <name> --old <skill dir at the cut's base> \
+  --sessions <sessions.jsonl> --seed <n> --copies <copies out dir> --count <count dir> \
+  --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] \
+  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -875,7 +885,12 @@ and near-miss tasks of a load test from the first requests of real sessions. `--
 sessions file: `build-cases` places each session's read of the skill with `attribute.ts`'s own
 rules (the prefix table, then a checkout, then the store's context), and keeps a session only
 when they place it at the cut repository's copy; a read they place at another copy, or at none, is
-`not-cut-copy`, with the rule named. A session is a
+`not-cut-copy`, with the rule named. `--set <id>` takes a skill set of the configuration (`sets`)
+in place of `--cut <id>`; one of the two is required, and both are refused (exit 2). The set's
+`repo` is then the cut repository: a session is kept only when its read is placed at the set's
+copy (a read of our skill of the same name, a Legion fork's among them, is `not-cut-copy`), the
+profile must install the set's copy, and each case's `cut` holds the set's id; `--reprofile`
+finds each case's cut or set by its `cut`. A session is a
 candidate only on a model the gateway serves (`servedModels`: its id after the last `/`, so a
 `claude-*` model behind any gateway's prefix counts); a session on any other model is counted as
 `model-not-served` and never run on another model. The `case` reader is offered only the base

@@ -27,10 +27,11 @@
  *                   and a neutral path without it. It names a person's home on the dev box, a
  *                   private value that only this file holds.
  *   sets            (optional) `{id, repo}`: each skill set `set-count` measures against our
- *                   skills. `id` is the set's name, which is also its Claude Code plugin name and
- *                   the `<id>:` prefix of its skills in a Claude Code `Skill` call; no cut may have
- *                   it as its id, and no two sets. `repo` is the set's upstream repository
- *                   (`owner/name`).
+ *                   skills, which `attribute --changed`, `build-cases --set` and `build-cases
+ *                   --reprofile` take where they take a cut (`cutOrSet`). `id` is the set's name,
+ *                   which is also its Claude Code plugin name and the `<id>:` prefix of its skills
+ *                   in a Claude Code `Skill` call; no cut may have it as its id, and no two sets.
+ *                   `repo` is the set's upstream repository (`owner/name`).
  *   dotfilesRepo    (optional; required when `sets` is given) the repository (`owner/name`) whose
  *                   `omp/plugins/package.json` and `installers/omp.sh` pin the sets (sets.ts)
  *
@@ -188,4 +189,21 @@ export function storeNamed(config: SkillCutsConfig, name: string): Store {
     );
   }
   return store;
+}
+
+/** A cut or a skill set of the configuration, by its id, with its repository: what `attribute
+ *  --changed`, `build-cases` and `build-cases --reprofile` measure. */
+export interface CutOrSet {
+  readonly kind: "cut" | "set";
+  readonly id: string;
+  readonly repo: string;
+}
+
+/** The cut or the set whose id is `id`, or undefined when the configuration has neither. A set id
+ *  is never a cut id (SkillCutsConfig refuses one), so at most one matches. */
+export function cutOrSet(config: SkillCutsConfig, id: string): CutOrSet | undefined {
+  const cut = config.cuts.find((each) => each.id === id);
+  if (cut !== undefined) return { kind: "cut", id: cut.id, repo: cut.repo };
+  const set = config.sets?.find((each) => each.id === id);
+  return set === undefined ? undefined : { kind: "set", id: set.id, repo: set.repo };
 }

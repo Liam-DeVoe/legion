@@ -57,13 +57,14 @@
  *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
- *       --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]
+ *       --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]
  *   bun scripts/skill-cuts/cli.ts set-count --config <file> --rows <dir> --spans <file>
  *       --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...
- *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file> --cut <id>
- *       --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir>
- *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
- *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file>
+ *       (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n>
+ *       --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
+ *       [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>]
+ *       [--stop-zero-case-usd <n>]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --old <dir> --copies <dir>
  *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
@@ -3133,7 +3134,7 @@ const BEHAVIOUR_USAGE = [
   "usage: cli.ts behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file>",
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
-  "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
+  "  [--reading-models <file>] (the skill's <cut or set id>/models/<skill>.json, written by attribute)",
   "  confirm [--case <id>] (40 fresh runs of old and the compared arm on that case alone, into its own --out)",
   "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
 ].join("\n");
@@ -3526,9 +3527,9 @@ const USAGE = [
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
-  "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]",
+  "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",
   "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
-  "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",

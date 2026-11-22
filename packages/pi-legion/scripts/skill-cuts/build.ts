@@ -9,10 +9,10 @@
  * readers.ts through gateway.ts, signed in by `--key-file`.
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
- *       --cut <id> --skill <name> --old <skill dir at the cut's base> --sessions <file>
- *       --seed <n> --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
- *       [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>]
- *       [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *       (--cut <id> | --set <id>) --skill <name> --old <skill dir at the cut's base>
+ *       --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
+ *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
+ *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
  *       the cut's base> --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
@@ -34,7 +34,9 @@
  * The candidates are taken in the order judge.ts's `blindOrder` gives them under `--seed` (the
  * summary records the seed and the order), one case per session, until `--max` cases are built,
  * or the readers' dollars at list price reach `--budget-usd`, when no further reader call starts
- * and the build stops (exit 3) with what it has.
+ * and the build stops (exit 3) with what it has. `--set <id>` names a skill set of the
+ * configuration (`sets`) in place of `--cut <id>`, one of the two (config.ts's `cutOrSet`): the
+ * cut repository below is then the set's `repo`, and each case's `cut` holds the set's id.
  *
  * **The stop rule** (`stopBy`): before the build reads a further session, after each session
  * decided, it stops (exit 4) as soon as
@@ -320,7 +322,8 @@
  * files; a recorded prompt and its tools stay) and in the profile's part of `evidence`.
  * `<out>.summary.json` lists, per case, the skills added and removed, and the GitHub reads sent
  * again after a transient failure by reason (`githubRetries`). A case whose profile cannot be
- * built, or no longer installs its skill, is left out and named, and the command exits 1.
+ * built, or no longer installs the skill of the repository of its `cut` (a cut or a set of the
+ * configuration, `cutOrSet`), is left out and named, and the command exits 1.
  *
  * **build-tasks** (the load test's tasks): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -473,7 +476,7 @@ import {
   transientReason,
   writeWhole,
 } from "./common";
-import { type SkillCutsConfig, storeNamed } from "./config";
+import { type CutOrSet, cutOrSet, type SkillCutsConfig, storeNamed } from "./config";
 import {
   BLOB_BATCH,
   BLOB_BATCH_BYTES,
@@ -3480,7 +3483,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
@@ -3593,6 +3596,8 @@ type Outcome =
 /** What one session's build reads beside the session. */
 interface CaseRun {
   readonly config: SkillCutsConfig;
+  /** The cut `--cut` names or the set `--set` names: its id, which each case's `cut` holds, and
+   *  its repository, whose copy of the skill a session must read. */
   readonly cut: { readonly id: string; readonly repo: string };
   readonly skill: string;
   readonly old: string;
@@ -4358,6 +4363,7 @@ async function reprofileCases(
   for (const flag of [
     "key-file",
     "cut",
+    "set",
     "skill",
     "sessions",
     "seed",
@@ -4424,12 +4430,12 @@ async function reprofileCases(
       io.out(`build-cases: ${c.id}: left out: ${why}\n`);
     };
     const store = config.stores.find((each) => each.name === c.source.store);
-    const cut = config.cuts.find((each) => each.id === c.cut);
+    const cut = cutOrSet(config, c.cut);
     if (store === undefined || cut === undefined) {
       leave(
         store === undefined
           ? `its store ${c.source.store} is no store of the configuration`
-          : `its cut ${c.cut} is no cut of the configuration`
+          : `its cut ${c.cut} is no cut or set of the configuration`
       );
       continue;
     }
@@ -4606,8 +4612,13 @@ function countFiles(countDir: string, stores: readonly string[]): string[] {
 /** Where two runs' inputs differ, one phrase each; empty when they are the same. */
 function inputsDiffer(was: CasesInputs, now: CasesInputs): string[] {
   const differ: string[] = [];
-  for (const key of ["cut", "skill", "seed"] as const) {
-    if (was[key] !== now[key]) differ.push(`--${key} was ${was[key]}, now ${now[key]}`);
+  // `cut` holds the id `--cut` or `--set` gave; the summary does not record which flag.
+  for (const [key, flag] of [
+    ["cut", "--cut or --set"],
+    ["skill", "--skill"],
+    ["seed", "--seed"],
+  ] as const) {
+    if (was[key] !== now[key]) differ.push(`${flag} was ${was[key]}, now ${now[key]}`);
   }
   for (const key of ["old", "sessions", "copies", "count"] as const) {
     if (was[key].sha256 !== now[key].sha256) {
@@ -4731,6 +4742,31 @@ function priorBuild(out: string, summaryFile: string, inputs: CasesInputs): Prio
   };
 }
 
+/** The cut `--cut` names or the skill set `--set` names (config.ts's `cutOrSet`), one of the two.
+ *  Refuses both, neither, and an id that is no cut (no set) of the configuration. */
+function cutOrSetOption(
+  values: Readonly<Record<string, string | undefined>>,
+  config: SkillCutsConfig
+): CutOrSet {
+  const { cut, set } = values;
+  if (cut !== undefined && set !== undefined) {
+    throw new Refused(
+      `--cut ${cut} and --set ${set} are both given: give one of the two. ${BUILD_CASES_USAGE}`
+    );
+  }
+  const id = set ?? cut;
+  if (id === undefined) throw new Refused(`--cut or --set required. ${BUILD_CASES_USAGE}`);
+  const kind = set === undefined ? "cut" : "set";
+  const found = cutOrSet(config, id);
+  if (found?.kind !== kind) {
+    const ids = (kind === "cut" ? config.cuts : (config.sets ?? [])).map((each) => each.id);
+    throw new Refused(
+      `--${kind} ${id} is no ${kind} of the configuration (${ids.join(", ") || "none"})`
+    );
+  }
+  return found;
+}
+
 /** `skill-cuts build-cases`. */
 async function buildCases(argv: readonly string[], io: BuildIo): Promise<number> {
   const values = parse(
@@ -4739,6 +4775,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       config: { type: "string" },
       "key-file": { type: "string" },
       cut: { type: "string" },
+      set: { type: "string" },
       skill: { type: "string" },
       old: { type: "string" },
       sessions: { type: "string" },
@@ -4759,7 +4796,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   if (values.reprofile !== undefined) return reprofileCases(values, io);
   const given = required(
     values,
-    ["config", "key-file", "cut", "skill", "old", "sessions", "seed", "copies", "count", "out"],
+    ["config", "key-file", "skill", "old", "sessions", "seed", "copies", "count", "out"],
     BUILD_CASES_USAGE
   );
   // The cases file and its spool hold real session text.
@@ -4800,12 +4837,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     );
   }
   const config = configFrom(given.config);
-  const cut = config.cuts.find((each) => each.id === given.cut);
-  if (cut === undefined) {
-    throw new Refused(
-      `--cut ${given.cut} is no cut of the configuration (${config.cuts.map((each) => each.id).join(", ")})`
-    );
-  }
+  const cut = cutOrSetOption(values, config);
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
   mustBeFile(given["key-file"], "--key-file");
   const files = skillFiles(given.old);
