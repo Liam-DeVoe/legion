@@ -257,7 +257,7 @@ func TestAPauseStopRecordRefusesTheBackstopOfAnotherRole(t *testing.T) {
 
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		_, err := RecordPauseStopTx(ctx, tx, PauseStopRecord{Pause: pause, Stop: implementer, At: pausedAt.Add(time.Minute),
-			HoldPod: true, Backstop: &PodWakeBackstop{Project: "legion", Issue: implementer.Issue, Role: claim.RoleTester,
+			HoldPod: true, Backstop: &PodWakeBackstop{Project: "legion", Issue: implementer.Issue, Claim: implementer.Claim, Role: claim.RoleTester,
 				DueAt: pausedAt.Add(time.Hour)}})
 		return err
 	})

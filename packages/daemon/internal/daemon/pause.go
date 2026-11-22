@@ -161,8 +161,8 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // It is safe to make again: the machine owes a stop whose commit's answer was lost and makes it
 // again with its next claim write. store.RecordPauseStopTx answers false for a stop already
 // recorded, and then nothing of the first run is written twice: no second hold, no second
-// backstop, and the role's open resume — the first run's held wake — is left open, so the held
-// wake taken again conflicts with it (one open resume per role) and queues no second start. A
+// backstop, and the claim's open resume — the first run's held wake — is left open, so the held
+// wake taken again conflicts with it (one open resume per claim) and queues no second start. A
 // second resume by rule of a claim the first already launched finds it running and does nothing.
 // It writes no log line of the stop itself: the machine writes supervise.PauseRoleStoppedMessage
 // once it lands.
@@ -256,7 +256,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 				return made, err
 			}
 			if c.Token == worker {
-				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Claim: c.Token, Role: c.Role, DueAt: at.Add(p.backstop)}
 			}
 		}
 	}

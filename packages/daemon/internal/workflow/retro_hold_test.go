@@ -388,6 +388,75 @@ func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
 	}
 }
 
+// A parent whose last step is the implementer's passes it while a child is in the workflow beneath
+// it and is held before its retro. The child's leave starts the implementer's retro once, with the
+// task the pass into the retro starts it with when no child holds it: the report of the last step,
+// `Handoff: implement version <n>`, and the commit that report names. The plans are `planner
+// implementer` and `implementer:a reviewer implementer:a`, whose last step is the implementer's
+// second. The control of each is the same walk with no child, whose pass starts the retro at once.
+// Before, the held retro read the implementer's row at the retro's own place, where no row stands
+// until the retro starts, and its task named no handoff and no commit.
+func TestAHeldRetroAfterTheImplementersLastStepGetsItsReport(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		steps   []string
+		walk    func(t *testing.T, pool *pgxpool.Pool, engine *Engine)
+		version string
+	}{
+		{"planner implementer", []string{"planner", "implementer"}, func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+			completes(t, pool, engine, claim.RolePlanner, "plan", 1)
+			completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
+		}, "1"},
+		{"implementer:a reviewer implementer:a", []string{"implementer:a", "reviewer", "implementer:a"}, func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+			implementer := agentToken(t, "implementer")
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+			move(t, pool, engine, "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+		}, "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// retro is the task of the retro's one start once the last step passed, with a child
+			// beneath the parent that leaves done where child is true.
+			retro := func(t *testing.T, child bool) string {
+				t.Helper()
+				pool := migratedPool(t)
+				engine := textEngine()
+				tickingClock(engine)
+				root := stepRoot(t, pool, phase.Admitted)
+				seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
+				if child {
+					stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+				}
+				move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+				tc.walk(t, pool, engine)
+				if child {
+					if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
+						t.Fatalf("%s after its last step stands in %s with hold %+v, want held before its retro for its children", root.Key, held.Phase, held.Hold)
+					}
+					childLeavesDone(t, pool, engine)
+				}
+				assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+				starts := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro)
+				if len(starts) != 1 {
+					t.Fatalf("%d starts of the retro, want one", len(starts))
+				}
+				return starts[0].Task
+			}
+			direct, held := retro(t, false), retro(t, true)
+			for _, says := range []string{" Handoff: implement version " + tc.version + " (dispatch handoff-read --issue LEGION-208 --phase implement --version " +
+				tc.version + ").", " Handoff commit: head."} {
+				if !strings.Contains(direct, says) {
+					t.Fatalf("the retro's task with no child = %q, want it to say %q", direct, says)
+				}
+			}
+			if held != direct {
+				t.Fatalf("the held retro's task = %q, want the task the pass into the retro starts it with: %q", held, direct)
+			}
+		})
+	}
+}
+
 // The reviewer's own report can land after its approval moved a parent with no acceptance step
 // into its hold before the retro. It is the first report of the run the approval ended, so it is
 // taken as such a report is wherever else the issue stands (leftItsPhase): on the reviewer's own

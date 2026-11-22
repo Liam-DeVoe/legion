@@ -118,7 +118,7 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		fact := intake.PodBackstopDue{ID: backstop.ID, Issue: backstop.Issue, Role: backstop.Role}
+		fact := intake.PodBackstopDue{ID: backstop.ID, Issue: backstop.Issue, Claim: backstop.Claim, Role: backstop.Role}
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
 		if _, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...); err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
@@ -279,7 +279,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // (retry). A released claim this call resumes answers no turn, even where the resume parks: the
 // row waits on its backoff, and its next attempt reads the park.
 //
-// The role's one open resume is what makes the wake one wake however often the row retries, so a
+// The claim's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
 // the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
 // with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to
@@ -422,15 +422,18 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenRoleOf, which at step is the role of the running
-// step, read with the issue). An architect gets none — nothing of its own is due, and a
-// sub-architect woken for nothing would hold a pod open for the backstop period — and neither does
-// an issue whose phase no role works.
+// worker of the pod's open phase, the claim the record gives the step of the open phase's role
+// (workflow.OpenRoleOf, which at step is the role of the running step, read with the issue, and
+// record.WorkerClaim), where that claim stands released serving the issue's run. That claim can be
+// a keyed agent's, whose token names another role, beside the role's own claim of an earlier
+// version of the plan, which works no step and gets none. An architect gets none — nothing of its
+// own is due, and a sub-architect woken for nothing would hold a pod open for the backstop period —
+// and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
-	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
+	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, "", ""); err != nil {
 		return err
 	}
 	if r.backstop <= 0 {
@@ -440,28 +443,37 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if role == "" {
 		return nil
 	}
+	rows, err := r.phaseRows(ctx, issue.Key)
+	if err != nil {
+		return err
+	}
+	worker, err := record.WorkerClaim(r.project, issue.Key, role, rows)
+	if err != nil {
+		return fmt.Errorf("the %s of %s: %w", role, issue.Key, err)
+	}
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
 	if err != nil {
 		return err
 	}
 	for _, c := range released {
-		if c.Role != role || c.ServingGeneration != issue.Generation {
+		if c.Token != worker || c.ServingGeneration != issue.Generation {
 			continue
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
-			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))
+			"issue", issue.Key, "role", role, "claim", worker, "due", due.Format(time.RFC3339))
 		return r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-			Role: role, DueAt: due})
+			Claim: worker, Role: role, DueAt: due})
 	}
 	return nil
 }
 
 // takeOverRelease is what every path that suspends, stops or closes a claim does to a pod that
 // was released: it drops the open backstops the path has taken over, so no later backstop acts on
-// a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
-// (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
-// nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
+// a claim this path owns. A `suspend` row takes one claim over, token, which holds role now, and
+// drops that claim's backstop alone (decision 17 of dispatch://INFRA-3759): another claim of the
+// pod, of another role or of the same one, may be waiting on a deploy with nothing but its own
+// backstop to bring it back. An issue's close and a tree's close name no claim
 // (dropReleasedWork), and drop every backstop of the issue, since the issue's work is over. The
 // claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
 // is what takes it out of every released-claim read; this drops what is left behind in the
@@ -471,12 +483,12 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // (newOutbox), so this is the test that builds a runner by hand for a path of its own, as the
 // zero clock and the zero design gate are; such a runner has released no pod, so there is
 // nothing of a release to take over.
-func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.Role) {
+func (r *outbox) takeOverRelease(ctx context.Context, issue string, token claim.Token, role claim.Role) {
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue, role); err != nil {
-		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "role", role, "error", err)
+	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue, token, role); err != nil {
+		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "claim", token, "error", err)
 	}
 }
 
@@ -485,7 +497,7 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 // nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
 // no tree store does nothing, as takeOverRelease says.
 func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
-	r.takeOverRelease(ctx, issue, "")
+	r.takeOverRelease(ctx, issue, "", "")
 	if r.trees == nil {
 		return
 	}

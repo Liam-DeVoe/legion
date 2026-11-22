@@ -116,7 +116,8 @@ func (r *idleRig) awaitedWake(t *testing.T) {
 // nothing has closed, each as one line, so a test can compare what a release found with what it
 // left. A teardown that armed a backstop would have cancelled the open ones of the issue first
 // (outbox.armBackstops), and the open resume is what tells the daemon a pod is already coming
-// back for that role (migration 20261105183200, one open resume per role).
+// back for that claim (migration 20261122074350, one open resume per claim; this resume names no
+// claim, as the release before wrote it, so it holds its role).
 func (r *idleRig) podWakes(t *testing.T) []string {
 	t.Helper()
 	ctx := context.Background()

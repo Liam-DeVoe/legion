@@ -535,7 +535,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
 		if worker != "" && r.token == worker && r.serving == standing.generation {
-			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, DueAt: at.Add(paused.Backstop)}
+			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Claim: r.token, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
 			return err

@@ -332,7 +332,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
 	// workflow judges the same rule again on the row its own transaction reads.
-	if refusal := intake.EntryFence(*issue, grant.Role, entry, position.entry, position.entryMovedBack, req.Commit, position.pullRequest, c.Pending); refusal != nil {
+	if refusal := intake.EntryFence(*issue, grant.Role, entry, position.entry, position.entryMovedBack, position.otherStepsEntry, req.Commit, position.pullRequest,
+		c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}

@@ -1785,7 +1785,7 @@ func StrandedClaimsOf(stranded []supervise.Claim) []StrandedClaim {
 	return claims
 }
 
-// StrandedByMove is each stranded claim named `<issue> <role>`, grouped by its Move under
+// StrandedByMove is each stranded claim by its name (StrandedClaim.Name), grouped by its Move under
 // suspended, which it reads by the claim's token, so two claims of one role on one issue each take
 // their own move; each group is in stranded's order, and every move has a group, empty when no
 // claim takes it.
@@ -1796,9 +1796,22 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	}
 	for _, c := range stranded {
 		move := c.Move(suspended.Of(c))
-		grouped[move] = append(grouped[move], c.Issue+" "+string(c.Role))
+		grouped[move] = append(grouped[move], c.Name())
 	}
 	return grouped
+}
+
+// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the role's
+// own claim, whose token the issue and the role spell (and for an entry that names no token), and
+// `<issue> <role> (claim <token>)` for the claim of an agent named for another role, which holds
+// the role for its step. Two claims of one role on one issue are then named apart, and the token
+// is what `legion claims` takes.
+func (c StrandedClaim) Name() string {
+	named := c.Issue + " " + string(c.Role)
+	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {
+		return named + " (claim " + string(c.Token) + ")"
+	}
+	return named
 }
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it
