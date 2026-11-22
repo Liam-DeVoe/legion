@@ -150,15 +150,25 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	}
 }
 
-// TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit is a failed read,
-// never a parse of the first 64 MiB, and the failure names the cap and what the read knows of the
-// answer's size. A Content-Length over the cap is refused before the body is read, and the failure
-// and the size name that length. A body with no Content-Length is read to one byte past the cap
-// and no further, whether it ends soon after the cap or never ends: the failure says the read
-// stopped there, and the size is that count, ResponseLimit+1. So a daemon that streams without end
-// costs one read of the cap and one byte. A body exactly at the cap is read, so the bound refuses
-// only what is over it.
+// stateOfSize is a state document of exactly size bytes, valid JSON throughout, so what refuses
+// one is the cap and not the decode.
+func stateOfSize(size int) string {
+	const head, tail = `{"issues":{},"pad":"`, `"}`
+	return head + strings.Repeat("a", size-len(head)-len(tail)) + tail
+}
+
+// TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit, 64 MiB, is a
+// failed read, never a parse of the first 64 MiB, and the failure names the cap and what the read
+// knows of the answer's size. A Content-Length over the cap is refused before the body is read,
+// and the failure and the size name that length. A body with no Content-Length is read to one byte
+// past the cap and no further, whether it ends soon after the cap or never ends: the failure says
+// the read stopped there, and the size is that count, ResponseLimit+1. So a daemon that streams
+// without end costs one read of the cap and one byte. A body exactly at the cap is read, so the
+// bound refuses only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
+	if ResponseLimit != 64<<20 {
+		t.Fatalf("ResponseLimit = %d, want 64 MiB (%d)", ResponseLimit, 64<<20)
+	}
 	stopped := fmt.Sprintf("the answer is over the %d-byte cap: it declares no Content-Length, and the read stopped at %d bytes",
 		ResponseLimit, ResponseLimit+1)
 	for _, over := range []struct {
@@ -203,6 +213,21 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 		})
 	}
 
+	// A document one byte over the cap, which stateServer writes in one call: the failure names
+	// the cap's value, 67108864 bytes, and the size is ResponseLimit+1, where the read stopped.
+	over := stateServer(t, stateOfSize(ResponseLimit+1))
+
+	_, bytes, err := New(over.URL).State(t.Context())
+	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a read of a body over the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "67108864-byte cap") {
+		t.Errorf("the refusal = %q, want it to name the 67108864-byte cap", err)
+	}
+	if bytes != ResponseLimit+1 {
+		t.Errorf("bytes = %d, want the point the read stopped (%d)", bytes, ResponseLimit+1)
+	}
+
 	atTheCap, _ := streamedState(t, ResponseLimit, false)
 	state, bytes, err := New(atTheCap.URL).State(t.Context())
 	if err != nil {
@@ -240,6 +265,22 @@ func TestABodyCutShortPastTheCapStopsAtTheCap(t *testing.T) {
 	}
 	if bytes != ResponseLimit+1 {
 		t.Errorf("bytes = %d, want the %d the read stopped at", bytes, ResponseLimit+1)
+	}
+}
+
+// TestANineMiBStateIsReadWhole: a state past the 8 MiB the cap was before, as the INFRA daemon's
+// will be from about 2026-11-23, is read whole and parsed, not refused.
+func TestANineMiBStateIsReadWhole(t *testing.T) {
+	server := stateServer(t, stateOfSize(9<<20))
+	state, bytes, err := New(server.URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("a read of a 9 MiB state: %v, want it read whole", err)
+	}
+	if bytes != 9<<20 {
+		t.Errorf("bytes = %d, want the whole body (%d)", bytes, 9<<20)
+	}
+	if state.Issues == nil {
+		t.Errorf("the 9 MiB state parsed to no issues map, want the empty map it sent")
 	}
 }
 
