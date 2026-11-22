@@ -15,8 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
@@ -588,13 +586,13 @@ func (r *pipeReader) drain(p []byte) (int, error) {
 	}
 }
 
-// endAfterExit waits for the child pid to exit, without reaping it (WNOWAIT: Wait reaps it), and
-// procgroup.WaitDelay after that ends the read: it marks the reader as past the child's exit and
-// sets the pipe's read deadline to now, which ends a read waiting on a descendant. It does nothing
-// where read is closed first, the reader having read to the pipe's end on its own.
+// endAfterExit waits for the child pid to exit, without reaping it (exitedNoReap: Wait reaps
+// it), and procgroup.WaitDelay after that ends the read: it marks the reader as past the child's
+// exit and sets the pipe's read deadline to now, which ends a read waiting on a descendant. It
+// does nothing where read is closed first, the reader having read to the pipe's end on its own.
 func (r *pipeReader) endAfterExit(pid int, read <-chan struct{}) {
-	var info unix.Siginfo
-	for errors.Is(unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil), unix.EINTR) {
+	if !exitedNoReap(pid, read) {
+		return
 	}
 	select {
 	case <-read:
