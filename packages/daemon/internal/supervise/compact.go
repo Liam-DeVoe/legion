@@ -345,8 +345,12 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
-		m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
-			"task", p.Number)
+		// A take whose report's finish the store refused is finished by that report instead
+		// (takeBack, waitFinish): no turn of it is aborted.
+		if m.takePhase() == waitTake {
+			m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
+				"task", p.Number)
+		}
 		if err := m.takeBack(ctx, takenBackCompaction); err != nil {
 			return err
 		}
@@ -396,7 +400,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // the turn's end runs it, and leaves the claim suspended with its process stopped; where a
 // turn is running it is left to that turn's end, and the claim is working for it; and where the
 // compaction began after a take's turn had ended with its report still to come, it waits for that
-// report as at the turn's end, behind the wait for the take's report (reportwait.go, reportOwed):
+// report as at the turn's end, behind the wait for the take's report (reportwait.go, takePhase):
 // the claim goes back idle holding it, and the report's finish runs it (reportedTask, afterTurn),
 // or that wait's bound or its own deadline (reportBoundOver, suspendAtTimeout). Run here, its stop
 // would come before that report, which the suspended claim ignores, and settle would take back as

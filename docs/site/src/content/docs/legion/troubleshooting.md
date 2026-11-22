@@ -1409,7 +1409,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 - **`supervise: the report of the take's turn is still to come; what is held for that turn waits for it`** at Info, with the `task` and what is `held`, is work held over a claim whose take's turn ended before the worker's report of it: a suspension (`held=suspension`, with its `by` and `deadline`), a stale-plugin relaunch (`held=relaunch`, with its `trigger`), or a wake whose turn came meanwhile, spent into the held suspension (`held=wake`, with its `kind`).
   Only that report finishes the task, so the daemon waits for it before it stops or relaunches the process; the claim is idle meanwhile, and a take of it is refused.
   The wait is bounded by `worker_turn_start_timeout_seconds` (25 minutes by default), from the turn's end where the bound reaches the take with nothing held, and from the arrival of the first held work over a restored take it leaves out (below); a turn that starts meanwhile stops the bound, and its end starts it again whole.
-  After a daemon restart the bound starts no earlier than the worker's first act, so a report the worker sends again across the outage has the whole bound.
+  The bound runs only while the worker's connection shows the daemon every frame of its turns: a closed connection stops it, and it does not run while no connection stands.
+  After the shim's next hello, whatever that hello says of its backlog, the daemon asks the agent whether it is in a turn, and the bound starts again whole at that answer, or at a turn's start or end frame on the new connection, whichever comes first.
+  So a report the worker sends again across a daemon's outage or a lost connection has the whole bound once the connection is back.
   The same bound runs with nothing held, for a take whose turn ended and whose report naming its task never came: the worker's host dropped the task's text (Claude Code never took it, or Oh My Pi refused it), and the turn the daemon counted as the take's reported no task.
   A take that a daemon start restored is bounded with nothing held only where the daemon sees every turn start since its turn: the daemon before the restart recorded no end of that turn, and the worker's first hello after the restart says its backlog dropped no frame and its agent answers on that connection.
   **`supervise: the report of the take's turn did not come by its bound; the task is taken back with the note of a cut turn, and what waited for the report runs or its value is written again`** at Warn is that wait reaching its bound, or a held suspension's own deadline (an operator's suspension has one at the stop timeout), whichever comes first (`by=`, with `held=` saying whether work waited): the task is taken back as a turn the stop cut off, and the held work runs; with nothing held, the task's value is written again under its number, nothing is charged, and the worker takes it again.
@@ -1453,6 +1455,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   taken back`) or `adoption` (a refused adoption of the working copy) — and the `bound=` that wait
   waited.
   These three are the only charges.
+  The take and turn-start waits run only while the worker's connection shows the daemon every frame of its turns: a closed connection stops both, and after the shim's next hello each starts again whole at the agent's answer to whether it is in a turn, or at a turn frame on the new connection.
   A daemon of an earlier release, which pushed each task as a prompt, also charged a prompt that started no turn (`supervise: timer` with `timer=turn`), a prompt the agent refused (`supervise: prompt outcome`) and a late refusal (`supervise: an event failed` with `event=supervise.StreamLateRefusal`); this release sends no prompt and writes none of those lines.
 - **`supervise: the first bound passed while a hold stands over the task; the worker is not charged`** at Info, with the `task` and the `hold`, is a first bound that ended while the daemon itself refuses the take, for a reason a take's refusal names (the `hold` of `supervise: a take was answered`), such as another role of the issue in a turn (`issue-in-turn`) or a suspension held over the claim (`suspension`).
   A hold charges nobody, and its end arms the wait again.
@@ -1464,11 +1467,16 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   task value to its worker did not reach it: an Envoy listener stopped or older than the relay, or
   a session no listener relays to. `legion state` names the claim
   ([Observe](/legion/legion/running-legion/#observe)); look at the listener's log.
-- **`supervise: the shim never reconnected after the daemon started; retired its process`** at
-  Warn means a claim the daemon restored ready, idle or working kept a live process whose shim
-  never said hello within the registration deadline. The daemon takes its task back under its
-  number and relaunches it, charging a launch failure; a claim whose launches run out fails with
-  the cause word `never_reconnected`.
+- **`supervise: the shim never reconnected after the daemon started; retired its process`** and **`supervise: the shim never reconnected after its connection closed; retired its process`** at Warn mean a live process whose shim never said hello within the reconnect deadline, the registration deadline's bound: after a daemon start, for a claim the daemon restored ready, idle or working, or after its connection closed while its claim held a task.
+  The daemon takes its task back under its number, a take still awaiting its turn as a cut turn, and relaunches it, charging a launch failure; a claim whose launches run out fails with the cause word `never_reconnected`.
+- **`supervise: the shim reconnected over a pending task; the daemon asks its agent whether it is in a turn, and the bounds on the worker wait for that answer or a turn frame`** at Info is the hello of a worker whose connection closed, or which a daemon start restored, while its claim holds a task.
+  The take, turn-start and report waits judge the worker by the frames its connection carries, and a frame lost in the socket when the connection broke is not replayed, so none of them runs until the agent answers or a turn starts or ends on the new connection.
+  An answer that the agent is in a turn is that turn starting, the task's own over a take awaiting its turn, and an answer that it is in no turn ends the turn the daemon read it in.
+  **`supervise: the agent said whether it is in a turn after its shim reconnected; the bounds on the worker run again from here`** at Info is that answer, with `streaming=`.
+  **`supervise: the agent did not say whether it is in a turn after its shim reconnected; the bounds on the worker wait for a turn frame or the reconnect deadline`** at Warn is an ask the agent did not answer, which is not asked again.
+  **`supervise: the agent did not say whether it is in a turn within the reconnect deadline of its shim's hello; it is relaunched, uncharged, and its task taken back as a cut turn`** at Warn is that deadline passing with no answer and no turn frame: nothing is charged, and the relaunched worker takes the task again, told that its turn on it may have run.
+  A connection that closes again before a bound passes postpones that bound each time to a whole bound after its next hello, and the reconnect deadline bounds each gap.
+  Nothing to do unless it repeats: a worker that reconnects and never answers has a hung agent, or a shim that cannot reach its agent.
 - **`supervise: the first bound passed over a revision whose seen report this daemon read from the
   store; it is written again under its number, and nobody is charged`** at Info follows a daemon
   start: the worker reported that revision seen to the daemon before, which may have failed to

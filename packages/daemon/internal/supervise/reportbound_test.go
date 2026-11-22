@@ -231,7 +231,10 @@ func TestTakeBoundedWithNothingHeldLeavesARestoredTakeItCannotSeeWhole(t *testin
 		name          string
 		before, hello func(h *harness)
 	}{
-		{"the store records the given run's end after the accept", func(h *harness) { h.hostsRun() }, func(h *harness) { h.connect() }},
+		{"the store records the given run's end after the accept", func(h *harness) { h.hostsRun() }, func(h *harness) {
+			h.connect()
+			h.answerAsk(false)
+		}},
 		{"the hello does not say the backlog is whole", givenRunRunning, func(h *harness) {
 			h.conn.SetStreaming(true)
 			h.cutHello()

@@ -1015,7 +1015,9 @@ func (m *Machine) adopt(ctx context.Context, a adoption) error {
 // store refused (finishOwed, overTurnFinish), and taken back with the note a cut turn gets where
 // only a report naming its number finishes it and none has. Left, it would stand started for
 // good, and the take of it the next process makes would be answered again the text of a turn
-// that already ran.
+// that already ran. A take awaiting its turn whose report's finish the store refused is finished
+// here by that report too (takePhase, waitFinish): the let-go that found it finished it, and a
+// refusal of that finish leaves it to this.
 //
 // A claim a daemon start restored over a provider error's report the store took and whose
 // take-back it refused (Machine.ladderOwed, Claim.owedReport) has that report's take-back and
@@ -1056,7 +1058,7 @@ func (m *Machine) settle(ctx context.Context) error {
 			}
 		}
 	}
-	if !SaidReady(m.claim.State) && p.turnStarted() {
+	if !SaidReady(m.claim.State) && (p.turnStarted() || m.takePhase() == waitFinish) {
 		if by, finishes := m.overTurnFinish(); finishes {
 			return m.finishTask(ctx, by)
 		}
@@ -1160,27 +1162,29 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // (message); outOfMemory says that end was the pod running out of memory, which adds
 // outOfMemoryTask, and it is written on every such call, true or false, so a second interruption
 // of the same task for another reason clears a note that no longer describes it. A take whose
-// turn had not started goes back with no note, since the worker ran nothing of it, except a
-// restored take whose turn may have run with no frame of it reaching the machine
-// (Machine.restoredTurnUnseen): it goes back as a turn cut off, since the worker may have run it
-// whole. The task is neither retired nor its run marked served, since the turn never finished;
-// the claim's TaskTaken stays, since the worker read it. A task no take holds is left as it is. An
-// older daemon's ask of an update round is the one task no take is accepted for again: it keeps
-// its delivery id, which names its round, and the next take of it drops it (takeable).
+// turn had not started goes back with no note, since the worker ran nothing of it, except one
+// whose turn may have run with no frame of it reaching the machine (Machine.turnUnseen): it goes
+// back as a turn cut off, since the worker may have run it whole. The task is neither retired nor
+// its run marked served, since the turn never finished; the claim's TaskTaken stays, since the
+// worker read it. A task no take holds is left as it is. An older daemon's ask of an update round
+// is the one task no take is accepted for again: it keeps its delivery id, which names its round,
+// and the next take of it drops it (takeable).
 //
-// A take whose turn has already ended is settled by its claim's contract. Where the end frame
-// finishes a task — a plugin below TaskTakeContract, whose reports name no number
-// (endFrameFinishes) — it is not taken back but finished: its turn ran whole, and only the
-// report of it is lost with the process (finishTask, by the end frame). So is one whose report
-// named its number and whose finish the store refused (finishOwed), by that report
-// (overTurnFinish). Where only a report naming the number finishes it, and none has, the end of
-// a run says nothing of whose run it was, so it is
-// taken back with the note a cut turn gets, as though its turn were still running: the next
-// accepted take carries the sentence of its interruption, and the let-go that follows records
-// the task's turn as cut off (Machine.cutTurnOf). Whether a turn runs is the one answer every
-// let-go reads (cutsTurn, as recordEnd and the stall backstop read it): a claim stored working
-// for nothing that runs is in no turn, so a compaction Oh My Pi started after the take's turn
-// ended and before its report leaves that take to be settled here too, whichever let-go comes.
+// A take whose report named its number and whose finish the store refused (Machine.finishOwed) is
+// not taken back but finished, by that report, whichever turn it awaits and whether or not a turn
+// runs: the report decides (takePhase, waitFinish), and a finish the store refuses again is
+// retried as this let-go's own refusals are. A take whose turn has otherwise ended is settled by
+// its claim's contract. Where the end frame finishes a task — a plugin below TaskTakeContract,
+// whose reports name no number (endFrameFinishes) — it is not taken back but finished: its turn
+// ran whole, and only the report of it is lost with the process (finishTask, by the end frame).
+// Where only a report naming the number finishes it, and none has, the end of a run says nothing
+// of whose run it was, so it is taken back with the note a cut turn gets, as though its turn were
+// still running: the next accepted take carries the sentence of its interruption, and the let-go
+// that follows records the task's turn as cut off (Machine.cutTurnOf). Whether a turn runs is the
+// one answer every let-go reads (cutsTurn, as recordEnd and the stall backstop read it): a claim
+// stored working for nothing that runs is in no turn, so a compaction Oh My Pi started after the
+// take's turn ended and before its report leaves that take to be settled here too, whichever
+// let-go comes.
 //
 // The taken-back task becomes the claim's only once its write has landed. A write that fails
 // leaves the task taken in memory as in the store, and the process is still recorded, so the
@@ -1212,13 +1216,16 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return nil
 	}
 	inTurn := m.cutsTurn()
+	if m.takePhase() == waitFinish {
+		return m.finishTask(ctx, finishedByReport)
+	}
 	if p.turnStarted() && !inTurn {
-		if by, finishes := m.overTurnFinish(); finishes {
-			return m.finishTask(ctx, by)
+		if m.endFrameFinishes() {
+			return m.finishTask(ctx, finishedByEndFrame)
 		}
 		inTurn = true
 	}
-	inTurn = inTurn || (m.restoredTurnUnseen && m.restoredTake && p.awaitsTurn())
+	inTurn = inTurn || (m.turnUnseen && p.awaitsTurn())
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "task", p.Number, "delivery", p.ID)
 	next := *p
 	handshake := m.claim.Handshake
@@ -1339,13 +1346,20 @@ func (m *Machine) untellUnstarted() {
 // take-back does. It writes nothing and reports whether it took a take back, so the caller's own
 // write carries the delivery with the claim (putClaimAndPendingOwed). cause is the take-back's
 // line's (takenBackLine).
-func (m *Machine) takeBackUnstarted(cause string) bool {
+//
+// A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
+// finished, by that report, which writes the claim with the retirement; a finish the store
+// refuses again answers its error, and the next decision makes it (settle).
+func (m *Machine) takeBackUnstarted(ctx context.Context, cause string) (bool, error) {
 	p := m.claim.Pending
 	if p == nil || !p.awaitsTurn() {
-		return false
+		return false, nil
+	}
+	if m.takePhase() == waitFinish {
+		return false, m.finishTask(ctx, finishedByReport)
 	}
 	m.clearTake(p, cause)
-	return true
+	return true, nil
 }
 
 // clearTake is the take-back of the accepted take of p in memory that takeBack and

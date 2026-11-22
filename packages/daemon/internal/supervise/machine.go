@@ -1546,6 +1546,12 @@ type Machine struct {
 	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
 	// at Warn.
 	unansweredAsks int
+	// connSeen is how much of the worker's turns the claim's connection shows the machine
+	// (connView, connview.go): whole, so the bounds that judge the worker by its frames run; or cut,
+	// by a daemon start before the shim's first hello (NewMachine), by a close (closeView), or by a
+	// reconnect hello over a pending task until the agent's answer or a turn frame (askView). It is
+	// memory only, as the connection is.
+	connSeen connView
 	// held is the suspension held for the agent's turn (holdSuspension), behind the wait for the
 	// report of its take's turn (reportwait.go), or for a launch's ready (holdSuspendUntilReady),
 	// nil for none.
@@ -1599,15 +1605,16 @@ type Machine struct {
 	// The wait for a take's report bounds such a take with nothing held only where its restored
 	// anchor is bound (reportReaches). It is memory only: what it says is of this daemon's start.
 	restoredTake bool
-	// restoredTurnUnseen is whether the restored take (restoredTake), awaiting its turn, may have
-	// had that turn run with no frame of it reaching the machine: the stale-plugin relaunch of its
-	// claim was decided, at its agent's answer of no turn or at the reconnect deadline with no
-	// answer, behind a replay whose hello did not say the shim's backlog is whole
-	// (markRestoredTurnUnseen, turnCount.cut), and a trim of that backlog can drop a whole turn.
-	// The let-go takes such a take back with the note of a cut turn rather than unstarted
-	// (interrupted), so the next process is told its turn on the task may have run. letGo clears
-	// it with the process, and it is memory only.
-	restoredTurnUnseen bool
+	// turnUnseen is whether the pending take, awaiting its turn, may have had that turn run with no
+	// frame of it reaching the machine: the stale-plugin relaunch of a restored claim was decided,
+	// at its agent's answer of no turn or at the reconnect deadline with no answer, behind a replay
+	// whose hello did not say the shim's backlog is whole (markRestoredTurnUnseen, turnCount.cut),
+	// and a trim of that backlog can drop a whole turn; or a reconnect deadline passed while the
+	// claim's connection did not show its turns whole (reconnectDeadline, connview.go). The let-go
+	// takes such a take back with the note of a cut turn rather than unstarted (interrupted), so
+	// the next process is told its turn on the task may have run. The next accepted take clears it
+	// (accept), letGo clears it with the process, and it is memory only.
+	turnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
 	// process for a reason that keeps the process — a provider error's turn, a compaction, the
@@ -1848,10 +1855,13 @@ type armed struct {
 //
 // R5's two waits are armed from the record, but not here: a machine built at a daemon's start
 // arms them at the worker's next act (awaitsAct, armWaits), so the time the daemon was not
-// serving counts toward neither bound. A seen report the claim was built holding is the store's,
-// not one this daemon received (seenFromStore), so the first wait's first bound over it writes
-// the value again rather than charging (takeBoundOver). Which records the pending take told is
-// the delivery's own mark, read back with it (Delivery.TakeTold).
+// serving counts toward neither bound; and one restored ready, idle or working has no connection
+// until its shim's first hello (viewNoHello), so the bounds that read the worker's frames wait for
+// that hello and the agent's answer or a turn frame behind it (connview.go). A seen report the
+// claim was built holding is the store's, not one this daemon received (seenFromStore), so the
+// first wait's first bound over it writes the value again rather than charging (takeBoundOver).
+// Which records the pending take told is the delivery's own mark, read back with it
+// (Delivery.TakeTold).
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -1883,6 +1893,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		m.armRegistration()
 	case StateReady, StateIdle:
 		m.armRegistration()
+		m.connSeen = viewNoHello
 		// A task whose take's turn started and ended under an earlier daemon, which nothing has
 		// finished: its report may still come, and for a plugin that names no number (whose end
 		// frame finishes its task, endFrameFinishes) where none does the end of that turn
@@ -1901,6 +1912,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		m.askTrigger = "boot"
 	case StateWorking:
 		m.armRegistration()
+		m.connSeen = viewNoHello
 		m.askFirst = true
 	}
 	// A report applied before the daemon that applied it stopped, whose effect on the pending task
@@ -2003,6 +2015,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	if actOf(ev) {
 		m.awaitsAct = false
+	}
+	// A turn frame is the connection carrying the worker's turns, whatever its row does with it,
+	// so the view of them is whole again (connview.go).
+	switch ev.(type) {
+	case StreamTurnStart, StreamTurnEnd:
+		m.seeView()
 	}
 	if hello, ok := ev.(StreamHello); ok && hello.AgentSecrets != nil && m.claim.Locator != nil && m.deps.Secrets != nil {
 		identity := *hello.AgentSecrets
@@ -4044,10 +4062,11 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 	if drops {
 		return m.dropPending(ctx, valueDeletedRetired)
 	}
-	if m.takeBackUnstarted(takenBackRetired) {
+	tookBack, err := m.takeBackUnstarted(ctx, takenBackRetired)
+	if tookBack {
 		return m.putClaimAndPendingOwed(ctx)
 	}
-	return m.persist(ctx)
+	return errors.Join(err, m.persist(ctx))
 }
 
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
@@ -4079,8 +4098,10 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // task's, and the background work its own activity report named. It is read here, first,
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
-// with the process too (cutTurnOf), as does the mark of a restored take whose turn may have run
-// unseen (restoredTurnUnseen).
+// with the process too (cutTurnOf), as does the mark of a take whose turn may have run unseen
+// (turnUnseen), and the connection's view of the process's turns (connSeen): the next process's
+// first hello opens a connection of its own, and a late frame of the process let go disarms
+// nothing of the next one's.
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -4088,10 +4109,11 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.askFirst = false
 	m.askTurn, m.askedAt, m.askTrigger = false, time.Time{}, ""
+	m.connSeen = viewWhole
 	m.dropHeld()
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
-	m.cutTurnOf, m.restoredTurnUnseen = "", false
+	m.cutTurnOf, m.turnUnseen = "", false
 	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {

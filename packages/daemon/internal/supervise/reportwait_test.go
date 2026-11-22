@@ -312,7 +312,7 @@ func TestAReadySentAgainLeavesTheHoldWaitingForTheReport(t *testing.T) {
 }
 
 // A suspension held over a compaction that started after the take's turn ended waits at the
-// compaction's end for the report of that turn (compactEnded, reportOwed), as one held over the
+// compaction's end for the report of that turn (compactEnded, takePhase), as one held over the
 // turn waits at the turn's end: the claim is given back idle, held, and the compaction is answered
 // that the hold took it (ErrCompactSuspended); the report finishes the task once and the stop runs
 // after it; with no report, the hold's deadline stops the claim and takes the task back with the

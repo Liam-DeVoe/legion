@@ -127,7 +127,7 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 // finishes the task. R2's start was seen, so none is left to come for it, and the next task's
 // turn is that task's: its start line names it, and its take's turn is started (startTakesTurn).
 // The second case is the first with a suspension held over R2: R2's end leaves the hold waiting
-// for R2's report (reportOwed), which finishes the task once before the stop. The third is R1's
+// for R2's report (takePhase), which finishes the task once before the stop. The third is R1's
 // report landing only after R2 ended: R2 ran the take whole, so the take's turn is R2's and over,
 // and a suspension then waits for R2's report. The fourth case is a run's report sent late, after
 // the take's own turn started: the take was accepted after R1 ended, R2 is its turn, and R1's

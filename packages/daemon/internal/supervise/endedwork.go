@@ -137,7 +137,9 @@ type ActivityReport struct {
 // in its phase), the controller keeper's retry of a retired controller (daemon's
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
-// ended (dispatch://INFRA-3276 R3).
+// ended (dispatch://INFRA-3276 R3). endUnanswered is the relaunch at the reconnect deadline of a
+// shim that came back while its agent never said whether it was in a turn (reconnectDeadline,
+// connview.go).
 //
 // The cause is read into an agent's task text as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can
@@ -151,6 +153,7 @@ const (
 	endDisplaced   = "its pod was replaced"
 	endRepointed   = "its address changed"
 	endStopped     = "its claim was stopped"
+	endUnanswered  = "its agent did not say whether it was in a turn after its connection came back"
 )
 
 // endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.

@@ -712,7 +712,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
 	m.anchorTake(first)
-	m.restoredTake = false
+	m.restoredTake, m.turnUnseen = false, false
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)
@@ -932,7 +932,14 @@ func (m *Machine) stateHold() string {
 //
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
 // write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
+//
+// A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
+// finished, by that report: the report decides whichever turn the take awaits, and taken back
+// under its number the task would run again.
 func (m *Machine) takeBack(ctx context.Context, cause string) error {
+	if m.takePhase() == waitFinish {
+		return m.finishTask(ctx, finishedByReport)
+	}
 	if m.takeBackInMemory(cause) {
 		return m.putClaimAndPendingOwed(ctx)
 	}

@@ -236,7 +236,7 @@ func TestAPauseHoldOverAWorkingClaimSurvivesAStartAndStopsItAtTheTurnsEnd(t *tes
 }
 
 // A pause's hold over a claim whose take's turn ends before the turn-outcome report waits for that
-// report rather than stopping the claim at the turn's end (reportwait.go, reportOwed):
+// report rather than stopping the claim at the turn's end (reportwait.go, takePhase):
 // a provider's refusal the report names takes the task back under its number for another take
 // (providerErrored), and the stop that follows keeps it and owes the role a launch for it, while
 // the ladder that would write its value again writes nothing. Stopped at the turn's end, the claim

@@ -356,6 +356,7 @@ func TestChargeNoneWhileAHoldStands(t *testing.T) {
 		h.restore(restoredRootTask())
 		h.manualTakes()
 		h.connect()
+		h.answerAsk(false)
 		h.seen()
 
 		h.advance(3 * takeBound)
@@ -444,11 +445,12 @@ func TestChargeResetByATurnStartAndATurnEndNotByATake(t *testing.T) {
 }
 
 // A daemon stopped for longer than a bound and started again charges nobody for the time it was
-// down: each wait's clock starts again at the worker's first act after the start, here the shim's
-// reconnect hello, and nobody is charged until one whole bound has passed after it — in the first
-// wait and in the second. In the first wait the seen report the started daemon holds is the
-// store's, so that bound's end writes the value again and charges nobody (decision 20); the
-// charge comes one bound after the worker reports the new revision seen.
+// down: each wait's clock starts again once the claim's connection is whole after the start, here
+// at the agent's answer to the ask the shim's reconnect hello makes (connview.go), and nobody is
+// charged until one whole bound has passed after it — in the first wait and in the second. In the
+// first wait the seen report the started daemon holds is the store's, so that bound's end writes
+// the value again and charges nobody (decision 20); the charge comes one bound after the worker
+// reports the new revision seen.
 func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testing.T) {
 	t.Run("the first wait", func(t *testing.T) {
 		h := waitsHarness(t)
@@ -462,6 +464,7 @@ func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testi
 		h.advance(deadline - time.Second)
 		h.wantCharges()
 		h.connect()
+		h.answerAsk(false)
 		h.advance(takeBound - time.Second)
 		h.wantCharges()
 		h.advance(time.Second)
@@ -484,6 +487,7 @@ func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testi
 		h.advance(deadline - time.Second)
 		h.wantCharges()
 		h.connect()
+		h.answerAsk(false)
 		h.advance(turnStartBound - time.Second)
 		h.wantCharges()
 		h.advance(time.Second)
@@ -492,12 +496,13 @@ func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testi
 	})
 }
 
-// A worker that makes no act after a daemon's start but its shim's reconnect hello is charged one
-// bound after that hello in the second wait, and its third charge retires it: the clock's restart
-// spares the daemon's outage, and nothing more. In the first wait the seen report the started
-// daemon holds is the store's, so the first bound after the hello writes the value again and
-// charges nobody (decision 20); a worker that then reports the new revision seen and takes
-// nothing is charged one bound after that report, and its third charge retires it.
+// A worker that makes no act after a daemon's start but its shim's reconnect hello, whose agent
+// answers the ask the hello makes that it is in no turn, is charged one bound after that answer in
+// the second wait, and its third charge retires it: the clock's restart spares the daemon's
+// outage, and nothing more. In the first wait the seen report the started daemon holds is the
+// store's, so the first bound after the answer writes the value again and charges nobody
+// (decision 20); a worker that then reports the new revision seen and takes nothing is charged one
+// bound after that report, and its third charge retires it.
 func TestSilentWorkerAfterItsReconnectIsChargedOneBoundAfterItAndRetiredAtTheThird(t *testing.T) {
 	t.Run("the first wait", func(t *testing.T) {
 		h := waitsHarness(t)
@@ -509,6 +514,7 @@ func TestSilentWorkerAfterItsReconnectIsChargedOneBoundAfterItAndRetiredAtTheThi
 
 		h.outage(3 * takeBound)
 		h.connect()
+		h.answerAsk(false)
 		h.advance(takeBound)
 		h.wantCharges()
 		h.seen()
@@ -540,6 +546,7 @@ func TestSilentWorkerAfterItsReconnectIsChargedOneBoundAfterItAndRetiredAtTheThi
 
 		h.outage(2 * turnStartBound)
 		h.connect()
+		h.answerAsk(false)
 		h.advance(turnStartBound - time.Second)
 		h.wantBudgets(Budgets{PromptFailures: 2})
 		h.advance(time.Second)
@@ -561,8 +568,8 @@ func TestSilentWorkerAfterItsReconnectIsChargedOneBoundAfterItAndRetiredAtTheThi
 // registration deadline's bound as a reconnect deadline. A live process whose shim never says
 // hello by then is retired and relaunched with a charged launch failure of its own cause,
 // never_reconnected, and a task whose turn it was running is taken back for the relaunch. A
-// hello inside the deadline leaves the claim untouched; a process the probe finds gone takes the
-// death path.
+// hello inside the deadline, its agent answering the ask the hello makes over the pending task,
+// leaves the claim untouched; a process the probe finds gone takes the death path.
 func TestSilentRestoredClaimWithNoHelloIsRetiredAtTheReconnectDeadline(t *testing.T) {
 	t.Run("a live idle process whose shim never says hello is retired and relaunched", func(t *testing.T) {
 		h := newBareHarness(t)
@@ -608,6 +615,7 @@ func TestSilentRestoredClaimWithNoHelloIsRetiredAtTheReconnectDeadline(t *testin
 
 		h.advance(deadline - time.Second)
 		h.connect()
+		h.answerAsk(false)
 		h.advance(2 * deadline)
 
 		h.wantCalls("Probe", 0)
@@ -688,6 +696,7 @@ func TestChargeNoneAtTheFirstExpiryForASeenReportReadFromTheStore(t *testing.T) 
 		stored := h.seen()
 		h.restart()
 		h.connect()
+		h.answerAsk(false)
 		h.advance(takeBound)
 
 		h.wantCharges()

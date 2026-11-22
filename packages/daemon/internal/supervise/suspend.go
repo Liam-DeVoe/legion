@@ -513,14 +513,14 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	tookBack := m.takeBackUnstarted(takenBackSuspended)
+	tookBack, err := m.takeBackUnstarted(ctx, takenBackSuspended)
 	switch {
 	case stop != nil:
-		return m.persistStop(ctx, *stop, tookBack)
+		return errors.Join(err, m.persistStop(ctx, *stop, tookBack))
 	case tookBack:
 		return m.putClaimAndPendingOwed(ctx)
 	}
-	return m.persist(ctx)
+	return errors.Join(err, m.persist(ctx))
 }
 
 // suspendHeld runs the held suspension's stop. One the runtime refuses stays held and is tried
@@ -563,8 +563,8 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 // Over a take whose report is still to come — its turn over, or the take put back by a report while
 // the turn ran — the hold waits behind the wait for that report (reportwait.go), whose finish runs
 // it (reportedTask, afterTurn), or behind that wait's bound or its own deadline: the claim goes
-// back in back, holding it. The end asks reportOwed rather than reportHolds, for the reasons
-// reportOwed gives.
+// back in back, holding it. The end reads the take's phase (takePhase, reportToCome), since the
+// claim it ends is still stored working.
 //
 // Otherwise the stop runs now (suspendHeldAtEnd). Where the turn was a task's, the settle that
 // follows the stop finishes the task, by its end frame or by the report whose finish the store
@@ -578,7 +578,7 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 // passes armEndFrameBound), and at a compaction's only where none stands (compactEnded passes
 // armEndFrameBoundUnlessArmed).
 func (m *Machine) runHeldAtEnd(ctx context.Context, back ClaimState, armFinish func(id string)) error {
-	if m.reportOwed() {
+	if m.takePhase().reportToCome() {
 		m.claim.State = back
 		m.logSuspensionWaits()
 		return m.persist(ctx)

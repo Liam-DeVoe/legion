@@ -21,7 +21,7 @@ package supervise
 //     decision reads it (dropEndedPauseHold); the resume's event (ResumePause) is such a decision.
 //
 // A project pause's held suspension waits past the end of its take's turn for the report that
-// settles the task, as every held suspension does (reportwait.go, reportOwed): only
+// settles the task, as every held suspension does (reportwait.go, takePhase): only
 // that report says whether the turn finished its task or a provider refused it, and a stop made
 // first would leave a refused task taken and the role owed nothing at the resume (check k1 of
 // dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). The report's
