@@ -240,9 +240,29 @@ export function VerificationFilterBody({
   // The rows are drawn once all three reads hold an answer, and not while one is out or failed.
   const answered = reads.state === "answered";
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
-  // Each read that failed before it first answered, by its name with the press that asks it
-  // alone again and whether it runs again, which the body says over the tree.
+  // The lines the body says over the tree: each read that failed before it first answered, by
+  // its name with the press that asks it alone again and whether it runs again, in the body's
+  // own order (`VERIFICATION_READS`) whatever order the reads are given in, then the names' line
+  // (`namesLine`), as the outline draws it after the lines of the reads its rows come from
+  // (`outline-reads.ts`'s `useOutlineReads`).
   const failed = reads.state === "failed" ? reads.failed : undefined;
+  const failedLines = [
+    ...VERIFICATION_READS.flatMap((read) => {
+      const line = failed?.[read];
+      return line === undefined
+        ? []
+        : [
+            {
+              failure: line.failure,
+              key: read,
+              message: UNREADABLE_LINES[read],
+              retry: line.retry,
+              retrying: line.retrying,
+            },
+          ];
+    }),
+    ...namesLine,
+  ];
   // Each statement of the issue by its address, named as every chip of the page names a block
   // (`chipName`): by the line the names store projects beside its name from the reading the page
   // published for it, its first block that holds words (`KnownReferences.lines`), which "Also
@@ -366,29 +386,14 @@ export function VerificationFilterBody({
   };
   const drawnBody = (
     <div className={BODY} data-verification-body="">
-      {/* Each read that failed before it first answered, the page's one line for a failed read
-          (`FailedReadLine`): its words and a Retry that asks that read alone again. The lines
-          stand in the body's own order (`VERIFICATION_READS`) whatever order the reads are given
-          in, since the stage the view is drawn in gives the first line's Retry the focus when a
-          line leaves with it. They stand over the tree and never in it: an alert inside a tree
-          would break the tree's own structure of rows. Each stands in an element that names its
-          read, so one read's line is found by that name. */}
-      {VERIFICATION_READS.map((read) => {
-        const line = failed?.[read];
-        return line === undefined ? null : (
-          <div data-verification-unreadable={read} key={read}>
-            <FailedReadLine
-              failure={line.failure}
-              message={UNREADABLE_LINES[read]}
-              onRetry={line.retry}
-              retrying={line.retrying}
-            />
-          </div>
-        );
-      })}
-      {/* The names' line, the outline's own (`namesLine`), after the view's own reads' lines and
-          over the tree, in an element that names it as each of those names its read. */}
-      {namesLine.map((line) => (
+      {/* Each line, the page's one line for a failed read (`FailedReadLine`): its words and a
+          Retry that asks its read alone again. The view's own reads' lines stand in the body's
+          own order whatever order the reads are given in, since the stage the view is drawn in
+          gives the first line's Retry the focus when a line leaves with it. They stand over the
+          tree and never in it: an alert inside a tree would break the tree's own structure of
+          rows. Each stands in an element that names its read, so one read's line is found by
+          that name. */}
+      {failedLines.map((line) => (
         <div data-verification-unreadable={line.key} key={line.key}>
           <FailedReadLine
             failure={line.failure}
