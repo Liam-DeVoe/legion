@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -74,8 +75,10 @@ var OutboxHandling = map[RowKind]RowHandling{
 		Does: "applies the linger's expiry at the row's next_at"},
 	{Kind: record.OutboxKindGateSeed}: {Way: OutboxExecuted, Facts: []string{"DispatchArtifact", "GateAboveDispatch"},
 		Does: "reads the registered document's approval from the replay's copy of Dispatch and applies what it finds, or the reset of a gate above Dispatch's version"},
+	{Kind: record.OutboxKindDesignChanges}: {Way: OutboxExecuted,
+		Does: "reconciles the tree's news of its approved design as the executor does, reading from the replay's copy of Dispatch the version each review history names: records each change set the news names, read with nothing listed from version 0 and unavailable from any other, since the copy holds no document's text, raises a told row past a pair that changed no work, and queues the news-only start of each other row's holder"},
 	{Kind: record.OutboxKindSupervise, Op: "start"}: {Way: OutboxExecuted,
-		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery, logs the launch, and resumes the issue's paused segment or opens its next recorded one"},
+		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery, logs the launch, and resumes the issue's paused segment or opens its next recorded one; a start queued for news alone, behind the same fences, is finished under assumption 26 where it reaches its claim with news to tell"},
 	{Kind: record.OutboxKindSupervise, Op: "suspend"}: {Way: OutboxExecuted,
 		Does: "suspends the role's claim, its task taken back, and pauses the issue's segment it works, or cancels it where the issue has left the workflow"},
 	{Kind: record.OutboxKindSupervise, Op: "issue_close"}: {Way: OutboxExecuted,
@@ -277,6 +280,8 @@ func (d *driver) take(row record.OutboxRow) (bool, error) {
 		err = d.gateSeedRow(leased, value)
 	case record.SuperviseRequest:
 		err = d.superviseRow(leased, value)
+	case record.DesignNewsReconcile:
+		err = d.designChangesRow(leased)
 	default:
 		err = d.finishUnder(leased, RowKind{Kind: leased.Kind})
 	}
@@ -301,18 +306,25 @@ func (d *driver) finishUnder(row record.OutboxRow, kind RowKind) error {
 	if !handled || handling.Way != OutboxFinished {
 		return fmt.Errorf("the stub holds no way to finish a row of %s %s", kind.Kind, kind.Op)
 	}
+	return d.finishAssumed(row, handling.Assumption)
+}
+
+// finishAssumed finishes row without acting, under assumption, and counts it: the way of a row
+// its kind's handling finishes (finishUnder), and of a start queued for news alone that reaches
+// its claim, which a start's handling executes (start).
+func (d *driver) finishAssumed(row record.OutboxRow, assumption int) error {
 	if d.counters.Finished == nil {
 		d.counters.Finished = map[int]int{}
 	}
-	d.counters.Finished[handling.Assumption]++
-	d.used[handling.Assumption] = true
+	d.counters.Finished[assumption]++
+	d.used[assumption] = true
 	return d.finish(row)
 }
 
 // retry gives row back to the outbox to run again on its backoff, as a lane gives back a row
 // whose executor waits on something (record.RetryBackoff): a first start of a child's own
-// architect while its tree lingers, a merger behind its tree's closed design gate, a claim its
-// tree's lifecycle refuses.
+// architect while its tree lingers, a merger behind its tree's closed design gate or behind news
+// of its approved design not yet recorded, a claim its tree's lifecycle refuses.
 func (d *driver) retry(row record.OutboxRow, why error) error {
 	next := d.clock.Instant().Add(record.RetryBackoff(row.Attempts))
 	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
@@ -611,18 +623,28 @@ func (d *driver) phaseEntry(issue string, role claim.Role) (int64, error) {
 
 // start runs a start row as the outbox's start does (internal/daemon's supervise, op start):
 // finished without acting for an issue out of the workflow or a member of a lingering tree, but
-// the first start of a child's own architect, which waits on its backoff while its root lingers;
-// a merger's start waits while its tree's design gate is closed. Then the claim is written as the
-// start and the turn's confirmation write it: admitted on its first start, re-pointed at the
-// issue's tree where it stands in another, launched again where it was queued, suspended, failed
-// or retired (`supervise: launched`), and given the row's task unless it holds that phase's task
-// already or was given the row's entry (supervise's queue), with a confirmed delivery, in one
-// transaction with the row's finish. Last, the work the start brings: the issue's paused segment
-// of the role resumes; a start whose entry is above the one the claim was given, or that resends
-// its entry, opens the issue's next recorded segment of the role (and an issue the record never
-// started takes the never-started scenario's work); a start that re-sends an entry already given
-// is counted as a reassertion. The settling of a root architect's claim whose root handed work to
-// a person is told the pass (Settled).
+// the first start of a child's own architect, which waits on its backoff while its root lingers.
+// Then what the start reads of the news of the approved design, in internal/daemon's startNewsOf's
+// order: a start queued for news alone (record.SuperviseRequest.News) that reaches no claim
+// (newsOnlyReaches) finishes without acting; a merger's start waits while its tree's design gate
+// is closed (gateClosed) or its member is owed news no start can carry yet
+// (mergerNewsUnrecorded); and a start queued for news alone finishes without acting where its news
+// says nothing now (creditNews), waits on its backoff while its claim holds a task, as the claim's
+// machine refuses a task of news alone behind any task (supervise's queue), and is otherwise
+// finished under assumption 26, since it hands the worker a task of news and no work: the replay
+// credits that news (creditNews), but writes nothing to its claim and launches no claim for it.
+// Then the claim is written as the start and the turn's confirmation write it: admitted on its
+// first start, re-pointed at the issue's tree where it stands in another, launched again where it
+// was queued, suspended, failed or retired (`supervise: launched`), and given the row's task unless
+// it holds that phase's task already or was given the row's entry (supervise's queue), with a
+// confirmed delivery, in one transaction with the row's finish; a task of an entry given so carries
+// the news its claim is owed, as the daemon's start attaches it (newsForStart), which the replay
+// credits (creditNews). Last, the work the start brings: the issue's paused segment of the role
+// resumes; a start whose entry is above the one the claim was given, or that resends its entry,
+// opens the issue's next recorded segment of the role (and an issue the record never started takes
+// the never-started scenario's work); a start that re-sends an entry already given is counted as a
+// reassertion. The settling of a root architect's claim whose root handed work to a person is told
+// the pass (Settled).
 func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
 	c, found := d.claims[token]
 	if payload.WakeKind != "" && found && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByDaemon {
@@ -636,10 +658,20 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 		return err
 	}
 	if root != nil && root.Lingers() {
-		if !found && payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" {
+		if !found && payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" &&
+			!payload.News {
 			return d.retry(row, fmt.Errorf("the first start of the own architect of %s waits for the tree of %s to run again", issue.Key, root.Key))
 		}
 		return d.finish(row)
+	}
+	if payload.News {
+		entry, err := d.phaseEntry(row.Issue, payload.Role)
+		if err != nil {
+			return err
+		}
+		if !newsOnlyReaches(c, found, entry) {
+			return d.finish(row)
+		}
 	}
 	if payload.Role == claim.RoleMerger {
 		closed, err := d.gateClosed(issue)
@@ -649,6 +681,28 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 		if closed {
 			return d.retry(row, fmt.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree))
 		}
+		unrecorded, err := d.mergerNewsUnrecorded(issue)
+		if err != nil {
+			return err
+		}
+		if unrecorded {
+			return d.retry(row, fmt.Errorf("the merger of %s waits for what changed in the approved design of %s to be recorded", issue.Key, issue.Tree))
+		}
+	}
+	if payload.News {
+		says, err := d.creditNews(issue, payload.Role, token, false)
+		switch {
+		case err != nil:
+			return err
+		case !says:
+			return d.finish(row)
+		case supervise.HoldsTask(c.Pending):
+			return d.retry(row, fmt.Errorf("the task of news alone of %s's %s waits behind the task its claim holds", issue.Key, payload.Role))
+		}
+		if _, err := d.creditNews(issue, payload.Role, token, true); err != nil {
+			return err
+		}
+		return d.finishAssumed(row, assumeNoticesChangeNothing)
 	}
 	if !found || c.Tree != issue.Tree {
 		admit := c
@@ -719,6 +773,11 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 	}
 	d.claims[token] = c
 	d.used[assumeSupervisionSettles] = true
+	if delivered && payload.Entry != 0 {
+		if _, err := d.creditNews(issue, payload.Role, token, true); err != nil {
+			return err
+		}
+	}
 	if err := d.startWork(issue, payload, given, delivered); err != nil {
 		return err
 	}
@@ -829,24 +888,23 @@ func (d *driver) neverStartedWork(key string, role claim.Role, served phase.Phas
 }
 
 // gateClosed says whether the design gate of issue's tree is closed, which holds the merger's
-// start (internal/daemon's designGateClosed): a step the deployment gates whose row no approval has
-// opened.
+// start (internal/daemon's designGateClosed): a step the tree is gated on holds a row no approval
+// has opened (classify.StandingGate over the deployment's steps and the tree root's rows, which
+// adds a criteria row the root registered beside a deployment that gates spec and not criteria). A
+// step with no row holds nothing here: nobody can be waiting on a document the record does not
+// know.
 func (d *driver) gateClosed(issue record.Issue) (bool, error) {
-	closed := false
+	var gates map[record.DesignStep]record.DesignGate
 	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		root, err := d.records.Issue(d.ctx, tx, issue.Tree)
-		if err != nil || root == nil {
-			return err
-		}
-		gates, err := record.ReadTreeGates(d.ctx, tx, d.records, []record.Issue{*root}, d.window.GateSteps)
-		if err != nil {
-			return err
-		}
-		gate, ok := gates[root.Key]
-		closed = ok && len(d.window.GateSteps) > 0 && !gate.Open()
-		return nil
+		var err error
+		gates, err = d.records.GatesOf(d.ctx, tx, issue.Tree)
+		return err
 	})
-	return closed, err
+	if err != nil {
+		return false, err
+	}
+	_, closed := classify.StandingGate(d.window.GateSteps, gates)
+	return closed, nil
 }
 
 // suspend runs a suspend as the outbox's does: a claim that runs nothing, or that a newer start

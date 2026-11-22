@@ -38,14 +38,15 @@ const seedSession = "replay-seed"
 // issue that entered the workflow before at, with its phase (held, or awaiting a person, where the
 // trace holds that wait at at), Dispatch status, rank, parent, tree, generation, hold, awaiting and
 // whether it is handed to Legion, and a lingering root's linger; the design gate rows of each such
-// issue's current run, and the mirror row of each ask on such a root; the slots the issues hold,
-// the trace's inferred slots among them (assumption 34), and the mark of an issue whose slot went
-// back for a wait on another issue; the tree lifecycle of each tree that runs or lingers; the
-// claims of the turns under way of the issues in the workflow, as the outbox's start writes a claim
-// (its given entry and a confirmed delivery); the owed start of each issue whose work came back
-// while it held no slot, marked to wait for one and created at the moment its work came back; and
-// a synthetic open pull request for each issue the trace has seen one of. records writes the
-// record's tables and claims the claims.
+// issue's current run, what each holder of a gated tree's work took of its approved design, as the
+// daemon's upgrade to the release that records it writes it (told), and the mirror row of each ask
+// on such a root; the slots the issues hold, the trace's inferred slots among them (assumption
+// 34), and the mark of an issue whose slot went back for a wait on another issue; the tree
+// lifecycle of each tree that runs or lingers; the claims of the turns under way of the issues in
+// the workflow, as the outbox's start writes a claim (its given entry and a confirmed delivery);
+// the owed start of each issue whose work came back while it held no slot, marked to wait for one
+// and created at the moment its work came back; and a synthetic open pull request for each issue
+// the trace has seen one of. records writes the record's tables and claims the claims.
 //
 // It names each issue it cannot place, with the reason: one Dispatch shows no event or no
 // repository of, one in the workflow whose turn stands in a tree the record shows running no
@@ -104,7 +105,7 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			return SeedReport{}, err
 		}
 	}
-	for _, fn := range []func() error{s.gates, s.asks, s.slots, s.lifecycles, s.turns, s.owedStarts, s.pullRequests, s.unclassified} {
+	for _, fn := range []func() error{s.gates, s.told, s.asks, s.slots, s.lifecycles, s.turns, s.owedStarts, s.pullRequests, s.unclassified} {
 		if err := fn(); err != nil {
 			return SeedReport{}, err
 		}
@@ -414,6 +415,73 @@ func (s *seeder) approvalMark(iss *IssueTrace, fact GateFact) record.EventMark {
 	}
 	_, seq := dispatchBefore(iss, fact.At.Add(time.Nanosecond))
 	return record.EventMark{Seq: seq, At: fact.At}
+}
+
+// told writes what each holder of a gated tree's work took of its approved design at the start
+// (record.DesignTold), by the rule the daemon's own upgrade to the release that records it seeds a
+// database with (internal/store's migration 20261119203047_design_news): a holder row of each
+// placed issue whose work has started — its status is none the workflow leaves, and the phase its
+// work stands at (record.Issue.WorkingPhase) is none of admitted, awaiting_person and done — and
+// whose tree root holds gate rows; and an architect row of each such root of whose tree a holder
+// row was written, or which holds an approved version while an issue of its tree stands short of
+// done in the workflow. Each row is at the versions the root's gate rows stand approved at
+// (record.Store.BaselineTold), the empty set where they hold none.
+//
+// A window recorded under a release before that one holds no record of what anyone took, and what
+// it shows is work in flight on the version approved when it started or since: the start owes
+// nobody news of what the record shows taken, as the upgrade owes nobody, and the replay's news is
+// of what a person approves inside the window. A later release's window shows what its daemon told
+// each holder in no line or event, and its record is read the same way. The work the replay starts
+// takes its own baseline at its first entry (workflow's Engine.enter), and a tree's first opening
+// its architect's (workflow's putGateTold).
+func (s *seeder) told() error {
+	gates := map[string]map[record.DesignStep]record.DesignGate{}
+	rowsOf := func(tree string) (map[record.DesignStep]record.DesignGate, error) {
+		rows, read := gates[tree]
+		if read {
+			return rows, nil
+		}
+		rows, err := s.records.GatesOf(s.ctx, s.tx, tree)
+		if err != nil {
+			return nil, fmt.Errorf("replay: read the gate of %s for what its holders took: %w", tree, err)
+		}
+		gates[tree] = rows
+		return rows, nil
+	}
+	started := map[string]bool{}
+	live := map[string]bool{}
+	for _, key := range s.placedKeys() {
+		issue := s.placed[key]
+		rows, err := rowsOf(issue.Tree)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 || record.OutOfWorkflow(issue.Status) || issue.Phase == phase.Done {
+			continue
+		}
+		live[issue.Tree] = true
+		switch issue.WorkingPhase() {
+		case phase.Admitted, phase.AwaitingPerson, phase.Done:
+			continue
+		}
+		if err := s.records.BaselineTold(s.ctx, s.tx, key, record.AudienceHolder, issue.Tree, s.at); err != nil {
+			return fmt.Errorf("replay: seed what the holder of %s took: %w", key, err)
+		}
+		started[issue.Tree] = true
+	}
+	for _, tree := range slices.Sorted(maps.Keys(gates)) {
+		approved := false
+		for _, gate := range gates[tree] {
+			approved = approved || gate.ApprovedVersion != nil
+		}
+		if !started[tree] && !(approved && live[tree]) {
+			continue
+		}
+		if err := s.records.BaselineTold(s.ctx, s.tx, tree, record.AudienceArchitect, tree, s.at); err != nil {
+			return fmt.Errorf("replay: seed what the architect of %s took: %w", tree, err)
+		}
+	}
+	return nil
 }
 
 // heldSlot is the slot iss holds at the start, and whether it holds one.

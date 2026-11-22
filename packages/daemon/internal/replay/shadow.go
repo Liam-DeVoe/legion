@@ -551,6 +551,30 @@ func (s *shadow) approvalOf(key, artifact string) approval {
 	return read
 }
 
+// approvedBefore is the highest version below version of the document artifact that a person's
+// verdict the shadow holds approved, 0 where none did: Dispatch's answer to the daemon's read of
+// the document's review history (dispatch.Client.ApprovedVersionBefore), which takes the highest
+// such version wherever it stands, since a changes request approves none and a review of a version
+// at or above the one asked about is not before it. The shadow holds the verdicts of every event
+// of the window and of its reach before the start (seedEvent), on whichever issue the document is
+// recorded, so a document none of those events names answers 0, as a history with no approval in
+// it does.
+func (s *shadow) approvedBefore(artifact string, version int) int {
+	approved := 0
+	for _, iss := range s.issues {
+		document, ok := iss.artifacts[artifact]
+		if !ok {
+			continue
+		}
+		for _, verdict := range document.verdicts {
+			if verdict.approved && verdict.version < version && verdict.version > approved {
+				approved = verdict.version
+			}
+		}
+	}
+	return approved
+}
+
 // sameJSON says whether a and b are one JSON value written alike, spaces aside.
 func sameJSON(a, b json.RawMessage) bool {
 	var x, y bytes.Buffer

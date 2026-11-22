@@ -315,6 +315,17 @@ A loop that left a later phase counts where the record shows it reaching the pha
 A stretch whose recorded conflict loop runs to `--to`, with no return to the phase that the conflict left, does not draw: it keeps that conflict, and the issue runs its own loop (assumption 35).
 `run` asks nothing outside: no Dispatch, no GitHub and no NATS.
 
+The daemon records what each holder of a gated tree's work took of its approved design, and its outbox tells a holder what changed when a person approves a later version.
+A window recorded under a release before that record holds none of it, so the start state writes it as the daemon's upgrade to that release writes it: each issue whose work has started took the versions that its tree's gate stands approved at, and so did the architect of each tree whose gate opened.
+So the news of a replay is of what a person approves inside the window.
+The worker stub runs each reconcile of that news (`design_changes`) as the daemon's outbox runs it, with the replay's copy of Dispatch in place of Dispatch.
+That copy holds the versions of each document and the verdicts on them, but not their text.
+So it answers which version a person approved before another, and the stub records what changed between two versions as a change that Dispatch could not read, but for a first approval, which names no earlier version.
+A merger's start that waits for that record waits on its backoff, as the daemon's does, and starts at its first try after the reconcile, which waits on no read of Dispatch.
+The stub finishes each start that the reconcile queues for news alone under assumption 26, once the claim it reaches holds no task, as the daemon's claim takes such a task.
+The news that such a start or an entry's start carries counts as taken by its holder at that start, since the replay's workers take each task at their start (assumption 30).
+Nothing that moves an issue's work reads what a holder took, but the merger's start, which waits only until the news is recorded.
+
 | Flag | What it gives |
 | --- | --- |
 | `--window <dir>` | The window (required). |
@@ -1550,7 +1561,8 @@ Under the recorded rule, each notice falls where the record's did.
 Under another rule, the work that the notice would have moved stays where the record put it, which favours the recorded rule's timing.
 
 **Evidence in a recorded window.** _The rows that the replay finishes without acting._
-The replay's worker stub finishes each Dispatch message, notice, controller notice, role message, hook prompt, update ask and merge-forward request without acting.
+The replay's worker stub finishes each Dispatch message, notice, controller notice, role message, hook prompt, update ask and merge-forward request without acting, and each start queued for news of the approved design alone that reaches its claim with news to tell.
+The daemon gives the worker of such a start a task of news and no work, and launches its claim where an idle pod's release or the daemon's own rule suspended it; the replay leaves the claim as it stands.
 `run` prints, beside this assumption, how many rows it finished under it, and `run.json` counts them under `divergence.finished`.
 
 **If it is wrong.**
