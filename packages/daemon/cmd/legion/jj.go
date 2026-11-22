@@ -83,17 +83,20 @@ func jjStepped(words []string) string {
 // own where they still name the commits jjStep.revisionGiven says it names; the line of an
 // argument it gets as the ids of its commits comes after the step's lines of its rewrites
 // (report). The step takes at most one snapshot of the working copy, the one the push would take
-// itself, before its first metaedit (jjStep.rewrite), and only where the push takes a snapshot of
-// its own (jjPush.noSnapshot) and the step's first read finds a commit with no author to fill, an
-// author to set where the push's command stays under jjArgMax bytes (jjStep.setAuthors), or, with
-// nothing else to change, a word to change in place of a hidden commit (jjStep.once); the push's
-// own snapshot after a step that took one finds nothing new. After a step that changes nothing more
-// (errJJAsWritten), past a dry run it cannot read, a metaedit that jj refuses because the commit it
-// would make exists already (jjStep.metaedit), or a push whose command would pass jjArgMax bytes
-// (jjStep.checkArgMax), only a commit that a metaedit of the step moved counts as replaced, and
-// every argument is held to the commits it named before the step only where a metaedit ran. The
-// push that runs after the step, or after the line of a table it cannot use, gets wrappedJJStepped
-// set to the digest of the words it runs with; the step's own commands do not.
+// itself, before it changes a commit or a word of the push, and only where the push takes a
+// snapshot of its own (jjPush.noSnapshot); errJJSnapshot lists what makes it take it. Where the
+// step took its snapshot (jjStep.snapshotted), the real push runs with --ignore-working-copy, on
+// every path, and takes no snapshot of its own: @ resolves against the step's snapshot, a write
+// another process makes after the step's snapshot stays in the working copy for the next jj
+// command, and a warning a snapshot prints is printed once. The role's own --ignore-working-copy
+// keeps the step from taking a snapshot, so the real push never gets that flag twice, which jj
+// 0.38 refuses. After a step that changes nothing more (errJJAsWritten), past a dry run it cannot
+// read, a metaedit that jj refuses because the commit it would make exists already
+// (jjStep.metaedit), or a push whose command would pass jjArgMax bytes (jjStep.checkArgMax), only
+// a commit that a metaedit of the step moved counts as replaced, and every argument is held to
+// the commits it named before the step only where a metaedit ran. The push that runs after the
+// step, or after the line of a table it cannot use, gets wrappedJJStepped set to the digest of the
+// words it runs with, the step's --ignore-working-copy among them; the step's own commands do not.
 //
 // An interrupt or a terminate ends legion jj where it stands. The step's own commands are
 // children in this process's group, so a signal sent to the group ends them too, and the push
@@ -142,6 +145,9 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		}
 	}
 	words := step.words(given, false)
+	if step.snapshotted {
+		words = slices.Concat([]string{"--ignore-working-copy"}, words)
+	}
 	return execWrapped("legion jj", next, words, withVariable(env, wrappedJJStepped, jjStepped(words)), nil, stderr)
 }
 
@@ -160,15 +166,27 @@ var jjDryRunFlags = []string{"--dry-run", "--ignore-working-copy", "--color=neve
 // Each of its jj commands runs next, one after another, as a child in this process's group, with
 // the caller's repository and configuration options (jjPush.options). Each but one runs with
 // --ignore-working-copy, so it takes no snapshot; the one is the snapshot the push would take
-// itself (snapshot), which the step takes only where its first read finds a commit or a word to
-// change and the push takes a snapshot of its own (snapshotDue), and before its first metaedit
-// (rewrite).
+// itself (snapshot), which the step takes before it changes a commit or a word of the push, where
+// errJJSnapshot says. The real push after that snapshot runs with --ignore-working-copy (runJJ),
+// so the step's snapshot is the push's one snapshot.
 type jjStep struct {
 	push   jjPush
 	next   string   // the jj each command of the step runs, and the push after them
 	env    []string // the environment of each, the loop guard's variable set
 	table  map[legionclaim.Role]runtime.GitIdentity
 	stderr io.Writer
+	// jjRun is what the current run of the step's reads and rewrites keeps (once), which rewrite
+	// forgets after the step's snapshot.
+	jjRun
+	// snapshotted is whether the step has taken its one snapshot of the working copy (snapshot):
+	// the real push then runs with --ignore-working-copy (runJJ). It outlasts the run that took it.
+	snapshotted bool
+}
+
+// jjRun is what one run of the step's reads and rewrites (once) keeps: every field such a run
+// writes. rewrite forgets it all after the step's snapshot by one assignment, so that nothing the
+// run before that snapshot read reaches the run after it.
+type jjRun struct {
 	// revisions are what the step keeps of each revision argument, by its place in push.revisions
 	// (jjArgument).
 	revisions []jjArgument
@@ -180,8 +198,6 @@ type jjStep struct {
 	// rewrites are the commits a metaedit of the step rewrote or found rewritten already, in
 	// order.
 	rewrites []jjRewrite
-	// snapshotted is whether the step has taken its one snapshot of the working copy (snapshot).
-	snapshotted bool
 }
 
 // jjFollowed is a commit the step follows through each of its metaedits: origin, the commit id
@@ -221,30 +237,41 @@ func (f jjStepFailure) Error() string { return fmt.Sprintf("a command of the ste
 // commit that exists already (metaedit), or set authors where the push's command would then pass
 // jjArgMax bytes (checkArgMax). The push then runs as the role wrote it, but where a metaedit of the
 // step ran: each revision argument is then held to the commits it named before the step, each one
-// that metaedit moved as the commit that replaced it (jjStep.given).
+// that metaedit moved as the commit that replaced it (jjStep.given). Where the step took its
+// snapshot before it gave up, that push runs with --ignore-working-copy too, and takes no snapshot
+// of its own (runJJ).
 var errJJAsWritten = errors.New("the step changes nothing more; the push runs as written")
 
-// errJJSnapshot is a run of the step's reads (once) that found, while the step's snapshot was due
-// (snapshotDue), a commit or a word to change: a commit with no author that the dry run refuses and
-// the step would fill (dryRunFilled), a commit whose author the step would set, where the push's
-// command would still be under jjArgMax bytes (setAuthors), or, once every read of the run is made
-// and it has nothing else to change, a hidden commit that a revision argument names and that the
-// step reads as its change's one visible commit, which the argument's words then name in its place
-// (readRevisions, standsIn). That run ends there, before any metaedit and any line of the step's,
-// and rewrite takes the snapshot and reads again.
+// errJJSnapshot is a run of the step (once) that would change a commit or a word of the push while
+// the step's snapshot is due (snapshotDue). This is the one list of what makes the step take its
+// snapshot:
+//
+//   - a metaedit, which answers errJJSnapshot before it runs any command (metaedit): the fill of a
+//     commit with no author that the dry run refuses (dryRunFilled), or the rewrite of an author
+//     where the push's command would still be under jjArgMax bytes (setAuthors, which asks
+//     checkArgMax first);
+//   - once every read of the run is made and it has nothing else to change, a hidden commit that a
+//     revision argument names and that the step reads as its change's one visible commit, which
+//     the argument's words then name in its place (readRevisions, standsIn).
+//
+// That run ends there, before any metaedit and any line of the step's, and rewrite takes the
+// snapshot and runs again.
 var errJJSnapshot = errors.New("the step has a commit or a word to change and takes the push's snapshot first")
 
-// rewrite runs the step's reads and rewrites (once) one time or two. The first reads with
+// rewrite runs the step's reads and rewrites (once) one time or two. The first run reads with
 // --ignore-working-copy, as every command of the step but its snapshot does, and so reads each
-// commit as it is before the push's own snapshot. Where it finds nothing to change, or where it
-// gives up before it changes anything (errJJAsWritten), the step takes no snapshot and adds no
-// operation. Where it finds a word or a commit to change (errJJSnapshot), the step takes the one
-// snapshot the push would take itself (snapshot), forgets all that the first run read, and runs
-// once more, with no other snapshot: each commit id it reads then, @'s and those of @'s
-// descendants included, names a commit that the push's own snapshot, which finds nothing new,
-// leaves as it is. Before a push that takes no snapshot (jjPush.noSnapshot) the first run reads
-// what the push will see, and is the one run. An error is a jjStepFailure, a step that changes
-// nothing more (errJJAsWritten), or output of jj's it cannot parse.
+// commit as it is before any snapshot. Where it finds nothing to change, or where it gives up
+// before it changes anything (errJJAsWritten), the step takes no snapshot and adds no operation,
+// and the real push takes its snapshot as jj alone does. Where it finds a commit or a word to
+// change (errJJSnapshot), the step takes the one snapshot the push would take itself (snapshot),
+// forgets all that the first run read (jjRun), and runs once more, with no other snapshot. The
+// real push then runs with --ignore-working-copy and takes no snapshot of its own (runJJ), so each
+// commit id the second run reads, @'s and those of @'s descendants included, names the commit the
+// push sees: @ resolves against the step's snapshot, and a write another process makes after that
+// snapshot stays in the working copy for the next jj command. Before a push that takes no snapshot
+// (jjPush.noSnapshot) the first run reads what the push will see, and is the one run. An error is
+// a jjStepFailure, a step that changes nothing more (errJJAsWritten), or output of jj's it cannot
+// parse.
 func (s *jjStep) rewrite() error {
 	err := s.once()
 	if !errors.Is(err, errJJSnapshot) {
@@ -253,18 +280,16 @@ func (s *jjStep) rewrite() error {
 	if err := s.snapshot(); err != nil {
 		return err
 	}
-	s.revisions, s.followed, s.rewrites, s.edited = nil, nil, nil, false
+	s.jjRun = jjRun{}
 	return s.once()
 }
 
 // once runs the step's reads and rewrites one time (rewrite): the read of each revision argument
 // (readRevisions), the dry run and the loop over a commit with no author (dryRunFilled), and the
-// rewrite of every other author (setAuthors). A run that ends with nothing more to change while
-// the step's snapshot is due (snapshotDue), but with a revision argument that names a hidden
-// commit in place of its change's one visible commit (standsIn), ends with errJJSnapshot: the push
-// would get a word the step changed. One that ends in errJJAsWritten, past a dry run it cannot read
-// or checkArgMax, gives each argument as the role wrote it but where a metaedit ran (given), and so
-// takes no snapshot.
+// rewrite of every other author (setAuthors). It ends with errJJSnapshot where errJJSnapshot says;
+// its own last check is that list's word in place of a hidden commit (standsIn). One that ends in
+// errJJAsWritten, past a dry run it cannot read or checkArgMax, gives each argument as the role
+// wrote it but where a metaedit ran (given), and so takes no snapshot that the step has not taken.
 func (s *jjStep) once() error {
 	if err := s.readRevisions(); err != nil {
 		return err
@@ -287,10 +312,14 @@ func (s *jjStep) once() error {
 // own (jjPush.quiet), and no --ignore-working-copy, in env, a read of the root commit's id, which
 // needs no working-copy commit, before which jj 0.38 and 0.45 alike snapshot the working copy (`jj
 // util snapshot` exists on 0.45 alone). It prints what that command prints on standard error, as
-// the push's own snapshot would print it: jj's warning of a file it refuses to snapshot, or its
-// line of the descendants of @ it rebased, which --quiet silences. A snapshot that finds nothing
-// new adds no operation. A command that cannot start or exits non-zero is a jjStepFailure, with
-// what it printed on standard error (output): the push would fail at the same snapshot.
+// the push's snapshot would print it: jj's warning of a file it refuses to snapshot, or its line
+// of the descendants of @ it rebased, which --quiet silences. A snapshot that finds nothing new
+// adds no operation. Once it has run (snapshotted), the real push runs with --ignore-working-copy
+// and takes no snapshot of its own (runJJ): @ resolves against this snapshot, a write another
+// process makes after it stays in the working copy for the next jj command, and a warning a
+// snapshot prints is printed once, here. A command that cannot start or exits non-zero is a
+// jjStepFailure, with what it printed on standard error (output): the push would fail at the same
+// snapshot.
 func (s *jjStep) snapshot() error {
 	flags := []string{"--color=never"}
 	if s.push.quiet {
@@ -306,9 +335,10 @@ func (s *jjStep) snapshot() error {
 }
 
 // snapshotDue is whether the step must take its snapshot (snapshot) before it changes a word or a
-// commit of the push: it has not taken it, and the push takes a snapshot of its own. A push with
-// the role's own --ignore-working-copy takes none (jjPush.noSnapshot): every read of the step then
-// sees what the push will see, and the step takes no snapshot, as the push takes none.
+// commit of the push, where errJJSnapshot says: it has not taken it, and the push takes a snapshot
+// of its own. A push with the role's own --ignore-working-copy takes none (jjPush.noSnapshot):
+// every read of the step then sees what the push will see, and the step takes no snapshot, as the
+// push takes none.
 func (s *jjStep) snapshotDue() bool {
 	return !s.snapshotted && !s.push.noSnapshot
 }
@@ -329,8 +359,8 @@ func (s *jjStep) snapshotDue() bool {
 // a commit an earlier pass already named or made, or a pass beyond the number of commits the first
 // pass read, ends it as a dry run the step cannot read. So does a refusal whose id starts the id
 // of no commit of the read, or of more than one, a commit whose trailer names no role of the
-// table, and any other failure of the dry run. A refused commit that the step would fill, while its
-// snapshot is due (snapshotDue), ends the loop before that metaedit (errJJSnapshot).
+// table, and any other failure of the dry run. The metaedit of a fill answers errJJSnapshot while
+// the step's snapshot is due (metaedit), which ends the loop.
 func (s *jjStep) dryRunFilled() ([]string, error) {
 	var seen []string
 	bound, passes := -1, 0
@@ -371,9 +401,6 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 		}
 		if _, ok := s.table[c.role]; !ok {
 			return nil, s.unreadable(refusal)
-		}
-		if s.snapshotDue() {
-			return nil, errJJSnapshot
 		}
 		passes++
 		seen = append(seen, c.commit)
@@ -450,10 +477,10 @@ func jjStartingWith[T any](items []T, id func(T) string, short string) []T {
 // many parts as keep each command under jjArgMax bytes (metaedit), and reads the set again before
 // each metaedit after its first, from what the dry run's new commits stand for after the one
 // before. Nothing to rewrite runs no metaedit, and reads no set of a revision argument. A set with
-// a commit to rewrite, while the step's snapshot is due (snapshotDue), still gets checkArgMax's
-// decision first: where the push's command would pass the limit, the step changes nothing and
-// takes no snapshot (errJJAsWritten); else the run ends there (errJJSnapshot), and the run after
-// the snapshot decides again.
+// a commit to rewrite gets checkArgMax's decision before its first metaedit can answer
+// errJJSnapshot (metaedit): where the push's command would pass the limit, the step changes
+// nothing and takes no snapshot that it has not taken (errJJAsWritten); else, where the step's
+// snapshot is due, the run after that snapshot decides again.
 func (s *jjStep) setAuthors(heads []string) error {
 	if len(heads) == 0 {
 		return nil
@@ -481,9 +508,6 @@ func (s *jjStep) setAuthors(heads []string) error {
 	}
 	if err := s.checkArgMax(); err != nil {
 		return err
-	}
-	if s.snapshotDue() {
-		return errJJSnapshot
 	}
 	first := true
 	for _, role := range legionclaim.Roles {
@@ -547,8 +571,10 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 // metaedit runs `jj metaedit --update-author` over commits under role's identity: the caller's
 // options first, then that identity as the command's last --config user.name and user.email,
 // each a TOML string (workspace.TOMLString), since a --config of the push's outranks JJ_USER and
-// JJ_EMAIL, which are set to the same. It reads the set of each revision argument first, before
-// any rewrite (revisionSets), and marks the step edited once its command has run. It runs in
+// JJ_EMAIL, which are set to the same. While the step's snapshot is due (snapshotDue) it runs no
+// command and answers errJJSnapshot, so that no metaedit of the step runs before that snapshot,
+// whichever caller asks for it. It reads the set of each revision argument first, before any
+// rewrite (revisionSets), and marks the step edited once its command has run. It runs in
 // parts, in order, each over as many of commits as keep its command, arguments and environment,
 // under jjArgMax bytes (jjSize), and at least one: one metaedit of some 35,000 commits would pass
 // that limit. After each part it follows every followed commit through it (advance), so that the
@@ -563,6 +589,9 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 // prints one line that names jj's error, and answers errJJAsWritten. Any other failure is
 // answered as it is: a jjStepFailure runs no push.
 func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
+	if s.snapshotDue() {
+		return errJJSnapshot
+	}
 	s.revisionSets()
 	identity := s.table[role]
 	env := withVariable(withVariable(slices.Clone(s.env), "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
@@ -815,7 +844,8 @@ func (s *jjStep) report() {
 // commit with no author that the step cannot fill among them (dryRunFilled), or a commit id of a
 // block that the step could not place among the commits it read (fullHeads), and answers
 // errJJAsWritten (asWritten): the push then runs with the role's own words, but where a metaedit of
-// the step ran, past which each revision argument is held to its set (jjStep.given).
+// the step ran, past which each revision argument is held to its set (jjStep.given), and with
+// --ignore-working-copy where the step took its snapshot (runJJ).
 func (s *jjStep) unreadable(line string) error {
 	return s.asWritten("read what the push sends", line)
 }
@@ -825,9 +855,14 @@ func (s *jjStep) unreadable(line string) error {
 // the revision argument with which the push's command would pass jjArgMax bytes (checkArgMax). It
 // answers errJJAsWritten: the step changes nothing more, and the push runs as the role wrote it,
 // but where a metaedit of the step ran, past which each revision argument is held to its set
-// (jjStep.given).
+// (jjStep.given). Where the step took its snapshot (snapshotted), that push runs with
+// --ignore-working-copy too (runJJ), and the line ends by saying so.
 func (s *jjStep) asWritten(what, line string) error {
-	fmt.Fprintf(s.stderr, "legion jj: could not %s: %s; the push runs as written\n", what, line)
+	ignoring := ""
+	if s.snapshotted {
+		ignoring = ", with --ignore-working-copy"
+	}
+	fmt.Fprintf(s.stderr, "legion jj: could not %s: %s; the push runs as written%s\n", what, line, ignoring)
 	return errJJAsWritten
 }
 

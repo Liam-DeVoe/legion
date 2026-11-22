@@ -33,9 +33,11 @@ type jjSent struct {
 	working bool
 }
 
-// word is the commit as a revision argument's words write it: `@` for the working-copy commit,
-// which the real push resolves after its own snapshot, so that a write another process makes
-// between the step's snapshot and the push's still goes with it, and its full id for any other.
+// word is the commit as a revision argument's words write it: `@` for the working-copy commit, and
+// its full id for any other. Where the step took its snapshot, the real push runs with
+// --ignore-working-copy and takes none of its own (runJJ): `@` resolves against the step's
+// snapshot, and a write another process makes after that snapshot stays in the working copy for
+// the next jj command.
 func (c jjSent) word() string {
 	if c.working {
 		return "@"
@@ -52,18 +54,19 @@ func (c jjSent) word() string {
 // whose change has none, or more than one, stands for itself. An argument with a hidden commit
 // that stands for another has its set read now too (revisionSet): each pass of the dry run sends
 // that commit in its place (revisionGiven), a word the step changes where it may change no commit.
-// A run of the step that reads such a commit takes the push's snapshot once all its reads are made
-// and it has nothing else to change (once, standsIn): the push's own snapshot could rebase the
-// visible commit, a descendant of a working-copy commit with a write that no command has
-// snapshotted, and the word would then name the commit that snapshot hid. Every other argument's
-// set is read before the step's first metaedit (revisionSets), so that a push of which the step
-// changes nothing, no commit and no word, costs one read of each argument. An argument whose read
-// jj refuses (a revset jj cannot parse or resolve, an ambiguous prefix, a commit that a git
-// command made and that no jj command has imported yet) is followed by nothing, and goes to the
-// dry run and the real push as the role wrote it (given): jj alone may still push such a commit,
-// since the real push imports it, while no read of the step, each with --ignore-working-copy,
-// imports it or can read it. The dry run then fails as the read did, with jj's error, which the
-// step cannot read (dryRunFilled), so the step takes no snapshot, which would import it.
+// A run of the step that reads such a commit ends with errJJSnapshot, while the step's snapshot
+// is due (snapshotDue), once all its reads are made and it has nothing else to change (once,
+// standsIn): without the step's snapshot, the push's own could rebase the visible commit, a
+// descendant of a working-copy commit with a write that no command has snapshotted, and the word
+// would then name the commit that snapshot hid. Every other argument's set is read before the
+// step's first metaedit (revisionSets), so that a push of which the step changes nothing, no
+// commit and no word, costs one read of each argument. An argument whose read jj refuses (a
+// revset jj cannot parse or resolve, an ambiguous prefix, a commit that a git command made and
+// that no jj command has imported yet) is followed by nothing, and goes to the dry run and the
+// real push as the role wrote it (given): jj alone may still push such a commit, since the real
+// push imports it, while no read of the step, each with --ignore-working-copy, imports it or can
+// read it. The dry run then fails as the read did, with jj's error, which the step cannot read
+// (dryRunFilled), so the step takes no snapshot, which would import it.
 func (s *jjStep) readRevisions() error {
 	s.revisions = make([]jjArgument, len(s.push.revisions))
 	var hidden []string
@@ -408,8 +411,9 @@ func jjNotIn(ids []string, set map[string]bool) []string {
 // the argument with the most ids, their number and the limit (asWritten), and answers
 // errJJAsWritten: setAuthors rewrites nothing, the step takes no snapshot it has not taken, and the
 // push runs with the role's own words, but where the fill of a commit with no author ran a
-// metaedit (jjStep.given). Else, and for a push with no argument that jj resolves, which no rewrite
-// makes longer, it answers nil.
+// metaedit (jjStep.given), and with --ignore-working-copy where the step took its snapshot
+// (runJJ), a flag that commandSize counts. Else, and for a push with no argument that jj resolves,
+// which no rewrite makes longer, it answers nil.
 func (s *jjStep) checkArgMax() error {
 	s.revisionSets()
 	written := make([]jjGiven, len(s.push.revisions))
@@ -445,9 +449,10 @@ func (s *jjStep) givenSize(i int, g jjGiven) int {
 
 // commandSize is the bytes that Linux counts against jjArgMax (jjSize) for the push with each
 // revision argument as given gives it. The arguments are next and the push's words, with the dry
-// run's flags (jjDryRunFlags), which its dry run has beside the same words, and the environment is
-// the step's (env) with wrappedJJStepped set to a digest (jjStepped), which the real push has
-// beside it; so each of the two commands counts that many bytes or fewer.
+// run's flags (jjDryRunFlags), which its dry run has beside the same words and which hold the
+// --ignore-working-copy that the real push has after the step's snapshot (runJJ), and the
+// environment is the step's (env) with wrappedJJStepped set to a digest (jjStepped), which the
+// real push has beside it; so each of the two commands counts that many bytes or fewer.
 func (s *jjStep) commandSize(given []jjGiven) int {
 	return jjSize(s.words(given, false)...) + jjSize(jjDryRunFlags...) + jjSize(s.env...) +
 		jjSize(s.next, wrappedJJStepped+"=") + hex.EncodedLen(sha256.Size)

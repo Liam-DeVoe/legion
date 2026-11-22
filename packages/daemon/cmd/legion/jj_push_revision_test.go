@@ -262,15 +262,16 @@ func rolePushNamedRows() []rolePushNamedRow {
 			return []string{"git", "push", "-b", "top", "-r", argument}, want, alone
 		}},
 		// none() names no commit before the step and after it, so the real push gets it as the role
-		// wrote it, with no line, beside legion/K-1 on the commit the step rewrote.
+		// wrote it, with no line, beside legion/K-1 on the commit the step rewrote: the role's own
+		// words, every byte, after the --ignore-working-copy that the step's snapshot gives it.
 		{name: "-b legion/K-1 -r none(), the step rewriting legion/K-1's commit", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 			f.bookmark("legion/K-1", c.commit)
 			args := []string{"git", "push", "-b", "legion/K-1", "-r", "none()"}
 			want := rolePushSends("legion/K-1", c, "implementer", impl)
 			want.pushed = func(words []string) {
-				if !slices.Equal(words, args) {
-					f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
+				if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(words, written) {
+					f.t.Errorf("the real push ran with %q, want the step's --ignore-working-copy, then the role's own words: %q", words, written)
 				}
 			}
 			alone := rolePushWant{

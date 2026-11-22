@@ -812,8 +812,11 @@ const (
 	rolePushCannotReadPrefix = "legion jj: could not read what the push sends: "
 	rolePushCannotSetPrefix  = "legion jj: could not set the author: "
 	rolePushAsWrittenSuffix  = "; the push runs as written"
-	rolePushTablePrefix      = "legion jj: " + rolePushVariable + " is "
-	rolePushTableSuffix      = "; the push runs with no author step"
+	// rolePushAsWrittenIgnoringSuffix ends the line of a step that took its snapshot before it
+	// gave up: the push runs as written with --ignore-working-copy.
+	rolePushAsWrittenIgnoringSuffix = rolePushAsWrittenSuffix + ", with --ignore-working-copy"
+	rolePushTablePrefix             = "legion jj: " + rolePushVariable + " is "
+	rolePushTableSuffix             = "; the push runs with no author step"
 )
 
 // rolePushLines is each line of legion jj's on a push's standard error, by kind.
@@ -845,10 +848,11 @@ func rolePushStepLines(stderr string) rolePushLines {
 			lines.ids = append(lines.ids, rolePushIDs{argument: parts[1]})
 			continue
 		}
+		asWritten := strings.HasSuffix(line, rolePushAsWrittenSuffix) || strings.HasSuffix(line, rolePushAsWrittenIgnoringSuffix)
 		switch {
-		case strings.HasPrefix(line, rolePushCannotReadPrefix) && strings.HasSuffix(line, rolePushAsWrittenSuffix):
+		case strings.HasPrefix(line, rolePushCannotReadPrefix) && asWritten:
 			lines.cannotRead = append(lines.cannotRead, line)
-		case strings.HasPrefix(line, rolePushCannotSetPrefix) && strings.HasSuffix(line, rolePushAsWrittenSuffix):
+		case strings.HasPrefix(line, rolePushCannotSetPrefix) && asWritten:
 			lines.cannotSet = append(lines.cannotSet, line)
 		case strings.HasPrefix(line, rolePushTablePrefix) && strings.HasSuffix(line, rolePushTableSuffix):
 			lines.table = append(lines.table, line)
@@ -1052,6 +1056,17 @@ func (f *rolePushFixture) check(want rolePushWant, code int, stderr string, dive
 		}
 		if n := int(want.snapshots - rolePushTakesNoSnapshot); len(taken) != n {
 			t.Errorf("the step ran %q with no --ignore-working-copy, want %d such command(s), each a snapshot of the working copy", taken, n)
+		}
+		// The line of a step that gave up says --ignore-working-copy where the step took its
+		// snapshot, and only there.
+		suffix := rolePushAsWrittenSuffix
+		if want.snapshots == rolePushTakesOneSnapshot {
+			suffix = rolePushAsWrittenIgnoringSuffix
+		}
+		for _, line := range slices.Concat(lines.cannotRead, lines.cannotSet) {
+			if !strings.HasSuffix(line, suffix) {
+				t.Errorf("the push printed %q, want it to end %q", line, suffix)
+			}
 		}
 	}
 	if want.pushed != nil {
@@ -1727,11 +1742,12 @@ func rolePushFollowedRows() []rolePushArgsRow {
 	work := func(f *rolePushFixture) rolePushChange {
 		return f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 	}
-	// asWritten is args and want, and what the real push's words must be: args, every byte.
+	// asWritten is args and want, and what the real push's words must be: the --ignore-working-copy
+	// that the step's snapshot gives it, then args, every byte.
 	asWritten := func(f *rolePushFixture, args []string, want rolePushWant) ([]string, rolePushWant) {
 		want.pushed = func(words []string) {
-			if !slices.Equal(words, args) {
-				f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
+			if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(words, written) {
+				f.t.Errorf("the real push ran with %q, want the step's --ignore-working-copy, then the role's own words: %q", words, written)
 			}
 		}
 		return args, want
@@ -1756,8 +1772,9 @@ func rolePushFollowedRows() []rolePushArgsRow {
 // A revision argument that names a commit the step rewrites by what jj itself moves to the commit
 // the rewrite makes, a bookmark, a change id, or @ with a write no command has snapshotted, names
 // that commit after the step as it is: a recording jj ahead of the real one sees the real push run
-// with the role's own words, every byte, and the remote gets the rewritten commit with its
-// trailer's author, @'s with the write, and no change is divergent.
+// with the role's own words, every byte, after the --ignore-working-copy that the step's snapshot
+// gives it, and the remote gets the rewritten commit with its trailer's author, @'s with the
+// write, and no change is divergent.
 func TestARevisionJJMovesToTheRewrittenCommitGoesToThePushAsWritten(t *testing.T) {
 	t.Parallel()
 	rolePushRunArgs(t, rolePushRecords, rolePushFollowedRows())
