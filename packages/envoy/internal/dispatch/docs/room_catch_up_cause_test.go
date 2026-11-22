@@ -332,7 +332,7 @@ func TestANotifiedCatchUpBeforeALoadingRoomsInstanceStartsRecordsTheHead(t *test
 }
 
 // A load that ends without starting the room's instance takes with it the causes a catch-up that
-// found no room left it (keepForLoadingRoom, takeKeptForLoadLocked). The catch-up the next load's
+// found no room left it (keepForLoadingRoom, takeKeptForLoad). The catch-up the next load's
 // instance schedules is this process's own, and no catch-up the notification asked for carried
 // the change it finds, which the next load read from the store itself, so it records no notified
 // head (RoomCounters.NotifiedHead). Handed the cause, it would record one, and a wait for that
@@ -341,10 +341,10 @@ func TestANotifiedCatchUpBeforeALoadingRoomsInstanceStartsRecordsTheHead(t *test
 // path drops the record it began (onLoadDocument), and ygo drops the room.
 func TestACauseLeftToALoadThatFailsIsNotCreditedToTheNextLoad(t *testing.T) {
 	held := holdLoadPastANotification(t)
-	service, artifactID, catchUps := held.service, held.artifactID, held.service.catchUps
-	catchUps.mu.Lock()
-	kept := catchUps.forLoads[artifactID].cause
-	catchUps.mu.Unlock()
+	service, artifactID, hooks := held.service, held.artifactID, held.service.hooks
+	hooks.mu.Lock()
+	kept := hooks.forLoads[artifactID].cause
+	hooks.mu.Unlock()
 	if kept != catchUpNotified {
 		t.Fatalf("the notified catch-up kept causes %b for the room's load, want the notification's, %b: nothing here is tested", kept, catchUpNotified)
 	}

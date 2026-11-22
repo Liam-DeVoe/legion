@@ -9,6 +9,9 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"weak"
+
+	"github.com/reearth/ygo/crdt"
 )
 
 // The test hooks let a test of several server processes (cmd/dispatch's multiprocess suite) see
@@ -67,23 +70,20 @@ type RoomCounters struct {
 	// service's close and is not counted.
 	RoomCloses int64 `json:"room_closes"`
 	// NotifiedHead is the highest version of the document this process's room held every update
-	// through (roomCursor.heldThrough) after a catch-up that another process's notification asked
-	// for (roomCatchUps.headNotified, changed) brought the room to the stored head or found it
-	// there - that catch-up itself, its look again for a room still loading, its retry after a try
-	// that reached no verdict, the catch-up asked again in its place after a replaced history the
-	// locked read did not confirm (closeReplaced) and that one's retries, a catch-up that answered
-	// for the room while one of those retries waited (roomCatchUps.settled), or, where it found no
-	// room while ygo was loading one, the catch-up that room's instance schedules
-	// (roomCatchUps.keepForLoadingRoom); 0 before any. A room instance's start (schedule) and its
-	// retries raise neither this nor SweptHead, except where one of them answers for such a retry
-	// or takes on such a catch-up's causes.
+	// through (roomCursor.heldThrough) after a catch-up that carried another process's
+	// notification (roomCatchUps.headNotified, changed) brought the room to the stored head or
+	// found it there; 0 before any. A notification's cause goes to the next catch-up of the room
+	// to start (roomCatchUps.request): the one its request queued, or another that started first,
+	// such as a sweep's. A catch-up that leaves the room to a later try - a try that reached no
+	// verdict, a look again for a room still loading, a replaced history the locked read did not
+	// confirm (roomCatchUps.closeReplaced) - carries its causes on the same way, and one that found
+	// no room while ygo was loading one leaves them to the catch-up that room's instance schedules
+	// (keepForLoadingRoom). A room instance's start (schedule) and its retries raise neither this
+	// nor SweptHead, except where they carry such a cause.
 	NotifiedHead int64 `json:"notified_head"`
 	// SweptHead is NotifiedHead for the sweep each LISTEN that stands runs (roomCatchUps.sweep):
 	// what carries a change whose notification was sent while this process's listener had no
-	// connection, and so reached nobody here. A catch-up that carries both causes - a sweep's
-	// asked again and a notification's it absorbed while queued (roomCatchUps.request), or a
-	// sweep's that answered for the room while a notified catch-up's retry waited
-	// (roomCatchUps.settled) - raises both.
+	// connection, and so reached nobody here. A catch-up that carries both causes raises both.
 	SweptHead int64 `json:"swept_head"`
 	// ListenStands counts the LISTENs this process's listener has stood up, each followed by the
 	// sweep (roomSync.connected): the first as room sync starts, and one more for each redial. It
@@ -160,9 +160,30 @@ type testHooks struct {
 	counters map[string]*RoomCounters
 	// listenStands is RoomCounters.ListenStands, the process's own count.
 	listenStands int64
+	// catchUpCauses holds, for each room, the causes the next catch-up of the room to start takes
+	// on (roomCatchUps.catchUp, carryCatchUpCause): those of the requests made since the last one
+	// started (roomCatchUps.request), and those of a catch-up that left the room to a later try - a
+	// retry (armRetry), a look again (takeLoading), a catch-up asked again in place of a close
+	// (closeReplaced).
+	catchUpCauses map[string]catchUpCause
+	// forLoads holds, for each room ygo is loading, the causes of a catch-up that found no room
+	// before the load started the room's instance, and the load's record they wait for
+	// (keepForLoadingRoom). A catch-up a request queues takes them on while that record is still
+	// the room's: the one the load's instance schedules (roomCatchUps.schedule), or one a
+	// notification asks for while it loads. Once the load has ended without an instance, its
+	// record is gone or a later load's stands, and the catch-up drops them (takeKeptForLoad): no
+	// catch-up they asked for carries the change to the next room.
+	forLoads map[string]keptForLoad
 	// holds is, per document, the time until which its rooms' appends of browser updates wait.
 	holds  map[string]time.Time
 	pauses map[livePauseKey]*livePause
+}
+
+// keptForLoad is what a catch-up that found no room while ygo loaded one kept for that load
+// (keepForLoadingRoom): the load's record (roomLoad), held weakly, and the catch-up's causes.
+type keptForLoad struct {
+	load  weak.Pointer[roomLoad]
+	cause catchUpCause
 }
 
 type livePauseKey struct {
@@ -180,9 +201,11 @@ type livePause struct {
 
 func newTestHooks() *testHooks {
 	return &testHooks{
-		counters: make(map[string]*RoomCounters),
-		holds:    make(map[string]time.Time),
-		pauses:   make(map[livePauseKey]*livePause),
+		counters:      make(map[string]*RoomCounters),
+		catchUpCauses: make(map[string]catchUpCause),
+		forLoads:      make(map[string]keptForLoad),
+		holds:         make(map[string]time.Time),
+		pauses:        make(map[livePauseKey]*livePause),
 	}
 }
 
@@ -342,12 +365,18 @@ func (h *testHooks) countRoomClose(artifactID string) {
 }
 
 // recordCaughtUpHead records that a catch-up of a room of artifactID that cause asked for left
-// the room holding every update through head: as NotifiedHead where a notification asked for it,
-// and as SweptHead where a sweep did.
-func (h *testHooks) recordCaughtUpHead(artifactID string, cause catchUpCause, head int64) {
-	if h == nil {
+// live, the room's instance, holding every update through its cursor's head: as NotifiedHead
+// where a notification asked for it, and as SweptHead where a sweep did. A catch-up this process
+// asked for itself (catchUpAsked) records nothing.
+func (h *testHooks) recordCaughtUpHead(s *Service, artifactID string, cause catchUpCause, live *crdt.Doc) {
+	if h == nil || cause == catchUpAsked {
 		return
 	}
+	cursor := s.cursorOf(live)
+	if cursor == nil {
+		return
+	}
+	head := cursor.heldThrough()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	counters := h.countersLocked(artifactID)
@@ -357,6 +386,82 @@ func (h *testHooks) recordCaughtUpHead(artifactID string, cause catchUpCause, he
 	if cause&catchUpSwept != 0 {
 		counters.SweptHead = max(counters.SweptHead, head)
 	}
+}
+
+// carryCatchUpCause adds cause, a notification's or a sweep's, to the causes the next catch-up of
+// room to start takes on (catchUpCauses).
+func (h *testHooks) carryCatchUpCause(room string, cause catchUpCause) {
+	if h == nil || cause == catchUpAsked {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.catchUpCauses[room] |= cause
+}
+
+// takeCatchUpCauses takes the causes carried to room's next catch-up (carryCatchUpCause), for the
+// one that starts now; catchUpAsked where none is carried.
+func (h *testHooks) takeCatchUpCauses(room string) catchUpCause {
+	if h == nil {
+		return catchUpAsked
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cause := h.catchUpCauses[room]
+	delete(h.catchUpCauses, room)
+	return cause
+}
+
+// keepForLoadingRoom keeps cause, the causes of a catch-up of room that found no room, for the
+// load of room ygo is running (forLoads), where ygo holds a room of room (Service.roomHeld): ygo
+// hands out no document of a room it is still loading, and a load that had scheduled its
+// instance's catch-up (keepInstance, roomCatchUps.schedule) would have been looked for again
+// (takeLoading), so that catch-up is still to come. The load is named by the record it began
+// before it read the store (beginRoomLoad). The catch-up the load's instance schedules takes cause
+// on (takeKeptForLoad), and carries it through its own look again while ygo has not published the
+// room, so it records the heads this catch-up would have. A room ygo does not hold has gone, and
+// cause goes with it; so does cause where no load's record stands yet, since that load reads the
+// store after this. Without the hooks it keeps nothing and asks ygo nothing.
+func (h *testHooks) keepForLoadingRoom(s *Service, room string, cause catchUpCause) {
+	if h == nil || cause == catchUpAsked || !s.roomHeld(room) {
+		return
+	}
+	value, ok := s.roomLoads.Load(room)
+	if !ok {
+		return
+	}
+	load := weak.Make(value.(*roomLoad))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	kept := h.forLoads[room]
+	if kept.load != load {
+		kept = keptForLoad{load: load}
+	}
+	kept.cause |= cause
+	h.forLoads[room] = kept
+}
+
+// takeKeptForLoad takes room's causes kept for a load (keepForLoadingRoom) out of forLoads, and
+// returns them while that load's record is still the room's (Service.roomLoads): the load is the
+// one whose instance this catch-up catches up, or it is still loading. A load that ended without
+// an instance dropped its record (failRoomLoad, onLoadDocument), or ygo dropped its room and the
+// next load's record replaced it (beginRoomLoad): that load's causes go then, carried by no
+// catch-up of the room that follows.
+func (h *testHooks) takeKeptForLoad(s *Service, room string) catchUpCause {
+	if h == nil {
+		return catchUpAsked
+	}
+	h.mu.Lock()
+	kept, ok := h.forLoads[room]
+	delete(h.forLoads, room)
+	h.mu.Unlock()
+	if !ok {
+		return catchUpAsked
+	}
+	if value, ok := s.roomLoads.Load(room); ok && weak.Make(value.(*roomLoad)) == kept.load {
+		return kept.cause
+	}
+	return catchUpAsked
 }
 
 // countListenStand counts a LISTEN this process's listener stood up (RoomCounters.ListenStands).
