@@ -93,7 +93,7 @@ test("a set id may not equal a cut id", () => {
   ).toContain('sets[0].id: "skills-1" is the id of a cut; a set id may not equal a cut id');
 });
 
-test("the helper finds a cut or a set by id", () => {
+test("cutOrSet finds a cut or a set by id, and nothing for an id of neither", () => {
   const config = parseConfig({ ...valid(), ...SETS });
   expect(cutOrSet(config, "skills-1")).toEqual({
     kind: "cut",

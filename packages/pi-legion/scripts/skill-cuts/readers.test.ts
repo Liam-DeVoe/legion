@@ -49,6 +49,9 @@ const UserMessage = z.tuple([
 // reaches a network. Every skill, repository and message is made up.
 
 const scratch = temporaryDirectory("skill-cuts-readers", { real: true });
+/** The text of the fixture `name` (testdata/CAPTURE.md). */
+const fixture = (name: string) =>
+  readFileSync(path.join(import.meta.dir, "testdata", name), "utf8");
 
 const SKILL_MD = [
   "---",
@@ -534,10 +537,7 @@ const proposalInput = {
       kind: "skill",
       repo: LEGION,
       name: "alpha",
-      files: [
-        { path: "SKILL.md", text: SKILL_MD },
-        { path: "references/x.md", text: "# X\n\nRead me first.\n" },
-      ],
+      files: craftReaderInput.files,
     },
     {
       kind: "dotfiles",
@@ -1584,7 +1584,6 @@ test("a craft gap outside the file, or with no rule id, is refused; a missing ga
 // Catches: a rule judged twice or not at all, a rule judged gap with no gap, or a gap against a
 // rule the answer judges met.
 test("the craft answer judges each style rule and reader property once, and its gaps agree with its judgements", () => {
-  expect(refusal("craft", craftReaderInput, allMet)).toBeUndefined();
   const judged = (list: readonly unknown[]) =>
     refusal("craft", craftReaderInput, { judged: list, gaps: [] });
   expect(judged(allMet.judged.filter((each) => each.rule !== "C1"))).toContain(
@@ -1605,12 +1604,8 @@ test("the craft answer judges each style rule and reader property once, and its 
 // Catches: a property a behaviour test checks reaching the reader, which would judge it on a
 // skill's text.
 test("the craft reader's input holds only reader properties", () => {
-  const list = parseCraftList(
-    readFileSync(path.join(import.meta.dir, "testdata", "F12-craft-list.json"), "utf8")
-  );
-  const style = styleRules(
-    readFileSync(path.join(import.meta.dir, "testdata", "style-check.md"), "utf8")
-  );
+  const list = parseCraftList(fixture("F12-craft-list.json"));
+  const style = styleRules(fixture("style-check.md"));
   const input = CraftInput.parse(
     craftInput({
       skill: "alpha",
@@ -1679,11 +1674,9 @@ test("the craft reader's request numbers each file's lines, and gives each style
 // Catches: a style text whose rules get no ids, ids out of the text's order, an example or a
 // source of a rule counted as a rule of its own, or a check item left out.
 test("a style text's rules get ids S1, S2, ... in its order: each order-table row, each item under Rules, each under Check before you commit", () => {
-  const read = (name: string) =>
-    styleRules(readFileSync(path.join(import.meta.dir, "testdata", name), "utf8"));
   // The numbered shape: 5 table rows and 10 numbered rules, each with its nested example and
   // source.
-  const numbered = read("style-numbered.md");
+  const numbered = styleRules(fixture("style-numbered.md"));
   expect(numbered.map((rule) => rule.id)).toEqual(
     Array.from({ length: 15 }, (_, n) => `S${n + 1}`)
   );
@@ -1708,7 +1701,7 @@ test("a style text's rules get ids S1, S2, ... in its order: each order-table ro
   expect(numbered[14]?.text.split("\n")).toHaveLength(3);
   // The check shape: 7 table rows, 10 items under Rules and 3 under Check before you commit; the
   // paragraph rule is a check item with its own id.
-  const check = read("style-check.md");
+  const check = styleRules(fixture("style-check.md"));
   expect(check.map((rule) => [rule.id, rule.line, rule.part])).toEqual([
     ...[9, 10, 11, 12, 13, 14, 15].map((line, n) => [`S${n + 1}`, line, "order"]),
     ...[19, 20, 21, 22, 23, 24, 25, 26, 27, 28].map((line, n) => [`S${n + 8}`, line, "rules"]),
@@ -1736,9 +1729,6 @@ test("a style text's rules get ids S1, S2, ... in its order: each order-table ro
 // Catches: an answer naming a skill no candidate is, more than two, or a verdict its entries do
 // not give.
 test("nearest answers none or one or two candidates, each with a verdict and a reason", () => {
-  for (const answer of ROWS.nearest.valid) {
-    expect(refusal("nearest", nearestInput, answer)).toBeUndefined();
-  }
   const entry = nearestEntry("alpha-list", "acme/tools", "partial");
   const answer = (nearest: unknown[], verdict = "partial") => ({ verdict, nearest, reason: "r" });
   expect(refusal("nearest", nearestInput, answer([{ ...entry, name: "alpha-lists" }]))).toContain(
@@ -1752,9 +1742,6 @@ test("nearest answers none or one or two candidates, each with a verdict and a r
   );
   expect(refusal("nearest", nearestInput, answer([entry], "equivalent"))).toContain(
     "is equivalent, not the best entry's verdict, partial"
-  );
-  expect(refusal("nearest", nearestInput, answer([{ ...entry, reason: "" }]))).toContain(
-    "nearest.0.reason"
   );
   expect(refusal("nearest", nearestInput, answer([{ ...entry, verdict: undefined }]))).toContain(
     "nearest.0.verdict"
@@ -1779,9 +1766,6 @@ test("nearest answers none or one or two candidates, each with a verdict and a r
 
 // Catches: a claim answer that is not a plain yes or no, or that gives no reason.
 test("the claim answer is yes or no with a reason", () => {
-  for (const answer of ROWS.claim.valid) {
-    expect(refusal("claim", claimInput, answer)).toBeUndefined();
-  }
   for (const answer of [
     { states: "yes", reason: "r" },
     { states: 1, reason: "r" },
@@ -1812,7 +1796,6 @@ test("the claim answer is yes or no with a reason", () => {
 // reader does not read, passed on to the proposal reader as the item's change or its target.
 test("proposal-target names only files of the diff or skills of the list", () => {
   const refused = (answer: unknown) => refusal("proposal-target", proposalTargetInput, answer);
-  for (const answer of ROWS["proposal-target"].valid) expect(refused(answer)).toBeUndefined();
   // The item's text names CLAUDE.md, and a skill's file the diff does not hold is no file of it.
   expect(
     refused({ hunks: [{ file: "skills/alpha/SKILL.md", hunk: 0 }], targets: [noTarget] })

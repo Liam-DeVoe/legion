@@ -8,9 +8,9 @@ import { main, parseCraftList, readerProperties } from "./craftlist";
 // craftlist.ts: the craft list's shape and `craft-lines`, on F12 (testdata/CAPTURE.md "F12"): a
 // made-up list of two made-up sets, alpha-set (acme/alpha-set) and beta-set
 // (acme/beta-set-plugin), at the commits F10 reads them at, with three properties (C1 and C3
-// checked by a reader, C2 by a behaviour test); the same list with lines past the end of their
-// files and an example at a path the commit lacks; and GitHub's answer for each file cited, as
-// the stand-in gh gives it.
+// checked by a reader, C2 by a behaviour test); the same list changed here to cite lines past the
+// end of their files and an example at a path the commit lacks; and GitHub's answer for each file
+// cited, as the stand-in gh gives it.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const fixture = (name: string) => readFileSync(path.join(TESTDATA, name), "utf8");
@@ -37,6 +37,11 @@ function changed(change: (list: { properties: Record<string, unknown>[] }) => vo
   change(list);
   return JSON.stringify(list);
 }
+
+/** The valid list with its third property under the first's id, C1. */
+const TWICE = changed((list) => {
+  list.properties[2] = { ...list.properties[2], id: "C1" };
+});
 
 /** Why parseCraftList refuses `text`, or undefined when it parses. */
 function refusal(text: string): string | undefined {
@@ -91,10 +96,7 @@ describe("the craft list's shape", () => {
 
   // Catches: two properties under one id, so that a gap's rule names either.
   test("refuses a duplicate id", () => {
-    const twice = changed((list) => {
-      list.properties[2] = { ...list.properties[2], id: "C1" };
-    });
-    expect(refusal(twice)).toContain("properties.2.id: gives the id C1 twice");
+    expect(refusal(TWICE)).toContain("properties.2.id: gives the id C1 twice");
   });
 
   // Catches: a property no reader and no behaviour test checks, or an id a gap cannot name.
@@ -194,7 +196,20 @@ describe("craft-lines", () => {
   // Catches: a cited line past the end of its file, or a file the commit lacks, passed as cited.
   test("a cited line past the end of its file at the commit fails", async () => {
     const file = path.join(scratch, "past-end.json");
-    writeFileSync(file, fixture("F12-craft-list-past-end.json"));
+    // C1's beta-set line run to line 7 and C2's alpha-set line moved to line 30, each past the end
+    // of its file at the commit, and C3's example at a path the commit lacks.
+    const pastEnd = changed((list) => {
+      // F12's C1 and C2, each with its lines.
+      const [c1, c2] = list.properties as { lines: Record<string, unknown>[] }[];
+      if (c1 === undefined || c2 === undefined) throw new Error("F12 lists C1 and C2");
+      c1.lines[1] = { ...c1.lines[1], lineEnd: 7 };
+      c2.lines[0] = { ...c2.lines[0], line: 30 };
+      list.properties[2] = {
+        ...list.properties[2],
+        example: { set: "beta-set", path: "skills/beta-skill-nine/SKILL.md", line: 2 },
+      };
+    });
+    writeFileSync(file, pastEnd);
     const ran = await craftLines(file);
     expect(ran.code).toBe(1);
     expect(ran.err.split("\n")).toEqual([
@@ -213,12 +228,7 @@ describe("craft-lines", () => {
     expect(missing.code).toBe(2);
     expect(missing.err).toContain("craft-lines: cannot read the craft list");
     const file = path.join(scratch, "duplicate.json");
-    writeFileSync(
-      file,
-      changed((list) => {
-        list.properties[2] = { ...list.properties[2], id: "C1" };
-      })
-    );
+    writeFileSync(file, TWICE);
     const refused = await craftLines(file, f12Gh(calls));
     expect(refused.code).toBe(2);
     expect(refused.err).toContain("gives the id C1 twice");

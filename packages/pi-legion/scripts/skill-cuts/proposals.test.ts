@@ -45,7 +45,7 @@ async function run(...args: string[]) {
 }
 
 /** The faults ItemFaults names when `parse` throws it, or the error it throws instead. */
-function faultsOf(parse: () => unknown): readonly string[] | unknown {
+function faultsOf(parse: () => unknown): unknown {
   try {
     parse();
   } catch (error) {
@@ -133,7 +133,7 @@ describe("the items of a pull request's body", () => {
   test("does not read a list it was not given", () => {
     const items = parseProposalItems(body(), SECTION, [GONE]);
     expect(items.map((item) => item.id)).toEqual(["41-8.3", "41-9.12", "41-9.14"]);
-    // The third list's lines and the broken one are not of the form: read, they fail.
+    // The third list's lines are not of the form: read, they fail.
     expect(faultsOf(() => parseProposalItems(body(), SECTION, [THIRD]))).toEqual([
       `line 22, in the list "${THIRD}", is not "- \`<id>\` (<state>): <text>": - \`41-8.2\`: the new line after line 62 of \`CLAUDE.md\` (R4).`,
       `line 23, in the list "${THIRD}", is not "- \`<id>\` (<state>): <text>": - \`41-13.2\`: the \`ignoredSkills\` comment in \`omp/config.yml\` changes with R2's hide.`,
@@ -401,6 +401,24 @@ function proposalAnswer(id: string): unknown {
   };
 }
 
+/** A request body's model, its reader (by its system prompt), its item's id and its user
+ *  message's blocks. */
+function requestOf(body: string) {
+  const sent = JSON.parse(body) as {
+    model: string;
+    system: { text: string }[];
+    messages: { content: { text: string; cache_control?: unknown }[] }[];
+  };
+  const system = sent.system[0]?.text;
+  const blocks = sent.messages[0]?.content ?? [];
+  return {
+    model: sent.model,
+    reader: ["proposal-target", "proposal"].find((name) => loadPrompt(name).text === system),
+    id: /<item id="([^"]+)"/.exec(blocks.map((block) => block.text).join("\n\n"))?.[1],
+    blocks,
+  };
+}
+
 /** The items whose proposal-target replies the stand-in gives as text that is no JSON. */
 let refusedTargets = new Set<string>();
 let recorder: Recorder;
@@ -408,26 +426,19 @@ beforeAll(() => {
   recorder = startRecorder({
     route: (request) => {
       if (request.method !== "POST" || request.path !== "/v1/messages") return undefined;
-      const sent = JSON.parse(request.body) as {
-        model: string;
-        system: { text: string }[];
-        messages: { content: { text: string }[] }[];
-      };
-      const user = sent.messages[0]?.content.map((part) => part.text).join("\n\n") ?? "";
-      const id = /<item id="([^"]+)"/.exec(user)?.[1] ?? "";
-      const system = sent.system[0]?.text;
+      const { model, reader, id = "" } = requestOf(request.body);
       const reply =
-        system === loadPrompt("proposal-target").text
+        reader === "proposal-target"
           ? refusedTargets.has(id)
             ? "The hunks are those of the skill."
             : JSON.stringify(TARGET_ANSWERS[id])
-          : system === loadPrompt("proposal").text
+          : reader === "proposal"
             ? JSON.stringify(proposalAnswer(id))
             : "{}";
       return sseResponse(
         messageSse({
           id: `msg_standin_${request.n}`,
-          model: sent.model,
+          model,
           content: [{ type: "text", text: reply }],
           stopReason: "end_turn",
           inputTokens: 10,
@@ -442,21 +453,10 @@ afterAll(async () => {
   await recorder.close();
 });
 
-/** Each request since `from`: its reader, its item's id, and its user message's blocks. */
+/** Each request since `from`: its model, its reader, its item's id and its user message's
+ *  blocks. */
 function requestsSince(from: number) {
-  return recorder.requests.slice(from).map((request) => {
-    const sent = JSON.parse(request.body) as {
-      system: { text: string }[];
-      messages: { content: { text: string; cache_control?: unknown }[] }[];
-    };
-    const blocks = sent.messages[0]?.content ?? [];
-    const system = sent.system[0]?.text;
-    return {
-      reader: ["proposal-target", "proposal"].find((name) => loadPrompt(name).text === system),
-      id: /<item id="([^"]+)"/.exec(blocks.map((block) => block.text).join("\n\n"))?.[1],
-      blocks,
-    };
-  });
+  return recorder.requests.slice(from).map((request) => requestOf(request.body));
 }
 
 /** Writes `files` (a path inside `dir` to its text) under `dir`. */
@@ -531,6 +531,20 @@ function scenario(name: string) {
 }
 
 describe("proposals", () => {
+  /** The scenario run once with every reply answered, for the three tests that read that run: the
+   *  scenario, what the run wrote, and the requests it sent. */
+  let full: {
+    s: ReturnType<typeof scenario>;
+    ran: Awaited<ReturnType<typeof run>>;
+    sent: ReturnType<typeof requestsSince>;
+  };
+  beforeAll(async () => {
+    const s = scenario("full");
+    const from = recorder.requests.length;
+    const ran = await run(...s.args);
+    full = { s, ran, sent: requestsSince(from) };
+  }, 30_000);
+
   // Catches: a run that ends 0 with an item unread, or that reads again an item whose entry is
   // written.
   test("exits 1 when an item has no entry", async () => {
@@ -582,12 +596,9 @@ describe("proposals", () => {
 
   // Catches: a skill target read from another root (the dotfiles copy of a Legion skill's name), a
   // file target read from a skills root, or a target skill given another commit's findings.
-  test("gives a Legion skill target its text at the Legion commit and a dotfiles target its text at the dotfiles commit", async () => {
-    const s = scenario("targets");
-    const from = recorder.requests.length;
-    const ran = await run(...s.args);
+  test("gives a Legion skill target its text at the Legion commit and a dotfiles target its text at the dotfiles commit", () => {
+    const { s, ran, sent } = full;
     expect({ code: ran.code, err: ran.err }).toEqual({ code: 0, err: "" });
-    const sent = requestsSince(from);
     const proposalText = (id: string) =>
       sent.find((request) => request.reader === "proposal" && request.id === id)?.blocks[0]?.text ??
       "";
@@ -711,14 +722,12 @@ describe("proposals", () => {
     expect(seventyFive?.blocks[1]?.text).toContain(
       `<skill repo="${LEGION}" name="dispatch-writing-specs"/>\n<skill repo="${LEGION}" name="plain-notes"/>\n<skill repo="${DOTFILES}" name="dispatch-writing-specs"/>\n<skill repo="${DOTFILES}" name="writing-agent-skills"/>`
     );
-  }, 30_000);
+  });
 
   // Catches: an item with no target read by the proposal reader anyway, or an entry that cannot
   // say which words of the body the item had.
-  test("an item with no target found gets an entry with the body's target words and no target text", async () => {
-    const s = scenario("no-target");
-    const from = recorder.requests.length;
-    const ran = await run(...s.args);
+  test("an item with no target found gets an entry with the body's target words and no target text", () => {
+    const { s, ran } = full;
     expect({ code: ran.code, err: ran.err }).toEqual({ code: 0, err: "" });
     const askGate = s.entry("41-8.3");
     expect(askGate.noTarget).toEqual({
@@ -735,22 +744,19 @@ describe("proposals", () => {
     expect(askGate.target.answer).toEqual(TARGET_ANSWERS["41-8.3"]);
     expect(askGate.usd).toBe(askGate.target.usd);
     expect(ran.out).toContain("proposals: 41-8.3: no target found;");
-    const sent = requestsSince(from).filter((request) => request.id === "41-8.3");
+    const sent = full.sent.filter((request) => request.id === "41-8.3");
     expect(sent.map((request) => request.reader)).toEqual(["proposal-target"]);
     const input = readFileSync(path.join(s.out, "41-8.3.input.md"), "utf8");
     expect(input).toStartWith("<!-- the user message of the proposal-target request -->\n");
     expect(input).not.toContain("<!-- the user message of the proposal request -->");
     expect(s.entry("41-9.14").noTarget.why).toEqual(["Its new home holds it already."]);
-  }, 30_000);
+  });
 
   // Catches: every item of a pull request sent at once, so that none reads the diff from the
   // prompt cache that the first one's request writes.
-  test("the first item of each pull request is read alone, before the others of it", async () => {
-    const s = scenario("cache-order");
-    const from = recorder.requests.length;
-    const ran = await run(...s.args);
-    expect(ran.code).toBe(0);
-    const sent = requestsSince(from).map((request) => `${request.reader} ${request.id}`);
+  test("the first item of each pull request is read alone, before the others of it", () => {
+    expect(full.ran.code).toBe(0);
+    const sent = full.sent.map((request) => `${request.reader} ${request.id}`);
     expect(sent.slice(0, 4).sort()).toEqual([
       "proposal 41-1.1",
       "proposal 75-1",
@@ -758,7 +764,7 @@ describe("proposals", () => {
       "proposal-target 75-1",
     ]);
     expect(sent).toHaveLength(7 * 2 - 2);
-  }, 30_000);
+  });
 
   // Catches: the proposal-target answer checked against one file of the diff and the entry's hunk
   // taken from another, where one path names two files: a file renamed away from it, and a new

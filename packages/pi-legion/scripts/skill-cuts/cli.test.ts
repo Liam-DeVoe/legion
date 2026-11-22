@@ -45,6 +45,7 @@ import {
 } from "./recorder";
 import { sendOrder } from "./replay";
 import {
+  type Compared,
   FRESH_RUNS,
   LISTING_MEASURE_ITEM,
   listingStanding,
@@ -55,6 +56,7 @@ import {
   type RunRecord,
   SCREEN_RUNS,
   STAGE_RUNS,
+  type Stage,
   scoreSkill,
   smallestDrop,
 } from "./score";
@@ -644,6 +646,24 @@ function scenario(
   };
 }
 
+/** The arms' directories of `s` (with `plantedLine` for minus) and the digests of their texts, as
+ *  buildArm and armCaptureDir take them. */
+function armInputs(s: Scenario, plantedLine?: string) {
+  return {
+    dirs: {
+      old: s.old,
+      new: s.new,
+      ...(s.ours === undefined ? {} : { ours: s.ours }),
+      ...(plantedLine === undefined ? {} : { plantedLine }),
+    },
+    texts: {
+      old: textDigest(s.old),
+      new: textDigest(s.new),
+      ...(s.ours === undefined ? {} : { ours: textDigest(s.ours.dir) }),
+    },
+  };
+}
+
 /** Saves a body recorded from F2 for each case of `s` and each arm of `arms` (with `plantedLine`
  *  for minus), where the capture step under `out` reads it back: F2 with the case's id and marker
  *  in its user text, and the arm's read result of SKILL.md in place of F2's, or, for none, no read.
@@ -656,17 +676,7 @@ function recordCaptures(
 ): void {
   const f2 = readFileSync(F2, "utf8");
   const f8 = readFileSync(F8, "utf8");
-  const dirs = {
-    old: s.old,
-    new: s.new,
-    ...(s.ours === undefined ? {} : { ours: s.ours }),
-    ...(plantedLine === undefined ? {} : { plantedLine }),
-  };
-  const texts = {
-    old: textDigest(s.old),
-    new: textDigest(s.new),
-    ...(s.ours === undefined ? {} : { ours: textDigest(s.ours.dir) }),
-  };
+  const { dirs, texts } = armInputs(s, plantedLine);
   for (const c of s.cases) {
     const responses = c.model.startsWith("openai/");
     for (const name of arms) {
@@ -749,7 +759,7 @@ function result(out: string, id: string): CaseResult {
 }
 
 /** The passes of each arm in a stage of `r`. */
-function passes(r: CaseResult, stage: "screen" | "confirm" | "control"): Record<string, number> {
+function passes(r: CaseResult, stage: Stage): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const run of r.stages[stage]?.runs ?? []) {
     counts[run.arm] = (counts[run.arm] ?? 0) + (run.verdict === "pass" ? 1 : 0);
@@ -759,6 +769,17 @@ function passes(r: CaseResult, stage: "screen" | "confirm" | "control"): Record<
 
 /** The cut's SKILL.md with the case's line rewritten. */
 const LOSS_SKILL = () => f1File(2).replace(LINE, "2. Put each step's result where it fits.");
+
+/** A chance as the report prints it: a percentage with two decimals. */
+const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+
+/** Writes `count` as a skill's reading sessions by model (attribute's
+ *  `<cut or set id>/models/<skill>.json`) to `name` in `dir`, and returns that file. */
+function readingModels(dir: string, name: string, count: object): string {
+  const file = path.join(dir, name);
+  writeFileSync(file, JSON.stringify(count));
+  return file;
+}
 
 describe("behaviour", () => {
   test("screen, confirm, control and report give each case's passes and the skill's verdict", async () => {
@@ -921,7 +942,6 @@ describe("behaviour", () => {
     );
     // Each informative case passed old 10, new 0 and none 0 of its screen runs.
     const each = falseLossChance({ old: 10, compared: 0, none: 0 });
-    const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
     expect(each).toBeGreaterThan(0);
     expect(reported.stdout).toContain(
       `false-loss rate at the cases run (an estimate): ${percent(1 - (1 - each) ** 6)}, `
@@ -1408,17 +1428,9 @@ process.stdout.write(JSON.stringify(answers[route]));
     );
   }, 120_000);
 
-  /** Writes `count` as the reading sessions by model of `s` (attribute's
-   *  `<cut id>/models/<skill>.json`) to `name` in its directory, and returns that file. */
-  const readingModels = (s: Scenario, name: string, count: object) => {
-    const file = path.join(s.dir, name);
-    writeFileSync(file, JSON.stringify(count));
-    return file;
-  };
-
   test("with --reading-models, screen refuses a skill too few of whose reading sessions are on served models, before any call, and report gives it no verdict", async () => {
     const s = scenario("reading-few", LOSS_SKILL(), [{ id: "c00" }]);
-    const file = readingModels(s, "reading-models.json", {
+    const file = readingModels(s.dir, "reading-models.json", {
       sessions: 8,
       byModel: [
         { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
@@ -1443,7 +1455,7 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(reported.code).toBe(0);
     expect(reported.stdout.split("\n")).toContain(`verdict: none: ${reason}`);
     // A file that is no skill's reading sessions by model is refused, before any call too.
-    const bad = readingModels(s, "not-reading-models.json", { sessions: 8 });
+    const bad = readingModels(s.dir, "not-reading-models.json", { sessions: 8 });
     const refused = await cli(behaviour("screen", s, "--reading-models", bad));
     expect(refused.code).toBe(2);
     expect(refused.stderr).toContain(
@@ -1468,7 +1480,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       (run: { run: number }) => run.run <= 3
     );
     writeFileSync(caseResultFile(s.out, "c00"), JSON.stringify(CaseResult.parse(begun)));
-    const file = readingModels(s, "reading-models.json", {
+    const file = readingModels(s.dir, "reading-models.json", {
       sessions: 8,
       byModel: [
         { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
@@ -1518,7 +1530,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       { model: "openai/gpt-6.1-sol", anthropic: false, served: true, sessions: 2 },
       { model: "gateway/claude-sonnet-5-5", anthropic: true, served: true, sessions: 1 },
     ];
-    const file = readingModels(s, "reading-models.json", {
+    const file = readingModels(s.dir, "reading-models.json", {
       sessions: 13,
       byModel: [sonnet, ...others],
       noModel: 1,
@@ -1570,7 +1582,7 @@ process.stdout.write(JSON.stringify(answers[route]));
         servedModels: [...fixture.servedModels, "anthropic/claude-opus-5-5"],
       })
     );
-    const opus = readingModels(s, "reading-models-opus.json", {
+    const opus = readingModels(s.dir, "reading-models-opus.json", {
       sessions: 16,
       byModel: [
         sonnet,
@@ -1730,7 +1742,12 @@ function withOurs(s: Scenario, dirName: string, skillMd: string): Scenario {
 
 /** The arguments of `behaviour <command>` for `s` with the compared arm `compared`: `--ours`, or
  *  neither `--new` nor `--ours`. */
-function comparedArgs(command: string, s: Scenario, compared: "ours" | "none", ...extra: string[]) {
+function comparedArgs(
+  command: string,
+  s: Scenario,
+  compared: Exclude<Compared, "new">,
+  ...extra: string[]
+) {
   const args = behaviour(command, s, ...extra);
   const at = args.indexOf("--new");
   return compared === "none"
@@ -1740,6 +1757,10 @@ function comparedArgs(command: string, s: Scenario, compared: "ours" | "none", .
 
 /** How a stage's runs were sent, as the runner records it in each stage. */
 const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
+/** The report's verdict with no skill compared on six cases, each flagged and none a confirmed
+ *  loss, the first of them the control case. */
+const NO_SKILL_KEEPS =
+  "verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss";
 
 /** Writes case `id`'s results under `out` in the runner's shape, made up: each stage of `stages`
  *  with each arm's passes of its runs (10 in the screen, 40 in confirm and control), its other
@@ -1748,9 +1769,9 @@ const SENDS = "each run its own session id; a round's arms interleaved in one se
 function writeMadeUpResult(
   out: string,
   id: string,
-  stages: Partial<Record<"screen" | "confirm" | "control", Record<string, number>>>,
+  stages: Partial<Record<Stage, Record<string, number>>>,
   recorded: {
-    compared?: "new" | "ours" | "none";
+    compared?: Compared;
     ours?: { name: string; replacedOwn: boolean; removedReads: string[] };
   } = {}
 ): void {
@@ -1816,6 +1837,32 @@ function writeMadeUpResult(
 }
 
 describe("behaviour: the compared arm", () => {
+  /** A screen run into its own --out: that --out, the run, and the requests it sent. */
+  interface Screened {
+    readonly out: string;
+    readonly ran: Ran;
+    readonly sent: readonly RecordedRequest[];
+  }
+  /** One case of alpha with a skill of ours, and its screens with --new and with no skill
+   *  compared, each run once for the two tests that read them. */
+  let oneCase: Scenario;
+  let screens: Record<"new" | "none", Screened>;
+  beforeAll(async () => {
+    oneCase = withOurs(scenario("compared", LOSS_SKILL(), [{ id: "c04" }]), "ours", OURS_SKILL());
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const screen = async (name: "new" | "none"): Promise<Screened> => {
+      const s = { ...oneCase, out: path.join(oneCase.dir, `out-${name}`) };
+      recordCaptures(s, name === "new" ? ["old", "new", "none"] : ["old", "none"]);
+      const from = recorder.requests.length;
+      const ran = await cli(
+        name === "new" ? behaviour("screen", s) : comparedArgs("screen", s, "none")
+      );
+      return { out: s.out, ran, sent: requestsSince(from) };
+    };
+    screens = { new: await screen("new"), none: await screen("none") };
+  }, 120_000);
+
   test("the ours arm's captures go under their own directory", () => {
     const s = withOurs(
       scenario("ours-captures", LOSS_SKILL(), [{ id: "c04" }]),
@@ -1823,12 +1870,7 @@ describe("behaviour: the compared arm", () => {
       OURS_SKILL()
     );
     const c = s.cases[0] ?? makeCase("c04");
-    const dirs = { old: s.old, new: s.new, ...(s.ours === undefined ? {} : { ours: s.ours }) };
-    const texts = {
-      old: textDigest(s.old),
-      new: textDigest(s.new),
-      ours: textDigest(s.ours?.dir ?? ""),
-    };
+    const { dirs, texts } = armInputs(s);
     const at = (name: ArmName) =>
       armCaptureDir(s.out, buildArm(c, name, dirs, path.join(s.dir, "arms")), texts);
     expect(at("ours")).toBe(path.join(s.out, "captures", `ours-${texts.ours}`));
@@ -1840,7 +1882,7 @@ describe("behaviour: the compared arm", () => {
   });
 
   test("a stage records its compared arm", async () => {
-    const s = withOurs(scenario("compared", LOSS_SKILL(), [{ id: "c04" }]), "ours", OURS_SKILL());
+    const s = oneCase;
     recordCaptures(s, ["old", "new", "ours", "none"]);
     answer = behaviourStandIn;
     usage = { input: 10, output: 3 };
@@ -1874,34 +1916,26 @@ describe("behaviour: the compared arm", () => {
     }
 
     // Neither --new nor --ours: the screen runs old and none, and records none.
-    const none = { ...s, out: path.join(s.dir, "out-none") };
-    recordCaptures(none, ["old", "none"]);
-    from = recorder.requests.length;
-    const alone = await cli(comparedArgs("screen", none, "none"));
-    expect({ code: alone.code, stderr: alone.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(requestsSince(from)).toHaveLength(3 + 20 + 20);
+    const { none, new: cut } = screens;
+    expect({ code: none.ran.code, stderr: none.ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(none.sent).toHaveLength(3 + 20 + 20);
     expect(result(none.out, "c04").stages.screen?.compared).toBe("none");
     expect(result(none.out, "c04").stages.screen?.ours).toBeUndefined();
     expect(passes(result(none.out, "c04"), "screen")).toEqual({ old: 10, none: 0 });
 
     // --new: the screen records new.
-    const cut = { ...s, out: path.join(s.dir, "out-new") };
-    recordCaptures(cut, ["old", "new", "none"]);
-    expect((await cli(behaviour("screen", cut))).code).toBe(0);
+    expect(cut.ran.code).toBe(0);
     expect(result(cut.out, "c04").stages.screen?.compared).toBe("new");
   }, 120_000);
 
   // Catches: a run of the cut's test (the old and new arms) or of their skill against no skill
   // whose judge reads `the-skill` where the case's text names the skill.
-  test("a run with --new or with no skill compared sends the judge the case's text unchanged", async () => {
-    const s = withOurs(scenario("unblinded", LOSS_SKILL(), [{ id: "c04" }]), "ours", OURS_SKILL());
-    answer = behaviourStandIn;
-    usage = { input: 10, output: 3 };
-    const c = s.cases[0] ?? makeCase("c04");
-    /** Each judge request since `from` less its own session id, beside the body the judge builds
+  test("a run with --new or with no skill compared sends the judge the case's text unchanged", () => {
+    const c = oneCase.cases[0] ?? makeCase("c04");
+    /** Each judge request of `requests` less its own session id, beside the body the judge builds
      *  for its step from the case's text with no name blinded. */
-    const judged = (from: number) =>
-      requestsSince(from).flatMap((request) => {
+    const judged = (requests: readonly RecordedRequest[]) =>
+      requests.flatMap((request) => {
         const { metadata: _metadata, ...sent } = JSON.parse(request.body);
         if (!isJudgement(sent)) return [];
         const step = String(sent.messages[0].content[1].text)
@@ -1911,24 +1945,20 @@ describe("behaviour: the compared arm", () => {
         const body = judgeBody({ criterion: c.criterion, line: c.line.text, before, reply: step });
         return [{ sent, unchanged: JSON.parse(JSON.stringify(body)) }];
       });
-    const runs = [
-      ["new", behaviour("screen", { ...s, out: path.join(s.dir, "out-new") }), 33],
-      ["none", comparedArgs("screen", { ...s, out: path.join(s.dir, "out-none") }, "none"), 23],
-    ] as const;
-    for (const [name, args, judgements] of runs) {
-      const out = path.join(s.dir, `out-${name}`);
-      recordCaptures({ ...s, out }, name === "new" ? ["old", "new", "none"] : ["old", "none"]);
-      const from = recorder.requests.length;
-      const ran = await cli(args);
+    for (const [name, judgements] of [
+      ["new", 33],
+      ["none", 23],
+    ] as const) {
+      const { ran, sent: requests } = screens[name];
       expect({ name, code: ran.code, stderr: ran.stderr }).toEqual({ name, code: 0, stderr: "" });
-      const bodies = judged(from);
+      const bodies = judged(requests);
       expect(bodies).toHaveLength(judgements);
       for (const { sent, unchanged } of bodies) expect(sent).toEqual(unchanged);
       // The case's text names the skill, and the judge reads it so.
       expect(JSON.stringify(bodies[0]?.sent)).toContain("skill://alpha");
       expect(JSON.stringify(bodies.map((each) => each.sent))).not.toContain("the-skill");
     }
-  }, 120_000);
+  });
 
   test("a results file of a cut's test, with old and new, still reports", async () => {
     const ids = ["c04", "c05", "c06", "c07", "c08", "c09"];
@@ -1955,7 +1985,6 @@ describe("behaviour: the compared arm", () => {
     expect(lines).toContain(
       `verdict: loss: in c04, c05, c06, c07, c08, c09 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c04) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
     );
-    const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
     expect(lines).toContain(
       `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, compared: cut, none: 0.1 }))}`).join(", ")}`
     );
@@ -2074,7 +2103,6 @@ describe("behaviour: the compared arm", () => {
     const reported = await cli([...report(s), "--limits", limits]);
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     const lines = reported.stdout.split("\n");
-    const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
     for (const line of [
       "compared arm: none (no skill): the arm with no skill informs and clears nothing",
       "cases by kind: 6 session (6 informative), 0 written (0 informative)",
@@ -2097,9 +2125,7 @@ describe("behaviour: the compared arm", () => {
     const kept = { ...s, out: path.join(s.dir, "out-keeps") };
     write(kept.out, 35);
     const keeps = (await cli(report(kept))).stdout.split("\n");
-    expect(keeps).toContain(
-      `verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
-    );
+    expect(keeps).toContain(`${NO_SKILL_KEEPS}${unmeasured(6, 6)}`);
     expect(keeps).toContain("limits: not given (no --limits)");
   }, 60_000);
 
@@ -2228,22 +2254,18 @@ describe("behaviour: written cases and the report's descriptions", () => {
     recordCaptures(s, ["old", "none"]);
     answer = behaviourStandIn;
     usage = { input: 10, output: 3 };
-    const file = path.join(s.dir, "reading-models.json");
-    writeFileSync(
-      file,
-      JSON.stringify({
-        sessions: 8,
-        byModel: [
-          { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
-          { model: "acme-gateway/gpt-6.1", anthropic: false, served: false, sessions: 3 },
-        ],
-        noModel: 0,
-        notQueried: 0,
-        notAnthropic: 3,
-        served: 5,
-        withModel: 8,
-      })
-    );
+    const file = readingModels(s.dir, "reading-models.json", {
+      sessions: 8,
+      byModel: [
+        { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
+        { model: "acme-gateway/gpt-6.1", anthropic: false, served: false, sessions: 3 },
+      ],
+      noModel: 0,
+      notQueried: 0,
+      notAnthropic: 3,
+      served: 5,
+      withModel: 8,
+    });
     const reason =
       "too few sessions on served models: 5 of its 8 reading sessions are on a model the gateway serves, fewer than 6";
     const from = recorder.requests.length;
@@ -2353,25 +2375,19 @@ describe("behaviour: written cases and the report's descriptions", () => {
   // Catches: a written case's model counted among the reading sessions a verdict speaks for, which
   // would claim a session on that model was tested.
   test("a written case's model is counted under written tasks, never among the reading sessions the verdict speaks for", async () => {
-    const keeps =
-      "verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss";
-    const models = path.join(scratch, "written-reading-models.json");
-    writeFileSync(
-      models,
-      JSON.stringify({
-        sessions: 11,
-        byModel: [
-          { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 7 },
-          { model: "openai/gpt-6.1-sol", anthropic: false, served: true, sessions: 2 },
-          { model: "openai-codex/gpt-6-astra", anthropic: false, served: false, sessions: 2 },
-        ],
-        noModel: 0,
-        notQueried: 0,
-        notAnthropic: 4,
-        served: 9,
-        withModel: 11,
-      })
-    );
+    const models = readingModels(scratch, "written-reading-models.json", {
+      sessions: 11,
+      byModel: [
+        { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 7 },
+        { model: "openai/gpt-6.1-sol", anthropic: false, served: true, sessions: 2 },
+        { model: "openai-codex/gpt-6-astra", anthropic: false, served: false, sessions: 2 },
+      ],
+      noModel: 0,
+      notQueried: 0,
+      notAnthropic: 4,
+      served: 9,
+      withModel: 11,
+    });
     /** A scenario of `session` session cases and the written cases `written` (id to model), each
      *  screened at old 10, none 0, confirmed at old 40, none 35, and c04 or w04 the control case. */
     const scenarioOf = (name: string, session: string[], written: Record<string, string>) => {
@@ -2412,7 +2428,7 @@ describe("behaviour: written cases and the report's descriptions", () => {
     for (const line of [
       "screened session cases by the served model they ran on: anthropic/claude-sonnet-5-5 3 cases",
       "written tasks: 3 on openai/gpt-6.1-sol (screened written cases: each a written task in a recorded session's context, never a reading session)",
-      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 2 sessions on served models no screened session case ran on${unmeasured(6, 6)}`,
+      `${NO_SKILL_KEEPS}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 2 sessions on served models no screened session case ran on${unmeasured(6, 6)}`,
     ]) {
       expect(lines).toContain(line);
     }
@@ -2429,13 +2445,13 @@ describe("behaviour: written cases and the report's descriptions", () => {
     for (const line of [
       "screened session cases by the served model they ran on: none",
       "written tasks: 4 on anthropic/claude-sonnet-5-5, 2 on openai/gpt-6.1-sol (screened written cases: each a written task in a recorded session's context, never a reading session)",
-      `${keeps.replace("case c04", "case w04")}; it speaks for no reading sessions: its screened cases are all written tasks, never reading sessions${unmeasured(6, 6)}`,
+      `${NO_SKILL_KEEPS.replace("case c04", "case w04")}; it speaks for no reading sessions: its screened cases are all written tasks, never reading sessions${unmeasured(6, 6)}`,
     ]) {
       expect(only).toContain(line);
     }
   }, 60_000);
 
-  test("a case file with no judge identity still loads", async () => {
+  test("a results file with no judge identity still loads", async () => {
     const s = scenario("judge-none", f1File(2), [{ id: "c04" }, { id: "c05" }]);
     for (const id of ["c04", "c05"]) {
       writeMadeUpResult(s.out, id, { screen: { old: 10, none: 0 } }, { compared: "none" });
@@ -2460,7 +2476,7 @@ const NO_INJECTION =
 function plantedStage(
   s: Scenario,
   caseId: string,
-  stage: "screen" | "confirm" | "control",
+  stage: Stage,
   passes: Record<string, number>,
   runner?: string
 ): Record<string, unknown> {
@@ -3230,9 +3246,9 @@ function craftArgs(skill: string, out: string, ...extra: string[]): string[] {
 }
 
 describe("craft", () => {
-  // Catches: an entry that cannot say which style text, of which version, its gaps were read
-  // against.
-  test("craft's entry records the style text's source and sha256", async () => {
+  // Catches: an entry that cannot say which style text or craft list, of which version, its gaps
+  // were read against, or a property a behaviour test checks sent to the reader.
+  test("craft's entry records the style text's and the craft list's source and sha256, and the request sends the list's reader properties", async () => {
     const dir = path.join(scratch, "craft-style");
     const skill = controlSkill(dir, "tidy-settled-change");
     const gaps = [gap(39, "S8", "The bold label holds two rules.")];
@@ -3249,6 +3265,12 @@ describe("craft", () => {
       sha256: sha256(readFileSync(STYLE)),
       rules: 20,
     });
+    expect(entry.craft).toEqual({
+      file: CRAFT_LIST,
+      source: LIST_SOURCE,
+      sha256: sha256(readFileSync(CRAFT_LIST)),
+      readerProperties: ["C1", "C3"],
+    });
     expect(entry.answer).toEqual(JSON.parse(craftReply(gaps)));
     expect(entry.reader).toEqual({ prompt: "craft", settings: loadPrompt("craft").settings });
     expect(entry.refusals).toEqual([]);
@@ -3259,33 +3281,13 @@ describe("craft", () => {
     expect(requests[0]?.user).toContain(
       '<rule id="S19" line="33" part="the check before you commit">\n- No paragraph holds more than one rule.\n</rule>'
     );
-    expect(ran.stdout).toContain("craft: tidy-settled-change: 1 gap (S8)");
-  }, 30_000);
-
-  // Catches: an entry that cannot say which craft list it read, or a property a behaviour test
-  // checks sent to the reader.
-  test("craft's entry records the craft list's sha256 and sends its reader properties", async () => {
-    const dir = path.join(scratch, "craft-list");
-    const skill = controlSkill(dir, "tidy-settled-change");
-    answer = () => craftReply([]);
-    const out = path.join(dir, "entry.json");
-    const from = recorder.requests.length;
-    const ran = await cli(craftArgs(skill, out));
-    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    const entry = JSON.parse(readFileSync(out, "utf8"));
-    expect(entry.craft).toEqual({
-      file: CRAFT_LIST,
-      source: LIST_SOURCE,
-      sha256: sha256(readFileSync(CRAFT_LIST)),
-      readerProperties: ["C1", "C3"],
-    });
-    const [request] = readerRequests(from);
-    expect(request?.user).toContain(
+    expect(requests[0]?.user).toContain(
       '<property id="C1">\n<states>The description says when to use the skill, and never sums up its steps.</states>'
     );
-    expect(request?.user).toContain('<property id="C3">');
-    expect(request?.user).not.toContain("C2");
-    expect(request?.user).not.toContain("an arm that runs with no skill");
+    expect(requests[0]?.user).toContain('<property id="C3">');
+    expect(requests[0]?.user).not.toContain("C2");
+    expect(requests[0]?.user).not.toContain("an arm that runs with no skill");
+    expect(ran.stdout).toContain("craft: tidy-settled-change: 1 gap (S8)");
   }, 30_000);
 
   // Catches: a nearest skill named in the entry but not sent, or sent without its references.
@@ -3668,17 +3670,11 @@ describe("control craft", () => {
     };
   }
 
+  const STEP_4 = "## Step 4: Verify";
   /** Controls (1) and (2): tidy-settled-change less its Step 4; the copy's lines 31 to 43 and any
    *  line of the unchanged skill, each with the claim that the check is missing. */
   const REMOVE = [
-    ...[
-      "--remove-section",
-      "## Step 4: Verify",
-      "--copy-line",
-      "31-43",
-      "--copy-claim",
-      CLAIM_CHECK,
-    ],
+    ...["--remove-section", STEP_4, "--copy-line", "31-43", "--copy-claim", CLAIM_CHECK],
     ...["--original-line", "all", "--original-claim", CLAIM_CHECK],
   ];
   /** Controls (3) and (4): tracker-first with its lines 37 to 39 joined; a present gap at the
@@ -3688,34 +3684,55 @@ describe("control craft", () => {
     ...["--join-lines", "37-39", "--copy-line", "37", "--copy-kind", "present"],
     ...["--copy-rule", "S19", "--original-line", "38", "--original-claim", CLAIM_38],
   ];
-  const STEP_4 = "## Step 4: Verify";
   const LINE_38 = "38: - A result a person asked for is the same";
   /** The copy's gap at line 43, its Step 5's summary: it reports check outcomes no step makes. */
   const OUTCOMES = gap(43, "S9", "Step 5 reports check outcomes that no step produces.");
 
-  /** Runs a control, and gives its exit status, its output, its control.json and the prompts of
-   *  its requests. */
+  /** Runs a control, and gives its exit status, its output, its --out, its control.json and the
+   *  prompts of its requests. */
   async function runControl(c: { out: string; args: string[] }) {
     const from = recorder.requests.length;
     const ran = await cli(c.args);
     const control = existsSync(path.join(c.out, "control.json"))
       ? JSON.parse(readFileSync(path.join(c.out, "control.json"), "utf8"))
       : undefined;
-    return { ...ran, control, prompts: readerRequests(from).map((request) => request.prompt) };
+    return {
+      ...ran,
+      out: c.out,
+      control,
+      prompts: readerRequests(from).map((request) => request.prompt),
+    };
   }
+
+  /** Controls (1) and (2), each run once for the tests that read it: `held`, with the copy's gap
+   *  at line 43 stating the claim and no gap of the unchanged skill; `none`, with no gap of
+   *  either. */
+  let held: Awaited<ReturnType<typeof runControl>>;
+  let none: Awaited<ReturnType<typeof runControl>>;
+  beforeAll(async () => {
+    answer = controlStandIn({
+      copy: [OUTCOMES],
+      original: [],
+      originalMarker: STEP_4,
+      states: (why) => why === OUTCOMES.why,
+    });
+    held = await runControl(
+      controlArgs(path.join(scratch, "control-holds"), "tidy-settled-change", ...REMOVE)
+    );
+    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4 });
+    none = await runControl(
+      controlArgs(path.join(scratch, "control-none"), "tidy-settled-change", ...REMOVE)
+    );
+  }, 60_000);
 
   // Catches: a control that holds on a copy with no candidate that states its claim, or on an
   // unchanged skill with one.
   test("control craft holds only when the copy has a candidate that states its claim and the unchanged skill has none", async () => {
-    const states = (why: string) => why === OUTCOMES.why;
-    const held = controlArgs(path.join(scratch, "control-holds"), "tidy-settled-change", ...REMOVE);
-    answer = controlStandIn({ copy: [OUTCOMES], original: [], originalMarker: STEP_4, states });
-    const ran = await runControl(held);
-    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(ran.control.held).toBe(true);
-    expect(ran.prompts.toSorted()).toEqual(["claim", "craft", "craft"]);
-    expect(ran.stdout).toContain("control craft: held");
-    expect(ran.control.copy.candidates).toEqual([
+    expect({ code: held.code, stderr: held.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(held.control.held).toBe(true);
+    expect(held.prompts.toSorted()).toEqual(["claim", "craft", "craft"]);
+    expect(held.stdout).toContain("control craft: held");
+    expect(held.control.copy.candidates).toEqual([
       {
         gap: OUTCOMES,
         claim: {
@@ -3725,19 +3742,13 @@ describe("control craft", () => {
         },
       },
     ]);
-    expect(ran.control.original.candidates).toEqual([]);
+    expect(held.control.original.candidates).toEqual([]);
 
-    const noCandidate = controlArgs(
-      path.join(scratch, "control-none"),
-      "tidy-settled-change",
-      ...REMOVE
-    );
-    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4, states });
-    const none = await runControl(noCandidate);
     expect(none.code).toBe(1);
     expect(none.control.held).toBe(false);
     expect(none.stderr).toContain("control craft: not held: the copy has no candidate");
 
+    const states = (why: string) => why === OUTCOMES.why;
     const both = controlArgs(path.join(scratch, "control-both"), "tidy-settled-change", ...REMOVE);
     answer = controlStandIn({
       copy: [OUTCOMES],
@@ -3779,20 +3790,12 @@ describe("control craft", () => {
     );
   }, 30_000);
 
-  test("(1) a copy present gap at line 43 (Step 5 reports check outcomes no step produces) that states the claim holds", async () => {
-    const c = controlArgs(path.join(scratch, "control-1-43"), "tidy-settled-change", ...REMOVE);
-    answer = controlStandIn({
-      copy: [OUTCOMES],
-      original: [],
-      originalMarker: STEP_4,
-      states: (why) => why === OUTCOMES.why,
-    });
-    const ran = await runControl(c);
-    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 0, held: true });
-    expect(ran.stdout).toContain(
+  test("(1) a copy present gap at line 43 (Step 5 reports check outcomes no step produces) that states the claim holds", () => {
+    expect({ code: held.code, held: held.control.held }).toEqual({ code: 0, held: true });
+    expect(held.stdout).toContain(
       "  SKILL.md:43 present S9: Step 5 reports check outcomes that no step produces. (states the claim: It says so.)"
     );
-  }, 30_000);
+  });
 
   test("(1) a copy gap at the top (a missing Done when line) is no candidate", async () => {
     const c = controlArgs(path.join(scratch, "control-1-top"), "tidy-settled-change", ...REMOVE);
@@ -3916,16 +3919,10 @@ describe("control craft", () => {
 
   // Catches: a copy that removes too much or too little, or a joined paragraph that keeps the
   // list markers.
-  test("--remove-section and --join-lines write the copies D15 names, --join-lines removing the list markers", async () => {
-    const removed = controlArgs(
-      path.join(scratch, "control-copy-remove"),
-      "tidy-settled-change",
-      ...REMOVE
-    );
-    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4 });
-    await runControl(removed);
+  test("--remove-section and --join-lines write a copy of the skill less the section, or with the list items joined into one paragraph less their markers", async () => {
+    // Control (2)'s run with no gap: its copy of tidy-settled-change less Step 4.
     const original = (CONTROL_SKILLS["tidy-settled-change/SKILL.md"] ?? "").split("\n");
-    const copyDir = path.join(removed.out, "copy", "tidy-settled-change");
+    const copyDir = path.join(none.out, "copy", "tidy-settled-change");
     expect(readFileSync(path.join(copyDir, "SKILL.md"), "utf8")).toBe(
       [...original.slice(0, 40), ...original.slice(46)].join("\n")
     );
@@ -3933,7 +3930,7 @@ describe("control craft", () => {
       CONTROL_SKILLS["tidy-settled-change/references/reuse-reader.md"]
     );
     for (const file of ["copy.json", "copy.input.md", "original.json", "original.input.md"]) {
-      expect({ file, written: existsSync(path.join(removed.out, file)) }).toEqual({
+      expect({ file, written: existsSync(path.join(none.out, file)) }).toEqual({
         file,
         written: true,
       });
@@ -3963,7 +3960,7 @@ describe("control craft", () => {
     const noHeading = controlArgs(
       path.join(scratch, "control-copy-refused-1"),
       "tidy-settled-change",
-      ...REMOVE.map((arg) => (arg === "## Step 4: Verify" ? "## Step 9: Ship" : arg))
+      ...REMOVE.map((arg) => (arg === STEP_4 ? "## Step 9: Ship" : arg))
     );
     const refusedHeading = await cli(noHeading.args);
     expect(refusedHeading.code).toBe(2);

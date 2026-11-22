@@ -391,7 +391,7 @@ test("installs ours under its own name and never a name twice", async () => {
   expect(readFileSync(path.join(bundled.skillsDir, "alpha-ours/SKILL.md"), "utf8")).toBe(OURS);
   expect(existsSync(path.join(bundled.skillsDir, "alpha"))).toBe(false);
 
-  // The guard stays: an arm whose profile installs one name twice is refused.
+  // An arm whose profile installs one name twice is refused.
   const [first] = ours.profileSkills;
   const twice: Arm = { ...ours, profileSkills: [...ours.profileSkills, ...(first ? [first] : [])] };
   expect(await buildContext(c, twice, options).then(() => "built", String)).toContain(

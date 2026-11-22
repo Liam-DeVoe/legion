@@ -54,8 +54,9 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--again <case id>]...    (--again: confirm only, not with --case)
 ```
 
-One skill per run: `--old` is that skill's own directory (their skill), and `--cases` holds that
-skill's cases (`cases.ts`), one JSON object per line. The old text is compared with one arm, the
+One skill per run: `--old` is that skill's own directory (the old text: the skill at the cut's
+base, or a set's skill, their skill), and `--cases` holds that skill's cases (`cases.ts`), one
+JSON object per line. The old text is compared with one arm, the
 compared arm: `--new` (the skill's directory in the cut), `--ours` (a skill of ours, "The arm of
 ours" below), or neither, which compares the old text with no skill. `--new` and `--ours` exclude
 each other (exit 2). Each stage records its compared arm (`compared`; a stage that records none
@@ -86,9 +87,9 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   the reason `too few sessions on served models` and its served and total counts, and the walk of
   the cut's ranking goes on to the next skill; with written cases, the screen says the session
   cases are not screened and screens the written ones, and the skill's verdict, or its reason for
-  none, is theirs, never that refusal. A session case whose screen began before the refusal
-  applied is passed over too: its runs count for nothing, and `confirm`, `control` and `report`
-  take the screen as finished without it.
+  none, is the written cases', never that refusal. A session case whose screen began before the
+  refusal applied is passed over too: its runs count for nothing, and `confirm`, `control` and
+  `report` take the screen as finished without it.
 - `confirm`: 40 fresh runs of old and the compared arm for each flagged case that is not dropped.
   Each confirm records the runner that made it: a digest of the runner's code (each file of this
   directory but its tests, its test data and this README). Where a case's last two confirms at the
@@ -528,11 +529,11 @@ copy by the prefix table, then by the repository-relative skill directory a chec
 with, then by the copies the store's context installs; counts each session once across the
 count's queries; marks ties and loaded skills; states each store's span; ranks each cut's changed
 skills for the behaviour test and writes each ranked skill's reading sessions
-(`<out>/<cut id>/sessions/<skill>.jsonl`, file hashes only). With `--models`, it also counts each
-copy's reading sessions by model, and writes each ranked skill's
-`<out>/<cut id>/models/<skill>.json`: the counts by model of the sessions its sessions file holds
-(`sessions`; `byModel`, each `{model, anthropic, served, sessions}`, most first; `noModel`, the
-sessions whose file's head names no model; `notQueried`, those no models query held;
+(`<out>/<cut or set id>/sessions/<skill>.jsonl`, file hashes only). With `--models`, it also
+counts each copy's reading sessions by model, and writes each ranked skill's
+`<out>/<cut or set id>/models/<skill>.json`: the counts by model of the sessions its sessions file
+holds (`sessions`; `byModel`, each `{model, anthropic, served, sessions}`, most first; `noModel`,
+the sessions whose file's head names no model; `notQueried`, those no models query held;
 `notAnthropic`; `served`, those on a model the gateway serves; `withModel`), which `behaviour
 --reading-models` reads. Without `--models` it writes no models file.
 `--changed` takes a skill set of the configuration (`sets`) as it takes a cut: `--changed
@@ -650,8 +651,8 @@ with a gap.
 
 ### The craft list
 
-A JSON file written by hand (`craftlist.ts`): the properties of a skill that the craft guides of
-both skill sets state. Its shape:
+A JSON file written by hand (`craftlist.ts`): the properties of a skill that the craft guide of
+every set of `sets` states. Its shape:
 
 ```json
 {"schemaVersion": 1,
@@ -666,8 +667,8 @@ both skill sets state. Its shape:
   guide's paths.
 - `id`: `C1`, `C2`, … once each.
 - `lines`: the line (or the lines `line` to `lineEnd`) of each set's guide that states the
-  property, at least one of each set of `sets`. A property that one set's guide states and the
-  other's does not is no property of the list.
+  property, at least one of each set of `sets`. A property that a set's guide does not state is no
+  property of the list.
 - `checkedBy`: `reader` (the craft reader checks it on a skill's text) or `behaviour` (only a
   behaviour test can check it).
 - `example`: for a reader property, one line of a skill of a set that shows it. `record`: for a
@@ -685,7 +686,8 @@ Prints each set with its repository and commit, then for each property each cite
 range) and its example line, with the text of those lines in the set's repository at its commit,
 and its record link. It reads each file once from GitHub through `gh` (`sets.ts`, `SetReads.text`)
 and calls no model. It exits 1 naming each cited line or example past the end of its file and
-each path the commit does not hold, 2 when it refuses its arguments or the list, and 0 otherwise.
+each path the commit does not hold, or when a GitHub read fails; 2 when it refuses its arguments
+or the list; and 0 when it printed every cited line.
 
 ### The style text's rule ids
 
@@ -896,12 +898,13 @@ list, line, body: {file, source, sha256}, diff: {pr, file, sha256}, style, craft
 sha256}, input, target: {reader, answer, refusals, spent, usd}, hunks: [{file, hunk, header}],
 targets, noTarget, reader, answer, refusals, spent, usd}`. `targets` gives each target read: a file
 with its repository, path, file and SHA-256 (null when the tree holds no such file), or a skill
-with its repository, name, directory, each file's SHA-256 and its findings entry (`{line, gaps}`,
-`gaps` null when every reply of that entry was refused; null with no entry). `noTarget` is
-`{bodyWords, why}` for an item with no target found, and then `targets` is empty and `reader` and
-`answer` are null; `answer` is the `proposal` reader's answer, `usd` the dollars of both calls. The
-user messages sent go to `<out>/<id>.input.md`. A reader whose every reply was refused leaves its
-item no entry, and its refusals go to `<out>/<id>.refused.json`.
+with its repository, name, directory, each file's SHA-256 and its findings entry (`{line, gaps}`:
+the entry's line of `--findings` and its count of gaps, null when every reply of that entry was
+refused; null with no entry). `noTarget` is `{bodyWords, why}` for an item with no target found,
+and then `targets` is empty and `reader` and `answer` are null; `answer` is the `proposal`
+reader's answer, `usd` the dollars of both calls. The user messages sent go to
+`<out>/<id>.input.md`. A reader whose every reply was refused leaves its item no entry, and its
+refusals go to `<out>/<id>.refused.json`.
 
 The first item of each pull request is read alone, then the rest, as many at once as
 `--concurrency` lets. An item whose entry exists is not read again, so a run started again reads
@@ -1559,17 +1562,18 @@ bun scripts/skill-cuts/cli.ts results-index --count <set-count out dir> \
   --nearest <dir of nearest rows> --cases <dir of case files> --results <dir of results>
 ```
 
-The inventory of the results of the skills of the two sets (`results-index.ts`). It lists each
-skill that `set-count`'s `summary.json` (in `--count`) gives at 20 or more own-copy sessions
-(`atLeast20`), in its order, beside its nearest row (a `nearest` row JSON file at any depth under
-`--nearest` of the skill's name; a row whose every reply was refused names no nearest skill, so
-it is none), its cases file (`cases-<skill>.jsonl` or `cases-<skill>.jsonl.gz` in `--cases`) and
-its result (`results-<skill>/` or `results-<skill>.tar.gz` in `--results`, holding the output of
-`behaviour report` for the skill as `report.txt`, whose `verdict:` line it prints; a result with
-no report, or a report with no verdict line, is none). It calls no model and reads nothing else.
-It exits 1 naming each skill that lacks a nearest row, a cases file or a result, and 2 when it
-refuses its arguments, a `summary.json` that is not set-count's, a directory it cannot read, or a
-`.json` file under `--nearest` that is no JSON or a nearest row of another shape.
+The inventory of the results of the skills of each set that `set-count` counted
+(`results-index.ts`). It lists each skill that `set-count`'s `summary.json` (in `--count`) gives
+at 20 or more own-copy sessions (`atLeast20`), in its order, beside its nearest row (a `nearest`
+row JSON file at any depth under `--nearest` of the skill's name; a row whose every reply was
+refused names no nearest skill, so it is none), its cases file (`cases-<skill>.jsonl` or
+`cases-<skill>.jsonl.gz` in `--cases`) and its result (`results-<skill>/` or
+`results-<skill>.tar.gz` in `--results`, holding the output of `behaviour report` for the skill as
+`report.txt`, whose `verdict:` line it prints; a result with no report, or a report with no
+verdict line, is none). It calls no model and reads nothing else. It exits 1 naming each skill
+that lacks a nearest row, a cases file or a result, and 2 when it refuses its arguments, a
+`summary.json` that is not set-count's, a directory it cannot read, or a `.json` file under
+`--nearest` that is no JSON or a nearest row of another shape.
 
 ## The request log
 
@@ -1590,10 +1594,12 @@ message's text.
 ## Exit status
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
-call, a load test's task or an `--after-case` command that failed, an item line of `proposals` that
-does not parse, an item it leaves with no entry, a skill `results-index` finds with no nearest
-row, cases file or result, or `behaviour` results that show a drop no stage makes); 2 refused
-before any model call or store read (among the refusals, an `--out` inside a git or jj checkout,
-from `behaviour`'s stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, the
-peak memory passed 1 GiB in `behaviour` or `build-cases`, or 1.5 GiB in `copies`, or the listing
-rule dropped more than half of a load's tasks); 4 stopped by build-cases' stop rule.
+call, a GitHub read, a load test's task or an `--after-case` command that failed, an item line of
+`proposals` that does not parse, an item it leaves with no entry, a skill `results-index` finds
+with no nearest row, cases file or result, a skill `craft-coverage` finds with no craft entry, a
+line `craft-lines` cites that cannot be read at its commit, or `behaviour` results that show a
+drop no stage makes); 2 refused before any model call or store read (among the refusals, an
+`--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and
+`build-cases`); 3 stopped (the budget is spent, the peak memory passed 1 GiB in `behaviour` or
+`build-cases`, or 1.5 GiB in `copies`, or the listing rule dropped more than half of a load's
+tasks); 4 stopped by build-cases' stop rule.

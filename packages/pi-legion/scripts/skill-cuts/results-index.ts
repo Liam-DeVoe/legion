@@ -1,5 +1,6 @@
 /**
- * The index of the results of the skills of the two sets (README.md, "results-index"):
+ * The index of the results of the skills of each set set-count counted (README.md,
+ * "results-index"):
  *
  *   bun scripts/skill-cuts/cli.ts results-index --count <set-count out dir> --nearest <dir>
  *     --cases <dir> --results <dir>

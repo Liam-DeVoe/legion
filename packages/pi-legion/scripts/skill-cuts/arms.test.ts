@@ -429,6 +429,13 @@ function withOurs(c: Case, name: ArmName, ours: { dir: string; name: string }): 
 }
 const RENAMED = { dir: renamedDir, name: "alpha-ours" };
 const SHORT = { dir: shortDir, name: "alpha-short" };
+/** A skill of another source that a profile lists under our name. */
+const INCUMBENT = {
+  repo: "acme/dotfiles",
+  commit: "fedcba9876543210",
+  path: "skills/alpha-ours",
+  name: "alpha-ours",
+};
 
 test("old holds the profile's skills; ours holds them with ours in place of theirs, a skill of our name replaced, not doubled; none holds them less theirs", () => {
   const [alpha, beta] = f1Case.profile.skills;
@@ -444,21 +451,15 @@ test("old holds the profile's skills; ours holds them with ours in place of thei
 
   // A profile that holds a skill of our name already: the --ours text replaces that entry, so
   // the name is installed once, and the arm records that it replaced it.
-  const incumbent = {
-    repo: "acme/dotfiles",
-    commit: "fedcba9876543210",
-    path: "skills/alpha-ours",
-    name: "alpha-ours",
-  };
   const holding: Case = {
     ...f1Case,
-    profile: { ...f1Case.profile, skills: [...f1Case.profile.skills, incumbent] },
+    profile: { ...f1Case.profile, skills: [...f1Case.profile.skills, INCUMBENT] },
   };
   const bundled = withOurs(holding, "ours", RENAMED);
-  expect(bundled.profileSkills).toEqual([beta, incumbent]);
+  expect(bundled.profileSkills).toEqual([beta, INCUMBENT]);
   expect(bundled.ours?.replacedOwn).toBe(true);
   expect(withOurs(holding, "old", RENAMED).profileSkills).toEqual(holding.profile.skills);
-  expect(withOurs(holding, "none", RENAMED).profileSkills).toEqual([beta, incumbent]);
+  expect(withOurs(holding, "none", RENAMED).profileSkills).toEqual([beta, INCUMBENT]);
 
   // Ours under their skill's own name stands in their skill's place, as the cut's text does.
   const same = withOurs(f1Case, "ours", { dir: renamedDir, name: "alpha" });
@@ -501,15 +502,9 @@ test("the ours arm leaves out every copy of their skill's source, a namespaced o
 
   // A profile that lists a skill of another source under our name keeps it, the --ours text in
   // its place, and no copy of theirs.
-  const incumbent = {
-    repo: "acme/dotfiles",
-    commit: "fedcba9876543210",
-    path: "skills/alpha-ours",
-    name: "alpha-ours",
-  };
-  copies.profile.skills.push(incumbent);
+  copies.profile.skills.push(INCUMBENT);
   const bundled = withOurs(copies, "ours", RENAMED);
-  expect(bundled.profileSkills).toEqual([beta, tools, incumbent]);
+  expect(bundled.profileSkills).toEqual([beta, tools, INCUMBENT]);
   expect(bundled.ours?.replacedOwn).toBe(true);
   expect(f1Case).toEqual(original);
 });
@@ -610,10 +605,9 @@ test("a written case's arms differ only in the skill's read and listing", () => 
     skillReads: [2],
     source: { ...f1Case.source, kind: "written" },
   };
-  const dirs = { old: oldDir, new: newDir, ours: RENAMED };
   const [old, fresh, minus, twin, none, ours] = (
     ["old", "new", "minus", "twin", "none", "ours"] as const
-  ).map((name) => buildArm(written, name, dirs, path.join(scratch, "written")));
+  ).map((name) => withOurs(written, name, RENAMED));
   // The task is the same message in every arm.
   for (const each of [old, fresh, minus, twin, none, ours]) expect(each?.messages[0]).toEqual(task);
   // Each arm with their skill keeps the call, and answers the read from its own text at the

@@ -642,10 +642,8 @@ two made-up sets, `alpha-set` (`acme/alpha-set`) and `beta-set` (`acme/beta-set-
 the commit F10 reads it at (`2ce8aa15…` and `8a776c13…`, which F10 gives as `sha` values, so the
 scan accounts for them), and three properties: C1 and C3 checked by a reader, each with an
 example line, and C2 checked by a behaviour test, with a record link. `F12-craft-list.json` is the
-valid list. `F12-craft-list-past-end.json` is the same list with C1's beta-set range running to
-line 7 of a 5-line file, C2's alpha-set line at 30 of a 12-line file, and C3's example at a path
-the commit does not hold. `F12-contents.json` is one JSON object: each key is the route sets.ts's
-`SetReads.text` gives `gh api -H 'Accept: application/vnd.github.raw'` for a file the lists cite
+valid list. `F12-contents.json` is one JSON object: each key is the route sets.ts's
+`SetReads.text` gives `gh api -H 'Accept: application/vnd.github.raw'` for a file the list cites
 (`repos/<owner>/<repo>/contents/<path>?ref=<commit>`), and each value the file's text, made up;
 the tests' stand-in gh answers a route it does not hold as GitHub answers a missing file (404).
 

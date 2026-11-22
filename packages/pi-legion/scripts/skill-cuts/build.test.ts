@@ -1981,7 +1981,9 @@ interface Summary {
   peakRssBytes?: number;
 }
 
-const summaryOf = (out: string): Summary => JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+/** The summary `build-cases` wrote beside the cases file `out`: a session build's, or `T`. */
+const summaryOf = <T = Summary>(out: string): T =>
+  JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
 
 describe("build-cases over every made-up session", () => {
   const out = path.join(scratch, "all", "cases.jsonl");
@@ -3804,8 +3806,7 @@ test("build-cases and --reprofile take a set where they take a cut", async () =>
 test("a set target keeps a read placed at the set's copy and drops a Legion fork's read as not-cut-copy", async () => {
   const sessions = sessionsFile("set-target.jsonl", [SET_SESSION, "legion"]);
   const out = path.join(scratch, "set-target", "cases.jsonl");
-  const lines: string[] = [];
-  expect(await main(setArgs(sessions, out), io(lines))).toBe(EXIT.ok);
+  expect(await main(setArgs(sessions, out), io([]))).toBe(EXIT.ok);
   const cases = loadCases(out, old);
   expect(cases.map((c) => c.source.pathHash)).toEqual([pathHash(sessionPath(SET_SESSION))]);
   // The profile installs the copy the session read: the set's alpha, not acme/skills's.
@@ -3902,8 +3903,6 @@ interface WrittenSummary {
   stopped: string | null;
   peakRssBytes?: number;
 }
-const writtenSummaryOf = (out: string): WrittenSummary =>
-  JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
 
 /** The user text of each request whose system prompt starts `prompt`. */
 const usersOf = (requests: readonly RecordedRequest[], prompt: string): string[] =>
@@ -3947,8 +3946,9 @@ describe("build-cases --written", () => {
     const messages = f1Messages();
     // The reader read the base text, the session case's step and criterion, the context session's
     // first user message and the count.
-    const [asked] = usersOf(requests, WRITTEN_PROMPT);
-    expect(usersOf(requests, WRITTEN_PROMPT)).toHaveLength(1);
+    const written = usersOf(requests, WRITTEN_PROMPT);
+    expect(written).toHaveLength(1);
+    const [asked] = written;
     expect(asked).toContain(`9: ${LINE}`);
     expect(asked).toContain(
       `<session-cases>\n<case n="1">\n<step>\n${stepText(messages[7]?.content ?? [])}\n</step>\n<criterion>\nPass: ${CRITERION.pass}\nFail: ${CRITERION.fail}\n</criterion>`
@@ -4028,7 +4028,7 @@ describe("build-cases --written", () => {
     expect(items).toContain(`written case: context session store_a:${contextHash}`);
     expect(items).toContain("written case: model anthropic/claude-sonnet-5-5");
 
-    const summary = writtenSummaryOf(out);
+    const summary = summaryOf<WrittenSummary>(out);
     expect(summary).toMatchObject({
       command: "build-cases --written",
       contextSession: {
@@ -4044,7 +4044,7 @@ describe("build-cases --written", () => {
   });
 
   test("a written case whose task restates the line or whose following step the audit does not call follows is dropped", () => {
-    const summary = writtenSummaryOf(out);
+    const summary = summaryOf<WrittenSummary>(out);
     expect(summary.tasks.map((each) => [each.task, each.outcome, each.reason ?? null])).toEqual([
       [1, `case ${id}`, null],
       [2, "dropped", "written-restates"],
@@ -4106,8 +4106,9 @@ describe("build-cases --written", () => {
   }, 60_000);
 
   test("a written build under the memory limit records its peak resident memory in the summary and prints it in its last line", () => {
-    expect(writtenSummaryOf(out).stopped).toBeNull();
-    expect(writtenSummaryOf(out).peakRssBytes).toBe(PEAK_BYTES);
+    const summary = summaryOf<WrittenSummary>(out);
+    expect(summary.stopped).toBeNull();
+    expect(summary.peakRssBytes).toBe(PEAK_BYTES);
     expect(printed.at(-1)).toContain(
       `of readers at list price, peak memory 200 MiB; written to ${out} and ${out}.summary.json`
     );
@@ -4137,7 +4138,7 @@ test("the context session is the first served reading session whose rebuilt prof
   expect(
     await main(writtenArgs(out, "--sessions", sessions, "--seed", seed ?? ""), io(lines))
   ).toBe(EXIT.ok);
-  const summary = writtenSummaryOf(out);
+  const summary = summaryOf<WrittenSummary>(out);
   expect(summary.contextSession).toMatchObject({
     store: "store_a",
     hash: fileHash(chosen),
@@ -4183,7 +4184,7 @@ test("the context session is the first served reading session whose rebuilt prof
   const [first] = loadCases(fromSkill, old);
   expect(first?.source.pathHash).toBe(pathHash(sessionPath("not-served")));
   expect(first?.model).toBe("openai/gpt-6.1-sol");
-  expect(writtenSummaryOf(fromSkill).contextSession.how).toContain(
+  expect(summaryOf<WrittenSummary>(fromSkill).contextSession.how).toContain(
     "no reading session on a served model"
   );
 
@@ -4210,7 +4211,7 @@ test("the context session is the first served reading session whose rebuilt prof
   );
   expect(await main(pooled, io(lines))).toBe(EXIT.ok);
   expect(loadCases(fromPool, old)[0]?.model).toBe("anthropic/claude-opus-5-5");
-  expect(writtenSummaryOf(fromPool).model.how).toContain("--model-pool");
+  expect(summaryOf<WrittenSummary>(fromPool).model.how).toContain("--model-pool");
 
   // With no served model anywhere, the build fails, naming why, and writes no case.
   const failed: string[] = [];
@@ -5162,7 +5163,7 @@ test("build-cases --written stops above 1 GiB of peak resident memory once a tas
   const reason =
     "the build's peak resident memory, 1024 MiB, is above 1 GiB, so no new task starts";
   expect(errors.join("\n")).toContain(`build-cases: stopped: ${reason}`);
-  const summary = writtenSummaryOf(out);
+  const summary = summaryOf<WrittenSummary>(out);
   expect(summary.stopped).toBe(reason);
   expect(summary.peakRssBytes).toBe(OVER_LIMIT);
   // Task 1 is a case, as in the written build above, and no task after it is read.

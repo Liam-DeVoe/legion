@@ -66,7 +66,7 @@ const PROFILE_SKILLS = ["alpha", "beta"].map((name) => ({
 const INSTALLED = "/home/agent/.omp/agent/skills/alpha";
 
 /** An arm of skill alpha whose directory holds `files`. */
-function armWith(name: "old" | "new" | "minus", files: Record<string, string>): Arm {
+function armWith(name: "old" | "new" | "minus" | "ours", files: Record<string, string>): Arm {
   const skillDir = path.join(scratch, `${name}-${Object.keys(files).length}-${Math.random()}`);
   for (const [file, text] of Object.entries(files)) {
     mkdirSync(path.dirname(path.join(skillDir, file)), { recursive: true });
@@ -806,19 +806,12 @@ test("on a Responses body: at most three rounds of skill reads, and a read of a 
 // Catches: a reply in the arm of ours whose read of their skill's URL is judged as the step, or
 // is answered from our files; or a read of our skill's URL that goes unanswered.
 test("in ours, a reply's read of skill://<ours> is answered from our directory and a read of skill://<theirs> gets the Unknown skill text and is answered, not judged", async () => {
-  const skillDir = path.join(scratch, `ours-${Math.random()}`);
   const oursSkill = SKILL_MD.replace("name: alpha\n", "name: alpha-ours\n");
-  for (const [file, text] of Object.entries({ "SKILL.md": oursSkill, "references/x.md": X_MD })) {
-    mkdirSync(path.dirname(path.join(skillDir, file)), { recursive: true });
-    writeFileSync(path.join(skillDir, file), text);
-  }
   const oursInstalled = path.join(path.dirname(INSTALLED), "alpha-ours");
   const ours: Arm = {
-    name: "ours",
+    ...armWith("ours", { "SKILL.md": oursSkill, "references/x.md": X_MD }),
     skill: "alpha-ours",
-    skillDir,
     installedDir: oursInstalled,
-    messages: [],
     profileSkills: PROFILE_SKILLS.map((skill) =>
       skill.name === "alpha" ? { ...skill, name: "alpha-ours" } : skill
     ),
@@ -880,5 +873,5 @@ test("in ours, a reply's read of skill://<ours> is answered from our directory a
       },
     ],
   });
-  expect(JSON.stringify(bodies)).not.toContain(skillDir);
+  expect(JSON.stringify(bodies)).not.toContain(ours.skillDir);
 });

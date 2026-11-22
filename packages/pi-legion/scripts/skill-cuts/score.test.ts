@@ -19,6 +19,7 @@ import {
   lossChance,
   type MadeConfirm,
   meanDifference,
+  NO_CONTROL_LOSS,
   poorName,
   RunRecord,
   rankSkills,
@@ -64,12 +65,14 @@ function unjudged(caseId: string, stage: Stage, arm: Arm, count: number): RunRec
     reason: "timed out",
   }));
 }
-/** A case's 10 screen runs in each arm, with these passes. */
-const screen = (caseId: string, old: number, cut: number, none: number): RunRecord[] => [
-  ...runs(caseId, "screen", "old", old, 10),
-  ...runs(caseId, "screen", "new", cut, 10),
-  ...runs(caseId, "screen", "none", none, 10),
-];
+/** A case's 10 screen runs of each arm of `passes`, in its order, each arm passing that many. */
+const screenRuns = (caseId: string, passes: Partial<Record<Arm, number>>): RunRecord[] =>
+  (Object.entries(passes) as [Arm, number][]).flatMap(([arm, passed]) =>
+    runs(caseId, "screen", arm, passed, 10)
+  );
+/** A case's 10 screen runs of old, new and none, with these passes. */
+const screen = (caseId: string, old: number, cut: number, none: number): RunRecord[] =>
+  screenRuns(caseId, { old, new: cut, none });
 /** A case's 40 fresh runs of `old` and of `other` (`new` to confirm, `minus` for the control), and
  *  for the control the false-loss control's `twin` too, passing `twin` (old's passes unless
  *  given). */
@@ -139,9 +142,6 @@ const keeps: SkillOutcome = { verdict: "keeps" };
 const loss: SkillOutcome = { verdict: "loss" };
 const tooFew: SkillOutcome = { verdict: null, reason: "fewer than 6 informative cases: 5" };
 const ranking = ["alpha", "beta", "gamma", "delta", "epsilon"];
-/** The reason of a skill whose planted-loss control is no loss. */
-const NO_CONTROL_LOSS =
-  "deleting the case's line showed no detectable change (planted-loss control not a loss)";
 
 const rows: [string, () => unknown, unknown][] = [
   // The run record: one JSON line per run.
@@ -829,23 +829,12 @@ test.each(rows)("%s", (_name, got, want) => {
 // The arm the old text is compared with (`new`, `ours` or `none`; the rows above compare with
 // `new`), the chance that the rule calls a loss, and each case's smallest drop.
 
-/** A case's 10 screen runs of old and none alone: the screen with no skill compared. */
-const screenNone = (caseId: string, old: number, none: number): RunRecord[] => [
-  ...runs(caseId, "screen", "old", old, 10),
-  ...runs(caseId, "screen", "none", none, 10),
-];
-/** A case's 10 screen runs of old, ours and none: the screen with a skill of ours compared. */
-const screenOurs = (caseId: string, old: number, ours: number, none: number): RunRecord[] => [
-  ...runs(caseId, "screen", "old", old, 10),
-  ...runs(caseId, "screen", "ours", ours, 10),
-  ...runs(caseId, "screen", "none", none, 10),
-];
 /** Six cases informative with no skill compared (old 8, none 5 of 10), so each is flagged too,
  *  each confirmed on 40 fresh runs of old (30) and none (`confirmNone`), and the control's runs on
  *  c1: old 30, minus `minus` and twin 30 of 40. */
 const sixNone = (minus: number, confirmNone: number): RunRecord[] => [
   ...["c1", "c2", "c3", "c4", "c5", "c6"].flatMap((id) => [
-    ...screenNone(id, 8, 5),
+    ...screenRuns(id, { old: 8, none: 5 }),
     ...runs(id, "confirm", "old", 30, 40),
     ...runs(id, "confirm", "none", confirmNone, 40),
   ]),
@@ -884,7 +873,7 @@ const comparedRows: [string, () => unknown, unknown][] = [
       stageArms("screen", "none"),
       stageArms("confirm", "none"),
       stageArms("control", "none"),
-      stageOutcome(screenNone("c1", 7, 5), "c1", "screen", "none"),
+      stageOutcome(screenRuns("c1", { old: 7, none: 5 }), "c1", "screen", "none"),
     ],
     [
       ["old", "none"],
@@ -947,10 +936,10 @@ const comparedRows: [string, () => unknown, unknown][] = [
       isFlagged({ old: 7, new: 0, ours: 6, none: 5 }, "ours"),
       isLoss({ old: 30, ours: 20 }, "ours"),
       isLoss({ old: 30, new: 0, ours: 21 }, "ours"),
-      stageOutcome(screenOurs("c1", 8, 6, 5), "c1", "screen", "ours"),
+      stageOutcome(screenRuns("c1", { old: 8, ours: 6, none: 5 }), "c1", "screen", "ours"),
       scoreSkill(
         [
-          ...screenOurs("c1", 8, 6, 5),
+          ...screenRuns("c1", { old: 8, ours: 6, none: 5 }),
           ...runs("c1", "confirm", "old", 30, 40),
           ...runs("c1", "confirm", "ours", 20, 40),
         ],
@@ -1048,7 +1037,11 @@ const comparedRows: [string, () => unknown, unknown][] = [
     () => {
       // Old 0.9, 0.7 and 1.0: 40, 40 and 35 points; none of the three is informative.
       const score = scoreSkill(
-        [...screenNone("c1", 9, 9), ...screenNone("c2", 7, 7), ...screenNone("c3", 10, 10)],
+        [
+          ...screenRuns("c1", { old: 9, none: 9 }),
+          ...screenRuns("c2", { old: 7, none: 7 }),
+          ...screenRuns("c3", { old: 10, none: 10 }),
+        ],
         new Map(),
         "none"
       );
@@ -1073,11 +1066,19 @@ const comparedRows: [string, () => unknown, unknown][] = [
     "the median falls between two figures, or on a case no drop catches",
     () => {
       const two = dropFigures(
-        scoreSkill([...screenNone("c1", 10, 0), ...screenNone("c2", 9, 0)], new Map(), "none"),
+        scoreSkill(
+          [...screenRuns("c1", { old: 10, none: 0 }), ...screenRuns("c2", { old: 9, none: 0 })],
+          new Map(),
+          "none"
+        ),
         "none"
       );
       const caught = dropFigures(
-        scoreSkill([...screenNone("c1", 1, 0), ...screenNone("c2", 1, 0)], new Map(), "none"),
+        scoreSkill(
+          [...screenRuns("c1", { old: 1, none: 0 }), ...screenRuns("c2", { old: 1, none: 0 })],
+          new Map(),
+          "none"
+        ),
         "none"
       );
       return [two.screened, two.informative, caught.screened];
@@ -1101,7 +1102,7 @@ const caseIds = (prefix: "s" | "w", count: number) =>
 /** The screen runs, with no skill compared, of the cases `ids`: the first `informative` of them
  *  informative (old 8, none 5 of 10), the rest not (old 5, none 5). */
 const screenOf = (ids: readonly string[], informative: number): RunRecord[] =>
-  ids.flatMap((id, n) => screenNone(id, n < informative ? 8 : 5, 5));
+  ids.flatMap((id, n) => screenRuns(id, { old: n < informative ? 8 : 5, none: 5 }));
 
 test("screening goes on to written cases after all session cases (at most 15) with fewer than 6 informative", () => {
   // Session cases come first, then written ones, each kind in the file's order.
@@ -1124,7 +1125,7 @@ test("screening goes on to written cases after all session cases (at most 15) wi
   expect(screeningDone(few, "written")).toBe(false);
 });
 
-test("stops at 6 informative in all", () => {
+test("screening stops at 6 informative cases in all", () => {
   const counts = (written: number) =>
     screenCounts(
       scoreSkill(
@@ -1134,19 +1135,18 @@ test("stops at 6 informative in all", () => {
       ),
       kindOf
     );
-  expect(counts(1)).toEqual({ informative: 5, screened: { session: 15, written: 3 } });
-  expect(screeningDone(counts(1), "written")).toBe(false);
-  expect(counts(2)).toEqual({ informative: 6, screened: { session: 15, written: 3 } });
-  expect([screeningDone(counts(2), "session"), screeningDone(counts(2), "written")]).toEqual([
-    true,
-    true,
-  ]);
+  const five = counts(1);
+  expect(five).toEqual({ informative: 5, screened: { session: 15, written: 3 } });
+  expect(screeningDone(five, "written")).toBe(false);
+  const six = counts(2);
+  expect(six).toEqual({ informative: 6, screened: { session: 15, written: 3 } });
+  expect([screeningDone(six, "session"), screeningDone(six, "written")]).toEqual([true, true]);
   // Informative cases of either kind count: 6 written ones stop the session cases too.
   const written = screenCounts(scoreSkill(screenOf(caseIds("w", 6), 6), new Map(), "none"), kindOf);
   expect(screeningDone(written, "session")).toBe(true);
 });
 
-test("stops at 15 written", () => {
+test("screening stops at 15 written cases", () => {
   const counts = (written: number) =>
     screenCounts(
       scoreSkill(
@@ -1156,10 +1156,12 @@ test("stops at 15 written", () => {
       ),
       kindOf
     );
-  expect(counts(14)).toEqual({ informative: 3, screened: { session: 3, written: 14 } });
-  expect(screeningDone(counts(14), "written")).toBe(false);
-  expect(counts(15)).toEqual({ informative: 3, screened: { session: 3, written: 15 } });
-  expect(screeningDone(counts(15), "written")).toBe(true);
+  const fourteen = counts(14);
+  expect(fourteen).toEqual({ informative: 3, screened: { session: 3, written: 14 } });
+  expect(screeningDone(fourteen, "written")).toBe(false);
+  const fifteen = counts(15);
+  expect(fifteen).toEqual({ informative: 3, screened: { session: 3, written: 15 } });
+  expect(screeningDone(fifteen, "written")).toBe(true);
 });
 
 // Catches: a normal interval where too few cases call for a t interval, or an interval drawn about

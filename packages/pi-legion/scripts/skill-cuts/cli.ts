@@ -90,11 +90,12 @@
  * set-count.ts, craftlist.ts, craftmerge.ts, build.ts and results-index.ts, given their arguments
  * whole.
  *
- * **`behaviour`** runs the behaviour test of one skill: `--old` is the skill's own directory at
- * the cut's base (their skill), and `--cases` a case file of that skill (cases.ts, checked against
- * `--old`). The old text is compared with one arm (score.ts's Compared): `--new`, the skill's
- * directory in the cut; `--ours`, a skill of ours whose name may differ (arms.ts's `ours`); or,
- * with neither, no skill. `--new` and `--ours` exclude each other. Each stage records its
+ * **`behaviour`** runs the behaviour test of one skill: `--old` is the skill's own directory (the
+ * old text: the skill at the cut's base, or a set's skill), and `--cases` a case file of that
+ * skill (cases.ts, checked against `--old`). The old text is compared with one arm (score.ts's
+ * Compared): `--new`, the skill's directory in the cut; `--ours`, a skill of ours whose name may
+ * differ (arms.ts's `ours`); or, with neither, no skill. `--new` and `--ours` exclude each other.
+ * Each stage records its
  * compared arm, and an `--out` whose results record another than the command's is refused.
  * Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
  * written whole (a fresh file renamed over it) after each round of runs, so a run started again

@@ -438,7 +438,7 @@ test("the ours arm lists our skill under its own name and description", async ()
   const hidden = armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", undefined);
   expect(hidden.line).toBe("removed");
   expect([...listingOf(hidden.blocks).keys()]).toEqual(["beta"]);
-  // Every other arm installs the case's own skill: its prompt is armPromptBlocks', as before.
+  // Every other arm installs the case's own skill: its prompt is armPromptBlocks'.
   for (const hint of ["Use for the arm's alpha.", undefined]) {
     expect(armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha", hint)).toEqual(
       armPromptBlocks(SUBAGENT_PROMPT, "alpha", hint)

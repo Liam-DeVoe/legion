@@ -64,13 +64,14 @@ function f10Gh(calls: string[] = []): Gh {
   };
 }
 
-/** A psql table of count.sql's shape holding only a summary row of `store` over [from, to). */
-function summaryOnly(store: string, from: number, to: number): string {
-  const row = { row: "summary", store, mtime_from: from, mtime_to: to, files: 0, parts: 0 };
+/** A psql table of count.sql's shape holding `rows` (count.sql's JSON rows), then a summary row of
+ *  `store` over [from, to). */
+function psqlTable(store: string, from: number, to: number, rows: readonly unknown[] = []): string {
+  const summary = { row: "summary", store, mtime_from: from, mtime_to: to, files: 0, parts: 0 };
   const more = { bytes: 0, lines_parsed: 0, bad_lines: 0, shared_call_ids: 0 };
-  return [" total", "-".repeat(40), ` ${JSON.stringify({ ...row, ...more })}`, "(1 row)", ""].join(
-    "\n"
-  );
+  const lines = [...rows, { ...summary, ...more }].map((row) => ` ${JSON.stringify(row)}`);
+  const count = `(${lines.length} ${lines.length === 1 ? "row" : "rows"})`;
+  return [" total", "-".repeat(40), ...lines, count, ""].join("\n");
 }
 
 const scratch = temporaryDirectory("skill-cuts-set-count");
@@ -242,11 +243,7 @@ test("refuses rows where a store lacks a day of the window", async () => {
   const nov21 = NOV_20 + DAY_MS;
   const hours = tree(at("hour-rows"), {
     "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
-    "store_a/2026-11-21T05.txt": summaryOnly(
-      "store_a",
-      nov21 + 5 * 3_600_000,
-      nov21 + 6 * 3_600_000
-    ),
+    "store_a/2026-11-21T05.txt": psqlTable("store_a", nov21 + 5 * 3_600_000, nov21 + 6 * 3_600_000),
   });
   const split = await setCount(argsOf(plantedConfig, hours, at("hour-out")));
   expect(split.code).toBe(2);
@@ -274,8 +271,8 @@ test("gives each store's earliest record from the spans file", async () => {
     ],
   });
   const empty = (store: string) => ({
-    [`${store}/2026-11-20.txt`]: summaryOnly(store, NOV_20, NOV_20 + DAY_MS),
-    [`${store}/2026-11-21.txt`]: summaryOnly(store, NOV_20 + DAY_MS, NOV_20 + 2 * DAY_MS),
+    [`${store}/2026-11-20.txt`]: psqlTable(store, NOV_20, NOV_20 + DAY_MS),
+    [`${store}/2026-11-21.txt`]: psqlTable(store, NOV_20 + DAY_MS, NOV_20 + 2 * DAY_MS),
   });
   const rows = tree(at("spans-rows"), {
     ...PLANTED_ROWS,
@@ -357,7 +354,7 @@ test("prints the count-sql command of each store and day, and its own", async ()
     ...Object.fromEntries(
       Array.from({ length: 24 }, (_, hour) => [
         `store_a/2026-11-21T${String(hour).padStart(2, "0")}.txt`,
-        summaryOnly("store_a", nov21 + hour * 3_600_000, nov21 + (hour + 1) * 3_600_000),
+        psqlTable("store_a", nov21 + hour * 3_600_000, nov21 + (hour + 1) * 3_600_000),
       ])
     ),
   });
@@ -440,9 +437,15 @@ describe("planted rows", () => {
     ["(c) a path under node_modules/alpha-set/", H.c, "alpha-set", "alpha-skill-two", "own"],
     ["(d) a path under vendor/beta-set/", H.d, "beta-set", "beta-skill-one", "own"],
     ["(e) a path elsewhere", H.e, "beta-set", "beta-skill-two", "other_copy"],
-    ["Claude Code's plugin cache under alpha-set/", H.g, "alpha-set", "alpha-skill-three", "own"],
-    ["skill://<name> with no path", H.h, "alpha-set", "alpha-skill-two", "no_copy"],
-    ["the upstream's raw GitHub URL", H.k, "beta-set", "beta-skill-two", "upstream_url"],
+    [
+      "(g) Claude Code's plugin cache under alpha-set/",
+      H.g,
+      "alpha-set",
+      "alpha-skill-three",
+      "own",
+    ],
+    ["(h) skill://<name> with no path", H.h, "alpha-set", "alpha-skill-two", "no_copy"],
+    ["(k) the upstream's raw GitHub URL", H.k, "beta-set", "beta-skill-two", "upstream_url"],
     ["a reference read under vendor/beta-set/", H.d, "beta-set", "beta-skill-one", "reference_own"],
   ] as const)("%s", (_name, hash, set, skill, column) => {
     const count = counts.find((each) => each.set === set && each.skill === skill);
@@ -546,7 +549,7 @@ test("lists each skill with at least 20 own-copy sessions", async () => {
   const nov23 = NOV_20 + 3 * DAY_MS;
   // With F14's one session each: alpha-skill-one 21 own-copy sessions, alpha-skill-two 19, and
   // beta-skill-two 25 that read only another copy.
-  const lines = [
+  const busy = psqlTable("store_a", nov23, nov23 + DAY_MS, [
     row("alpha-skill-one", "alpha-set:alpha-skill-one", hashes(20, 0x100)),
     row("alpha-skill-two", "alpha-set:alpha-skill-two", hashes(18, 0x200)),
     row(
@@ -554,9 +557,7 @@ test("lists each skill with at least 20 own-copy sessions", async () => {
       "/opt/acme/plugin/dist/skills/beta-skill-two/SKILL.md",
       hashes(25, 0x300)
     ),
-  ].map((each) => ` ${JSON.stringify(each)}`);
-  const summary = summaryOnly("store_a", nov23, nov23 + DAY_MS).split("\n")[2] ?? "";
-  const busy = [" total", "-".repeat(40), ...lines, summary, "(4 rows)", ""].join("\n");
+  ]);
   const rows = tree(at("busy-rows"), { ...PLANTED_ROWS, "store_a/2026-11-23.txt": busy });
   const out = at("busy-out");
   const ran = await setCount(argsOf(plantedConfig, rows, out));
@@ -583,10 +584,7 @@ test("a read two files of two queries hold counts in one session, the file whose
       ...{ calls: { [file]: [key] }, unpaired: 0, unpaired_hashes: [], unpaired_calls: {} },
     };
     const from = NOV_20 + day * DAY_MS;
-    const summary = summaryOnly("store_a", from, from + DAY_MS).split("\n")[2] ?? "";
-    return [" total", "-".repeat(40), ` ${JSON.stringify(row)}`, summary, "(2 rows)", ""].join(
-      "\n"
-    );
+    return psqlTable("store_a", from, from + DAY_MS, [row]);
   };
   const rows = tree(at("fork-rows"), {
     ...PLANTED_ROWS,

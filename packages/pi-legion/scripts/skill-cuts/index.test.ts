@@ -3,8 +3,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { main } from "./cli";
+import { NO_CONTROL_LOSS } from "./score";
 
-// `results-index`, the inventory of R4's results: each skill set-count lists at 20 or more
+// `results-index`, the inventory of the sets' results: each skill set-count lists at 20 or more
 // sessions (its summary.json's `atLeast20`), beside its nearest row (`nearest`'s row JSON), its
 // cases file and its result (the report `behaviour report` printed, kept as `report.txt` in the
 // result's directory or tarball). Every file is made up here, in the shapes those commands write:
@@ -158,7 +159,7 @@ test("lists each skill at 20 or more in set-count's output and exits 1 for one w
     "cases-beta-one.jsonl.gz": Bun.gzipSync(new TextEncoder().encode("{}\n")),
   });
   writeTree(at("results"), {
-    "results-beta-two/report.txt": report("beta-two", "none: control not a loss"),
+    "results-beta-two/report.txt": report("beta-two", `none: ${NO_CONTROL_LOSS}`),
   });
   const whole = await index(...ARGS);
   expect({ code: whole.code, err: whole.err }).toEqual({ code: 0, err: "" });
