@@ -29,7 +29,9 @@ var _ supervise.Specs = specs{}
 
 // specs builds the part of every launch the claim does not carry. An operator may retain a
 // one-off prompt under the state directory for the Stage 2 proof; otherwise the Go daemon
-// composes the shipped role parts plus its own role-specific instructions. The repository is the
+// composes the shipped role parts for one of Legion's roles, and for a role of the deployment or
+// of the issue's plan its own prompt between the headless mechanics and Legion's worker part,
+// plus its own role-specific instructions. The repository is the
 // one the claim's issue's record names, at the default branch the record names; a runtime that
 // provisions workspaces itself (a Sandbox pod's init containers) provisions the issue's workspace
 // from them, and under any other the daemon makes sure the workspace is on its own host first.
@@ -48,8 +50,9 @@ type specs struct {
 	// Nil is a deployment that lists none.
 	models []string
 	// planRole is the role of an issue's plan in force named role, and whether that plan defines
-	// one (planRoleOf, the daemon's one reader of a role of a plan): a role neither Legion nor
-	// the deployment defines launches with the plan's prompt and model. Nil in a test whose specs
+	// one (planRoleOf, the daemon's one reader of a role of a plan): a role the plan defines that
+	// is none of Legion's launches with the plan's prompt and model, where the deployment defines a
+	// role of its name too. Nil in a test whose specs
 	// literal leaves it out, and such a specs launches no role of a plan.
 	planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
@@ -410,8 +413,9 @@ var refusalCooldownVariables = []string{
 // nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm
 // (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude worker's plugin
 // is the image's — so a plugin-contract change for such a role is answered by a new image, not by
-// an install. Such a claim whose recorded contract differs still relaunches: it is the image's
-// plugin that decides, and the image probe is what refuses a wrong one. The daemon-launched
+// an install. The stale-plugin lane relaunches no such claim under Kubernetes (noPluginInstall):
+// its registration stands, and the update round over its pod brings the new image, whose plugin
+// the image probe holds to the contract. The daemon-launched
 // controller runs on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its
 // launch is covered here exactly as before.
 func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *runtime.PluginInstall {

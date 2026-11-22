@@ -212,8 +212,8 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	records := record.NewStore()
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
 	// The supervision is built before the machines are, because the machines are handed one of
-	// its answers: which roles a launch installs no plugin for, which only the daemon's own
-	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
+	// its answers: which claims a launch installs no plugin for, which only the daemon knows, from
+	// its configuration and the plan of each claim's issue (supervise.Deps.NoPluginInstall). A test that moves a role onto another
 	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))

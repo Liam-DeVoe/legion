@@ -32,7 +32,7 @@ func noAppOwners(context.Context, string, claim.Role) []string { return nil }
 // A role the deployment defines launches with its own prompt file between the headless mechanics
 // and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
 // worker is told, and with the model its settings give it; one of Legion's roles names no model;
-// a role the deployment does not define is refused, with no prompt and no panic.
+// a role neither the deployment nor the issue's plan defines is refused, with no prompt and no panic.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -383,7 +383,8 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	}
 }
 
-// A role worker_backends puts on claude is launched on Claude Code and told the Claude Code part
+// A role worker_backends puts on claude, where the plan of the claim's issue defines no role of its
+// name, is launched on Claude Code and told the Claude Code part
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
 func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing.T) {
@@ -979,8 +980,9 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 
 // A Claude Code claim gets no stale-plugin install, whatever its recorded contract: that install
 // is the two npm plugins, and a Claude worker's plugin is the worker image's, so a plugin-contract
-// change for such a role is answered by a new image. The relaunch itself is unchanged — the
-// image's plugin decides, and the image probe is what refuses a wrong one. An Oh My Pi claim of
+// change for such a role is answered by a new image. No stale-plugin lane relaunches such a claim
+// (noPluginInstall): the update round over its pod brings the new image, and the image probe is
+// what refuses a wrong plugin. An Oh My Pi claim of
 // the same shape is installed for as before, the daemon's own controller among them: it runs on
 // Oh My Pi whatever worker_backends names for a phase worker.
 func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
