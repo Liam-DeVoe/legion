@@ -19,6 +19,7 @@ import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -157,7 +158,9 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
     // The column header names the status; the card does not repeat it.
     expect(within(card).queryByText("Triage")).not.toBeInTheDocument();
     expect(within(card).getByRole("link", { name: /CORE-1/ })).toBeDefined();
-    expect(within(card).getByRole("combobox", { name: "Priority of CORE-1" })).toBeDefined();
+    expect(
+      within(card).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).toBeDefined();
   } finally {
     cleanup();
   }
@@ -713,7 +716,7 @@ test("j/k/h/l rove real focus over cards, columns and rails", async () => {
   }
 });
 
-test("Enter and o open the focused card once, p focuses its priority select, Escape returns to the card and then out", async () => {
+test("Enter and o open the focused card once, p focuses its priority list's trigger, Escape returns to the card and then out", async () => {
   const user = userEvent.setup();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -725,11 +728,16 @@ test("Enter and o open the focused card once, p focuses its priority select, Esc
     act(() => alpha.focus());
 
     await user.keyboard("p");
-    const select = within(alpha).getByRole("combobox", { name: "Priority of CORE-1" });
-    expect(select).toHaveFocus();
-    // Single letters never fire on an editable target.
+    const priority = within(alpha).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    expect(priority).toHaveFocus();
+    // Single letters never fire on an editable target: on the closed trigger a letter is the
+    // list's, which opens with it in its text box, and the board's `j` moves to no other card.
     await user.keyboard("j");
-    expect(select).toHaveFocus();
+    const search = screen.getByRole("combobox", { name: "Search priorities" });
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("j");
+    await user.keyboard("{Escape}");
+    expect(priority).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(alpha).toHaveFocus();
     await user.keyboard("{Escape}");

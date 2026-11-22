@@ -39,6 +39,7 @@ import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
 import { issuePriority } from "./issue-priority";
+import { PRIORITY_TRIGGER_SELECTOR } from "./PriorityControl";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -105,14 +106,14 @@ function ItemLandingFailure({
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = 'select[aria-label="Status"]';
 const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
 /** The header control `selector` names, or `null` when it is absent or refuses input: disabled
- *  (a closed issue, a save in flight), or held with `aria-disabled` (the labels' trigger while
- *  their save is out, `IssueLabels`). It is the one fact both the key's `run` and the `when` that
- *  offers it read, so a shortcut is listed exactly while its control would take a click. */
+ *  (the status on a closed issue or while a save is in flight), or held with `aria-disabled`
+ *  (the priority's trigger then, the labels' trigger while their save is out, `IssueLabels`). It
+ *  is the one fact both the key's `run` and the `when` that offers it read, so a shortcut is
+ *  listed exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
@@ -279,15 +280,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      run: () => usableControl(PRIORITY_TRIGGER_SELECTOR)?.focus(),
+      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
       id: "labels",
@@ -314,10 +315,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
     {
-      // `s` and `p` put focus in a native select, where every single-key binding is suspended
-      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
-      // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
+      // `s` puts the focus in a native select and `p` on the priority list's trigger. There every
+      // single-key binding is suspended, and the next keystroke is the control's own: the
+      // select's type-ahead, or the list's search, which a character typed on its closed trigger
+      // opens. So `t` picks Todo or Testing, or opens the priority list, rather than start the
+      // tab chord. Escape is the way back out, as it is on the Inbox rows, the board's cards and
+      // the architecture rows. The priority's trigger keeps the focus while it is held
+      // (`aria-disabled`), so Escape leaves it then too.
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -325,7 +329,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
-        return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
+        return (
+          active === usableControl(STATUS_SELECT) ||
+          active === document.querySelector(HEADER)?.querySelector(PRIORITY_TRIGGER_SELECTOR)
+        );
       },
     },
     ...tabChords.map(({ keys, label, tab }) => ({

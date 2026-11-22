@@ -51,7 +51,7 @@ import {
   putAgentState,
 } from "./api";
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { control, controlRow, listTrigger, openFilterPanel } from "./filters";
+import { control, controlRow, listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { nextFrames } from "./frames";
 import { seedAgentThread, seedCommentThread } from "./inbox-threads";
 import {
@@ -344,7 +344,7 @@ async function boardCard({ n, page, scene }: CaseContext): Promise<{
   const key = await freshIssue(`Board card ${n}`);
   const { root } = await openSurface(page, "project Board", scene);
   await setBoardLanes(page, "hidden");
-  const priority = root.getByRole("combobox", { exact: true, name: `Priority of ${key}` });
+  const priority = listTrigger(root, `Priority of ${key}`);
   await priority.focus();
   return { key, priority };
 }
@@ -362,15 +362,16 @@ const BOARD_CASES: Scene["cases"] = {
     const { key, priority } = await boardCard(context);
     return { control: priority, key };
   }),
-  // A pick draws the new priority at once and the select stays enabled while its write is out,
-  // so with no lanes the card stays where it is and the select keeps the focus.
+  // A pick draws the new priority at once and the list's trigger takes a press while its write is
+  // out, so with no lanes the card stays where it is, and the pick hands the focus back to the
+  // trigger.
   offline: async (context) => {
     const { key, priority } = await boardCard(context);
     return {
       answered: () => expect(context.page.getByTestId("pending-writes")).toBeVisible(),
-      cause: () => priority.selectOption("1"),
+      cause: () => pickFromList(priority, "P1"),
       control: priority,
-      landing: { at: priority, name: `combobox "Priority of ${key}"` },
+      landing: { at: priority, name: `button "Priority of ${key} P1"` },
     };
   },
 };
@@ -682,10 +683,11 @@ const ARTIFACTS_CASES: Scene["cases"] = {
  * project Board:
  * - press: the first of two chips, Needs you and Unclaimed, by Enter. Lands on the other chip,
  *   now at its place.
- * - live: a card's priority select, its issue closed through the API. Lands on the body.
- * - device: a card's priority select, its issue closed by the other device. Lands on the body.
- * - offline: a card's priority, picked offline. The select stays, so it lands on combobox
- *   "Priority of <key>" itself.
+ * - live: a card's priority list's trigger, its issue closed through the API. Lands on the body.
+ * - device: a card's priority list's trigger, its issue closed by the other device. Lands on the
+ *   body.
+ * - offline: a card's priority, picked offline. The trigger stays, so it lands on button
+ *   "Priority of <key> P1" itself.
  *
  * Agents page:
  * - press: the select-all header's Clear selection, by Enter. Lands on checkbox "Select all

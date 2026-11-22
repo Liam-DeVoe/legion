@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { pickNamed } from "../../__tests__/list-picks";
+import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -493,9 +493,11 @@ test("IssuePage submits the selected priority through the issue mutation", async
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    expect([...priority.options].map((option) => option.value)).toEqual(["", "0", "1", "2", "3"]);
-    await user.selectOptions(priority, "0");
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(priority);
+    const list = within(panelOf(priority)).getByRole("listbox");
+    expect(rows(list)).toEqual(["✓Unset", "P0", "P1", "P2", "P3"]);
+    await user.click(within(list).getByRole("option", { name: "P0" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -514,13 +516,14 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    await user.selectOptions(priority, "0");
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(priority);
+    await user.click(within(panelOf(priority)).getByRole("option", { name: "P0" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
 
-    expect(priority.value).toBe("0");
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 P0");
 
     await act(async () => {
       save.resolve({ ...issue, priority: 0 });
@@ -540,19 +543,21 @@ test("IssuePage restores the previous priority after a failed save", async () =>
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    await user.selectOptions(priority, "0");
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(priority);
+    await user.click(within(panelOf(priority)).getByRole("option", { name: "P0" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    expect(priority.value).toBe("0");
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 P0");
 
     act(() => {
       save.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
-    expect(priority.value).toBe("");
-    expect(priority.disabled).toBe(false);
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 Priority");
+    expect(priority).not.toHaveAttribute("aria-disabled");
+    expect((priority as HTMLButtonElement).disabled).toBe(false);
   } finally {
     unmount();
     restore();

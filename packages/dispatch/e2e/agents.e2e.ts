@@ -1411,7 +1411,7 @@ test("a typed broadcast survives clearing the selection and picking again, and a
     await expect(restore).toBeEnabled();
     await restore.click();
     await expect(message).toHaveValue("Keep this draft.");
-    await expect(mode).toHaveValue("aside");
+    await expect(mode).toHaveAccessibleName("Delivery mode Aside");
     await expect(
       composer.getByRole("heading", { name: "Broadcast to 2 of 2 selected" })
     ).toBeVisible();

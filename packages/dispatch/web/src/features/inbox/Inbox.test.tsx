@@ -1612,13 +1612,17 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
   }
 });
 
-/** What the picker named `Priority of <issueKey>` inside `scope`, a CSS selector, draws
- *  (`drawnPick`), or `(none)` while none is drawn there. */
+/** What the priority list named `Priority of <issueKey>` inside `scope`, a CSS selector, draws
+ *  (`drawnPick`), or `(none)` while none is drawn there. Its trigger is named by the list's name
+ *  first (`MultiSelect`). */
 function drawnPriority(scope: string, issueKey: string): string {
-  const select = document.querySelector<HTMLSelectElement>(
-    `${scope} select[aria-label="Priority of ${issueKey}"]`
-  );
-  return select === null ? "(none)" : drawnPick(select);
+  const trigger = [
+    ...document.querySelectorAll<HTMLElement>(`${scope} [aria-haspopup="listbox"]`),
+  ].find((node) => {
+    const [named = ""] = node.getAttribute("aria-labelledby")?.split(" ") ?? [];
+    return document.getElementById(named)?.textContent === `Priority of ${issueKey}`;
+  });
+  return trigger === undefined ? "(none)" : drawnPick(trigger);
 }
 
 // A pick of P2 on a P1 row under `?priority=P1` takes the row out of the filter, and the Inbox
@@ -1642,10 +1646,12 @@ test("a priority pick that takes the row under the reader's hand out of the prio
     const row = rowOf("ask-p1");
     // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
     fireEvent.pointerOver(row);
-    const select = within(row).getByRole("combobox", { name: "Priority of CORE-1" });
-    const fromPick = commits.markAt(select, "change");
+    const priority = within(row).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(priority);
+    const p2 = within(panelOf(priority)).getByRole("option", { name: "P2" });
+    const fromPick = commits.markAt(p2, "click");
     notifications = holdNotifications();
-    await user.selectOptions(select, "2");
+    await user.click(p2);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
@@ -1661,7 +1667,7 @@ test("a priority pick that takes the row under the reader's hand out of the prio
 
     // The hand is still on the row, which the filter no longer lists.
     expect(rowIds()).toContain("ask-p1");
-    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "P2 P2"));
   } finally {
     notifications?.tell();
     unmount();
@@ -1697,10 +1703,12 @@ test("a priority pick in the reading column that takes its question out of the p
     await user.clear(draft);
     await user.click(draft);
     await user.paste("Whichever the mirror already holds.");
-    const select = within(pane).getByRole("combobox", { name: "Priority of CORE-1" });
-    const fromPick = commits.markAt(select, "change");
+    const priority = within(pane).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(priority);
+    const p2 = within(panelOf(priority)).getByRole("option", { name: "P2" });
+    const fromPick = commits.markAt(p2, "click");
     notifications = holdNotifications();
-    await user.selectOptions(select, "2");
+    await user.click(p2);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
@@ -1716,7 +1724,7 @@ test("a priority pick in the reading column that takes its question out of the p
 
     // The list no longer holds the question, and the column still shows it.
     expect(rowIds()).toEqual(["ask-b"]);
-    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "P2 P2"));
   } finally {
     notifications?.tell();
     unmount();
@@ -1789,10 +1797,14 @@ test("a priority pick on a row held after a server edit took it out of the typed
     });
     expect(rowIds()).toContain("ask-p1");
 
-    const select = within(rowOf("ask-p1")).getByRole("combobox", { name: "Priority of CORE-1" });
-    const fromPick = commits.markAt(select, "change");
+    const priority = within(rowOf("ask-p1")).getByRole("button", {
+      name: pickNamed("Priority of CORE-1"),
+    });
+    await user.click(priority);
+    const p2 = within(panelOf(priority)).getByRole("option", { name: "P2" });
+    const fromPick = commits.markAt(p2, "click");
     notifications = holdNotifications();
-    await user.selectOptions(select, "2");
+    await user.click(p2);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
@@ -1807,7 +1819,7 @@ test("a priority pick on a row held after a server edit took it out of the typed
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
 
     expect(rowIds()).toContain("ask-p1");
-    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "P2 P2"));
   } finally {
     notifications?.tell();
     unmount();

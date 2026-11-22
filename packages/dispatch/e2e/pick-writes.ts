@@ -245,9 +245,9 @@ export function expectReadWhileHeld(
 export const ISSUE_PAGE_PICKERS = ':is(main, aside[aria-label="Details"])';
 
 /** The issue page's own picker named `name` (such as `Priority of CORE-1`), inside
- *  `ISSUE_PAGE_PICKERS`: a native select or box named `name`, such as the priority's, or the
- *  shared list's single pick (`MultiSelect`), whose trigger is named `name` and then what it
- *  shows, such as the assignee's and the repository's (`listTrigger`). */
+ *  `ISSUE_PAGE_PICKERS`: the shared list's single pick (`MultiSelect`), whose trigger is named
+ *  `name` and then what it shows, such as the priority's, the assignee's and the repository's
+ *  (`listTrigger`). */
 export function pagePicker(page: Page, name: string): Locator {
   return listTrigger(page.locator(ISSUE_PAGE_PICKERS), name);
 }

@@ -694,9 +694,9 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
     await page.goto(`/issues/${p0Issue.key}`);
     // `Priority of <KEY>` is the issue's own grade; the header also carries the control that
     // adds a priority the issue advances, whose name holds that word too.
-    const priority = page.getByLabel(/^Priority of /);
-    await priority.selectOption("0");
-    await expect(priority).toHaveValue("0");
+    const priority = listTrigger(page, `Priority of ${p0Issue.key}`);
+    await pickFromList(priority, "P0");
+    await expect(priority).toHaveAccessibleName(`Priority of ${p0Issue.key} P0`);
     await expect.poll(() => getIssue(p0Issue.key)).toMatchObject({ priority: 0 });
     // Clarified P0 first, so recency alone would put the P2 ask on top: the order under test is
     // the priority one, not the one the writes happened to land in.
@@ -732,16 +732,16 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     // The question's own controls, where this width puts them: the reading column's head, for
     // the row it is showing.
     const controls = await askControls(page, ask.id);
-    const control = controls.getByLabel(`Priority of ${issue.key}`);
-    await expect(controls.locator("span", { hasText: /^P2$/ })).toBeVisible();
+    const control = listTrigger(controls, `Priority of ${issue.key}`);
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await control.selectOption("0");
+    await pickFromList(control, "P0");
     expect((await patch).postDataJSON()).toEqual({ priority: 0 });
-    await expect(controls.locator("span", { hasText: /^P0$/ })).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 0 });
     // The row's link was not followed.
     expect(new URL(page.url()).pathname).toBe("/");
@@ -754,7 +754,7 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     });
 
     await page.reload();
-    await expect(controls.locator("span", { hasText: /^P0$/ })).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
   } finally {
     await alice.close();
   }

@@ -1112,7 +1112,7 @@ test("a project document's head names the project and the document, and opens it
   try {
     expect(await screen.findByText("CORE · Design notes")).toBeDefined();
     // Neither applies to a project document: it has no priority and nobody is assigned to it.
-    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Priority of / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     runtime.sync();

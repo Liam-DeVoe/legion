@@ -90,6 +90,7 @@ import {
   askCard,
   askControls,
   hasReadingPane,
+  inboxList,
   inboxRow,
   paneScroller,
   selectedRow,
@@ -118,7 +119,7 @@ import { searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
-import { expandedState } from "./settled";
+import { expandedState, settledState } from "./settled";
 import {
   closeControlPanel,
   drawnControlNames,
@@ -4047,11 +4048,20 @@ const ASSIGNEE_BADGE = 32;
  *  this row's run over that commit's build, measured 44 px at 1024x768. */
 const REPOSITORY_LINE = 28;
 
+/** The parts a Board card or a List row draws now where it drew `parts` at the base. R3 changes
+ *  one of them, the issue's priority: the base drew the badge's words with a native select laid
+ *  over it (`"P1" | combobox "Priority of CORE-1"`), and the head draws the shared list's trigger
+ *  holding that badge, read by its words (`button "P1"`). Every other part is the base's. */
+function priorityAtTheHead(parts: string): string {
+  return parts.replace(/"([^"]*)" \| combobox "Priority of [A-Z]+-\d+"/g, 'button "$1"');
+}
+
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
 // rows and its reading pane are the stub row's (`table-controls.stub.e2e.ts`), and the tables
 // with no controls the row above; this one holds the Board's cards and the rows of the Agents
 // page, the project List and the Delivery list to what they drew at the base
-// (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
+// (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, save the priority's,
+// which is the shared list's trigger now (`priorityAtTheHead`), in a box of the same
 // size, where a height the fonts decide is the one its lines and the base's classes give it
 // (`linedHeights`). It holds an ask card's "Asked of" line and the issue header's Assignee badge
 // to their heights at the base too, and the header's `Repository:` line to the box of the shared
@@ -4137,8 +4147,10 @@ test.describe("R8's rows and cards", () => {
           const item = drawn[index];
           if (item === undefined) continue;
           const at = `the ${name}'s ${noun} ${index + 1}`;
-          if (item.parts !== was.parts) {
-            differs.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
+          if (item.parts !== priorityAtTheHead(was.parts)) {
+            differs.push(
+              `${at} draws ${item.parts}, and at the base ${was.parts}, which is ${priorityAtTheHead(was.parts)} with the priority's list`
+            );
           }
           const [height, width, listWidth] = was.box;
           const ruled = height === "lines";
@@ -4704,11 +4716,14 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await openIssuesTab(page, "CORE", "Board");
     await setBoardLanes(page, "shown");
     const lane = `P${step + 1}`;
-    const priority = page.getByLabel(`Priority of ${boardCard.key}`);
+    const priority = listTrigger(page, `Priority of ${boardCard.key}`);
     await priority.focus();
-    await priority.selectOption(String(step + 1));
+    await pickFromList(priority, lane);
     await expect(
-      page.getByRole("region", { name: `${lane} lane` }).getByLabel(`Priority of ${boardCard.key}`),
+      listTrigger(
+        page.getByRole("region", { name: `${lane} lane` }),
+        `Priority of ${boardCard.key}`
+      ),
       `${where}: the pick left ${boardCard.key} outside the ${lane} lane`
     ).toHaveCount(1);
     await after(where, `a pick of ${lane} on ${boardCard.key}`);
@@ -5907,6 +5922,9 @@ interface PickListSeed {
     readonly bulk: string;
     readonly row: string;
   }[];
+  /** For each width, an issue of CORE at P3 with a question waiting on alice, whose priority the
+   *  List's row, the Board's card and the Inbox's question pick in turn, and that question. */
+  readonly priorities: readonly { readonly ask: string; readonly issue: string }[];
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
@@ -5916,9 +5934,10 @@ interface PickListSeed {
  *  an issue assigned to, or a project named by, are alice, bob and carol; three epics, the first
  *  with a member; a spec and a second document of one issue, each in two versions; a question for
  *  each width; CORE's default repository, acme/widgets; three priorities; an issue of CORE
- *  assigned to alice, which names no repository of its own and advances no priority; the
- *  Delivery page's fixture (`seedDeliveryFixture`), which adds project ACME; and, last, so the
- *  Inbox lists them first, three questions for each width that the Snoozes defer. */
+ *  assigned to alice, which names no repository of its own and advances no priority; for each
+ *  width an issue of CORE at P3 with a question; the Delivery page's fixture
+ *  (`seedDeliveryFixture`), which adds project ACME; and, last, so the Inbox lists them first,
+ *  three questions for each width that the Snoozes defer. */
 async function seedPickLists(): Promise<PickListSeed> {
   await seedAgents();
   await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
@@ -5963,6 +5982,17 @@ async function seedPickLists(): Promise<PickListSeed> {
   }
   const header = await createIssue({ project: "CORE", title: "Harbour crane" });
   await patchIssue(header.key, { assignee: "alice" });
+  const priorities: { ask: string; issue: string }[] = [];
+  for (const width of [1440, 390]) {
+    const owner = await createIssue({ project: "CORE", title: `Priority picked at ${width}` });
+    await patchIssue(owner.key, { priority: 3 });
+    const ask = await createAsk(
+      owner.key,
+      { question: `How urgent is it at ${width}?` },
+      SURFACE_SESSION
+    );
+    priorities.push({ ask: ask.id, issue: owner.key });
+  }
   await seedDeliveryFixture();
   const snoozes: { after: string; bulk: string; row: string }[] = [];
   for (const width of [1440, 390]) {
@@ -5981,11 +6011,12 @@ async function seedPickLists(): Promise<PickListSeed> {
     documented: documented.key,
     header: header.key,
     member: member.key,
+    priorities,
     snoozes,
   };
 }
 
-/** The twenty-three lists, in the order the row reads them at one width; `step` is the width's
+/** The twenty-six lists, in the order the row reads them at one width; `step` is the width's
  *  place, which picks the question it hands on, the issue it addresses, and the person and the
  *  repository the issue header's lists and the Settings page's people lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
@@ -6057,10 +6088,16 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     "Snooze selected asks"
   );
   /** Where a reader reads what a Snooze did: how many rows the Inbox's Later band holds, in the
-   *  band's own words, `Later (0)` while there is no band. */
+   *  band's own words, `Later (0)` while there is no band. Which of the two the Inbox shows is
+   *  read once its list has settled on one of them (`settledState`): the band, or the list drawn
+   *  with no band in it. */
   const later = async () => {
     const band = page.getByRole("button", { name: /^Later \(\d+\)/ });
-    if ((await band.count()) === 0) return "Later (0)";
+    const shown = await settledState("the Inbox's Later band", [
+      ["band", band],
+      ["no band", inboxList(page).filter({ hasNot: band })],
+    ]);
+    if (shown === "no band") return "Later (0)";
     return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
   };
   // Each Snooze pick defers one more question, two at each width, so Later counts one more.
@@ -6069,6 +6106,17 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [modeWord, modeOption] = step === 0 ? ["asi", "Aside"] : ["sen", "Send"];
   const rowsPerPage = listTrigger(control(main, CONTROL.pager), "Rows per page");
   const [sizeWord, sizeOption] = step === 0 ? ["250", "250 per page"] : ["100", "100 per page"];
+  // The priority of the width's own issue, which the List's row, the Board's card and the
+  // Inbox's question pick in turn: P3 to P1, P1 to P2, then P2 to P0. The Inbox draws a
+  // question's priority in the reading column's head, for the row the column shows, and without
+  // the column in the row itself.
+  const prioritized = seed.priorities[step] ?? { ask: "", issue: "" };
+  const priorityOf = (scope: Locator) => listTrigger(scope, `Priority of ${prioritized.issue}`);
+  const listPriority = priorityOf(main.locator(`[data-issue-row="${prioritized.issue}"]`));
+  const cardPriority = priorityOf(main.locator(`[data-board-card="${prioritized.issue}"]`));
+  const inboxPriority = priorityOf(
+    hasReadingPane(page) ? page.getByTestId("inbox-pane") : inboxRow(page, prioritized.ask)
+  );
   // The Delivery page over the fixture's custom range, so the Window starts on Custom range….
   const deliveryPage = `/delivery?${DELIVERY_WINDOW}&mode=list`;
   const deliveryWindow = listTrigger(main, "Window");
@@ -6146,6 +6194,26 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: new RegExp(`^${sizeOption}$`),
     },
     {
+      name: "the List's Priority of a row",
+      trigger: listPriority,
+      value: shown(listPriority),
+      word: "p1",
+      left: ["P1"],
+      picked: /^P1$/,
+    },
+    {
+      name: "the Board's Priority of a card",
+      reach: async () => {
+        await openIssuesTab(page, "CORE", "Board");
+        await setBoardLanes(page, "hidden");
+      },
+      trigger: cardPriority,
+      value: shown(cardPriority),
+      word: "p2",
+      left: ["P2"],
+      picked: /^P2$/,
+    },
+    {
       // Every person's questions, so the question stays listed once it waits on bob. Its list is
       // on its card: the reading column's, for the row selected, or the row's own where the
       // Inbox is too narrow for that column.
@@ -6193,6 +6261,21 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       // The bar goes with the row it deferred, and its focus goes to the mark of the row that
       // moves up into that row's place.
       focusAfterPick: inboxRow(page, snoozed.after).getByRole("checkbox").first(),
+    },
+    {
+      // The reader's own questions; with the reading column the question is selected first, so
+      // the column's head draws its priority.
+      name: "the Inbox's Priority of a question",
+      reach: async () => {
+        await page.goto("/");
+        await expect(inboxRow(page, prioritized.ask)).toBeVisible();
+        await selectRow(page, prioritized.ask);
+      },
+      trigger: inboxPriority,
+      value: shown(inboxPriority),
+      word: "p0",
+      left: ["P0"],
+      picked: /^P0$/,
     },
     {
       name: "the Agents composer's Issue",
@@ -6386,21 +6469,22 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   ];
 }
 
-// SLOW(>=2s): twenty-three lists on nine pages, each list opened three times at each of two widths.
+// SLOW(>=2s): twenty-six lists on nine pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// The row covers the twenty-three single picks of the shared list (`components/MultiSelect.tsx`),
+// The row covers the twenty-six single picks of the shared list (`components/MultiSelect.tsx`),
 // the lists whose options grow with the project among them: the search bar's Project and Status,
 // the List's Move to epic and Rows per page (`Pager`), an epic's Merge into another epic, the
-// Inbox's Hand this question to (`AskHandOn`), a row's Snooze (`SnoozeControl`) and the selection
-// bar's Snooze selected asks (`Inbox`), the Agents composer's Issue, the Agents page's Delivery
-// mode (`AgentsPage`), the Spec tab's Version (`SpecToolbar`), a document page's Version
+// priority of a List row, a Board card and an Inbox question (`PriorityControl`), the Inbox's
+// Hand this question to (`AskHandOn`), a row's Snooze (`SnoozeControl`) and the selection bar's
+// Snooze selected asks (`Inbox`), the Agents composer's Issue, the Agents page's Delivery mode
+// (`AgentsPage`), the Spec tab's Version (`SpecToolbar`), a document page's Version
 // (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
 // (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
-// Color merges by (`DeliveryPage`). Two short fixed lists stay native selects, and the row opens
-// neither: Priority (`PriorityControl`) and the issue header's Status. At each width each list is
+// Color merges by (`DeliveryPage`). One short fixed list stays a native select, and the row does
+// not open it: the issue header's Status. At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel - at 390 an `input` of
 // 16 px, the size `styles.css` gives every input below 1280 px and under which iOS Safari zooms
 // the page onto the box - the option a typed word leaves is not the value the list starts on, the
@@ -6424,7 +6508,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390", async ({
   page,
 }) => {
-  // Fourteen page loads and a dialog at each width, with the lists read between them. Measured in
+  // Sixteen page loads and a dialog at each width, with the lists read between them. Measured in
   // an issue pod (two cores), with each of the eighteen lists it then read opened three times: the
   // row took 2.3 min in Chromium (2026-11-17), and 41.9 s in CI's Chromium (full-lane run
   // 44206548149). Six minutes kept the pod's time under two thirds of the budget then.

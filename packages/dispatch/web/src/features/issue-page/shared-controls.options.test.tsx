@@ -342,10 +342,6 @@ function parentOf(element: Element): HTMLElement {
   return parent;
 }
 
-function optionsOf(select: HTMLElement): string[][] {
-  return [...(select as HTMLSelectElement).options].map((option) => [option.value, option.text]);
-}
-
 function sessionClaim(sessionId: string): IssueClaim {
   return { actor: { id: sessionId, kind: "session" }, at: CLAIMED_AT };
 }
@@ -606,11 +602,22 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
 });
 
 // The header variant of the assignee and the priority is the prototype's `.person` and `.prio`,
-// drawn over the same native select as the badge, at the header line's 24 px.
-test("the header variant draws the person and the priority bars over the same select", async () => {
+// drawn on the trigger of the same list as the badge, at the header line's 24 px.
+test("the header variant draws the person and the priority bars on the trigger of the same list", async () => {
   const expectHeaderWrapper = (wrapper: HTMLElement) => {
     expect(classOf(wrapper)).toContain("min-h-6");
     expect(classOf(wrapper).filter((token) => token.startsWith("md:min-h-"))).toEqual([]);
+  };
+  const user = userEvent.setup();
+  // The rows the list `trigger` opens offers, once it holds `count` of them: each list is read
+  // open, its rows in its panel, and closed again before the other opens.
+  const offered = async (trigger: HTMLElement, count: number) => {
+    await user.click(trigger);
+    const list = within(panelOf(trigger)).getByRole("listbox");
+    await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(count));
+    const offers = listRows(list);
+    await user.keyboard("{Escape}");
+    return offers;
   };
 
   for (const level of [0, 1, 2, 3, null] as const) {
@@ -627,20 +634,22 @@ test("the header variant draws the person and the priority bars over the same se
       "inside"
     );
     try {
-      const select = within(header.container).getByRole("combobox", { name: "Priority of CORE-1" });
-      const wrapper = parentOf(select);
+      const trigger = within(header.container).getByRole("button", {
+        name: pickNamed("Priority of CORE-1"),
+      });
+      const wrapper = parentOf(trigger);
       expect(wrapper.querySelectorAll("rect")).toHaveLength(3);
       expect(wrapper.querySelectorAll("rect[class~='fill-page-ink']")).toHaveLength(
         level === null ? 0 : 3 - level
       );
-      expect(wrapper.querySelector("[aria-hidden='true']")?.textContent).toBe(
-        level === null ? PROPERTY_LABELS.priority : `P${level}`
-      );
-      const badgeSelect = within(badge.container).getByRole("combobox", {
-        name: "Priority of CORE-1",
+      const label = level === null ? PROPERTY_LABELS.priority : `P${level}`;
+      expect(trigger.querySelector(":scope > span > span")?.textContent).toBe(label);
+      const badgeTrigger = within(badge.container).getByRole("button", {
+        name: pickNamed("Priority of CORE-1"),
       });
-      expect(optionsOf(select)).toEqual(optionsOf(badgeSelect));
-      expect((select as HTMLSelectElement).value).toBe((badgeSelect as HTMLSelectElement).value);
+      expect(trigger).toHaveAccessibleName(`Priority of CORE-1 ${label}`);
+      expect(badgeTrigger).toHaveAccessibleName(`Priority of CORE-1 ${label}`);
+      expect(await offered(trigger, 5)).toEqual(await offered(badgeTrigger, 5));
       expectHeaderWrapper(wrapper);
     } finally {
       undraw(header);
@@ -648,7 +657,6 @@ test("the header variant draws the person and the priority bars over the same se
     }
   }
 
-  const user = userEvent.setup();
   for (const assignee of ["alice@example.com", null]) {
     const header = draw(
       <AssigneeControl assignee={assignee} issueKey="CORE-1" variant="header" />,
@@ -662,17 +670,8 @@ test("the header variant draws the person and the priority bars over the same se
       const badgeSelect = within(badge.container).getByRole("button", {
         name: pickNamed("Assignee of CORE-1"),
       });
-      // A press reads who has signed in, and both lists then offer each of them. Each list is
-      // read open, its rows in its panel, and closed again before the other opens.
-      const offered = async (trigger: HTMLElement) => {
-        await user.click(trigger);
-        const list = within(panelOf(trigger)).getByRole("listbox");
-        await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(3));
-        const offers = listRows(list);
-        await user.keyboard("{Escape}");
-        return offers;
-      };
-      expect(await offered(select)).toEqual(await offered(badgeSelect));
+      // A press reads who has signed in, and both lists then offer each of them.
+      expect(await offered(select, 3)).toEqual(await offered(badgeSelect, 3));
       const wrapper = parentOf(select);
       const shown = select.querySelector(":scope > span > span");
       if (assignee === null) {
@@ -2501,16 +2500,15 @@ test("the default shapes keep main's class strings", async () => {
       "AssigneeControl badge, unassigned",
       caseOf(view, "unassigned").querySelector("button > span > span")
     );
-    const p0 = within(caseOf(view, "P0")).getByRole("combobox");
+    const p0 = within(caseOf(view, "P0")).getByRole("button", {
+      name: pickNamed("Priority of CORE-1"),
+    });
     classAt("PriorityControl wrapper", p0.parentElement);
-    classAt("PriorityControl badge, P0", p0.parentElement?.querySelector("span"));
-    classAt(
-      "PriorityControl badge, P1",
-      caseOf(view, "P1").querySelector("span[aria-hidden='true']")
-    );
+    classAt("PriorityControl badge, P0", p0.querySelector(":scope > span > span"));
+    classAt("PriorityControl badge, P1", caseOf(view, "P1").querySelector("button > span > span"));
     classAt(
       "PriorityControl badge, none",
-      caseOf(view, "no priority").querySelector("span[aria-hidden='true']")
+      caseOf(view, "no priority").querySelector("button > span > span")
     );
 
     const held = within(caseOf(view, "held")).getByTestId("issue-claim");

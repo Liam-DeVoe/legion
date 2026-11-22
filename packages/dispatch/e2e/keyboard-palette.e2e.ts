@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { issueSearchIn, openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
+import { listTrigger } from "./filters";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -83,7 +84,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("done");
 
     // The guards follow the buttons: the closed issue offers Reopen and neither Close nor a
-    // priority, exactly as its header renders Reopen and disables the priority select.
+    // priority, exactly as its header renders Reopen and holds the priority's list.
     await page.reload();
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.locator("body").focus();
@@ -99,10 +100,10 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("backlog");
 
     // A filtered action runs the same write its control does. The rows are taken when the palette
-    // opens, and the Set priority rows, like the priority select, are withheld until the page has
-    // taken in the Reopen answer, which under load can come after the server already reads
-    // `backlog`: so open once the select takes a pick again.
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeEnabled();
+    // opens, and the Set priority rows, like the priority list's trigger, are withheld until the
+    // page has taken in the Reopen answer, which under load can come after the server already
+    // reads `backlog`: so open once the trigger takes a pick again.
+    await expect(listTrigger(page, `Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     await input.fill("priority p2");
@@ -121,7 +122,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     );
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toHaveValue("2");
+    await expect(listTrigger(page, `Priority of ${issue.key}`)).toHaveAccessibleName(
+      `Priority of ${issue.key} P2`
+    );
     await expect.poll(() => getIssue(issue.key).then((read) => read.priority)).toBe(2);
   } finally {
     await context.close();
@@ -331,7 +334,7 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     const closeButton = page.getByRole("button", { name: "Close issue" });
     await closeButton.click();
     await expect(closeButton).toBeDisabled();
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeDisabled();
+    await expect(listTrigger(page, `Priority of ${issue.key}`)).toBeDisabled();
 
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");

@@ -2363,7 +2363,7 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
     expect(
-      within(stateActions).getByRole("combobox", { name: "Priority of CORE-1" })
+      within(stateActions).getByRole("button", { name: pickNamed("Priority of CORE-1") })
     ).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
