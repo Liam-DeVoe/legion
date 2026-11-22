@@ -614,25 +614,25 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these on a fresh load, and nothing else: 21 reads, named rather than counted, and
-  // waited for rather than read at an instant. Four of them land after the message above is on
+  // Exactly these on a fresh load, and nothing else: 20 reads, named rather than counted, and
+  // waited for rather than read at an instant. Three of them land after the message above is on
   // the page, which is what a count taken at that instant misses: the issue header is a chunk
-  // of its own, asked for only once the page that holds it renders, so the three reads of its
-  // metadata rail - who is subscribed to the issue, the project's architecture sources and the
-  // repository mappings - go out when that chunk lands, after the Conversation, whose chunk
-  // the address asked for before React started (`app.tsx`'s `requestTheOpenPagesChunk`); and
-  // the margin is mounted only once the route the reader asked for is drawn (`app.tsx`'s
-  // `TheRouteIsDrawn`), so its own list of the issue's asks goes out then too. The page issues
-  // the last requests of its first
-  // load within a few milliseconds of painting the message this row waits for, so a count
-  // taken the moment that message appears can be one request short, which is how this row
-  // failed in CI - 20 against 21. The wait ends on the set itself, so a panel that starts
-  // eagerly fetching before its tab is ever opened still trips this immediately instead of
-  // only breaking some looser upper bound, and a failure names the request that is missing or
-  // extra instead of leaving a reader to work out which of 21 a count of 20 dropped. The
-  // Conversation pages no event log at all now that the history is the Activity tab's, and the
-  // Activity panel is unmounted until its tab is opened. No block schema is among them: the page
-  // carries the manifest it was built with (`compiledBlockSchema`).
+  // of its own, asked for only once the page that holds it renders, so the two reads of its
+  // metadata rail - who is subscribed to the issue and the project's architecture sources - go
+  // out when that chunk lands, after the Conversation, whose chunk the address asked for before
+  // React started (`app.tsx`'s `requestTheOpenPagesChunk`); and the margin is mounted only once
+  // the route the reader asked for is drawn (`app.tsx`'s `TheRouteIsDrawn`), so its own list of
+  // the issue's asks goes out then too. The repository control reads no mapping of its own: it
+  // shares the Projects query for the project's default repository (below). The page issues the
+  // last requests of its first load within a few milliseconds of painting the message this row
+  // waits for, so a count taken the moment that message appears can be one request short, which
+  // is how this row once failed in CI. The wait ends on the set itself, so a panel that starts
+  // eagerly fetching before its tab is ever opened still trips this immediately instead of only
+  // breaking some looser upper bound, and a failure names the request that is missing or extra
+  // instead of leaving a reader to work out which one a short count dropped. The Conversation
+  // pages no event log at all now that the history is the Activity tab's, and the Activity panel
+  // is unmounted until its tab is opened. No block schema is among them: the page carries the
+  // manifest it was built with (`compiledBlockSchema`).
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -686,7 +686,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
   ].sort();
-  expect(firstLoad).toHaveLength(21);
+  expect(firstLoad).toHaveLength(20);
   await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
 
   await alice.close();
