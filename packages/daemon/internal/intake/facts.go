@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -96,6 +97,13 @@ type DispatchIssue struct {
 	// decode's own among them, and for a preparation whose reads GitHub did not answer or refused:
 	// only a preparation sets it.
 	RepositoryRead *ghbranch.Repository
+	// PreparedAgainst is the repository the issue's record held when this fact was prepared (the
+	// daemon's prepareRecorded, from the record that preparation read), kept in memory with the
+	// fact and never stored. The record's correction is written only while the record still holds
+	// it; workflow.Engine.ApplyRepositoryChange says why. Empty for every fact no preparation of a
+	// recorded issue made, the decode's own among them, whose correction is written whatever
+	// repository the record holds.
+	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -254,6 +262,11 @@ type Handover struct {
 	RepositoryRead        *ghbranch.Repository
 	RepositoryRefusal     string
 	RepositoryRefusalKind RepositoryRefusalKind
+	// PreparedAgainst is the repository the issue's record held at the outbox's preparation of
+	// the fact (the daemon's prepareHandover), as an event's preparation carries it
+	// (DispatchIssue.PreparedAgainst), kept in memory and never stored: admission's correction is
+	// written only while the record still holds it. Empty where nothing prepared the fact.
+	PreparedAgainst string
 }
 
 func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
@@ -759,9 +772,9 @@ func (r PullRequestReview) LegionSession() string {
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
 // review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA
-// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
-// which code was read.
+// cannot be parsed, it names no head, or the head it names is not spelled as a head is
+// (reviewround.IsHead) - a short SHA or a branch name names no commit, since only the whole of it
+// says which code was read.
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
@@ -771,7 +784,7 @@ func (r PullRequestReview) LegionSession() string {
 // heads apart.
 func (r PullRequestReview) LegionHead() string {
 	head := r.lastLegionFooter().Head
-	if !fullCommitSHA(head) {
+	if !reviewround.IsHead(head) {
 		return ""
 	}
 	return head
@@ -800,21 +813,6 @@ func (r PullRequestReview) LegionEntry() int64 {
 		return 0
 	}
 	return int64(entry)
-}
-
-// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
-// chance and GitHub spells every head it reports this way.
-func fullCommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -1330,9 +1328,9 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
-// as every other fact, so a root whose wait was held because its architect had not yet taken its
-// task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
+// takes it as every other fact, so a root whose wait was held because its architect had not yet
+// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role
@@ -1808,13 +1806,14 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
 // issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone, and what
-// that preparation read of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and
-// its kind) where the event resolves the issue to that same repository, which a recorded issue's
-// correction is written from (workflow.Engine.ApplyRepositoryChange): the daemon's own status
-// write resolves the issue as the view does, so its correction would otherwise read as unread. A
-// view prepared in place of no event applies nothing. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// carrying the view's Ancestry and Reread, which the preparation read for the view alone, the
+// repository the record held at that preparation (PreparedAgainst), and what that preparation read
+// of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and its kind) where the
+// event resolves the issue to that same repository, which a recorded issue's correction is written
+// from (workflow.Engine.ApplyRepositoryChange): the daemon's own status write resolves the issue as
+// the view does, so its correction would otherwise read as unread. A view prepared in place of no
+// event applies nothing. Every other fact applies as it is, so no handler sees Observed or
+// Delivered.
 //
 // A view older than an event of the issue the daemon has already applied (the mirror, which every
 // applied issue event writes first, holds a later sequence) applies nothing while the issue is
@@ -1845,7 +1844,7 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		return nil, false, nil
 	default:
 		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
+		delivered.Ancestry, delivered.Reread, delivered.PreparedAgainst = issue.Ancestry, issue.Reread, issue.PreparedAgainst
 		if strings.EqualFold(delivered.ResolvedRepo, issue.ResolvedRepo) {
 			delivered.RepositoryRead, delivered.RepositoryRefusal, delivered.RepositoryRefusalKind =
 				issue.RepositoryRead, issue.RepositoryRefusal, issue.RepositoryRefusalKind

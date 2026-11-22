@@ -359,6 +359,8 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", rig.issue.Key, renameFrom); err != nil {
 		t.Fatal(err)
 	}
+	// The pod was built from the repository the record names, as a Sandbox pod is.
+	rig.podBuiltFrom(renameFrom)
 	var logged syncBuffer
 	rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
 	rig.w.repositories = transferredRepositories()
@@ -407,6 +409,8 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", key, renameFrom); err != nil {
 		t.Fatal(err)
 	}
+	// The pod was built from the repository the record names, as a Sandbox pod is.
+	rig.podBuiltFrom(renameFrom)
 	rig.w.repositories = transferredRepositories()
 	rig.w.liveWake = make(chan struct{}, 1)
 	rig.runner.podEnded = rig.w.podEndsOn(renamePodRuntime{rig.rt})
@@ -466,7 +470,9 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 		t.Errorf("the next launch's spec works %s at %s, want %s at main: the pod after the rename works the new name",
 			spec.Repository, spec.DefaultBranch, renameTo)
 	}
-	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute), rig.w.repositories.left)
+	// The next pod is built from the spec just read, so its workspace is a clone of that name.
+	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", spec.Repository.String(),
+		time.Now().UTC().Add(time.Minute), rig.w.repositories.left)
 	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
 		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
 			take, saved.Head, saved.PodUID, err, releasedPodUID)
@@ -505,6 +511,8 @@ func TestAReleaseThatKeepsTheVolumeLeavesTheIssueOnItsOldName(t *testing.T) {
 			if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", key, renameFrom); err != nil {
 				t.Fatal(err)
 			}
+			// The pod was built from the repository the record names, as a Sandbox pod is.
+			rig.podBuiltFrom(renameFrom)
 			var logged syncBuffer
 			rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
 			rig.w.repositories = transferredRepositories()

@@ -59,15 +59,16 @@ const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 
 // idleRigEarlierBundle is the workspace bundle an earlier release of the issue's pod saved, as
 // both rigs of this rule seed it (idleWakeRig.savedBundle, idleRig.earlierReleasesBundle): the
-// same body, the same head and the same source pod, at the moment its caller gives. That moment
-// is far enough back that a pod a later start builds is newer than the save and so the pod the
-// work is sent to. The body is bytes rather than a real git bundle, since what either rig reads
-// is which pod the daemon offered the work to and not what a launcher could do with it.
-func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
+// same body, the same head and the same source pod, of the repository repo that pod was built
+// from, at the moment its caller gives. That moment is far enough back that a pod a later start
+// builds is newer than the save and so the pod the work is sent to. The body is bytes rather than
+// a real git bundle, since what either rig reads is which pod the daemon offered the work to and
+// not what a launcher could do with it.
+func idleRigEarlierBundle(issue, repo string, at time.Time) runtime.WorkspaceBundle {
 	return runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work an earlier release of " + issue + " saved"),
 		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		At:     at, PodUID: idleRigEarlierPodUID,
+		At:     at, PodUID: idleRigEarlierPodUID, Repo: repo,
 	}
 }
 
@@ -393,13 +394,13 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 	r.t.Helper()
 	ctx := context.Background()
-	saved := idleRigEarlierBundle(issue.key, time.Now().UTC().Add(-10*time.Minute))
+	saved := idleRigEarlierBundle(issue.key, liveRepo, time.Now().UTC().Add(-10*time.Minute))
 	st, err := store.Open(ctx, r.cfg.PostgresDSN)
 	if err != nil {
 		r.t.Fatalf("open the store to save the bundle of %s: %v", issue.key, err)
 	}
 	defer st.Close()
-	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, liveRepo, saved); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, saved); err != nil {
 		r.t.Fatalf("save the earlier release's bundle of %s: %v", issue.key, err)
 	}
 	return saved

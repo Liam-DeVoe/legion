@@ -31,8 +31,9 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // per repository. A record Dispatch resolves to none is left as it is, and the issue and the cause
 // are logged, while every other record is filled: one record's repository never stops the boot
 // (INFRA-4401 D11), and the backfill answers GitHub's spelling of each record it filled, for the
-// refresher's backfill to have GitHub intake hear it (backfillLater), and that a record is left,
-// for the refresher to try it again.
+// refresher's backfill to have GitHub intake hear it (backfillLater), the key of each record it
+// filled, for the refresher's backfill to ask for its follow, and that a record is left, for the
+// refresher to try it again.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
@@ -58,9 +59,10 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 		w := seed(t)
 		client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
 		var logs bytes.Buffer
-		filled, left, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
-		if err != nil || !slices.Equal(repositoryNames(filled), []string{"Acme/Widgets"}) || !left {
-			t.Fatalf("backfill = filled %v, left %t, %v; want LEGION-9 filled on GitHub's Acme/Widgets, the two Dispatch resolves none for left, and no error", filled, left, err)
+		filled, keys, left, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		if err != nil || !slices.Equal(repositoryNames(filled), []string{"Acme/Widgets"}) || !slices.Equal(keys, []string{"LEGION-9"}) || !left {
+			t.Fatalf("backfill = filled %v (%v), left %t, %v; want LEGION-9 filled on GitHub's Acme/Widgets, the two Dispatch resolves none for left, and no error",
+				filled, keys, left, err)
 		}
 		if unfilled := unfilledKeys(t, w); !slices.Equal(slices.Sorted(slices.Values(unfilled)), []string{"LEGION-12", "LEGION-7"}) {
 			t.Fatalf("unfilled after the backfill = %v, want LEGION-12 and LEGION-7 left as they are", unfilled)
@@ -81,7 +83,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 			{Key: "LEGION-7", ResolvedRepo: "acme/widgets"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}, {Key: "LEGION-12", ResolvedRepo: "acme/widgets"},
 		}}
 		var logs bytes.Buffer
-		if _, _, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		if _, _, _, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
 			t.Fatalf("backfill: %v", err)
 		}
 		if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {

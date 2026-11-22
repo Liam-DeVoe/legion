@@ -12,7 +12,7 @@ import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./ph
 import { type PhaseStallEntry, phaseStallEntryFrom, reminderText } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
 
-/** The contract the build under test speaks, which its client states on every request. */
+/** A contract the test's client states on every request. */
 const CONTRACT = 60;
 
 const implementer = {

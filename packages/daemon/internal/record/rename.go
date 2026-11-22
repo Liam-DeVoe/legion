@@ -28,14 +28,15 @@ import (
 // issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
 // production_checks.repo (0049), repo_notes.resolved_repo (0047) and workspace_bundles.repo
 // (20261112012123_issue_repository_correction), the repository a saved bundle's work is of.
-// That last one is written because the take compares it with the record's repository through
-// the pair (ghrepo.Renames.Left): left on the old name, a bundle saved before the pass would read
-// as work of a repository the issue left once the pair is removed from `repository_renames`, and
-// the next pod's restore would refuse it; and it is counted, so the rows the pass logs as left
-// hold the operator's removal of the pair back while a bundle names the old name. No other
-// column holds one the pass writes. The claims' and claim capabilities' locators name a tmux pane
-// or a Sandbox, the outbox's payloads carry no repository, and processed_events.event_id only
-// embeds one in a dedupe key. Three more columns hold a name the pass leaves as it is:
+// That last one is written because the take compares it with the repository of the pod that
+// asks, which a launch builds from the record, through the pair (ghrepo.Renames.Left): left on
+// the old name, a bundle saved before the pass would read as work of another repository than a
+// pod built from the new name once the pair is removed from `repository_renames`, and that pod's
+// restore would refuse it; and it is counted, so the rows the pass logs as left hold the
+// operator's removal of the pair back while a bundle names the old name. No other column holds
+// one the pass writes. The claims' and claim capabilities' locators name a tmux pane or a
+// Sandbox, the outbox's payloads carry no repository, and processed_events.event_id only embeds
+// one in a dedupe key. Three more columns hold a name the pass leaves as it is:
 // issues.repo_before, the repository a correction moved the issue off, which is that
 // correction's history and decides nothing that compares it with a pair;
 // issues.repo_change_pending, Dispatch's own name for a change still to be made, which the

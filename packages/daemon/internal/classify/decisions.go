@@ -1466,14 +1466,17 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 	return gate
 }
 
-// ReviewSuperseded is the one answer to "is this recorded review still the person's current
-// word": it reports whether gate records an approval given after a review of version at mark — an
-// approval of a later version, or one of that version the review does not come after
-// (record.EventMark.After). Such an approval is the person's decision in the review's place,
-// whichever approval request carried it, so nothing of the review is left to tell or to act on.
-// Every sender of a task or a notice about a person's review reaches it through one predicate,
-// workflow's SupersedingApproval, asked from the gates as the record holds them at that moment.
-// That predicate's doc lists the guards that choose whether this rule is asked of a review.
+// ReviewSuperseded is the one answer, for every sender of a task or a notice about a person's
+// review, to "is this recorded review still the person's current word": it reports whether gate
+// records an approval given after a review of version at mark — an approval of a later version,
+// or one of that version the review does not come after (record.EventMark.After). Such an approval
+// is the person's decision in the review's place, whichever approval request carried it, so nothing
+// of the review is left to tell or to act on. Each of those senders reaches it through one
+// predicate, workflow's SupersedingApproval, asked from the gates as the record holds them at that
+// moment. That predicate's doc lists the guards that choose whether this rule is asked of a review.
+//
+// The news of an approved version is no sender of that kind: it asks DesignApprovalStands, whose
+// doc says how the two rules differ.
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror
@@ -1481,15 +1484,35 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // document at that version's own place in the log (ask.edited), so a request whose newest event
 // the approval does not follow asked for no version above the approved one, and is asked at the
 // approved version and that event's mark. So when two requests are made for one version and the
-// approval lands on the second, the first, still open on the mirror, is answered by it. A kept
-// decision records no version either, and is asked the same way, at the approved version and its
-// own place in Dispatch's log, which the daemon keeps from its notice (workflow's SupersedingApproval).
+// approval lands on the second, the first, still open on the mirror, is answered by it. A decision
+// a daemon of an earlier release kept records no version either, and is asked the same way, at
+// the approved version and its own mark (workflow's SupersedingApproval).
 func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	if gate.ApprovedVersion == nil {
 		return false
 	}
 	approved := *gate.ApprovedVersion
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
+}
+
+// DesignApprovalStands is the news rule: it reports whether the approval a news item names, of
+// version to of the document artifact, is still the gate's, asked when a task that carries the
+// item is sent, not when it was composed (the daemon's itemStands). It stands while the gate's
+// row for the item's step holds that document and its approved version is to. Where the step now
+// records another document (a registration that named one since), a later approval has replaced the
+// one the item names, or a changes request has cleared it (ApplyDesignGateEvent), the item would
+// tell the holder of a version that is no longer the person's word. A new version that closed
+// the gate since leaves it standing: the gate keeps that approval as the version a person approved
+// below the latest.
+//
+// It is not ReviewSuperseded, which every sender of a task or a notice about a person's review
+// asks (workflow's SupersedingApproval). That rule asks whether an approval followed a review,
+// so a gate with no approval leaves the review standing. An item tells the holder the version
+// its work now follows, and a changes request that cleared that approval is the person's word
+// against that version, so the item no longer stands. It is named for the design gate because
+// ApprovalStands already answers the pull request's question of a review.
+func DesignApprovalStands(gate record.DesignGate, artifact string, to int) bool {
+	return gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
 }
 
 // DesignGateOpen reports whether a human approved the gate's current document version. It
@@ -1501,20 +1524,32 @@ func DesignGateOpen(gate record.DesignGate) bool {
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// the deployment gates, in the order it names them, or the single step spec when it gates none.
-// It is record.RequiredSteps, where the rule lives because the record package needs it too and
-// may not read this one, and it keeps its name here because every reader of a step list in this
-// file reads it through this name.
+// it is given, in their order, or the single step spec when it is given none. It is
+// record.RequiredSteps, where the rule lives because the record package needs it too and may not
+// read this one, and it keeps its name here because every reader of a step list in this file
+// reads it through this name. It takes no rows, so a caller that holds a root's rows gives it
+// TreeSteps' answer.
 func RequiredSteps(configured []record.DesignStep) []record.DesignStep {
 	return record.RequiredSteps(configured)
 }
 
+// TreeSteps is the steps one tree is gated on: the steps the deployment gates, and criteria
+// after them when the root holds a criteria row and the deployment gates spec but not criteria.
+// `gates.design` names the steps every root must register, any step a root registers holds its
+// tree, a criteria row exists only by the architect's registration, and a row kept after a switch
+// to `gates.design: off` gates nothing. It is record.TreeSteps, where the rule lives because the
+// record package needs it too and may not read this one, and it keeps its name here as
+// RequiredSteps does.
+func TreeSteps(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []record.DesignStep {
+	return record.TreeSteps(configured, gates)
+}
+
 // DesignGatesOpen reports whether gates, every design gate an issue holds by its step, lets the
-// tree's work run: no required step (RequiredSteps) holds the work. A required step with no row
-// holds the work, as an unregistered gate always has, and since a root always requires at least
-// one step, an issue holding no row at all is held too. A row of a step the deployment does not
-// require is read by nothing here: it is kept as the record of a step gated before, and holds
-// nothing.
+// tree's work run: no required step (RequiredSteps over TreeSteps) holds the work. A required
+// step with no row holds the work, as an unregistered gate always has, and since a root always
+// requires at least one step, an issue holding no row at all is held too. A row of a step the
+// tree is not gated on is read by nothing here: it is kept as the record of a step gated before,
+// and holds nothing.
 //
 // It is record.TreeGate.Open over the same steps and rows, where the rule lives because the
 // record package needs it too and may not read this one, and it keeps its name here because
@@ -1524,16 +1559,17 @@ func DesignGatesOpen(configured []record.DesignStep, gates map[record.DesignStep
 	return record.TreeGate{Steps: configured, Rows: gates}.Open()
 }
 
-// FirstClosedStep is the first required step (RequiredSteps) whose gate is not open, in the
-// configured order, with the row it holds — the zero row when it holds none, which is the step
-// nobody has registered. ok is false when every required step is open, which is DesignGatesOpen.
+// FirstClosedStep is the first required step (RequiredSteps over TreeSteps) whose gate is not
+// open, in the configured order with a registered criteria row after the deployment's steps,
+// with the row it holds — the zero row when it holds none, which is the step nobody has
+// registered. ok is false when every required step is open, which is DesignGatesOpen.
 //
 // It answers which step holds the work now, and so which step a refusal or a hold is about: a
 // step nobody has registered holds it, because nobody has said the document exists. Which step a
 // person is being asked about is another question, since nobody can be asked about a document
 // the record does not know, and the wait reads its own rule for it (StandingGate).
 func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, record.DesignGate, bool) {
-	for _, step := range RequiredSteps(configured) {
+	for _, step := range RequiredSteps(TreeSteps(configured, gates)) {
 		if gate, ok := gates[step]; !ok || !DesignGateOpen(gate) {
 			return step, gate, true
 		}
@@ -1542,12 +1578,18 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 }
 
 // StandingGate is the gate a person is being asked about: the row of the first required step
-// (RequiredSteps), in the configured order, that is closed and has a row. That is a different
-// question from which step holds the tree's work (FirstClosedStep), which a step nobody has
-// registered also holds: such a step names no document, so nobody can be asked about it, and the
-// wait it raised would be a wait on nothing. So the wait skips it and names the first registered
-// unapproved step after it, while the work stays held. ok is false when no required step holds a
-// closed row, which is every required step open or every closed one unregistered.
+// (RequiredSteps over TreeSteps), in the configured order with a registered criteria row after
+// the deployment's steps, that is closed and has a row. That is a different question from which
+// step holds the tree's work (FirstClosedStep), which a step nobody has registered also holds:
+// such a step names no document, so nobody can be asked about it, and the wait it raised would
+// be a wait on nothing. So the wait skips it and names the first registered unapproved step after
+// it, while the work stays held. ok is false when no required step holds a closed row, which is
+// every required step open or every closed one unregistered.
+//
+// A criteria row comes after the spec, so a root whose spec and Verification document are both
+// with the person stands on its spec, the document one approval request names when it asks for
+// both (`dispatch request-approval --include-verification`), and on its Verification document
+// once the spec is open.
 //
 // A deployment that gates no step asks no person about anything, so the empty list stands on no
 // gate: ok is false whatever rows the root holds. The empty list still holds the tree's work
@@ -1560,7 +1602,7 @@ func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]re
 	if len(configured) == 0 {
 		return record.DesignGate{}, false
 	}
-	for _, step := range RequiredSteps(configured) {
+	for _, step := range RequiredSteps(TreeSteps(configured, gates)) {
 		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
 			return gate, true
 		}

@@ -160,9 +160,13 @@ type DecisionMark struct {
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
-	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), which a send
-	// asks the gate with (workflow.SupersedingApproval); it is no part of the row's identity.
-	Seq int64 `json:"seq,omitempty"`
+	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), Artifact the
+	// document reviewed (ParkedDecision.Artifact) and Version its version reviewed
+	// (ParkedDecision.Version), which a send asks the gate with (workflow.SupersedingApproval);
+	// none is part of the row's identity.
+	Seq      int64  `json:"seq,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+	Version  int    `json:"version,omitempty"`
 }
 
 // KeptForget deletes in tx what a clear of a generation would otherwise leave to be asked of no
@@ -279,14 +283,16 @@ func SpecDecision(kind NoticeKind) (DecisionKind, bool) {
 	}
 }
 
+// validDecisionKinds is every decision a parked-decision notice may relay, which is what
+// validDecisionKind decides from. It is a list rather than a switch so a test can range over it,
+// as validNoticeKinds is.
+var validDecisionKinds = []DecisionKind{
+	DecisionDesignApproved, DecisionDesignChangesRequested, DecisionCarriedGateOpened,
+	DecisionAskAnswered, DecisionAskResolved, DecisionAskReply,
+}
+
 func validDecisionKind(kind DecisionKind) bool {
-	switch kind {
-	case DecisionDesignApproved, DecisionDesignChangesRequested, DecisionCarriedGateOpened,
-		DecisionAskAnswered, DecisionAskResolved, DecisionAskReply:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(validDecisionKinds, kind)
 }
 
 // PersonActor says whether actor, as Dispatch names an event's author (`<kind>:<id>`), is a person.

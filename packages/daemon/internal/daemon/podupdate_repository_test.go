@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -351,35 +352,359 @@ func TestThePodsRepositoryIsReadThroughTheSameClaimInAnyOrder(t *testing.T) {
 	}
 }
 
-// A gone pod's message names the old repository's workspace only on a round whose reasons end in
-// the reason repositoryDrift writes (podWentMessage). Every other text reads as no repository
-// round: no reason at all, the runtime's reasons alone, the reason's words inside another reason
-// or before one, and a reason whose names are not two repositories.
-func TestTheRepositoryReasonReadsBackOnlyAsItIsWritten(t *testing.T) {
-	written := repositoryReason(podUpdateRepo, podUpdateCorrectedRepo)
+// A gone pod's message reads the repository the round's pod was built from off the round itself
+// (supervise.Claim.UpdateRepository), never out of the round's reasons, which are text for a
+// reader. The round here was opened over a pod of podUpdateRepo, and its reasons name only the
+// image that the pod drifted on as well, while the record has moved to podUpdateCorrectedRepo. The
+// message still names the old repository's workspace and its issue branch, beside the repository
+// the record holds.
+func TestAPodGoneOnARepositoryRoundReadsThePodsRepositoryOffTheRound(t *testing.T) {
+	roles := []podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}
+	for i := range roles {
+		roles[i].round, roles[i].reasons, roles[i].repository = podUpdateRound, podUpdateDrift, podUpdateRepo
+	}
+	roles[1].signalled = true
+	rig := newPodUpdateRig(t, roles...)
+	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+	rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+
+	rig.tickBackIn(podUpdateReplacementPod)
+
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+	}
+	want := implementerLostWith(podUpdateDrift,
+		keptVolumeMovedTo(podUpdateCorrectedRepo), pushedMovedTo(podUpdateCorrectedRepo))
+	if messages[0] != want {
+		t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+	}
+}
+
+// A gone pod's message names the repository the round's pod was built from and the repository
+// the issue's record holds when the message is written, never the one the record held at the
+// round's open. Here Dispatch moves the issue twice: the first correction opens the round over the
+// pod of podUpdateRepo, and the second moves the record on while the round is open. The round's
+// reasons keep the record as it stood at the open, since a round's terms are fixed then, but the
+// next pod is built from the record as it stands now. So after a second move onto a third
+// repository the message names the old workspace and issue branch of podUpdateRepo, the pod's
+// own, and the third repository as the new pod's origin, and names podUpdateCorrectedRepo only in
+// the reasons. A second move back onto podUpdateRepo is no move at all: the next pod is built from
+// the repository the gone pod was, so the message is the one of an issue that never moved, but
+// for its reasons.
+func TestAPodGoneAfterASecondCorrectionNamesThePodsRepositoryAndTheRecordsNow(t *testing.T) {
+	const third = "zeta/gadgets"
 	for _, tc := range []struct {
-		reasons string
-		want    bool
+		name string
+		// again and branch are the repository the second correction moves the record onto and
+		// that repository's default branch.
+		again, branch string
+		disk, pushed  string
 	}{
-		{written, true},
-		{podUpdateDrift + ", " + written, true},
-		{"", false},
-		{podUpdateDrift, false},
-		{podUpdateDrift + " " + written, false},
-		{written + ", " + podUpdateDrift, false},
-		{"repository " + podUpdateRepo, false},
-		{"repository acme widgets, now " + podUpdateCorrectedRepo, false},
+		{"a second move onto a third repository", third, "release/v10", keptVolumeMovedTo(third), pushedMovedTo(third)},
+		{"a second move back onto the pod's repository", podUpdateRepo, "main", podUpdateKeptVolumeStays, podUpdateAtOrigin},
 	} {
-		pod, recorded, ok := roundRepositories(tc.reasons)
-		if ok != tc.want {
-			t.Errorf("roundRepositories(%q) reads a repository round: %t, want %t",
-				tc.reasons, ok, tc.want)
-			continue
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			rig.awaitRound(claim.RoleTester, podUpdateRound)
+			rig.corrects(tc.again, tc.branch)
+			rig.signal(claim.RoleTester, "a1b2c3d")
+			rig.tickBackIn(podUpdateReplacementPod)
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+			}
+			if want := implementerLostWith(podUpdateRepositoryReason, tc.disk, tc.pushed); messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
+	}
+}
+
+// A correction can land while a round that another drift opened runs. The round here opens for
+// the image alone, over a pod built from podUpdateRepo while the record still holds that
+// repository, and Dispatch moves the issue to podUpdateCorrectedRepo before the pod goes. The
+// round records the repository its pod was built from at its open, whatever drift opened it
+// (supervise.Claim.UpdateRepository), so the message on the gone pod still names the issue branch
+// of podUpdateRepo, and on a kept volume its workspace, and names podUpdateCorrectedRepo as the
+// new pod's origin. Its reasons name the image alone: a round's terms are fixed at its open.
+func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// created is when the issue's kept Sandbox was made, zero for an ephemeral volume.
+		created time.Time
+		disk    string
+	}{
+		{"a kept volume", podUpdateStart.Add(-time.Hour), keptVolumeMovedTo(podUpdateCorrectedRepo)},
+		{"an ephemeral volume", time.Time{}, podUpdateDiskLost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.drifts(podUpdateDrift)
+			if !tc.created.IsZero() {
+				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
+			}
+
+			rig.tick()
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				c := rig.awaitRound(role, podUpdateRound)
+				if c.UpdateReasons != podUpdateDrift || c.UpdateRepository != ghrepo.MustParse(podUpdateRepo) {
+					t.Errorf("the %s's round records the reasons %q and the repository %q, want %q and %s, its pod's",
+						role, c.UpdateReasons, c.UpdateRepository, podUpdateDrift, podUpdateRepo)
+				}
+			}
+			rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			rig.signal(claim.RoleTester, "a1b2c3d")
+			rig.tickBackIn(podUpdateReplacementPod)
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+			}
+			if want := implementerLostWith(podUpdateDrift, tc.disk, pushedMovedTo(podUpdateCorrectedRepo)); messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
+	}
+}
+
+// A tick whose read of the pod's repository fails has read the pod no better than one whose drift
+// read fails, and opens no round however the image drifted (groupDrift, podUnread). A round opened
+// on it would record no repository (supervise.Claim.UpdateRepository) for its whole life, since
+// its terms are fixed at its open, and a correction landing while it ran would send each role to
+// its issue branch at the new pod's origin, which is the other repository. The next tick reads the
+// repository and opens the round with it recorded.
+func TestARoundOpensOnlyOnATickThatReadThePodsRepository(t *testing.T) {
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.rt.FailPodRepository(errors.New("the cluster did not answer for this pod"))
+
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitPosted(role)
+		if c := rig.claimOf(role); c.UpdateRound != "" {
+			t.Errorf("after the tick whose repository read failed, the %s is in round %q for reasons %q with the repository %q, want no round",
+				role, c.UpdateRound, c.UpdateReasons, c.UpdateRepository)
 		}
-		if ok && (pod.String() != podUpdateRepo || recorded.String() != podUpdateCorrectedRepo) {
-			t.Errorf("roundRepositories(%q) = %s, %s, want %s, %s",
-				tc.reasons, pod, recorded, podUpdateRepo, podUpdateCorrectedRepo)
+	}
+
+	rig.rt.FailPodRepository(nil)
+	rig.tick()
+	for _, role := range roles {
+		c := rig.awaitRound(role, podUpdateRound)
+		if c.UpdateReasons != podUpdateDrift || c.UpdateRepository != ghrepo.MustParse(podUpdateRepo) {
+			t.Errorf("the %s's round records the reasons %q and the repository %q, want %q and %s, its pod's",
+				role, c.UpdateReasons, c.UpdateRepository, podUpdateDrift, podUpdateRepo)
 		}
+	}
+}
+
+// A replacement that could not wait for a role writes on the issue what its read of the
+// workspace found (workspaceLostMessage), and that message says where the work is as the message
+// on a gone pod does. The round here opens for the image alone over a pod of podUpdateRepo, the
+// daemon suspended the planner, and the read through the implementer finds one commit that no
+// branch holds, or fails. Where Dispatch moves the issue to podUpdateCorrectedRepo while the round
+// runs, the message names the work by podUpdateRepo and not by origin, in what it says the read
+// found or could not know as in what it says of the disk: the read ran in the round's pod, whose
+// origin was podUpdateRepo. It sends each role to the issue branch of podUpdateRepo, names
+// podUpdateCorrectedRepo as the new pod's origin and, on a kept volume, names the workspace of
+// podUpdateRepo: the round's repository and the record as it stands when the message is written
+// (roundMove). The control is the same round of an issue that never moved, whose message is the
+// text of every other such replacement, word for word.
+func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved(t *testing.T) {
+	madeBefore := podUpdateStart.Add(-time.Hour)
+	const (
+		// atOrigin and ofThePods are the words the message names the work that no branch holds
+		// with, on an issue that never moved and on one that moved off the pod's repository, and
+		// heldAtOrigin and heldOfThePods the words it names the work the read was for with.
+		atOrigin      = "Work that is not on a branch at origin"
+		ofThePods     = "Work that is not on a branch of the repository `" + podUpdateRepo + "`"
+		heldAtOrigin  = "no branch or tag at origin holds"
+		heldOfThePods = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
+		// lost and kept are what the message says of the pod and its disk.
+		lost = "The pod and its disk are gone."
+		kept = "The pod is gone. Its disk is a kept volume, and the volume is still there."
+	)
+	for _, tc := range []struct {
+		name string
+		// keptVolumeAt is when the issue's Sandbox made the kept volume that is the pod's disk,
+		// nil for an ephemeral disk, corrected is whether Dispatch moves the issue to
+		// podUpdateCorrectedRepo while the round runs, and fails is whether the read fails with
+		// errPassedOverRead rather than find the one commit.
+		keptVolumeAt     *time.Time
+		corrected, fails bool
+		// gone, held, work and pushed are what the message says of the pod and its disk, the
+		// words it names the work the read was for with, what it says of the work that no
+		// branch holds, and of the work each role pushed.
+		gone, held, work, pushed string
+	}{
+		{"an ephemeral disk of an issue that never moved", nil, false, false, lost, heldAtOrigin,
+			atOrigin + " is lost.", podUpdateAtOrigin},
+		{"a kept volume of an issue that never moved", &madeBefore, false, false, kept, heldAtOrigin,
+			atOrigin + " is on that volume. The next pod of this issue mounts the volume.", podUpdateAtOrigin},
+		{"a read that fails on an issue that never moved", nil, false, true, lost, heldAtOrigin,
+			atOrigin + " is lost.", podUpdateAtOrigin},
+		{"an ephemeral disk of an issue that moved", nil, true, false, lost, heldOfThePods,
+			ofThePods + " is lost.", pushedMovedTo(podUpdateCorrectedRepo)},
+		{"a kept volume of an issue that moved", &madeBefore, true, false, kept, heldOfThePods,
+			keptWorkMovedTo(ofThePods, podUpdateCorrectedRepo), pushedMovedTo(podUpdateCorrectedRepo)},
+		{"a read that fails on an issue that moved", nil, true, true, lost, heldOfThePods,
+			ofThePods + " is lost.", pushedMovedTo(podUpdateCorrectedRepo)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
+			read := "Before the replacement, the daemon read the issue workspace. " +
+				"The read found work that " + tc.held + ". " +
+				"The workspace held one commit that " + tc.held + ": " + passedOverCommit + "."
+			if tc.fails {
+				rig.rt.FailWorkspaceWork(podUpdateIssue, errPassedOverRead)
+				read = "Before the replacement, the daemon tried to read the issue workspace. " +
+					"The read failed: " + errPassedOverRead.Error() + ". " +
+					"The daemon does not know if the workspace held work that " + tc.held + "."
+			} else {
+				rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+			}
+			if tc.keptVolumeAt != nil {
+				rig.rt.ScriptKeptVolume(podUpdateIssue, *tc.keptVolumeAt)
+			}
+			rig.drifts(podUpdateDrift)
+
+			rig.tick()
+			rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+			rig.awaitRound(claim.RolePlanner, podUpdateRound)
+			if tc.corrected {
+				rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			}
+			rig.signal(claim.RoleImplementer, "a1b2c3d")
+			rig.settleAll()
+			rig.awaitReplacement(1, "once the implementer answered")
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+			}
+			want := "The daemon replaced the pod that ran this issue's roles. " +
+				"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+				"The reasons were: " + podUpdateDrift + ". " + tc.gone + "\n\n" +
+				"The round did not wait for these roles, because no process of these roles ran in the pod: " +
+				"planner (suspended).\n\n" +
+				read + "\n\n" +
+				tc.work + " " + tc.pushed
+			if messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
+	}
+}
+
+// podUpdatePushedUnread is the last sentence of the message on a gone pod whose read of the
+// issue's record failed, and podUpdateKeptVolumeUnread what that message says of a kept volume that
+// is still there: each names the repository the round's pod was built from, podUpdateRepo, and
+// never origin.
+const (
+	podUpdatePushedUnread = "Work that each role pushed before the pod went " +
+		"is on the issue branch of the repository `" + podUpdateRepo + "`. " +
+		"The daemon could not read the repository that this issue's record holds now. " +
+		"It does not know which repository is origin in the new pod. " +
+		"To see that work, each role must read the issue branch of the repository `" + podUpdateRepo + "`."
+	podUpdateKeptVolumeUnread = "The pod's disk is a kept volume, and the volume is still there. " +
+		"Work that these roles did not push is on that volume, " +
+		"in the workspace of `" + podUpdateRepo + "` at `" + podUpdateOldWorkspace + "`. " +
+		"The next pod of this issue mounts the volume. " +
+		"If that pod makes a workspace of a different repository, " +
+		"read that work at `" + podUpdateOldWorkspace + "` in that pod. " +
+		"Put that work on the issue branch in the new workspace. Then push the issue branch."
+)
+
+// A gone pod's message whose read of the issue's record fails names the repository the round's
+// pod was built from (supervise.Claim.UpdateRepository), never origin: a correction can have moved
+// the record, and origin in the next pod is then the repository the record holds now, which holds
+// none of the work the roles pushed. The round here was opened over a pod of podUpdateRepo, and
+// the record cannot be read when the pod goes. The message sends each role to the issue branch of
+// podUpdateRepo, names the workspace of podUpdateRepo on a kept volume, and says that the daemon
+// could not read the record. Control: with the failed read taken as no move, the message sends
+// each role to its issue branch at origin.
+func TestAPodGoneWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// created is when the issue's kept Sandbox was made, zero for an ephemeral volume.
+		created time.Time
+		disk    string
+	}{
+		{"a kept volume", podUpdateStart.Add(-time.Hour), podUpdateKeptVolumeUnread},
+		{"an ephemeral volume", time.Time{}, podUpdateDiskLost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roles := []podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}
+			for i := range roles {
+				roles[i].round, roles[i].reasons, roles[i].repository = podUpdateRound, podUpdateDrift, podUpdateRepo
+			}
+			roles[1].signalled = true
+			rig := newPodUpdateRig(t, roles...)
+			if !tc.created.IsZero() {
+				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
+			}
+			rig.s.plan.recordedRepository = func(context.Context, string) (string, error) {
+				return "", errors.New("the store did not answer")
+			}
+
+			rig.tickBackIn(podUpdateReplacementPod)
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+			}
+			if want := implementerLostWith(podUpdateDrift, tc.disk, podUpdatePushedUnread); messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
+	}
+}
+
+// The message of a replacement that could not wait for a role reads the record as the message
+// on a gone pod does (roundMove): where the record cannot be read when the message is written, it
+// names the work that no branch holds by the repository of the round's pod, podUpdateRepo, and
+// not by origin, in what it says the read found and in what it says of the disk, and its last
+// sentence is the one of a gone pod whose record could not be read. Control: with the failed read
+// taken as no move, the message names that work at origin.
+func TestAReplacementWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) {
+	const held = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RolePlanner, podUpdateRound)
+	rig.s.plan.recordedRepository = func(context.Context, string) (string, error) {
+		return "", errors.New("the store did not answer")
+	}
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.settleAll()
+	rig.awaitReplacement(1, "once the implementer answered")
+
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+	}
+	want := "The daemon replaced the pod that ran this issue's roles. " +
+		"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+		"The reasons were: " + podUpdateDrift + ". The pod and its disk are gone.\n\n" +
+		"The round did not wait for these roles, because no process of these roles ran in the pod: " +
+		"planner (suspended).\n\n" +
+		"Before the replacement, the daemon read the issue workspace. " +
+		"The read found work that " + held + ". " +
+		"The workspace held one commit that " + held + ": " + passedOverCommit + ".\n\n" +
+		"Work that is not on a branch of the repository `" + podUpdateRepo + "` is lost. " + podUpdatePushedUnread
+	if messages[0] != want {
+		t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
 	}
 }
 

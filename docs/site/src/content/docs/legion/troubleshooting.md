@@ -65,7 +65,7 @@ legion config check --config legion.yaml
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
-| `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), and `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
+| `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason), and `repository-cache-room` when a repository cache's last health read carries a failure for lack of space, logged also at the first controller tick after the row opens (the detail names each such cache with its claim, its room and the step that failed, and says that room comes from growing the cache's claim in place and raising `runtime.kubernetes.repository_cache.volume`). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`, and `caches` on `repository-cache-room`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
 
 **At boot, after the check passes**, the daemon checks its GitHub Apps, the cluster and the image.
 The key proof under the App's JWT mints no token for an owner; every other step of the boot that
@@ -445,11 +445,13 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
-Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
-its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
-`approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
-`designGate` beside it is the `spec` step's record alone.
+earlier version does not count: the spec changed since. The gate holds the tree's start and its
+merger's start. `gatedSteps` carries one entry for each step that holds the tree, each with its own
+`artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
+`approved` or `changes_requested`): one per step `gates.design` lists, then `criteria` where the
+deployment's list names `spec` and not `criteria` and the root registered its Verification
+document. The tree waits until every entry reads `approved`, and `designGate` beside it is the
+`spec` step's record alone.
 
 ## A parked tree did not come back after a decision
 
@@ -1662,6 +1664,20 @@ resolution:
 an event of the issue from Dispatch,
 the hand-over that completes a child handed to Legion,
 or the pass over every recorded issue that the daemon makes once a boot is over.
+When GitHub does not answer that pass's reads of the repository (a failure, its rate limit, or no
+answer in time), the issue is told nothing and nothing waits on the record:
+the daemon reads the issue again from Dispatch's listing and GitHub until GitHub answers,
+and then moves it, or says why not with the line above, with no event of the issue and no restart.
+That read comes at once unless one already owed covers the issue (one owed for it, or the read of
+every recorded issue a boot asks for);
+otherwise, and after each read GitHub still does not answer, it comes at the latest at the next
+run of one backoff all owed reads share, 30 s doubling to 10 min, which starts again at 30 s only
+once no read is owed.
+A pass that read the record before another pass moved it moves nothing either, since two reads of
+Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
+pass over the listing):
+the daemon owes that issue the same read of Dispatch's listing and GitHub, and the record ends on
+what Dispatch resolves then.
 The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
 and whatever runs for it.
 
@@ -1707,14 +1723,12 @@ Every role in the pod is asked to push its work and to answer the update round, 
 pod replacement.
 The issue's branch and its pull request are on the repository the issue left, and the
 replacement makes no rescue: work a role has not pushed by the round's bound goes with the pod.
-Work a release saved as a bundle of that repository is restored into no pod, even if Dispatch
-later moves the issue back. The daemon moves it to the `workspace_bundles_refused` table, where no
-later release of the issue writes over it or deletes it and nothing holds back the release of a
-pod for it, and writes on the issue the issue key and `release_id` of the row that keeps it. Its
-`bundle` column is a git bundle, which an operator reads out with
-`psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>" | base64 -d > <KEY>.bundle`
-and unbundles into a clone of the repository the row's `repo` names. The daemon never deletes the
-row; delete it once the work is carried out.
+Work a release saved as a bundle of that repository is restored into no pod built from another repository: the daemon compares the bundle with the repository the asking pod was built from, never with the issue's record.
+Once such a pod has refused it, no pod is sent it, even if Dispatch later moves the issue back.
+The daemon moves it to the `workspace_bundles_refused` table, where no later release of the issue writes over it or deletes it and nothing holds back the release of a pod for it, and writes on the issue the issue key and `release_id` of the row that keeps it.
+Its `bundle` column is a git bundle, which an operator reads out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>" | base64 -d > <KEY>.bundle` and unbundles into a clone of the repository the row's `repo` names.
+For a row whose `repo` is empty, which an earlier release saved, run `git bundle verify <KEY>.bundle` in a clone of the issue's `issues.repo_before`, and where that is empty or the bundle does not verify there, in a clone of its `issues.repo`, and unbundle it into the clone where it verifies.
+The daemon never deletes the row; delete it once the work is carried out.
 A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
 and no update round is opened, and each pane works the repository the issue left until its next
 launch, which provisions it a workspace of the new repository on the daemon's host.
@@ -1868,9 +1882,10 @@ notice comes once per handoff commit, from whichever read finds it first.
   dropped settlements since: each remembers in memory what it logged.
   - The listener writes `checks held a head` for a head's record that it has
     not settled after 10 minutes with no event. The line names what holds the record: `running`
-    names each check run that has not finished, `suites` names each check suite that is not
-    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
-    name the other holds. It is a warning when every recorded check run has finished.
+    names each check run that has not finished, `suites` names each check suite that holds it,
+    with its App: a suite not completed that is GitHub Actions' or whose App the record does not
+    know. `overflowed`, `no_run_id`, `legacy` and `claimed` name the other holds. It is a warning
+    when every recorded check run has finished.
   - The listener writes `checks settlement published` for each settlement it publishes.
   - The daemon writes one line for each checks settlement it drops before it applies it:
     `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the

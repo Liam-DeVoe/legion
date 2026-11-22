@@ -51,7 +51,7 @@ func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 
 	// The upgrade's boot fills the record from Dispatch and GitHub.
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-	if _, _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state,
+	if _, _, _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state,
 		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger()); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-		if _, _, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+		if _, _, _, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
 			t.Fatal(err)
 		}
 		got := recordedIssue(t, w, "LEGION-301")
@@ -147,7 +147,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		github := newNamedGitHub(t, map[string]string{})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
 		var logs strings.Builder
-		_, left, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		_, _, left, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
 		if err != nil || !left || !strings.Contains(logs.String(), "issue=LEGION-301 repo=acme/widgets cause=\"the read of acme/widgets from GitHub failed: ") {
 			t.Fatalf("backfill = left %t, %v, logging:\n%s\nwant LEGION-301 left, logged with the failed read, and no error", left, err, logs.String())
 		}

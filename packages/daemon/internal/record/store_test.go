@@ -238,28 +238,32 @@ func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueL
 	}
 }
 
-// A correction of a record that held no repository yet — one the repository backfill had not
-// filled — moved the issue off no repository, so the record reads as holding no correction: there
-// is no repository the issue left for a launch to name, and none whose work it saved.
-func TestACorrectionOffNoRepositoryReadsAsNone(t *testing.T) {
+// A record that holds no repository (Issue.Unfilled) is the backfill's to fill, and the
+// correction's statement writes nothing on it: it answers false, and the record stands as it was,
+// with no repository, no repository it left, no moment of a correction and nothing waiting. The
+// daemon asks for no such correction, so the statement is driven here by hand over a record
+// emptied as the migration that added the repository columns left every earlier row.
+func TestCorrectIssueRepositoryWritesNothingOnARecordWithNoRepository(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-605"))) })
 	inTx(t, st, func(tx pgx.Tx) {
-		if _, err := tx.Exec(ctx, "update issues set repo = '', github_repo = '' where key = $1", "LEGION-605"); err != nil {
+		if _, err := tx.Exec(ctx, "update issues set repo = '', default_branch = '', github_repo = '' where key = $1", "LEGION-605"); err != nil {
 			t.Fatal(err)
 		}
+		unfilled, err := records.Issue(ctx, tx, "LEGION-605")
+		must(t, err)
 		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-605", "zeta/tools", "main", "Zeta/Tools", at)
 		must(t, err)
-		if !corrected {
-			t.Fatal("CorrectIssueRepository = false, want true: the record was on no repository")
+		if corrected {
+			t.Fatal("CorrectIssueRepository = true, want false: a record with no repository is the backfill's to fill")
 		}
 		got, err := records.Issue(ctx, tx, "LEGION-605")
 		must(t, err)
-		if got.Repo != "zeta/tools" || got.RepoCorrection != nil {
-			t.Fatalf("the record is on %s, corrected %+v; want zeta/tools with no correction: it left no repository", got.Repo, got.RepoCorrection)
+		if got.Repo != "" || got.RepoCorrection != nil || !reflect.DeepEqual(got, unfilled) {
+			t.Fatalf("the record after the correction = %#v, want it as it was, with no repository and no correction: %#v", got, unfilled)
 		}
 	})
 }
@@ -2758,8 +2762,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
 // replaces it (an approval after a changes request of the same spec), an older one arriving late
 // does not. A read names them all, newest first and ties by reference, each with Dispatch's mark
-// of it, and leaves them; the forget of what a delivered start named deletes exactly those, so a
-// decision kept on a named reference since stays for the next start to name.
+// of it, the document reviewed and its version, and leaves them; the forget of what a delivered
+// start named deletes exactly those, so a decision kept on a named reference since stays for the
+// next start to name, with the document and the version it was kept with, none where it was kept
+// with none.
 func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2772,7 +2778,8 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	for _, decision := range []ParkedDecision{
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:alice", At: t0},
 		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignChangesRequested, Actor: "user:alice", At: t0},
-		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12},
+		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12,
+			Artifact: "artifact-210", Version: 3},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:carol", At: t0.Add(-time.Second)},
 	} {
@@ -2787,7 +2794,8 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		must(t, err)
 	})
 	want := []ParkedDecision{
-		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12},
+		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12,
+			Artifact: "artifact-210", Version: 3},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 	}
 	if len(named) != len(want) {
@@ -2797,7 +2805,8 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		got := named[i]
 		if got.Issue != want[i].Issue || got.Ref != want[i].Ref ||
 			got.Decision != want[i].Decision || got.Actor != want[i].Actor ||
-			!got.At.Equal(want[i].At) || got.Seq != want[i].Seq {
+			!got.At.Equal(want[i].At) || got.Seq != want[i].Seq || got.Artifact != want[i].Artifact ||
+			got.Version != want[i].Version {
 			t.Fatalf("read[%d] = %#v, want %#v: each ref keeps its newest decision", i, got, want[i])
 		}
 	}
@@ -2818,8 +2827,10 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	inTx(t, st, func(tx pgx.Tx) {
 		left, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
 		must(t, err)
-		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" {
-			t.Fatalf("after the forget %#v, want only the decision kept since it was named", left)
+		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" ||
+			left[0].Artifact != "" || left[0].Version != 0 {
+			t.Fatalf("after the forget %#v, want only the decision kept since it was named, with no document and no version, "+
+				"as it was kept", left)
 		}
 	})
 }

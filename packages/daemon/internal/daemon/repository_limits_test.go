@@ -504,7 +504,7 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 					published = append(published, repos)
 					return nil
 				}}
-			filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
+			filled, _, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
 			if err != nil || !slices.Equal(repositoryNames(filled), []string{"acme/widgets"}) || !left {
 				t.Fatalf("backfill = filled %v, left %v, %v; want LEGION-9 filled on acme/widgets, LEGION-7 left and the boot going on", filled, left, err)
 			}

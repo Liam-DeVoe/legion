@@ -17,18 +17,19 @@ import (
 // workflow.Engine.ApplyRepositoryChange) in the same transaction that opens the child's next run.
 // No event of the repository change is ever delivered here: the route's own write is the whole of
 // what the daemon reads. dispatch://INFRA-2865 measured the absence of this, where a park and a
-// run again gave a new generation on the repository the issue had left.
+// run again gave a new generation on the repository the issue had left. The child leaves the
+// workflow first by its owning architect's own backlog in Dispatch (ownersBacklog), which the
+// daemon takes as it takes a person's move (dispatch://INFRA-3178).
 func TestRepositoryCorrectionFollowsRerunChild(t *testing.T) {
-	h, _, statuses := statusHarness(t)
+	h, handlers, statuses := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("park = %d %s, want 200", recorder.Code, recorder.Body)
-	}
-	if parked := recordedChild(t, h, statusChild); parked == nil || parked.Phase != phase.Done || parked.Repo != "acme/widgets" {
-		t.Fatalf("the parked child = %#v, want it out of the workflow on acme/widgets, the repository Dispatch resolved it to then", parked)
+	ownersBacklog(t, h, handlers, statuses, architect, statusChild)
+	if out := recordedChild(t, h, statusChild); out.Repo != "acme/widgets" {
+		t.Fatalf("the child out of the workflow = %#v, want it on acme/widgets, the repository Dispatch resolved it to then", out)
 	}
 
-	// Dispatch moves the child to another repository the project serves while it is parked.
+	// Dispatch moves the child to another repository the project serves while it is out of the
+	// workflow.
 	moved := statuses.issues[statusChild]
 	moved.ResolvedRepo = "sjawhar/legion"
 	statuses.issues[statusChild] = moved

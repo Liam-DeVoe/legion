@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -221,5 +222,70 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 					tc.name, ungated)
 			}
 		})
+	}
+}
+
+// Which queued rows hold a person's changes request is one rule (ChangesRequest), which the
+// daemon's delivery of a notice and its publish of a relay ask, and the clear's select of the
+// changes requests it hands its forget (queuedChanges) names the same rows by the payload's own
+// fields. Were they to part, a request one of them asks again would be left by the other to be
+// asked of no gate once the clear deleted it. One row of every notice kind, as an architect's
+// notice and as a controller's, one relay of every decision a parked-decision notice may carry,
+// and a row of another outbox kind are queued on one issue; a payload the outbox refuses is not
+// queued, since no row like it can stand there. The select names exactly the rows the rule
+// accepts, and the rule accepts some row of each of the two notice kinds, so the comparison is
+// not of two empty sets.
+func TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts(t *testing.T) {
+	ctx := context.Background()
+	records := NewStore()
+	st := migratedStore(t)
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	const key = "LEGION-310"
+	ref := "dispatch://" + key + "/spec"
+	var payloads []OutboxPayload
+	for _, kind := range validNoticeKinds {
+		notice := Notice{Kind: kind}
+		if _, spec := SpecDecision(kind); spec {
+			notice.Version, notice.Actor, notice.Ref = 3, "user:alice", ref
+		}
+		payloads = append(payloads, notice, ControllerNotice{Kind: kind})
+	}
+	for _, decision := range validDecisionKinds {
+		payloads = append(payloads, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision,
+			Root: key, Ref: ref, Actor: "user:alice", Version: 3})
+	}
+	payloads = append(payloads, ControllerNotice{Kind: TickNotice}, MessagePost{Body: "a message"})
+	accepted := map[int64]OutboxKind{}
+	queued := 0
+	var selected []QueuedChanges
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, payload := range payloads {
+			row, err := NewOutboxRow(key, payload, at)
+			if err != nil {
+				continue
+			}
+			id, err := records.EnqueueID(ctx, tx, row)
+			must(t, err)
+			queued++
+			if _, asks := ChangesRequest(payload); asks {
+				accepted[id] = row.Kind
+			}
+		}
+		var err error
+		selected, err = queuedChanges(ctx, tx, clearedIssue, key)
+		must(t, err)
+	})
+	if kinds := slices.Collect(maps.Values(accepted)); !slices.Contains(kinds, OutboxKindNotice) ||
+		!slices.Contains(kinds, OutboxKindControllerNotice) || len(accepted) == queued {
+		t.Fatalf("of %d queued rows ChangesRequest accepts %v, want some notice, some controller notice and "+
+			"not every row: the comparison below would prove nothing", queued, accepted)
+	}
+	named := map[int64]OutboxKind{}
+	for _, request := range selected {
+		named[request.Row] = request.Kind
+	}
+	if !maps.Equal(named, accepted) {
+		t.Fatalf("the clear's select names the rows %v and ChangesRequest accepts %v of the %d queued, "+
+			"want the same rows: one rule says which rows hold a changes request", named, accepted, queued)
 	}
 }

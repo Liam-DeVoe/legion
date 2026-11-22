@@ -246,6 +246,56 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 	}
 }
 
+// A record written before records carried their repository holds none (record.Issue.Unfilled),
+// and the backfill fills it (the daemon's fillRepositories), with checks a correction makes none
+// of. A correction is no fill: an event resolving such a record to a repository writes nothing on
+// the record — no repository, no repository it left, no moment of a correction, no change
+// waiting — and says nothing on the issue, whether its preparation carries GitHub's read of the
+// repository or GitHub's refusal of it. The backfill's own write still fills the record. Control:
+// with ApplyRepositoryChange correcting such a record, the first event fills it onto acme/widgets
+// through the correction.
+func TestACorrectionLeavesARecordWithNoRepositoryToTheBackfill(t *testing.T) {
+	pool := migratedPool(t)
+	openTree(t, pool)
+	parent := "LEGION-208"
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent,
+		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 2})
+	// The record store refuses to write a record with no repository, so the row is made the way
+	// the migration that added the columns left every earlier row: empty.
+	if _, err := pool.Exec(t.Context(), "update issues set repo = '', default_branch = '', github_repo = '' where key = 'LEGION-209'"); err != nil {
+		t.Fatalf("empty the repository of LEGION-209: %v", err)
+	}
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	read := readAt(childTodo(3, "acme/widgets"), "acme/widgets", "trunk")
+	read.Status = "in_progress"
+	apply("resolved-onto-a-repository-github-read", read)
+	refused := childTodo(4, "acme/gadgets")
+	refused.Status, refused.RepositoryRefusal, refused.RepositoryRefusalKind = "in_progress", "the review App is not installed on acme/gadgets", intake.RefusedByGitHub
+	apply("resolved-onto-a-repository-github-refused", refused)
+
+	child := issueRecord(t, pool, "LEGION-209")
+	if child == nil || child.Repo != "" || child.DefaultBranch != "" || child.GitHubRepo != "" || child.RepoChange != nil {
+		t.Fatalf("child = %#v, want it still with no repository and nothing waiting: the backfill fills it", child)
+	}
+	var corrected bool
+	if err := pool.QueryRow(t.Context(), "select repo_corrected_at is not null from issues where key = 'LEGION-209'").Scan(&corrected); err != nil {
+		t.Fatalf("read whether LEGION-209 records a correction: %v", err)
+	}
+	if corrected {
+		t.Fatal("LEGION-209 records the moment of a correction, want none: nothing corrected it")
+	}
+	if messages := outboxOf(t, pool, "dispatch_message"); len(messages) != 0 {
+		t.Fatalf("Dispatch messages = %#v, want none: a record with no repository is told nothing by a correction", messages)
+	}
+
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().FillIssueRepository(t.Context(), tx, "LEGION-209", "acme/widgets", "trunk", "acme/widgets")
+	})
+	if child := issueRecord(t, pool, "LEGION-209"); child == nil || child.Repo != "acme/widgets" || child.DefaultBranch != "trunk" {
+		t.Fatalf("child after the backfill's write = %#v, want it filled onto acme/widgets at trunk", child)
+	}
+}
+
 // A recorded issue whose change waits on a repository Legion cannot work is told what a person
 // can do and when Legion moves it, which differ with what Dispatch named. An App can be installed
 // on a repository, so the note asks for that or another repository. A name that is no

@@ -73,6 +73,10 @@ type releaseRuntime struct {
 	// bundleVia, when set, answers the save in place of bundle and bundleErr: the rig's role
 	// asked over a real worker stream, as the Kubernetes runtime asks it (idleRig.shimAnswers).
 	bundleVia func(ctx context.Context, issue string) (runtime.WorkspaceBundle, error)
+	// claims is the store's read of the claims, which the save's role is looked up in before
+	// anything answers it, as the Sandbox runtime looks it up (sandbox's runningRoleConn). Nil in a
+	// rig that never saves, where a save is refused.
+	claims func(ctx context.Context) ([]supervise.Claim, error)
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -90,15 +94,41 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 	return r.sandboxName, true
 }
 
+// BundleWorkspace refuses a role whose stored claim records no process before it bundles
+// anything, as the Sandbox runtime does (sandbox's runningRoleConn): only that role's shim can
+// build the bundle, and it dies with the role's process. A save that got a bundle therefore always
+// has its role's claim recording a process in the pod. The bundle names the repository of the pod
+// that process runs in, as the Sandbox runtime reads it off that same pod (sandbox's
+// Runtime.BundleWorkspace): here, what the rig scripts as that pod's repository through the
+// claim (fake.Runtime.ScriptPodRepository), "" where it scripts none.
 func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	r.bundled = append(r.bundled, role)
-	via, bundle, err := r.bundleVia, r.bundle, r.bundleErr
+	via, bundle, err, claims := r.bundleVia, r.bundle, r.bundleErr, r.claims
 	r.mu.Unlock()
-	if via != nil {
-		return via(ctx, issue)
+	if claims == nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: the rig's runtime reads no claims", issue)
 	}
-	return bundle, err
+	stored, readErr := claims(ctx)
+	if readErr != nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, readErr)
+	}
+	at := slices.IndexFunc(stored, func(c supervise.Claim) bool { return c.Issue == issue && c.Role == role && c.Locator != nil })
+	if at < 0 {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: its %s holds no role process to bundle it", issue, role)
+	}
+	if via != nil {
+		bundle, err = via(ctx, issue)
+	}
+	if err != nil {
+		return runtime.WorkspaceBundle{}, err
+	}
+	repo, err := r.PodRepository(ctx, runtime.Known{Claim: stored[at].Token, Locator: stored[at].Locator})
+	if err != nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: read the repository of its pod: %w", issue, err)
+	}
+	bundle.Repo = repo
+	return bundle, nil
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -193,6 +223,8 @@ func newIdleRig(t *testing.T) *idleRig {
 			At: time.Now().UTC(), PodUID: releasedPodUID}}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	// The runtime looks the save's role up in the store, as the Sandbox runtime does.
+	rt.claims = st.Claims
 	// The teardown records the release through the supervisor's store, as the daemon's does.
 	sup.store = st
 
@@ -255,9 +287,11 @@ func newIdleRig(t *testing.T) *idleRig {
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	// The repository hold reads what the daemon's own attach wires it to read
 	// (attachIdleRelease): the pod through the runtime the supervisor holds, and the record
-	// through the workflow's own read of it. The rig's pods are scripted no repository, so every
-	// pod of it is on the repository its record holds until a test says otherwise
-	// (idleRig.podRepository).
+	// through the workflow's own read of it. The rig's pod names the repository its record holds,
+	// as a Sandbox pod names the one its fetch cloned (runtime.Runtime.PodRepository), so it is on
+	// that repository until a test says otherwise (idleRig.podBuiltFrom), and a release's save
+	// labels its bundle with it.
+	rt.ScriptPodRepository(token, issue.Repo)
 	s := &supervision{log: quietLogger(), supervisor: sup, plan: plan{recordedRepository: recordedRepositoryOf(w.recordedIssue)}}
 	w.idleRepositoryDrifted = s.podRepositoryDrifted
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
@@ -527,10 +561,30 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 		below, rig.issue.Key); err != nil {
 		t.Fatal(err)
 	}
-	// The role whose stop is the boundary is retired before that stop runs: it has no process
-	// left to stop, which is what used to take the row out before it read the mark.
+	// The role whose stop is the boundary is retired after the save and before that stop runs: it
+	// has no process left to stop, which is what used to take the row out before it read the mark.
+	// It still runs at the save, since the save asks that role's shim, which only a role with a
+	// process has (releaseRuntime.BundleWorkspace, as sandbox's runningRoleConn), so the save runs
+	// alone first: the release's rows after it are held back until the claim is retired.
+	var save int64
+	if err := rig.pool.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'issue_bundle'`, rig.issue.Key).Scan(&save); err != nil {
+		t.Fatalf("read the release's save: %v", err)
+	}
+	after := `update outbox set next_at = now() + $3::interval where issue = $1 and id > $2`
+	if _, err := rig.pool.Exec(ctx, after, rig.issue.Key, save, "1 hour"); err != nil {
+		t.Fatalf("hold the release's rows after its save back: %v", err)
+	}
+	if err := rig.runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the release's save: %v", err)
+	}
+	if !rig.bundled(t) {
+		t.Fatal("control: the release's save stored no bundle while its role still ran")
+	}
 	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token}); err != nil {
 		t.Fatalf("retire the claim the boundary stops: %v", err)
+	}
+	if _, err := rig.pool.Exec(ctx, after, rig.issue.Key, save, "0 seconds"); err != nil {
+		t.Fatalf("make the release's rows after its save due: %v", err)
 	}
 
 	rig.drain(t)
@@ -818,7 +872,7 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
 	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour), unrenamed)
+	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", rig.issue.Repo, time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
 	}

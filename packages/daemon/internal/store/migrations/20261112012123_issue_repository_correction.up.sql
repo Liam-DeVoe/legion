@@ -11,8 +11,7 @@
 --
 -- repo_before is the repository the record held before the newest correction, empty when there
 -- has been none: what the next task of each worker names beside the new repository, so a role
--- reading its task knows which clone its earlier work is in, and what tells a restore that a
--- saved bundle is of the repository the issue has left.
+-- reading its task knows which clone its earlier work is in.
 --
 -- repo_corrected_at is the moment the daemon applied that correction, null when there has been
 -- none, which is what the spec means by recording the correction with the moment it happened: every
@@ -29,14 +28,17 @@
 -- change. Text rather than null for the same reason the record's other optional names are text:
 -- nothing reads the difference between empty and absent here.
 --
--- workspace_bundles.repo is the repository the saved work is of, empty for a row saved before
--- this release, whose repository nothing recorded. A bundle of the old repository is not applied
--- into the new clone (dispatch://INFRA-3136/spec R3), and this column is what the restore reads
--- to tell the two apart. This release ships both halves: the idle release writes it from the
--- repository the released pod itself was built from (daemon's bundleIssueWorkspace,
--- store.PutWorkspaceBundle), and the restore refuses a bundle whose repository the issue has left
--- by it (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository). A row written
--- before this release holds the default and refuses nothing.
+-- workspace_bundles.repo is the repository the saved work is of. A bundle of the old repository
+-- is not applied into the new clone (dispatch://INFRA-3136/spec R3), and this column is what the
+-- restore reads to tell the two apart. This release ships both halves: the idle release writes it
+-- from the repository the released pod itself was built from (daemon's bundleIssueWorkspace,
+-- store.PutWorkspaceBundle), and the restore refuses a bundle by it to a pod built from another
+-- repository (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository).
+-- Every row already there takes its issue's issues.repo: no release before this one could move a
+-- record off its repository, so the repository the record holds is the one the bundle's work is
+-- of. A row whose issue no record holds, or whose record holds no repository yet, keeps the empty
+-- name, and the restore refuses a bundle with no repository too, keeping it in
+-- workspace_bundles_refused, as it never knows which repository that work is of.
 --
 -- workspace_bundles_refused keeps the bundles the restore refused for their repository, one row
 -- per refusal under an id of its own, so two refusals of one issue are two rows. The take moves
@@ -50,32 +52,56 @@
 -- row of it or deletes one: it is an operator's, who finds a row by the issue and the release the
 -- message on the issue names, and deletes it once the work is carried out.
 --
--- An older daemon binary on this schema writes none of the five columns and reads none of them:
--- its issue reads and its bundle writes name the columns it knows, and the new ones take their
--- defaults. It never reads workspace_bundles_refused, so the refused work stays there for an
--- operator through a roll back, and no row of workspace_bundles is a refused one for its idle
--- rule to count. It still carries the write-once guard, so it refuses a corrected repository as
--- it always did, and a correction this release applied stands under it with repo_before and
+-- claims.update_repository is the repository the pod of the claim's update round was built from,
+-- as that pod named it at the round's open, whatever drift opened the round
+-- (supervise.Claim.UpdateRepository, the daemon's groupDrift), and '' on a round whose pod named
+-- none and while no round is open. A correction can land while any round runs, so where the
+-- record holds another repository when the daemon writes the message on an issue whose pod went
+-- before its round was over, or cannot be read then, that message names this repository's issue
+-- branch, and its workspace where the pod's disk is a kept volume that is still there, beside the
+-- repository the record holds then where it was read (the daemon's podWentMessage). On a round
+-- that a correction opened, the round's reasons name both repositories too, but as text for a
+-- reader, and the record's as it stood at the round's open. claims.update_repository_round is the
+-- round the name was written with, and the claim store reads the name only while that round is
+-- the one update_round holds (store's roundRepositoryOf). A name it reads that is no repository
+-- refuses the read of the claims and names the claim, as a stored locator that does not validate
+-- does.
+--
+-- An older daemon binary on this schema writes none of the columns this migration adds and reads
+-- none of them: its issue reads, its claim reads and writes and its bundle writes name the
+-- columns it knows, and the new ones take their defaults. A bundle it saves for an issue with no
+-- row in workspace_bundles therefore names no repository, which this release refuses at the
+-- restore and keeps, and one it saves over a row this release wrote keeps that row's repo. Its
+-- write of a claim this release wrote leaves the two claims columns as they stood, through the end
+-- of a round this release opened and the open of the claim's next round, which is why the name
+-- carries the round it was written with: this release reads that next round as one that recorded
+-- no repository. It never reads workspace_bundles_refused, so the refused work stays there for an
+-- operator through a roll back, and no row of workspace_bundles is a refused one for its idle rule
+-- to count. It still carries the write-once guard, so it refuses a corrected repository as it
+-- always did, and a correction this release applied stands under it with repo_before and
 -- repo_corrected_at untouched for the roll forward.
 --
 -- `refused_repository` is the third thing one restore attempt can do, beside the `sent` and the
 -- `refused_older` the attempt column was written with (20261103214558_workspace_bundle_pod_binding):
--- the row's repo is a repository the issue has left, so nothing is sent. The take records the
--- attempt with this word and then moves the row, both in one transaction, so no committed row of
--- workspace_bundles holds it; the row moved keeps the attempt as refused_pod_uid and refused_at.
--- The daemon never restores such a bundle. Its commits are of another repository's history, and
--- the new clone holds none of their bases, so an apply there would either fail or push work of one
--- repository into another. The constraint is dropped and written again with the word beside the
--- two, which this migration may do because it adds the repo column the refusal reads: no
--- deployment holds a row with the new outcome, and an older daemon binary writes neither it nor
--- the column it rests on.
+-- the row's repo is a repository the issue has left, or no repository at all, so nothing is sent.
+-- The take records the attempt with this word and then moves the row, both in one transaction, so
+-- no committed row of workspace_bundles holds it; the row moved keeps the attempt as
+-- refused_pod_uid and refused_at. The daemon never restores such a bundle. Its commits are of
+-- another repository's history, or of one nothing recorded, and the new clone can hold none of
+-- their bases, so an apply there would either fail or push work of one repository into another.
+-- The constraint is dropped and written again with the word beside the two, which this migration
+-- may do because it adds the repo column the refusal reads: no deployment holds a row with the
+-- new outcome, and an older daemon binary writes neither it nor the column it rests on.
 --
 -- There is no down file: migrations here are forward-only.
 alter table issues add column repo_before text not null default '';
 alter table issues add column repo_corrected_at timestamptz;
 alter table issues add column repo_change_pending text not null default '';
 alter table issues add column repo_change_reason text not null default '';
+alter table claims add column update_repository text not null default '',
+  add column update_repository_round text not null default '';
 alter table workspace_bundles add column repo text not null default '';
+update workspace_bundles b set repo = i.repo from issues i where i.key = b.issue;
 alter table workspace_bundles drop constraint workspace_bundles_attempt_outcome;
 alter table workspace_bundles
   add constraint workspace_bundles_attempt_outcome

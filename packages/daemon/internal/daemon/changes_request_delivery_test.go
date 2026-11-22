@@ -25,7 +25,7 @@ import (
 // A person's changes request whose notice waits in the outbox is published only while it is
 // still the person's word (dispatch://INFRA-3136/spec R2). The workflow asks when it queues the
 // notice (workflow's tellChanges), and the delivery asks again of the gates as they stand when it
-// runs (readNoticeTree's decisionSuperseded): the row's first attempt finds no session holding the
+// runs (readNoticeTree's stillOwed): the row's first attempt finds no session holding the
 // architect's role, as while its pod is released or relaunching, and waits; the person's approval
 // lands; the next attempt runs. The review and the approval reach the engine as Dispatch's
 // artifact events do, and a gate's move to another document as register_gate's registration does,
@@ -554,6 +554,131 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 			if len(finished) != 1 || !strings.Contains(finished[0], line) ||
 				!strings.Contains(finished[0], "level=INFO") {
 				t.Fatalf("the clear logged %q, want one Info line naming %s", finished, line)
+			}
+		})
+	}
+}
+
+// A person's changes request on a tree nobody in it hears is both kept for the root's next start
+// or catch-up and relayed to the controller (record.RelayParkedDecision), and wherever the two are
+// asked whether the request is still the person's word they answer alike
+// (dispatch://INFRA-3136/spec R2): the kept row holds the document reviewed, as the relay does
+// (record.ParkedDecision.Artifact, record.Notice.Artifact), so the approval of a document the
+// step's gate has moved to answers no review of the one it left, for either. The request is on
+// artifact-1 at version 3, and the architect's claim failed, so the outbox relays it and the relay
+// waits for the controller's claim. The gate moves to artifact-2, which the person approved at
+// version 3 after the request (movedGate), and the generation is cleared, of the tree or of the
+// issue alone, which asks the kept row and the queued relay before it deletes the gates
+// (workflow.Engine.ClearGeneration). The request stands for both: it is still kept, under the
+// document reviewed, its relay is still queued, and once a session holds the controller's claim
+// the controller is told it before the approval. The negative control is a kept row asked of its
+// step alone, which the approval of artifact-2 answers: the clear forgets it while the relay
+// stands.
+func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(t *testing.T) {
+	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
+		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "name the rollback path",
+		Actor: alice, Mark: record.EventMark{Seq: 8, At: reviewed}}
+	for _, tc := range []struct {
+		name  string
+		clear func(context.Context, pgx.Tx, *workflow.Engine, time.Time) error
+	}{
+		{name: "the tree's clear", clear: func(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, at time.Time) error {
+			return engine.ClearTreeGeneration(ctx, tx, "LEGION-1", at)
+		}},
+		{name: "the issue's clear", clear: func(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, at time.Time) error {
+			issue, err := record.NewStore().Issue(ctx, tx, "LEGION-1")
+			if err != nil {
+				return err
+			}
+			return engine.ClearGeneration(ctx, tx, *issue, at)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
+					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
+			}); err != nil {
+				t.Fatalf("register the spec gate at version 3: %v", err)
+			}
+			clock := reviewed.Add(time.Hour)
+			now := func() time.Time { return clock }
+			steps := config.DesignGateRootIssues.Steps()
+			engine := workflow.New(records, workflow.Config{Project: "LEGION",
+				Repositories: testRepositories, Steps: steps, Clock: now}, quietLogger())
+			applyFacts(t, pool, engine, []intake.Fact{changes})
+
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateFailed)
+			publisher := &holderPublisher{}
+			publisher.setAbsent(architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion"))
+			var logged bytes.Buffer
+			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool,
+				dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
+				project: "legion", gatedSteps: steps, now: now}
+			// The first run relays the request, whose notice finds its architect's claim failed;
+			// the second is the relay's first attempt, which waits for the controller's claim.
+			for run := range 2 {
+				if err := runner.RunOnce(ctx); err != nil {
+					t.Fatalf("run %d before the clear: %v", run, err)
+				}
+			}
+			relays := func() int {
+				var queued int
+				if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = $1
+					and payload->>'kind' = $2 and payload->>'decision' = $3`,
+					string(record.OutboxKindControllerNotice), string(record.ParkedDecisionNotice),
+					string(record.DecisionDesignChangesRequested)).Scan(&queued); err != nil {
+					t.Fatalf("count the relays of the changes request: %v", err)
+				}
+				return queued
+			}
+			kept := keptDecisions(t, pool, records, "LEGION-1")
+			if len(kept) != 1 || kept[0].Decision != record.DecisionDesignChangesRequested ||
+				kept[0].Artifact != "artifact-1" || relays() != 1 {
+				t.Fatalf("before the clear the tree keeps %#v and the outbox holds %d relays of the request; "+
+					"want the request kept, with the document reviewed, and relayed once", kept, relays())
+			}
+
+			clock = clock.Add(time.Minute)
+			applyFacts(t, pool, engine, []intake.Fact{movedGate(reviewed.Add(5 * time.Minute))})
+			scoped, committed := intake.WithCommitHooks(ctx)
+			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
+				return tc.clear(scoped, tx, engine, clock)
+			}); err != nil {
+				t.Fatalf("clear the generation: %v", err)
+			}
+			committed()
+			kept = keptDecisions(t, pool, records, "LEGION-1")
+			keptStands := len(kept) == 1 && kept[0].Decision == record.DecisionDesignChangesRequested
+			if relayStands := relays() == 1; !keptStands || !relayStands {
+				t.Fatalf("after %s the tree keeps %#v (the request stands: %v) and the outbox holds the "+
+					"request's relay: %v; want both to stand, as one question asked of each: the approval "+
+					"of artifact-2 answers no review of artifact-1", tc.name, kept, keptStands, relayStands)
+			}
+
+			publisher.setAbsent(architectTopic(t, "LEGION-1"))
+			left := func() int {
+				return outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindNotice) +
+					outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindControllerNotice)
+			}
+			for run := 0; run < 5 && left() > 0; run++ {
+				clock = clock.Add(time.Hour)
+				if err := runner.RunOnce(ctx); err != nil {
+					t.Fatalf("run %d after the clear: %v", run, err)
+				}
+			}
+			if rows := left(); rows != 0 {
+				t.Fatalf("%d notice and controller rows of LEGION-1 left, want every row finished; log %s",
+					rows, logged.String())
+			}
+			want := []record.DecisionKind{record.DecisionDesignChangesRequested, record.DecisionDesignApproved}
+			if told := controllerDecisions(publisher); !slices.Equal(told, want) {
+				t.Fatalf("told the controller %v, want %v; log %s", told, want, logged.String())
 			}
 		})
 	}

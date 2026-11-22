@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -148,7 +149,10 @@ type StreamLateRefusal struct {
 	ConnSequence uint64
 }
 
-// PromptAcked is a send's prompt acknowledged, posted by the send's own goroutine.
+// PromptAcked is a send's prompt acknowledged, posted by the send's own goroutine. What that prompt
+// carried of news of the approved design is the pending delivery's own news, read where the
+// acknowledgement is decided (acked): the fence passes only an acknowledgement of the pending id
+// (fenceOutcome), and every rendering of the news takes a new id (currentNews, currentRootTask).
 type PromptAcked struct {
 	Claim      claim.Token
 	Generation uint64
@@ -262,19 +266,22 @@ type StallBackstop struct {
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
-// (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
+// (Claim.UpdateRound), Reasons the drift the daemon read of the pod it runs in, and Repository
+// the repository that pod was built from, whatever drift opened the round, the zero Repository
+// where the pod named none (Claim.UpdateRepository).
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
-// so the action is idempotent: the first post of a round records the round, its reasons and its
-// clock, and each later post of the same round changes nothing. The round's terms are fixed when
-// it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
-// (Machine.PublishUpdateAsk).
+// so the action is idempotent: the first post of a round records the round, its reasons, its
+// repository and its clock, and each later post of the same round changes nothing. The round's
+// terms are fixed when it opens, so the ask a role reads and the record an operator reads name
+// the same reasons. The machine asks the role nothing: the sweep enqueues the round's ask to the
+// role's own Envoy topic (record.UpdateAsk), and the outbox marks it on the claim once it reached
+// a session (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
-	Claim   claim.Token
-	Round   string
-	Reasons string
+	Claim      claim.Token
+	Round      string
+	Reasons    string
+	Repository ghrepo.Repository
 }
 
 // UpdateTask is the text a pod's update round asks each role with. round is the round, which the
@@ -604,8 +611,11 @@ type RequestDeliver struct {
 	// alone.
 	ResendEntry bool
 	// RoundNamed marks a task that ends with the daemon's two sentences of a reviewer's review
-	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
-	// task and the controller's carry none (Delivery.RoundNamed).
+	// round: from the start row that queued it (record.SuperviseRequest.RoundNamed), or, for a
+	// reviewer's start queued for news alone, which the queue named no round on, from the round
+	// the start executor names when it composes that task (the daemon's newsForStart,
+	// startNews.roundNamed). An operator's task and the controller's carry none
+	// (Delivery.RoundNamed).
 	RoundNamed bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
@@ -625,6 +635,21 @@ type RequestDeliver struct {
 	// carried onto the delivery, whose text is rendered from it at each send (Delivery.Resume).
 	// Empty for every other task.
 	Resume []byte
+	// News is what the task carries of news of the approved design, as the start that queued it
+	// read it from the record (record.DeliveryNews, encoded JSON), carried onto the delivery and
+	// persisted with it, since the delivery's confirmation is what raises it as taken
+	// (Delivery.News). Empty for a task that carries none.
+	News []byte
+	// NewsOnly marks a task queued for news of the approved design alone (the daemon's news-only
+	// start, record.SuperviseRequest.News). Such a task holds no work of the claim's: it asks the
+	// worker to read what changed and to answer it. So it takes the place of no task that holds
+	// work (HoldsTask), where any other newer task takes the place of a confirmed task or of one a
+	// provider error took back (queue): it is refused (ErrDeliveryPending), and its start waits on
+	// its row's backoff until the claim holds no such task. It still takes the place of the
+	// daemon's own delivery of a relaunch's record, which holds no work either. Once held, it
+	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
+	// start of an entry carries the same news itself.
+	NewsOnly bool
 }
 
 // RequestExit is the agent reporting its own end.
@@ -1453,7 +1478,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	} else {
 		m.log.Info(over)
 	}
-	m.outstanding = nil
+	m.forgetOutstanding()
 	return turnEnded(m, ctx, ev)
 }
 
@@ -1472,13 +1497,26 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // acknowledges a prompt at its admission, before its pre-turn work, and its turn is the session's
 // next whenever it starts, so a late start confirms the task (turnStarted) and the prompt's own
 // result settles it (fence, promptResulted).
-// It tells nothing of what the prompt carried, as confirm states, and so writes the delivery
-// alone, as for every other prompt.
+// It tells nothing of what the prompt carried, as confirmCarrying states, and so writes the
+// delivery alone, as for every other prompt.
+//
+// It does record what the prompt carried of news of the approved design, the pending delivery's
+// own news (PromptAcked says why that is the prompt's), with the prompt (awaitResult), and as the
+// copy the task's confirmation credits (copyTurnNews): the news of the first prompt still
+// outstanding, whose turn is the session's next (turnNews). The acknowledgement is the one word that
+// the send's adoption of the working copy and its identity mint went through and that the agent
+// took the prompt, so a send refused at either, or answered busy, records none, and a task no
+// prompt of which was acknowledged stays one the question a restart leaves never takes a turn of
+// the agent's own for (unsentNews). The copy is written with the delivery, so a restart reads what
+// the prompt it may find running carried. An acknowledgement the shim gave from its own record, for
+// a send under an id it already carried (shimwire's Dedupe), is of the same news as the send it
+// forwarded, since every send under one id carries the same news.
 func acked(m *Machine, ctx context.Context, _ Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
-	m.awaitResult(p.ID)
+	m.awaitResult(p.ID, p.News)
 	m.markRead(p)
+	m.copyTurnNews(p)
 	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	return m.putPending(ctx)
 }
@@ -1487,11 +1525,13 @@ func acked(m *Machine, ctx context.Context, _ Event) error {
 // agent_start can land before the answer to the prompt that caused it, and that start has already
 // confirmed the delivery (turnStarted). The mark and the wait for a turn are that turn's to need,
 // and it has started — but the prompt itself is still outstanding, and which of the turns that
-// follow is its own is still a question only its result answers, so it is recorded here too.
-// Nothing else moves, and nothing is written.
+// follow is its own is still a question only its result answers, so it is recorded here too, with
+// the news it carried. The copy the confirmation credits stays as that confirmation fixed it
+// (turnAnswers). Nothing else moves, and nothing is written.
 func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 	m.helloDuringSend = false
-	m.awaitResult(m.claim.Pending.ID)
+	p := m.claim.Pending
+	m.awaitResult(p.ID, p.News)
 	return nil
 }
 
@@ -1503,9 +1543,15 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // goes with it unless another prompt of the task is still outstanding (Machine.outstanding): the
 // pinned Oh My Pi refuses this send because it is preparing or running that prompt's turn, the
 // very turn whose start, with this send in flight, confirmed the task, so it stays the task's.
-// A confirmation that goes takes back what it told (moveTelling, confirm): the turn that confirmed
-// the task was another's, so the agent never read the sentence the task's prompt carried, and the
-// next prompt carries it again.
+// A confirmation that goes takes back what it told (moveTelling, confirmCarrying): the turn that
+// confirmed the task was another's, so the agent never read the sentence the task's prompt
+// carried, and the next prompt carries it again. The credit it made of the news of the approved
+// design goes with it: the copy goes (Delivery.Carried), and the write of the delivery without it
+// ends that credit, since the store counts only the copy a confirmed row holds
+// (design_news_told_in). A refused send writes no copy of its own news, since only an
+// acknowledgement does (acked): a task whose every send was refused here — its adoption refused,
+// its identity not minted, its prompt answered busy — is one no acknowledged prompt carried, which
+// no turn of the agent's own confirms across a restart (unsentNews).
 //
 // Which failures cost budget is the policy's (Charges), and this site names the outcome and
 // decides nothing: the send's error carries what the stream minted from the far side's answer, or
@@ -1590,6 +1636,9 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	p := m.claim.Pending
 	untold, handshakeMoved := false, false
 	if !m.awaitsResult() {
+		// No acknowledged prompt of the task is left, so no copy of its news stands, and the
+		// write below ends the credit of a confirmation it takes back (Delivery.Carried,
+		// takeBackConfirmation).
 		handshakeMoved = m.takeBackConfirmation(p)
 		untold = m.moveTelling(p.ID, "")
 	}
@@ -1863,12 +1912,17 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // carried a delivery for it to confirm: a wake for a notice or a hook prompt carries none, and its
 // resume would otherwise never be measured (R5).
 //
-// The question a restart left (askFirst) counts as in flight for every delivery but one: a root
+// The question a restart left (askFirst) counts as in flight for every delivery but two. A root
 // architect's task of a run (asksRoot) may be a task nobody has ever sent, held on the claim while
 // its root had no architect to hear it, so a turn of the agent's own is not that task's. Confirmed
 // by it, the task would tell the person's decisions it names — the confirmation is their telling —
-// to an architect nobody prompted, and be retired unsent when that turn ended. Only a send of this
-// machine's own or a prompt it waits for a turn on makes such a turn that task's.
+// to an architect nobody prompted, and be retired unsent when that turn ended. A task carrying
+// news of the approved design that no acknowledged prompt carried (unsentNews) is the other: its
+// confirmation records the news as taken, so a turn the agent started by itself, an Envoy
+// message's while the daemon was down, would record news nobody read — a task whose adoption or
+// identity mint failed before any prompt went among them. Only a send of this machine's own or a
+// prompt it waits for a turn on makes such a turn that task's, and its confirmation credits what
+// that prompt carried (turnAnswers).
 //
 // A prompt of the task acknowledged and still outstanding (Machine.outstanding) makes the turn the
 // task's however late it starts, past the wait for it (noTurn) and past any busy answer to a
@@ -1898,15 +1952,14 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart func(delivery string)) error {
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
-	_, awaiting := m.timers[TimerTurn]
-	inFlight := m.send != nil || awaiting || m.awaitsResult() || (m.askFirst && (p == nil || !m.asksRoot(*p)))
+	news, inFlight := m.turnAnswers()
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
 	// The write is the confirmation where this start is the pending delivery's turn, and the
 	// claim alone where it is a foreign one; the delivery is named in the start's line for the
 	// same reason, so both are decided in the one place that asks the question.
 	persist, task := m.persist, ""
 	if own {
-		persist, task = m.confirm, p.ID
+		persist, task = func(ctx context.Context) error { return m.confirmCarrying(ctx, news) }, p.ID
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is
 	// a turn start whose claim write failed, and a line written after the write would leave
@@ -2276,6 +2329,16 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // (stopWaitsForResult) stops the claim here instead (stopAtResult), once the result has decided
 // the task: a refused task taken back is one the stop owes the role a launch for, and a finished
 // one is retired by the settle that follows every decision (Handle).
+//
+// A result that says the turn ran with no provider error makes final what the task's confirmation
+// credited of news of the approved design: the delivery is marked so (Delivery.Ran), and the write
+// that records the mark folds the copy into the told rows (the claim store's settleDesignNews), so
+// the retirement that follows ends nothing of it. Until then the credit is the delivery's own row,
+// so a task a newer one replaced while its turn still ran, or whose turn ended in a provider error
+// that the fence then dropped as stale, owes its news again once that row goes. A write of the mark
+// that fails leaves the delivery unsaved, and settle's next write of it folds the copy then. A task
+// this result confirms is confirmed with the news its own prompt carried (promptNews), or, for a
+// prompt this daemon did not see acknowledged, the copy the task holds.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2302,7 +2365,8 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return errors.Join(m.promptFailed(ctx, outcome, taskUnread), m.recordBusyTurn(ctx))
 	}
-	m.outstanding = nil
+	ran, acknowledged := m.promptNews(r.DeliveryID)
+	m.forgetOutstanding()
 	if r.Error != "" {
 		if err := m.providerErrored(ctx, r); err != nil {
 			return err
@@ -2322,7 +2386,16 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		// — and yet Oh My Pi ran one for it: the agent did read the task.
 		m.log.Info("supervise: the task's prompt ran a turn the daemon never matched to it; confirming it from the result",
 			"delivery", r.DeliveryID)
-		if err := m.confirm(ctx); err != nil {
+		if !acknowledged {
+			ran = p.Carried
+		}
+		if err := m.confirmCarrying(ctx, ran); err != nil {
+			return err
+		}
+	}
+	if p := m.claim.Pending; len(p.Carried) > 0 && !p.Ran {
+		p.Ran = true
+		if err := m.putPending(ctx); err != nil {
 			return err
 		}
 	}
@@ -3005,17 +3078,24 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // and the reasons the post carries, as the store keeps them, as every event's text is (Handle: the
 // reasons quote what the runtime read of the pod, so the claim the operator's answers read holds
 // the reasons the store holds), and clears what an earlier round left: the ask it published, the
-// signal it got, the head that signal reported, and the notice it wrote. The same round again
-// changes nothing, its reasons included: the round's terms are fixed when it opens
+// signal it got, the head that signal reported, and the notice it wrote. The repository the post
+// carries is recorded beside the reasons (Claim.UpdateRepository). The same round again changes
+// nothing, its reasons and its repository included: the round's terms are fixed when it opens
 // (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
-// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
-// suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
-// once its agent is ready again, and the round ends at its bound whether or not the role answers.
+// an ask that reached none marks nothing, so a later sweep asks again. A suspended claim is not
+// revived for the ask, and its machine records the round all the same. A suspension by the daemon
+// itself (Claim.PassedOverByRound) takes the claim out of the round's ask and out of its wait: the
+// sweep asks it nothing and the round does not wait for its answer (internal/daemon's roundAsks,
+// dispatch://INFRA-4109 R1). The one exception is a claim a project's pause stopped, while the
+// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). An
+// operator's suspension leaves the claim in both: if no ask has reached it, the sweep asks it once
+// its agent is ready again, and the round waits for the operator whatever its bound
+// (dispatch://INFRA-2981 R5).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an
@@ -3046,6 +3126,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
+	m.claim.UpdateRepository = open.Repository
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -3258,6 +3339,7 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 // restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
+	m.claim.UpdateRepository = ghrepo.Repository{}
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
 	m.claim.UpdateLeftRound = ""

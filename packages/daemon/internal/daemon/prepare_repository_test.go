@@ -46,9 +46,11 @@ func refusingGitHub(t *testing.T) string {
 // A recorded issue's event is prepared from its record while Dispatch resolves the issue where the
 // record already holds it, and reads nothing at all: an event naming that repository, in any
 // spelling, is applied as it is, and a retained event, which names no repository
-// (ResolvedRepoMissing), takes the record's. Neither GitHub nor Dispatch is read for any of them:
-// a recorded issue's repository never comes from its issue detail, and a resolution that is the
-// record's own repository is no change for a correction to read GitHub for.
+// (ResolvedRepoMissing), takes the record's. Each carries the repository the record holds, which
+// its correction is applied against (intake.DispatchIssue.PreparedAgainst). Neither GitHub nor
+// Dispatch is read for any of them: a recorded issue's repository never comes from its issue
+// detail, and a resolution that is the record's own repository is no change for a correction to
+// read GitHub for.
 func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 	ctx := context.Background()
 	installs := &installations{}
@@ -61,17 +63,20 @@ func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 		{
 			name:  "an event on the repository the record holds",
 			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
+			want: intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets",
+				PreparedAgainst: "acme/widgets"},
 		},
 		{
 			name:  "a retained event, which names no repository",
 			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepoMissing: true},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
+			want: intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets",
+				PreparedAgainst: "acme/widgets"},
 		},
 		{
 			name:  "an event on the record's repository in another spelling",
 			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets"},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets"},
+			want: intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets",
+				PreparedAgainst: "acme/widgets"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,8 +131,9 @@ func TestARecordedIssuesEventOnAnotherRepositoryCarriesGitHubsReadOfIt(t *testin
 
 // A recorded issue's event onto a repository a role App is not installed on carries GitHub's
 // refusal and its kind, which the change waits on the record with; one onto a repository GitHub
-// cannot read carries neither, so its correction writes nothing and says nothing, and the issue's
-// next event or the next boot reads it again. Neither fails the fact: the event is applied.
+// cannot read carries neither, so its correction writes nothing and says nothing, and the
+// preparation asks for a follow of the issue (requestFollowOf), which reads it again until GitHub
+// answers. Neither fails the fact: the event is applied.
 func TestARecordedIssuesEventCarriesWhatGitHubAnsweredForItsNewRepository(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -152,6 +158,9 @@ func TestARecordedIssuesEventCarriesWhatGitHubAnsweredForItsNewRepository(t *tes
 			if got.RepositoryRead != nil || got.RepositoryRefusal != tc.refusal || got.RepositoryRefusalKind != tc.kind {
 				t.Fatalf("the prepared event carries the read %+v and the refusal %q (%v), want no read and %q (%v)",
 					got.RepositoryRead, got.RepositoryRefusal, got.RepositoryRefusalKind, tc.refusal, tc.kind)
+			}
+			if asked, want := w.followRequested.Load(), tc.refusal == ""; (asked != 0) != want {
+				t.Fatalf("the preparation asked for %d follows, want one only for a read GitHub did not answer (%t)", asked, want)
 			}
 		})
 	}

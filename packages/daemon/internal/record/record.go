@@ -309,12 +309,65 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
 }
 
+// Unfilled says whether the record holds no repository: one written before records carried their
+// repository, which the daemon's backfill has not filled yet (Store.UnfilledIssues). Nothing
+// corrects such a record onto the repository Dispatch resolves it to (workflow's
+// ApplyRepositoryChange), and no preparation reads GitHub for it, because a correction is no fill.
+// The backfill fills it (the daemon's fillRepositories), and makes the checks a correction makes
+// none of: what names the repository the issue worked in, and the spelling its workspace was made
+// under.
+func (i Issue) Unfilled() bool { return i.Repo == "" }
+
+// SeqKind is what the Dispatch sequence a fact carries stands for, which decides whether a record
+// at that same sequence already holds what the fact says (Issue.Outdates).
+type SeqKind uint8
+
+const (
+	// EventSeq is a live Dispatch event's own sequence: the event is the issue as Dispatch held it
+	// when the issue's log reached that sequence.
+	EventSeq SeqKind = iota
+	// ReadSeq is the sequence a read of Dispatch carried, a listing's summary or an issue's
+	// detail (dispatch.IssueSummary.LastSeq, dispatch.Issue.LastSeq): how far the issue's log had
+	// run when Dispatch answered. The read is the issue as Dispatch held it at that answer, which
+	// is at or after the sequence it carries.
+	ReadSeq
+)
+
+// Outdates says whether the record already holds what Dispatch said of the issue in a fact of
+// kind at sequence seq, or something newer, so the fact is older than the record and moves
+// nothing of it. A seq of 0 is a fact nothing read a sequence for, which is never older.
+//
+// The two kinds part at the record's own sequence. An event the record applied left its
+// sequence on the record, so an event at that sequence is that event delivered again, through a
+// second door to it (a route's own status write and its echo, intake.OwnStatusWrite): the record
+// outdates it. Acting on it again would undo what was written since without moving the
+// sequence, such as a follow's correction of the repository after the project's default
+// repository moved, which Dispatch sends no event of the issue for (Store.CorrectIssueRepository
+// writes no sequence). A read at the record's own sequence says only that the issue's log has
+// run no further: what Dispatch resolves the issue's repository to can move with no event of the
+// issue (an ancestor's repository or the project's default, dispatch.IssueSummary.ResolvedRepo),
+// so the read carries that resolution as of the read, and the record does not outdate it. A read
+// is older only below the record's sequence, where the record took a later event since.
+func (i Issue) Outdates(kind SeqKind, seq int64) bool {
+	if seq == 0 {
+		return false
+	}
+	if kind == EventSeq {
+		return seq <= i.LastDispatchSeq
+	}
+	return seq < i.LastDispatchSeq
+}
+
+// Behind says whether Dispatch's log of the issue had run past the record's sequence where a fact
+// carries seq: the fact shows at least one event the record has not applied. It asks where the
+// record stands against the log, not whether the fact moves the record (Outdates). For every seq
+// but 0 it is the opposite of Outdates as of an event; a seq of 0, a fact nothing read a sequence
+// for, is neither ahead of the record nor older than it.
+func (i Issue) Behind(seq int64) bool { return seq > i.LastDispatchSeq }
+
 // RepositoryCorrection is what a correction of an issue's repository left on its record: the
 // repository the record held before it (Before) and the moment the daemon applied it (At). The
 // two are one value because neither says anything alone, so a record holds a correction or nil.
-// A correction of a record that held no repository yet — one the repository backfill had not
-// filled — moved the issue off no repository, and it reads as none: nothing was ever worked or
-// saved under a repository the issue left.
 type RepositoryCorrection struct {
 	Before string
 	At     time.Time
@@ -416,8 +469,8 @@ const HoldEscalated HoldReason = "escalated"
 //
 // AnsweredVersion is 0 for every other answer, and for a changes request a daemon of an earlier
 // release answered after this release's migration gave every older answer its version
-// (20261112215432_delivery_resume): such a review is asked as a kept decision is, at the version
-// the gate holds approved (workflow.SupersedingApproval).
+// (20261112215432_delivery_resume): such a review is asked as a kept decision that records no
+// version is, at the version the gate holds approved (workflow.SupersedingApproval).
 type Awaiting struct {
 	Ask             string
 	GateVersion     int
@@ -500,6 +553,21 @@ type ParkedDecision struct {
 	// identity with Ref (DecisionMark).
 	At  time.Time
 	Seq int64
+	// Artifact is the Dispatch artifact id of the document a spec decision's review is of (the
+	// notice's Artifact, which its relay to the controller carries too), so the kept decision is
+	// asked of that document as its relay is (workflow.SupersedingApproval): a step's gate can
+	// move to another document while Ref stays the step's, and the approval of that document
+	// answers no review of this one. It is "" for an answer, resolution or reply on an ask, for a
+	// notice that carried none, and for a row kept before the column was added, and such a
+	// decision is asked of whichever document the gate holds (workflow's keptSuperseded).
+	Artifact string
+	// Version is the version of that document the review is of (the notice's Version, which its
+	// relay carries too), so the kept decision is asked at the version the person reviewed as its
+	// relay is (workflow.SupersedingApproval): an approval of a later version is the person's word
+	// in the review's place, whichever of the two Dispatch marked first. It is 0 for an answer,
+	// resolution or reply on an ask, for a notice that carried none, and for a row kept before the
+	// column was added, and such a decision is asked at the version its gate holds approved.
+	Version int
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
@@ -507,9 +575,11 @@ type ParkedDecision struct {
 }
 
 // Mark is the mark a task names d by (DecisionMark): the row's identity, what the task says of
-// it, and Dispatch's sequence of its review, which a send asks the gate with.
+// it, and Dispatch's sequence of its review, the document reviewed and its version, which a send
+// asks the gate with.
 func (d ParkedDecision) Mark() DecisionMark {
-	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
+	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq,
+		Artifact: d.Artifact, Version: d.Version}
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
@@ -743,7 +813,7 @@ type PhaseRow struct {
 	//
 	// The resume writes the text it rendered here all the same, though this release never sends
 	// it for an entry that holds a wait: its one reader is a rollback to the release before
-	// contract 206. The rollback block in docs/kubernetes.md (contract 206) marks each entry that
+	// contract 225. The rollback block in docs/kubernetes.md (contract 225) marks each entry that
 	// holds a wait (phases.entry_verbatim), and that release sends a marked entry's task as this
 	// field holds it, as it did before this release. So the write is no dead code: it goes only
 	// when that rollback block goes.
@@ -1478,7 +1548,9 @@ const (
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
 // steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
 // DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a deployment gates, keyed by the issue and the step.
+// record keeps one DesignGate for each step a root registers, keyed by the issue and the step:
+// each step the deployment gates, and criteria where its architect registers the Verification
+// document beside a deployment that gates spec alone of the two (TreeSteps).
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1576,16 +1648,19 @@ type DesignGate struct {
 	ToldChangesVersion *int
 	ToldChangesReason  string
 	ToldChangesMark    EventMark
-	// EverOpened records that a human approved the gate's document version at some point in this
-	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
-	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both
-	// stand, and a changes request clears ApprovedVersion, so a gate that opened and was sent back
-	// reads exactly like one that never opened. Under the children-first rule a root stays at
-	// admitted while its children run, which is the state the later rule must tell from a root
-	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because a re-admission's clear deletes the gate (Store.ClearTreeGeneration), and a
-	// re-admitted root's architect writes its spec again: the mark belongs to the generation whose
-	// approval it records.
+	// EverOpened records that the step has not held the tree's first release in this generation
+	// of the issue: a human approved the gate's document version at some point, whether or not
+	// the gate stands open now, or the step joined the tree after that release — a Verification
+	// document its architect registered as criteria once the spec had opened the tree
+	// (workflow's gateRegistered), which that release never waited on. Nothing else remembers
+	// it: classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion
+	// as both stand, and a changes request clears ApprovedVersion, so a gate that opened and was
+	// sent back reads exactly like one that never opened. Under the children-first rule a root
+	// stays at admitted while its children run, which is the state the later rule must tell from
+	// a root still waiting for its first approval. It lives on the gate row rather than on the
+	// issue because a re-admission's clear deletes the gate (Store.ClearTreeGeneration), and a
+	// re-admitted root's architect writes its spec again: the mark belongs to the generation
+	// whose release it records.
 	EverOpened bool
 }
 
@@ -1889,7 +1964,8 @@ type Store interface {
 	// keeping the repository the record held and at as Issue.RepoCorrection, and clearing
 	// whatever change NoteIssueRepositoryChange noted. It answers whether it wrote the
 	// record: false, and nothing written, for a record already on repo, so a pass that reads one
-	// correction twice corrects once and the repository the issue left is kept as it was. It
+	// correction twice corrects once and the repository the issue left is kept as it was, and for
+	// a record that holds no repository (Issue.Unfilled), which FillIssueRepository fills. It
 	// refuses an empty repository, default branch or GitHub spelling, and a GitHub spelling that
 	// names another repository, as FillIssueRepository does. Those two are a different act:
 	// FillIssueRepository and NameIssueRepository fill in what an older record never carried, and
@@ -2004,6 +2080,11 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds in
+	// the tree, and whether it holds one. It reads the claim in any state, as SessionClaimsTree
+	// does: a suspended architect's session is still the session of its claim, and a write in
+	// Dispatch names that session.
+	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.
@@ -2151,14 +2232,14 @@ type Store interface {
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration empties the facts one generation of issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gates, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and the handoff it last named, so a commit an
-	// earlier generation reported is never new again. It answers each issue whose gate rows it
-	// deleted, once, in key order, and queues nothing: the set Dispatch holds for such an issue is
-	// the one those rows recorded, so the caller queues the empty set's publication for each, in
-	// tx, through its own store, which is the one that wakes the issue's board lane on commit
-	// (workflow.Engine.ClearGeneration, the daemon's projectRecords). issue is the record as tx
-	// holds it.
+	// same branch and pull request), its design gates with what their holders took of them
+	// (DesignTold), and each role's handoff, review rounds, verdict and summary. Each role keeps
+	// its claim and the handoff it last named, so a commit an earlier generation reported is never
+	// new again. It answers each issue whose gate rows it deleted, once, in key order, and queues
+	// nothing: the set Dispatch holds for such an issue is the one those rows recorded, so the
+	// caller queues the empty set's publication for each, in tx, through its own store, which is
+	// the one that wakes the issue's board lane on commit (workflow.Engine.ClearGeneration, the
+	// daemon's projectRecords). issue is the record as tx holds it.
 	//
 	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue, and
 	// every changes request the outbox holds on one (QueuedChanges), while that issue's gates
@@ -2222,6 +2303,46 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience,
+	// as each audience took it, the credit of every confirmed delivery not yet final counted in
+	// (Postgres.TreeTold).
+	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
+	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
+	// this transaction, when issue holds no such row: the version work starts from
+	// (Postgres.BaselineTold).
+	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error
+	// RaiseTold raises issue's audience row past each of items, from its From (nil for none) to its
+	// To, as a final credit that reaches only a row that took its From, writing the row when there
+	// is none; a step items do not name keeps what the row holds (Postgres.RaiseTold).
+	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, items []NewsItem, at time.Time) error
+	// SettleOpening settles the gate's opening on issue's audience row as it reaches the audience
+	// now: owed, for the task that carries its news to lead with, or told by the opened role
+	// message; the row takes its next opening number either way (Postgres.SettleOpening).
+	SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// CloseOpenings settles the gate's close on every told row of tree's issues: none owes an
+	// opening, and each takes its next opening number (Postgres.CloseOpenings).
+	CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error
+	// FillTold writes each step of versions on issue's audience row where the row knows no
+	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
+	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
+	// has not begun to run at now (Postgres.DesignNewsPending).
+	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
+	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
+	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
+	// its row (Postgres.PutDesignChanges).
+	PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error
+	// DesignHistoryUnreadOf is the recorded unread review history of each of questions that has
+	// one, by question, as the rows stand; a row counts only while no reconcile of the tree that
+	// asks it is pending, which its caller weighs (DesignHistoryUnread).
+	DesignHistoryUnreadOf(ctx context.Context, tx pgx.Tx, questions []DesignHistoryQuestion) (map[DesignHistoryQuestion]DesignHistoryUnread, error)
+	// PutDesignHistoryUnread records that the review history could not answer one question,
+	// replacing the reason and time an earlier reconcile recorded of it.
+	PutDesignHistoryUnread(ctx context.Context, tx pgx.Tx, unread DesignHistoryUnread) error
+	// ClearDesignHistoryUnread deletes what the record holds of question's unread review history,
+	// once the history has answered it.
+	ClearDesignHistoryUnread(ctx context.Context, tx pgx.Tx, question DesignHistoryQuestion) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,

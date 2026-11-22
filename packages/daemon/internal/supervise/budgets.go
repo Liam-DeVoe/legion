@@ -196,9 +196,9 @@ func (m *Machine) chargeDeath(o runtime.Outcome) bool {
 	if !task && !open {
 		return false
 	}
-	// Every caller today passes an outcome the policy charges, but this is the death budget's only
-	// question of the policy: without it a change to Charges would charge every death regardless,
-	// and the policy would decide every budget but this one.
+	// This is the death budget's only question of the policy. died asks it of the outcome its end
+	// names (endOutcome), so an end the policy charges nothing costs no death whatever state the
+	// claim is in, and a change to Charges decides this budget as it decides every other.
 	// TestTheDeathBudgetChargesWhatTheOutcomePolicySays holds it.
 	if !Charges(o) {
 		return false

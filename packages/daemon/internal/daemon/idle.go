@@ -48,9 +48,8 @@ type issuePods interface {
 var _ issuePods = (*sandbox.Runtime)(nil)
 
 // issuePodRepository is the repository the pod of issue was built from, read through the claims
-// of the issue the daemon supervises (podRepository). Two readers want it: the idle rule's
-// repository hold (podRepositoryDrifted) and the label of the bundle a release saves
-// (outbox.bundleIssueWorkspace), and the two read the one pod the one way.
+// of the issue the daemon supervises (podRepository), for the idle rule's repository hold
+// (podRepositoryDrifted).
 //
 // It is the pod's own fact and not the record's: a pod clones one repository into the issue's
 // workspace at its creation and holds the gh directories and the token of that repository's
@@ -82,12 +81,12 @@ func issuePodRepository(ctx context.Context, sup *supervisor, issue string) (str
 // names it (runtime.Runtime.PodRepository), asked through the claim of claims that records a
 // process and has the lowest token. One claim answers for the whole issue: every role of an
 // issue runs in that one pod and works the one workspace its fetch cloned. The claim is chosen
-// by its token and not by the order claims arrive in, so every reader asks the pod through the
-// same claim whichever list it holds: the idle rule and a release's save read the claims the
-// daemon supervises (issuePodRepository), and the update-round sweep reads the claims the store
-// answered (supervision.groupDrift). That is what lets the release and the replacement agree on
-// which pods are on a repository the issue has left (podRepositoryDrifted). It answers "" with
-// no error where no claim records a process.
+// by its token and not by the order claims arrive in, so the readers that hand it every claim of
+// the issue ask the pod through the same claim whichever list they hold: the idle rule reads the
+// claims the daemon supervises (issuePodRepository), and the update-round sweep reads the claims
+// the store answered (supervision.groupDrift). That is what lets the release and the replacement
+// agree on which pods are on a repository the issue has left (podRepositoryDrifted). It answers
+// "" with no error where no claim records a process.
 func podRepository(ctx context.Context, rt runtime.Runtime, claims iter.Seq[supervise.Claim]) (string, error) {
 	var pod supervise.Claim
 	found := false
@@ -126,7 +125,8 @@ func (s *supervision) podRepositoryDrifted(ctx context.Context, issue string) bo
 		}
 		return false
 	}
-	return s.repositoryDrift(ctx, issue, pod) != ""
+	_, reason := s.repositoryDrift(ctx, issue, pod)
+	return reason != ""
 }
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),

@@ -81,13 +81,17 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
 		// so a later approval is weighed against it by Dispatch's order and not by this clock;
 		// this clock places it only where the notice carries no time of the review (one an
-		// earlier release queued, or a Dispatch event that gave none).
+		// earlier release queued, or a Dispatch event that gave none). It is kept with the
+		// document reviewed and its version (record.Notice.Artifact and Version), as its relay
+		// carries them, so the kept decision and the relay are asked the same question of the
+		// same review.
 		at := notice.Review.At
 		if at.IsZero() {
 			at = now
 		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq},
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq,
+				Artifact: notice.Artifact, Version: notice.Version},
 			notice, r.gatedSteps)
 		return err
 	}); err != nil {
@@ -179,11 +183,23 @@ func (r *outbox) handOverKept(ctx context.Context, root string, row int64) error
 	})
 }
 
-// writeSettlement runs one settlement of what outbox row named of what root keeps, in a
-// transaction of its own that serializes with every fact (intake.SerializeFacts), since a hand-over
-// reads the root and writes the catch-up a ready would write, and owns the commit hooks its writes
-// register (projectRecords, intake.OnCommit), so a queued catch-up's lane wakes as it commits.
+// writeSettlement runs one settlement of what outbox row named of what root keeps
+// (settleUnderFacts): a hand-over reads the root and writes the catch-up a ready would write, so a
+// queued catch-up's lane wakes as it commits. Its failure names the row and the root.
 func (r *outbox) writeSettlement(ctx context.Context, root string, row int64, write func(context.Context, pgx.Tx) error) error {
+	if err := r.settleUnderFacts(ctx, write); err != nil {
+		return fmt.Errorf("settle the decisions outbox row %d named to %s: %w", row, root, err)
+	}
+	return nil
+}
+
+// settleUnderFacts runs write in a transaction of its own that serializes with every fact
+// (intake.SerializeFacts) and owns the commit hooks its writes register (projectRecords,
+// intake.OnCommit), so the lane of each row its writes queue wakes as it commits. Every settlement
+// the outbox writes under the fact lock runs here: a hand-over of what a root keeps
+// (writeSettlement), and the settlement of the news a tree is owed (settleNews). The caller names
+// what was settled in the error.
+func (r *outbox) settleUnderFacts(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
@@ -191,7 +207,7 @@ func (r *outbox) writeSettlement(ctx context.Context, root string, row int64, wr
 		}
 		return write(scoped, tx)
 	}); err != nil {
-		return fmt.Errorf("settle the decisions outbox row %d named to %s: %w", row, root, err)
+		return err
 	}
 	committed()
 	return nil

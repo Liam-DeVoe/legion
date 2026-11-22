@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // releaseSaveFaults is the real release store with two faults a test arms by setting a field.
@@ -120,6 +121,30 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		}
 		return left
 	}
+	// cancelledKeepsPod is what a release leaves once its save's retry cancelled it: the save and
+	// the teardown it held back both finished, the teardown reading the release as over, so the
+	// mark is gone, the pod is kept, and the implementer's one resume, which the cancel queues, is
+	// in the outbox.
+	cancelledKeepsPod := func(t *testing.T, rig *idleRig) {
+		t.Helper()
+		if left := releaseRowsLeft(t, rig); left != 0 {
+			t.Fatalf("%d of the save and the teardown are left, want both finished once the save's retry cancelled the release", left)
+		}
+		if rig.marked(t) {
+			t.Fatal("the release's mark outlived its cancel")
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 0 {
+			t.Fatalf("Sandbox teardowns = %d, want none: the cancelled release keeps the pod", teardowns)
+		}
+		var resumes int
+		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
+			and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, rig.issue.Key).Scan(&resumes); err != nil {
+			t.Fatal(err)
+		}
+		if resumes != 1 {
+			t.Fatalf("queued resumes of the implementer = %d, want the one the cancel queues", resumes)
+		}
+	}
 
 	t.Run("the save's cancel fails", func(t *testing.T) {
 		rig := newIdleRig(t)
@@ -140,23 +165,7 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		// finishes without a teardown, and the implementer's resume is queued.
 		faults.cancelErr = nil
 		nextPass(t, rig)
-		if left := releaseRowsLeft(t, rig); left != 0 {
-			t.Fatalf("%d of the save and the teardown are left, want both finished once the save's retry cancelled the release", left)
-		}
-		if rig.marked(t) {
-			t.Fatal("the release's mark outlived its cancel")
-		}
-		if _, teardowns := rig.rt.reads(); teardowns != 0 {
-			t.Fatalf("Sandbox teardowns = %d, want none: the cancelled release keeps the pod", teardowns)
-		}
-		var resumes int
-		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
-			and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, rig.issue.Key).Scan(&resumes); err != nil {
-			t.Fatal(err)
-		}
-		if resumes != 1 {
-			t.Fatalf("queued resumes of the implementer = %d, want the one the cancel queues", resumes)
-		}
+		cancelledKeepsPod(t, rig)
 	})
 
 	t.Run("the save's authorization fails once", func(t *testing.T) {
@@ -172,20 +181,19 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		}
 		pendingSaveKeepsPod(t, rig, 0)
 
-		// The save's authorization answers again: the save stores the bundle and leaves the
-		// outbox, and the teardown it held back tears the pod down once in the same pass.
+		// The save's authorization answers again, but the implementer's stop ran in the first
+		// pass and let its process go, so the retried save has no role process to bundle
+		// through: the runtime refuses it, as the Sandbox runtime refuses a role whose claim
+		// records no process (sandbox's runningRoleConn). The save cancels the release under the
+		// bundle-save hold, so the teardown it held back reads the release as over and finishes
+		// without a teardown, the pod is kept, and the implementer's resume is queued.
 		nextPass(t, rig)
-		if left := releaseRowsLeft(t, rig); left != 0 {
-			t.Fatalf("%d of the save and the teardown are left, want both finished once the save stored its bundle", left)
+		cancelledKeepsPod(t, rig)
+		if rig.bundled(t) {
+			t.Fatal("the save's retry stored a bundle with no role process to build it")
 		}
-		if _, teardowns := rig.rt.reads(); teardowns != 1 {
-			t.Fatalf("Sandbox teardowns = %d, want one once the save has left the outbox", teardowns)
-		}
-		if !rig.bundled(t) {
-			t.Fatal("the save's retry stored no bundle")
-		}
-		if rig.marked(t) {
-			t.Fatal("the finished release left its mark behind")
+		if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != workflow.IdleHoldBundleSave.String() {
+			t.Fatalf("holds = %+v, want the one %s", holds, workflow.IdleHoldBundleSave)
 		}
 	})
 

@@ -505,6 +505,17 @@ func fetchRepository(pod *corev1.Pod) (ghrepo.Repository, bool) {
 	return ghrepo.Repository{}, false
 }
 
+// fetchRepositoryName is the repository pod's fetch container names (fetchRepository) as
+// `<owner>/<name>`, and "" for a pod whose fetch names none that parses: an unknown, which every
+// reader of it takes for no name at all.
+func fetchRepositoryName(pod *corev1.Pod) string {
+	repo, named := fetchRepository(pod)
+	if !named {
+		return ""
+	}
+	return repo.String()
+}
+
 func containerStatus(pod *corev1.Pod, name string) *corev1.ContainerStatus {
 	for i := range pod.Status.ContainerStatuses {
 		if pod.Status.ContainerStatuses[i].Name == name {

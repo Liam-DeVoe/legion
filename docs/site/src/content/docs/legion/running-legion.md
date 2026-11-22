@@ -28,7 +28,8 @@ your cluster, from one published worker image.
 `legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
 owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
-Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository, and
+Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
+Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
 its default branch as GitHub names it, when it first records the issue. The record then follows
 Dispatch: a later change of the issue's repository is applied in the next pass that reads it,
 which is a live Dispatch event of the issue, a hand-over, or the pass over every recorded issue
@@ -38,16 +39,30 @@ applies the change only from what GitHub answers then. Under `runtime: kubernete
 replaces the issue's pod, so its workspace, its GitHub token and its clone are of the new owner;
 under `runtime: tmux` there is no pod to replace, and each pane works the repository the issue
 left until its next launch, which provisions it a workspace of the new repository on the daemon's
-host. A change onto a repository a role App is not installed on, or one GitHub does not have, is
-not applied; the record keeps what it has, the daemon says so once on the issue, and the record
-carries the waiting change (`repoChangePending` and `repoChangeReason` of `legion state --json`)
-until the issue's next event or the daemon's next boot, the two passes that read the repository
-again: installing the missing App starts no pass by itself. The daemon reads no repository
+host. When GitHub does not answer such a pass's reads (a failure, its rate limit, or no answer in
+time), the pass applies nothing and says nothing on the issue, and the daemon reads that issue
+again from Dispatch's listing and GitHub until GitHub answers, with no event of the issue and no
+restart: the change is then applied, or waits as below.
+That read comes at once unless one already owed covers the issue (one owed for it, or the read of
+every recorded issue a boot asks for); otherwise, and after each read GitHub still does not answer,
+it comes at the latest at the next run of one backoff all owed reads share, 30 seconds doubling to
+10 minutes, which starts again at 30 seconds only once no read is owed.
+A pass that read the record before another pass moved it applies nothing either, since two reads
+of Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
+pass over the listing), and the daemon owes that issue the same read of Dispatch's listing and
+GitHub, so the record ends on what Dispatch resolves then; a daemon that stops before that read
+leaves it to its next boot, which reads again every recorded issue Dispatch resolves to another
+repository than its record names. A change onto a repository a
+role App is not installed on, or one GitHub does not have, is not applied; the record keeps what
+it has, the daemon says so once on the issue, and the record carries the waiting change
+(`repoChangePending` and `repoChangeReason` of `legion state --json`) until the issue's next
+event or the daemon's next boot, the two passes that read the repository again: installing the
+missing App starts no pass by itself. The daemon reads no repository
 mapping from Dispatch, so nothing else reads such a repository again, and a change of the
-project's default repository in Dispatch moves an issue that inherits it at that issue's next
-event or at the next boot. An issue whose repository resolves to none, or to one a role App is
-not installed on, is not admitted, and the daemon says why on the issue. A claim an operator
-starts on an issue the
+project's default repository in Dispatch, which sends no event of the issues that inherit it,
+moves such an issue at that issue's next event or at the next boot. An issue whose repository
+resolves to none, or to one a role App is not installed on, is not admitted, and the daemon says
+why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
 claim's first launch and kept for as long as the issue holds its workspace. When that issue
 resolves to no repository, the launch is refused: `<KEY> names no repository: set the repository
@@ -658,8 +673,10 @@ What each part is for:
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
   order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. The
-  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
+  merger merges until a person has approved the document of every step listed. A list that names
+  `spec` and not `criteria` lets a root's architect also register the root's Verification document
+  as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
+  the word `root-issues` also means; the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in

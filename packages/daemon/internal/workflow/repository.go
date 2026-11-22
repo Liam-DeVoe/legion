@@ -83,8 +83,9 @@ func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, 
 // repository an App was uninstalled from since, or at a default branch renamed since. A fact whose
 // preparation made no such read — a boot listing's, which reads GitHub for no repository, or an
 // event's or a hand-over's whose preparation's reads GitHub did not answer — is Unread: nothing is
-// written and nothing is said, and the issue's next event, or the follow after the next boot,
-// reads GitHub again.
+// written and nothing is said, and the daemon's follow reads GitHub again (its followRecorded):
+// once a boot is over for the first, and for the others until GitHub answers, at the times its
+// requestFollowOf gives.
 func (e *Engine) correctionResolution(fact intake.DispatchIssue) (Resolution, error) {
 	if fact.RepositoryRefusal != "" || fact.ResolvedRepo == "" {
 		return e.ResolveIssueRepository(fact)
@@ -163,12 +164,29 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // what it has. Every pass that reads a recorded issue's resolution calls it, once per issue,
 // inside the transaction that pass applies in: a live Dispatch event (Engine.dispatchIssue), the
 // listing admission reconciles at boot (its applySummary; the recovery listing takes no recorded
-// issue), admission's outbox hand-over (its consumeHandover), and the listing the daemon reads
-// once a boot is over for the recorded issues that boot's listing found resolved to another
-// repository (the daemon's followRecorded). The correction is one statement in that transaction
-// (record.Store.CorrectIssueRepository, whose one caller this is): no park, no rerun and no new
-// generation, so an issue keeps its phase, its generation and whatever is running for it while
-// its repository moves.
+// issue), admission's outbox hand-over (its consumeHandover), and the daemon's follow over
+// Dispatch's listing (its followRecorded), which reads an issue again wherever a pass can leave
+// its record on another repository than Dispatch resolves (its requestFollow and requestFollowOf
+// say who asks for one; this asks for one below). The correction is one statement in that
+// transaction (record.Store.CorrectIssueRepository, whose one caller this is): no park, no rerun
+// and no new generation, so an issue keeps its phase, its generation and whatever is running for
+// it while its repository moves.
+//
+// A fact is applied only to the record it was prepared against. Its preparation stamps it with
+// the repository the record held then (intake.DispatchIssue.PreparedAgainst), and while the record
+// holds another — compared as every repository name is (sameRepository), so a configured rename's
+// other name or a spelling in another case is no move — this writes nothing and says nothing. Two
+// reads of Dispatch at one sequence cannot be ordered, and a correction moves no sequence
+// (record.Store.CorrectIssueRepository writes none), so a fact prepared before another correction
+// moved the record — a hand-over's read against a follow's at the same sequence, or a late event
+// against a follow that read Dispatch after the event — would otherwise put the record back on an
+// older resolution, and nothing would read the issue again before its next event or the next
+// boot. The issue is owed a follow instead, which reads Dispatch and GitHub fresh
+// (Config.FollowIssue): it is asked from this transaction's commit hook, so a skip that commits is
+// never lost and one rolled back asks nothing, and Config.FollowIssue says what covers a process
+// that stops in between. A follow pass's own rows are checked here alike, each prepared against
+// the record the pass read before its write. A fact no preparation stamped is applied whatever
+// repository the record holds.
 //
 // The repository is resolved from the fact alone (correctionResolution): the refusal the fact's
 // preparation read from GitHub — a role App not installed on it, a repository GitHub does not
@@ -193,10 +211,32 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // no repository at all is told the same way, and leaves no change waiting: there is no
 // repository to change to, so the record's waiting pair is cleared. A resolution GitHub has not
 // answered the reads of (Resolution.Unread) is nothing Dispatch has said that the daemon can act
-// on, so this writes and says nothing at all, and the repository is read again at the issue's
-// next event or at the next boot.
+// on, so this writes and says nothing at all, and the daemon's follow reads the repository again
+// until GitHub answers.
+//
+// A record that holds no repository (record.Issue.Unfilled) is the backfill's to fill, and this
+// writes nothing on it and says nothing: a correction would fill it without the checks the
+// backfill makes, and the stamp of the record a fact was prepared against could fence nothing,
+// since a preparation against such a record stamps it empty (PreparedAgainst). The preparations
+// read GitHub for no such record (the daemon's correctionMoves), and what Dispatch resolves the
+// issue to is read again once the backfill has filled it, so a change this leaves unwritten is not
+// lost (the daemon's backfillRepositories and backfillLater say how).
 func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+	if issue.Unfilled() {
+		return nil
+	}
 	resolved := fact.ResolvedRepo
+	// The record moved after the fact was prepared: it takes nothing from the fact, and a follow
+	// reads the issue fresh once this transaction commits (the doc above says why).
+	if fact.PreparedAgainst != "" && !e.sameRepository(fact.PreparedAgainst, issue.Repo) {
+		key := issue.Key
+		if follow := e.cfg.FollowIssue; follow != nil {
+			intake.OnCommit(ctx, func() { follow(key) })
+		}
+		e.logOnCommit(ctx, "workflow: a repository correction prepared before the record moved writes nothing; the issue is followed again",
+			"issue", key, "prepared", fact.PreparedAgainst, "record", issue.Repo, "resolved", resolved)
+		return nil
+	}
 	// The common pass: Dispatch names the repository the record already holds — the same name, or
 	// the other name of a configured rename (sameRepository), so re-pointing every open issue at
 	// the repository a transfer moved to corrects none of them. It writes only when a change the
