@@ -482,10 +482,11 @@ const (
 	gcloudWaited  = "waited"  // gcloud has been waited for; what it left is not killed yet
 )
 
-// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited. A test replaces it
-// to send a signal at one of those moments, which no timing of the test's own can hit on every
-// run.
-var onGcloudStep = func(step string) {}
+// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited, with the pid of the
+// process cmd started (gcloud's supervisor, or gcloud where there is none). A test replaces it to
+// send a signal at one of those moments, which no timing of the test's own can hit on every run,
+// or to watch that process end.
+var onGcloudStep = func(step string, pid int) {}
 
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
@@ -515,11 +516,11 @@ func runRecorded(cmd *exec.Cmd) error {
 		return err
 	}
 	pid := cmd.Process.Pid
-	onGcloudStep(gcloudStarted)
+	onGcloudStep(gcloudStarted, pid)
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
 	err := cmd.Wait()
-	onGcloudStep(gcloudWaited)
+	onGcloudStep(gcloudWaited, pid)
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)

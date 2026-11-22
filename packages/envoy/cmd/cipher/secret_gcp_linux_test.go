@@ -104,17 +104,19 @@ func useGcloudWhoseChildHoldsItsOutput(t *testing.T) (gcloudCommand, gcloudChild
 // child names itself in beside it, and gcloudStubSelfName, which the stub names its own pid in
 // before it starts the child. The child runs for as long as the process watch runs: the test
 // binary, never a process the row ends, such as the sign-in helper (TestGcloudSignInSignalHelper),
-// so only a kill of gcloud's group, which the child is in, ends it while the row watches. The stub
-// ends with last once it has started the child: "wait" waits on the child, never answering;
-// "exit 0" exits at once, leaving the child holding the output, as a wrapper that does not wait
-// for what it started does.
+// so only a kill of gcloud's group, which the child is in, ends it while the row watches. Of what
+// the child starts, only the child holds the output: each sleep it waits with leaves it alone, so
+// the stub and the child are the only processes of the group besides the supervisor that the
+// call's output waits on (callEnds). The stub ends with last once it has started the child:
+// "wait" waits on the child, never answering; "exit 0" exits at once, leaving the child holding
+// the output, as a wrapper that does not wait for what it started does.
 func gcloudStubIn(t *testing.T, dir, last string, watch int) (gcloudCommand, gcloudChild) {
 	t.Helper()
 	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
 	t.Setenv(gcloudChildFile, child.pidFile)
 	script := "#!/bin/sh\n" +
 		"echo $$ >" + shellWord(filepath.Join(dir, gcloudStubSelfName)) + "\n" +
-		`/bin/sh -c 'echo $$ >"$` + gcloudChildFile + `"; while kill -0 ` + strconv.Itoa(watch) + ` 2>/dev/null; do sleep 1; done' &` + "\n" +
+		`/bin/sh -c 'echo $$ >"$` + gcloudChildFile + `"; while kill -0 ` + strconv.Itoa(watch) + ` 2>/dev/null; do sleep 1 </dev/null >/dev/null 2>&1; done' &` + "\n" +
 		last + "\n"
 	gcloud := gcloudCommand{path: filepath.Join(dir, "gcloud")}
 	if err := os.WriteFile(gcloud.path, []byte(script), 0o755); err != nil {
@@ -133,52 +135,24 @@ func (c gcloudChild) stubPid() int {
 	return gcloudChild{pidFile: filepath.Join(filepath.Dir(c.pidFile), gcloudStubSelfName)}.pid()
 }
 
-// watchExit watches pid, a process that runs, through a pidfd (pidfd_open), and answers when it
-// saw that process end, the zero time until then; the watch ends with t. t fails where the kernel
-// gives no pidfd for pid, and the answer fails it where the watch could not read the pidfd.
-func watchExit(t *testing.T, pid int) func() time.Time {
+// watchedToEnd watches pid, a process that runs (watchProcessExit), for the rest of t, and answers
+// how to read when it ended: it waits for the watch to see the end, bounded by the waits of these
+// tests, and t fails where the kernel gives no pidfd for pid, the watch fails, or the end is not
+// seen when the waits give up.
+func watchedToEnd(t *testing.T, what string, pid int) func() time.Time {
 	t.Helper()
-	fd, err := unix.PidfdOpen(pid, 0)
-	if err != nil {
-		t.Fatalf("pidfd_open of %d: %v", pid, err)
+	exited, stop := watchProcessExit(pid)
+	t.Cleanup(stop)
+	if _, err := exited(); err != nil {
+		t.Fatalf("%s, pid %d: %v", what, pid, err)
 	}
-	var mu sync.Mutex
-	var exited time.Time
-	var watchErr error
-	stop, stopped := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(stopped)
-		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			n, err := unix.Poll(fds, 100)
-			if errors.Is(err, unix.EINTR) || (err == nil && n == 0) {
-				continue
-			}
-			now := time.Now()
-			mu.Lock()
-			exited, watchErr = now, err
-			mu.Unlock()
-			return
-		}
-	}()
-	t.Cleanup(func() {
-		close(stop)
-		<-stopped
-		_ = unix.Close(fd)
-	})
 	return func() time.Time {
 		t.Helper()
-		mu.Lock()
-		defer mu.Unlock()
-		if watchErr != nil {
-			t.Fatalf("watching pid %d end: %v", pid, watchErr)
+		at, err := seenToEnd(t, exited)
+		if err != nil {
+			t.Fatalf("%s, pid %d: %v", what, pid, err)
 		}
-		return exited
+		return at
 	}
 }
 
@@ -285,11 +259,14 @@ func (c gcloudChild) kill(t *testing.T, pid int) {
 // release against after, how long the code may take once released (0 for a deadline's kill,
 // gcloudWaitDelay for a gcloud that exited), plus the time another process's work took meanwhile,
 // which the stall meter, counting only this process, does not see, less the time this process was
-// held up (requireOnTime). That work is, for a call its deadline killed, from the kill to the
-// call's wait (recordGcloudCalls): the process group, on Linux gcloud's supervisor (a run of this
-// binary) among it, torn down and reaped; for a gcloud that exited, from release to the stub's own
-// end (watchExit), the stub seeing its go-ahead and ending. What the supervisor does once gcloud
-// has ended, and what the code does after the wait, stay within after and lateSlack. It fails t
+// held up (requireOnTime). That work ends at the other processes' own ends, each seen as it
+// happens through a pidfd (watchProcessExit), never at the call's wait, so what this process does
+// meanwhile (the rest of the kill, the reaping, the close of the output, the return) stays on
+// lateSlack. For a call its deadline killed, it runs from the kill (recordGcloudCalls) to the last
+// end of the processes the call's output waits on: gcloud's supervisor (a run of this binary), the
+// stub gcloud and its child. For a gcloud that exited, it runs from release to the stub's own end,
+// the stub seeing its go-ahead and ending; what the supervisor does once gcloud has ended stays
+// within after and lateSlack. It fails t
 // where call ends before release (the stub did not hold it), and
 // where the child is not seen or call has not ended when the waits of these tests give up. Where
 // it fails t before call has returned, t ends by running release, so nothing the row set up still
@@ -344,7 +321,8 @@ func (c gcloudChild) callEnds(t *testing.T, what string, after time.Duration, re
 	if stub == 0 {
 		t.Fatalf("the stub gcloud named no pid of its own beside %s", c.pidFile)
 	}
-	stubEnded := watchExit(t, stub)
+	stubEnded := watchedToEnd(t, "the stub gcloud", stub)
+	childEnded := watchedToEnd(t, "the stub gcloud's child", c.pid())
 	start := time.Now()
 	release()
 	err, ok := received(t, done)
@@ -352,18 +330,20 @@ func (c gcloudChild) callEnds(t *testing.T, what string, after time.Duration, re
 		t.Fatalf("%s had not ended %s after its release, past its %s, %s before the test binary's deadline", what, time.Since(start).Round(time.Millisecond), after, waitMargin)
 	}
 	recorded := calls()
-	if len(recorded) != 1 || recorded[0].waited.IsZero() {
-		t.Fatalf("%s made %d gcloud calls (%+v); want one, waited for", what, len(recorded), recorded)
+	if len(recorded) != 1 {
+		t.Fatalf("%s made %d gcloud calls (%+v); want one", what, len(recorded), recorded)
 	}
 	var elsewhere time.Duration
 	if killed := recorded[0].killed; !killed.IsZero() {
-		elsewhere = recorded[0].waited.Sub(killed)
-	} else {
-		ended := stubEnded()
-		if ended.IsZero() {
-			t.Fatalf("%s returned with the stub gcloud, pid %d, not seen to end", what, stub)
+		last := killed
+		for _, ended := range []time.Time{recorded[0].exited, stubEnded(), childEnded()} {
+			if ended.After(last) {
+				last = ended
+			}
 		}
-		elsewhere = ended.Sub(start)
+		elsewhere = last.Sub(killed)
+	} else {
+		elsewhere = max(stubEnded().Sub(start), 0)
 	}
 	elsewhere = elsewhere.Round(time.Millisecond)
 	requireOnTime(t, meter, fmt.Sprintf("%s, its %s in another process allowed", what, elsewhere), start, after+elsewhere)
@@ -581,7 +561,7 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	if at != "" {
 		restore := onGcloudStep
 		t.Cleanup(func() { onGcloudStep = restore })
-		onGcloudStep = func(step string) {
+		onGcloudStep = func(step string, _ int) {
 			if step != at {
 				return
 			}
@@ -851,7 +831,7 @@ func gcloudLivedWhileThreadsEnded(t *testing.T) bool {
 	}
 	gcloud := gcloudCommand{path: stub}
 	startedOn, release := make(chan int, 1), make(chan struct{})
-	onGcloudStep = func(step string) {
+	onGcloudStep = func(step string, _ int) {
 		if step == gcloudStarted {
 			startedOn <- unix.Gettid()
 			<-release
