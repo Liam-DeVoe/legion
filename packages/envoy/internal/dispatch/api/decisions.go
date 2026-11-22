@@ -369,7 +369,7 @@ func (s *server) readDecisions(
 // stands cut by the same rule (readDecisions), so a document that carries one heading twice still
 // names each of them, and a decision with no cut leaves its links as they are. A version another
 // renderer version stored, or none stamped, holds the decision's text where this build reads its
-// text of the decision, alone, as the text now (storedDecisions.holds), so a renderer change,
+// text of the decision as the text now, both alone (storedDecisions.holds), so a renderer change,
 // which leaves every version stored before it in its renderer's spelling, marks no link. A text
 // that holds `[^`, and a text cut from inside a typed block then or now (decisionCut.alone), are
 // compared by their sums alone (pmdoc.FragmentReadsAs). keepsRead is the versions the keeps' pass

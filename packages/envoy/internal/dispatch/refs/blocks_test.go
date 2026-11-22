@@ -353,7 +353,7 @@ func insertRenderedVersion(t *testing.T, tx pgx.Tx, artifact string, number int,
 // A version another renderer version stored spells its tree otherwise than this build does, so
 // the next version moves the sum of a block whose tree did not change. That version, which
 // rewords the closing paragraph, keeps the changed version and time of each top-level block whose
-// text recorded at version 1 stood at a line start and reads, alone, as its text now - the
+// text recorded at version 1 stood at a line start and reads as its text now, both alone - the
 // top-level list and the quote - and gives each the new text's sum and excerpt with no text
 // recorded at version 2, so a citation of the list is not counted as moved. The list inside the
 // quote, a block inside a container, whose text read alone loses the quote's prefix, takes
@@ -456,6 +456,102 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 	}
 	if !slices.Contains(moved, Target{Kind: "block", ID: refKey + "#" + quotedList}) {
 		t.Errorf("version 2 does not count the cited list inside the quote as moved (%v); it took version 2", moved)
+	}
+}
+
+// otherMarkerDocument is version 1 of a document as another renderer version stored it: a bullet
+// list and a second one that the renderer writes with the other marker, `*`, an ordered list and a
+// second one it writes with `N)`, so each pair reads back as two lists, and a closing paragraph.
+// Each list is loose in renderer version 1's spelling, two blank lines between its items, where
+// this build writes one. otherMarkerDocumentBlocks is each of its blocks in document order, with
+// its type and its slice of the document as that renderer's build indexed it.
+const otherMarkerDocument = "- first\n\n\n- second\n\n* third\n\n\n* fourth\n\n1. fifth\n\n\n2. sixth\n\n1) seventh\n\n\n2) eighth\n\nClosing paragraph.\n"
+
+var otherMarkerDocumentBlocks = []struct{ nodeType, text string }{
+	{"bullet_list", "- first\n\n\n- second"},
+	{"paragraph", "first"},
+	{"paragraph", "second"},
+	{"bullet_list", "* third\n\n\n* fourth"},
+	{"paragraph", "third"},
+	{"paragraph", "fourth"},
+	{"ordered_list", "1. fifth\n\n\n2. sixth"},
+	{"paragraph", "fifth"},
+	{"paragraph", "sixth"},
+	{"ordered_list", "1) seventh\n\n\n2) eighth"},
+	{"paragraph", "seventh"},
+	{"paragraph", "eighth"},
+	{"paragraph", "Closing paragraph."},
+}
+
+// The renderer writes a list that follows a list of its kind with that kind's other marker (`*`
+// after `-`, `N)` after `N.`), so the two read back as two lists, and the same list read alone
+// renders with `-` or `N.`. Version 1, which another renderer version stored, holds two such pairs
+// of top-level lists in that renderer's spelling (otherMarkerDocument); version 2 rewords the
+// closing paragraph. Every list keeps changed version 1 and its time, and takes the new text's
+// sum with no text recorded at version 2: the second list of each pair as well, whose recorded
+// text read alone renders with `-` or `N.` while its text now keeps the other marker, since its
+// text now read alone renders so too. The reworded paragraph takes version 2.
+func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "other-marker-md")
+	tree, err := pmdoc.ParseRendering(otherMarkerDocument)
+	if err != nil {
+		t.Fatalf("read %q: %v", otherMarkerDocument, err)
+	}
+	stored := respelledVersionBlocks(t, tree, otherMarkerDocument, otherMarkerDocumentBlocks)
+	recorded := make(map[string]string, len(stored))
+	for _, block := range stored {
+		recorded[block.ID] = otherMarkerDocument[block.From:block.To]
+	}
+	// The second list of each pair, and the marker this build writes it with.
+	otherMarker := map[string]string{stored[3].ID: "* ", stored[9].ID: "1) "}
+	closing := stored[12].ID
+	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
+	insertRenderedVersion(t, tx, artifact, 1, otherMarkerDocument, pmdoc.RendererVersion-1, versionOneAt)
+	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, otherMarkerDocument, stored, nil, nil); err != nil {
+		t.Fatalf("index version 1: %v", err)
+	}
+
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "text" && node.Text == "Closing paragraph." {
+			node.Text = "Closing paragraph, reworded."
+		}
+		return true
+	})
+	markdown, blocks := renderedBlocks(t, tree)
+	for _, block := range blocks {
+		body := markdown[block.From:block.To]
+		if block.Type != "paragraph" && body == recorded[block.ID] {
+			t.Fatalf("this build writes list %s as version 1 recorded it, %q; the test needs another spelling", block.ID, body)
+		}
+		if marker, other := otherMarker[block.ID]; other && !strings.HasPrefix(body, marker) {
+			t.Fatalf("this build writes list %s as %q; the test needs it written with %q", block.ID, body, marker)
+		}
+	}
+	versionTwoAt := versionOneAt.Add(time.Hour)
+	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
+	if _, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil); err != nil {
+		t.Fatalf("index version 2: %v", err)
+	}
+
+	// The reworded paragraph takes version 2, and its text is recorded there. Every other block
+	// keeps version 1 with no text recorded at version 2: the four lists, whose texts recorded at
+	// version 1 and texts now read alone as one tree, and the blocks whose texts did not move.
+	for _, block := range blocks {
+		body := markdown[block.From:block.To]
+		wantVersion, wantAt, wantTexts := 1, versionOneAt, []string{}
+		if block.ID == closing {
+			wantVersion, wantAt, wantTexts = 2, versionTwoAt, []string{body}
+		}
+		changedVersion, changedAt, sum, texts := indexedChange(t, tx, artifact, block.ID, 2)
+		if changedVersion != wantVersion || !changedAt.Equal(wantAt) || sum != BlockTextSum(body) {
+			t.Errorf("block %s, a %s written %q and recorded at version 1 as %q, changed at version %d (%s) with the sum %s, want version %d (%s) with the sum of its text",
+				block.ID, block.Type, body, recorded[block.ID], changedVersion, changedAt.UTC(), sum, wantVersion, wantAt)
+		}
+		if !slices.Equal(texts, wantTexts) {
+			t.Errorf("version 2 records block %s as %q, want %q", block.ID, texts, wantTexts)
+		}
 	}
 }
 

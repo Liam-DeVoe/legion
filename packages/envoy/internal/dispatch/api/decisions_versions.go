@@ -18,19 +18,19 @@ import (
 // version stored the version its keep names, or none stamped it (pmdoc.OtherRenderer), that
 // version's text of the decision (decisionCuts, named by its sectionKey) has the keep's sum,
 // which makes it the text the keep agreed with, the decision stood in no container there and
-// stands in none now, and this build reads that text, alone, as the decision's text now
-// (pmdoc.FragmentReadsAs). Both sides are read by one cut (decisionCuts): the stored version's,
-// and the document's as it stands (current, readDecisions), each cut's decisionCut.alone saying
-// whether no typed block holds the decision's text there or now; a decision whose heading stands
-// in a list item, a quote or a footnote definition has no cut now. A decision's text read alone
-// loses the list item, quote, footnote definition or typed block it stands in, so two trees can
-// read as one. The decision waits for review otherwise: a version the view could not read - the
-// parser refuses its markdown (storedDecisions.refused) - a version that holds no such text - the
-// decision's heading changed since, or a block left the decision after that version - a decision
-// inside a container then or now, kept text that reads otherwise alone, and kept text or text now
-// that holds `[^`, which reads as a footnote reference or as text by the labels the whole document
-// defines (another section among them), leave it waiting, as a version this renderer version
-// stored does.
+// stands in none now, and this build reads that text and the decision's text now, each alone, as
+// one tree (pmdoc.FragmentReadsAs). Both sides are read by one cut (decisionCuts): the stored
+// version's, and the document's as it stands (current, readDecisions), each cut's decisionCut.alone
+// saying whether no typed block holds the decision's text there or now; a decision whose heading
+// stands in a list item, a quote or a footnote definition has no cut now. A decision's text read
+// alone loses the list item, quote, footnote definition or typed block it stands in, so two trees
+// can read as one. The decision waits for review otherwise: a version the view could not read -
+// the parser refuses its markdown (storedDecisions.refused) - a version that holds no such text -
+// the decision's heading changed since, or a block left the decision after that version - a
+// decision inside a container then or now, kept text that reads otherwise alone, and kept text or
+// text now that holds `[^`, which reads as a footnote reference or as text by the labels the whole
+// document defines (another section among them), leave it waiting, as a version this renderer
+// version stored does.
 //
 // Of the versions the keeps of decisions standing in no container name, those another renderer
 // version stored, or none stamped, are read in one query (otherRendererDecisionsAt), and a
@@ -92,10 +92,10 @@ type storedDecisions struct {
 
 // holds reports whether this version holds now, the text of the decision key as the document
 // stands: its text of that decision has now's sum, or, for a version of another renderer version,
-// both texts stand alone (decisionCut.alone) and this build reads its text of that decision,
-// alone, as now's text (pmdoc.FragmentReadsAs), which a text that holds `[^` on either side does
-// not. Only a version of another renderer version whose sum differs pays the parse and the render.
-// A version that gives the decision no text holds none of it.
+// both texts stand alone (decisionCut.alone) and this build reads its text of that decision and
+// now's text, each alone, as one tree (pmdoc.FragmentReadsAs), which a text that holds `[^` on
+// either side does not. Only a version of another renderer version whose sum differs pays the
+// parse and the render. A version that gives the decision no text holds none of it.
 func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 	stored, ok := v.decisions[key]
 	return ok && (stored.sum == now.sum || v.otherRenderer && stored.alone && now.alone && pmdoc.FragmentReadsAs(stored.text, now.text))

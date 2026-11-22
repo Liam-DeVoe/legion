@@ -130,8 +130,8 @@ type BlockIndexing struct {
 // A block whose text moved keeps its changed version and time as well when it is a top-level
 // block, enclosed by no other block of this version (topLevelCandidates), another renderer
 // version stored that version, or none stamped it (pmdoc.OtherRenderer), and the text recorded
-// for the block there occurs in that version's stored markdown, only at line starts, and reads,
-// alone, as its text here (pmdoc.FragmentReadsAs): the same tree in that renderer's spelling.
+// for the block there occurs in that version's stored markdown, only at line starts, and reads
+// as its text here, both alone (pmdoc.FragmentReadsAs): the same tree in that renderer's spelling.
 // The plan names such blocks its candidates, and reads nothing for them: KeepRespelled, which
 // the caller runs in its read phase right after the plan, reads their recorded texts and stored
 // versions and decides. Each block it keeps has its row take this text's sha256 and excerpt, and

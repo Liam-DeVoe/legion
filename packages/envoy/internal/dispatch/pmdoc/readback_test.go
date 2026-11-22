@@ -279,11 +279,17 @@ func documentAdding(doc, block *Node) *Node {
 // writes. The line feeds either side ends in do not count, so a fragment cut from a document
 // compares with its own slice. Other text reads as another rendering, and a stored text this build
 // reads as no document reads as nothing, not even as its own bytes: nothing was rendered of it.
+// A slice keeps the marker its place in the document gave it - a list after a list of its kind is
+// written with that kind's other marker, `*` or `N)` - which the same list read alone does not, so
+// where the stored text renders otherwise the rendering is read alone and rendered again too: a
+// list stored with the other marker reads as its slice written with that marker, and as the same
+// list written with the first, but not as a list of other items.
 //
 // A fragment read alone (FragmentReadsAs) reads as readsAsRendering reads it, a loose list in
-// another spelling among them, except where either side holds `[^`: literal text shaped like a
-// footnote reference, escaped because its document defines the label, and a reference to that
-// label read alone as one, though the two documents that hold them read as two trees.
+// another spelling and a list written with the other marker among them, except where either side
+// holds `[^`: literal text shaped like a footnote reference, escaped because its document defines
+// the label, and a reference to that label read alone as one, though the two documents that hold
+// them read as two trees.
 func TestAStoredTextReadsAsAnotherSpellingOfTheSameTree(t *testing.T) {
 	const unclosed = ":::callout{#b7 kind=\"note\" title=\"T\"}\nBody.\n"
 	const unknown = ":::future_block{#b1}\nBody.\n:::\n"
@@ -306,6 +312,10 @@ func TestAStoredTextReadsAsAnotherSpellingOfTheSameTree(t *testing.T) {
 		{"footnote-shaped text and a reference in documents that define the label",
 			"see \\[^1] here\n\n[^1]: A note.\n", "see [^1] here\n\n[^1]: A note.\n", false, false},
 		{"text that holds `[^` on one side only", `see \[\^1] here`, "see [^1] here", true, false},
+		{"a bullet list written with the other marker", "* a\n* b\n\n* c", "* a\n\n* b\n\n* c", true, true},
+		{"an ordered list written with the other marker", "1) a\n2) b\n\n3) c", "1) a\n\n2) b\n\n3) c", true, true},
+		{"a list written with the other marker and the same list with the first", "* a\n* b\n\n* c", "- a\n\n- b\n\n- c", true, true},
+		{"a list written with the other marker whose items differ", "* a\n* b\n\n* c", "* a\n\n* b\n\n* d", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := readsAsRendering(test.stored, test.rendering); got != test.reads {

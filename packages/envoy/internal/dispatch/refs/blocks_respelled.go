@@ -48,7 +48,7 @@ func topLevelCandidates(blocks []model.ArtifactBlock, candidates []respellCandid
 // respelledBlocks keeps, of candidates, which are top-level blocks of the version
 // (topLevelCandidates), each block that holds the same tree as the text recorded for it at its
 // storedAt (document_block_texts), spelled by another renderer version: that text stood in no
-// container with a prefix there, and reads, alone, as its text now (pmdoc.FragmentReadsAs). A
+// container with a prefix there, and reads as its text now, both alone (pmdoc.FragmentReadsAs). A
 // block that stood inside a list item, a quote or a footnote definition at storedAt was recorded
 // after that container's marker, with its prefix on each later line, which its text read alone
 // loses. So a block is kept only when its recorded text occurs in storedAt's stored markdown and

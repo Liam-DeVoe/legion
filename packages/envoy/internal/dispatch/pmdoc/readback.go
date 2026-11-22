@@ -84,24 +84,44 @@ func withoutFinalLineFeeds(rendering string) string {
 }
 
 // readsAsRendering reports whether stored, markdown that any build of the store may have written,
-// reads as rendering: this build reads stored and renders it again (RenderingOf), and the two are
-// one rendering (SameRendering). Stored text that reads as no document, or whose tree does not
-// render, reads as nothing. It is the rule FragmentReadsAs applies to a fragment that holds no `[^`.
+// reads as rendering, each read alone: this build reads stored and renders it again (RenderingOf),
+// and that is one rendering (SameRendering) with rendering as given or, where it is not, with what
+// this build reads rendering as and renders again. The first comparison, the common case, reads
+// stored alone; only stored text that renders otherwise than rendering pays for reading rendering
+// too. A side that reads as no document, or whose tree does not render, reads as nothing. It is
+// the rule FragmentReadsAs applies to a fragment that holds no `[^`, which says why both sides
+// are read alone.
 func readsAsRendering(stored, rendering string) bool {
 	again, _, err := RenderingOf(stored)
-	return err == nil && SameRendering(again, rendering)
+	if err != nil {
+		return false
+	}
+	if SameRendering(again, rendering) {
+		return true
+	}
+	renderingAgain, _, err := RenderingOf(rendering)
+	return err == nil && SameRendering(again, renderingAgain)
 }
 
 // FragmentReadsAs reports whether stored reads as rendering where both are cut from documents - a
-// block, a decision - and read alone, away from the rest of their documents: false where either
-// holds `[^`, and readsAsRendering otherwise. Whether `[^label]` reads as a footnote reference
-// depends on the labels its whole document defines, and so does whether the renderer escapes text
-// shaped like one as `\[^label]` (definedFootnoteLabels, footnoteReferenceText). A fragment holds
-// none of its document's definitions, so literal text `see \[^1] here` and a reference
-// `see [^1] here`, two trees in a document that defines 1, read alone as one. A reference is
-// written `[^`, its label and `]`, and text shaped like one is escaped as `\[^`, so every spelling
-// whose reading depends on the labels holds `[^`: where neither side holds it, no reading of
-// either depends on a definition it was cut away from.
+// block, a decision - and each is read alone, away from the rest of its document: false where
+// either holds `[^`, and readsAsRendering otherwise.
+//
+// Both sides are read alone because a slice keeps what its place in the document gave it. The
+// renderer writes a list that follows a list of its kind with that kind's other marker (`*` after
+// `-`, `N)` after `N.`: otherListMarkers), so the two read back as two lists, and the same list
+// read alone renders with `-` or `N.`. A stored `* a\n* b\n\n* c` read alone renders
+// `- a\n\n- b\n\n- c`, never `* a\n\n* b\n\n* c`, its slice of a document that writes it second,
+// though the two are one tree; read alone too, that slice renders as the stored text does.
+//
+// Whether `[^label]` reads as a footnote reference depends on the labels its whole document
+// defines, and so does whether the renderer escapes text shaped like one as `\[^label]`
+// (definedFootnoteLabels, footnoteReferenceText). A fragment holds none of its document's
+// definitions, so literal text `see \[^1] here` and a reference `see [^1] here`, two trees in a
+// document that defines 1, read alone as one. A reference is written `[^`, its label and `]`, and
+// text shaped like one is escaped as `\[^`, so every spelling whose reading depends on the labels
+// holds `[^`: where neither side holds it, no reading of either depends on a definition it was
+// cut away from.
 //
 // It does not give a fragment back the container it was cut from, and a caller reads alone only a
 // fragment that stands in none: a top-level block, or a decision no typed block holds. A block
