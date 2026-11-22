@@ -46,12 +46,13 @@ func linesHolding(logged, text string) []string {
 	return held
 }
 
-// The refresher brings a live pod's role Secrets to the current render of each role's credential
-// for the default owner its Secret records, and touches nothing else, the controller's included: a
+// The refresher brings a live pod's slot Secrets to the current render of the credential each slot
+// holds — here every slot runs its own role, so it holds its own name's App — for the default
+// owner its Secret records, and touches nothing else, the controller's included: a
 // Secret whose owners' hosts.yml are already the render is not written, one another Sandbox owns is
 // skipped, one that records no default is logged and left, and a rewrite changes the stale owner's
 // two gh keys alone — the other owner's, the default, the launcher token and the annotations the
-// binding wrote stay — and is logged naming the sandbox, the role, its App, the lease's expiry and
+// binding wrote stay — and is logged naming the sandbox, the slot and its role, its App, the lease's expiry and
 // the owner it rewrote.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	logs := &lockedLog{}
@@ -130,15 +131,15 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	}
 }
 
-// A lease the daemon re-minted reaches every role of every live pod on the next tick, the
-// controller's included: each role's Secret is rewritten to its own App's new tokens, every
-// owner's. A role whose render fails keeps its last files, logged, while the roles of the
-// pod's other App are refreshed, and so does one whose render holds no directory for the default
-// owner its Secret records.
+// A lease the daemon re-minted reaches every slot of every live pod on the next tick, the
+// controller's included: each slot's Secret, here each slot running its own role, is rewritten to
+// the new tokens of the App it holds, every owner's. A slot whose render fails keeps its last
+// files, logged, while the slots of the pod's other App are refreshed, and so does one whose
+// render holds no directory for the default owner its Secret records.
 //
 // The stand-in answers by App role and repository and by nothing else, as the daemon's own
 // function does (appauth.GitHubCredential): a bundle is that pair, which is why the walk builds
-// one per pair and hands it to every role of it (appauth.Bundles). So the implement App's
+// one per pair and hands it to every slot that holds it (appauth.Bundles). So the implement App's
 // failure is the implementer's and the merger's, and the review App's new lease is the four
 // roles' that run as it; the controller's bundle comes from the function that answers by owner,
 // and a render of it that holds no directory for the owner its Secret records is refused on its

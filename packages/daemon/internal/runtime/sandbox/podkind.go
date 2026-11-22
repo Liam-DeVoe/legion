@@ -489,8 +489,9 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 // GITHUB_TOKEN and GH_HOST are set to the empty string, which gh ignores, so no value the image or
 // an operator's rc file could leave in the environment outranks the files: a non-empty GH_TOKEN
 // would. No other tool path or helper is told: the agent's git and jj are the image's on PATH, and
-// the helper is the clone's own configuration. Every launcher role, the controller's included,
-// reads its own App's gh bundle at GHConfigDir, so this is appended once for every kind.
+// the helper is the clone's own configuration. Every launcher slot, the controller's included,
+// reads at GHConfigDir the gh bundle its Secret holds — the App of the role its process was
+// launched as (slotAppRole) — so this is appended once for every kind.
 func ghAgentEnv(l launch) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "GH_CONFIG_DIR", Value: ghconfig.Dir(GHConfigDir, l.gitHubDefault)},

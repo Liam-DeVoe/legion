@@ -28,8 +28,8 @@ import (
 // gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
 // function (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its
 // expiry, so most ticks render the hosts.yml the Secret already holds and write nothing; a minute
-// keeps the time a role's gh runs on a token the daemon has already replaced short against an
-// installation token's hour, at one Secret read per live role. A runtime reads it once, as it starts
+// keeps the time an agent's gh runs on a token the daemon has already replaced short against an
+// installation token's hour, at one Secret read per live slot. A runtime reads it once, as it starts
 // (start); a test that must see a tick inside its run shortens it before starting one.
 var gitHubRefreshInterval = time.Minute
 
@@ -51,20 +51,22 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 	}
 }
 
-// refreshGitHubCredentials brings the role Secrets of every live pod to the current render of each
-// role's GitHub credential, so the gh files its container projects (GHConfigDir) carry the tokens
-// the daemon holds now: the kubelet rewrites the projection in place once the Secret changes. It
-// walks the pod store for the pods of this project (every launcher role holds its App's gh
-// bundle, the controller's included; a repository cache's pod names no kind and holds
+// refreshGitHubCredentials brings the slot Secrets of every live pod to the current render of the
+// GitHub credential each slot holds — the App of the role its process was launched as, which that
+// launch recorded on the Secret, else of the stored claim's role, and its own name's App where no
+// stored claim runs in it (slotAppRole) — so the gh files its container projects (GHConfigDir)
+// carry the tokens the daemon holds now: the kubelet rewrites the projection in place once the
+// Secret changes. It walks the pod store for the pods of this project (every launcher slot holds
+// an App's gh bundle, the controller's included; a repository cache's pod names no kind and holds
 // none, so it is passed over, its token refreshCacheTokens') that are Pending or Running and not
 // being deleted —
 // a pod waiting to be scheduled starts its launchers from the Secret as it is then — and, for each
-// of the kind's roles, reads the role's Secret, skips one another Sandbox owns (the pod's Sandbox
-// replaced since the pod was listed), renders the credential for the pod's own repository, and
+// slot the pod was built with, reads the slot's Secret, skips one another Sandbox owns (the pod's
+// Sandbox replaced since the pod was listed), renders the credential for the pod's own repository, and
 // rewrites only the directories whose hosts.yml is not the render. A Secret that records no
 // default (one an older runtime wrote, whose pod the next launch replaces),
 // a render that fails, or one that holds no directory for the default the Secret records is
-// logged and the role keeps its last tokens until the next tick, and a Secret whose default is
+// logged and the slot keeps its last tokens until the next tick, and a Secret whose default is
 // empty (a controller whose project
 // had no GitHub owner when its pod started, whose gh directory is an empty one) has nothing to
 // refresh until its next pod; a write that conflicts is retried once on a fresh read. Nothing
@@ -82,7 +84,7 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // that repository's pods the walk holds, and a repository whose mint fails is logged once and
 // left to the next tick, where its pods are tried again. The gh bundles are built once per App
 // role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
-// reads its two Apps' installations and not its six roles'.
+// reads its Apps' installations and not one per slot.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion

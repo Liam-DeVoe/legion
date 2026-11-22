@@ -451,10 +451,10 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 	}
 }
 
-// A role's locator in an issue pod names the pod's one container, `roles`, so the role whose
-// enrollment, address record and launcher are read is the claim's: an enrolled pod holding the
-// role's own key directory is alive, and a generation the role's record says was told a moved
-// daemon URL is stale.
+// A claim's locator in an issue pod names the pod's one container, `roles`, so the slot whose
+// enrollment, address record and launcher are read is the claim's (slotOf, its agent's name,
+// whatever role its step is on): an enrolled pod holding the slot's own key directory is alive,
+// and a generation the slot's record says was told a moved daemon URL is stale.
 func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 	broker := func(o *Options) {
 		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
