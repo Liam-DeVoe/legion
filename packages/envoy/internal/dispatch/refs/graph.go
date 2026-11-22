@@ -143,7 +143,10 @@ func blockHolds(alias, fromKind, table, column string) string {
 // reaches every link of that attribute at its next read, with no pass over documents nobody
 // edits. A row that names no node, which a build before the store wrote, is the old block_refs
 // arm's, whose test reads the to_types the index copied into the row: such a row follows a
-// change of the targets only once a version is indexed again.
+// change of the targets only once a version is indexed again. Beyond a mention it tests no row's
+// kind, as the view does not, so a decision's decided_by and from_ask, whose attributes declare no
+// targets, are listed as graph_edges lists them; the references read admits only mentions and the
+// pointer kinds the schema declares (blockRefLinked).
 func blockRefListed(alias, target string) string {
 	return `(case when ` + alias + `.node_kind is null
 		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + target + `)
