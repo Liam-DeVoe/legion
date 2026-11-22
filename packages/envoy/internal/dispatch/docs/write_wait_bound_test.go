@@ -104,7 +104,7 @@ func TestAWriteOfTheServersOwnIsNotRefusedByTheWaitBound(t *testing.T) {
 		defer free()
 		waiting := make(chan struct{})
 		var waitOnce sync.Once
-		slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+		slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 		answered := make(chan error, 1)
 		go func() { answered <- cancelWrite(writer, service, artifactID, find, with, nil) }()
 		select {

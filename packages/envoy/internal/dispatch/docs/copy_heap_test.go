@@ -1000,7 +1000,7 @@ func TestALoadWaitsForASlotWhileEveryOneIsHeldAndThenTakesIt(t *testing.T) {
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 	var taken slotsHeld
 	slots.taken = taken.record
 	loaded := make(chan error, 1)
@@ -1182,7 +1182,7 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 	request, cancel := context.WithCancel(ctx)
 	type admission struct {
 		tree   *pmdoc.Node
@@ -1247,7 +1247,7 @@ func TestARebuildOfAResidentDocumentTakesASlotBeforeItWeighsIt(t *testing.T) {
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 	var taken slotsHeld
 	slots.taken = taken.record
 	tx, err := service.store.Pool.Begin(ctx)

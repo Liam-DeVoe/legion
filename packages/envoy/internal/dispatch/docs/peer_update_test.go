@@ -1856,7 +1856,7 @@ func TestAHeavyApplyTakesASlotOfTheLoadConcurrencyAndAKeystrokeTakesNone(t *test
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 
 	applied := make(chan error, 1)
 	var reached atomic.Bool
@@ -1939,7 +1939,7 @@ func TestAnUpdateSmallInBytesAndHeavyInStructsTakesASlotOfWhatItsStructsCost(t *
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 	taken := make(chan int64, 1)
 	slots.taken = func(held int64) {
 		select {

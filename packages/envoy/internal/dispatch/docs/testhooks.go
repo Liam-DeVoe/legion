@@ -866,7 +866,9 @@ type LoadPoolForTest struct {
 // before the call is given back to the pool it was taken from.
 func UseOneLoadSlotForTest(waiting func()) (pool *LoadPoolForTest, restore func()) {
 	slots := newLoadSlots(1)
-	slots.waiting = waiting
+	if waiting != nil {
+		slots.waiting = func(int64) { waiting() }
+	}
 	previous := podLoadSlots.Swap(slots)
 	return &LoadPoolForTest{slots: slots}, func() { podLoadSlots.Store(previous) }
 }
@@ -886,6 +888,32 @@ func (p *LoadPoolForTest) FillForTest() (release func(), filled bool) {
 		return nil, false
 	}
 	return filler.release, true
+}
+
+// WatchLoadPoolWaitsForTest calls waiting, with the bytes asked, each time a taker of the
+// process's load pool (podLoadSlots) finds too little of it free and starts to wait
+// (loadSlots.waiting). It sets the hook on the pool the process holds as it is called, which must
+// be before any taker can reach that pool: cmd/dispatch's memory-test server calls it before main
+// runs. A service built at the calibration keeps that pool (New), so every wait of such a server
+// is told; a service built at another Go memory limit makes a pool of its own, which no hook
+// watches.
+func WatchLoadPoolWaitsForTest(waiting func(bytes int64)) {
+	podLoadSlots.Load().waiting = waiting
+}
+
+// HoldLoadPoolForTest takes bytes of the process's load pool (podLoadSlots), at most the whole
+// pool, as every holder of nothing takes its first grant (loadSlot.take): at once where they are
+// free and no taker waits, and otherwise waiting within ctx, in turn behind every taker already
+// waiting. It answers what gives them back, or ctx's error, holding nothing. The bytes count as
+// any holder's do, so while it holds even one byte every taker of the whole pool waits behind it;
+// their release logs the grant where it waited (logLoadSlot). cmd/dispatch's memory-test server
+// holds a byte of it to keep a drive's gate folds waiting for as long as the drive chooses.
+func HoldLoadPoolForTest(ctx context.Context, bytes int64) (release func(), err error) {
+	hold := newLoadSlot()
+	if err := hold.take(ctx, bytes); err != nil {
+		return nil, err
+	}
+	return hold.release, nil
 }
 
 // FoldHistoryPastRoomForTest writes artifactID as another process would, in holder, which holds

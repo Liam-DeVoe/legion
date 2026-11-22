@@ -3983,6 +3983,24 @@ const (
 	// for one of the process's buffered folds where the cold reads hold them all, and for its
 	// grant of the pool.
 	replacedCloseWithin = 5 * time.Minute
+	// poolHeldWithin bounds the gate-fold drive's wait, once it has asked for its hold of the
+	// pool, for the server to hold it (memoryServer.holdPool). The hold waits in turn behind every
+	// taker waiting as it asks - at most the three handoffs' applies and the four cold reads - so
+	// this is seven of the longest holds the heaviest-apply drive measured (59.946 s,
+	// poolQueuedWithin) with room to spare.
+	poolHeldWithin = 10 * time.Minute
+	// gateFoldsQueuedWithin bounds the drive's wait, once its keystrokes have gone, for the server
+	// to write a wait for the whole pool for each room's gate fold (poolWaitLine). Neither the
+	// keystroke's apply nor its store takes a grant before the gate's own, and a room's worker
+	// asks for that once it has read the replaced history's two rows to weigh them, holding the
+	// document's lock and a connection of the room-appends pool, which has eight (store's
+	// roomAppendsPoolSize), more than the rooms the budget holds here.
+	gateFoldsQueuedWithin = 2 * time.Minute
+	// poolHeldPast is how long the drive keeps its hold once every room's gate fold waits behind
+	// it: past loadSlotLoggedForTest, so each fold's wait, begun before the server wrote it, is one
+	// the server logs as it gives the grant back (loadSlotLine). It bounds each of those waits from
+	// below and races nothing.
+	poolHeldPast = 2 * loadSlotLoggedForTest
 )
 
 // replacedCloseLine is the line the server logs once it has closed a room whose browser's update
@@ -4046,15 +4064,37 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // logs that count beside A3's, the budget over a room of a mebibyte of prose that only loads
 // (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays).
 //
-// The pool is held full as the store-decode drive holds it: three browsers of the room at the
-// state cap hand its whole state back with a few words typed, each apply granted its state's
-// weight, and four cold reads of documents at the decode cap each fold under a whole slot. The
-// keystrokes go, all at once, as soon as the server has given back a grant one of those waited
-// for (loadSlotLine). A keystroke is a one-character insert, which takes no grant at its apply or
-// at its store (docs' heavyUpdateWeight), and its room answers it applied only once its worker has
-// stored it (docs' Server.AnswerOnceStored), past the gate's fold. That fold is weighed at the
-// whole pool - its rows declare a million structs (copyWeightForTest) - so while any holder holds
-// bytes of the pool or waits for them it waits, and the rooms' folds take the pool one at a time.
+// The pool is filled as the store-decode drive fills it: three browsers of the room at the state
+// cap hand its whole state back with a few words typed, each apply granted its state's weight, and
+// four cold reads of documents at the decode cap each fold under a whole slot. Once the server has
+// given back a grant one of those waited for (loadSlotLine), the drive has the server take a hold
+// of one byte of the pool (holdPoolOnSignal, docs.HoldLoadPoolForTest), which waits its turn
+// behind every taker already waiting, and the keystrokes go, all at once, once the server holds
+// it. A keystroke is a one-character insert, which takes no grant at its apply or at its store
+// (docs' heavyUpdateWeight), and its room answers it applied only once its worker has stored it
+// (docs' Server.AnswerOnceStored), past the gate's fold. That fold is weighed at the whole pool -
+// its rows declare a million structs (copyWeightForTest) - so while any holder holds bytes of the
+// pool or waits for them it waits, and the rooms' folds take the pool one at a time.
+//
+// The hold is what makes every fold wait. The heavy work can be over by the time a room's fold
+// asks, and a fold that finds the pool free takes it at once and leaves no line in the grants
+// log: one of six runs of this drive failed so, with the server's memory at 1,280 MiB of the
+// pod's 4,096 (dispatch://INFRA-179). The server writes each wait for its pool as the wait
+// begins, naming the bytes asked (docs.WatchLoadPoolWaitsForTest), and the drive keeps its hold
+// until the server has written, since the keystrokes went, as many waits for the whole pool as
+// there are rooms, and then for poolHeldPast more, which is past loadSlotLoggedForTest: each
+// queued fold's wait began before the server wrote it, so each is one the server logs as it gives
+// the grant back. No closing compaction is among those waits, since a room closes only once its
+// gate fold has had the pool. The drive fails where the server has not written them within
+// gateFoldsQueuedWithin of the keystrokes.
+//
+// The hold holds no copy. Behind it wait the gate folds and every later taker of the whole pool -
+// a cold read that asks after it - while a taker of less, as the heavy writers' applies are, takes
+// room beside it at once where the pool has that room and no taker waits, and otherwise waits its
+// turn too. Once the hold is given back, what waited takes the pool in turn, within the pool's
+// bytes as every holder does, so the window's worst case is the one this comment describes: the
+// rooms, and one fold of the whole pool at a time.
+//
 // The drive fails unless each room's gate fold shows in the server's grants log as a grant of the
 // whole pool that waited a tenth of a second or more, its wait begun once the room's keystroke was
 // sent and its bytes given back before the room answered the keystroke: the drive gives each room
@@ -4103,6 +4143,8 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	building := time.Now()
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
+	// The server's hold of a byte of its load pool, and its line for each wait (holdPoolOnSignal).
+	memory.env = append(memory.env, memoryTestPoolHoldEnv+"=1")
 	longEdited, heaviest := memory.heavyWriterShapes(t)
 	// A3's document, for A3's count of rooms and the store-decode drive's heaviest step 2. No copy
 	// of it is opened.
@@ -4234,16 +4276,22 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		t.Fatalf("age the rooms' replaced rows past the tail: %v", err)
 	}
 
+	whole := int64(worstCaseLoadSlotBytesForTest)
 	typed := make([]windowOutcome, len(typing))
 	var closes map[string]time.Time
 	mark := len(server.output.String())
 	step = time.Now()
 	peak := server.peakResident(t, func() {
 		var group sync.WaitGroup
-		// The keystrokes go once the pool is full: once the server has given back a grant a holder
-		// waited for, the heavy writers and the folds are queuing for it.
+		// The drive's hold goes once the pool is full: once the server has given back a grant a
+		// holder waited for, the heavy writers and the folds are queuing for it. The keystrokes go
+		// once the server holds it, so every room's gate fold, which asks the whole pool, waits
+		// behind the hold however soon the heavy work ends.
 		writers.fillPool(t, server, &group, mark)
-		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the keystrokes go now", time.Since(step).Round(time.Millisecond))
+		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the drive's hold goes now", time.Since(step).Round(time.Millisecond))
+		server.holdPool(t, &group)
+		t.Logf("the server held a byte of the pool %s after the heavy writers and the folds started; the keystrokes go now", time.Since(step).Round(time.Millisecond))
+		sent, keystrokes := server.output.Len(), time.Now()
 		for index, typingIn := range typing {
 			group.Go(func() {
 				result := &typed[index]
@@ -4252,6 +4300,31 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 				result.answered = time.Now()
 			})
 		}
+		// Every room's gate fold waits behind the hold once the server has written, since the
+		// keystrokes went, as many waits for the whole pool as there are rooms. The hold stays
+		// poolHeldPast longer, so each of those waits is one the server logs.
+		for deadline := keystrokes.Add(gateFoldsQueuedWithin); ; time.Sleep(10 * time.Millisecond) {
+			waits := server.poolWaits(t, sent)
+			queued := 0
+			for _, asked := range waits {
+				if asked == whole {
+					queued++
+				}
+			}
+			if queued >= len(typing) {
+				t.Logf("the server wrote %d waits for the whole pool within %s of the keystrokes going, one for each room's gate fold; the hold stays %s more",
+					queued, time.Since(keystrokes).Round(time.Millisecond), poolHeldPast)
+				break
+			}
+			if time.Now().After(deadline) {
+				server.givePoolBack(t)
+				group.Wait()
+				t.Fatalf("within %s of the keystrokes going the server wrote %d waits for the whole %d-byte pool, want %d, one for each room's gate fold queued behind the drive's hold: a gate fold did not wait for the pool; every wait it wrote since the keystrokes went, in bytes asked: %v\n%s",
+					gateFoldsQueuedWithin, queued, whole, len(typing), waits, server.output.tail())
+			}
+		}
+		time.Sleep(poolHeldPast)
+		server.givePoolBack(t)
 		group.Wait()
 		closes = replacedCloses(t, server, mark, foldRooms)
 	})
@@ -4272,7 +4345,6 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		room     int
 		what, by string
 	}
-	whole := int64(worstCaseLoadSlotBytesForTest)
 	var windows []grantWindow
 	var named []foldGrant
 	closed := 0

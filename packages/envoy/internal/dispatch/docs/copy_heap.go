@@ -370,9 +370,9 @@ type loadSlots struct {
 	free *semaphore.Weighted
 	// held is how many bytes of the pool are held now.
 	held atomic.Int64
-	// waiting runs, in a test, as a taker finds too little of the pool free and starts to wait;
-	// taken runs once it holds its own bytes, with the bytes held then.
-	waiting func()
+	// waiting runs, in a test, as a taker finds too little of the pool free and starts to wait,
+	// with the bytes it asks; taken runs once it holds its own bytes, with the bytes held then.
+	waiting func(bytes int64)
 	taken   func(held int64)
 }
 
@@ -572,7 +572,7 @@ func (g *loadSlot) acquire(ctx context.Context, bytes int64) error {
 	slots := g.slots.semaphore()
 	if !slots.TryAcquire(bytes) {
 		if g.slots.waiting != nil {
-			g.slots.waiting()
+			g.slots.waiting(bytes)
 		}
 		if err := slots.Acquire(ctx, bytes); err != nil {
 			return err

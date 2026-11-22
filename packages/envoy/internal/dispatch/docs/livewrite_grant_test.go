@@ -157,7 +157,7 @@ func TestAColdWriteWhoseForkDecodesWhileTheSlotsAreFullTakesOneSlot(t *testing.T
 	var waits atomic.Int64
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() {
+	slots.waiting = func(int64) {
 		waits.Add(1)
 		waitOnce.Do(func() { close(waiting) })
 	}
@@ -209,7 +209,7 @@ func TestAnAPIWriteWhoseRequestEndsWhileItWaitsForASlotIsRefusedAndChangesNothin
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 	request, cancel := context.WithCancel(context.Background())
 	refused := make(chan error, 1)
 	go func() { refused <- grantWrite(request, service, artifactID, grantWriteHeading, "Written") }()
@@ -259,7 +259,7 @@ func TestAServerWriteWaitsForASlotWithoutADeadlineAndThenLands(t *testing.T) {
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots.waiting = func(int64) { waitOnce.Do(func() { close(waiting) }) }
 	written := make(chan error, 1)
 	go func() {
 		written <- grantWrite(context.Background(), service, artifactID, grantWriteHeading, "Written")
@@ -357,7 +357,7 @@ func TestAStreamOfAPILiveWritesStarvesNeitherARoomLoadNorAServerWrite(t *testing
 	}
 	slots, test := loadSlotsWithRoomFor(t, 2, 2*each)
 	var waits atomic.Int64
-	slots.waiting = func() { waits.Add(1) }
+	slots.waiting = func(int64) { waits.Add(1) }
 
 	// One write with the bound to itself, which the probes' deadline is a multiple of.
 	started := time.Now()

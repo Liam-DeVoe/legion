@@ -124,6 +124,26 @@ const memoryTestCollectEnv = "DISPATCH_MEMORY_TEST_COLLECT_ON_SIGNAL"
 // a SIGUSR1 asked for has run: its number and the heap it found live, in bytes.
 var collectedLine = regexp.MustCompile(`memory test: collection (\d+) found (\d+) bytes live\n`)
 
+// memoryTestPoolHoldEnv makes a memory test's server write on its standard error each wait a
+// taker of its load pool begins, and hold a byte of that pool from one SIGUSR2 to the next
+// (holdPoolOnSignal). Only the gate-fold drive sets it
+// (TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory).
+const memoryTestPoolHoldEnv = "DISPATCH_MEMORY_TEST_HOLD_POOL_ON_SIGNAL"
+
+// poolHoldBytes is what the server's hold takes of its load pool: one byte. It holds no copy of
+// anything, and leaves room beside it for every taker of less than the whole pool, while every
+// taker of the whole pool waits behind it.
+const poolHoldBytes = 1
+
+// The lines a server running with memoryTestPoolHoldEnv writes (holdPoolOnSignal): its hold
+// taken, with the bytes it holds; a taker of its load pool beginning to wait, with the bytes it
+// asks; and its hold given back. The server's own lines are its log's, which begin "time=".
+var (
+	poolHeldLine  = regexp.MustCompile(`memory test: the pool hold holds (\d+) bytes\n`)
+	poolWaitLine  = regexp.MustCompile(`memory test: a taker of the load pool waits for (\d+) bytes\n`)
+	poolGivenLine = regexp.MustCompile(`memory test: the pool hold was given back\n`)
+)
+
 // memoryServer is a Dispatch server: this test binary running main.
 type memoryServer struct {
 	command *exec.Cmd
@@ -146,6 +166,9 @@ type memoryServer struct {
 func init() {
 	if os.Getenv(memoryTestServeEnv) == "1" && os.Getenv(memoryTestCollectEnv) == "1" {
 		collectOnSignal()
+	}
+	if os.Getenv(memoryTestServeEnv) == "1" && os.Getenv(memoryTestPoolHoldEnv) == "1" {
+		holdPoolOnSignal()
 	}
 }
 
@@ -170,6 +193,40 @@ func collectOnSignal() {
 					break
 				}
 			}
+		}
+	}()
+}
+
+// holdPoolOnSignal has the server write a line naming the bytes each taker of its load pool asks
+// as it begins to wait (poolWaitLine, docs.WatchLoadPoolWaitsForTest), and take or give back a
+// hold of poolHoldBytes of that pool on each SIGUSR2 (docs.HoldLoadPoolForTest): the first takes
+// it, waiting in turn behind every taker already waiting, and writes poolHeldLine once it holds
+// it; the next gives it back and writes poolGivenLine; and so on. A signal that comes while the
+// hold still waits is read once it holds. It is installed before main runs, so its hook is on the
+// pool every taker of a server at the calibration takes from (docs.New keeps that pool), and the
+// server never meets a SIGUSR2 it would die of.
+func holdPoolOnSignal() {
+	docs.WatchLoadPoolWaitsForTest(func(asked int64) {
+		fmt.Fprintf(os.Stderr, "memory test: a taker of the load pool waits for %d bytes\n", asked)
+	})
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR2)
+	go func() {
+		var release func()
+		for range signals {
+			if release != nil {
+				release()
+				release = nil
+				fmt.Fprintln(os.Stderr, "memory test: the pool hold was given back")
+				continue
+			}
+			held, err := docs.HoldLoadPoolForTest(context.Background(), poolHoldBytes)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "memory test: the pool hold was refused: %v\n", err)
+				continue
+			}
+			release = held
+			fmt.Fprintf(os.Stderr, "memory test: the pool hold holds %d bytes\n", poolHoldBytes)
 		}
 	}()
 }
@@ -610,6 +667,64 @@ func (p *memoryServer) collect(t *testing.T) (collection, int) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// holdPool asks the server for its hold of a byte of its load pool (holdPoolOnSignal) and waits
+// until the server writes that it holds it, which is once every taker that was waiting for the
+// pool as the hold asked has had its turn. It fails the test, once group's work has returned,
+// where the server does not hold it within poolHeldWithin.
+func (p *memoryServer) holdPool(t *testing.T, group *sync.WaitGroup) {
+	t.Helper()
+	if !p.signalPoolHold(t, poolHeldLine, poolHeldWithin) {
+		group.Wait()
+		t.Fatalf("the server did not hold a byte of its load pool within %s of the drive asking: the heavy work waiting ahead of the hold outlasted that\n%s",
+			poolHeldWithin, p.output.tail())
+	}
+}
+
+// givePoolBack asks the server to give its hold of the load pool back (holdPoolOnSignal) and waits
+// up to a minute until it writes that it has.
+func (p *memoryServer) givePoolBack(t *testing.T) {
+	t.Helper()
+	if !p.signalPoolHold(t, poolGivenLine, time.Minute) {
+		t.Fatalf("the server did not give its hold of the load pool back within a minute of the drive asking:\n%s", p.output.tail())
+	}
+}
+
+// signalPoolHold sends the server SIGUSR2 (holdPoolOnSignal) and reports whether it wrote line
+// after it within within. It fails the test where the server exits first.
+func (p *memoryServer) signalPoolHold(t *testing.T, line *regexp.Regexp, within time.Duration) bool {
+	t.Helper()
+	offset := p.output.Len()
+	if err := p.command.Process.Signal(syscall.SIGUSR2); err != nil {
+		t.Fatalf("send the server SIGUSR2 for its hold of the load pool: %v\n%s", err, p.output.tail())
+	}
+	for deadline := time.Now().Add(within); !line.MatchString(p.output.from(offset)); time.Sleep(10 * time.Millisecond) {
+		select {
+		case <-p.exited:
+			t.Fatalf("the server exited before it answered the SIGUSR2 for its hold of the load pool: is %s=1 set?\n%s", memoryTestPoolHoldEnv, p.output.tail())
+		default:
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
+	return true
+}
+
+// poolWaits is the bytes each taker of the server's load pool asked as it began to wait
+// (poolWaitLine), in the order the server wrote them after the first from bytes of its output.
+func (p *memoryServer) poolWaits(t *testing.T, from int) []int64 {
+	t.Helper()
+	var waits []int64
+	for _, match := range poolWaitLine.FindAllStringSubmatch(p.output.from(from), -1) {
+		asked, err := strconv.ParseInt(match[1], 10, 64)
+		if err != nil {
+			t.Fatalf("parse %q: %v", match[0], err)
+		}
+		waits = append(waits, asked)
+	}
+	return waits
 }
 
 // resident is the server's resident memory in bytes, VmRSS now or VmHWM its peak.
