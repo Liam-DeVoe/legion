@@ -5753,6 +5753,58 @@ for mode in citations shape; do
     fi
 done
 
+# 187. A dotted name whose prefix names its file as a module does, `engine.match` for the
+# function match of engine.py, is read as that file and that name (test round 48, the class
+# of case 183: a symbol part whose prefix names its file is read in that file, not as a
+# namespace the file's text must write). Case 183 reads a prefix that is the file's name
+# with its extension, `a.go:Alpha` or `a.go.Alpha`; Python names a module-level function by
+# its module, the file's name without its extension, and a package path before it, as
+# `engine.match` or `api.engine.match`, and a module's own text seldom writes its name. At
+# e0845e61 such a prefix reached prefix_held, which asks each component to stand in the file
+# as a word, so both failed citation-our-code ("the component 'engine' of its prefix 'engine'
+# does not stand in it"), though engine.py declares match. The case commits
+# packages/daemon/internal/api/engine.py into the fixture, a module-level `def match`, its
+# text writing neither engine nor api as a word, names that commit as our repository's in
+# sources.json, and writes the fixture's row f-our-1 as citing that file with the symbol
+# 'engine.match', then 'api.engine.match', then 'engin.match', running --citations over
+# each: the first two must pass citation-our-code; the third, whose prefix names no file
+# and is no word of the file, must fail it, naming the part.
+for form in module package mistyped; do
+    case "$form" in
+    module) symbol='engine.match' ;;
+    package) symbol='api.engine.match' ;;
+    mistyped) symbol='engin.match' ;;
+    esac
+    dir="$(fresh "symbol-module-prefix-$form")"
+    evidence_copy="$dir/repo/docs/research/internet-of-cognition"
+    api="$dir/repo/packages/daemon/internal/api"
+    printf 'def match(row):\n    return row\n' >"$api/engine.py"
+    named="$(
+        cd "$dir/repo" &&
+            git add packages/daemon/internal/api/engine.py &&
+            git commit --quiet -m "a module of one function" &&
+            git rev-parse HEAD
+    )"
+    jq --arg c "$named" '.our_repository.commit = $c' "$evidence_copy/sources.json" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$evidence_copy/sources.json"
+    sed -i "/\"id\":\"f-our-1\"/s#\"file\":\"packages/daemon/internal/api/handoff.go\",\"symbol\":\"TesterVerdictRequired\"#\"file\":\"packages/daemon/internal/api/engine.py\",\"symbol\":\"$symbol\"#" \
+        "$evidence_copy/claims.jsonl"
+    [ -n "$named" ] && [ "$(jq -r '.our_repository.commit' "$evidence_copy/sources.json")" = "$named" ] &&
+        grep -F '"id":"f-our-1"' "$evidence_copy/claims.jsonl" | grep -qF "\"file\":\"packages/daemon/internal/api/engine.py\",\"symbol\":\"$symbol\"" &&
+        ! grep -qwE 'engine|api|engin' "$api/engine.py" || {
+        printf 'FAIL the symbol %s and its module could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    mistyped)
+        case_result "a dotted name engin.match, whose prefix names no file and is no word of engine.py, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol engin\\.match" "$out"
+        ;;
+    *) honest_result "a dotted name $symbol, whose prefix names engine.py as a module, in a file that writes neither engine nor api as a word, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
