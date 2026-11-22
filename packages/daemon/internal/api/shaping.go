@@ -601,6 +601,7 @@ var stateNarrowings = []stateNarrowing{
 		left: leftDeploymentRoles,
 		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
+	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1493,6 +1494,24 @@ func withoutUnadmittedStrandedStates(state State, restore int) (State, bool) {
 		if !unadmitted(c) {
 			stranded = append(stranded, c)
 		}
+	}
+	state.StrandedClaims = stranded
+	return state, true
+}
+
+// withoutStrandedTokens is state whose stranded claims carry no `token`, the key
+// strandedTokenContract added: a plugin before INFRA-1048 reads a stranded claim as a strict
+// object and refuses the whole state over a key it does not know, and a later plugin below the
+// contract strips it. A state with no token to take is returned as it is, with no copy made.
+// Otherwise the entries are copied, so the state the source answered is left as it was.
+func withoutStrandedTokens(state State) (State, bool) {
+	if !slices.ContainsFunc(state.StrandedClaims, func(c StrandedClaim) bool { return c.Token != "" }) {
+		return state, false
+	}
+	stranded := make([]StrandedClaim, len(state.StrandedClaims))
+	for i, c := range state.StrandedClaims {
+		c.Token = ""
+		stranded[i] = c
 	}
 	state.StrandedClaims = stranded
 	return state, true
