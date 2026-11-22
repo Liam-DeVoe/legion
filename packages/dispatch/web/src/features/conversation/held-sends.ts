@@ -686,8 +686,9 @@ export class HeldSends {
    *  The issue page's box keeps with it the mentions it holds then (`HeldDraft.seeds`): they
    *  replace the request's (`SentRequest.seeds`), so a box that mounts again over the send takes
    *  out those and no link the reader wrote. A keep that carries none leaves the request none, and
-   *  one whose mentions the request holds already writes nothing either (`holdsSeeds`). The box
-   *  alone writes them, so every other composer's request holds none before the keep and after. */
+   *  a keep of the draft the send holds already still writes where its mentions are not the
+   *  request's (`holdsSeeds`). The box alone writes them, so every other composer's request holds
+   *  none before the keep and after. */
   keep(mutationKey: MutationKey, { seeds, ...draft }: HeldDraft): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;

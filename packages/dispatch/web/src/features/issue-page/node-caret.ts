@@ -468,6 +468,10 @@ export function holdEditsToBlock(
       if (letGo || view.isDestroyed) return;
       // Each document an edit of the reader's made (above).
       const edited = new WeakSet<ProseMirrorNode>();
+      // The last document reported: Milkdown's dispatch of a heading's `id` from its plugin's
+      // view runs the plugins' views again inside the update that brought the edit, so both
+      // updates find the editor holding the same document.
+      let reported: ProseMirrorNode | undefined;
       const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
         filterTransaction: (transaction, editorState) =>
           letGo ||
@@ -499,11 +503,13 @@ export function holdEditsToBlock(
         view: () => ({
           update: (editor, before) => {
             const { doc } = editor.state;
-            if (letGo || doc === before.doc || !edited.has(doc)) return;
+            if (letGo || doc === before.doc || doc === reported || !edited.has(doc)) return;
             // The held block, where the plugin's state last found it.
             const start = plugin.getState(editor.state);
             const block = start === undefined ? null : doc.nodeAt(start);
-            if (block !== null) onOwnEdit?.(editWords(block.toJSON()));
+            if (block === null) return;
+            reported = doc;
+            onOwnEdit?.(editWords(block.toJSON()));
           },
         }),
       });

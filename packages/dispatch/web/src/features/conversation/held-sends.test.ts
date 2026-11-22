@@ -567,7 +567,8 @@ test("a keep over a refused reply writes the mentions its box holds into the req
 // A keep by the issue page's box over a refused reply writes nothing where the request holds its
 // mentions already, none and an empty list being alike: it tells no listener of the store and
 // leaves the entry as it was. The same draft kept with other mentions still writes them, as the
-// draft's own change does (#3125's case above holds the draft and the ask).
+// draft's own change does ("a keep of the draft a refused send holds already writes nothing, and
+// a changed one writes it", above, holds the draft and the ask).
 test("a keep of the mentions a refused reply holds already writes nothing, and the same draft with other mentions writes them", async () => {
   const tab = keptTab();
   const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);

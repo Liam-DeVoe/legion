@@ -11843,24 +11843,30 @@ function statementRead(words?: string, tree?: DisplayTree): TreeNode {
   return node({ children: [first, ...statement, arrived], id: KEY, type: "issue" });
 }
 
-/** The statement's words in `room` edited by a collaborator: `length` of them from `from` typed
- *  over with `words`, which y-prosemirror draws in the row's editor. */
-function collaboratorEdits(room: LiveRoom, from: number, length: number, words: string): void {
+/** The words of `room`'s block at `block`, the statement's by default, edited by a collaborator:
+ *  `length` of them from `from` typed over with `words`, which y-prosemirror draws in the row's
+ *  editor. */
+function collaboratorEdits(
+  room: LiveRoom,
+  from: number,
+  length: number,
+  words: string,
+  block = 1
+): void {
   act(() => {
     room.server.transact(() => {
-      const statement = room.server.getXmlFragment("prosemirror").get(1);
-      const text = statement instanceof Y.XmlElement ? statement.get(0) : undefined;
-      if (!(text instanceof Y.XmlText)) throw new Error("the room holds no statement's words");
+      const edited = room.server.getXmlFragment("prosemirror").get(block);
+      const text = edited instanceof Y.XmlElement ? edited.get(0) : undefined;
+      if (!(text instanceof Y.XmlText)) throw new Error(`the room's block ${block} holds no words`);
       text.delete(from, length);
       text.insert(from, words);
     });
   });
 }
 
-/** Checks that the read that dropped the statement's row, which held the focus, `when` the
- *  reader did what the case names, ended any editing of the row and left the focus on the page's
- *  body. */
-async function expectDropLeftBody(
+/** Checks that the read that dropped the row being edited, which held the focus, ended the
+ *  editing and left the focus on the page's body: `when` names what came before the read. */
+async function expectEditingEndedOnBody(
   view: { readonly edited: readonly (string | undefined)[] },
   when: string
 ): Promise<void> {
@@ -11871,7 +11877,7 @@ async function expectDropLeftBody(
   await nextFrame();
   expect(
     document.body,
-    `a read that dropped the statement's row ${when} took the focus off the page's body`
+    `a read that dropped the row being edited ${when} took the focus off the page's body`
   ).toHaveFocus();
 }
 
@@ -11936,21 +11942,12 @@ test("the reader's two edits, a read of the first between them, then the read th
     withWords(before, "r1", "A new rule of the spec.")
   );
 
-  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
-  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
-  const edited = node({
-    id: "spec#b-r1",
-    text: "A new statement of the spec.",
-    type: "requirement",
-  });
-  await act(async () =>
-    view.reread(node({ children: [first, edited, arrived], id: KEY, type: "issue" }))
-  );
+  await act(async () => view.reread(statementRead("A new statement of the spec.")));
   expect(
     rowsFor(view.container, "spec#b-r1"),
     "the read of the first edit dropped the row"
   ).toHaveLength(1);
-  await act(async () => view.reread(node({ children: [first, arrived], id: KEY, type: "issue" })));
+  await act(async () => view.reread(statementRead()));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
   await waitFor(() =>
     expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
@@ -11970,29 +11967,13 @@ test("a collaborator's edit of the focused row being edited, then a read that dr
   const user = userEvent.setup();
   const { editor, room, view } = await caretInLiveStatement(user);
   const before = blocksOf(editor);
-  act(() => {
-    room.server.transact(() => {
-      const statement = room.server.getXmlFragment("prosemirror").get(1);
-      const words = statement instanceof Y.XmlElement ? statement.get(0) : undefined;
-      if (!(words instanceof Y.XmlText)) throw new Error("the room holds no statement's words");
-      words.delete(2, 9);
-      words.insert(2, "rule");
-    });
-  });
+  collaboratorEdits(room, 2, 9, "rule");
   expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
     withWords(before, "r1", "A rule of the spec.")
   );
 
   await dropStatement(view);
-  await waitFor(() =>
-    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
-  );
-  // The frame the editing's end asks for comes.
-  await nextFrame();
-  expect(
-    document.body,
-    "a read that dropped the row a collaborator edited took the focus off the page's body"
-  ).toHaveFocus();
+  await expectEditingEndedOnBody(view, "after a collaborator's edit");
 });
 
 // Milkdown writes a heading's `id` from its words in a transaction of its own, kept out of the
@@ -12010,26 +11991,11 @@ test("the heading id the editor writes after a collaborator's edit notes nothing
   const headingId = () => editor.state.doc.firstChild?.attrs.id;
   const idBefore = headingId();
   expect(typeof idBefore, "the editor wrote no id for the heading").toBe("string");
-  act(() => {
-    room.server.transact(() => {
-      const above = room.server.getXmlFragment("prosemirror").get(0);
-      const words = above instanceof Y.XmlElement ? above.get(0) : undefined;
-      if (!(words instanceof Y.XmlText)) throw new Error("the room holds no heading's words");
-      words.insert(0, "New: ");
-    });
-  });
+  collaboratorEdits(room, 0, 0, "New: ", 0);
   expect(headingId(), "the editor wrote no new id for the edited heading").not.toBe(idBefore);
 
   await dropStatement(view);
-  await waitFor(() =>
-    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
-  );
-  // The frame the editing's end asks for comes.
-  await nextFrame();
-  expect(
-    document.body,
-    "a read that dropped the row being edited after the editor wrote a heading's id took the focus off the page's body"
-  ).toHaveFocus();
+  await expectEditingEndedOnBody(view, "after the editor wrote a heading's id");
 });
 
 // The read that draws the reader's edit spends the edit's note: the edit's own read has come and
@@ -12062,7 +12028,7 @@ test("a collaborator's edit after the read that drew the reader's own key, then 
   );
   await act(async () => view.reread(statementRead()));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
-  await expectDropLeftBody(
+  await expectEditingEndedOnBody(
     view,
     "after a collaborator's edit that followed the read of the reader's key"
   );
@@ -12082,11 +12048,11 @@ async function escapeToStatement(
   );
 }
 
-// Once the editing has ended, an edit's note lasts no longer than the read that draws the words
-// the edit left. Here that read comes while the reader still edits the statement, then they press
-// Escape, and three reads that draw the statement as it is come - a comment's, a read mark's -
-// before another session's read drops the row the focus is back on: the focus stays on the
-// page's body, as with no edit at all.
+// An edit's note lasts no longer than the read that draws the words the edit left, and Escape
+// brings nothing back. Here that read comes while the reader still edits the statement, then
+// they press Escape, and three reads that draw the statement as it is come - a comment's, a read
+// mark's - before another session's read drops the row the focus is back on: the focus stays on
+// the page's body, as with no edit at all.
 test("the reader's edit, the read that draws it, Escape and three other reads leave a read that then drops the focused row another session's", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -12105,7 +12071,10 @@ test("the reader's edit, the read that draws it, Escape and three other reads le
   ).toBe("spec#b-r1");
   await act(async () => view.reread(statementRead()));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
-  await expectDropLeftBody(view, "after the reader's edit, its read, Escape and three other reads");
+  await expectEditingEndedOnBody(
+    view,
+    "after the reader's edit, its read, Escape and three other reads"
+  );
 });
 
 // An edit the reader takes back leaves the words as they were, so no tree ever draws the node
@@ -12132,7 +12101,10 @@ test("the reader's key taken back, Escape and later reads leave a read that then
   }
   await act(async () => view.reread(statementRead()));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
-  await expectDropLeftBody(view, "after the reader's key taken back, Escape and two other reads");
+  await expectEditingEndedOnBody(
+    view,
+    "after the reader's key taken back, Escape and two other reads"
+  );
 });
 
 // The words the reader's edit left and the words a read draws the statement with are read by one
@@ -12156,7 +12128,7 @@ test("the read that draws the reader's edit of a statement holding a link and a 
     words.format(stored.indexOf("the guide"), "the guide".length, {
       link: { href: "https://example.com/guide" },
     });
-    const { editable, editor, view } = await caretInLiveStatement(user, liveBlocks(), room);
+    const { editable, editor, view } = await caretInLiveStatement(user, undefined, room);
     expect(
       editable.querySelector('[data-block-id="r1"] a')?.textContent,
       "the editor drew no link in the statement"
@@ -12184,7 +12156,7 @@ test("the read that draws the reader's edit of a statement holding a link and a 
     collaboratorEdits(room, 6, 9, "rule");
     await act(async () => view.reread(statementRead()));
     expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
-    await expectDropLeftBody(
+    await expectEditingEndedOnBody(
       view,
       "after a collaborator's edit that followed the read of the reader's edit of words beside a link and a reference"
     );
@@ -12259,28 +12231,15 @@ test("the read that draws the reader's edit of a decision's heading spends the e
   ).toHaveLength(1);
 
   // The filter's word typed over.
-  act(() => {
-    room.server.transact(() => {
-      const above = room.server.getXmlFragment("prosemirror").get(0);
-      const words = above instanceof Y.XmlElement ? above.get(0) : undefined;
-      if (!(words instanceof Y.XmlText)) throw new Error("the room holds no heading's words");
-      words.delete(0, 4);
-      words.insert(0, "Hold");
-    });
-  });
+  collaboratorEdits(room, 0, 4, "Hold", 0);
   await act(async () => view.reread(read()));
   expect(rowsFor(view.container, "decisions#b-d1"), "the read did not drop the decision").toEqual(
     []
   );
-  await waitFor(() =>
-    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  await expectEditingEndedOnBody(
+    view,
+    "after a collaborator's edit that followed the read of the reader's edit"
   );
-  // The frame the editing's end asks for comes.
-  await nextFrame();
-  expect(
-    document.body,
-    "a read that dropped the decision's row after a collaborator's edit that followed the read of the reader's edit took the focus off the page's body"
-  ).toHaveFocus();
 });
 
 // A read that takes the row being edited out while a press on another row is held ends the

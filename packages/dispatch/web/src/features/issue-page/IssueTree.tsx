@@ -274,12 +274,17 @@ export function IssueTree({
         : { line, ...(row === undefined ? {} : { row }) }
     );
   }, []);
-  // The node the reader last acted on themselves, with the tree drawn as it was noted: a read
-  // that drops that node's row is theirs (`heldRow`, below). A Keep of a decision notes the node
-  // as that tree draws it, and an edit in a row's editor notes the node's id, the row it was
-  // made in and the words it left in the row's block.
+  // The node the reader last acted on themselves, by its id, with the tree drawn as it was noted:
+  // a read that drops that node's row is theirs (`heldRow`, below). A Keep of a decision notes
+  // the node as that tree draws it, and an edit in a row's editor notes the row it was made in
+  // and the words it left in the row's block.
   const ownAct = useRef<
-    | { readonly kind: "keep"; readonly node: TreeNode; readonly root: TreeNode }
+    | {
+        readonly id: string;
+        readonly kind: "keep";
+        readonly node: TreeNode;
+        readonly root: TreeNode;
+      }
     | {
         readonly id: string;
         readonly kind: "edit";
@@ -296,7 +301,7 @@ export function IssueTree({
   const noteWrite = useCallback((reference: string) => {
     const tree = drawnRoot.current;
     const node = nodesInOrder(tree).find((drawn) => drawn.reference === reference);
-    if (node !== undefined) ownAct.current = { kind: "keep", node, root: tree };
+    if (node !== undefined) ownAct.current = { id: node.id, kind: "keep", node, root: tree };
   }, []);
   const noteEdit = useCallback((row: string, words: string) => {
     // A row key names one node (`rowKeyOf`), so a note already held for this row holds that
@@ -1171,7 +1176,7 @@ export function IssueTree({
       const landed = landedOn.current;
       const read = root !== held.root && locationKey === held.locationKey;
       const own = ownAct.current;
-      const acted = own !== undefined && (own.kind === "keep" ? own.node.id : own.id) === held.node;
+      const acted = own !== undefined && own.id === held.node;
       if (acted) ownAct.current = undefined;
       const caused =
         !read ||
@@ -1194,7 +1199,7 @@ export function IssueTree({
     // nothing (above).
     const noted = ownAct.current;
     if (noted !== undefined && noted.root !== root) {
-      const now = pathTo(root, noted.kind === "keep" ? noted.node.id : noted.id)?.at(-1);
+      const now = pathTo(root, noted.id)?.at(-1);
       const lasts =
         now !== undefined &&
         (noted.kind === "keep" ? sameOwnFields(noted.node, now) : drawnWords(now) !== noted.words);

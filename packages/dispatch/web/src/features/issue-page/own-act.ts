@@ -3,7 +3,7 @@ import { createContext, useContext } from "react";
 
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
-import type { TreeNode } from "./issue-tree";
+import { nodeWords, type TreeNode } from "./issue-tree";
 
 /**
  * How a write a row makes tells the tree that draws the row that the reader acted on the row's
@@ -49,22 +49,28 @@ export function sameOwnFields(before: TreeNode, after: TreeNode): boolean {
  * not write, and an address typed out bare under no mark, which the server's reading links.
  */
 export function editWords(block: DisplayTree): string {
-  return wordsOf(block).trim().replace(/\s+/g, " ");
+  return flatWords(wordsOf(block));
 }
 
 /**
  * The words a tree draws `node` with, by the rule an edit's are read by (`editWords`), for the
- * block an edit of the node's row holds (`useNodeEditing.ts`): the server's reading of the
- * node's words (`TreeNode.tree`), which for a block of a document is the reading of the block's
- * whole stored text, and for a decision the reading of its section, whose first block is the
- * decision's own heading, the block its row edits (`lineReading`). A node whose read sent no
- * reading - this page asks every read for one (`api/client.ts`'s `Dispatch-Trees`) - is read
- * from its words as that read holds them (`TreeNode.text`).
+ * block an edit of the node's row holds (`useNodeEditing.ts`): the node's words as a reader reads
+ * them (`issue-tree.ts`'s `nodeWords`), the server's reading of them (`TreeNode.tree`), which for
+ * a block of a document is the reading of the block's whole stored text. A node whose read sent
+ * no reading - this page asks every read for one (`api/client.ts`'s `Dispatch-Trees`) - is read
+ * from its words as that read holds them (`TreeNode.text`). A decision's reading is the reading
+ * of its section, whose first block is the decision's own heading, the block its row edits
+ * (`lineReading`), so a decision whose read sent one is drawn with that heading's words. The
+ * issue's words join its key to its title, which no edit leaves, but the outline draws no row of
+ * the issue, so no edit notes it.
  */
 export function drawnWords(node: TreeNode): string {
-  const reading = node.tree;
-  if (reading === undefined) return editWords({ text: node.text, type: "text" });
-  const heading: DisplayTree | undefined =
-    node.type === "decision" && Array.isArray(reading.content) ? reading.content[0] : undefined;
-  return editWords(heading ?? reading);
+  const content = node.type === "decision" ? node.tree?.content : undefined;
+  const heading: DisplayTree | undefined = Array.isArray(content) ? content[0] : undefined;
+  return heading === undefined ? flatWords(nodeWords(node)) : editWords(heading);
+}
+
+/** `words` with each run of white space made one space and none left at either end. */
+function flatWords(words: string): string {
+  return words.trim().replace(/\s+/g, " ");
 }
