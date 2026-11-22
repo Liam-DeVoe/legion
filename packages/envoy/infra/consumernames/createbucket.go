@@ -1284,7 +1284,10 @@ func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 			if _, err := apiRequest(ctx, nc, "$JS.API.STREAM.DELETE."+selectionStreamName, nil); err != nil {
 				return unknownf(err, "the delete of %s's leftover", selection.SessionBucket)
 			}
-			return createBucketAwaitGone(ctx, nc, deadline)
+			return createBucketAwaitGone(ctx, func(ctx context.Context) (bool, error) {
+				_, present, err := createBucketStream(ctx, nc, false)
+				return present, err
+			}, deadline)
 		}
 		if !clustered {
 			return nil
@@ -1298,18 +1301,21 @@ func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 	}
 }
 
-// createBucketAwaitGone reads the selection bucket's stream after its delete until STREAM.INFO
-// answers it absent: a read the hub does not answer in time (a timeout or no responder, while the
-// removal settles) is read again until deadline, and any other answer ends it. A stream still
-// present, or no answer by deadline, is UNKNOWN, naming the bucket.
-func createBucketAwaitGone(ctx context.Context, nc *nats.Conn, deadline time.Time) error {
+// createBucketAwaitGone reads the selection bucket's stream (read) after its delete until STREAM.INFO
+// answers it absent. Until deadline it reads again both a stream that still answers present (a
+// clustered hub answers the stream for a moment after its delete, while the meta group applies the
+// removal) and a read the hub does not answer in time (a timeout or no responder); any other failed
+// read ends it with that error. A stream still present at deadline, or no answer by then, is
+// UNKNOWN, naming the bucket.
+func createBucketAwaitGone(ctx context.Context, read func(context.Context) (bool, error), deadline time.Time) error {
 	for {
-		_, present, err := createBucketStream(ctx, nc, false)
+		present, err := read(ctx)
 		switch {
-		case err == nil && present:
-			return unknownf(nil, "%s's leftover is still present after its delete", selection.SessionBucket)
-		case err == nil:
+		case err == nil && !present:
 			return nil
+		case err == nil && time.Now().After(deadline):
+			return unknownf(nil, "%s's leftover is still present after its delete", selection.SessionBucket)
+		case err == nil: // still present before deadline: read again
 		case !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrNoResponders):
 			return err
 		case time.Now().After(deadline):
