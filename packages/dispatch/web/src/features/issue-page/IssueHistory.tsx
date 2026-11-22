@@ -488,15 +488,11 @@ export function IssueHistory({
     anchor.current?.keepRow(null);
   });
   // The history draws the log it holds whatever the last read's outcome. The log's own line
-  // stands under the heading while the log stands failed (`standsFailed`): it holds no page, and
-  // a fetch of it has failed. A refetch that fails once it holds pages - after an event, or on a
-  // later open of Details - draws no line, and every entry stays drawn. A failed next page is
-  // said where Load older is, below the pages held, and its Retry reads that page again; the
-  // log's Retry reads the log again. Each line stays while the read its Retry sent is out: the
-  // log's since the log still stands failed, though a fetch of a log that holds no page puts it
-  // back to pending as it starts; the next page's since the log keeps that failure while the page
-  // is read again. Each failure is drawn afresh by its count (`errorUpdateCount`), so a read that
-  // fails again is said again, in the same words.
+  // stands under the heading, in place of the loading line, while the log stands failed
+  // (`standsFailed`), and its Retry hands the focus on to the heading. A failed next page is said
+  // where Load older is, below the pages held, and its Retry reads that page again and hands the
+  // focus on as Load older does; that line stays while the page is read again, since the log
+  // keeps that failure meanwhile.
   const logFailed = standsFailed(log);
   const saysFailure = logFailed || log.isFetchNextPageError;
   const failed = saysFailure ? (

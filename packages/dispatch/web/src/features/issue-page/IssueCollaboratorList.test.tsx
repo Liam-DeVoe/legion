@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { failRefreshOverHeld } from "../../__tests__/refresh-over-held";
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { collaboratorSections } from "../issue/CollaboratorsTab";
@@ -113,26 +114,27 @@ function sessionsIn(container: HTMLElement): string[] {
   );
 }
 
-/** Fails a refresh of `list`'s read over the one collaborator it holds, `writer`, and asserts that
- *  the refresh failed, said no failure and offered no Retry over the list, and left `writer`
- *  drawn; then takes the list back to holding none, as before its first read, and fails that read
- *  too, which draws its line and its Retry. */
-async function failRefreshThenFirstRead(list: {
+/** Fails a refresh of `list`'s read over the one collaborator it holds, `writer`, and then its
+ *  first read (`failRefreshOverHeld`). */
+function failRefreshThenFirstRead(list: {
   readonly client: QueryClient;
   readonly read: Mock<typeof api.getIssueCollaborators>;
 }): Promise<void> {
   const key = ["issue", "CORE-1", "collaborators"];
-  list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-  await act(() => list.client.invalidateQueries({ queryKey: key }));
-  expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-  expect(
-    sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
-  ).toEqual(["writer"]);
-  // The list taken back to holding none, as before its first read, which then fails.
-  list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-  await act(() => list.client.resetQueries({ queryKey: key }));
+  return failRefreshOverHeld({
+    client: list.client,
+    failNextFetch: () =>
+      list.read.mockRejectedValueOnce(new Error("the collaborators' read failed")),
+    held: "the list",
+    queryKey: key,
+    refresh: () => list.client.invalidateQueries({ queryKey: key }),
+    refreshFailed: () =>
+      expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error"),
+    stillDrawn: () =>
+      expect(
+        sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
+      ).toEqual(["writer"]),
+  });
 }
 
 // What the page makes of one answer in the order the server sends it (the contract's: the

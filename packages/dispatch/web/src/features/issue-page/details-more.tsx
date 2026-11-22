@@ -532,15 +532,11 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * anchor keeps places again by its own rules from the next one it records: an act of the
  * reader's, the history's own `keepRow`, a scroll.
  *
- * The reader's first act that names a place in the history ends the hold, and its claim with it,
- * and the history's anchor keeps that place from then on (`claimBox`'s `end`): the pointer moving
- * onto an entry, a scroll of theirs, made by an act since the claim began, while the pointer rests
- * on an entry, or the focus moving into one. Where the focused element holds the history's list,
- * as the history `t v` focuses does, the reader's first such scroll ends it too, wherever the
- * pointer rests: the reader then reads the list, and the anchor keeps the entry the pointer rests
- * on, or else the one in the middle of the view (`ViewportAnchor`). So an event that arrives above
- * the reader's entry, or an entry above it that grows, leaves that entry where the reader sees it,
- * where the hold of the history's top would keep the heading and let the entry move.
+ * The reader's act that takes the box back, as `ViewportAnchor`'s `takeBox` states, ends the
+ * hold, and its claim with it (`claimBox`'s `end`), and the history's anchor keeps the entry that
+ * act names from then on. So an event that arrives above the reader's entry, or an entry above it
+ * that grows, leaves that entry where the reader sees it, where the hold of the history's top
+ * would keep the heading and let the entry move.
  *
  * One move is the place the key asked for rather than one to make good: `t v` often reaches the
  * history while its list is still the loading line, at the end of what Details holds, and once
@@ -586,7 +582,7 @@ function holdLandedPlace(target: string, frames: number): () => void {
     }
     // The control's top as the place to keep, or null while it lies wholly outside the view; and
     // the claim of the box (`claimBox`) while a top is kept, which the history's anchor ends, and
-    // the hold with it, at the reader's first act that names a place in the history.
+    // the hold with it, as the reader takes the box back (`takeBox`).
     let kept: number | null = null;
     let claim: (() => void) | undefined;
     const keepTop = () => {

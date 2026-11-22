@@ -16,10 +16,8 @@ export interface IssueSubscribers {
    *  last answer said, kept through a later read that failed; before any has, it
    *  counts nobody, since the number would be a claim the page cannot make. */
   readonly counted: boolean;
-  /** Whether the read is said as failed, with its Retry: while it stands failed (`standsFailed`),
-   *  holding no answer after a fetch of it failed, which goes on while it is read again, so the
-   *  line, and its Retry with a reader's focus, stay through the press. A refresh that fails
-   *  over rows the read holds is not said: `rows` still holds what that read answered. */
+  /** Whether the read is said as failed, with its Retry, under the Subscribers control, which
+   *  then carries no count: while it stands failed (`standsFailed`). */
   readonly error: boolean;
   /** How many times the read has failed, which keys the failure the line says
    *  (`DetailsErrorLineProps.failure`), so a read that fails again is said again. */

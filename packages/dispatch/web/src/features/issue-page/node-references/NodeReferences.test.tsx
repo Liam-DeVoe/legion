@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { graphNode } from "../../../__tests__/graph-fixture";
+import { failRefreshOverHeld } from "../../../__tests__/refresh-over-held";
 import { api } from "../../../api/client";
 import type { CommentWithTrees, GraphEdge, GraphReferences } from "../../../api/types";
 import { emulateChromiumFocusFixup } from "../chromium-focus-fixup";
@@ -164,11 +165,9 @@ function draw(detailsOpen: boolean, drawn: Drawn = STATEMENT_ROW, answer = ANSWE
   return { client, getReferences, itemReads, view };
 }
 
-/** Fails a refresh of the references over the list `draw` drew and the reader opened, and asserts
- *  that the refresh failed, said no failure and offered no Retry over the list, and left its
- *  mention drawn; then takes the list back to holding none, as before its first read, and fails
- *  that read too, which draws its line and its Retry. */
-async function failRefreshThenFirstRead({
+/** Fails a refresh of the references over the list `draw` drew and the reader opened, whose
+ *  mention stays drawn, and then its first read (`failRefreshOverHeld`). */
+function failRefreshThenFirstRead({
   client,
   getReferences,
 }: {
@@ -176,15 +175,18 @@ async function failRefreshThenFirstRead({
   readonly getReferences: Mock<typeof api.getReferences>;
 }): Promise<void> {
   const key = ["references", "to", STATEMENT];
-  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
-  await act(() => client.invalidateQueries({ queryKey: key }));
-  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-  expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
-  // The list taken back to holding none, as before its first read, which then fails.
-  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
-  await act(() => client.resetQueries({ queryKey: key }));
+  return failRefreshOverHeld({
+    client,
+    failNextFetch: () =>
+      getReferences.mockRejectedValueOnce(new Error("the references' read failed")),
+    held: "the list",
+    queryKey: key,
+    refresh: () => client.invalidateQueries({ queryKey: key }),
+    refreshFailed: () =>
+      expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error"),
+    stillDrawn: () =>
+      expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull(),
+  });
 }
 
 test("the first drawing of a focused row reads nothing", async () => {

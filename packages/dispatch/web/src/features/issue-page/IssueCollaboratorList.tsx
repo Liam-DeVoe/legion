@@ -100,10 +100,8 @@ export function IssueCollaboratorList({
   // turns disabled to the page. It reads busy then, and a press while the list is read joins
   // that read rather than ending it and sending another (`retryRead`).
   const retry = useRetryHandOff(() => owner.current);
-  // The line stands while the read stands failed (`standsFailed`): it holds no answer, and a
-  // fetch of it has failed. A refresh that fails over a list the read holds draws no line, and
-  // the list stays drawn. The line stays while the read its Retry sent is out, and each failure
-  // is drawn afresh by its count, so a read that fails again is said again, in the same words.
+  // The failure line stands in place of the loading line while the read stands failed
+  // (`standsFailed`), and its Retry hands the focus on to the control that opens the list.
   const failure = standsFailed(query) ? (
     <DetailsErrorLine
       failure={query.errorUpdateCount}

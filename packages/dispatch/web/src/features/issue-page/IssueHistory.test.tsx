@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { failRefreshOverHeld } from "../../__tests__/refresh-over-held";
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Artifact, DispatchEvent, Handoff, IssueDetails, MessageRead } from "../../api/types";
@@ -620,23 +621,21 @@ function drawHistory(
 }
 
 /** Refetches the log, whose reads the case has made fail, over the `entries` entries the history
- *  draws, and asserts that the refetch said no failure and offered no Retry over them and left
- *  them drawn (`message` saying what went wrong where it did not); then takes the log back to
- *  holding no page, as before its first read, which fails too and draws its line and its Retry. */
-async function failLogRefetchThenFirstRead(
+ *  draws, and then takes it back to holding no page, whose first read fails too
+ *  (`failRefreshOverHeld`). `message` says what went wrong where the entries did not stay drawn. */
+function failLogRefetchThenFirstRead(
   queryClient: QueryClient,
   entries: number,
   message?: string
 ): Promise<void> {
-  await act(async () => {
-    await queryClient.refetchQueries({ queryKey: ["events", KEY] });
-  });
-  expect(screen.queryByRole("alert"), "a failed refetch said a failure over the log").toBeNull();
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-  expect(document.querySelectorAll("[data-event-seq]"), message).toHaveLength(entries);
-  // The log taken back to holding no page, as before its first read, which then fails.
-  await act(async () => {
-    await queryClient.resetQueries({ queryKey: ["events", KEY] });
+  const key = ["events", KEY];
+  return failRefreshOverHeld({
+    client: queryClient,
+    held: "the log",
+    queryKey: key,
+    refresh: () => queryClient.refetchQueries({ queryKey: key }),
+    stillDrawn: () =>
+      expect(document.querySelectorAll("[data-event-seq]"), message).toHaveLength(entries),
   });
 }
 
@@ -1862,28 +1861,25 @@ function drawHandoff(): { queryClient: QueryClient; unmount: () => void } {
   return { queryClient, unmount };
 }
 
-/** Fails a refresh of the handoff over the body its opened fields draw (`Second pass`), and
- *  asserts that the refresh said no failure and offered no Retry over the fields and left them
- *  drawn; then takes the body back to held by none, as before its first read, and fails that read
- *  too, which draws its line and its Retry. Where `refreshed` is given, it asserts as well that
- *  the handoff has been read that many times once the refresh has failed. */
-async function failHandoffRefreshThenFirstRead(
+/** Fails a refresh of the handoff over the body its opened fields draw (`Second pass`), and then
+ *  its first read (`failRefreshOverHeld`). Where `refreshed` is given, it asserts as well that the
+ *  handoff has been read that many times once the refresh has failed. */
+function failHandoffRefreshThenFirstRead(
   queryClient: QueryClient,
   getHandoff: Mock<typeof api.getHandoff>,
   refreshed?: number
 ): Promise<void> {
-  getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-  await act(async () => {
-    await queryClient.invalidateQueries();
-  });
-  if (refreshed !== undefined) expect(getHandoff).toHaveBeenCalledTimes(refreshed);
-  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the fields").toBeNull();
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-  expect(screen.queryByText("Second pass")).not.toBeNull();
-  // The body taken back to held by none, as before its first read, which then fails.
-  getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-  await act(async () => {
-    await queryClient.resetQueries({ queryKey: ["handoff", "handoff-1"] });
+  return failRefreshOverHeld({
+    client: queryClient,
+    failNextFetch: () => getHandoff.mockRejectedValueOnce(new Error("the handoff is down")),
+    held: "the fields",
+    queryKey: ["handoff", "handoff-1"],
+    refresh: () => queryClient.invalidateQueries(),
+    refreshFailed:
+      refreshed === undefined
+        ? undefined
+        : () => expect(getHandoff).toHaveBeenCalledTimes(refreshed),
+    stillDrawn: () => expect(screen.queryByText("Second pass")).not.toBeNull(),
   });
 }
 

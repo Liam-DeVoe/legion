@@ -8,6 +8,7 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { failRefreshOverHeld } from "../../__tests__/refresh-over-held";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import { issueResultsQuery, issueStepsQuery, userStateQuery } from "../../api/queries";
@@ -261,28 +262,28 @@ function renderPeople() {
 /** The Subscribers row's control, which carries the count once the read answers. */
 const SUBSCRIBERS = new RegExp(`^${PROPERTY_LABELS.subscribers}`, "u");
 
-/** Fails a refresh of the subscribers over the answer the People rows hold, and asserts that the
- *  refresh failed, said no failure over `held` and offered no Retry, and that `stillDrawn` passes
- *  on what the rows draw; then takes the read back to holding none, as before its first read, and
- *  fails that read too, which draws its line and its Retry. */
-async function failRefreshThenFirstRead(
+/** Fails a refresh of the subscribers over the answer the People rows hold, and then their first
+ *  read, each with the listener's refusal (`failRefreshOverHeld`). */
+function failRefreshThenFirstRead(
   client: QueryClient,
   getIssueSubscribers: Mock<typeof api.getIssueSubscribers>,
   held: string,
   stillDrawn: () => void
 ): Promise<void> {
-  const refusal = () =>
-    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
   const key = ["subscribers", KEY];
-  getIssueSubscribers.mockRejectedValueOnce(refusal());
-  await act(() => client.invalidateQueries({ queryKey: key }));
-  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-  expect(screen.queryByRole("alert"), `a failed refresh said a failure over ${held}`).toBeNull();
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-  stillDrawn();
-  // The agents taken back to holding none, as before their first read, which then fails.
-  getIssueSubscribers.mockRejectedValueOnce(refusal());
-  await act(() => client.resetQueries({ queryKey: key }));
+  return failRefreshOverHeld({
+    client,
+    failNextFetch: () =>
+      getIssueSubscribers.mockRejectedValueOnce(
+        new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" })
+      ),
+    held,
+    queryKey: key,
+    refresh: () => client.invalidateQueries({ queryKey: key }),
+    refreshFailed: () =>
+      expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error"),
+    stillDrawn,
+  });
 }
 
 // The subscribers' read, which counts them on every load, says so

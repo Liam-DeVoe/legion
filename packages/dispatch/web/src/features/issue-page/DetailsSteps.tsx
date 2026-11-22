@@ -184,10 +184,8 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
   useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
   const retry = useRetryHandOff(() => heading.current);
-  // The line stands while the read stands failed (`standsFailed`): it holds no answer, and a
-  // fetch of it has failed. A refresh that fails over runs the read holds draws no line, and the
-  // runs stay drawn. The line stays while the read its Retry sent is out, though that read puts
-  // the query back to pending as it starts, so its Retry keeps the focus.
+  // The failure line stands under the heading, in place of the loading line, while the read
+  // stands failed (`standsFailed`), and its Retry hands the focus on to the heading.
   const failed = standsFailed(query);
   const tasks = query.data === undefined ? undefined : stepTasks(query.data);
   const runs = tasks?.reduce((count, task) => count + task.rows.length, 0);

@@ -70,15 +70,16 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
   // A focus on a line that goes - the Retry of the failure line once the read the reader's press
   // of it sent lands, or the loading line - goes on to what the reader's press asked for, where no
   // Enter undoes it: the Retry of a failure line drawn in its place, else what stands in the
-  // fields' place, the fields once the read has landed, or the loading line while a read is out.
+  // fields' place, the fields once the read has landed. The loading line takes it from the Retry
+  // only after a reset of the query, which takes the failure line away while the read is out.
   // The toggle above them would not do: a second press of the Retry's key - a key that repeated,
   // or a reader who saw nothing happen and pressed again - would land on it and shut the fields.
   // The Retry hands it on only after the reader's press of it (`useRetryHandOff`): a line a read
   // that answers on its own takes away - a window focus, an invalidation after a write - leaves
   // the focus on the page's body, as on every page of Dispatch. The loading line, which no Tab
   // reaches, holds the focus only where the reader put it there - their press on it, or their
-  // Retry's hand-on - and goes only as the read it stands for answers, so it hands the focus on
-  // with no further press.
+  // Retry's hand-on after such a reset - and goes only as the read it stands for answers, so it
+  // hands the focus on with no further press.
   const handOffTo = () =>
     failure.current?.querySelector<HTMLElement>("button") ?? document.getElementById(id);
   const retry = useRetryHandOff(handOffTo);
@@ -87,10 +88,9 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
     () => (handoff.data === undefined ? undefined : fieldRows(handoff.data.body)),
     [handoff.data]
   );
-  // The failure line stands in the fields' place while the read stands failed (`standsFailed`):
-  // it holds no body, and a fetch of it has failed. That goes on while its Retry reads again,
-  // though that read puts the query back to pending as it starts, so the line stays, its Retry
-  // busy and holding the reader's focus, in place of the loading line until the read answers.
+  // The failure line stands in the fields' place, and in place of the loading line, while the
+  // read stands failed (`standsFailed`), and its Retry hands the focus on to the fields once the
+  // read lands (`handOffTo`).
   if (standsFailed(handoff)) {
     return (
       <span className="mt-1 block" id={id} ref={failure}>

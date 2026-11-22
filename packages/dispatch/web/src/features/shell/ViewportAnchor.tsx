@@ -72,14 +72,13 @@ export interface ViewportAnchorProps {
    *  script's scroll (`rebaseHeld`), the focus lost with a node that went (`readerKept`). While
    *  another keeper of a place claims the box (`claimBox`), this anchor keeps no place there and
    *  moves the box for nothing, and the box's own scroll anchoring is back on, until an act of the
-   *  reader's names a row of the list, or a scroll of theirs is made while the focus is on an
-   *  element that holds the whole list: that act ends the claim, and the place it names is kept
-   *  (`takeBox`). Read once, as the anchor is built (`ownsBox`). Off by default, and of no effect
-   *  where the rows scroll in the document. Left off, the browser keeps anchoring the box on a
-   *  node of its own near the top of the view, which holds the rows in view as content between
-   *  the kept row and the view changes height. Details' history turns it on: the place it keeps
-   *  is often a control the page handed the focus to far down a long turn, and the browser's move
-   *  of the box for its own node took that control out of the view. */
+   *  reader's ends the claim, as `takeBox` states, and the place it names is kept. Read once, as
+   *  the anchor is built (`ownsBox`). Off by default, and of no effect where the rows scroll in
+   *  the document. Left off, the browser keeps anchoring the box on a node of its own near the
+   *  top of the view, which holds the rows in view as content between the kept row and the view
+   *  changes height. Details' history turns it on: the place it keeps is often a control the page
+   *  handed the focus to far down a long turn, and the browser's move of the box for its own node
+   *  took that control out of the view. */
   ownsScrollAnchoring?: boolean;
   /** Receives the rendered root element, for a host that also queries the rows itself. */
   rootRef?: RefObject<HTMLElement | null>;
@@ -291,13 +290,12 @@ const claimHearers = new Set<(box: Element) => void>();
  * running hold before it starts the next (`useLandedPlaceHold`). Each anchor whose box it is lets
  * its place go as the claim starts, which gives the box its own scroll anchoring back
  * (`keepPlace`), and while the claim lasts it records no place and moves the box for nothing,
- * neither for a change of height (`contentResized`) nor at a commit (`componentDidUpdate`). An
- * act of the reader's that names a row of the anchor's list, or their first scroll of the box
- * while the focus is on an element that holds the whole list, ends the claim: the anchor calls
- * `end`, which ends the keeper's hold, and keeps the place that act names (`takeBox`). Once the
- * claim ends, the anchor keeps places again by its own rules, from the next one it records: an
- * act of the reader's, the host's `keepRow`, a scroll. Returns what ends the claim alone, the
- * keeper's hold left running; calling it again, or once the claim has ended, does nothing.
+ * neither for a change of height (`contentResized`) nor at a commit (`componentDidUpdate`). The
+ * anchor ends the claim as `takeBox` states: it calls `end`, which ends the keeper's hold, and
+ * keeps the place the reader's act names. Once the claim ends, the anchor keeps places again by
+ * its own rules, from the next one it records: an act of the reader's, the host's `keepRow`, a
+ * scroll. Returns what ends the claim alone, the keeper's hold left running; calling it again, or
+ * once the claim has ended, does nothing.
  */
 export function claimBox(box: Element, end: () => void): () => void {
   const claim: BoxClaim = { end };
@@ -357,13 +355,10 @@ export function claimBox(box: Element, end: () => void): () => void {
  * there (`claimBox`): Details' hold of the place a key or an address landed the focus at
  * (`details-more.tsx`). One keeper keeps a box at a time: the anchor lets its place go as the
  * claim starts, and while it lasts keeps no place there and moves the box for nothing, at a change
- * of height or at a commit, so no change is made good toward two places. The reader's first act
- * that names a place in the list takes the box back, and the anchor keeps that place from then on
- * (`takeBox`): the pointer moving onto a row; a scroll of theirs, made by an act since the claim
- * began, while the pointer rests on a row or the focus is on an element of the box that holds the
- * whole list, as Details' history section, which `t v` focuses, holds its entries; the focus
- * moving into a row. Once the claim ends otherwise it keeps places again by its own rules, from
- * the next one it records.
+ * of height or at a commit, so no change is made good toward two places. An act of the reader's
+ * takes the box back, as `takeBox` states, and the anchor keeps the place that act names from
+ * then on. Once the claim ends otherwise it keeps places again by its own rules, from the next
+ * one it records.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -526,9 +521,20 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   };
 
   /** Ends another keeper's claim of the box the host named (`claimBox`), where the host takes
-   *  its box over and a claim stands: called as an act of the reader's names their place in this
-   *  list, which this anchor then keeps (`rememberHeld`, `ownedScrolled`). The claim goes, and
-   *  the keeper's hold ends with it (`end`). */
+   *  its box over and a claim stands: the claim goes, the keeper's hold ends with it (`end`), and
+   *  this anchor keeps the place the reader's act names from then on. This is the one statement
+   *  of what ends a claim. The reader's first act that names a row of this list as their place
+   *  ends it (`rememberHeld`): the pointer moving onto a row (`handMoved`); the focus moving into
+   *  a row, whoever moves it; a scroll of the reader's while the pointer rests on a row or the
+   *  focus is in one. Where the focus is on an element of the box that holds the whole list, as
+   *  Details' history section, which `t v` focuses, holds its entries, such an act names the row
+   *  in the middle of the view where no row is under the pointer (`listReadAt`), and a scroll of
+   *  the reader's ends the claim even where it names no row (`ownedScrolled`). While a claim
+   *  stands, a scroll is the reader's (`readerScrolls`) only where the act of theirs that made
+   *  it, a turn of the wheel, a key or a press, came after the claim began (`actedSinceClaim`).
+   *  Nothing else ends a claim here: neither an act that names no row, nor a scroll of the
+   *  page's, nor a commit. The keeper can end its claim itself, its hold left running, by what
+   *  `claimBox` returns. */
   private takeBox(): void {
     const box = this.scrollerElement();
     if (!this.ownsBox || box === null) return;
@@ -705,8 +711,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  its end under a place of theirs included (`viewScrolled`). What it records, or nothing where
    *  neither names a row, takes the place of one the host kept (`keepRow`): the reader's own act
    *  says where they are now. A row it names while another keeper claims the box takes the box
-   *  back first (`takeBox`): the act names the reader's place in this list, and this anchor keeps
-   *  it from then on. A host whose rows scroll in the document keeps nothing. */
+   *  back first (`takeBox`). A host whose rows scroll in the document keeps nothing. */
   private readonly rememberHeld = (): void => {
     const current = this.interacted() ?? this.listReadAt();
     if (current !== null) this.takeBox();
@@ -902,17 +907,14 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  frame observed the rows laid out again, which had moved the focused control 38,600 px down.
    *  Then the event records the reader's place only where the scroll is theirs
    *  (`readerScrolls`), at the row the pointer rests on now and the focus, or the row they read
-   *  by keys (`listReadAt`). While another keeper claims the box, a scroll is theirs only where
-   *  an act of theirs since the claim began made it (`actedSinceClaim`): the scroll of the
-   *  claimant's own landing follows the key that started it. Such a scroll takes the box back
-   *  where it names a row (`rememberHeld`), and wherever the focus is on an element of the box
-   *  that holds the whole list, as Details' history section holds its entries: the reader then
-   *  reads the list (`takeBox`). A scroll that left the box where the place holds moved nothing.
-   *  A pull-back of the box to its end, the browser's own anchoring and another script's scroll
-   *  record nothing: the place kept stays where the scroll left it, as far as the reader can
-   *  still see it (`rebaseHeld`). Details' hold of the place a key landed the focus at scrolls
-   *  the box in its own resize observation (`details-more.tsx`), and recording the place at that
-   *  scroll's event took the row the pointer rested on then, or none, for the reader's. */
+   *  by keys (`listReadAt`). While another keeper claims the box, which scroll is theirs, and
+   *  which takes the box back, is as `takeBox` states (`actedSinceClaim`). A scroll that left the
+   *  box where the place holds moved nothing. A pull-back of the box to its end, the browser's
+   *  own anchoring and another script's scroll record nothing: the place kept stays where the
+   *  scroll left it, as far as the reader can still see it (`rebaseHeld`). Details' hold of the
+   *  place a key landed the focus at scrolls the box in its own resize observation
+   *  (`details-more.tsx`), and recording the place at that scroll's event took the row the
+   *  pointer rested on then, or none, for the reader's. */
   private ownedScrolled(scroller: HTMLElement): void {
     const reader = this.readerScrolls() && (this.actedSinceClaim || !this.boxClaimed());
     this.contentResized();
@@ -1219,10 +1221,10 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   /** Where the host takes its box over, once the box is scrolled, the row nearest the middle of
    *  the view while the focus is on an element of that box that holds this whole list
-   *  (`focusHoldsList`), as Details' history section, which `t v` focuses, holds its entries:
-   *  the reader reads the list by keys from there, and the row a commit keeps then is that one
-   *  (`named`), so an act of theirs that names no other row records it (`rememberHeld`). Null
-   *  otherwise. Layout reads. */
+   *  (`focusHoldsList`): the reader reads the list by keys from there, and the row a commit keeps
+   *  then is that one (`named`), so an act of theirs that names no other row records it
+   *  (`rememberHeld`), and takes the box back from a claim (`takeBox`). Null otherwise. Layout
+   *  reads. */
   private listReadAt(): (AnchorRow & { row: HTMLElement }) | null {
     return this.ownsBox && this.focusHoldsList() ? this.centerRow() : null;
   }
