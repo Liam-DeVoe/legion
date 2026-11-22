@@ -47,6 +47,17 @@ export interface HeldPatches {
   readonly release: () => void;
 }
 
+/** Resolves once `PICK_HOLD_MS` has passed since `since` by `Date.now()`, the clock a row reads a
+ *  hold by (`HeldPatch`): a timer of that length can end a millisecond short by that clock, and
+ *  the row would then read the save as held 2999 ms. */
+async function heldFrom(since: number): Promise<void> {
+  for (let left = PICK_HOLD_MS; left > 0; left = since + PICK_HOLD_MS - Date.now()) {
+    // The save is held out this long so the row's next pick, reload or read happens while it is
+    // out, and each pass waits only the part of the hold the clock has not yet counted.
+    await sleep(left);
+  }
+}
+
 /**
  * Holds every save of `issueKey` the page makes - a pick, a board move, a key of the issue page -
  * with Playwright's route control, each for at least `PICK_HOLD_MS` and until the row lets the
@@ -71,7 +82,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldFrom(patch.arrivedAt), released.promise]);
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
