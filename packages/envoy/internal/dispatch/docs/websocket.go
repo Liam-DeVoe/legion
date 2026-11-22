@@ -719,10 +719,12 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	default:
 		askBlocks = askBlockIDs(rendered.tree)
 	}
-	// The history this load decoded counts as resident against this load's own token, so the
-	// unload that ends the token takes those bytes back wherever the room's record has gone by then
-	// (countResidentBytes).
-	s.countResidentBytes(counted, int64(size))
+	// The history this load decoded counts as resident against this load's own token, and so does
+	// the weight the budget takes the room to hold (roomWeight), so the unload that ends the token
+	// takes both back wherever the room's record has gone by then (countLoadedRoom). Nothing below
+	// fails the load, so the weight counted here is the room's own from here until that unload.
+	weight := roomWeight(stored)
+	s.countLoadedRoom(counted, int64(size), weight)
 	// The room this load publishes holds the state it takes from here until ygo retires it
 	// (releaseIfUnusedLocked). The load is this room's first use, which is where the peerless-room
 	// budget orders it from until something uses it again (noteRoomUsed), and the bytes it decoded
@@ -734,7 +736,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// holds, this load's read or a close recorded after it began.
 	state := s.lockState(room)
 	state.lastUsed = s.now()
-	state.weight = roomWeight(stored)
+	state.weight = weight
 	state.recordIssueLocked(issue)
 	open := !state.closed
 	// A room a late departure's settlement loaded is that settlement's until a browser or a writer

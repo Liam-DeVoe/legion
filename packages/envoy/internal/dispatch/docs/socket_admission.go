@@ -205,13 +205,17 @@ func socketRoom(r *http.Request) string {
 // Before it loads anything the socket takes its places under the caps, a connection's
 // (reserveConnection) and its room's (reserveRoom), and a socket that cannot take either is
 // refused 503 with Retry-After (admission.RetryAfter) before the upgrade, as every socket the
-// server cannot serve now is. Each place is taken in the same step that checks the cap, so
-// sockets that open at once never pass it, and each is a count, so the check walks no rooms. The
-// socket holds both until it ends. The connection's place is the connection's count once
-// authorize registers it, and removeConnection, which forgets the browser as the socket closes,
-// ends it; a socket that ends unregistered - its admission or its authorization refused, its room's
-// load failed or panicked - gives it back. The room's place the socket gives back however it ends,
-// and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
+// server cannot serve now is (refuseAtCap). A socket that finds the room cap full first waits, for
+// at most roomPlaceWait and holding no place under either cap, while the trim closes the least
+// recently used idle room for it (awaitRoomPlace): the cap counts the rooms API reads and writes
+// loaded, which no socket asked for, and the trim closes a room for a place only while a socket
+// waits for one. Each place is taken in the same step that checks the cap, so sockets that open at
+// once never pass it, and each is a count, so the check walks no rooms. The socket holds both
+// until it ends. The connection's place is the connection's count once authorize registers it,
+// and removeConnection, which forgets the browser as the socket closes, ends it; a socket that
+// ends unregistered - its admission or its authorization refused, its room's load failed or
+// panicked - gives it back. The room's place the socket gives back however it ends, and a room ygo
+// loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
 //
 // A socket whose document's issue, document, or the live server processes its page is admitted
 // against could not be read, or whose request ended while it waited for its failed room's recovery,
@@ -349,17 +353,31 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A cap with no place for the socket is a refusal of the server's for now, which tells the
-	// browser when to ask again as every other one does (refuseUnservedSocket).
+	// browser when to ask again as every other one does (refuseUnservedSocket). A full room cap is
+	// waited on first, for at most roomPlaceWait, while the trim closes an idle room for the socket
+	// (awaitRoomPlace); the socket gives its connection's place back for that wait, so a socket
+	// waiting for a room holds no place under either cap, and takes it again once it has a room.
 	if !s.reserveConnection() {
-		w.Header().Set("Retry-After", admission.RetryAfter)
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		refuseAtCap(w)
 		return
 	}
 	if !s.reserveRoom(room) {
 		s.releaseConnection()
-		w.Header().Set("Retry-After", admission.RetryAfter)
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-		return
+		if !s.awaitRoomPlace(r.Context(), room) {
+			// A browser that left while it waited is answered nothing, and a request the server
+			// ended is refused with what ended it, as the wait for a failed room's recovery is.
+			if err := r.Context().Err(); err != nil {
+				refuseAdmission(w, r, "dispatch: a document socket was refused: its request ended while it waited for a place under the room cap", room, "", err)
+				return
+			}
+			refuseAtCap(w)
+			return
+		}
+		if !s.reserveConnection() {
+			s.releaseRoom(room)
+			refuseAtCap(w)
+			return
+		}
 	}
 	// Last of all, once the socket has let go of everything it held on the room's record: the
 	// settlement its browser's departure ran (settleLastPeer) may have loaded a room of its own,
@@ -466,6 +484,14 @@ func refuseUnservedSocket(w http.ResponseWriter, message, room, pool string, err
 		attrs = append(attrs, "cause", refusalClass(cause))
 	}
 	slog.Warn(message, attrs...)
+	w.Header().Set("Retry-After", admission.RetryAfter)
+	http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+}
+
+// refuseAtCap refuses a document socket a cap had no place for, before any upgrade: 503 with
+// Retry-After (admission.RetryAfter), as refuseUnservedSocket answers, without its WARN line - a
+// full cap is the server holding its bound, and the caps' own figures say how near each is.
+func refuseAtCap(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", admission.RetryAfter)
 	http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 }

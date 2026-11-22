@@ -206,11 +206,17 @@ type Service struct {
 	peerlessRoomBytes atomic.Int64
 	// trimmingRooms is held by the one trim of those rooms that runs at a time
 	// (trimPeerlessRooms), trimPending records an ask for a trim that arrived while one ran,
-	// lastRoomTrim is when the last pass weighed the rooms (roomTrimInterval), and
-	// roomsClosedToBudget counts the rooms those trims have closed (RoomsClosedToBudget).
+	// lastRoomTrim is when the last pass weighed the rooms (roomTrimInterval), trimDemand holds a
+	// waiting socket's ask for a pass that does not wait out that interval (demandRoomTrim), one
+	// token the next pass takes, roomWaiters counts the document sockets waiting for a place under
+	// a full room cap (awaitRoomPlace), the only sockets the trim closes rooms for places for
+	// (peerlessRoomsOverBudget), and roomsClosedToBudget counts the rooms those trims have closed
+	// (RoomsClosedToBudget).
 	trimmingRooms       atomic.Bool
 	trimPending         atomic.Bool
 	lastRoomTrim        atomic.Int64
+	trimDemand          chan struct{}
+	roomWaiters         atomic.Int64
 	roomsClosedToBudget atomic.Int64
 	nextConnection      atomic.Uint64
 	stopping            atomic.Bool
@@ -587,6 +593,11 @@ type Service struct {
 	// reported its unload keeps its own; two ended rooms that unload out of order each end the
 	// other's, and the total is exact once both have run (roomUnloaded).
 	residentBytes atomic.Int64
+	// residentWeight is the heap the loads ygo holds are taken to hold, each load's roomWeight,
+	// counted against that load's token with its history's bytes and taken back with them
+	// (countLoadedRoom, roomUnloaded), so a pass of the trim that could close nothing for the bytes
+	// budget is known without walking the rooms (roomTrimHasWork).
+	residentWeight atomic.Int64
 	// appendFigures counts what the rooms' browser append transactions did (room_appends.go), for
 	// the room figures, as settlementWakeups counts the wakes of the waits for a room's appends
 	// (settlementWoke).
@@ -1008,6 +1019,7 @@ func New(deps Deps) *Service {
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,
+		trimDemand:        make(chan struct{}, 1),
 		maxPendingItems:   maxUpdateItems,
 	}
 	service.catchUps = newRoomCatchUps(service)

@@ -179,7 +179,9 @@ type roomState struct {
 	// budget of resident peerless rooms closes them in, least recently used first
 	// (peerlessRoomsOverBudget), and the start of the window the budget leaves a room alone for
 	// (roomBudgetMinIdle). weight is the heap that room is taken to hold, from the bytes
-	// its load decoded (roomWeight); both are read by the budget alone.
+	// its load decoded (roomWeight); both are read by the budget alone. The load's token carries
+	// the same weight (residentLoad), which the service's resident weight sums without walking the
+	// rooms.
 	lastUsed time.Time
 	weight   int64
 }
@@ -859,9 +861,16 @@ func (s *Service) loadFailedSince(room string, held *roomState, before *roomLoad
 // the answer walks no list of rooms: an eviction or a deploy reconnects every browser at once, and
 // a walk on each open would cost every room for each of them. A document whose room has gone and
 // that no socket holds counts for nothing, whatever the service once kept for it.
+//
+// freed is what the sockets waiting for a place under a full cap wait on (awaitRoomPlace): made by
+// the first of them to find the cap full (reserveRoomOrFreed), and closed and dropped where a
+// place leaves the map (setLocked), so each place that leaves wakes every socket waiting then, and
+// the next to find the cap full makes another. Nil while no socket waits, so an unload nobody
+// waits on makes nothing and closes nothing.
 type roomSlots struct {
 	mu    sync.Mutex
 	rooms map[string]roomSlot
+	freed chan struct{}
 }
 
 // roomSlot is what holds one room's place: loads, a token for each load of it whose unload has not
@@ -875,7 +884,10 @@ type roomSlot struct {
 
 // residentLoad is one room load's share of the service's resident bytes (Service.residentBytes):
 // the history that load decoded (onLoadDocument) and every update the room instance it left
-// behind committed (queueUpdateClass). The bytes are kept per load rather than on the room's
+// behind committed (queueUpdateClass); and its share of the resident weight
+// (Service.residentWeight): the heap the peerless-room budget takes the room to hold, its
+// roomState.weight (roomWeight), counted where the load counts the history it decoded
+// (countLoadedRoom). The bytes are kept per load rather than on the room's
 // record because ygo's OnUnloadDocument names the room alone and comes only after the room has
 // left its map, so a room of the same name can load again first, onto that very record or onto
 // one created after it was forgotten: either way a record's total is the wrong thing to take
@@ -884,13 +896,15 @@ type roomSlot struct {
 // both left ygo's map and report their unloads out of order, when each ends the other's, and the
 // total is exact once both have run.
 //
-// bytes and ended are guarded by roomSlots.mu. A token leaves the name's list in the same hold of
-// that lock that takes its bytes back (roomUnloaded), so each load's bytes leave the count once;
-// ended, set there too, is what refuses a count that arrives for a load already over
-// (countResidentBytes), such as an update the room's drain classifies after its unload.
+// bytes, weight and ended are guarded by roomSlots.mu. A token leaves the name's list in the same
+// hold of that lock that takes its bytes and its weight back (roomUnloaded), so each load's bytes
+// and weight leave the counts once; ended, set there too, is what refuses a count that arrives for
+// a load already over (countResidentBytes), such as an update the room's drain classifies after
+// its unload.
 type residentLoad struct {
-	bytes int64
-	ended bool
+	bytes  int64
+	weight int64
+	ended  bool
 }
 
 // countResidentBytes counts n, the bytes a load took, against load, that load's token, and among
@@ -911,11 +925,35 @@ func (s *Service) countResidentBytes(load *residentLoad, n int64) {
 	s.residentBytes.Add(n)
 }
 
-// setLocked records slot as room's, and forgets the room once nothing holds its place. Its caller
-// holds slots.mu.
+// countLoadedRoom counts what a room's load took against load, that load's token, in one hold of
+// roomSlots.mu: bytes, the history it decoded, among the service's resident bytes, and weight, the
+// heap the budget takes the room to hold (roomWeight), among the resident weight. The unload that
+// ends the token takes both back in its own one hold (roomUnloaded), so the resident weight is
+// always the weights of the loads no unload has ended, and a trim that could close nothing reads
+// that without walking the rooms (roomTrimHasWork). A load that has ended counts nothing.
+func (s *Service) countLoadedRoom(load *residentLoad, bytes, weight int64) {
+	s.roomSlots.mu.Lock()
+	defer s.roomSlots.mu.Unlock()
+	if load.ended {
+		return
+	}
+	load.bytes += bytes
+	load.weight += weight
+	s.residentBytes.Add(bytes)
+	s.residentWeight.Add(weight)
+}
+
+// setLocked records slot as room's, and forgets the room once nothing holds its place. A place
+// that leaves wakes the sockets waiting for one (freed). Its caller holds slots.mu.
 func (slots *roomSlots) setLocked(room string, slot roomSlot) {
 	if len(slot.loads) == 0 && slot.sockets <= 0 {
-		delete(slots.rooms, room)
+		if _, held := slots.rooms[room]; held {
+			delete(slots.rooms, room)
+			if slots.freed != nil {
+				close(slots.freed)
+				slots.freed = nil
+			}
+		}
 		return
 	}
 	if slots.rooms == nil {
@@ -930,16 +968,38 @@ func (slots *roomSlots) setLocked(room string, slot roomSlot) {
 // (Server.Apply) holds its place from its load (roomLoaded) though no socket asked for it, and is
 // refused nothing, so it counts against the sockets that come after it. The socket gives the
 // reservation back when it ends, whatever ended it (releaseRoom); a room ygo loaded meanwhile keeps
-// the place until it unloads.
+// the place until it unloads. A socket refused here waits for a place (awaitRoomPlace).
 func (s *Service) reserveRoom(room string) bool {
 	s.roomSlots.mu.Lock()
 	defer s.roomSlots.mu.Unlock()
-	slot, held := s.roomSlots.rooms[room]
-	if !held && len(s.roomSlots.rooms) >= s.roomCap {
+	return s.roomSlots.reserveLocked(room, s.roomCap)
+}
+
+// reserveRoomOrFreed is reserveRoom for a socket waiting on a full cap (awaitRoomPlace): it takes
+// the place reserveRoom would, or answers the channel the next place to leave the cap closes
+// (roomSlots.freed), read in the same hold of mu that found the cap full, so a place that leaves
+// after the refusal wakes the socket and none that left before it is missed.
+func (s *Service) reserveRoomOrFreed(room string) (<-chan struct{}, bool) {
+	s.roomSlots.mu.Lock()
+	defer s.roomSlots.mu.Unlock()
+	if s.roomSlots.reserveLocked(room, s.roomCap) {
+		return nil, true
+	}
+	if s.roomSlots.freed == nil {
+		s.roomSlots.freed = make(chan struct{})
+	}
+	return s.roomSlots.freed, false
+}
+
+// reserveLocked takes a socket's reservation on room, and is whether it did: room's own place, or
+// a new one while fewer than roomCap rooms hold places (reserveRoom). Its caller holds slots.mu.
+func (slots *roomSlots) reserveLocked(room string, roomCap int) bool {
+	slot, held := slots.rooms[room]
+	if !held && len(slots.rooms) >= roomCap {
 		return false
 	}
 	slot.sockets++
-	s.roomSlots.setLocked(room, slot)
+	slots.setLocked(room, slot)
 	return true
 }
 
@@ -986,8 +1046,8 @@ func (s *Service) roomLoadedHere(room string) bool {
 }
 
 // roomUnloaded takes back what roomLoaded counted for one load of room - its place among the
-// resident rooms and under the room cap, and the bytes counted against its token - and is the only
-// place a load's bytes leave the service's count.
+// resident rooms and under the room cap, and the bytes and the weight counted against its token
+// (countLoadedRoom) - and is the only place a load's bytes and weight leave the service's counts.
 // load is the token to end: a failed load names its own (onLoadDocument), and an unload names
 // none, which ends the oldest load of the name (releaseUnloadedRoom says why that one has ended).
 // The token is chosen and taken out under the one hold of roomSlots.mu that ends it, so two
@@ -1008,6 +1068,7 @@ func (s *Service) roomUnloaded(room string, load *residentLoad) {
 		slot.loads = slices.Delete(slot.loads, at, at+1)
 		load.ended = true
 		s.residentBytes.Add(-load.bytes)
+		s.residentWeight.Add(-load.weight)
 	}
 	s.roomSlots.setLocked(room, slot)
 	s.residentRooms.Add(-1)

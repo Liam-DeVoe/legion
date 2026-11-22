@@ -3,9 +3,12 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -229,56 +232,310 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedRoomPastItsWindow(t *testing.T) 
 	}
 }
 
-// The trim holds the peerless rooms to the room cap less its headroom (roomCapHeadroomShare) as
-// well as to the bytes budget: the cap counts every room, and a bytes budget that is a share of
-// the process's memory can hold more peerless rooms than the cap has places for, so a browser
-// opening a document would be refused 503 while idle rooms held its place. Here the cap is ten,
-// its headroom one, and twelve peerless rooms past their window fill it while their bytes stay
-// far inside the budget: a browser opening another document is refused; the trim then closes
-// the three least recently used, keeps the nine newest, which are inside both bounds, and the
-// browser's socket gets a room.
-func TestTheTrimKeepsTheRoomCapsHeadroomFreeOfPeerlessRooms(t *testing.T) {
-	const roomCap, peerless = 10, 12
-	keep := roomCap - roomCap/roomCapHeadroomShare
-	service, database := newRoomBudgetServiceWithCap(t, 100*peerless, roomCap)
+// A browser opening a document while the room cap is full of rooms nobody has open is admitted,
+// not refused: its socket waits for a place (awaitRoomPlace) and the trim closes one room for it,
+// the least recently used of the rooms it may close (peerlessRoomsOverBudget). The rooms it may not
+// close stay, however long ago they were loaded: here the oldest owes a settlement, the next was
+// just written through the API, which leaves it inside roomBudgetMinIdle and owing its settlement,
+// and the third was just read again, which leaves it inside the window. The fourth, the least
+// recently used of the rest, is the one closed, and only it, since one socket waits; the bytes stay
+// far inside the budget, so nothing is closed for them. The trim once kept a tenth of the cap free
+// of peerless rooms ahead of any socket instead, and a socket that found the cap full was refused
+// at once.
+func TestABrowserAtAFullRoomCapIsAdmittedInTheLeastRecentlyUsedClosableRoomsPlace(t *testing.T) {
+	const roomCap = 10
+	service, database := newRoomBudgetServiceWithCap(t, 100*roomCap, roomCap)
 	advance := roomBudgetClock(service)
-	ids := createDocuments(t, database, peerless+1)
-	rooms, browsers := ids[:peerless], ids[peerless]
+	ids := createDocuments(t, database, roomCap+1)
+	rooms, browsers := ids[:roomCap], ids[roomCap]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 
-	// A tenth of a second apart, so the order the trim reads is the order loaded and no room is
-	// past its window while the others load.
+	// A tenth of a second apart, so the order the trim reads is the order loaded, and then all of
+	// them past the window.
 	for _, id := range rooms {
 		warmRoom(t, service, id)
 		advance(100 * time.Millisecond)
 	}
-	refuseSocket(t, httpServer.URL, browsers, "a browser opening a document while peerless rooms fill the room cap")
-
 	advance(roomBudgetMinIdle)
-	trimNow(service)
-	waitFor(t, 30*time.Second, "the rooms past the cap's headroom to close", func() bool {
-		return service.roomPlaces() <= keep
-	})
-	left := peerlessRoomNames(service)
-	want := slices.Clone(rooms[peerless-keep:])
-	slices.Sort(left)
-	slices.Sort(want)
-	if !slices.Equal(left, want) {
-		t.Fatalf("the peerless rooms left are %v, want the %d loaded last, %v", left, keep, want)
-	}
-	if bytes, budget := service.PeerlessRoomBytes(), service.peerlessRoomBytes.Load(); bytes >= budget {
-		t.Fatalf("the peerless rooms left weigh %d bytes against a budget of %d, so the bytes and not the cap closed them", bytes, budget)
+	owing, written, read, oldest := rooms[0], rooms[1], rooms[2], rooms[3]
+	// The service's settlements are an hour out, so these stay owed for the whole test.
+	service.scheduleSettle(owing)
+	appendThroughAPI(t, service, written)
+	warmRoom(t, service, read)
+	if places := service.roomPlaces(); places != roomCap {
+		t.Fatalf("%d rooms hold places under a cap of %d, so the cap is not full and nothing here is tested", places, roomCap)
 	}
 
-	connection, err := dialDocument(httpServer.URL, browsers)
-	if err != nil {
-		t.Fatalf("the browser's socket was refused once the trim had freed the cap's headroom: %v", err)
-	}
+	connection := admitSocket(t, httpServer.URL, browsers, "a browser opening a document while peerless rooms fill the room cap")
 	defer leaveDocument(connection)
-	waitFor(t, 30*time.Second, "the browser's room to load", func() bool {
-		return service.srv.GetDoc(browsers) != nil
+	waitFor(t, 30*time.Second, "the trim to end", func() bool { return !service.trimmingRooms.Load() })
+	if service.srv.GetDoc(oldest) != nil {
+		t.Errorf("the least recently used room the trim may close, %s, is still resident", oldest)
+	}
+	for _, kept := range []struct{ room, why string }{
+		{owing, "owes a settlement"},
+		{written, "was written through the API inside its window and owes that write's settlement"},
+		{read, "was read inside its window"},
+	} {
+		if service.srv.GetDoc(kept.room) == nil {
+			t.Errorf("the trim closed %s, which %s", kept.room, kept.why)
+		}
+	}
+	for _, kept := range rooms[4:] {
+		if service.srv.GetDoc(kept) == nil {
+			t.Errorf("the trim closed %s too, more rooms than the one socket waiting needed", kept)
+		}
+	}
+	if closed := service.RoomsClosedToBudget(); closed != 1 {
+		t.Errorf("the trim closed %d rooms for one waiting socket, want 1", closed)
+	}
+	if waiting := service.roomWaiters.Load(); waiting != 0 {
+		t.Errorf("%d sockets count as waiting for a place once the browser was admitted, want none", waiting)
+	}
+}
+
+// The trim closes no room for a place no socket waits for. Here the rooms API reads loaded fill the
+// cap and stand past it, which reserveRoom refuses them nothing to do, every one past its window,
+// while their bytes stay far inside the budget: neither an ask for a trim (trimNow) nor a pass run
+// as the trim's goroutine runs one (closeRoomsOverBudget) closes anything, so no API-loaded room is
+// reloaded for a browser that never came. The standing headroom the trim kept before closed the
+// rooms past nine of these ten places, and on the load test's 10x step (INFRA-592) that closed 2.6
+// rooms a second, each reloaded by its next write or read.
+func TestTheTrimClosesNoRoomForAPlaceNoSocketWaitsFor(t *testing.T) {
+	const roomCap = 10
+	service, database := newRoomBudgetServiceWithCap(t, 100*roomCap, roomCap)
+	advance := roomBudgetClock(service)
+	ids := createDocuments(t, database, roomCap+2)
+	for _, id := range ids {
+		warmRoom(t, service, id)
+		advance(100 * time.Millisecond)
+	}
+	advance(roomBudgetMinIdle)
+	if places := service.roomPlaces(); places != len(ids) {
+		t.Fatalf("%d rooms hold places after the test loaded %d, so the cap is not what is tested", places, len(ids))
+	}
+
+	trimNow(service)
+	waitFor(t, 30*time.Second, "the trim to end", func() bool { return !service.trimmingRooms.Load() })
+	service.closeRoomsOverBudget()
+	if closed := service.RoomsClosedToBudget(); closed != 0 {
+		t.Errorf("the trim closed %d rooms with no socket waiting for a place and the bytes inside the budget, want none", closed)
+	}
+	if left := peerlessRoomNames(service); len(left) != len(ids) {
+		t.Errorf("%d of the %d API-loaded rooms are resident after the trim, want all of them", len(left), len(ids))
+	}
+}
+
+// A browser opening a document while the room cap is full of rooms the trim may not close - here
+// every one was used inside roomBudgetMinIdle - waits for a place for roomPlaceWait, no less and not
+// much more, and is then refused 503 with Retry-After, as a socket at a full cap was refused before.
+// Its wait closed nothing, and it counts as waiting no longer.
+func TestABrowserAtARoomCapNoCloseCanFreeIsRefusedAfterItsWait(t *testing.T) {
+	const roomCap = 4
+	service, database := newRoomBudgetServiceWithCap(t, 100*roomCap, roomCap)
+	// The clock stands still, so every room stays inside its window.
+	roomBudgetClock(service)
+	ids := createDocuments(t, database, roomCap+1)
+	rooms, browsers := ids[:roomCap], ids[roomCap]
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+	for _, id := range rooms {
+		warmRoom(t, service, id)
+	}
+
+	started := time.Now()
+	refuseSocket(t, httpServer.URL, browsers, "a browser opening a document while rooms inside their window fill the room cap")
+	waited := time.Since(started)
+	if waited < roomPlaceWait || waited > roomPlaceWait+time.Second {
+		t.Errorf("the socket was refused %v after it dialled, want about roomPlaceWait, %v", waited, roomPlaceWait)
+	}
+	if waiting := service.roomWaiters.Load(); waiting != 0 {
+		t.Errorf("%d sockets count as waiting for a place once the browser was refused, want none", waiting)
+	}
+	if closed := service.RoomsClosedToBudget(); closed != 0 {
+		t.Errorf("the trim closed %d rooms used inside their window, want none", closed)
+	}
+	for _, room := range rooms {
+		if service.srv.GetDoc(room) == nil {
+			t.Errorf("the trim closed %s, used inside its window", room)
+		}
+	}
+}
+
+// Every browser that opens a document while the room cap is full of rooms the trim may close gets a
+// place, in milliseconds: its socket's wait asks for a pass that runs at once (demandRoomTrim), the
+// pass closes one room for it, and that room's unload wakes it (roomSlots.freed). Here a cap of a
+// hundred is full of a hundred such rooms, and a hundred browsers open a hundred other documents
+// one after another, each kept open, so each finds the cap full and takes the place of one closed
+// room. The test logs the median, p99 and longest time from dial to admission.
+func TestEveryBrowserAtAFullRoomCapGetsAPlaceInMilliseconds(t *testing.T) {
+	const roomCap = 100
+	service, database := newRoomBudgetServiceWithCap(t, 10*roomCap, roomCap)
+	advance := roomBudgetClock(service)
+	ids := createDocuments(t, database, 2*roomCap)
+	rooms, browsers := ids[:roomCap], ids[roomCap:]
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+	warmRooms(t, service, rooms)
+	advance(roomBudgetMinIdle)
+	if places := service.roomPlaces(); places != roomCap {
+		t.Fatalf("%d rooms hold places under a cap of %d, so the cap is not full and nothing here is tested", places, roomCap)
+	}
+
+	waits := make([]time.Duration, 0, len(browsers))
+	for i, id := range browsers {
+		started := time.Now()
+		opened := <-dialSocketAsync(httpServer.URL, id)
+		waited := time.Since(started)
+		if opened.err != nil {
+			t.Fatalf("browser %d of %d: the socket on %s was refused (%v), want it admitted in a closed room's place", i+1, len(browsers), id, opened.err)
+		}
+		t.Cleanup(func() { _ = opened.connection.Close() })
+		// The room's first frame, so its room holds its place before the next browser dials.
+		_ = opened.connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+		if _, _, err := opened.connection.ReadMessage(); err != nil {
+			t.Fatalf("browser %d of %d: the socket on %s sent no first frame: %v", i+1, len(browsers), id, err)
+		}
+		_ = opened.connection.SetReadDeadline(time.Time{})
+		waits = append(waits, waited)
+	}
+	slices.Sort(waits)
+	// Nearest rank: the shortest wait at least p percent of the sockets waited no longer than.
+	rank := func(p int) time.Duration { return waits[(len(waits)*p+99)/100-1] }
+	t.Logf("time to a place over %d sockets: median=%v p99=%v max=%v", len(waits), rank(50), rank(99), waits[len(waits)-1])
+	if p99 := rank(99); p99 >= time.Second {
+		t.Errorf("the p99 time from dial to admission is %v, want under a second", p99)
+	}
+	waitFor(t, 30*time.Second, "the trim to end", func() bool { return !service.trimmingRooms.Load() })
+	if closed := service.RoomsClosedToBudget(); closed != roomCap {
+		t.Errorf("the trim closed %d rooms for %d browsers, want one for each", closed, len(browsers))
+	}
+	for _, room := range rooms {
+		if service.srv.GetDoc(room) != nil {
+			t.Errorf("%s, one of the rooms that filled the cap, is still resident after %d browsers each took a place", room, len(browsers))
+		}
+	}
+}
+
+// The resident weight the trim reads in place of walking the rooms (residentWeight,
+// roomTrimHasWork) is the walk's own answer whenever the service is at rest: the weight on each
+// resident room's state (roomState.weight), summed over the rooms ygo holds. Each load counts its
+// room's weight against its own token and each unload takes back the token it ends, whichever way
+// the room goes, so nothing drifts. Here a seeded random run of loads by reads and writes, unloads
+// of three kinds (the budget's close, Evict, a failed room's eviction), loads that fail on a history
+// that does not decode, and writes whose settlements run, compares the two after every step. The
+// writes grow the documents past the weight floor, so the rooms do not all weigh alike. A failure
+// logs the run's seed.
+func TestTheResidentWeightIsTheResidentRoomsWeightAfterEveryStep(t *testing.T) {
+	const steps = 240
+	seed := uint64(time.Now().UnixNano())
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the run's seed: %d", seed)
+		}
 	})
+	random := rand.New(rand.NewPCG(seed, seed))
+	ctx := context.Background()
+	// The budget holds far more than these rooms weigh, so no trim closes anything here.
+	service, database := newRoomBudgetService(t, 1_000)
+	ids := createDocuments(t, database, 10)
+	documents, unloadable := ids[:8], ids[8:]
+	for _, id := range unloadable {
+		corruptStoredHistory(t, database, id)
+	}
+	paragraph := func() string { return strings.TrimSpace(strings.Repeat("word ", 100+random.IntN(300))) }
+	resident := func() []string {
+		var rooms []string
+		for _, id := range documents {
+			if service.srv.GetDoc(id) != nil {
+				rooms = append(rooms, id)
+			}
+		}
+		return rooms
+	}
+	// At rest: no room loading, no unload still to report, no eviction or trim running.
+	atRest := func() bool {
+		if service.evictionsRunning.Load() != 0 || service.trimmingRooms.Load() {
+			return false
+		}
+		rooms := service.srv.Rooms()
+		if int64(len(rooms)) != service.residentRooms.Load() {
+			return false
+		}
+		for _, room := range rooms {
+			if service.srv.GetDoc(room) == nil {
+				return false
+			}
+		}
+		return true
+	}
+
+	heaviest := int64(0)
+	for step := range steps {
+		var did string
+		switch roll := random.IntN(20); {
+		case roll < 7:
+			id := documents[random.IntN(len(documents))]
+			if random.IntN(2) == 0 {
+				did = "a read's load of " + id
+				if err := service.warmLiveDocument(ctx, id); err != nil {
+					t.Fatalf("step %d, %s: %v", step, did, err)
+				}
+			} else {
+				did = "a write's load of " + id
+				appendMarkdownThroughAPI(t, service, id, paragraph())
+			}
+		case roll < 13:
+			rooms := resident()
+			if len(rooms) == 0 {
+				did = "an unload with no room resident"
+				break
+			}
+			id := rooms[random.IntN(len(rooms))]
+			switch random.IntN(3) {
+			case 0:
+				did = "the budget's close of " + id
+				service.closeRoomOverBudget(id)
+			case 1:
+				did = "an eviction of " + id
+				if err := service.Evict(ctx, id); err != nil {
+					t.Fatalf("step %d, %s: %v", step, did, err)
+				}
+			default:
+				did = "a failed room's eviction of " + id
+				service.failRoom(id, errors.New("the test fails the room"))
+			}
+		case roll < 15:
+			id := unloadable[random.IntN(len(unloadable))]
+			did = "a failed load of " + id
+			if err := service.warmLiveDocument(ctx, id); err == nil {
+				t.Fatalf("step %d, %s: the room loaded, want its load to fail", step, did)
+			}
+		default:
+			id := documents[random.IntN(len(documents))]
+			did = "a settled write to " + id
+			appendMarkdownThroughAPI(t, service, id, paragraph())
+			settleRoomNow(t, service, id)
+		}
+		waitFor(t, 30*time.Second, fmt.Sprintf("the service to come to rest after step %d, %s", step, did), atRest)
+		walked := int64(0)
+		for _, room := range service.srv.Rooms() {
+			state := service.lockExistingState(room)
+			if state == nil {
+				t.Fatalf("step %d, after %s: the resident room %s has no state", step, did, room)
+			}
+			walked += state.weight
+			heaviest = max(heaviest, state.weight)
+			service.unlockState(room, state)
+		}
+		if counted := service.residentWeight.Load(); counted != walked {
+			t.Fatalf("step %d, after %s: the resident weight is %d, and the resident rooms' weights sum to %d", step, did, counted, walked)
+		}
+	}
+	if heaviest <= roomHeapFloor {
+		t.Fatalf("no resident room weighed more than the floor of %d, so every room weighed alike and a drift of whole rooms could hide", roomHeapFloor)
+	}
 }
 
 // The budget counts a room as closed only where its own close unloaded it. ygo's idle sweep takes

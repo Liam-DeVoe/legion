@@ -86,7 +86,12 @@ const (
 // roomTrimInterval is how often the rooms are weighed. The trim walks every resident room under
 // its state's lock, so it is not run on every Apply of a burst; at the room-load rate the load
 // test measured (4 to 13 a second) a tenth of a second puts at most one or two rooms past the
-// budget before the next pass takes them.
+// budget before the next pass takes them. The spacing is for the Applies that ask for passes: a
+// socket waiting for a place under the room cap asks for a pass that runs at once
+// (demandRoomTrim). And a pass that could close nothing walks no room at all (roomTrimHasWork):
+// on the load test's 10x step (INFRA-592) the passes walked the ~900 resident rooms every tenth of
+// a second while the peerless rooms' bytes stood inside the budget, and the walks, with
+// peerlessRooms's list and its sort, cost 10.3 to 10.5 s of CPU and allocated 0.92 GB.
 const roomTrimInterval = 100 * time.Millisecond
 
 // roomBudgetCloseWait is how long one close of the trim waits for a room a caller is inside before
@@ -105,17 +110,17 @@ const roomBudgetCloseWait = 2 * time.Second
 // background work of the service that writes through the store.
 const roomBudgetClosers = 4
 
-// roomCapHeadroomShare is the share of the room cap (Service.roomCap, maxLiveRooms) the trim keeps
-// free of peerless rooms: a tenth, 100 places of the default 1,000. The cap counts every room,
-// and the bytes budget, now a share of the process's memory, can hold more peerless rooms than the
-// cap leaves room for - production's 5 GiB holds about 720 of the ~7 MiB rooms the load test
-// measured, and 8 GiB more than 1,000 - so the rooms nobody has open could fill the cap and a
-// browser opening a document be refused 503 while idle rooms hold its place. So the trim also
-// closes peerless rooms past roomBudgetMinIdle, least recently used first, while the rooms holding
-// places exceed the cap less this headroom (peerlessRoomsOverBudget). The headroom is what a burst
-// of browsers opening new documents has while the trim catches up: it runs at most every
-// roomTrimInterval, a tenth of a second, and closes four rooms at a time (roomBudgetClosers).
-const roomCapHeadroomShare = 10
+// roomPlaceWait is how long a document socket that finds the room cap full waits for a place
+// before it is refused 503 (awaitRoomPlace). The place is one the trim frees for it: the pass the
+// socket asks for weighs the rooms at once (demandRoomTrim) and closes the least recently used
+// room it may close (peerlessRoomsOverBudget), and that close waits at most roomBudgetCloseWait
+// for a caller inside the room to leave (closeRoomOverBudget). roomTrimInterval more covers the
+// pass after it: an API load that takes the freed place first asks for that pass as its Apply
+// returns (noteRoomUsed), and that pass waits out the interval. A place that has not come by then
+// is one the trim is not about to free - the rooms holding places are all inside
+// roomBudgetMinIdle, owe a settlement, or have a browser connected - and the browser's own
+// reconnect backoff is the better wait.
+const roomPlaceWait = roomTrimInterval + roomBudgetCloseWait
 
 // roomBudgetMinIdle is how long a room must have gone unused before the budget closes it. A
 // close frees the room's heap and costs the document's next use a reload, and that reload reads
@@ -140,9 +145,10 @@ const roomCapHeadroomShare = 10
 // least recently used first, so the heap comes back to the budget as those rooms age rather
 // than at once. The rooms the window holds still count against the budget
 // (peerlessRoomsOverBudget), so a burst of young rooms does not hide the older ones a trim can
-// close. A trim runs only when a room is used (noteRoomUsed), so a room that ages past the
-// window while the server is quiet is weighed again at the next use of any room, and a room
-// nothing uses at all goes to ygo's idle sweeper at roomIdleTimeout whatever the budget does.
+// close. A trim runs only when a room is used (noteRoomUsed) or a socket waits for a place
+// (demandRoomTrim), so a room that ages past the window while the server is quiet is weighed again
+// at the next use of any room, and a room nothing uses at all goes to ygo's idle sweeper at
+// roomIdleTimeout whatever the budget does.
 const roomBudgetMinIdle = 5 * time.Second
 
 // noteRoomUsed stamps room as used now, for the budget's order (peerlessRoomsOverBudget), and
@@ -165,18 +171,23 @@ func (s *Service) noteRoomUsed(room string) {
 // and a trim run inside a room's load hook would wait for another room's load through ygo's
 // CloseRoom while holding its own.
 //
-// No ask is dropped, however many arrive while one trim runs: the ask is recorded first
-// (trimPending) and the trim loops until it finds none recorded, so the rooms a burst loaded while
-// the last pass was closing are weighed by the next. Each pass waits out roomTrimInterval from the
-// last pass's weighing before it weighs the rooms, which is what keeps a burst's Applies from
-// walking every room's state between two writes, and which puts every ask that arrives in that
-// window into the pass that follows it.
+// An ask that finds nothing a pass could close (roomTrimHasWork) - no socket waiting for a place,
+// and the resident rooms together weighing no more than the budget - records nothing and starts
+// nothing, and a pass whose turn comes when that holds walks no room. No other ask is dropped,
+// however many arrive while one trim runs: the ask is recorded first (trimPending) and the trim
+// loops until it finds none recorded, so the rooms a burst loaded while the last pass was closing
+// are weighed by the next, and a trim that is letting go takes up an ask recorded after its last
+// look and before it let go, which started no trim of its own. Each pass waits out
+// roomTrimInterval from the last pass's weighing before it weighs the rooms, which is what keeps
+// a burst's Applies from walking every room's state between two writes, and which puts every ask
+// that arrives in that window into the pass that follows it; a socket waiting for a place asks for
+// a pass that does not wait (demandRoomTrim, awaitTrimSpacing).
 //
 // The trim counts as an eviction for Shutdown (evictWG), which waits for the closes already
 // running and takes the rooms from there, and starts none once the service is stopping or
 // quiescing: those two empty the rooms themselves, and a close racing them buys nothing.
 func (s *Service) trimPeerlessRooms() {
-	if s.peerlessRoomBytes.Load() <= 0 || s.stopping.Load() || s.quiescing.Load() {
+	if s.peerlessRoomBytes.Load() <= 0 || s.stopping.Load() || s.quiescing.Load() || !s.roomTrimHasWork() {
 		return
 	}
 	s.trimPending.Store(true)
@@ -189,18 +200,111 @@ func (s *Service) trimPeerlessRooms() {
 	}
 	go func() {
 		defer s.evictWG.Done()
-		defer s.trimmingRooms.Store(false)
-		for s.trimPending.Swap(false) {
-			if wait := roomTrimInterval - s.now().Sub(time.Unix(0, s.lastRoomTrim.Load())); wait > 0 {
-				time.Sleep(wait)
-			}
-			if s.stopping.Load() || s.quiescing.Load() {
+		for {
+			s.trimRooms()
+			s.trimmingRooms.Store(false)
+			if !s.trimPending.Load() || !s.trimmingRooms.CompareAndSwap(false, true) {
 				return
 			}
-			s.lastRoomTrim.Store(s.now().UnixNano())
-			s.closeRoomsOverBudget()
 		}
 	}()
+}
+
+// trimRooms runs the passes the asks recorded (trimPending) until it finds none recorded, or the
+// service is stopping or quiescing. A pass with nothing it could close (roomTrimHasWork) walks no
+// room and leaves the last pass's weighing as the one the next waits out roomTrimInterval from.
+func (s *Service) trimRooms() {
+	for s.trimPending.Swap(false) {
+		s.awaitTrimSpacing()
+		if s.stopping.Load() || s.quiescing.Load() {
+			return
+		}
+		if !s.roomTrimHasWork() {
+			continue
+		}
+		s.lastRoomTrim.Store(s.now().UnixNano())
+		s.closeRoomsOverBudget()
+	}
+}
+
+// awaitTrimSpacing waits out roomTrimInterval from the last pass's weighing (trimPeerlessRooms),
+// unless a socket waiting for a place has asked for a pass (demandRoomTrim): its ask, made before
+// the wait or during it, ends the wait.
+func (s *Service) awaitTrimSpacing() {
+	select {
+	case <-s.trimDemand:
+		return
+	default:
+	}
+	wait := roomTrimInterval - s.now().Sub(time.Unix(0, s.lastRoomTrim.Load()))
+	if wait <= 0 {
+		return
+	}
+	spacing := time.NewTimer(wait)
+	defer spacing.Stop()
+	select {
+	case <-spacing.C:
+	case <-s.trimDemand:
+	}
+}
+
+// demandRoomTrim asks for a pass of the trim for a socket waiting for a place under a full room cap
+// (awaitRoomPlace), one that does not wait out roomTrimInterval from the last pass: the spacing
+// keeps a burst's Applies from walking the rooms between two writes, and a waiting socket is
+// refused at roomPlaceWait, so its pass weighs the rooms at once. Its caller counts itself waiting
+// first (roomWaiters), so the pass it asks for closes a room for it.
+func (s *Service) demandRoomTrim() {
+	select {
+	case s.trimDemand <- struct{}{}:
+	default:
+	}
+	s.trimPeerlessRooms()
+}
+
+// roomTrimHasWork is whether a pass of the trim may find a room to close: a socket waits for a
+// place under the room cap (roomWaiters), or the resident rooms together weigh more than the
+// budget (residentWeight). The peerless rooms are some of the resident ones, so while all of these
+// weigh no more than the budget the peerless ones do not either: the bytes bound would close
+// nothing, no socket asks for a place, and a pass would walk every room to close none.
+func (s *Service) roomTrimHasWork() bool {
+	return s.roomWaiters.Load() > 0 || s.residentWeight.Load() > s.peerlessRoomBytes.Load()
+}
+
+// awaitRoomPlace waits for a place under the room cap for a document socket on room that found the
+// cap full (reserveRoom), and is whether it took one. The socket counts itself waiting
+// (roomWaiters), which is what the trim closes peerless rooms for places for
+// (peerlessRoomsOverBudget), and asks for a pass that weighs the rooms at once (demandRoomTrim);
+// then it takes the first place it finds, woken where a place leaves the cap
+// (reserveRoomOrFreed), unless the request's context ends first or roomPlaceWait passes. However
+// it ends, the socket no longer counts as waiting.
+//
+// It waits holding nothing: its caller gave its place outside admission back before it and its
+// place under the connection cap back for it (ServeHTTP), so a waiting socket keeps no other
+// socket out. With the budget off (peerlessRoomBytes zero) no trim runs and no place is coming, so
+// the socket is refused at once, as every socket at a full cap was before; so is one that arrives
+// while the service is stopping or quiescing, which runs no trim either.
+func (s *Service) awaitRoomPlace(ctx context.Context, room string) bool {
+	if s.peerlessRoomBytes.Load() <= 0 || s.stopping.Load() || s.quiescing.Load() {
+		return false
+	}
+	s.roomWaiters.Add(1)
+	defer s.roomWaiters.Add(-1)
+	s.demandRoomTrim()
+	bound := time.NewTimer(roomPlaceWait)
+	defer bound.Stop()
+	for {
+		freed, reserved := s.reserveRoomOrFreed(room)
+		if reserved {
+			return true
+		}
+		select {
+		case <-freed:
+		case <-ctx.Done():
+			return false
+		case <-bound.C:
+			return false
+		}
+	}
 }
 
 // closeRoomsOverBudget closes the peerless rooms the budget does not hold, least recently used
@@ -392,10 +496,18 @@ func owesSettlementLocked(state *roomState, timerArmed bool) bool {
 // settlement, closes nothing and leaves the heap above the budget until they age
 // (roomBudgetMinIdle).
 //
-// The budget is also a count: while the rooms holding places under the room cap exceed the cap
-// less its headroom (roomCapHeadroomShare), the oldest closable peerless rooms are closed until
-// they no longer do, whatever their bytes. The rooms either bound closes are the oldest closable
-// ones, so the pass closes as many of them as the tighter bound asks for.
+// The budget is also a count, on demand alone: while document sockets wait for a place under the
+// full room cap (roomWaiters, awaitRoomPlace), the oldest closable peerless rooms are closed for
+// them, as many as wait beyond the places free - places + waiting - cap - whatever their bytes.
+// Two sockets waiting on one document count twice and close one room more than they need. No
+// room is closed for a place no socket waits for, not even while the rooms API loads hold, which
+// reserveRoom refuses nothing, stand past the cap. The trim once kept a standing headroom of a
+// tenth of the cap free of peerless rooms instead: on the load test's 10x step (INFRA-592: a
+// 1,000-room cap, and an 8 GiB budget the peerless rooms' 6.3 to 6.5 GB never reached) it held the
+// rooms holding places at 900 and closed 1,534 rooms in the step, 2.6 a second, each reloaded by
+// its next write or read, and that decoding was 72% of the 18.8 GB the branch allocated beyond
+// main's. The rooms either bound closes are the oldest closable ones, so the pass closes as many
+// of them as the tighter bound asks for.
 func (s *Service) peerlessRoomsOverBudget() []string {
 	peerless := s.peerlessRooms()
 	slices.SortFunc(peerless, func(a, b peerlessRoom) int { return b.used.Compare(a.used) })
@@ -420,7 +532,10 @@ func (s *Service) peerlessRoomsOverBudget() []string {
 			break
 		}
 	}
-	overPlaces := s.roomPlaces() - (s.roomCap - s.roomCap/roomCapHeadroomShare)
+	overPlaces := 0
+	if waiting := int(s.roomWaiters.Load()); waiting > 0 {
+		overPlaces = s.roomPlaces() + waiting - s.roomCap
+	}
 	return closable[:min(max(overBytes, overPlaces), len(closable))]
 }
 

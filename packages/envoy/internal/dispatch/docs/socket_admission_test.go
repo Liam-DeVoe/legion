@@ -391,10 +391,11 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 	// no room may idle out while the test fills the cap.
 	service.srv.RoomIdleTimeout = time.Hour
 	// Nor may the room budget's trim close one (trimPeerlessRooms, which a budget of 0 turns off):
-	// it closes the peerless rooms past roomBudgetMinIdle while the rooms holding places exceed
-	// the cap less its headroom (peerlessRoomsOverBudget), so wherever loading the thousand rooms
-	// took longer than that window it closed the first of them before the cap was reached, or a
-	// room later, freeing a place the cap then gave out. The counts this test is about are the
+	// it closes the least recently used peerless room past roomBudgetMinIdle for each socket that
+	// waits for a place under the full cap (awaitRoomPlace, peerlessRoomsOverBudget), so wherever
+	// loading the thousand rooms took longer than that window the 1,001st room's socket would be
+	// admitted in a closed room's place rather than refused. With the budget off a socket at the
+	// full cap is refused at once, as this test requires. The counts this test is about are the
 	// caps', which the budget is no part of.
 	service.peerlessRoomBytes.Store(0)
 	ids := createDocuments(t, database, maxLiveRooms+2)

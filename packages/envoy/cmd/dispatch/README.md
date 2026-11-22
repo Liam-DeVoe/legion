@@ -169,6 +169,8 @@ Each item below names a variable, then its purpose.
 
   Each process's own caps on the document rooms it holds in memory and the browser connections to them, so two processes of one deployment hold up to twice each;
   a document socket past either is refused `503` with `Retry-After: 1` before it upgrades, never `401`.
+  A socket that finds the room cap full first waits, for at most about 2.1 seconds (`roomPlaceWait`), while the least recently used room nobody is connected to, unused for five seconds and owing no settlement, is closed for it, and is refused only when no place frees in that time;
+  it holds no place under either cap while it waits, and no room is closed for a place while no socket waits for one.
   A socket takes its place under both caps before it loads anything, in the same step that checks each, so sockets that open at once never pass a cap:
   the room cap counts the rooms held and the rooms sockets being admitted reserved, each room once, and the connection cap the browsers connected and the sockets being admitted.
   The caps are counts kept as rooms load and unload and as sockets come and go, so admission walks no rooms.
@@ -5819,7 +5821,7 @@ Each item below names a status and code, then its meaning.
 - `409 DOCUMENT_LIVE`
 
   A rebuild found the document resident in this server or in another Dispatch process on the database (it asks every member, and waits 500 ms at most for the answers):
-  open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds; a room nobody is connected to goes sooner when those rooms hold more than their budget, `roomBudgetFor` - a quarter of the memory the process may use, at least 256 MiB and at most 8 GiB - and it has been unused for five seconds and owes no settlement).
+  open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds; a room nobody is connected to goes sooner when those rooms hold more than their budget, `roomBudgetFor` - a quarter of the memory the process may use, at least 256 MiB and at most 8 GiB - or when a browser waits for a place under a full room cap, and it has been unused for five seconds and owes no settlement).
   Nothing was deleted.
   The message says whether this process or another one holds the document, names the latest saved version N a rebuild from it would discard every later edit back to, and tells the caller to stop and ask a person whether to rebuild the document after two minutes;
   it offers no other repair.
