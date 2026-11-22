@@ -82,7 +82,10 @@ func stepAt(position int) record.TaskPlace {
 //     one fact of the implementer, the retro's role, and the issue, which has no pull request, is
 //     done.
 //  7. implementer acceptance:owner at accepting: pass is one SignOff, fail with returnTo 1 one
-//     BackwardMove returning to step 1.
+//     BackwardMove returning to step 1. acceptance:owner implementer at step 1, and tester
+//     acceptance:owner at step 2: a fail naming no step, with no step of the type implementation
+//     before it, is one HandoffComplete of the acceptance with the verdict fail, which stops the
+//     task; at step 1 a returnTo is 400 INVALID_RETURN_TO, since no step stands before it.
 //  8. The architect of another tree: 403 NOT_THE_OWNER.
 //  9. LEGION-1 > LEGION-2 > LEGION-3: LEGION-2's sub-architect, which sign_off takes for LEGION-3,
 //     reporting LEGION-3's step: 403 NOT_THE_OWNER, no fact.
@@ -234,6 +237,40 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 			moved.Requester != claim.RoleArchitect || moved.Reason != "the widget does not render" {
 			t.Fatalf("the fail = %#v, want one move back of %s to step 1 (implementing) by %s with the report's summary", moved, key, owner.token)
 		}
+	})
+
+	for _, tc := range []struct {
+		name, words string
+		step        int
+	}{
+		{"7 the owner's first-step acceptance fails as the step's fail", "acceptance:owner implementer", 1},
+		{"7 the owner's acceptance with no implementation before it fails as the step's fail", "tester acceptance:owner", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := recorded(t)
+			seedIssueAt(t, at.h, key, phase.Accepting)
+			seedOwnerPlan(t, at.h, key, tc.words, stepAt(tc.step))
+			seedEntry(t, at.h, key, "acceptance", 4)
+			owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
+			answered(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": tc.step, "summary": "the widget does not render",
+				"verdict": "fail", "commit": headSHA}))
+			failed, ok := oneFact(t, at).(intake.HandoffComplete)
+			if !ok || failed.Issue != key || failed.Role != "acceptance" || failed.Claim != owner.token || failed.Step != tc.step || failed.Verdict != "fail" ||
+				failed.ReturnTo != 0 || failed.Entry != 4 || failed.Commit != headSHA || failed.Summary != "the widget does not render" {
+				t.Fatalf("the fail = %#v, want the acceptance's fail of step %d under %s at entry 4, naming no step", failed, tc.step, owner.token)
+			}
+		})
+	}
+
+	t.Run("7 the owner's first-step acceptance names no earlier step", func(t *testing.T) {
+		at := recorded(t)
+		seedIssueAt(t, at.h, key, phase.Accepting)
+		seedOwnerPlan(t, at.h, key, "acceptance:owner implementer", stepAt(1))
+		owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
+		refusedSaying(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 1, "summary": "the widget does not render",
+			"verdict": "fail", "returnTo": 1, "commit": headSHA}), http.StatusBadRequest, "INVALID_RETURN_TO",
+			"returnTo is 1, and step 1 of task a of LEGION-208 is not before step 1, the acceptance that failed: send it again naming an earlier step, or without returnTo; nothing was recorded")
+		noFact(t, at)
 	})
 
 	t.Run("8 the architect of another tree", func(t *testing.T) {

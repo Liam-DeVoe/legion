@@ -3129,12 +3129,13 @@ package api
 // in the task, 1 for its first, and 0 for the retro. It answers the empty object every fact route
 // answers. It refuses a grant of any claim but the issue's own architect `403 NOT_THE_OWNER`, a
 // step that does not run now or whose agent is not the owner `409 OWNER_STEP_NOT_RUNNING`, a step
-// below 0 `400 INVALID_STEP`, the owner's failed acceptance that names no step to return to and
-// has no step of the type implementation before it `400 RETURN_TO_REQUIRED`, and otherwise as the
-// completion route refuses a report of that place. No plugin below 227 calls it. A reviewer of an
-// issue with no pull request record reports its step on `POST /legion/v1/handoff/complete` with the
-// verdict `pass` or `fail` and a commit (`400 STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the
-// owner's review step does on the new route, since no review on GitHub decides either;
+// below 0 `400 INVALID_STEP`, and otherwise as the completion route refuses a report of that place.
+// The owner's failed acceptance that names no step to return to, with no step of the type
+// implementation before it, stops the task as any such failed step does. No plugin below 227
+// calls it. A reviewer of an issue with no pull request record reports its step on `POST
+// /legion/v1/handoff/complete` with the verdict `pass` or `fail` and a commit (`400
+// STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the owner's review step does on the new route,
+// since no review on GitHub decides either;
 // `VERDICT_ROLE_FORBIDDEN` now reads `only a tester, a role of the deployment or of the plan, the
 // role acceptance, a reviewer of an issue with no pull request, and the owner in a review step
 // report a verdict`. No answer a plugin parses changes shape: the request records of 227 hold the

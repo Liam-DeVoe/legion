@@ -260,8 +260,12 @@ func (s *server) completeStep(w http.ResponseWriter, r *http.Request) {
 // sign_off (intake.SignOff), and fail as request_backward_move (intake.BackwardMove) with the
 // report's summary as its reason, to the step its returnTo names, or, where it names none, to the
 // task's first step of the type implementation before the acceptance, as a failed step's work
-// returns (workflow's returnTarget). A fail with no such step and no returnTo names no step to go
-// back to, and is refused RETURN_TO_REQUIRED, with nothing recorded.
+// returns (workflow's returnTarget). A fail that names no step, with no such step before it (an
+// acceptance that is its task's first step among them), returns the work nowhere: it is the fail
+// of the step itself, applied as the completion of the acceptance's role under the owner's claim
+// (intake.HandoffComplete with the verdict fail), which stops the task and tells its owner, as the
+// fail of the fresh agent of acceptance and of every other step with nothing before it to take the
+// work does.
 func (s *server) ownersAcceptance(w http.ResponseWriter, r *http.Request, req CompleteStepRequest, by claim.Token, at *ownerPlace) {
 	entry, ok := s.openStep(w, r, req.Issue)
 	if !ok {
@@ -275,7 +279,7 @@ func (s *server) ownersAcceptance(w http.ResponseWriter, r *http.Request, req Co
 	if req.ReturnTo != nil {
 		if back = *req.ReturnTo; back >= req.Step {
 			s.writeFailure(w, r, http.StatusBadRequest, "INVALID_RETURN_TO", fmt.Sprintf(
-				"returnTo is %d, and step %d of task %s of %s is not before step %d, the acceptance that failed: send it again naming an earlier step; nothing was recorded",
+				"returnTo is %d, and step %d of task %s of %s is not before step %d, the acceptance that failed: send it again naming an earlier step, or without returnTo; nothing was recorded",
 				back, back, at.task.Task, req.Issue, req.Step))
 			return
 		}
@@ -288,9 +292,8 @@ func (s *server) ownersAcceptance(w http.ResponseWriter, r *http.Request, req Co
 		}
 	}
 	if back < 1 {
-		s.writeFailure(w, r, http.StatusBadRequest, "RETURN_TO_REQUIRED", fmt.Sprintf(
-			"the fail of step %d of task %s of %s names no step to return to, and no step of the type implementation stands before it: send it again naming returnTo, an earlier step; nothing was recorded",
-			req.Step, at.task.Task, req.Issue))
+		s.applyFact(w, r, requestFactID("steps/complete"), intake.HandoffComplete{Generation: at.issue.Generation, Issue: req.Issue, Role: at.role,
+			Claim: by, Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit, Entry: at.row.Entry, Step: req.Step}, CompleteStepResponse{})
 		return
 	}
 	s.applyFact(w, r, requestFactID("steps/complete"), intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect,

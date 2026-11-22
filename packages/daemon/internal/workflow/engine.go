@@ -2556,16 +2556,19 @@ func (e *Engine) signOffRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // accept is the move of an accepted step, issue standing in accepting: on to the task's next step,
 // or to the retro, told the report of the step the acceptance accepted (acceptedRole) with the
-// pull request. The owner's sign-off and the fresh agent of acceptance's pass both move by it,
-// past signOffRefusal.
+// pull request, and told no report where no step stands before the acceptance, since none ran.
+// The owner's sign-off and the fresh agent of acceptance's pass both move by it, past
+// signOffRefusal.
 func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	accepted, err := e.acceptedRole(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
-	if err != nil {
-		return err
+	var report record.PhaseRow
+	if accepted != "" {
+		if report, err = e.phaseRow(ctx, tx, issue.Key, accepted); err != nil {
+			return err
+		}
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
@@ -2577,16 +2580,21 @@ func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) erro
 // acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
 // the acceptance's place on the task of its walk, by place and never by type, so the step after
 // the sign-off reads the report the owner read. Of two acceptance steps, the place is the one the
-// task stands at (Walk.placeRunning). An issue with no plan rows walks today's line, where the
-// review stands before accepting.
+// task stands at (Walk.placeRunning). An acceptance that is its task's first step accepts the work
+// its task text names and no step's report, so it answers "": a plan whose first step is an
+// acceptance is taken (plan.Supported), and its pass moves on with no report to hand on. An issue
+// with no plan rows walks today's line, where the review stands before accepting.
 func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil || !w.Stored {
 		return claim.RoleReviewer, err
 	}
 	place, ok := w.placeRunning(phase.Accepting, "")
-	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
-		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", issue.Key, w.Task, w.Line)
+	if !ok || place.Kind != record.PlaceStep || place.Position < 1 || place.Position > len(w.Steps) {
+		return "", fmt.Errorf("sign off %s: task %s of its line %v stands at no step of acceptance", issue.Key, w.Task, w.Line)
+	}
+	if place.Position == 1 {
+		return "", nil
 	}
 	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
