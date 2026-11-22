@@ -13,11 +13,15 @@ body: |-
   it); any call that names a channel by anything but its id, such as `#general`; any call
   carrying a key with a character other than an ASCII letter, a digit or `_`, such as ` channel`
   or `channel[]`, which Slack may read as `channel`; and any body it cannot read as naming none:
-  one that is neither JSON nor a form, a compressed one, or one over 1 MiB. Its words never say
-  whether a channel is a private project's: a listed id and a channel named otherwise read the
-  same, and a call another rule refuses reads the same whatever ids it names. The broker keeps the
-  last list it read in its own database (`known_private_projects`, migration 0041). When a read of
-  the list fails, a 404 included, it fences by that stored list: nothing while it holds no private
+  one that is neither JSON nor a form, a compressed one, or one over 1 MiB. Its words do not name
+  a channel as a private project's: a listed id and a channel named otherwise read the same, and a
+  call another rule refuses reads the same whatever ids it names. That stops only an incidental
+  refusal from naming the channel: whether a well-formed id is listed still shows by whether the
+  call is refused, for example `GET /api/auth.test?channel=<id>`, which answers 403 for a listed id
+  and Slack's own answer for another. The fence keeps such a session out of a private project's
+  channels; it does not keep their ids secret. The broker keeps the last list it read in its own
+  database (`known_private_projects`, migration 0041). When a read of the list fails, a 404
+  included, it fences by that stored list: nothing while it holds no private
   project, its projects' channels otherwise, read again within a minute, for 10 minutes of the
   database's time after Dispatch last named each stored project or a switch recorded it; a stored
   project past those 10 minutes, a stored project whose channels it never read, a store it cannot

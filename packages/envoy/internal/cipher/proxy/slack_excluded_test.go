@@ -183,8 +183,9 @@ func grantFenced(r *rig, placeholder, grantID string, secret requests.AirlockSec
 // +channel, channel%00x, channel[], channel.), every call naming a channel other than by its id,
 // and every call it cannot read as naming none. Each of slackCallExcluded's seven rules has a case
 // that it alone refuses (fenceCase). A refusal reads the same, byte for byte but its answer id,
-// whether a channel the call names is PRIV's or the call is refused for another reason: so no
-// refusal tells the session which ids are a private project's. The allowed calls naming a public
+// whether a channel the call names is PRIV's or the call is refused for another reason: so a
+// refusal's words never name a channel as a private project's (whether a well-formed id is listed
+// still shows by whether the call is refused, slackCallExcluded). The allowed calls naming a public
 // channel, and auth.test, reach the stand-in with the real token, and a grant with no Excluded
 // carries every one of them as before the fence. A name the broker could not read the fence of
 // refuses every call PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a private

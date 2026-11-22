@@ -417,21 +417,22 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 
 	// The stored list's age bound (storedListMaxAge): a channel an owner names while the list
 	// fails reaches no row, so a row is trusted for 10 min of the database's time from when
-	// Dispatch last told the broker of it. Rows (q) and (r) spell the 10 minutes out, so a bound
-	// of another length fails one of them.
-	t.Run("(q) PRIV listed 10 min ago less a second, the list route down: [C1]", func(t *testing.T) {
+	// Dispatch last told the broker of it. Rows (q) and (r) spell the 10 minutes out, 30 s either
+	// side, so a bound of 9 minutes or of 11 fails one of them; the 30 s also cover the wall-clock
+	// time a loaded runner spends between the stamp and the release's read of the store.
+	t.Run("(q) PRIV listed 9m30s ago, the list route down: [C1]", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
 		storeList(t, m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
-		advance(m.Store, 10*time.Minute-time.Second)
+		advance(m.Store, 9*time.Minute+30*time.Second)
 		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		fencedBy(t, "(q) PRIV listed within the bound", got, read, privChannel)
 	})
 
-	t.Run("(r) PRIV listed past 10 min ago, the list route down: unread", func(t *testing.T) {
+	t.Run("(r) PRIV listed 10m30s ago, the list route down: unread", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
 		storeList(t, m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
-		advance(m.Store, 10*time.Minute+time.Second)
+		advance(m.Store, 10*time.Minute+30*time.Second)
 		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		unread(t, "(r) PRIV listed past the bound", got, read)

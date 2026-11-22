@@ -32,8 +32,10 @@ const (
 	// settling (requests.AirlockSecret.SettlesAt), before the time it settles at.
 	channelsSettle = "; this project's channels changed, and posting to them reopens at "
 	// privateChannel is the public fence's refusal's words (PRIVATE_CHANNEL); the rule the call
-	// broke follows them. They say what the fence carries and never whether a channel the call
-	// named is a private project's, which a session could otherwise learn one id at a time.
+	// broke follows them. They say what the fence carries, not that a channel the call named is a
+	// private project's, so a refusal for another reason does not name the channel. They do not
+	// hide which ids are listed: a well-formed id refused PRIVATE_CHANNEL was refused by rule 5
+	// (slackCallExcluded).
 	privateChannel = "a credential that names no private project spends this secret only on chat.postMessage, conversations.replies and auth.test, naming each channel by its id and none a private project's owner listed"
 	// privateChannelsUnread is the words of PRIVATE_CHANNELS_UNREAD, every call on a name whose
 	// public fence the broker could not read (requests.AirlockSecret.ExcludedUnread).
@@ -261,9 +263,15 @@ var fencedMethods = map[string]bool{
 // TestAPublicSlackGrantNeverNamesAPrivateChannel drives. Rule 5 alone reads a channel against
 // excluded, so it runs last, on the query and the body alike, once every other rule has passed
 // both: a call another rule refuses is refused in the same words whatever channels it names. Rule
-// 5 refuses in rule 7's words (channelUnreached), so no refusal says whether a channel is a
-// private project's. An empty body holds no key. The body answered is the bytes read, which the
-// caller serves upstream in place of r's own, so the call Slack receives is the call this read.
+// 5 refuses in rule 7's words (channelUnreached), so a refusal's words do not name the channel as
+// a private project's. Whether an id is listed still shows, by whether the call is refused: rule 7
+// refuses only a value that is not shaped like an id, so a well-formed id refused PRIVATE_CHANNEL
+// was refused by rule 5, and rule 5 reads the query of every carried method, so
+// GET /api/auth.test?channel=<id> answers 403 for a listed id and Slack's own answer for another,
+// with no side effect. The fence keeps a credential that names no private project out of a private
+// project's channels; it does not keep the list of their ids secret. An empty body holds no key.
+// The body answered is the bytes read, which the caller serves upstream in place of r's own, so
+// the call Slack receives is the call this read.
 func slackCallExcluded(r *http.Request, excluded []string) (body []byte, why string) {
 	if !fencedMethods[r.URL.Path] {
 		return nil, "the Slack method is not one this secret is spent on outside a private project (chat.postMessage, conversations.replies, auth.test)"
@@ -418,8 +426,8 @@ func argsExcluded(args []slackArg, excluded []string) string {
 
 // channelUnreached is the words of rules 5 and 7 for a channel named under key: one a private
 // project's owner listed, and one named by something other than its id, read the same, so a
-// refusal never tells a credential that names no private project which ids are a private
-// project's.
+// refusal's words never name a channel as a private project's. Whether a well-formed id is listed
+// still shows by the refusal itself (slackCallExcluded).
 func channelUnreached(key string) string {
 	return "names a channel under " + key + " that this secret does not reach"
 }
