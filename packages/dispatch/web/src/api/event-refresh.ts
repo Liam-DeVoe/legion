@@ -1249,8 +1249,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
       // that document by its role, which it writes as it creates the row; a server built before
       // roles sends none, and names it by its slug alone.
+      // The Decisions read's `document` member names that document while it stands, for the page
+      // of the release before; a server of this release refuses a new decisions.md, so only a
+      // process of the release before sends this event during a roll.
+      //
+      // kept for one release: compat-objects
       const { role, slug } = event.payload.artifact;
-      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
+      if (role === "decisions" || (role === undefined && slug === "decisions-md")) {
         targets.push({ exact: true, queryKey: ["decisions", key] });
       }
     }

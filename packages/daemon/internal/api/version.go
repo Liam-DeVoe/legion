@@ -3028,7 +3028,7 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of 202 reads that state as before, since it parses the three names, and the boot gate
+// A plugin of 205 reads that state as before, since it parses the three names, and the boot gate
 // and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
 // file before it pins an image of this release.
@@ -3065,11 +3065,11 @@ package api
 // open during the reading, made between 2026-11-21T06:38:03Z and 07:20:32Z: 203 #4175 and
 // #4661, 205 #3712, #4539 and #4573, 207 #3831, #3993, #4030, #4065, #4273, #4392, #4432, #4590,
 // #4592 and #4596, 208 #2230 and #4611, 209 #4049, #4540, #4553 and #4580, and nothing above 209.)
-// (At the forward merge of 2026-11-21 that brings main in at 0497e861b0, main declares 205, the
+// (At the forward merge of 2026-11-21 that brings main in at 98987d3f3d, main declares 205, the
 // entry before this one, and this change takes 216 in place of 204: the lowest number above main's
-// 205 that no open pull request declares, in a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 413 open pull requests, made between 2026-11-21T19:43:55Z and
-// 19:55:36Z: 206 #3712 and #4539, 207 #3831, #3993, #4273, #4392, #4432, #4590, #4682, #4723 and
-// #4805, 208 #2230, 209 #4049, #4540 and #4580, 210 #4661, 211 #4611, 212 #4771, 213 #4030 and
-// #4553, 214 #4592 and #4596, 215 #4065, and nothing above 215.)
+// 205 that no open pull request declares, in a reading of `const DaemonAPIVersion` at the head of
+// each of the 411 open pull requests, made between 2026-11-21T20:11:41Z and 20:18:15Z: 206 #3712
+// and #4539, 207 #3993, #4273, #4392, #4432, #4590, #4682, #4723 and #4805, 208 #2230, 209 #4049,
+// #4540 and #4580, 210 #4661, 211 #4611, 212 #3831 and #4771, 213 #4030 and #4553, 214 #4592 and
+// #4596, 215 #4065, and nothing above 215.)
 const DaemonAPIVersion = 216
