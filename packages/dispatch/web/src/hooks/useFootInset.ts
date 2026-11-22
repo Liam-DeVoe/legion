@@ -31,8 +31,8 @@ import { type RefObject, useLayoutEffect } from "react";
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
- *     wrapper that holds it with the sends, and the composer's own section, which on a narrow or
- *     short screen, where the wrapper has no box, is what sticks.
+ *     wrapper that holds it with the sends, and, on a narrow or short screen, where the wrapper
+ *     has no box, the composer's own section, which is what sticks there.
  *   - The agent live view's composer (`AgentThread`), in the flow of a page that fills the
  *     screen, whose reach takes in the row laid out under it, and the live thread's own `Jump to
  *     latest`, just above the composer while it shows: both only in the view in front.
@@ -51,7 +51,7 @@ import { type RefObject, useLayoutEffect } from "react";
  * below `xl`, a modal dialog over the page; and `MultiSelect`'s sticky foot, which sticks to the
  * foot of its own popover, not of the screen.
  */
-export const FOOT_LAYERS = [
+const FOOT_LAYERS = [
   { name: "page", property: "--foot-page-inset" },
   { name: "banner", property: "--foot-banner-inset" },
   { name: "status", property: "--foot-status-inset" },
@@ -65,8 +65,8 @@ export type FootLayer = (typeof FOOT_LAYERS)[number]["name"];
  *  where the element now stands. */
 type FootControl = { measure: () => void; reach: number };
 
-/** Each layer's own elements. The measurements are kept per layer, so a publisher of one never
- *  clears another's. */
+/** Each layer's own elements, so publish takes each layer's value from its own reaches and those
+ *  of the layers below it. */
 const layers = new Map<FootLayer, Map<Element, FootControl>>();
 
 function controlsOf(layer: FootLayer): Map<Element, FootControl> {
@@ -79,41 +79,42 @@ function controlsOf(layer: FootLayer): Map<Element, FootControl> {
  * Publishes every layer's value, from the bottom up: each holds the highest reach published into
  * it or into a layer below it, a page element's reach counted at most half the screen's height
  * (`FOOT_LAYERS` says why). When that changes any value the document element holds, it measures
- * every element the hook holds again, in every layer.
+ * again the elements of every layer above the lowest one whose value changed.
  *
  * These properties place elements, so a publish moves elements that never change size: the update
  * banner sits on the page layer, so a composer that grows pushes the banner up the screen with its
  * box untouched, and the status corner sits on the banner layer. Neither a `ResizeObserver` on a
  * moved element nor a `window` resize reports a move, so without this the banner would keep
  * publishing the reach it had where it stood before, the corner would stand on that stale reach,
- * and `Jump to latest`, placed by the corner's, would land inside the composer.
+ * and `Jump to latest`, placed by the corner's, would land inside the composer. No element is
+ * placed on its own layer or a layer above it, so a change moves only the elements of the layers
+ * above it, and those are the ones measured again.
  *
  * The comparison is against each property as the document element holds it, so what decides a
  * cascade is the published value itself rather than a number kept beside it. That is also what
  * ends the recursion: a publish that changes no value measures nothing again. The composer grows
  * and raises the page layer, the banner is measured where it now stands and raises the banner
- * layer, the corner is measured where that puts it and raises the status layer, and the elements
- * measured once more have not moved, so no value changes and the cascade stops. No element is
- * placed on its own layer or a layer above it, so each step only moves elements of higher layers.
+ * layer, the corner is measured where that puts it and raises the status layer, which places no
+ * element the hook holds, and the cascade stops.
  */
 function publish(): void {
   const style = document.documentElement.style;
   let highest = 0;
-  let changed = false;
-  for (const { name, property } of FOOT_LAYERS) {
+  // The first layer whose elements a changed value moves; none while it is past the last.
+  let moved: number = FOOT_LAYERS.length;
+  for (const [index, { name, property }] of FOOT_LAYERS.entries()) {
     const most = name === "page" ? window.innerHeight / 2 : Number.POSITIVE_INFINITY;
     for (const control of controlsOf(name).values()) {
       highest = Math.max(highest, Math.min(control.reach, most));
     }
     const value = highest === 0 ? "" : `${highest}px`;
     if (style.getPropertyValue(property) === value) continue;
-    changed = true;
+    moved = Math.min(moved, index + 1);
     if (value === "") style.removeProperty(property);
     else style.setProperty(property, value);
   }
-  if (!changed) return;
-  for (const controls of layers.values()) {
-    for (const control of controls.values()) control.measure();
+  for (const { name } of FOOT_LAYERS.slice(moved)) {
+    for (const control of controlsOf(name).values()) control.measure();
   }
 }
 
@@ -133,9 +134,10 @@ function publish(): void {
  * An element that is not fixed moves when its scroll container scrolls, and when the content
  * around it grows or shrinks - agents joining or leaving the Agents list - and neither a
  * `ResizeObserver` on the element nor a `window` resize reports either move. So while such an
- * element has a box and is not sticky to the top, the hook also measures it on any scroll, once
- * per animation frame, and whenever its parent changes size: the parent element itself, or, where
- * that is `display: contents` and has no box, the nearest ancestor that has one.
+ * element has a box and is not sticky to the top, the hook also measures it on any scroll of a
+ * container that holds it, once per animation frame, and whenever its parent changes size: the
+ * parent element itself, or, where that is `display: contents` and has no box, the nearest
+ * ancestor that has one, found again at each measure, since a resize can change which that is.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -155,25 +157,31 @@ export function useFootInset(
         control.measure();
       });
     };
+    // The scroll listener captures, since a scroll event does not bubble: it hears the scroll of
+    // any container, and measures for one that holds the element. A page's own scroll targets the
+    // document, which holds every element.
+    const measureOnScroll = (event: Event) => {
+      if (event.target instanceof Node && event.target.contains(element)) measureNextFrame();
+    };
     let following = false;
     let parent: Element | null = null;
-    // The scroll listener captures, since a scroll event does not bubble: it hears the scroll of
-    // any container.
     const follow = (moves: boolean) => {
-      if (moves === following) return;
-      following = moves;
-      if (moves) {
-        window.addEventListener("scroll", measureNextFrame, { capture: true, passive: true });
-        parent = element.parentElement;
-        while (parent !== null && getComputedStyle(parent).display === "contents") {
-          parent = parent.parentElement;
+      if (moves !== following) {
+        following = moves;
+        if (moves) {
+          window.addEventListener("scroll", measureOnScroll, { capture: true, passive: true });
+        } else {
+          window.removeEventListener("scroll", measureOnScroll, { capture: true });
         }
-        if (parent !== null) sizes.observe(parent);
-      } else {
-        window.removeEventListener("scroll", measureNextFrame, { capture: true });
-        if (parent !== null) sizes.unobserve(parent);
-        parent = null;
       }
+      let boxed = moves ? element.parentElement : null;
+      while (boxed !== null && getComputedStyle(boxed).display === "contents") {
+        boxed = boxed.parentElement;
+      }
+      if (boxed === parent) return;
+      if (parent !== null) sizes.unobserve(parent);
+      if (boxed !== null) sizes.observe(boxed);
+      parent = boxed;
     };
     // Reading the box flushes the style and layout a cascading publish has just changed, so the
     // element is measured where the new layers put it, not where it was painted last.

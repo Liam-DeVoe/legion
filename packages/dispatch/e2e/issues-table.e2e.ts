@@ -1,5 +1,3 @@
-import type { Locator } from "@playwright/test";
-
 import type { Issue } from "../web/src/api/types";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import { setLiveSessions } from "./agents";
@@ -16,6 +14,7 @@ import {
 import { filterPicker } from "./filters";
 import { nextFrames } from "./frames";
 import { dropFirstAnswer, pendingWrites, watchWrites } from "./keyed-writes";
+import { type Box, boxesApart } from "./layout";
 import {
   expectReadWhileHeld,
   holdIssuePatches,
@@ -28,7 +27,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, test } from "./test";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 test("the table sorts, searches facets and fuzzy text, groups, pages and receives a second page's edit live", async ({
@@ -460,9 +459,6 @@ test("the selection bar, Pending changes and the update banner, in every combina
       { width: 1600, height: 1000 },
       { width: 1920, height: 1080 },
     ].filter((size) => size.width !== own.width || size.height !== own.height);
-    type Box = { x: number; y: number; width: number; height: number };
-    const meet = (a: Box, b: Box) =>
-      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
     const expectEachTakesEveryPress = async (shown: FootElement[]) => {
       const controls: Locator[] = [];
       for (const element of shown) controls.push(...(await element.controls()));
@@ -480,9 +476,10 @@ test("the selection bar, Pending changes and the update banner, in every combina
         }
         for (const [index, first] of boxes.entries()) {
           for (const second of boxes.slice(index + 1)) {
-            expect(meet(first.box, second.box), `${first.name} meets ${second.name} at ${at}`).toBe(
-              false
-            );
+            expect(
+              boxesApart(first.box, second.box),
+              `${first.name} meets ${second.name} at ${at}`
+            ).toBe(true);
           }
         }
       }

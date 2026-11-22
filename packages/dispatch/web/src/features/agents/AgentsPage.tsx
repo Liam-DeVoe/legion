@@ -1060,6 +1060,10 @@ function SelectionHeader({
   );
 }
 
+/** The query of the `narrow-or-short` variant (styles.css), under which the broadcast composer's
+ *  own section sticks to the foot of the page's scroll. */
+const NARROW_OR_SHORT_QUERY = "(max-width: 767px), (max-height: 500px)";
+
 /**
  * The broadcast a selection is waiting to become: one body, one mode, and one message per
  * recipient. Selection is what the human ticked, so a recipient that a later filter hides is
@@ -1133,10 +1137,10 @@ function BroadcastComposer({
   const noticeId = useId();
   // On a narrow or short screen this section is what sticks to the foot of the page's scroll
   // (`BroadcastFoot` has no box there), in the foot's page layer (`hooks/useFootInset.ts` lists
-  // the foot's layers and the elements in each). Elsewhere it lays out in that wrapper, which
-  // sticks instead and reaches at least as high.
+  // the foot's layers and the elements in each), and it registers only there. Elsewhere that
+  // wrapper holds it and sticks instead, so the wrapper reaches at least as high.
   const sectionRef = useRef<HTMLElement>(null);
-  useFootInset(sectionRef, true, "page");
+  useFootInset(sectionRef, useMediaQuery(NARROW_OR_SHORT_QUERY), "page");
 
   // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
   // so it takes about a third of a phone screen: the heading on one line, the recipients in one
