@@ -182,7 +182,7 @@ func TestHoldARestoreJetStreamNeverPlacesStopsAtOneLimit(t *testing.T) {
 	const limit = 4 * time.Second
 	var out bytes.Buffer
 	start := time.Now()
-	err = restoreOne(ctx, nc, &out, bus.InterestBucket, filepath.Join(dir, bus.InterestBucket), archive, limit)
+	_, err = restoreOne(ctx, nc, &out, bus.InterestBucket, filepath.Join(dir, bus.InterestBucket), archive, limit)
 	took := time.Since(start)
 	t.Logf("restoreOne with a %s limit took %s: %v\n%s", limit, took, err, out.String())
 	var unknown *writerhold.Unknown

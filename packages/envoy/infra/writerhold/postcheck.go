@@ -33,14 +33,18 @@ type ArchiveState struct {
 // one, after the restore for a restored one), how many of those writes replaced a key the stream
 // already held (Replaced: a KV put to a key there raises last_seq and leaves the message count, as
 // `buckets create`'s sentinel replaces a restored archive's), and, for a restore, the archive's
-// state. Replaced is never more than Writes. A write whose answer was lost counts when the command
-// read its own record or revision back (§2, "Ambiguous results"): the command states it here, and
-// the postcheck does not guess.
+// state (Archive) and the stream's own reading taken right after the restore, before any write
+// (Restored), which must be the archive's: the counts after the writes cannot tell a key the
+// restore lost and the command wrote again from one the command replaced. Replaced is never more
+// than Writes. A write whose answer was lost counts when the command read its own record or
+// revision back (§2, "Ambiguous results"): the command states it here, and the postcheck does not
+// guess.
 type Change struct {
 	Kind     ChangeKind
 	Writes   uint64
 	Replaced uint64
 	Archive  ArchiveState
+	Restored ArchiveState
 }
 
 // Postcheck is the postcheck of a held command (§3a, "The postcheck, per stream incarnation and per
@@ -54,9 +58,10 @@ type Change struct {
 //   - a restored stream's `created` is not compared, since no version keeps it the same way:
 //     nats-server 2.15.1 snapshots in its V2 archive (stream.go:9477), whose restore
 //     (stream_backup.go's RestoreStreamV2) sets a new one, while the V1 restore of 2.10.29 keeps
-//     the archive's (stream.go:9622-9623); its `last_seq` is the archive's plus the command's
-//     writes after the restore, and its message count the archive's plus those writes less the
-//     ones that replaced a key (Replaced);
+//     the archive's (stream.go:9622-9623). Its reading right after the restore, before any write
+//     (Change.Restored), must be the archive's, and from it its `last_seq` is that reading's plus
+//     the command's writes, and its message count that reading's plus those writes less the ones
+//     that replaced a key (Replaced);
 //   - a stream step 1 found absent and the command did not create stays absent, and no other
 //     stream is absent.
 //
@@ -146,11 +151,16 @@ func compare(name string, was, now StreamReading, change Change) error {
 			return refusef(StepPostcheck, "%s's last_seq is %d, and the command states %d writes to the stream it created", name, now.LastSeq, change.Writes)
 		}
 	case ChangeRestored:
-		if now.LastSeq != change.Archive.LastSeq+change.Writes {
-			return refusef(StepPostcheck, "%s's last_seq is %d, and the archive's %d plus the command's %d writes after the restore is %d", name, now.LastSeq, change.Archive.LastSeq, change.Writes, change.Archive.LastSeq+change.Writes)
+		restored := change.Restored
+		if restored != change.Archive {
+			return refusef(StepPostcheck, "%s held %d messages to seq %d right after the restore, and not the archive's %d messages to seq %d: the restore lost or added messages",
+				name, restored.Messages, restored.LastSeq, change.Archive.Messages, change.Archive.LastSeq)
 		}
-		if now.Messages != change.Archive.Messages+change.Writes-change.Replaced {
-			return refusef(StepPostcheck, "%s holds %d messages, and the archive's %d plus the command's %d writes after the restore less its %d replaced keys is %d", name, now.Messages, change.Archive.Messages, change.Writes, change.Replaced, change.Archive.Messages+change.Writes-change.Replaced)
+		if now.LastSeq != restored.LastSeq+change.Writes {
+			return refusef(StepPostcheck, "%s's last_seq is %d, and its %d right after the restore plus the command's %d writes after it is %d", name, now.LastSeq, restored.LastSeq, change.Writes, restored.LastSeq+change.Writes)
+		}
+		if now.Messages != restored.Messages+change.Writes-change.Replaced {
+			return refusef(StepPostcheck, "%s holds %d messages, and its %d right after the restore plus the command's %d writes after it less its %d replaced keys is %d", name, now.Messages, restored.Messages, change.Writes, change.Replaced, restored.Messages+change.Writes-change.Replaced)
 		}
 	}
 	return nil

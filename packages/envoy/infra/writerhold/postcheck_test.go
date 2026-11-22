@@ -205,15 +205,20 @@ func TestHoldThePostcheck(t *testing.T) {
 	deleteStream(t, held, interests)
 	createStream(t, held, interestsConfig.CachedInfo().Config)
 	holdBarrier(t, held, bus.InterestBucket)
-	// The roles bucket restored from its backup, and its barrier record written.
+	// The roles bucket restored from its backup, its reading taken right after the restore, and
+	// its barrier record written.
 	deleteStream(t, held, roles)
 	restoreStream(t, held, roles, backup)
+	restoredInfo, found, err := streamInfoOnce(ctx, held, roles)
+	require.NoError(t, err)
+	require.True(t, found, "%s after its restore", roles)
+	restored := ArchiveState{LastSeq: restoredInfo.State.LastSeq, Messages: restoredInfo.State.Msgs}
 	holdBarrier(t, held, bus.RoleClaimBucket)
 
 	changes := map[string]Change{
 		selection: {Kind: ChangeKept, Writes: 1},
 		interests: {Kind: ChangeRecreated, Writes: 1},
-		roles:     {Kind: ChangeRestored, Writes: 1, Archive: backup.ArchiveState},
+		roles:     {Kind: ChangeRestored, Writes: 1, Archive: backup.ArchiveState, Restored: restored},
 	}
 	after, err := Postcheck(ctx, held, step1, changes)
 	require.NoError(t, err)
@@ -238,7 +243,7 @@ func TestHoldThePostcheck(t *testing.T) {
 		kv     nats.KeyValue
 		want   string
 	}{
-		{roles, rolesKV, "the archive's 3 plus the command's 1 writes after the restore is 4"},
+		{roles, rolesKV, "its 3 right after the restore plus the command's 1 writes after it is 4"},
 		{interests, interestsKV, "the command states 1 writes to the stream it created"},
 		{selection, selectionKV, "plus the command's 1 writes"},
 	} {

@@ -264,21 +264,25 @@ var restoreStart = 60 * time.Second
 const restoreRuns = 2
 
 // restoreAll restores each of buckets from dir/<bucket> on nc, each with restoreOne, a restore
-// JetStream cannot place yet made again within bound. A restore that stops is a *writerhold.Left
-// naming what the command left: each bucket restored before it, and the stopped one's stream
-// deleted.
+// JetStream cannot place yet made again within bound. Each bucket's change states the archive and
+// the stream's own reading right after its restore (writerhold.Change.Restored), which restoreOne
+// has already found equal to the archive. A restore that stops is a *writerhold.Left naming what
+// the command left: each bucket restored before it, and the stopped one's stream deleted.
 func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string, bound time.Duration) (map[string]writerhold.Change, map[string]string, error) {
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
 	var left []string
 	for _, bucket := range buckets {
 		archive := m.Buckets[bucket]
-		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, bound); err != nil {
+		restored, err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, bound)
+		if err != nil {
 			left = append(left, "KV_"+bucket+" deleted, its restore stopped")
 			return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
 		}
 		left = append(left, "KV_"+bucket+" restored")
 		fmt.Fprintf(stdout, "restored %s: %d messages to seq %d\n", bucket, archive.Messages, archive.LastSeq)
-		changes["KV_"+bucket] = writerhold.Change{Kind: writerhold.ChangeRestored, Archive: writerhold.ArchiveState{LastSeq: archive.LastSeq, Messages: archive.Messages}}
+		changes["KV_"+bucket] = writerhold.Change{Kind: writerhold.ChangeRestored,
+			Archive:  writerhold.ArchiveState{LastSeq: archive.LastSeq, Messages: archive.Messages},
+			Restored: writerhold.ArchiveState{LastSeq: restored.LastSeq, Messages: restored.Msgs}}
 		outputs["sha256."+bucket] = archive.SHA256
 	}
 	return changes, outputs, nil
@@ -293,15 +297,15 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 // nothing and is sent again (writerhold.RetryPlacementUntil), the runs sharing one placement limit
 // of bound; the limit passing is UNKNOWN naming the restore and the code, and no cut: no run
 // follows and no leftover is searched for, since the server stored nothing. A restored stream whose
-// state is not the archive's stops it too.
-func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, bound time.Duration) error {
+// state is not the archive's stops it too. It returns the restored stream's state it read.
+func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, bound time.Duration) (streamState, error) {
 	stream := "KV_" + bucket
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
-		return err
+		return streamState{}, err
 	}
 	if err := js.DeleteStream(stream); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
-		return fmt.Errorf("delete %s before its restore: %w", stream, err)
+		return streamState{}, fmt.Errorf("delete %s before its restore: %w", stream, err)
 	}
 	placement := time.Now().Add(writerhold.PlacementBound(bound))
 	var errs []error
@@ -317,10 +321,10 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 				errs = append(errs, fmt.Errorf("run %d restored %d messages to seq %d, and the archive holds %d to seq %d", run, state.Msgs, state.LastSeq, archive.Messages, archive.LastSeq))
 				break
 			}
-			return nil
+			return state, nil
 		}
 		if writerhold.PlacementRefused(err) {
-			return fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, err)
+			return streamState{}, fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, err)
 		}
 		errs = append(errs, fmt.Errorf("run %d: %w", run, err))
 		fmt.Fprintf(stdout, "restore of %s: run %d of %d stopped part way: %v\n", bucket, run, restoreRuns, err)
@@ -335,7 +339,7 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 	if err := deleteLeftover(ctx, nc, stream); err != nil {
 		errs = append(errs, err)
 	}
-	return fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, errors.Join(errs...))
+	return streamState{}, fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, errors.Join(errs...))
 }
 
 // startRestore runs one restore of stream, retrying its start, before the server accepts it,
