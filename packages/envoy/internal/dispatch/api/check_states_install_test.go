@@ -93,7 +93,7 @@ func TestAFormerHeadTheInstallSeededIsPublishedOnceItsPullRequestListsIt(t *test
 // #70 as above, and GitHub fails the read of #70's commits. H1 stays an unverified candidate with
 // nothing published there, and the issue keeps a mark due after the backoff; once GitHub answers
 // and that mark falls due, the settle verifies H1 and publishes k1 there. A pull request GitHub
-// answers 404 for confirms nothing, then or later: its candidates go.
+// answers 404 for is no commit list either: a candidate seeded then stays, unverified.
 func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
@@ -134,7 +134,7 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 	delete(rig.github.pullCommits, 70)
 	rig.github.mu.Unlock()
 	settleOwed(t, rig)
-	if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
-		t.Fatalf("#70 holds the former heads %v after GitHub answered 404 for its commits, want H1 alone: a 404 confirms nothing", got)
+	if got := candidatesOf(t, rig); len(got) != 2 || !got[eachHeadH1] || got[eachHeadH3] {
+		t.Fatalf("#70 holds the former heads %v after GitHub answered 404 for its commits, want H1 verified and H3 still unverified: a 404 is no commit list", got)
 	}
 }

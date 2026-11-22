@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -364,11 +361,12 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 // once (delivery.PullRequestCommits, a page of 100 commits per read, and GitHub lists 250 at
 // most), keeps each candidate among them as a former head and deletes the rest, in one statement.
 // So the read happens once per such pull request, in the first settle of its issue after the
-// install, which the install's mark owes. A repository the App cannot read, a deployment with no
-// App key, and a pull request GitHub answers 404 for can confirm nothing now or later: their
-// candidates are deleted. Any other failure leaves them as they are, and unverified answers true,
-// so the settle keeps a mark that reads them again after the backoff; until then a candidate is no
-// former head. Only a failed read of Dispatch's own database is an error.
+// install, which the install's mark owes. Only a commit list GitHub answered deletes a candidate.
+// Every other outcome, a deployment with no App key, a repository the App cannot read, a 404, a
+// 5xx or a bound that ended, says nothing about the commits: the candidates stay as they are,
+// unverified answers true, and the settle keeps a mark that reads them again after the backoff, so
+// the read comes again once access or configuration returns. Until then a candidate is no former
+// head. Only a failed read of Dispatch's own database is an error.
 func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (unverified bool, err error) {
 	pool := c.server.deps.Store.Pool
 	var repos []string
@@ -405,13 +403,7 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		readCtx, cancel := ciReadBound(ctx)
 		commits, pages, readErr := delivery.PullRequestCommits(readCtx, c.server.deps.GitHub, held.repo, held.number)
 		cancel()
-		var status *githubapp.StatusError
-		switch {
-		case readErr == nil:
-		case delivery.RepositoryUnreadable(readErr) || errors.Is(readErr, githubapp.ErrNoAppKey) ||
-			(errors.As(readErr, &status) && status.Status == http.StatusNotFound):
-			commits = []string{}
-		default:
+		if readErr != nil {
 			slog.Warn("dispatch: read the commits of a pull request whose former heads the install seeded",
 				"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "error", readErr)
 			unverified = true
@@ -438,7 +430,7 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			return false, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
 		}
 		slog.Info("dispatch: check states verified the former heads the install seeded",
-			"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "kept", kept, "dropped", dropped, "error", readErr)
+			"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "kept", kept, "dropped", dropped)
 	}
 	return unverified, nil
 }
