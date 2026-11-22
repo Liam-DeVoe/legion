@@ -309,7 +309,9 @@ async function expectProposedMarks(page: Page, { answer, seeded }: ProposedPage)
     "statement 9, live with no check, does not carry No check"
   ).toContainText(GAP_WORDS.no_check);
   const statement7 = await drawnRow(page, ids.statement7, "statement 7");
-  expect(await ownMarks(statement7), "statement 7 carries Proposed").toEqual([PROPOSED]);
+  await expect
+    .poll(() => ownMarks(statement7), { message: "statement 7 carries Proposed" })
+    .toEqual([PROPOSED]);
   await expect(rowGaps(statement7), "statement 7, which is proposed, draws a gap").toHaveCount(0);
   const proposed = [
     { readId: ids.check2, what: "check 2" },
@@ -319,9 +321,9 @@ async function expectProposedMarks(page: Page, { answer, seeded }: ProposedPage)
   const rows = [statement7];
   for (const { readId, what } of proposed) {
     const row = await drawnRow(page, readId, what);
-    expect(await ownMarks(row), `${what} does not carry Proposed in the outline`).toEqual([
-      PROPOSED,
-    ]);
+    await expect
+      .poll(() => ownMarks(row), { message: `${what} does not carry Proposed in the outline` })
+      .toEqual([PROPOSED]);
     rows.push(row);
   }
   const shaping = await drawnRow(
@@ -335,23 +337,26 @@ async function expectProposedMarks(page: Page, { answer, seeded }: ProposedPage)
     }),
   });
   await expect(chip, "the decision that shapes statement 7 draws no chip naming it").toHaveCount(1);
-  expect(
-    await compactMarks(chip),
-    "the chip naming statement 7 does not carry Proposed in its compact form"
-  ).toEqual([PROPOSED]);
+  await expect
+    .poll(() => compactMarks(chip), {
+      message: "the chip naming statement 7 does not carry Proposed in its compact form",
+    })
+    .toEqual([PROPOSED]);
 
   await page.emulateMedia({ forcedColors: "active" });
   try {
     for (const row of rows) {
-      expect(
-        await ownMarks(row),
-        "a proposed row's mark loses its word or its shape with forced colours"
-      ).toEqual([PROPOSED]);
+      await expect
+        .poll(() => ownMarks(row), {
+          message: "a proposed row's mark loses its word or its shape with forced colours",
+        })
+        .toEqual([PROPOSED]);
     }
-    expect(
-      await compactMarks(chip),
-      "the chip's compact mark loses its word or its shape with forced colours"
-    ).toEqual([PROPOSED]);
+    await expect
+      .poll(() => compactMarks(chip), {
+        message: "the chip's compact mark loses its word or its shape with forced colours",
+      })
+      .toEqual([PROPOSED]);
   } finally {
     await page.emulateMedia({ forcedColors: "none" });
   }
@@ -456,7 +461,9 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
   const statement8 = issuePage(page).locator(
     `[data-node-row][data-node-read-id="${ids.statement8}"]`
   );
-  expect(await ownMarks(statement8), "statement 8 does not carry Overtaken").toEqual([OVERTAKEN]);
+  await expect
+    .poll(() => ownMarks(statement8), { message: "statement 8 does not carry Overtaken" })
+    .toEqual([OVERTAKEN]);
   await expect(rowGaps(statement8), "statement 8, which is overtaken, draws a gap").toHaveCount(0);
   await expect(statement8, "statement 8 is drawn open under its line").toHaveAttribute(
     "aria-expanded",
@@ -583,9 +590,9 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
   await gotoIssue(page, presetPath(key, "verification"));
   const check2 = verificationCheck(page, treeId(ids.check2));
   await expect(check2, "the Verification view draws no row for check 2").toHaveCount(1);
-  expect(await ownMarks(check2), "check 2 does not carry Proposed under Verification").toEqual([
-    PROPOSED,
-  ]);
+  await expect
+    .poll(() => ownMarks(check2), { message: "check 2 does not carry Proposed under Verification" })
+    .toEqual([PROPOSED]);
   await expect
     .poll(() => flagCount(page, "failing"), {
       message: "the failing flag counts check 4, which is overtaken, or check 2, which is proposed",
@@ -617,18 +624,20 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     queried,
     "the Verification view with check 2's result words draws no check 2"
   ).toHaveCount(1);
-  expect(
-    await ownMarks(queried),
-    "check 2 does not carry Proposed under Verification with its result's words"
-  ).toEqual([PROPOSED]);
+  await expect
+    .poll(() => ownMarks(queried), {
+      message: "check 2 does not carry Proposed under Verification with its result's words",
+    })
+    .toEqual([PROPOSED]);
 
   await gotoIssue(page, presetPath(key, "decisions"));
   const decision1 = nodeRow(page, treeId(ids.decision1)).first();
   await expect(decision1, "the Decisions view draws no row for the first decision").toHaveCount(1);
-  expect(
-    await ownMarks(decision1),
-    "the first decision does not carry Proposed under Decisions"
-  ).toEqual([PROPOSED]);
+  await expect
+    .poll(() => ownMarks(decision1), {
+      message: "the first decision does not carry Proposed under Decisions",
+    })
+    .toEqual([PROPOSED]);
   expect(
     (await decisionsRows(page)).map((row) => row.id),
     "the Decisions view draws the overtaken decision"
@@ -646,9 +655,9 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     .locator(`[data-node-id="${treeId(ids.planTask1)}"]`)
     .first();
   await expect(planTask1, "the Plan view draws no step for plan task 1").toBeVisible();
-  expect(await ownMarks(planTask1), "plan task 1 does not carry Proposed under Plan").toEqual([
-    PROPOSED,
-  ]);
+  await expect
+    .poll(() => ownMarks(planTask1), { message: "plan task 1 does not carry Proposed under Plan" })
+    .toEqual([PROPOSED]);
   expect(
     (await planChartRows(page)).map((row) => row.id),
     "plan task 2 is a step of the Plan view"
@@ -684,18 +693,19 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     statement7Line,
     "under Plan's steps, plan task 7 draws no line naming statement 7"
   ).toBeVisible();
-  expect(
-    await compactMarks(statement7Line),
-    "the line naming statement 7 does not carry Proposed in its compact form"
-  ).toEqual([PROPOSED]);
+  await expect
+    .poll(() => compactMarks(statement7Line), {
+      message: "the line naming statement 7 does not carry Proposed in its compact form",
+    })
+    .toEqual([PROPOSED]);
   await expectNoRawValue(page, "under Plan");
 
   await gotoIssue(page, presetPath(key, "spec"));
   const statement7 = nodeRow(page, treeId(ids.statement7)).first();
   await expect(statement7, "the Spec view draws no row for statement 7").toHaveCount(1);
-  expect(await ownMarks(statement7), "statement 7 does not carry Proposed under Spec").toEqual([
-    PROPOSED,
-  ]);
+  await expect
+    .poll(() => ownMarks(statement7), { message: "statement 7 does not carry Proposed under Spec" })
+    .toEqual([PROPOSED]);
   await expect
     .poll(() => filterCount(page, "spec"), {
       message: "the Spec control does not count every statement",
@@ -881,7 +891,9 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
       SETTLE_ANSWERS.not_proposed
     );
     await expect(answer, "the refusal's sentence is no status").toHaveAttribute("role", "status");
-    expect(await ownMarks(row), "the refused settle takes statement 7's mark").toEqual([PROPOSED]);
+    await expect
+      .poll(() => ownMarks(row), { message: "the refused settle takes statement 7's mark" })
+      .toEqual([PROPOSED]);
     await expectLoadSettled(traffic);
     expect(
       treeReads(traffic.requests, key, null) +
@@ -902,10 +914,11 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
           answer,
           `a ${refusal.status} ${refusal.body.code} does not say ${refusal.words}`
         ).toHaveText(refusal.words);
-        expect(
-          await ownMarks(row),
-          `the ${refusal.status} ${refusal.body.code} takes statement 7's mark`
-        ).toEqual([PROPOSED]);
+        await expect
+          .poll(() => ownMarks(row), {
+            message: `the ${refusal.status} ${refusal.body.code} takes statement 7's mark`,
+          })
+          .toEqual([PROPOSED]);
       } finally {
         await page.unroute(SETTLE_ROUTE, refuse);
       }
@@ -1217,9 +1230,9 @@ test("a node reserved for its author is on its author's page and on nobody else'
     const her = await readAsReader(page, traffic, key, "alice");
     for (const name of RESERVED_NODES) {
       const row = await drawnRow(page, reserved.get(name) ?? "", `her reserved ${name}`);
-      expect(await ownMarks(row), `her reserved ${name} does not carry Only you`).toEqual([
-        ONLY_YOU,
-      ]);
+      await expect
+        .poll(() => ownMarks(row), { message: `her reserved ${name} does not carry Only you` })
+        .toEqual([ONLY_YOU]);
     }
     const projectLens = readIdHolding(her.answer, seeded.nodes.projectLens.word, "project lens");
     const lensId = await drawnRowId(page, projectLens, "the project lens");
@@ -1229,10 +1242,12 @@ test("a node reserved for its author is on its author's page and on nobody else'
       { label: triggered?.label, chips: triggered?.chips.length },
       "her project lens does not read Triggered by with one chip"
     ).toEqual({ chips: 1, label: LENS_WORDS.triggered_by });
-    expect(
-      await compactMarks(lensRow.locator('[data-lens-line="triggered_by"] [data-node-chip]')),
-      "the chip of her reserved lens does not carry Only you in its compact form"
-    ).toEqual([ONLY_YOU]);
+    await expect
+      .poll(
+        () => compactMarks(lensRow.locator('[data-lens-line="triggered_by"] [data-node-chip]')),
+        { message: "the chip of her reserved lens does not carry Only you in its compact form" }
+      )
+      .toEqual([ONLY_YOU]);
 
     // Each of her counts is bob's and the reserved nodes in that branch.
     const bobsFolds = new Map(his.folded.map((row) => [row.readId, row.count]));
