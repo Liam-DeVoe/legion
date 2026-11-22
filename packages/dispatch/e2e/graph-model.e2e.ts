@@ -1014,20 +1014,33 @@ test("a reading is a child node of its decision and leaves the approval alone", 
     const specRow = (await listIssueArtifacts(key)).find((artifact) => artifact.id === spec);
     expect(specRow?.approval?.state, "the current spec after a reading").toBe("approved");
     // The approval the person gave stands apart, at the version it covered, in the document's
-    // reviews: the current spec reads as approved without it being given again.
+    // reviews, as their own act, with no reason. The version the reading wrote is approved by a
+    // carry from that approval (R4), never by an act of the person's: the review the server
+    // writes for it names the version it carries in its reason, the one field of a review that
+    // tells a carry from the person's own approval, which shares its kind and its actor.
     const reviewsUrl = new URL(`/api/v1/artifacts/${spec}/reviews`, baseUrl);
     const reviewsRead = await fetch(reviewsUrl, { headers: await userHeaders(READER) });
     expect(reviewsRead.status, `GET ${reviewsUrl.pathname} answered ${reviewsRead.status}`).toBe(
       200
     );
     const reviews = (await reviewsRead.json()) as ArtifactReviewRead[];
-    console.log(
-      `the spec's reviews after the reading: ${reviews.map((review) => `${review.state} v${review.version} ${review.kind} by ${review.actor.kind}:${review.actor.id}`).join("; ")}`
-    );
     expect(
-      reviews.filter((review) => review.state === "approved").map((review) => review.version),
-      "the versions the spec's approvals cover, the person's own at the revision it covered"
-    ).toContain(approved);
+      reviews
+        .filter((review) => review.version === approved)
+        .map((review) => `${review.state} by ${review.actor.id}, reason ${review.reason}`),
+      `the person's own approval of version ${approved}`
+    ).toEqual([`approved by ${READER}, reason null`]);
+    const carry = `Carried forward from the approval of version ${approved}:`;
+    expect(
+      reviews
+        .filter((review) => review.version > approved)
+        .map((review) =>
+          review.state === "approved" && review.reason?.startsWith(carry) === true
+            ? "a carry"
+            : `v${review.version} ${review.state}, reason ${review.reason}`
+        ),
+      `the reviews after the reading: one carry from version ${approved}, and none the person's own`
+    ).toEqual(["a carry"]);
     expect(
       (await requestApproval(spec, {}, asAgent)).ask,
       "the approval gate after a reading asks the person again"
@@ -1346,7 +1359,11 @@ test("the issue draws whole from one tree of nodes", async ({ browser }, testInf
         "the old placement of d-moved, in the note, read back as a retraction"
       ).toContain(`${noteEnd}:false`);
 
-      // The three role documents are query nodes, and no row of the seeded issue holds a role.
+      // The three role documents are queries of the tree, and no row of the seeded issue holds a
+      // role. The artifacts read keeps main's contract, which deployed clients parse: the spec is
+      // the primary document and names no role, since a client reads a role as verification, plan
+      // or decisions; the Verification document and the plan name their query as their role. The
+      // tree read answers every query by its name, the spec's included.
       const roleColumn = (
         await sql(`select count(*) || '|' || count(role) from artifacts where issue_key = '${key}'`)
       ).split("|");
@@ -1356,16 +1373,33 @@ test("the issue draws whole from one tree of nodes", async ({ browser }, testInf
       expect(Number(roleColumn[0]), `artifacts holds no row of ${key}`).toBeGreaterThan(0);
       expect(Number(roleColumn[1]), `rows of ${key} holding a role in artifacts.role`).toBe(0);
       const listed = await listIssueArtifacts(key);
-      const answered = listed.map(
-        (artifact) => `${artifact.slug} ${artifact.kind} ${artifact.role}`
+      const answered = listed
+        .map(
+          (artifact) =>
+            `${artifact.slug} primary=${artifact.primary} role=${artifact.role ?? "none"}`
+        )
+        .join("; ");
+      const specRow = listed.find((artifact) => artifact.id === spec);
+      expect(specRow?.primary, `the spec the artifacts read answers is primary: ${answered}`).toBe(
+        true
       );
-      for (const query of ["spec", "verification", "plan"]) {
-        const node = listed.find((artifact) => artifact.role === query);
+      expect(specRow?.role, `the spec the artifacts read answers names a role: ${answered}`).toBe(
+        undefined
+      );
+      for (const [slug, query] of [
+        ["verification-md", "verification"],
+        ["plan-md", "plan"],
+      ] as const) {
         expect(
-          node,
-          `the artifacts read of ${key} answers no ${query} query node: ${answered.join("; ")}`
-        ).toBeDefined();
-        expect(node?.kind, `the kind of the ${query} the artifacts read answers`).toBe("query");
+          listed.find((artifact) => artifact.slug === slug)?.role,
+          `the role the artifacts read answers for ${slug}: ${answered}`
+        ).toBe(query);
+      }
+      for (const query of ["spec", "verification", "plan"] as const) {
+        expect(
+          (await treeRead(key, { view: query })).view,
+          `the tree read of the ${query} query`
+        ).toBe(query);
       }
       const verification = await treeRead(key, { view: "verification" });
       const checks = nodesOf(verification).filter(
@@ -1498,7 +1532,9 @@ test("the issue draws whole from one tree of nodes", async ({ browser }, testInf
       const childRow = rowIdOf(childCheck, key, asks);
       const rows = await rowsDrawn(
         page,
-        [...new Set([...rowIds.values(), childRow])],
+        // The issue itself is the outline's root, which every top-level row stands under, and no
+        // row of its own.
+        [...new Set([...rowIds.values(), childRow])].filter((id) => id !== key),
         "the outline of the seeded issue"
       );
       for (const node of ownNodes) {
