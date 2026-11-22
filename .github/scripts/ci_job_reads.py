@@ -640,7 +640,7 @@ RULES = {
     # package's and the live tests' among them - on daemon-go's filter (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/role_for_readers_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/role_for_readers_test.go:98 walks every .go file under packages/daemon (../.., :94) "
-                              "and :101 parses each one")),
+                              "and :111 parses each one")),
     # The pages and the proof scripts that state the production check's rule outside a prompt.
     # main's #4092 read the first two in internal/prompts's production-check test. That half moved
     # here, so an edit of one of them alone starts the text checks and not the daemon's lane

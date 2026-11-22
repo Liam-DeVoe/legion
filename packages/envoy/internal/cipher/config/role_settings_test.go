@@ -126,17 +126,17 @@ var settingRoles = map[string]settingRole{
 	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE": givesNone("a file path"),
 
 	// loadNATSCallout's.
-	"BROKER_NATS_SEED_FILE":        givesNone("a file path"),
-	"BROKER_NATS_ISSUER_SEED_FILE": givesNone("a file path"),
-	"BROKER_NATS_XKEY_SEED_FILE":   givesNone("a file path"),
 	"BROKER_NATS_SERVICES": givesARole(
 		"a BROKER_NATS_SERVICES entry names it",
 		"a BROKER_NATS_SERVICES entry that names its issuers names it",
 	),
-	"BROKER_NATS_K8S_AUDIENCE":    givesNone("an audience"),
-	"BROKER_NATS_GOOGLE_AUDIENCE": givesNone("an audience"),
-	"BROKER_NATS_URLS":            givesNone("the NATS hub's URLs"),
-	"BROKER_NATS_ACCOUNT":         givesNone("the hub account admitted clients are placed in"),
+	"BROKER_NATS_ACCOUNT":          givesNone("the hub account admitted clients are placed in"),
+	"BROKER_NATS_SEED_FILE":        givesNone("a file path"),
+	"BROKER_NATS_ISSUER_SEED_FILE": givesNone("a file path"),
+	"BROKER_NATS_XKEY_SEED_FILE":   givesNone("a file path"),
+	"BROKER_NATS_K8S_AUDIENCE":     givesNone("an audience"),
+	"BROKER_NATS_GOOGLE_AUDIENCE":  givesNone("an audience"),
+	"BROKER_NATS_URLS":             givesNone("the NATS hub's URLs"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),
