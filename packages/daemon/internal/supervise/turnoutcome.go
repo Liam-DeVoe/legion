@@ -500,14 +500,21 @@ const takesTurnMovedLine = "supervise: a turn's report names no task of the take
 // as before (finishAtTurnsEnd): that is what finishes the task a migrated old worker took
 // (decision 8 of dispatch://INFRA-2811). A report of an earlier generation than the claim's is
 // of a turn no take of this process held, and says nothing of it either; and a take whose text no
-// record kept (Delivery) has no text to await its turn with.
+// record kept (Delivery) has no text to await its turn with. Nor does a report move a take whose
+// report naming its number came and whose finish the store refused (takePhase, waitFinish): that
+// report decides, the take stays where it put it, and the end-frame bound makes its finish
+// again. Put back, the take would await a turn that has run, and the start of that turn, late,
+// would be given it as a second run of the task.
 //
 // The undoing stands in memory whether or not its write lands: a write that fails leaves the
 // delivery unsaved, and settle writes it again.
 func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
-	if p == nil || !p.taken() || p.TakenText == "" || r.Generation != m.claim.Generation ||
-		m.endFrameFinishes() {
+	if p == nil || !p.taken() || p.TakenText == "" || r.Generation != m.claim.Generation {
+		return nil
+	}
+	// waitNone over a take is a plugin below TaskTakeContract (endFrameFinishes).
+	if phase := m.takePhase(); phase == waitNone || phase == waitFinish {
 		return nil
 	}
 	count := m.counted()

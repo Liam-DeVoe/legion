@@ -170,3 +170,54 @@ func TestTakeBackOverAnOwedFinishFinishesOnEveryPath(t *testing.T) {
 		})
 	}
 }
+
+// The live order that reaches a take whose finish is owed while a report of the run the daemon
+// gave it says that run was not its own (plan v99): the take is given a run of the host's own, G,
+// whose start and end the daemon sees; the take's own turn, T, runs, and its report naming the
+// number comes ahead of T's start frame, and the store refuses its finish (Machine.finishOwed);
+// then G's report, naming no task, arrives late, of the turn the daemon gave the take, with no
+// start seen since. That report came after the one that decides: the take is left where T's
+// report put it, its finish owed (takePhase, waitFinish), and is put back to await no turn. No
+// bound takes it back while the store refuses, T's late start frame is no turn of the task, and
+// the end-frame bound makes the finish once the store answers, once, by T's report.
+//
+// The negative control is the commit under this change, where G's late report put back the take
+// whose finish was owed (notTheTakesTurn, putBack), and T's start frame was then given the take
+// as its turn, a second run of the task.
+func TestTakeWhoseFinishIsOwedIsNotPutBackByTheLateReportOfItsGivenRun(t *testing.T) {
+	h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
+	h.manualTakes()
+	h.reach(StateReady)
+	number := h.takeOf("the task whose own turn reported ahead of its start")
+	h.hostsRun()
+	h.wantTakesTurnStanding(number, "after G's end")
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: 2, Task: number}); err == nil {
+		t.Fatal("T's report whose finish the store refused answered no failure")
+	}
+	h.m.Wait()
+
+	h.reportOf(1, 0)
+
+	if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
+		t.Errorf("G's late report logged %q over the take whose finish is owed, want it put back to await no turn", lines)
+	}
+	if p := h.pending(); p.Number != number || !p.taken() {
+		t.Fatalf("after G's late report the claim holds %+v, want task %d's take kept with its finish owed", p, number)
+	}
+	h.advance(2 * turnStartBound)
+	h.wantCharges()
+	if lines := h.logs.lines(reportMissedLine); len(lines) != 0 {
+		t.Fatalf("logged %q, want no bound to take the task back", lines)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	starts := h.records.of(turnStartedLine)
+	if task, named := starts[len(starts)-1].attr("task"); named {
+		t.Errorf("T's late start frame names task %s, want it no turn of the task, whose report came", task)
+	}
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.store.fail("RetireDelivery", nil)
+	h.advance(testRPC)
+	h.wantRunOnce(number)
+	h.wantCharges()
+}
