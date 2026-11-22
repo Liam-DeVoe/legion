@@ -332,10 +332,11 @@ func (r *claimCompactionLive) overrides() overrides {
 }
 
 // seed records the issues as the daemon would hold them at the moment each one's worker began: a
-// root handed to Legion, in the phase its worker works, holding its tree's admission slot with
-// its lifecycle open, and that worker's claim mid-launch, which this boot relaunches. The one
-// claim that runs no pane is the Claude Code role's, seeded stopped so nothing ever launches it:
-// the compaction refuses such a claim on its backend before it reads any state at all.
+// root handed to Legion, in the phase its worker works, with its lifecycle open, an admission
+// slot the seed writes (liveProof.admit), and that worker's claim mid-launch, which this boot
+// relaunches. The one claim that runs no pane is the Claude Code role's, seeded stopped so
+// nothing ever launches it: the compaction refuses such a claim on its backend before it reads
+// any state at all.
 //
 // Each phase worker's claim also holds the task its phase's start left pending, because a start
 // writes the relaunch and the task together (workflow's StartOrOwe) and a slotted worker holding
@@ -351,7 +352,9 @@ func (r *claimCompactionLive) overrides() overrides {
 // repair: it has an architect's claim and no phase worker's, and the repair would read the
 // planner a planning issue names, find no claim at all and start one. Accepting is the phase
 // whose role is the architect (phase.RoleFor), where no phase worker runs, so the repair
-// passes over it as it passes over every architect.
+// passes over it as it passes over every architect. Its slot is the one a daemon would not hold:
+// accepting keeps none (record.KeepsSlot), so admission's release takes it back (admit's
+// releaseSlots).
 func (r *claimCompactionLive) seed() {
 	t := r.t
 	t.Helper()
