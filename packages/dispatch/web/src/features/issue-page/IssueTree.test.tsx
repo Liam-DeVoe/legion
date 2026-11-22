@@ -47,11 +47,7 @@ import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor"
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import {
-  type PublishedReferences,
-  ReferenceNamesProvider,
-  usePublishReferenceNames,
-} from "../refs/reference-names";
+import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -66,8 +62,9 @@ import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
-import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
+import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { useNodeLine } from "./NodeRow";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
@@ -93,7 +90,7 @@ import {
   type Preset,
   STATE_LINES,
 } from "./page-words";
-import { lineWordsOf, publishedNames } from "./projection-fixture";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
@@ -229,28 +226,38 @@ function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
   return null;
 }
 
-/** What the page's panel would draw the facts of: the node the tree last set as focused. */
-function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode {
+/** What the page's panel would draw the facts of: the node the tree last set as focused, and the
+ *  name the panel names it by (`PanelName`), which is `undefined` while nothing has the focus. */
+function FocusedNodeProbe({
+  seen,
+}: {
+  seen: { name?: string | undefined; node?: FocusedNode };
+}): ReactNode {
   seen.node = useFocusedNode();
-  return null;
+  if (seen.node === undefined) {
+    seen.name = undefined;
+    return null;
+  }
+  return <PanelName node={seen.node} seen={seen} />;
 }
 
-/** What the panel names the focused node by: its one line, as every place that names a node by
- *  one draws it (`NodeRow.tsx`'s `useNodeLine`) - its words projected by the shared reader
- *  (`lineWordsOf`) and cut by R1's first-line rule - and its kind's word where its words hold
- *  none; `""` where nothing has the focus. */
-function panelWords(focused: FocusedNode | undefined): string {
-  if (focused === undefined) return "";
-  const words = lineWordsOf(focused);
-  return words === "" ? NODE_TYPE_NAMES[focused.type] : drawnLine(firstLineOf(words));
-}
-
-/** Publishes `published` to the names store, as the page publishes its batched read beside the
- *  outline it draws (`useIssueTree.ts`): in the layout phase of the commit that draws the tree,
- *  after its rows have rendered; nothing where it is undefined. */
-function Publisher({ published }: { published: PublishedReferences | undefined }): ReactNode {
-  usePublishReferenceNames(published);
-  return null;
+/** The name the panel names the focused node by (`FocusedNode.text`), as every place that names
+ *  a node by its one line names it: the page's own `useNodeLine`'s `name` - its first line, each
+ *  reference in it read as its target's current name (R8), and its kind's word where its words
+ *  hold none - with the reads that name its references mounted. The panel draws nothing of the
+ *  focused node yet (`details-more.tsx`), so no row of the reading list is the panel's, and the
+ *  name is read on the crumb's: the surface names the row, and the projection reads nothing of
+ *  it. */
+function PanelName({
+  node,
+  seen,
+}: {
+  node: FocusedNode;
+  seen: { name?: string | undefined };
+}): ReactNode {
+  const { name, reads } = useNodeLine(node, { surface: "outline-crumb" });
+  seen.name = name;
+  return reads;
 }
 
 /** How the page's row editor reports what a document's room admitted the page to
@@ -339,10 +346,11 @@ function EditedDocument({
  *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
  *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
  *  `admit` answers for a document's room, as the page's row editor reports what that room
- *  admitted the page to (`document-admission.tsx`). The tree is drawn under the names store, as
- *  the shell draws every page (`app.tsx`), with `published` published to it as the page
- *  publishes its batched names read (`Publisher`), until `publish` publishes another value, as a
- *  later answer of that read does. */
+ *  admitted the page to (`document-admission.tsx`); `focusedNode` is the node the tree set as
+ *  focused, and `panelName` the name the panel names it by (`PanelName`). The tree is drawn under
+ *  the names store, as the shell draws every page (`app.tsx`), with `published` published to it
+ *  as the page publishes its batched names read (`Publisher`), until `publish` publishes another
+ *  value, as a later answer of that read does. */
 function renderTree(
   root: TreeNode,
   {
@@ -377,7 +385,7 @@ function renderTree(
   const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
-  const focused: { node?: FocusedNode } = {};
+  const focused: { name?: string | undefined; node?: FocusedNode } = {};
   const admission: { report?: ReportAdmission } = {};
   const draw = () => (
     <MemoryRouter>
@@ -391,7 +399,7 @@ function renderTree(
                   <IssueScope />
                   <FocusedNodeProbe seen={focused} />
                   <AdmissionProbe held={admission} />
-                  <Publisher published={names.published} />
+                  {names.published === undefined ? null : <Publisher published={names.published} />}
                   <IssueTree
                     artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
                     context={new Set()}
@@ -428,6 +436,8 @@ function renderTree(
       act(async () => admission.report?.(artifactId, readOnly)),
     edited,
     focusedNode: () => focused.node,
+    /** The name the panel names the focused node by (`PanelName`). */
+    panelName: () => focused.name,
     holdReads: () => {
       reads.held = true;
       view.rerender(draw());
@@ -515,7 +525,7 @@ function renderPageTree(root: TreeNode, reader = "alice", published?: PublishedR
             <OutlineWriterProvider issueKey={KEY}>
               <OutlineRequestProvider>
                 <IssueScope />
-                <Publisher published={published} />
+                {published === undefined ? null : <Publisher published={published} />}
                 <PageBody drawn={drawn} held={held} />
               </OutlineRequestProvider>
             </OutlineWriterProvider>
@@ -6783,7 +6793,8 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
 
 // The focused node is named in the panel by its own first line, and a node with no words - a
 // plan task whose block holds none - by the page's word for its kind, never by its id, which is
-// no name a reader reads (the rule a parent line already follows).
+// no name a reader reads (the rule a parent line already follows). Both are the page's own name
+// for the node (`useNodeLine`'s `name`), read off the node the tree set as focused.
 test("a focused row whose node has no words names it by its kind, not its id", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -6797,12 +6808,20 @@ test("a focused row whose node has no words names it by its kind, not its id", a
   });
   const view = renderTree(root);
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  expect(panelWords(view.focusedNode())).toBe("The first words.");
+  await waitFor(() =>
+    expect(view.panelName(), "the panel does not name the comment by its first line").toBe(
+      "The first words."
+    )
+  );
 
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("plan#b-t1"));
   expect(view.focusedNode()?.id).toBe("plan#b-t1");
-  expect(panelWords(view.focusedNode())).toBe("plan task");
+  await waitFor(() =>
+    expect(view.panelName(), "the panel does not name the plan task by its kind's word").toBe(
+      "plan task"
+    )
+  );
 });
 
 // The page opens with the focus on the first open question that waits on the reader, in the
@@ -8736,13 +8755,12 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
   expect(crumbs[1]?.textContent).toBe(NODE_TYPE_NAMES.plan_task);
 });
 
-// R8 and INFRA-1196 decision 350: a reference reads as its target's name, the short form gone. A
-// crumb draws one line for a node as every place that names a node by one does (`useNodeLine`):
-// a reference in it reads as the words its author wrote while the page's batched read has not
-// answered for it, and as its target's current name once it has. The panel is handed the node's
-// own words to name it by under the same rule (`FocusedNode.text`), never a line cut from them,
-// which could read no name.
-test("a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves", async () => {
+// R8 and INFRA-1196 decision 350: a reference reads as its target's name, the short form gone. The
+// panel's name of the focused node and a crumb each draw one line for a node as every place that
+// names a node by one does (`useNodeLine`): a reference in it reads as the words its author wrote
+// while the page's batched read has not answered for it, and as its target's current name once it
+// has, in the panel and in the crumb alike.
+test("a reference in a node's line reads as its target's name in the panel and in its crumb, and as its author's words until it resolves", async () => {
   setViewport(1000);
   const user = userEvent.setup();
   const address = "dispatch://CORE-2/spec#b-r1";
@@ -8767,8 +8785,8 @@ test("a crumb reads a reference in its node's line as its target's name, and as 
   const crumb = () => view.container.querySelector<HTMLElement>('[data-crumb="comment-1"]');
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(view.focusedNode()?.text, "the panel is handed a line cut from the node's words").toBe(
-      words
+    await waitFor(() =>
+      expect(view.panelName(), "the panel does not name the node by its author's words").toBe(words)
     );
     await user.keyboard(".");
     await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
@@ -8783,6 +8801,15 @@ test("a crumb reads a reference in its node's line as its target's name, and as 
     view.publish(publishedNames(new Map([[address, name]])));
     await waitFor(() =>
       expect(crumb()?.textContent, "the crumb did not name the target").toBe(`See ${name} first.`)
+    );
+    // Back out of both zooms, `,` puts the focus on the row each zoomed into, the comment last.
+    await user.keyboard(",");
+    await waitFor(() => expect(crumb()).toBeNull());
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await waitFor(() =>
+      expect(view.panelName(), "the panel did not name the target").toBe(`See ${name} first.`)
     );
   } finally {
     getReferences.mockRestore();

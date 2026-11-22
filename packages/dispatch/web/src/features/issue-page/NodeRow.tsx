@@ -459,15 +459,18 @@ export function NodeRow({
  * resolves, and as the words its author wrote until then (R8, INFRA-1196 decision 350); and a
  * numbered step keeps its number (decisions 66 and 88). Each role is read by the issue the node's
  * record is on. `line` is `undefined` until the projection has answered, which is one pre-paint
- * commit on a page whose engine is loaded, and `""` for a node whose words hold none. `reads`
- * draws nothing and the caller mounts it where it draws the line.
+ * commit on a page whose engine is loaded, and `""` for a node whose words hold none. `name` is
+ * what a place that names the node by its one line draws - a parent's line, a crumb, and the
+ * panel's name of the focused node (`FocusedNode.text`): `line`, and the page's word for the
+ * node's kind where its words hold none (R22), never its id, which is no name a reader reads.
+ * `reads` draws nothing and the caller mounts it where it draws the line.
  */
 export function useNodeLine(
   node: Pick<TreeNode, "source" | "text" | "tree" | "type">,
   {
     surface,
   }: { readonly surface: "node-row-first-line" | "node-row-parent-line" | "outline-crumb" }
-): { line: string | undefined; reads: ReactNode } {
+): { line: string | undefined; name: string | undefined; reads: ReactNode } {
   const { source, text: stored, tree, type } = node;
   const reading = useMemo(() => lineReading({ text: stored, tree, type }), [stored, tree, type]);
   const { reads, text } = usePlainHeadline(
@@ -476,7 +479,8 @@ export function useNodeLine(
     { firstLine: "markdown" in reading, issue: source?.issue, surface }
   );
   const words = "none" in reading ? "" : text?.text;
-  return { line: words === undefined ? undefined : drawnLine(firstLineOf(words)), reads };
+  const line = words === undefined ? undefined : drawnLine(firstLineOf(words));
+  return { line, name: line === "" ? NODE_TYPE_NAMES[type] : line, reads };
 }
 
 /** A folded branch's one line (`useNodeLine`): empty until the projection has answered. */
@@ -1330,19 +1334,19 @@ function NodeReference({
   );
 }
 
-/** The parent's own first line, as every one line of a node is drawn (`useNodeLine`), and the
- *  page's word for its kind where its words hold none (R22): as the link a reader follows to
- *  that node where the model gives it an address (R18, and R26: a step's row reaches the
- *  statement it serves), and as words with no link where that address names a person, whom no
- *  page shows (R5). Out of the tab order, as every other control inside a row is, unless
- *  `tabStops` holds: `f` steps to it and Enter follows it. The Verification view draws its own
- *  rows' parent lines with it too (`VerificationFilterBody.tsx`). */
+/** The parent's own name, as every place that names a node by its one line draws it
+ *  (`useNodeLine`'s `name`), the page's word for its kind where its words hold none (R22): as the
+ *  link a reader follows to that node where the model gives it an address (R18, and R26: a step's
+ *  row reaches the statement it serves), and as words with no link where that address names a
+ *  person, whom no page shows (R5). Out of the tab order, as every other control inside a row is,
+ *  unless `tabStops` holds: `f` steps to it and Enter follows it. The Verification view draws its
+ *  own rows' parent lines with it too (`VerificationFilterBody.tsx`). */
 export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   const href = parent === undefined ? undefined : referenceHref(parent);
-  const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
+  const { name, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
   // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded.
-  const words = drawn === "" ? NODE_TYPE_NAMES[line.type] : (drawn ?? "");
+  const words = name ?? "";
   return href === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
       {reads}

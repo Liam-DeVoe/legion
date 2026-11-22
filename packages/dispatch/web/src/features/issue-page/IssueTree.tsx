@@ -29,7 +29,7 @@ import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
@@ -1276,15 +1276,15 @@ function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): Readonly
 }
 
 /** What a crumb above a zoom says of a node other than the issue, which is named by its key:
- *  its one line, as every place that names a node by one draws it (`useNodeLine`) - each
- *  reference in it read as its target's current name (R8) - and its kind's word where its words
- *  hold none. */
+ *  its name, as every place that names a node by its one line draws it (`useNodeLine`'s
+ *  `name`) - each reference in it read as its target's current name (R8) - and its kind's word
+ *  where its words hold none. */
 function CrumbName({ node }: { node: TreeNode }): ReactNode {
-  const { line, reads } = useNodeLine(node, { surface: "outline-crumb" });
+  const { name, reads } = useNodeLine(node, { surface: "outline-crumb" });
   return (
     <>
       {reads}
-      {line === "" ? NODE_TYPE_NAMES[node.type] : (line ?? "")}
+      {name ?? ""}
     </>
   );
 }

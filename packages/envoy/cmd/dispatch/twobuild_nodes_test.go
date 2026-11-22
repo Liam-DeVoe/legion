@@ -290,11 +290,17 @@ func runCurrentCommand(t *testing.T, builds *twoBuilds, wants []int, args ...str
 
 // runPrinted runs a command line as the census printed it, in a POSIX shell whose PATH finds this
 // tree's envoy-dispatch first, against the pair's database, failing the test unless it exits with
-// want. The shell reads the line as an operator's does, its quoting included.
+// want. The shell reads the line as an operator's does, its quoting included. DISPATCH_SERVER_URL
+// is the origin this tree's process serves under, as an operator's shell holds the deployment's:
+// the erase cuts a redacted excerpt around it as the server's writers do, and refuses to run
+// without one (grapherase.Erase), as erase_test.go gives its own erase the origin its server
+// serves under.
 func runPrinted(t *testing.T, builds *twoBuilds, want int, line string) string {
 	t.Helper()
 	command := exec.Command("sh", "-c", line)
-	command.Env = append(command.Environ(), "PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command.Env = append(command.Environ(),
+		"PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"DISPATCH_SERVER_URL="+builds.current().url(""))
 	if filepath.Base(builds.binary) != "envoy-dispatch" {
 		t.Fatalf("this tree's server is built as %s, so no shell finds it as envoy-dispatch", builds.binary)
 	}

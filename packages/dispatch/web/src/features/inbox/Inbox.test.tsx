@@ -2156,6 +2156,38 @@ test("the reader's own list reads no open asks", async () => {
   }
 });
 
+// The assignee picker says beside each person how many rows they hold, so while it stands open
+// the open asks of everybody else are read over the reader's own list too - which still lists
+// the reader's own rows alone - and the count beside a person is what they hold.
+test("the assignee picker over the reader's own list counts the rows of every person", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = mockPeople();
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Which approach?");
+    expect(
+      listOpenAsks,
+      "the list read the open asks before the picker opened"
+    ).not.toHaveBeenCalled();
+    await user.click(await filterTrigger(user));
+    const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
+    expect(
+      await within(listbox).findByRole("option", { name: "bob, 1 rows" }),
+      "the count beside a person"
+    ).toBeTruthy();
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
+    expect(rowIds()).toEqual(["ask-mine"]);
+  } finally {
+    unmount();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+  }
+});
+
 // The open asks are read once, whoever the filter names, and the page narrows them itself: a
 // move of the filter from one person to another asks the server nothing.
 test("moving the filter from one person to another makes no request", async () => {

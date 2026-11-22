@@ -1027,11 +1027,17 @@ function InboxBody({
   // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
   // behind their back.
   const selection = filter.assignees ?? (viewer === undefined ? [] : [viewer]);
+  /** Whether the one **Filter** panel stands open. */
+  const [filterOpen, setFilterOpen] = useState(false);
+  /** Which of its five controls has its popover open: one at a time, and none once it shuts. */
+  const filterPanel = useNestedPanels<InboxFilterPanel>(filterOpen);
   // The asks this list holds: the reader's own from the one read, and every other person's from
   // the open asks while the selection shows them (`useInboxAsks`, `one-read.ts`, which
   // `useInboxThreadRows` below follows for the threads). The list is a client-side partition of
-  // those reads, so an answered row leaves every surface that reads them at once.
-  const inboxAsks = useInboxAsks(selection, viewer);
+  // those reads, so an answered row leaves every surface that reads them at once. The assignee
+  // picker counts every person's rows beside their name, so the open asks are read while it
+  // stands open too, and its counts are what each person holds.
+  const inboxAsks = useInboxAsks(selection, viewer, filterPanel("assignee").open);
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
    *  it. A thread stays in the Inbox, read or not, until it is dismissed, by **Dismiss** or by
    *  the reader's own answer or reply in it. */
@@ -1066,10 +1072,6 @@ function InboxBody({
   const showMore = useCallback((key: string) => {
     setPages((current) => new Map(current).set(key, (current.get(key) ?? 1) + 1));
   }, []);
-  /** Whether the one **Filter** panel stands open. */
-  const [filterOpen, setFilterOpen] = useState(false);
-  /** Which of its five controls has its popover open: one at a time, and none once it shuts. */
-  const filterPanel = useNestedPanels<InboxFilterPanel>(filterOpen);
   /** Whether the display menu stands open. */
   const [viewOpen, setViewOpen] = useState(false);
   // Escape is a panel's while one stands open, never the selection's. A field's popover stands

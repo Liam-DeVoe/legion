@@ -1704,7 +1704,7 @@ test("each page's own parameters open the rows they name", async ({ page }) => {
         approval: "Approvals",
         decision: "Decisions",
         question: "Questions",
-        reply: "Replies",
+        reply: "Threads",
       }[value];
       return `${plural} (${rows.filter((row) => row.type === value).length})`;
     })

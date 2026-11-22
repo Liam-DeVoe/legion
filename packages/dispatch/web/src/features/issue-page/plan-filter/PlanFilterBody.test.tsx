@@ -23,7 +23,6 @@ import {
   type PublishedReferences,
   type ReferenceNameReading,
   ReferenceNamesProvider,
-  usePublishReferenceNames,
 } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
@@ -45,6 +44,7 @@ import {
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
+import { Publisher } from "../projection-fixture";
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
@@ -252,14 +252,6 @@ function publishedPlan(tasks: readonly TreeNode[]): PublishedReferences {
     readings,
     unnamed: new Set(),
   };
-}
-
-/** Publishes `published` to the names store, as the page publishes its batched read beside the
- *  view it draws (`useIssueTree.ts`): in the layout phase of the commit that draws the body,
- *  after its rows have rendered. */
-function Publisher({ published }: { published: PublishedReferences }): ReactNode {
-  usePublishReferenceNames(published);
-  return null;
 }
 
 /** The plan document, as the issue's read names it. */
@@ -529,7 +521,8 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
 // reference, since the server refuses a pointer named twice only by its raw value. The row draws
 // each of them, and React is never handed two chips under one key, which would drop or reorder
 // one of them as the row is drawn again. A chip's words are the name the page publishes for its
-// statement, so two chips carry the same words where two statements read the same.
+// statement, so two chips carry the same words where two statements read the same. A chip whose
+// reference is no node's address opens no page, so it draws its words with no link.
 test("a bar draws every serves chip, two with the same words or the same reference included", () => {
   setViewport(1440);
   // A chip of a statement the task is also under, carrying the reading the tree names the
@@ -547,6 +540,8 @@ test("a bar draws every serves chip, two with the same words or the same referen
       {
         ...task("t1"),
         alsoUnder: [
+          chip("Same words", "not a reference"),
+          chip("Same words", "not a reference"),
           chip("Same words", `dispatch://${KEY}/spec#b-r4`),
           chip("Same words", `dispatch://${KEY}/spec#b-r5`),
           chip("The same statement", statement),
@@ -562,6 +557,8 @@ test("a bar draws every serves chip, two with the same words or the same referen
         one.querySelector("a")?.getAttribute("href"),
       ])
     ).toEqual([
+      ["Same words", undefined],
+      ["Same words", undefined],
       ["Same words", `/issues/${KEY}/spec#b-r4`],
       ["Same words", `/issues/${KEY}/spec#b-r5`],
       ["The same statement", `/issues/${KEY}/spec#b-r3`],

@@ -31,10 +31,10 @@ export interface FocusedNode {
   readonly state?: string;
   /** The node's own words as the tree holds them (`TreeNode.text`), or an issue's key and title:
    *  the author's words, which the panel names the node by as every place that names a node by
-   *  its one line does - projected by the shared plain-text projection, each reference in them
-   *  read as its target's current name (R8), and the page's word for the node's kind where they
-   *  hold none (`NodeRow.tsx`'s `useNodeLine`). They are handed whole rather than as a line cut
-   *  from them, since only a draw can read a reference's name. */
+   *  its one line does (`NodeRow.tsx`'s `useNodeLine`, its `name`) - projected by the shared
+   *  plain-text projection, each reference in them read as its target's current name (R8), and
+   *  the page's word for the node's kind where they hold none. They are handed whole rather than
+   *  as a line cut from them, since only a draw can read a reference's name. */
   readonly text: string;
   /** The server's reading of `text` (`TreeNode.tree`), where the node has one. */
   readonly tree?: DisplayTree;
