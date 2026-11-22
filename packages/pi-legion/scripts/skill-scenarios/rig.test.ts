@@ -20,7 +20,10 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
@@ -5160,9 +5163,13 @@ describe("health", () => {
   // copy, or under it but not under a path the run showed, is read as any other (the tester's
   // finding of 2026-11-22T04:07:41Z, the class of round 25's "a reader reads the run's archive
   // and its recorded provenance alone"). Here the judge's directory is under what the run's world
-  // covers, as a scratch root the run shared with its judge is.
+  // covers, as a scratch root the run shared with its judge is. It is outside /tmp, under the
+  // caller's HOME, wherever the suite's TMPDIR is: in a namespace /tmp is the run's own <run>/tmp,
+  // so a name there is in its world, and a judge under a TMPDIR in /tmp (CI's) would test nothing.
+  const judges = temporaryDirectories("health-judge", { root: homedir() });
   test("a name above or under the copy health is given is no part of the run's world", () => {
-    const judge = freshDir("health-judge");
+    const judge = judges();
+    expect([judge, judge === "/tmp" || judge.startsWith("/tmp/")]).toEqual([judge, false]);
     const copy = (name: string, steps: Step[]) => {
       const at = path.join(judge, "archive", name);
       cpSync(worldRun(name, { steps, world: [`cover ${judge}`] }).dir, at, { recursive: true });
