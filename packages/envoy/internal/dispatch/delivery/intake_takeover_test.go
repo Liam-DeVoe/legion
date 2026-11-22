@@ -92,7 +92,7 @@ func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
 			})
 		}
 		close(start)
-		attempting.Wait()
+		testwait.Returns(t, "both processes' attempts to take the durable over to return", attempting.Wait)
 
 		requireOneBinder(t, publisher, first, second)
 	})

@@ -56,7 +56,8 @@ type Payload struct {
 var Interval = 5 * time.Second
 
 // statementTimeout bounds one pass's announcing transaction, well inside Interval, so a database
-// that has stopped answering costs a pass and not the loop: the next tick tries again.
+// that has stopped answering costs a pass and not the loop: the next tick tries again. It runs on
+// the Announcer's clock (Deps.Clock), as publishTimeout does.
 const statementTimeout = 3 * time.Second
 
 // publishTimeout bounds one publish: its context, which the bus client gives the reconnect wait,
@@ -69,6 +70,7 @@ const publishTimeout = 10 * time.Second
 
 // publishPassTimeout bounds a pass's publishing transaction as a whole, its statements and its
 // publishes together, so a database link that stalls mid-pass ends the pass rather than the loop.
+// It runs on the Announcer's clock (Deps.Clock), as publishTimeout does.
 const publishPassTimeout = 30 * time.Second
 
 // announceLock is the transaction advisory lock a pass takes, with pg_try_advisory_xact_lock,
@@ -98,8 +100,9 @@ type Deps struct {
 	// Publisher publishes announcements; nil where NATS is disabled, and such a process announces
 	// into the table and publishes nothing.
 	Publisher Publisher
-	// Clock is the clock one publish's bound runs on (publishTimeout): nil is clock.Real(), and a
-	// test hands a clocktest.Fake and moves it past the bound.
+	// Clock is the clock every bound of a pass runs on (statementTimeout, publishPassTimeout and
+	// publishTimeout): nil is clock.Real(), and a test hands a clocktest.Fake and moves it past a
+	// bound.
 	Clock clock.Clock
 }
 
@@ -217,7 +220,7 @@ func (a *Announcer) announceAndPublish(ctx context.Context) string {
 // whether an announcement awaits publishing: one this pass inserted, or one its read found
 // unpublished, which a pass that missed the lock learns as well.
 func (a *Announcer) announce(ctx context.Context) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, statementTimeout)
+	ctx, cancel := a.clock.WithTimeout(ctx, statementTimeout)
 	defer cancel()
 	tx, err := a.deps.Pool.Begin(ctx)
 	if err != nil {
@@ -300,7 +303,7 @@ func (a *Announcer) publish(ctx context.Context) error {
 	if a.deps.Publisher == nil || !a.deps.Publisher.Connected() {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, publishPassTimeout)
+	ctx, cancel := a.clock.WithTimeout(ctx, publishPassTimeout)
 	defer cancel()
 	tx, err := a.deps.Pool.Begin(ctx)
 	if err != nil {

@@ -562,7 +562,7 @@ func TestStaticHandlerServesABurstOfSmallRetainedAssets(t *testing.T) {
 			codes[i] = recorder.Code
 		}()
 	}
-	wg.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d requests of the burst to be answered", burst), wg.Wait)
 
 	refused := 0
 	for _, code := range codes {

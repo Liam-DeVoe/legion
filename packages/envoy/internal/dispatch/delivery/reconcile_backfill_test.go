@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // backfillRun is one deploy run the backfill fake serves, created at created.
@@ -391,7 +392,7 @@ func TestStartBackfillProgressRacesToOneRow(t *testing.T) {
 		}
 		started.Wait()
 		close(release)
-		done.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: both reconciles' starts of the backfill and their reads of it to return", round), done.Wait)
 		for i, err := range errs {
 			if err != nil {
 				t.Fatalf("round %d: start %d: %v", round, i, err)

@@ -483,7 +483,7 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 	if err := a.Commit(ctx); err != nil {
 		t.Fatalf("commit A: %v", err)
 	}
-	wg.Wait()
+	testwait.Returns(t, "B's insert and commit to return once A committed and let the change log's lock go", wg.Wait)
 	if err := <-bErr; err != nil {
 		t.Fatalf("B: %v", err)
 	}

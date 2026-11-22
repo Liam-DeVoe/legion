@@ -499,7 +499,7 @@ func TestTwoWritesOfOneIDAtOneTimeKeepBoth(t *testing.T) {
 		}
 		begun.Wait()
 		close(release)
-		done.Wait()
+		testwait.Returns(t, "round "+strconv.Itoa(round)+": the start's and the end's writes of one step to answer", done.Wait)
 		for index, err := range errs {
 			if err != nil {
 				t.Fatalf("round %d: write %d answered %v, want both taken", round, index, err)

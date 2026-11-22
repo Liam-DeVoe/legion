@@ -921,7 +921,7 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 				_, failures[n] = process.Sync(ctx, "CORE", archRepo)
 			}()
 		}
-		wait.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: both processes' syncs of CORE to return", round), wait.Wait)
 		for n, err := range failures {
 			if err != nil {
 				t.Fatalf("round %d process %d: %v", round, n, err)
@@ -1559,7 +1559,7 @@ func TestSyncAcrossProcessesEmitsOneEventForOneHead(t *testing.T) {
 			_, failures[n] = process.Sync(ctx, "CORE", archRepo)
 		}()
 	}
-	wait.Wait()
+	testwait.Returns(t, "both processes' syncs of the one head to return", wait.Wait)
 	for n, err := range failures {
 		if err != nil {
 			t.Fatalf("process %d: %v", n, err)
@@ -1900,7 +1900,7 @@ func TestACollisionRacedAcrossProcessesFailsOneSourceByName(t *testing.T) {
 			_, failures[n] = process.Sync(ctx, "CORE", repo)
 		}()
 	}
-	wait.Wait()
+	testwait.Returns(t, "both processes' imports of the two sources whose models share an id to return", wait.Wait)
 	if (failures[0] == nil) == (failures[1] == nil) {
 		t.Fatalf("legion/arch: %v; acme/infra: %v; want exactly one to fail", failures[0], failures[1])
 	}

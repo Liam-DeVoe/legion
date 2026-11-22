@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proofFixture is a migrated database of the test's own and the replay store on it.
@@ -58,7 +61,7 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 		}()
 	}
 	start.Done()
-	done.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d presentations of one proof to be answered", presentations), done.Wait)
 
 	unused := 0
 	for i, err := range failures {

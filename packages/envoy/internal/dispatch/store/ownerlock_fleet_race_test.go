@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build, raced (ownerlock_fleet_test.go): the writers of either
@@ -36,7 +38,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 	committed := map[Owner]int{}
 	tally := raceTally{rounds: rounds}
 	var mu sync.Mutex
-	for range rounds {
+	for round := range rounds {
 		var wg sync.WaitGroup
 		for _, shape := range []writerShape{a, b} {
 			subset, touch := randomOwners(all)
@@ -58,7 +60,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 				}
 			})
 		}
-		wg.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: the writers %q and %q to end their transactions", round, a, b), wg.Wait)
 	}
 	tally.lost = lostIncrements(t, s, all, start, committed)
 	return tally
@@ -134,8 +136,18 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()
 
+	// This build's writers and heartbeat stop and are joined however the row ends, so none outlives
+	// the test, as ownerlock_fleet_mark_test.go's writers do. The join is the shared wait's, outside
+	// the once that closes the stop, since a give-up inside a sync.OnceFunc becomes a panic with a
+	// nil argument; a second call closes nothing and finds the writers already joined.
 	stop := make(chan struct{})
 	var thisBuild sync.WaitGroup
+	closeStop := sync.OnceFunc(func() { close(stop) })
+	stopThisBuild := func() {
+		closeStop()
+		testwait.Returns(t, "this build's writers and its heartbeat to stop once told", thisBuild.Wait)
+	}
+	t.Cleanup(stopThisBuild)
 	for range gateRaceWriters {
 		thisBuild.Go(func() {
 			for {
@@ -180,15 +192,14 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 		if cycle%2 == 0 {
 			timedArrival(earlierBuildArrivals[1], instance)
 		}
-		earlier.Wait()
+		testwait.Returns(t, fmt.Sprintf("cycle %d: the earlier build's two row-first writers to end their writes", cycle), earlier.Wait)
 		if _, err := s.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
 			t.Fatal(err)
 		}
 		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
 		time.Sleep(time.Duration(10+rand.IntN(40)) * time.Millisecond)
 	}
-	close(stop)
-	thisBuild.Wait()
+	stopThisBuild()
 
 	lost, deadlocks, failures := ledger.settle(t, s, all, start)
 	slices.Sort(waits)

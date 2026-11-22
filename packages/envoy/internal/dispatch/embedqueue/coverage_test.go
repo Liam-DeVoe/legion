@@ -1014,7 +1014,7 @@ func TestTwoConcurrentPassesLeaveTheStateOnePassLeaves(t *testing.T) {
 			errs[i] = Cover(context.Background(), Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 		})
 	}
-	wg.Wait()
+	testwait.Returns(t, "both processes' coverage passes to return", wg.Wait)
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("concurrent pass %d: %v", i, err)

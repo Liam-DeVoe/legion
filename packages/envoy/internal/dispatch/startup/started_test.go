@@ -336,7 +336,7 @@ func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
 	// that publish was in flight.
 	testwait.Receive(t, "the first process to finish its passes", finished)
 	publisher.release()
-	passes.Wait()
+	testwait.Returns(t, "both processes' passes to return once the held publish was released", passes.Wait)
 	if err := ctx.Err(); err != nil {
 		t.Errorf("the passes ran until the bound ended them, so no process finished passing while the other's publish was held: %v", err)
 	}
@@ -389,8 +389,8 @@ func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
 
 	publisher := &recordingPublisher{}
 	publisher.hang(true)
-	// The bound runs on this clock, which stands until the test moves it: the publish is
-	// abandoned where the test moves it past publishTimeout and nowhere else.
+	// Every bound of the pass runs on this clock, which stands until the test moves it: the
+	// publish is abandoned where the test moves it past publishTimeout and nowhere else.
 	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	announcer := New(Deps{Pool: database.Pool, Publisher: publisher, Clock: fake})
 	began := fake.Now()
@@ -399,9 +399,13 @@ func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
 		defer close(passed)
 		announcer.pass(ctx)
 	}()
-	armed := fake.AwaitArmed(t, "the publish's bound", 1)
-	if want := began.Add(publishTimeout); len(armed) != 1 || !armed[0].Equal(want) {
-		t.Fatalf("the publish armed %v, want its bound alone at %s, publishTimeout from the pass's start", armed, want)
+	// The announce's bound ends with its transaction, before the publishing transaction arms its
+	// own and the publish its own, so two armed bounds are those two.
+	armed := fake.AwaitArmed(t, "the publish's bound beside its transaction's", 2)
+	publishBound, passBound := began.Add(publishTimeout), began.Add(publishPassTimeout)
+	if len(armed) != 2 || !armed[0].Equal(publishBound) || !armed[1].Equal(passBound) {
+		t.Fatalf("the pass armed %v, want the publish's bound at %s and its transaction's at %s, publishTimeout and publishPassTimeout from the pass's start, and nothing else",
+			armed, publishBound, passBound)
 	}
 	fake.Set(armed[0])
 	testwait.Receive(t, "the pass to end once the publish outlived its bound", passed)

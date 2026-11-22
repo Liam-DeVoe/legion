@@ -210,7 +210,7 @@ func TestEntraTokenSourceRunsOneExchangeForConcurrentCallers(t *testing.T) {
 	// them meets an exchange in flight rather than a race that may or may not overlap.
 	testwait.Eventually(t, "the first caller's exchange to reach Entra", func() bool { return fake.hits.Load() > 0 })
 	close(gate)
-	wg.Wait()
+	testwait.Returns(t, "every caller's Token to return once the one exchange was released", wg.Wait)
 	for i := range callers {
 		if errs[i] != nil || tokens[i] != "token-1" {
 			t.Errorf("caller %d: Token() = %q, %v; want token-1", i, tokens[i], errs[i])

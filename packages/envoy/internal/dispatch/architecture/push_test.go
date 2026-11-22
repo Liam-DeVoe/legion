@@ -378,7 +378,7 @@ func TestAPushDuringAWorkersLastLookIsNotLost(t *testing.T) {
 				}
 			})
 		}
-		group.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: the pushers' Pushed calls to return", round), group.Wait)
 		waitForPushWorkers(t, importer)
 
 		newest := slices.MaxFunc(asked, time.Time.Compare)

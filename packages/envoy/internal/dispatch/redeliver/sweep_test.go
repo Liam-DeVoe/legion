@@ -1158,7 +1158,7 @@ func TestConcurrentSweepersRequestEachDeliveryOnce(t *testing.T) {
 			}
 		}()
 	}
-	wg.Wait()
+	testwait.Returns(t, "both sweepers' sweeps over the one state bucket to return", wg.Wait)
 
 	requests := h.requests()
 	unique := slices.Compact(slices.Sorted(slices.Values(requests)))
