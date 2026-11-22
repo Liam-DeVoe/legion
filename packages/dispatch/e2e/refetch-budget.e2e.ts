@@ -408,6 +408,14 @@ test("status writes: moving and closing a cited issue each send no more reads th
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
+    // The Inbox's credential list asks the broker again every 15 s once it holds a list
+    // (`web/src/features/credentials/pending.ts`): a page timer no write causes, which can land in
+    // any window below and was once counted against the move to done. Its read is answered as a
+    // Dispatch with no secrets broker answers it, `null`, which the page reads once and never
+    // polls, so the poll stands still and each window holds only what its writes cause.
+    await page.route("**/api/v1/credential-requests?approver=me", (route) =>
+      route.fulfill({ body: "null", contentType: "application/json" })
+    );
     // The scheduler's trailing window is fired on this clock rather than waited out.
     await page.clock.install();
     await page.goto(`/issues/${source.key}/conversation`);
