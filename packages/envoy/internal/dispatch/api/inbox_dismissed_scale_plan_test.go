@@ -97,8 +97,9 @@ func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold b
 }
 
 // explainDismissedScaleOneRead explains the one read's Dismissed page as the handler builds it
-// (GET /api/v1/me/inbox?state=dismissed&limit=200, meInboxStatement): the first page and, where the
-// shape holds one, the page 50,000 deep, each under the plan of its own arguments and under the
+// (GET /api/v1/me/inbox?state=dismissed&limit=200, meInboxStatement) and as it runs it, under the
+// settings of the read's own transaction (meInboxSettings, readMeInbox): the first page and, where
+// the shape holds one, the page 50,000 deep, each under the plan of its own arguments and under the
 // generic plan a prepared statement settles on from its sixth execution, which knows nothing of the
 // cursor or the page and is the plan the measurement mostly times. On the loaded shape each plan is
 // held to the cut (meInboxDismissedCut): each of the two arms reads its own index, from the cursor
@@ -137,9 +138,9 @@ func explainDismissedScaleOneRead(t *testing.T, connection *pgx.Conn, shape *dis
 			plan, text := json.RawMessage(nil), ""
 			if generic {
 				name = page.operation + " / the one read, generic plan @ " + shape.name
-				plan, text = explainDismissedScaleGeneric(t, connection, name, statement, args)
+				plan, text = explainDismissedScaleGeneric(t, connection, name, statement, args, meInboxSettings)
 			} else {
-				plan, text = explainDismissedScale(t, connection, name, statement, args)
+				plan, text = explainDismissedScale(t, connection, name, statement, args, meInboxSettings)
 			}
 			t.Logf("%s:\n%s", name, text)
 			if !hold {
@@ -177,12 +178,13 @@ func planRowsOver(t *testing.T, planJSON json.RawMessage, index string) float64 
 }
 
 // explainDismissedScaleGeneric is explainDismissedScale under the generic plan: statement prepared
-// on connection, and its EXECUTE explained under plan_cache_mode force_generic_plan inside a
-// transaction that is rolled back. EXECUTE takes no bind parameter (explaintest.GenericPlan), so
-// args go as literals pgx writes into it (the simple protocol), each cast to the type the prepare
-// gave that parameter. The prepared statement is deallocated afterwards.
+// on connection, and its EXECUTE explained under plan_cache_mode force_generic_plan and settings,
+// each a statement the transaction runs first, inside a transaction that is rolled back. EXECUTE
+// takes no bind parameter (explaintest.GenericPlan), so args go as literals pgx writes into it (the
+// simple protocol), each cast to the type the prepare gave that parameter. The prepared statement
+// is deallocated afterwards.
 func explainDismissedScaleGeneric(
-	t *testing.T, connection *pgx.Conn, name, statement string, args []any,
+	t *testing.T, connection *pgx.Conn, name, statement string, args []any, settings ...string,
 ) (json.RawMessage, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -209,8 +211,10 @@ func explainDismissedScaleGeneric(
 		t.Fatalf("begin the explain of %s: %v", name, err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local plan_cache_mode = force_generic_plan"); err != nil {
-		t.Fatalf("force the generic plan of %s: %v", name, err)
+	for _, setting := range append([]string{"set local plan_cache_mode = force_generic_plan"}, settings...) {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s before the explain of %s: %v", setting, name, err)
+		}
 	}
 	execute := "execute " + prepared + "(" + strings.Join(placeholders, ", ") + ")"
 	// A []byte argument - the acting credential, JSON (refs.VisibilityArg) - goes as its text: pgx
@@ -263,9 +267,10 @@ func planLoopsOver(t *testing.T, planJSON json.RawMessage, relation string) floa
 
 // explainDismissedScale runs one statement under EXPLAIN (ANALYZE, BUFFERS) twice: once as JSON,
 // which the checks read, and once as text, which the report prints. Both run inside a transaction
-// that is rolled back, so a write route's read takes no lock past the measurement.
+// that is rolled back, so a write route's read takes no lock past the measurement, after settings,
+// the statements the read's own transaction runs before it where it runs any (meInboxSettings).
 func explainDismissedScale(
-	t *testing.T, connection *pgx.Conn, name, statement string, args []any,
+	t *testing.T, connection *pgx.Conn, name, statement string, args []any, settings ...string,
 ) (json.RawMessage, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -274,6 +279,11 @@ func explainDismissedScale(
 		t.Fatalf("begin the explain of %s: %v", name, err)
 	}
 	defer tx.Rollback(ctx)
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s before the explain of %s: %v", setting, name, err)
+		}
+	}
 	var planJSON []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, args...).Scan(&planJSON); err != nil {
 		t.Fatalf("explain %s: %v", name, err)

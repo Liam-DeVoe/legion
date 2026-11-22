@@ -30,7 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-// GET /api/v1/me/inbox is the one read of what is tied to a person (dispatch://INFRA-1152 R1): every
+// GET /api/v1/me/inbox is the one read of what is tied to a person (the spec's R1): every
 // node that holds a current relation to the caller's own person node, at either end of it, each
 // answered once with every relation kind that ties it to them. It takes its relation kinds from the
 // store and from no list here, so a kind a later write appends is an entry of this read the day it is
@@ -265,11 +265,12 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 //
 // The statement is the whole of the database work the handler does: actingPerson resolves the
 // person before it, the horizon is read in process (sinceHorizon, whose observation runs on the
-// horizon's own pool), and what follows it is Go over the rows it answered. The display trees the
-// page asks for (Dispatch-Trees: 1) are read in it too, and a text it holds no tree of is read for
-// display and stored back after the answer, off the request, as every reader's misses are. The
-// listener's roster is read off the stored answer in it, and asked of the listener alone where that
-// answer is stale.
+// horizon's own pool), and what follows it is Go over the rows it answered. It runs in a read-only
+// transaction of its own, sent with it as one batch (readMeInbox). The display trees the page asks
+// for (Dispatch-Trees: 1) are read in it too, and a text it holds no tree of is read for display and
+// stored back after the answer, off the request, as every reader's misses are. The listener's
+// roster is read off the stored answer in it, and asked of the listener alone where that answer is
+// stale.
 func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 	request, err := parseMeInboxRequest(r)
 	if err != nil {
@@ -293,12 +294,7 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), statement, args...)
-	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read the inbox: %w", err))
-		return
-	}
-	read, err := readMeInboxRows(rows, s.deps.ServerURL)
+	read, err := s.readMeInbox(r.Context(), statement, args)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -343,6 +339,63 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		response.NextCursor = meInboxCursor{moment: last.Moment, kind: last.Node.Kind, id: last.Node.ID}.String()
 	}
 	writeMeInboxAnswer(w, response)
+}
+
+// meInboxSettings are what the read's own transaction sets before its statement (readMeInbox): JIT
+// off, so that what the read costs is its plan's and not the server's JIT setting. A server built
+// with LLVM compiles a statement whose estimated cost passes jit_above_cost (100,000 by default),
+// and this statement's estimate passes it once a person's pile is large, whatever page it answers.
+// At the dismissed scale test's seed, 110,000 dismissed threads, the Dismissed page's plans are
+// estimated at 109,000 (the generic plan) to 209,000, and Postgres compiled about 1,400 functions
+// on every execution of each of the four the scale test explains (page 1 and the page 50,000 deep,
+// each under the plan of its own arguments and the generic plan): 450 to 490 ms of JIT in an
+// execution of 480 to 520 ms, where the page itself was built in about 30 ms. At 200 dismissed
+// threads, or none, the estimate stays under the threshold and nothing is compiled. So with JIT on
+// the cut page read a p50 of 464 to 795 ms, against 86 ms on a Postgres built without LLVM; every
+// other measurement of this read ran without JIT too - a pod's test server sets it off - and
+// production's setting was never read. The read states the setting it was measured under, as the
+// search coverage read states its own (embedqueue's coverageSettings).
+const meInboxSettings = `set local jit = off`
+
+// readMeInbox runs the read's statement and reads what it answered (readMeInboxRows), in a
+// read-only transaction of its own that sets meInboxSettings first: begin, the settings, the
+// statement and commit, sent as one batch. A batch is one round trip, so the transaction costs the
+// read no round trip it did not make already, and the statement stays the read's one statement and
+// the only one that reads anything (TestOneReadAnswersEveryRelationToThePersonsNode). The settings
+// come before the statement rather than inside it because Postgres decides whether to compile a
+// statement when it plans it, which the server does at that statement's Bind, after it has run the
+// messages before it; and `set local` ends with the transaction, so the setting reaches no
+// statement this connection runs for another request. A statement that fails leaves the
+// transaction aborted, and the pool closes a connection handed back to it in one rather than reuse
+// it.
+func (s *server) readMeInbox(ctx context.Context, statement string, args []any) (*meInboxRead, error) {
+	batch := &pgx.Batch{}
+	batch.Queue(`begin transaction read only`)
+	batch.Queue(meInboxSettings)
+	batch.Queue(statement, args...)
+	batch.Queue(`commit`)
+	results := s.deps.Store.Pool.SendBatch(ctx, batch)
+	defer results.Close()
+	for _, step := range []string{"begin", "set"} {
+		if _, err := results.Exec(); err != nil {
+			return nil, fmt.Errorf("%s the inbox's read: %w", step, err)
+		}
+	}
+	rows, err := results.Query()
+	if err != nil {
+		return nil, fmt.Errorf("read the inbox: %w", err)
+	}
+	read, err := readMeInboxRows(rows, s.deps.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := results.Exec(); err != nil {
+		return nil, fmt.Errorf("end the inbox's read: %w", err)
+	}
+	if err := results.Close(); err != nil {
+		return nil, fmt.Errorf("end the inbox's read: %w", err)
+	}
+	return read, nil
 }
 
 // writeMeInboxAnswer writes response with the bytes WriteJSON writes for it, its entries one at a
