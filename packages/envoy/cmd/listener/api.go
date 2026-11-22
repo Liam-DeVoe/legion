@@ -1253,16 +1253,23 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if lane, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
 			// The lane names its role in either form while every reader takes both: its project
 			// and then the role, or the role alone. The claim this send resolves is the one that
-			// name is keyed by (store.RoleClaimKeyOf): the bare name, or <project>.<role> for a
-			// free-form role under a project, never the lane's tokens as they stand.
-			role := store.RoleClaimKeyOf(lane)
+			// name is keyed by (store.RoleClaimKeyOf, which store.Registry.ReadRole answers): the
+			// bare name, or <project>.<role> for a free-form role under a project, never the
+			// lane's tokens as they stand. A lane naming a valid role in the old form is counted
+			// and named back in the answer's warnings with its new form (store.Registry.ReadRole):
+			// this publisher is one the old form's refusal would stop.
+			role, roleWarning := d.registry.ReadRole(lane, roles.Valid)
+			var warnings []string
+			if roleWarning != "" {
+				warnings = []string{roleWarning}
+			}
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
 			// The request's keep flag is read here and nowhere else: it belongs to this route's
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -2308,8 +2315,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				switch {
 				case verdict == roleHolderUnread:
 					// A read that did not answer, or a role claim view that cannot be
-					// served, takes nothing from a holder.
-					writeBusUnavailable(w, decideErr)
+					// served, takes nothing from a holder. At the edge a read of the holder's
+					// session is answered in the listener's own words (edgeScope.unresolved).
+					writeBusUnavailable(w, edgeScopeOf(r, nil).unresolved(body.Role, decideErr, logger))
 					return
 				case verdict == roleGrantGuarded:
 					// The bus answered, and this listener still cannot vouch that the
@@ -2388,9 +2396,10 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					slog.String("holder_client_instance_id", claim.ClientInstanceID),
 					slog.String("client_instance_id", claimantInstanceID))
 			}
-			// At the edge a 409 names no holder the scope does not show, as its role read names
-			// none (edgeScope.namesHolderConfirmed); the revision stays, so the caller can claim against the
-			// record that stands.
+			// At the edge a 409 names no holder the scope does not show, nor the revision of
+			// that holder's claim, as its role read names neither (edgeScope.namesHolderConfirmed,
+			// roleHeldElsewhere); a 409 of a holder the scope shows keeps the revision, so the
+			// caller can claim against the record that stands.
 			scope := edgeScopeOf(r, nil)
 			if mismatch {
 				answer := map[string]any{
@@ -2402,15 +2411,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				if named, namedErr := scope.namesHolderConfirmed(ctx, d.sessions, stale.Holder); namedErr != nil {
 					writeBusUnavailable(w, namedErr)
 					return
-				} else if !named {
-					delete(answer, "holder")
+				} else if stale.Holder != "" && !named {
+					answer = roleHeldElsewhere(stale.Role)
 				}
 				writeJSON(w, http.StatusConflict, answer)
 				return
 			}
 			var held *store.ErrRoleHeld
 			if errors.As(err, &held) {
-				answer := map[string]string{
+				answer := map[string]any{
 					"error":  err.Error(),
 					"role":   held.Role,
 					"holder": held.Holder,
@@ -2419,7 +2428,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					writeBusUnavailable(w, namedErr)
 					return
 				} else if !named {
-					answer = map[string]string{"error": fmt.Sprintf("role %s is held by another session", held.Role), "role": held.Role}
+					answer = roleHeldElsewhere(held.Role)
 				}
 				writeJSON(w, http.StatusConflict, answer)
 				return
@@ -2440,6 +2449,14 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 	}
 }
 
+// roleHeldElsewhere is the 409 body of a claim of role at the edge whose standing claim names a
+// holder the scope does not show (edgeScope.namesHolderConfirmed): that the role is held, and
+// neither by whom nor at which claim revision, since the role read answers such a role as one no
+// claim holds, at claim revision 0 (edgeScope.holderConfirmed).
+func roleHeldElsewhere(role string) map[string]any {
+	return map[string]any{"error": fmt.Sprintf("role %s is held by another session", role), "role": role}
+}
+
 // roleGetHandler answers GET /v1/roles/<role> with the role's live holder, its holder_state and
 // its last_seen. It resolves the holder (roles.ResolveHolder, the one resolution)
 // within sendRequestBudget of the request's own context, as
@@ -2453,7 +2470,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 // did not answer within its cap or that budget - the claim read or the holder's session read -
 // and is answered as the publish route answers it (writeBusUnavailable): the 503 with
 // Retry-After: 1 whose body begins busUnansweredPrefix and names the call, or the 413 and 400 a
-// refused key gets.
+// refused key gets. At the edge a holder's session read that did not answer names no holder: it
+// is answered in the listener's own words, and logger gets the read's error (edgeScope.unresolved).
 //
 // Both answers carry claim_revision, the role bucket revision of the claim record the resolution
 // read: the revision the live holder's claim was read at on the 200, and on the 404 the revision
@@ -2479,7 +2497,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 // out where the claim carries no mark, as
 // client_instance_id is left out where it names no process, so a client reads an absent field as
 // "this claim is still its holder's" rather than having to tell false from missing.
-func roleGetHandler(d *listenerDeps) http.HandlerFunc {
+func roleGetHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -2491,26 +2509,30 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			return
 		}
 		// The path names the role in either form, its project first or its name alone, and the
-		// holder is read under the key a claim of that name is keyed by (store.RoleClaimKeyOf).
-		role := store.RoleClaimKeyOf(name)
+		// holder is read under the key a claim of that name is keyed by (store.RoleClaimKeyOf,
+		// which store.Registry.ReadRole answers). A path naming a valid role in the old form is
+		// counted (store.Registry.ReadRole): a caller that looks a role up by its name alone is
+		// still on the old form, though this answer, a holder's record, carries no warning of it.
 		if refusal := edgeRoleRefusal(r, name); refusal != nil {
 			refusal.write(w)
 			return
 		}
+		role, _ := d.registry.ReadRole(name, roles.Valid)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
+		scope := edgeScopeOf(r, nil)
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
 		if errors.Is(err, store.ErrMalformedRoleClaim) {
 			writeRoleClaimUnreadable(w, role, err)
 			return
 		}
 		if err != nil {
-			writeBusUnavailable(w, err)
+			writeBusUnavailable(w, scope.unresolved(role, err, logger))
 			return
 		}
 		// At the edge a holder the scope does not show, live or lapsed, is no holder the answer
 		// names: the role reads as one no claim holds (edgeScope.holderConfirmed).
-		confirmed, confErr := edgeScopeOf(r, nil).holderConfirmed(ctx, d.sessions, result)
+		confirmed, confErr := scope.holderConfirmed(ctx, d.sessions, result)
 		if confErr != nil {
 			writeBusUnavailable(w, confErr)
 			return
@@ -3485,7 +3507,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		writeJSON(w, http.StatusOK, listenerwire.UnsubscribeResponse{Removed: removed})
 	})
 	v1.HandleFunc("/v1/roles/set", roleSetHandler(d, machineID, logger))
-	v1.HandleFunc("/v1/roles/", roleGetHandler(d))
+	v1.HandleFunc("/v1/roles/", roleGetHandler(d, logger))
 	v1.HandleFunc("/v1/registry/", sessionEntryHandler(d))
 	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
 	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))

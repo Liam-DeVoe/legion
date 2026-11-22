@@ -33,11 +33,13 @@ package main
 //     (edgeSenderRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
 //     (edgeRoleRefusal), and a role held by a session of none of them reads as one no claim holds
-//     in a role read, a role send's answers and a claim's 409 (edgeScope.holderConfirmed,
-//     edgeScope.namesHolderConfirmed). A registration first releases the session's claims of other projects'
-//     roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews its
-//     token's projects' roles alone (edgeTopicHold.holdsRole), and a claimant is handed the kept
-//     messages of those alone (edgeScope.roles).
+//     in a role read, a role send's answers and a claim's 409, which name neither its holder nor
+//     its claim revision (edgeScope.holderConfirmed, edgeScope.namesHolderConfirmed,
+//     roleHeldElsewhere); a read of a holder's session that does not answer names no holder either
+//     (edgeScope.unresolved). A registration first releases the session's claims of other
+//     projects' roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews
+//     its token's projects' roles alone (edgeTopicHold.holdsRole), and a claimant is handed the
+//     kept messages of those alone (edgeScope.roles).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (edgeScope.hidesConfirmed).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
@@ -339,10 +341,12 @@ func sessionInProject(ctx context.Context, sessions *session.SessionRegistry, se
 // one a cache that trails the bucket still shows under projects a newer write dropped, each read as
 // a role no claim holds, which names no holder, process, state, last registration, hand-back or
 // claim revision: a holder outside the scope's projects is another project's session, whose id and
-// activity the scope shows nobody. The holder's key is result.Holder, the id the claim names,
-// never the key a cached record names. A read that did not answer is returned as its error, so the
-// role read answers the bus-unavailable 503. A nil scope, and a role no claim holds, both cost no
-// read.
+// activity the scope shows nobody. A lapsed holder whose session record is gone has no projects to
+// show, so it reads as unclaimed too, even where it was a session of one of the scope's projects:
+// the rule fails closed, and a claim of the role still takes it from the holder that stopped
+// answering. The holder's key is result.Holder, the id the claim names, never the key a cached
+// record names. A read that did not answer is returned as its error, so the role read answers the
+// bus-unavailable 503. A nil scope, and a role no claim holds, both cost no read.
 func (s *edgeScope) holderConfirmed(ctx context.Context, sessions *session.SessionRegistry, result roles.Resolution) (roles.Resolution, error) {
 	if result.State == roles.Unclaimed {
 		return result, nil
@@ -369,12 +373,67 @@ func (s *edgeScope) namesHolderConfirmed(ctx context.Context, sessions *session.
 	return s.showsConfirmed(ctx, sessions, holderID, entry)
 }
 
+// unresolved is err, the error of a read of role's holder that failed, as an answer the scope
+// holds gives it: a resolution's read of the holder's session that did not answer
+// (roles.ReadError at roles.SessionRead, from GET /v1/roles/<role> and a role send), and a soft
+// claim's read of the holder's liveness or of the declared predecessor's registration
+// (holderSessionUnread, from POST /v1/roles/set). Each names that session in its text, a session
+// the scope may not show, so the scope answers it in the listener's own words, which name the
+// role and no holder, and logger gets the read's own error (hideHolder). Every other error names
+// no holder, and is answered as it is. A nil scope answers err as it is.
+func (s *edgeScope) unresolved(role string, err error, logger *logging.Logger) error {
+	if s == nil {
+		return err
+	}
+	var resolution *roles.ReadError
+	var claimRead *holderSessionUnread
+	holder := ""
+	switch {
+	case errors.As(err, &resolution) && resolution.Step == roles.SessionRead:
+		holder = resolution.Holder
+	case errors.As(err, &claimRead):
+		holder = claimRead.holder
+	default:
+		return err
+	}
+	return hideHolder(logger, "edge listener could not read a role holder's session; its answer names no holder",
+		role, holder, "read the holder session of role "+role, err)
+}
+
+// hideHolder is err, whose text names holder, a holder of role an edge answer may not name, as
+// that answer gives it (edgeHolderHidden): text, the listener's own words, and err beneath, which
+// decides the answer's status and Retry-After (writeBusUnavailable). logger gets line with err.
+func hideHolder(logger *logging.Logger, line, role, holder, text string, err error) error {
+	logger.Warn(line, slog.String("role", role), slog.String("holder_session_id", holder), slog.String("error", err.Error()))
+	return &edgeHolderHidden{text: text, err: err}
+}
+
+// edgeHolderHidden is the error an edge answer gives a failure whose own text names a holder the
+// scope may not show (hideHolder): its text is the listener's own, and it unwraps to the failure,
+// which decides how the answer is written.
+type edgeHolderHidden struct {
+	text string
+	err  error
+}
+
+func (e *edgeHolderHidden) Error() string { return e.text }
+
+func (e *edgeHolderHidden) Unwrap() error { return e.err }
+
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
 // project its key gives (contracts.ParseRoleClaimKey) is one of them. It is the edge's rule for a
-// role the session already holds, as edgeRoleRefusal is for one it claims or reads.
+// role the session already holds, as roleNameOfProjects is for one it names in either form.
 func roleOfProjects(role string, projects []string) bool {
 	project, _ := contracts.ParseRoleClaimKey(role)
 	return slices.Contains(projects, project)
+}
+
+// roleNameOfProjects is the claim role, named in either form, names (contracts.RoleClaimOf), and
+// whether that claim works for one of projects. It is the edge's rule for a role a session claims,
+// reads, publishes to or follows the lane of (edgeRoleRefusal, edgePublishRefusal, edgeTopicRule).
+func roleNameOfProjects(role string, projects []string) (contracts.RoleClaimName, bool) {
+	claim, err := contracts.RoleClaimOf(role)
+	return claim, err == nil && slices.Contains(projects, claim.Project)
 }
 
 // edgeReleasedRoleWarning is the warning a registration's answer names a role by, one the edge
@@ -495,7 +554,7 @@ func edgeTopicRule(sessionID string, projects []string, topic string) (reason, o
 		return edgeTopicNotInProject, "", ""
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole && !strings.ContainsAny(lane, "*>") {
-		if claim, err := contracts.RoleClaimOf(lane); err != nil || !slices.Contains(projects, claim.Project) {
+		if _, ok := roleNameOfProjects(lane, projects); !ok {
 			return edgeTopicNotInProject, "", ""
 		}
 		return "", "", ""
@@ -728,7 +787,7 @@ func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 		return nil
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole {
-		if claim, err := contracts.RoleClaimOf(lane); !claim.Legacy && err == nil && slices.Contains(projects, claim.Project) {
+		if claim, ok := roleNameOfProjects(lane, projects); ok && !claim.Legacy {
 			return nil
 		}
 	}
@@ -765,7 +824,7 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 	if !held {
 		return nil
 	}
-	if claim, err := contracts.RoleClaimOf(role); err == nil && slices.Contains(projects, claim.Project) {
+	if _, ok := roleNameOfProjects(role, projects); ok {
 		return nil
 	}
 	return refuseEdge(http.StatusForbidden, edgeRoleNotInProject,

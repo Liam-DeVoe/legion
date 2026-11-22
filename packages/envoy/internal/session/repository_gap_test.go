@@ -1,13 +1,145 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 )
+
+// losingUpdateKV is a session bucket whose every conditional update loses, as to writers that keep
+// landing first; every other call is the bucket's own. It counts the updates it refused, and once
+// it has refused stop of them it ends the writer's context, so a write loop with no bound of its
+// own ends there.
+type losingUpdateKV struct {
+	nats.KeyValue
+	updates *atomic.Int64
+	stop    int64
+	cancel  context.CancelFunc
+}
+
+func (kv losingUpdateKV) Update(string, []byte, uint64) (uint64, error) {
+	if kv.updates.Add(1) >= kv.stop {
+		kv.cancel()
+	}
+	return 0, errors.New("nats: wrong last sequence: 1")
+}
+
+// A write of an entry ends once it has lost entryWriteLosses writes, whatever its context allows:
+// a lost write is another writer's progress, and a run of writers that keeps landing first would
+// otherwise keep the write looping at the bucket's round trip, holding a registration or a
+// relay's frames, for as long as its context lasts. Both loops end so, a registration's
+// (PutWithin) and a change of the stored entry's (SetRepositoryGap through rewriteStoredEntry).
+// Here every update loses. Control: with the loops writing until a write lands or ctx ends
+// (writeEntryAt's stop rule before this row), each write loses until the bucket ends its context,
+// a thousand updates in, and the row fails.
+func TestAnEntryWriteStopsAfterABoundOfLostWrites(t *testing.T) {
+	client := setupNATS(t)
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	const sessionID = "ses_lost_writes"
+	if err := registry.Put(sessionID, SessionEntry{MachineID: "listener-a"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var updates atomic.Int64
+	useKV(t, registry, losingUpdateKV{KeyValue: registry.watcher.KV().Legacy(), updates: &updates, stop: 1000, cancel: cancel})
+	for _, write := range []struct {
+		what  string
+		write func() error
+	}{
+		{"a registration (PutWithin)", func() error { return registry.PutWithin(ctx, sessionID, SessionEntry{MachineID: "listener-a"}) }},
+		{"a gap mark (SetRepositoryGap)", func() error { return registry.SetRepositoryGap(ctx, sessionID, "a-mark") }},
+	} {
+		updates.Store(0)
+		err := write.write()
+		if err == nil || ctx.Err() != nil || updates.Load() != entryWriteLosses {
+			t.Fatalf("%s whose every update loses answered %v after %d updates, with its context ended: %v; want an error once it has lost %d",
+				write.what, err, updates.Load(), ctx.Err() != nil, entryWriteLosses)
+		}
+	}
+}
+
+// staleGetKV is a session bucket whose direct get of key answers stale, an entry the bucket has
+// since written over, as a copy of a replicated bucket that stays a write behind does; every other
+// call is the bucket's own, a read from the stream's leader (bus.KeyValue.GetFromLeader) among
+// them, which does not go through this handle.
+type staleGetKV struct {
+	nats.KeyValue
+	key   string
+	stale nats.KeyValueEntry
+}
+
+func (kv staleGetKV) Get(key string) (nats.KeyValueEntry, error) {
+	if key == kv.key {
+		return kv.stale, nil
+	}
+	return kv.KeyValue.Get(key)
+}
+
+// A write of an entry that lost to another write reads the entry again from the bucket stream's
+// leader, which holds every write the bucket took, so a copy that keeps answering its direct gets
+// a write behind cannot spend the write's bound of lost writes (entryWriteLosses): a
+// registration (PutWithin) over a stale copy of the entry and a change of the stored entry
+// (SetRepositoryGap through rewriteStoredEntry) each land at their second write. Here the
+// registry's copy is held behind the bucket by stopping its watch, and its direct get answers the
+// entry the bucket held before. Control: with every read after a lost write a direct get
+// (readEntry before this row), each write reads the stale entry again until it has lost 32 writes,
+// and the row fails.
+func TestAnEntryWriteReadsTheLeaderAfterALostWrite(t *testing.T) {
+	client := setupNATS(t)
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	const sessionID = "ses_stale_copy"
+	if err := registry.Put(sessionID, SessionEntry{MachineID: "listener-a"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	stale, err := registry.watcher.KV().Legacy().Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's entry: %v", sessionID, err)
+	}
+	useKV(t, registry, staleGetKV{KeyValue: registry.watcher.KV().Legacy(), key: sessionID, stale: stale})
+	registry.StopWatch()
+	bucket, err := client.JS().KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	if _, err := bucket.Put(sessionID, []byte(`{"machine_id":"listener-b"}`)); err != nil {
+		t.Fatalf("write %s's entry from another listener: %v", sessionID, err)
+	}
+	for _, write := range []struct {
+		what  string
+		write func() error
+	}{
+		{"a registration over the stale copy (PutWithin)", func() error {
+			return registry.PutWithin(t.Context(), sessionID, SessionEntry{MachineID: "listener-a"})
+		}},
+		{"a gap mark (SetRepositoryGap)", func() error { return registry.SetRepositoryGap(t.Context(), sessionID, "a-mark") }},
+	} {
+		if err := write.write(); err != nil {
+			t.Fatalf("%s while the bucket's direct get answers a write behind: %v; want it written at the revision the leader holds", write.what, err)
+		}
+	}
+	value, err := bucket.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's entry: %v", sessionID, err)
+	}
+	var entry SessionEntry
+	if err := json.Unmarshal(value.Value(), &entry); err != nil || entry.MachineID != "listener-a" || entry.RepositoryGap != "a-mark" {
+		t.Fatalf("%s's entry is %s (%v), want listener-a's registration with the mark a-mark", sessionID, value.Value(), err)
+	}
+}
 
 // An entry write carries the gap mark of the entry it replaces (SessionEntry.RepositoryGap),
 // whatever the written entry says, and never on the strength of a copy of the bucket that trails
