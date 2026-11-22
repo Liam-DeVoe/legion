@@ -32,7 +32,7 @@
  *  an unprivileged user namespace). Firefox and WebKit, and the visual review's Chromium, which
  *  runs in a container with no network of its own (`e2e/visual-run.sh`), are started as before. */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection, createServer, isIPv4, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -97,13 +97,13 @@ export function namespaceRefusal(): string | undefined {
   return probed.refusal;
 }
 
-let toldHost = false;
-
 /** The network a run's Chromium gets: what `DISPATCH_E2E_BROWSER_NETWORK` names; unset, `host`
- *  on CI, else `own` unless `refusal` says why this machine makes no namespace, which the run's
- *  own process (not a worker) says once, on stderr: stdout carries what a `--list --reporter=json`
- *  run prints, which a line of its own there would make no JSON. Any other value is refused
- *  rather than read as either. */
+ *  on CI, else `own` unless `refusal` says why this machine makes no namespace. A decision made
+ *  here is written into `env`, so it is made once: Playwright's main process loads the config
+ *  first, and every worker it starts inherits that environment and reads the decision rather
+ *  than probing again, so a worker cannot fall back on its own with no line said. The fallback
+ *  is said on stderr: stdout carries what a `--list --reporter=json` run prints, which a line of
+ *  its own there would make no JSON. Any other value is refused rather than read as either. */
 export function browserNetwork(
   env: NodeJS.ProcessEnv = process.env,
   refusal: () => string | undefined = namespaceRefusal
@@ -118,16 +118,16 @@ export function browserNetwork(
   }
   if (env.CI) return "host";
   const refused = refusal();
-  if (refused === undefined) return "own";
-  if (!toldHost && env.TEST_WORKER_INDEX === undefined) {
-    toldHost = true;
+  const decided: BrowserNetwork = refused === undefined ? "own" : "host";
+  env[browserNetworkVariable] = decided;
+  if (refused !== undefined) {
     console.error(
       `e2e: Chromium runs on the host's network, where a network the host adds or removes fails ` +
         `the requests waiting for a connection: this machine made no network namespace for it ` +
         `(${refused}). ${browserNetworkVariable}=own makes that an error.`
     );
   }
-  return "host";
+  return decided;
 }
 
 /** The executable Playwright starts in place of Chromium for a namespace of its own. */
@@ -344,16 +344,66 @@ function runAsChild(command: readonly string[], then: () => void): void {
   });
 }
 
+/** The prefix of each launch's directory under `tmpdir()`, which holds the proxy's socket. */
+export const launchPrefix = "dispatch-browser-net-";
+
+/** Whether a connection to the Unix socket `path` is refused: nothing listens there, so the
+ *  launch that made it is gone. A socket that answers belongs to a launch still running. */
+function socketRefuses(path: string): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const socket = createConnection({ path });
+  socket.once("connect", () => {
+    socket.destroy();
+    resolve(false);
+  });
+  socket.once("error", (error: NodeJS.ErrnoException) => {
+    resolve(error.code === "ECONNREFUSED" || error.code === "ENOENT");
+  });
+  return promise;
+}
+
+/** Removes the directories earlier launches left under `root`: a launch removes its own when
+ *  its browser exits, and a SIGKILL of its process group (Playwright's on a second Ctrl-C or a
+ *  failed close) leaves it. A directory is left alone while its socket answers, which a running
+ *  launch's does, and while it is under a minute old, which a launch between making it and
+ *  listening in it is. */
+export async function sweepStaleLaunches(root: string): Promise<void> {
+  const now = Date.now();
+  const stale = readdirSync(root)
+    .filter((name) => name.startsWith(launchPrefix))
+    .map((name) => join(root, name))
+    .filter((path) => {
+      try {
+        return now - statSync(path).mtimeMs > 60_000;
+      } catch {
+        return false;
+      }
+    });
+  await Promise.all(
+    stale.map(async (path) => {
+      if (await socketRefuses(join(path, String(proxyPort)))) {
+        rmSync(path, { force: true, recursive: true });
+      }
+    })
+  );
+}
+
 /** `launch <Chromium's arguments>`: on the host, the proxy's host half on a Unix socket, and the
  *  namespace with the browser in it. */
 async function launch(args: readonly string[]): Promise<void> {
   const executable = chromiumExecutable(args);
-  const directory = mkdtempSync(join(tmpdir(), "dispatch-browser-net-"));
+  await sweepStaleLaunches(tmpdir());
+  const directory = mkdtempSync(join(tmpdir(), launchPrefix));
   const server = loopbackSocksServer(resolverMaps(args));
-  const { promise, resolve, reject } = Promise.withResolvers<void>();
-  server.once("error", reject);
-  server.listen(join(directory, String(proxyPort)), resolve);
-  await promise;
+  try {
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    server.once("error", reject);
+    server.listen(join(directory, String(proxyPort)), resolve);
+    await promise;
+  } catch (error) {
+    rmSync(directory, { force: true, recursive: true });
+    throw error;
+  }
   runAsChild(
     inNamespace([
       process.execPath,

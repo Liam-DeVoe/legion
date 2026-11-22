@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
   browserLauncher,
@@ -7,18 +10,24 @@ import {
   browserNetworkVariable,
   chromiumExecutable,
   chromiumLaunchOptions,
+  launchPrefix,
   loopbackAddress,
   loopbackSocksServer,
+  proxyPort,
   resolverMaps,
+  sweepStaleLaunches,
 } from "../browser-namespace";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // A local run's Chromium gets a network namespace of its own and reaches the host's loopback
 // through a SOCKS5 proxy (e2e/browser-namespace.ts). These rows hold the choice of network, the
-// projects that launch through it, and the proxy's host half: what it opens, what it refuses,
-// and the bytes it carries. Chromium in the namespace itself needs an unprivileged user namespace,
-// which a CI runner refuses, so the forcing that shows the namespace keeping a request is run by
-// hand (the pull request that brought this file names it).
+// projects that launch through it, the proxy's host half (what it opens, what it refuses, and the
+// bytes it carries) and the sweep of directories earlier launches left. Chromium in the namespace
+// itself needs an unprivileged user namespace, which no row here asks of the machine it runs on,
+// so the forcing that shows the namespace keeping a request is run by hand (the pull request that
+// brought this file names it).
+
+const directory = temporaryDirectories("browser-namespace");
 
 const opened: Server[] = [];
 afterEach(() => {
@@ -98,6 +107,64 @@ test("the browser's network is its own where this machine makes one, unless CI o
     `${browserNetworkVariable} is "none"`
   );
 });
+
+// The main process decides, and a worker reads its decision: a worker inherits the main process's
+// environment, so the decision written there is the one every worker takes, with no probe of its
+// own that could fall back without a word.
+test("a decision is written into the environment, and read from it after", () => {
+  const probed: string[] = [];
+  const refusing = () => {
+    probed.push("probe");
+    return "refused";
+  };
+  const env: NodeJS.ProcessEnv = {};
+  expect(browserNetwork(env, refusing)).toBe("host");
+  expect(env[browserNetworkVariable]).toBe("host");
+  expect(browserNetwork(env, makes)).toBe("host");
+  expect(probed).toEqual(["probe"]);
+  const made: NodeJS.ProcessEnv = {};
+  expect(browserNetwork(made, makes)).toBe("own");
+  expect(made[browserNetworkVariable]).toBe("own");
+  const onCI: NodeJS.ProcessEnv = { CI: "true" };
+  browserNetwork(onCI, makes);
+  expect(onCI[browserNetworkVariable]).toBeUndefined();
+});
+
+/** A launch's directory under `root`, its socket `answering` or not, its time set `ageMs` ago. */
+async function launchDirectory(root: string, name: string, answering: boolean, ageMs: number) {
+  const path = join(root, `${launchPrefix}${name}`);
+  mkdirSync(path);
+  if (answering) {
+    const server = createServer();
+    opened.push(server);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    server.listen(join(path, String(proxyPort)), resolve);
+    await promise;
+  }
+  const at = new Date(Date.now() - ageMs);
+  utimesSync(path, at, at);
+  return path;
+}
+
+test(
+  "a launch sweeps the directories earlier launches left, and no running or new one",
+  async () => {
+    const root = directory();
+    const left = await launchDirectory(root, "left", false, 120_000);
+    const running = await launchDirectory(root, "running", true, 120_000);
+    const fresh = await launchDirectory(root, "fresh", false, 0);
+    const other = join(root, "someone-elses");
+    mkdirSync(other);
+    await sweepStaleLaunches(root);
+    expect({
+      fresh: existsSync(fresh),
+      left: existsSync(left),
+      other: existsSync(other),
+      running: existsSync(running),
+    }).toEqual({ fresh: true, left: false, other: true, running: true });
+  },
+  rowLimit("short")
+);
 
 test("a Chromium launch names the launcher where the network is its own, and keeps its arguments", () => {
   const args = ["--enable-precise-memory-info"];
@@ -180,15 +247,16 @@ test(
 );
 
 test(
-  "the proxy refuses an address off loopback, a name nothing maps, and says a closed port refused",
+  "the proxy refuses an address off loopback, a name nothing maps, and says a refused port refused",
   async () => {
     const proxy = await listening(loopbackSocksServer(new Map()));
-    const closed = await listening(createServer());
-    opened.pop()?.close();
+    // Port 1 of loopback: below 1024, where no unprivileged program can bind, and served by
+    // nothing on these machines, so every connection to it is refused. A port a row freed would
+    // be any program's to take.
     for (const [host, port, code] of [
       ["10.0.0.1", 80, 2],
       ["example.com", 80, 2],
-      ["127.0.0.1", closed, 5],
+      ["127.0.0.1", 1, 5],
     ] as const) {
       const { code: answered, socket } = await connectThrough(proxy, host, port);
       expect({ host, code: answered }).toEqual({ host, code });
