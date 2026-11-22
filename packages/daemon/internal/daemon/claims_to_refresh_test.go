@@ -159,18 +159,28 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 // whether its launch installs a plugin, and that reads the plan of the claim's issue. The count
 // runs inside the state's snapshot under a context that marks the connection the snapshot holds,
 // as every API route's does, so the pool refuses that caller a connection of its own
-// (store.ErrNestedAcquire). The deployment's prober runs on Claude Code, and the plan of its
+// (store.ErrNestedAcquire). The deployment's prober runs on Claude Code. The plan of the first
 // issue defines no prober, so its stale claim is one no install moves and the count leaves it
-// out: the read goes through the snapshot itself (stateNoPluginInstall).
+// out. The plan of the second defines a prober of its own, which runs on Oh My Pi, so an install
+// moves its stale claim and the count names it. Only a read of the plan through the snapshot
+// itself answers both (stateNoPluginInstall): a read refused or failed answers neither, so the
+// count of 1 is what a read that left the snapshot cannot give.
 func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Runtime.Name = "kubernetes"
 	cfg.Roles = []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}
 	cfg.WorkerBackends = map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}
-	issue := cfg.Project + "-1"
-	c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
-	c.PluginContract = api.DaemonAPIVersion - 1
-	putPreviousRun(t, cfg, previousRun{issues: []record.Issue{runningRoot(issue, phase.Implementing)}, claims: []supervise.Claim{c}})
+	deployed, planned := cfg.Project+"-1", cfg.Project+"-2"
+	var claims []supervise.Claim
+	for _, issue := range []string{deployed, planned} {
+		c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
+		c.PluginContract = api.DaemonAPIVersion - 1
+		claims = append(claims, c)
+	}
+	putPreviousRun(t, cfg, previousRun{
+		issues: []record.Issue{runningRoot(deployed, phase.Implementing), runningRoot(planned, phase.Implementing)},
+		claims: claims,
+	})
 
 	ctx := store.WithTransactionTracking(context.Background())
 	st, err := store.Open(ctx, cfg.PostgresDSN)
@@ -178,6 +188,7 @@ func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
+	putPlanRole(t, st, planned, record.PlanRole{Role: "prober", Type: "testing", Model: "prober-model", Prompt: "# Prober\n\nProbe the change."})
 	view := refreshCountSource(t, cfg, st)
 	view.noPluginInstall = stateNoPluginInstall(cfg)
 	var state api.State
@@ -188,8 +199,28 @@ func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("State: %v", err)
 	}
-	if state.ClaimsToRefresh != 0 {
-		t.Fatalf("claimsToRefresh = %d, want 0: the deployment's prober runs on Claude Code, so no install moves its claim", state.ClaimsToRefresh)
+	if state.ClaimsToRefresh != 1 {
+		t.Fatalf("claimsToRefresh = %d, want 1: the prober of %s is the deployment's on Claude Code, which no install moves, and the prober of %s is its plan's on Oh My Pi, which an install moves",
+			state.ClaimsToRefresh, deployed, planned)
+	}
+}
+
+// putPlanRole records version 1 of the plan of issue, at its generation 1, as defining role and
+// no task: what a plan read of the role finds (record.Store.PlanRoleOf).
+func putPlanRole(t *testing.T, st *store.Store, issue string, role record.PlanRole) {
+	t.Helper()
+	ctx := context.Background()
+	records := record.NewStore()
+	role.Issue, role.Generation, role.PlanVersion = issue, 1, 1
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: issue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, issue, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		if err := records.PutPlan(ctx, tx, v, nil, nil); err != nil {
+			return err
+		}
+		return records.PutPlanRoles(ctx, tx, issue, 1, 1, []record.PlanRole{role})
+	}); err != nil {
+		t.Fatalf("record the plan of %s defining %s: %v", issue, role.Role, err)
 	}
 }
 
