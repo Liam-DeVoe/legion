@@ -23,14 +23,16 @@ import (
 // and deletes, and still reads while its get fits: a store serves it or skips it, and a reaper
 // removes it.
 //
-// Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
-// a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
-// (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) makes
-// nats.go's legacy GetLastMsg call on that jetstream context's connection. nats.go's legacy KV
-// watcher, which its legacy Watch, History and Keys all run, arms an init timer while its scan is
-// pending whose callback can send on the channels the subscription's end has just closed, a "send
-// on closed channel" panic in a goroutine nats.go owns (the `initDoneTimer.Reset` of
+// Every read and every write through a handle no caller bound goes through the bucket's legacy
+// nats.KeyValue, except what nats.go runs as a watcher and the reads beside them: a watch of the
+// bucket (WatchKeys), a key's history (ReadHistory) and its stream's state (ReadStreamState) go
+// through the same bucket's jetstream.KeyValue instead, and the leader-answered read of one key
+// (GetFromLeader) makes nats.go's legacy GetLastMsg call on that jetstream context's connection. A
+// write through a handle given its caller's context (Within) goes through the jetstream handle too
+// (writtenOn). nats.go's legacy KV watcher, which its legacy Watch, History and Keys all run, arms
+// an init timer while its scan is pending whose callback can send on the channels the
+// subscription's end has just closed, a "send on closed channel" panic in a goroutine nats.go owns
+// (the `initDoneTimer.Reset` of
 // `(*kvs).WatchFiltered` in v1.55.0). The jetstream package's watcher has no
 // such timer and closes its updates only on the subscription goroutine's own exit (its own
 // `(*kvs).WatchFiltered`). So the legacy handle is held unexported and KeyValue forwards only the
@@ -41,14 +43,16 @@ import (
 // EnsureKeyValue and OpenKeyValue are how the listener and Dispatch open every bucket, and
 // WrapKeyValue pairs a legacy handle a caller already holds with its connection. A test that
 // injects faults builds its handle with NewKeyValue, from the legacy handle (Legacy), the jetstream
-// one (WatchHandle) and the jetstream context (Streams) it wraps. A zero KeyValue has none of them
-// and is a programming error: every call on it panics.
+// one (WatchHandle) and the jetstream context (Streams) it wraps. A write fault is injected into
+// both handles: a write through Within takes the jetstream one, so a test that wraps the legacy
+// handle alone misses every such write. A zero KeyValue has none of them and is a programming
+// error: every call on it panics.
 type KeyValue struct {
-	// legacy is the bucket's legacy handle, which every checked read and write goes through. It is
-	// not embedded, so none of its watcher calls is promoted.
+	// legacy is the bucket's legacy handle, which every checked read goes through, and every write
+	// of a handle no caller bound. It is not embedded, so none of its watcher calls is promoted.
 	legacy nats.KeyValue
 	// watch is the same bucket as a jetstream handle, the one every watch, history and stream read
-	// goes through.
+	// goes through, and every write of a handle given its caller's context (Within).
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
 	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
@@ -73,11 +77,13 @@ type KeyValue struct {
 // Within is kv for a caller that gives up on a write when ctx ends (Bounded, or a call it runs on
 // its own goroutine, or one that holds its request's context). A write through it goes through the
 // jetstream handle under a context that ends noStreamMargin before ctx's deadline or when ctx is
-// canceled (writtenOn): nats.go sends no request of it after that, its own sends again included,
-// and the bus sends it again only before then. So no part of a write its caller has given up on is
-// sent after the caller's deadline less noStreamMargin, or after the caller canceled; without
-// Within the legacy handle's write runs on to its own wait, and it is sent again for the whole
-// noStreamWait. A request already on the wire at that moment still reaches the server.
+// canceled (writtenOn); nats.go sends no request of it once that context reports its end, its own
+// sends again included, and the bus sends it again only before then. A context reports a deadline
+// when its timer fires, which runs late under load, so the bound is writtenOn's: while that lag
+// stays under noStreamMargin, no part of a write its caller has given up on is sent after the
+// caller's deadline, and none after the caller canceled. Without Within the legacy handle's write
+// runs on to its own wait, and it is sent again for the whole noStreamWait. A request already on
+// the wire still reaches the server.
 func (kv KeyValue) Within(ctx context.Context) KeyValue {
 	kv.caller = ctx
 	return kv
@@ -376,8 +382,10 @@ func (create watchCreate) matches(subject string) bool {
 	return filtered && filter == create.filter
 }
 
-// Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
-// inject a fault (NewKeyValue). Production code calls kv's own methods, which check the key first.
+// Legacy is the legacy handle kv's checked reads go through, and the writes of a handle no caller
+// bound, for a test that wraps it to inject a fault (NewKeyValue): a write through Within goes
+// through WatchHandle instead, so a write fault needs a twin there too. Production code calls kv's
+// own methods, which check the key first.
 func (kv KeyValue) Legacy() nats.KeyValue {
 	return kv.legacy
 }
@@ -388,7 +396,8 @@ func (kv KeyValue) Opened() bool {
 	return kv.legacy != nil
 }
 
-// WatchHandle is the jetstream handle kv's watches go through.
+// WatchHandle is the jetstream handle kv's watches go through, and the writes of a handle given its
+// caller's context (Within).
 func (kv KeyValue) WatchHandle() jetstream.KeyValue {
 	return kv.watch
 }
