@@ -1,14 +1,18 @@
 // The whole daemon runs a role an owner's plan defines with a role block: the plan's prompt, the
-// plan's model and a step record of the role's type.
+// plan's model and a step record of the role's type. An issue that ran before a plan could define a
+// role goes on.
 //
-// The test boots the whole daemon over the rig of the deployment's roles (newDeploymentRolesRig,
-// deployment_roles_test.go), whose settings here define no role and list the model prober-model:
-// the real store, the real outbox and the real Dispatch of this package's tests, each role's agent
-// over the worker stream, the owner's plan given with register_plan. GitHub's REST API and the
-// panes are stood in for, each pane answering with the model its launch's spec named.
+// The first test boots the whole daemon over the rig of the deployment's roles
+// (newDeploymentRolesRig, deployment_roles_test.go), whose settings here define no role and list
+// the model prober-model: the real store, the real outbox and the real Dispatch of this package's
+// tests, each role's agent over the worker stream, the owner's plan given with register_plan.
+// GitHub's REST API and the panes are stood in for, each pane answering with the model its launch's
+// spec named. The second boots it over the rig of an earlier release's store (newSliceFourRig,
+// deployment_roles_test.go), stopped below the migration of the roles a plan defines.
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -27,6 +31,10 @@ const (
 	planProberModel             = "prober-model"
 	planProberPrompt            = "# Prober\n\nProbe the change."
 )
+
+// planRolesMigration ends the name of the migration of the roles a plan defines (plan_roles). It is
+// found by its name rather than its number, as deploymentRolesMigration is.
+const planRolesMigration = "_plan_roles.up.sql"
 
 // planWithProber is the text of a plan.md whose task a names `implementer prober`
 // (deploymentPlanOf), after a role block of prober of the type testing on model, or with no role
@@ -88,6 +96,40 @@ func TestARoleThePlanDefinesRunsWithItsPromptAndModel(t *testing.T) {
 			t.Fatalf("the walk's assertion on %s, whose plan was refused, says %v; want it to say %q", noBlock, err, want)
 		}
 	})
+}
+
+// R20: an issue that ran before a plan could define a role goes on under this release. The store
+// holds every migration below plan_roles, applied by hand (storeOfSliceFour), and the record of one
+// issue whose owner's plan `implementer tester reviewer` stands at step 2, the implementer's step
+// done and the tester's claim a launch the earlier daemon began (seedSliceFourIssue). This release's
+// migrations then run on it, plan_roles among them, as a deploy runs them, and the whole daemon
+// boots on it. The tester's pass moves task a to step 3, the reviewer starts with the task of step 3
+// of 3, and plan_roles holds no row of the issue: the plan of the release before stays a plan that
+// defines no role.
+//
+// The fault: a daemon that needs a plan_roles row of the plan in force could not read the issue's
+// plan, since that plan has none, and the issue would not go on. The control is a mutation of the
+// release's code, run by hand: record.Postgres.Plan failing where the generation's plan has no
+// plan_roles row; the daemon's boot then fails at its read of the issue's plan, and the test fails
+// before the tester's pass.
+func TestAnIssueThatRanBeforePlanRolesGoesOn(t *testing.T) {
+	r := newSliceFourRig(t, planRolesMigration)
+	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
+	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
+		t.Fatalf("after the tester's pass %s's task a stands at %s %d, want step 3", r.key, kind, position)
+	}
+	reviewer := r.worker(claim.RoleReviewer)
+	if task := reviewer.take().Message; !strings.Contains(task, " Task: a. Step 3 of 3: reviewer.") {
+		t.Fatalf("the reviewer's task is %q, want it to stand at step 3 of 3 of task a", task)
+	}
+	reviewer.endTurn()
+	var roles int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from plan_roles where issue = $1`, r.key).Scan(&roles); err != nil {
+		t.Fatalf("read the plan_roles rows of %s: %v", r.key, err)
+	}
+	if roles != 0 {
+		t.Fatalf("plan_roles holds %d rows of %s, an issue whose plan defines no role, want none", roles, r.key)
+	}
 }
 
 // walkImplementerProber is the walk of `implementer prober` on the walk's issue: its gate opens at

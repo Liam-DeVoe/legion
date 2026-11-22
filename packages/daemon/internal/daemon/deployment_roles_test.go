@@ -233,7 +233,7 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 // place of plan_tasks.position, as a store that lost slice 4's place would answer; the tester's pass
 // then moves nothing, and the assertion of step 3 fails.
 func TestAnIssueOfSliceFourGoesOnUnderThisRelease(t *testing.T) {
-	r := newSliceFourRig(t)
+	r := newSliceFourRig(t, deploymentRolesMigration)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
 		t.Fatalf("after the tester's pass %s's task a stands at %s %d, want step 3", r.key, kind, position)
@@ -596,21 +596,21 @@ func deref[T any](p *T) any {
 // is the same whatever number a later merge gives it.
 const deploymentRolesMigration = "_deployment_roles.up.sql"
 
-// sliceFourRig is the walk's rig on the store slice 4 leaves, with its one issue at testing, and
-// the version of the migration whose way back the test runs.
+// sliceFourRig is the walk's rig on the store an earlier release leaves, with its one issue at
+// testing, and the version of the migration the store stops below, whose way back a test can run.
 type sliceFourRig struct {
 	*stepRecordsRig
 	migrationVersion int
 }
 
-// newSliceFourRig is the store slice 4 leaves (storeOfSliceFour), seeded with one issue at testing
-// (seedSliceFourIssue), migrated to this release's schema, with the daemon booted on it at the real
-// Dispatch of this package's tests and the issue's architect and tester resumed in the sessions the
-// earlier daemon recorded.
-func newSliceFourRig(t *testing.T) *sliceFourRig {
+// newSliceFourRig is the store an earlier release leaves, every migration below the one whose name
+// ends below (storeOfSliceFour), seeded with one issue at testing (seedSliceFourIssue), migrated to
+// this release's schema, with the daemon booted on it at the real Dispatch of this package's tests
+// and the issue's architect and tester resumed in the sessions the earlier daemon recorded.
+func newSliceFourRig(t *testing.T, below string) *sliceFourRig {
 	t.Helper()
 	proof := newLiveProofOn(t, workflowNATS(t))
-	st, dsn, version := storeOfSliceFour(t)
+	st, dsn, version := storeOfSliceFour(t, below)
 	proof.st, proof.cfg.PostgresDSN = st, dsn
 	proof.cfg.Project = "SF" + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
@@ -655,10 +655,11 @@ func newSliceFourRig(t *testing.T) *sliceFourRig {
 }
 
 // storeOfSliceFour is a database of this test's own carrying every embedded migration whose version
-// is below this release's first (deploymentRolesMigration), applied by hand in version order
-// (applyMigrationsByHand): the schema slice 4 leaves. It answers the store, its URL and the version
-// of this release's first migration.
-func storeOfSliceFour(t *testing.T) (*store.Store, string, int) {
+// is below the one whose name ends below, applied by hand in version order (applyMigrationsByHand):
+// with deploymentRolesMigration, the schema slice 4 leaves; with planRolesMigration
+// (plan_roles_test.go), the schema of the release before a plan could define a role. It answers the
+// store, its URL and the version of the migration whose name ends below.
+func storeOfSliceFour(t *testing.T, below string) (*store.Store, string, int) {
 	t.Helper()
 	dsn := testdb.Database(t, "legion_slice_four")
 	st, err := store.Open(context.Background(), dsn)
@@ -672,12 +673,12 @@ func storeOfSliceFour(t *testing.T) (*store.Store, string, int) {
 	}
 	first := 0
 	for _, migration := range all {
-		if strings.HasSuffix(migration.Name, deploymentRolesMigration) {
+		if strings.HasSuffix(migration.Name, below) {
 			first = migration.Version
 		}
 	}
 	if first == 0 {
-		t.Fatalf("no embedded migration ends %s, the first one of this release", deploymentRolesMigration)
+		t.Fatalf("no embedded migration ends %s", below)
 	}
 	var before []migrations.Migration
 	for _, migration := range all {
