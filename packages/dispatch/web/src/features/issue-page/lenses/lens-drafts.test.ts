@@ -347,6 +347,60 @@ test("a finding is a block whose parent is a lens", () => {
   expect(idsOf(root)).not.toContain("stray");
 });
 
+// A stored string that cites a lens, a risk or a constraint by its own address draws no address
+// and no uuid: the address reads as words, as a bare address of an issue's block does. A verdict,
+// a heading and an early warning are read through the stored string's plain words; a finding's
+// line through its reading.
+test("a lens's, a risk's and a finding's words draw no address of a lens, a risk or a constraint", () => {
+  const lensId = `lens/${FIRST}`;
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = {
+    constraint: "dispatch://constraint/e5000000-0000-4000-8000-000000000005",
+    lens: `dispatch://lens/${SECOND}`,
+    risk: `dispatch://risk/${risk}`,
+  };
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(lensId, "r1", "2026-11-05T09:00:00Z", {
+          attributes: { verdict: `Keep one region, as ${cited.risk} warns.` },
+        }),
+        bare(risk, "risk", lensId, {
+          attributes: {
+            early_warning: `The bill passes ${cited.constraint} first.`,
+            heading: `Failover takes minutes, as ${cited.lens} found.`,
+            prevention: "Test the failover.",
+          },
+        }),
+        finding(
+          `${lensId}#first`,
+          lensId,
+          `A second region doubles the cost, as ${cited.risk} says.`
+        ),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", lensId, PRE_MORTEM.id)]
+    )
+  );
+  const drawnWords = {
+    earlyWarning: factsOf(rowOf(root, risk)).earlyWarning ?? "",
+    finding: lineWords(rowOf(root, `${lensId}#first`)),
+    heading: rowOf(root, risk).text,
+    verdict: rowOf(root, lensId).text,
+  };
+  const address = /dispatch:\/\/|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u;
+
+  expect(
+    Object.entries(drawnWords).filter(([, words]) => address.test(words)),
+    "a row draws a store address or its uuid"
+  ).toEqual([]);
+  expect(drawnWords.verdict.startsWith("Keep one region, as ")).toBe(true);
+  expect(drawnWords.heading.startsWith("Failover takes minutes, as ")).toBe(true);
+  expect(drawnWords.earlyWarning.startsWith("The bill passes ")).toBe(true);
+  expect(drawnWords.finding.startsWith("A second region doubles the cost, as ")).toBe(true);
+});
+
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose
 // `triggered_by` names it, only for a lens the read holds, named by its kind's words as its tag
 // is, linked where a step drafted it, and with that lens's state and visibility. Every lens
