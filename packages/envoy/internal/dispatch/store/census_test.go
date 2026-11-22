@@ -1127,6 +1127,15 @@ func TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough(t *testing.T) {
 	requireCensusAdmitsConcurrentIndexes(t, 20261121180100, 20261122010000, 20261122010100, 20261122010200)
 }
 
+// TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough holds the census to admitting the
+// index a person's erase reads comments through for the comments a session the server proved
+// theirs wrote (20261122010300, on user_threads_login(author->>'owner') of those comments), over
+// a database at 20261122010200, the version before it, with the limit at one byte, where comments
+// is over it (requireCensusAdmitsConcurrentIndexes).
+func TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261122010200, 20261122010300)
+}
+
 // requireCensusAdmitsConcurrentIndexes holds the census, over a database migrated through before
 // with the limit at one byte, to admitting each of versions, every one pending there, as one
 // concurrent, non-unique index of its own migration, which the limit never applies to at any size.

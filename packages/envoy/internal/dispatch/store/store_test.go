@@ -274,6 +274,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"related_checks_source_block",
 		"related_checks_source_issue",
 		"graph_erasures_block_document",
+		"comments_proved_session_owner",
 	}
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select indexname
