@@ -640,15 +640,6 @@ export const STATE_LINES = freeze({
   decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
-/** The words of two controls the box at the foot of the outline names as the way back to a draft
- *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`): a row's Reply, and the box's
- *  control that writes on the issue instead. They stand here, ahead of `ANSWER_LINES`, because
- *  `CONTROL_LABELS` comes after it. `CONTROL_LABELS.reply` and `write_on_issue` repeat these
- *  words as literals; `IssueComposer.test.tsx` holds each kept line to the words its control
- *  draws. */
-const REPLY_WORD = "Reply";
-const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
-
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
@@ -709,8 +700,10 @@ export const ANSWER_LINES = freeze({
    *  or on a statement, and the box keeps there, with the control that goes back to it: the
    *  box's own that writes on the issue, or the statement's Reply. A reply kept for a row is said
    *  in the composer's own words, which name the author of what it answers. */
-  kept_on_issue: `What you wrote on the issue is kept: press ${WRITE_ON_ISSUE_WORDS} to go on with it.`,
-  kept_on_statement: `What you wrote on a statement is kept: press ${REPLY_WORD} on that statement to go on with it.`,
+  kept_on_issue:
+    "What you wrote on the issue is kept: press Write on the issue instead to go on with it.",
+  kept_on_statement:
+    "What you wrote on a statement is kept: press Reply on that statement to go on with it.",
   /** What the box says of what the reader wrote on a statement the outline no longer draws - a
    *  new version took it out or changed its words, so its Reply aims the box at other words - with
    *  the draft drawn after it, Use it here and Discard my draft; and, while the box holds words of

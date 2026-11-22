@@ -357,7 +357,9 @@ export interface KeptDrafts {
    *  (`keepsNothing`). */
   readonly keepNothing: () => void;
   /** The drafts kept for other addresses than the one the composer shows, each of which the
-   *  composer names with the way back to it: every one but those of `goneAway`. */
+   *  composer names with the way back to it: every one but those of `goneAway`. The issue page's
+   *  box draws a draft kept for a statement its outline no longer draws as an offer instead
+   *  (`MentionComposer`). */
   readonly keptAway: readonly AwayDraft[];
   /** A draft kept for other words of the document than the ones this compose shows: a newer
    *  compose on the document is the host's move for the one before it, which carries nothing,
