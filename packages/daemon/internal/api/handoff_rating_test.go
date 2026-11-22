@@ -391,6 +391,7 @@ func mustRate(t *testing.T, h *harness, unrated, rated string, score int, reason
 func TestANewPluginMustRate(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
 		t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
@@ -413,6 +414,7 @@ func TestANewPluginMustRate(t *testing.T) {
 func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
 	later := DaemonAPIVersion + 1
@@ -436,6 +438,7 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 func TestAPluginAtTheRatingContractMustRate(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
 	h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
@@ -475,6 +478,7 @@ func stepRecordPayloads(t *testing.T, h *harness, key string) []string {
 func TestARatedRetroSentAgainKeepsItsFirstRating(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	retro := func(rating int, reason string) *httptest.ResponseRecorder {
 		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
@@ -778,6 +782,11 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			key := fmt.Sprintf("LEGION-%d", 400+i)
 			seedIssueAt(t, h, key, row.at)
+			// The implementer's move needed a pull request, so an issue at its retro has one, and
+			// its retro ends in merging.
+			if row.at == phase.Retro {
+				seedPullRequest(t, h, key, headSHA)
+			}
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grant is minted first, as
 			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares

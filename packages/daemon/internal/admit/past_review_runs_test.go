@@ -118,6 +118,9 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// builds is held by nobody.
 	const accepted = "LEGION-200"
 	pastReviewRoot(t, pool, accepted, phase.Accepting, "needs_review", "C")
+	// An issue reaches accepting on the pull request its implementer opened, which its retro's end
+	// reads to move it to the merge.
+	seedPullRequest(t, pool, accepted, 200, record.PullRequestOpen)
 	seedGate(t, pool, record.DesignGate{Issue: accepted, ArtifactID: "spec-200", LatestVersion: 1, ApprovedVersion: new(1)})
 	// An issue at work that holds no row, whose start waits for one throughout.
 	const atWork = "LEGION-300"

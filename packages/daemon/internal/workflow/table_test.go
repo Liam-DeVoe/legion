@@ -36,7 +36,10 @@ var testLines = [][]phase.Phase{
 
 // todaysTable is the table the workflow walked before an issue's plan picked its line, written
 // out row by row as it stood: the control that TableOf(phase.Order) changes nothing for an issue
-// with no plan rows.
+// with no plan rows. The retro's move to merging is guarded by a pull request record, which an
+// issue with no plan rows always has at its retro (the implementer's move needs one, and a record
+// goes only at a new generation, which takes the issue back before its retro), so the row beside
+// it, to done with none, is never taken on today's line.
 func todaysTable() []Row {
 	rows := []Row{
 		{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: phase.Planning, Effects: []EffectKind{EffectStart, EffectNotice}},
@@ -47,7 +50,8 @@ func todaysTable() []Row {
 		{From: phase.Reviewing, Trigger: TriggerReviewApproved, Guard: allow, To: phase.Accepting, Effects: []EffectKind{EffectNotice}},
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
+		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: func(s Snapshot) bool { return s.HasPullRequest }, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
+		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: func(s Snapshot) bool { return !s.HasPullRequest }, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 	}
 	for _, text := range phase.BackwardPairs() {
@@ -66,7 +70,7 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 	if len(got) != len(want) {
 		t.Fatalf("the table of a walk with no plan rows has %d rows, want today's %d", len(got), len(want))
 	}
-	snapshots := []Snapshot{{}, {HasOpenOrMergedPR: true}, {GateOpen: true}, {HasOpenOrMergedPR: true, GateOpen: true}}
+	snapshots := []Snapshot{{}, {HasOpenOrMergedPR: true, HasPullRequest: true}, {GateOpen: true}, {HasOpenOrMergedPR: true, HasPullRequest: true, GateOpen: true}}
 	for i := range want {
 		g, w := got[i], want[i]
 		if g.From != w.From || g.Trigger != w.Trigger || g.To != w.To || !slices.Equal(g.Effects, w.Effects) {
@@ -265,11 +269,14 @@ func sortedPairs(pairs map[string]bool) []string {
 
 // validateTable says why rows is not the whole table of line, nil when it is: every phase and
 // trigger the line declares has a complete row into the phase that line sends it to, every
-// backward edge of the line has its row, and no row stands where the line declares none.
+// backward edge of the line has its row, and no row stands where the line declares none. The
+// retro's end has two rows, one into each phase it may lead to (retroTargets): its merge where the
+// issue has a pull request, done where it has none.
 func validateTable(line []phase.Phase, rows []Row) error {
 	for _, current := range phase.All {
 		for _, trigger := range allWorkflowTriggers {
 			hasRow := false
+			var retroEnds []phase.Phase
 			for _, row := range rows {
 				if row.From != current || row.Trigger != trigger {
 					continue
@@ -278,9 +285,16 @@ func validateTable(line []phase.Phase, rows []Row) error {
 				if row.To == "" || row.Guard == nil || len(row.Effects) == 0 {
 					return fmt.Errorf("%s/%s is not a complete transition row", current, trigger)
 				}
+				if current == phase.Retro && trigger == TriggerRetroCompleted {
+					retroEnds = append(retroEnds, row.To)
+					continue
+				}
 				if want, ok := wantTarget(line, current, trigger); ok && row.To != want {
 					return fmt.Errorf("%s/%s moves to %s, want %s", current, trigger, row.To, want)
 				}
+			}
+			if hasRow && current == phase.Retro && trigger == TriggerRetroCompleted && !slices.Equal(retroEnds, retroTargets) {
+				return fmt.Errorf("%s/%s moves to %v, want %v", current, trigger, retroEnds, retroTargets)
 			}
 			if workflowTransitionRequired(line, current, trigger) {
 				if !hasRow {
@@ -313,6 +327,10 @@ func validateTable(line []phase.Phase, rows []Row) error {
 	}
 	return nil
 }
+
+// retroTargets are the phases the retro's end leads to, in the table's order: the merge, for an
+// issue with a pull request, and done, for one with none.
+var retroTargets = []phase.Phase{phase.Merging, phase.Done}
 
 func hasBackwardRow(rows []Row, from, to phase.Phase) bool {
 	for _, row := range rows {

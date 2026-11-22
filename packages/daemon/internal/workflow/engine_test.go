@@ -660,6 +660,11 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		},
 		{
 			name: "retro completion", current: phase.Retro, role: claim.RoleImplementer,
+			// An issue with no plan rows reaches its retro only with a pull request record, which the
+			// implementer's move needs, so the retro's end moves it to its merge.
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
+			},
 			fact: func() intake.Fact {
 				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "claim", Commit: "retro"}
 			},

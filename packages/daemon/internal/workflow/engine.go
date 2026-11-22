@@ -2456,7 +2456,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// ended is the role whose step this move ends, read once before the task moves
 	// (Walk.endingRole): a role the deployment defines at step is named by its own role.
 	ended := w.endingRole(issue.Phase)
-	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr), HasPullRequest: pr != nil}
 	row, ok := w.row(issue.Phase, trigger, target, snapshot)
 	// A failed step of a task with plan rows that names no step to return to returns its work to
 	// the step its plan reads, or its task stops where no step before it can take the work
