@@ -216,8 +216,8 @@ const DISMISS_INBOX_RULE =
 
 function dismissInboxProblem(input: Record<string, unknown>): string | undefined {
   const narrowing = ["kind", "priority", "urgency", "project", "issue", "artifact"];
-  const restore = input.restore === true;
-  const seen = input.seen_replies !== undefined && input.seen_replies !== null;
+  const restore = input["restore"] === true;
+  const seen = input["seen_replies"] !== undefined && input["seen_replies"] !== null;
   if (names(input, "threads")) {
     if (names(input, "dismiss_through") || narrowing.some((name) => names(input, name))) {
       return "threads names the rows itself, so it takes neither dismiss_through nor the narrowing.";
@@ -295,8 +295,8 @@ export const dispatchRouteToolSpecs = [
     validation: crossFieldRule(
       `title and text together are at most ${RELATED_QUERY_MAX} characters, each trimmed, with a line break between them; dispatch related checks a longer text.`,
       (input) => {
-        const title = typeof input.title === "string" ? input.title.trim() : "";
-        const text = typeof input.text === "string" ? input.text.trim() : "";
+        const title = typeof input["title"] === "string" ? input["title"].trim() : "";
+        const text = typeof input["text"] === "string" ? input["text"].trim() : "";
         const checked = title === "" || text === "" ? title + text : `${title}\n${text}`;
         return checked.length <= RELATED_QUERY_MAX;
       }
@@ -728,8 +728,8 @@ export const dispatchRouteToolSpecs = [
       `A title over ${PRIORITY_ID_MAX} characters names id as well: the id the title would give is longer than an id may be.`,
       (input) =>
         names(input, "id") ||
-        typeof input.title !== "string" ||
-        input.title.length <= PRIORITY_ID_MAX
+        typeof input["title"] !== "string" ||
+        input["title"].length <= PRIORITY_ID_MAX
     ),
     strict: true,
     routes: send("POST", "/api/v1/priorities", { body: ["title", "id", "description", "owner"] }),
@@ -762,7 +762,7 @@ export const dispatchRouteToolSpecs = [
         if (fields.every((field) => input[field] === undefined)) {
           return "name at least one of title, description, owner and rank.";
         }
-        const rank = input.rank as Record<string, unknown> | undefined;
+        const rank = input["rank"] as Record<string, unknown> | undefined;
         if (rank !== undefined && !names(rank, "before") && !names(rank, "after")) {
           return "rank names before, after, or both.";
         }
@@ -1337,11 +1337,11 @@ export const dispatchRouteToolSpecs = [
     validation: crossFieldRules(
       "A reply carries exactly one of body and error, and reply_to_block goes with a body alone.",
       (input) => {
-        if ((input.body === undefined) === (input.error === undefined)) {
+        if ((input["body"] === undefined) === (input["error"] === undefined)) {
           return "name exactly one of body and error.";
         }
-        if (input.body !== undefined && !names(input, "body")) return "body is blank.";
-        if (input.reply_to_block !== undefined && input.body === undefined) {
+        if (input["body"] !== undefined && !names(input, "body")) return "body is blank.";
+        if (input["reply_to_block"] !== undefined && input["body"] === undefined) {
           return "reply_to_block names the block a body answers, and an error has none.";
         }
         return undefined;
@@ -1411,7 +1411,8 @@ export const dispatchRouteToolSpecs = [
     }),
     validation: crossFieldRule(
       "after takes neither before nor order desc.",
-      (input) => input.after === undefined || (input.before === undefined && input.order !== "desc")
+      (input) =>
+        input["after"] === undefined || (input["before"] === undefined && input["order"] !== "desc")
     ),
     strict: true,
     routes: get("/api/v1/artifacts/{id}/events", {
@@ -1532,7 +1533,7 @@ export const dispatchRouteToolSpecs = [
     }),
     validation: crossFieldRule(
       "state changes_requested requires reason, a non-empty note saying what must change.",
-      (input) => input.state !== "changes_requested" || names(input, "reason")
+      (input) => input["state"] !== "changes_requested" || names(input, "reason")
     ),
     strict: true,
     routes: send("POST", "/api/v1/artifacts/{id}/reviews", {
@@ -1650,9 +1651,9 @@ export const dispatchRouteToolSpecs = [
     validation: crossFieldRule(
       "Name at least one of pinned, cleared_before, read_through and read_replies (one reply or more).",
       (input) =>
-        input.pinned !== undefined ||
-        input.cleared_before !== undefined ||
-        input.read_through !== undefined ||
+        input["pinned"] !== undefined ||
+        input["cleared_before"] !== undefined ||
+        input["read_through"] !== undefined ||
         names(input, "read_replies")
     ),
     strict: true,

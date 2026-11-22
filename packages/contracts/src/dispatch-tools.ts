@@ -950,7 +950,7 @@ export const dispatchToolSpecs = [
       external: z
         .string()
         .describe(
-          "Optional external issue reference, owner/repo#n. Its repository is mapped to this project in repository settings (dispatch_map_repo): a repository mapped to no project is refused with 400 PROJECT_UNMAPPED unless the deployment names a default project, and one mapped to another project with 400 EXTERNAL_PROJECT_MISMATCH."
+          "Optional external issue reference, owner/repo#n. Its repository is mapped to this project in repository settings (dispatch map-repo): a repository mapped to no project is refused with 400 PROJECT_UNMAPPED unless the deployment names a default project, and one mapped to another project with 400 EXTERNAL_PROJECT_MISMATCH."
         )
         .optional(),
       force: z
