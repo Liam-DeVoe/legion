@@ -84,7 +84,20 @@ type createIssueInput struct {
 	Actor      *model.Actor    `json:"actor"`
 }
 
+// issueCreateHook is a write a caller of createIssueWith makes in the create's own transaction,
+// with the new issue's key, after every write the create queued and while it holds the project's
+// owner lock, which every create of the project takes: the create and the hook's write commit
+// together or not at all, and no other create of the project runs between the hook's reads and
+// that commit. An error refuses the create, which then writes nothing.
+type issueCreateHook func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string) error
+
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
+	s.createIssueWith(w, r, nil)
+}
+
+// createIssueWith is POST /api/v1/issues, running beforeCommit, where it is not nil, just before
+// the create commits (issueCreateHook).
+func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, beforeCommit issueCreateHook) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
@@ -730,6 +743,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// create's transaction id. Every other row is written after the commit.
 	if recordInTx {
 		if err := s.writeNearCopyCheck(r.Context(), tx, nearCopyRecord, outcome.Check); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(documentCtx, tx, ledger, key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

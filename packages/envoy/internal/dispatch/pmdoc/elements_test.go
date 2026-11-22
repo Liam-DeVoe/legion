@@ -362,6 +362,7 @@ func TestEveryNodeOfTheSchemaWeighsWhatItMakes(t *testing.T) {
 		"reading":             {repeated("::::decision{}\nd\n\n:::reading{}\nr\n:::\n::::\n\n")},
 		"criterion":           {repeated(":::criterion{}\n:::\n\n"), repeated(":::criterion{}\nc\n:::\n\n")},
 		"component":           {repeated(":::component{}\n:::\n\n"), repeated(":::component{}\nc\n:::\n\n")},
+		"conclusion":          {repeated(":::conclusion{}\n:::\n\n"), repeated(":::conclusion{}\nc\n:::\n\n")},
 	}
 	oneADocument := map[string]bool{"doc": true, "frontmatter": true}
 	types := typedBlockNames()

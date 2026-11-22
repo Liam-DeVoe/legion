@@ -42,6 +42,8 @@ test("the compiled manifest is the page's own, and it creates everything it read
     "decision",
     "reading",
     "criterion",
+    "component",
+    "conclusion",
   ]);
   expect(schemaCreatable(compiledBlockSchema)).toBe(compiledBlockSchema.version);
 });

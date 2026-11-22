@@ -2599,17 +2599,19 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_spec_import_level",
-    example: { issue: "DSP-1", notes: "notes.md" },
+    example: { issue: "<KEY>", notes: "notes.md" },
     description:
       "Import the approved level of The Spec that an issue holds into the approved spec of the issue's " +
       "repository, which must be a spec source of its project (409 SPEC_SOURCE_REQUIRED). The level is the " +
       "issue's spec at the version of the person's newest approval of it (409 LEVEL_NOT_APPROVED where none); " +
-      "notes names its notes document, read at the version that approval names. Each component and " +
-      "interface, and each statement whose kind, about, supports and parent resolve, is written with that " +
-      "approval as its provenance; each other statement is held with the fields it lacks, and one child issue " +
-      "of the level, assigned to its assignee, lists the holds. A node already approved is left as it stands, " +
-      "so a second run writes only what the first could not. It prints what it wrote, each hold, and the " +
-      "repair issue.",
+      "notes names its notes document, whose kinds, abouts and supports count only at a version a person's " +
+      "approval names: the version the level's approval request names, else the version of the person's " +
+      "newest approval of the notes document. With no such approval no statement takes a field from the notes. " +
+      "Each component and interface, and each statement whose kind, about, supports and parent resolve, is " +
+      "written with that approval as its provenance; each other statement is held with the fields it lacks, " +
+      "and the holds no repair issue names get one child issue of the level, assigned to its assignee, whose " +
+      "spec lists them, opened and named on them in one act. A node already approved is left as it stands, so " +
+      "a second run writes only what the first could not. It prints what it wrote, each hold, and the repair issue.",
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       notes: z

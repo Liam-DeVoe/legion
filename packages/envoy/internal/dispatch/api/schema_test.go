@@ -60,7 +60,7 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	for index, typ := range served.Types {
 		names[index] = typ.Name
 	}
-	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion", "component"}
+	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion", "component", "conclusion"}
 	if served.Version != 7 || !slices.Equal(names, want) {
 		t.Fatalf("schema = version %d, types %v; want version 7 and %v", served.Version, names, want)
 	}
@@ -73,6 +73,19 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	}
 	if parents := served.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)
+	}
+	// The conclusion of D6: the approved statement it concludes about, the kind of difference it
+	// found, R28's four, and whether it names no statement.
+	conclusion := served.Types[9]
+	if difference, declared := conclusion.Attributes.Lookup("difference"); !declared || difference.Kind != pmdoc.BlockAttributeEnum ||
+		!slices.Equal(difference.Choices, []string{"files_differ", "code_breaks", "check_wrong", "statement_wrong"}) {
+		t.Fatalf("conclusion attribute difference = %+v (declared %v), want an enum of the four kinds of difference", difference, declared)
+	}
+	if statement, declared := conclusion.Attributes.Lookup("statement"); !declared || statement.Kind != pmdoc.BlockAttributeString {
+		t.Fatalf("conclusion attribute statement = %+v (declared %v), want a string", statement, declared)
+	}
+	if none, declared := conclusion.Attributes.Lookup("no_statement"); !declared || none.Kind != pmdoc.BlockAttributeBool {
+		t.Fatalf("conclusion attribute no_statement = %+v (declared %v), want a bool", none, declared)
 	}
 
 	types := map[string][]storeAttributeRead{}

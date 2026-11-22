@@ -17,7 +17,7 @@ var TypeMigrations = []string{
 	// each held to its migration by cmd/dispatch's requireStoreOnlyAttributesMatchTheirMigrations.
 	"20261116123354_lens_catalogue.up.sql",
 	"20261116163700_issue_tree_block_schema.up.sql",
-	// Version 7: the change request's attributes, the component block type, and the supertags of
-	// the approved spec (internal/dispatch/specstore).
+	// Version 7: the change request's attributes, the component and conclusion block types, and
+	// the supertags of the approved spec (internal/dispatch/specstore).
 	"20261122060100_spec_change_block_schema.up.sql",
 }

@@ -29,9 +29,10 @@ func TestTheSpecQueryTakesComponentsUnderOneDefinition(t *testing.T) {
 	}
 	database := storetest.Open(t)
 	rig := &digestRig{database: database}
-	const requirement, component = "PIN-1/spec#r1", "PIN-1/spec#billing"
+	pinned := pinnedIssue(t)
+	requirement, component := pinned+"/spec#r1", pinned+"/spec#billing"
 	rig.state(t,
-		blockTuple(requirement, graphstore.TuplePartOf, graphstore.KindIssue, "PIN-1", true),
+		blockTuple(requirement, graphstore.TuplePartOf, graphstore.KindIssue, pinned, true),
 		blockValue(requirement, refs.AttributeRank, "1V"),
 		blockValue(requirement, graphstore.AttributeText, ":::requirement{#r1}\nThe words.\n:::\n"),
 		blockValue(requirement, "size", "1.5"),
@@ -39,23 +40,23 @@ func TestTheSpecQueryTakesComponentsUnderOneDefinition(t *testing.T) {
 		blockValue(requirement, refs.AttributePlacement, refs.PlacementAuthored),
 		blockValue(requirement, graphstore.AttributeState, graphstore.StateLive),
 		blockValue(requirement, graphstore.AttributeVisibility, graphstore.VisibilityProject),
-		blockTuple(requirement, "serves", refs.BlockNodeKind, "PIN-1/spec#k1", true),
+		blockTuple(requirement, "serves", refs.BlockNodeKind, pinned+"/spec#k1", true),
 	)
 	read := func() docs.QueryRecord {
 		t.Helper()
-		record, err := docs.ReadQueryRecord(context.Background(), database.Pool, "PIN-1", graphstore.QuerySpec, refs.TreeCut{})
+		record, err := docs.ReadQueryRecord(context.Background(), database.Pool, pinned, graphstore.QuerySpec, refs.TreeCut{})
 		if err != nil {
-			t.Fatalf("read the spec record of PIN-1: %v", err)
+			t.Fatalf("read the spec record of %s: %v", pinned, err)
 		}
 		return record
 	}
 	if before := read(); string(before.Record) != pinnedRecord || before.Digest != pinnedDigest {
-		t.Fatalf("with no component block the spec record of PIN-1 reads %q (%s), want the pinned record %q (%s)", before.Record, before.Digest, pinnedRecord, pinnedDigest)
+		t.Fatalf("with no component block the spec record of %s reads %q (%s), want the pinned record %q (%s)", pinned, before.Record, before.Digest, pinnedRecord, pinnedDigest)
 	}
 
 	const text = ":::component{#billing name=\"Billing\" kind=\"interface\" joins=\"bank shop\"}\nIt bills.\n:::\n"
 	rig.state(t,
-		blockTuple(component, graphstore.TuplePartOf, graphstore.KindIssue, "PIN-1", true),
+		blockTuple(component, graphstore.TuplePartOf, graphstore.KindIssue, pinned, true),
 		blockValue(component, refs.AttributeRank, "1W"),
 		blockValue(component, graphstore.AttributeText, text),
 		blockValue(component, "joins", "bank shop"),
@@ -64,13 +65,31 @@ func TestTheSpecQueryTakesComponentsUnderOneDefinition(t *testing.T) {
 	)
 	values := recordField("joins") + recordField("bank shop") + recordField(graphstore.AttributeState) + recordField(graphstore.StateLive) +
 		recordField(graphstore.AttributeVisibility) + recordField(graphstore.VisibilityProject)
-	want := pinnedRecord + recordField(refs.BlockNodeKind+":"+component) + recordField("component") + recordField(graphstore.KindIssue+":PIN-1") +
-		recordField("1W") + recordField(values) + recordField(text) + recordField(recordField(graphstore.TuplePartOf)+recordField(graphstore.KindIssue+":PIN-1"))
+	want := pinnedRecord + recordField(refs.BlockNodeKind+":"+component) + recordField("component") + recordField(graphstore.KindIssue+":"+pinned) +
+		recordField("1W") + recordField(values) + recordField(text) + recordField(recordField(graphstore.TuplePartOf)+recordField(graphstore.KindIssue+":"+pinned))
 	after := read()
 	if string(after.Record) != want {
-		t.Errorf("with a component block the spec record of PIN-1 reads\n%q\nwant\n%q", after.Record, want)
+		t.Errorf("with a component block the spec record of %s reads\n%q\nwant\n%q", pinned, after.Record, want)
 	}
 	if after.Digest == pinnedDigest || !strings.Contains(string(after.Record), "component") {
 		t.Errorf("the component block leaves the spec digest at %s", after.Digest)
 	}
+}
+
+// pinnedIssue is the issue of the tree whose spec record pinnedRecord pins, read from the record's
+// first field, the node of its requirement (`block:<issue>/spec#r1`), so this test writes its tree
+// under the issue that record names.
+func pinnedIssue(t *testing.T) string {
+	t.Helper()
+	length, rest, _ := strings.Cut(pinnedRecord, " ")
+	size, err := strconv.Atoi(length)
+	if err != nil || size > len(rest) {
+		t.Fatalf("the pinned record %q opens with no field", pinnedRecord)
+	}
+	node, isBlock := strings.CutPrefix(rest[:size], refs.BlockNodeKind+":")
+	issue, _, inIssue := strings.Cut(node, "/")
+	if !isBlock || !inIssue {
+		t.Fatalf("the pinned record's first field is %q, want the node of a block of an issue", rest[:size])
+	}
+	return issue
 }

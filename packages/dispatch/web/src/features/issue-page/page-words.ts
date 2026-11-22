@@ -66,13 +66,13 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the eight typed blocks of those documents, the
+ * issue, the documents and images it carries, the ten typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
- * `criterion` are the block type names in
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading`,
+ * `criterion`, `component` and `conclusion` are the block type names in
  * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
  * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
  * because the page draws it inside its own sentences and rows, where a capital would read as a
@@ -87,6 +87,13 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `component` block: a part of the software, or an interface between two parts, that
+   *  statements of The Spec are about. The schema's own word is a plain one, so the page draws
+   *  it. */
+  component: "component",
+  /** A `conclusion` block: what a change found where its files, its code or its checks differ
+   *  from the approved spec, with its evidence and its outcomes. */
+  conclusion: "conclusion",
   /** A `criterion` block: what a person wants to be able to do, in their own words, which a
    *  statement answers. The schema's own word is a plain one, so the page draws it. */
   criterion: "criterion",
@@ -1171,9 +1178,14 @@ export const CONTROL_LABELS = freeze({
  * A label is lowercase, like the block name it sits under, and the stylesheet adds the colon.
  */
 export const BLOCK_ATTRIBUTE_LABELS = freeze({
+  /** The components and interfaces a statement of The Spec is about. */
+  about: "about",
   answer: "answer",
   answered_at: "answered at",
   answered_by: "answered by",
+  /** The approved version of the node its writer read, which a change request is written
+   *  against. */
+  base: "written against version",
   /** The CI run whose conclusion at the pull request's head is a check's result, read in place
    *  of one a role records. "CI" keeps its capitals: it is an initialism, not a word. */
   ci_check: "CI check",
@@ -1181,10 +1193,16 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   copied_from_document: "copied from document",
   /** The author of a decision, which the server writes from who wrote the block. */
   decided_by: "decided by",
+  /** Which of the four kinds of difference a conclusion found. */
+  difference: "difference",
   /** The question an agent's decision settles. An ask is drawn as a question (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The CI job a check's test runs in. */
+  job: "job",
+  /** The components an interface joins. */
+  joins: "joins",
   /** The person who kept the decision as it reads; the server writes it. */
   kept_by: "kept by",
   /** The sum of the words that person kept, which the server compares with the words now. */
@@ -1192,15 +1210,27 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
+  /** The name of a component or an interface. */
+  name: "name",
   needs: "needs",
   negative_control: "negative control",
+  /** Whether a conclusion names no approved statement. */
+  no_statement: "no statement",
   /** The question, comment or message a statement, a criterion, a check or a plan task hangs
    *  under, by the plain word the page's own parent controls use. */
   parent: "parent",
+  /** How a check of The Spec is run: a program, a query or an agent. */
+  procedure: "procedure",
+  /** Whether the change request removes the node from the approved spec. */
+  removes: "removes",
   /** Whether a newer decision stands in this one's place. */
   replaced: "replaced",
   run: "run",
+  /** The test runner of a check's test. */
+  runner: "runner",
   selected: "selected",
+  /** The test of a check, as its runner selects it. */
+  selector: "selector",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
   /** The spec blocks a decision, or the answer of an ask, shaped. */
@@ -1209,11 +1239,21 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
    *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
   state: "state",
+  /** The approved statement a check of The Spec or a conclusion is about. */
+  statement: "statement",
+  /** What a check of The Spec reads: the code, production or The Spec's graph. */
+  subject: "subject",
+  /** The statements of The Spec a statement supports. */
+  supports: "supports",
   surface: "surface",
+  /** How long a check of The Spec may run. */
+  time_limit: "time limit",
   title: "title",
   /** How unsure the agent was of a decision, and in the next one why. */
   uncertainty: "uncertainty",
   uncertainty_reason: "why unsure",
+  /** The statement, or the component, a node of The Spec stands under. */
+  under: "under",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1367,6 +1407,8 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    component: "component",
+    conclusion: "conclusion",
     criterion: "criterion",
     decision: "decision",
     document: "document",

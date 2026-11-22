@@ -397,6 +397,31 @@
       },
       "since": 7,
       "creatable_since": 7
+    },
+    {
+      "name": "conclusion",
+      "content": "paragraph+",
+      "render": "host",
+      "attributes": {
+        "statement": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "difference": {
+          "kind": "enum",
+          "choices": ["files_differ", "code_breaks", "check_wrong", "statement_wrong"],
+          "since": 7,
+          "creatable_since": 7
+        },
+        "no_statement": {
+          "kind": "bool",
+          "since": 7,
+          "creatable_since": 7
+        }
+      },
+      "since": 7,
+      "creatable_since": 7
     }
   ]
 }

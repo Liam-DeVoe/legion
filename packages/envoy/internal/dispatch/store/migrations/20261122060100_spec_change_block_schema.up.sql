@@ -13,11 +13,16 @@
 --   `removes`;
 -- - the block type `component`, holding paragraphs (`paragraph+`), its body a component's purpose,
 --   with `name`, `kind` (an enum of interface alone, absent for a component), `under`, `joins`,
---   `base` and `removes`.
+--   `base` and `removes`;
+-- - the block type `conclusion`, holding paragraphs (`paragraph+`), its body a change's evidence
+--   and outcomes (D6 of the work-units plan), with `statement` (the approved statement it
+--   concludes about), `difference` (an enum of files_differ, code_breaks, check_wrong and
+--   statement_wrong) and `no_statement` (a bool).
 --
--- It also adds the two supertags of the approved spec, which declare no block type: `spec_node`,
--- a node of The Spec (internal/dispatch/specstore), and `spec_import_hold`, a statement of an
--- approved level its import could not resolve.
+-- It also adds three supertags the seed does not hold: `conclusion`, the block type above, and
+-- the two supertags of the approved spec, which declare no block type: `spec_node`, a node of The
+-- Spec (internal/dispatch/specstore), and `spec_import_hold`, a statement of an approved level its
+-- import could not resolve.
 --
 -- A type is a node of the store, and the server installs the schema it builds from those nodes,
 -- not the file (20261109051232), so the change reaches a store only as this migration, in the
@@ -68,19 +73,34 @@ update graph_nodes
 set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 8, "since": 7, "creatable_since": 7}'::jsonb
 where (kind, id) in (('supertag', 'component'));
 
--- The two supertags of the approved spec, written as the seed writes a supertag that declares no
+-- The three supertags this change adds. `conclusion` is a block type, written as the seed writes
+-- the supertag of a type of the file: its content rule, who draws it, the schema's version, its
+-- place among the types (component holds 8, so conclusion holds 9) and its element versions. The
+-- two supertags of the approved spec are written as the seed writes a supertag that declares no
 -- block type: its node, carrying no attribute. Then the attribute nodes. Each attribute node's id
 -- is `<supertag>/<store name>`, and its attributes are what the seed builds for an attribute of
 -- the file: the attribute's own JSON, with its name, its store name and its position beside it.
 -- None is named for a base attribute, so each store name is its own name
 -- (pmdoc/schemanodes.StoreName). A position is the attribute's place among its type's attributes,
 -- counted from 0: requirement holds two before kind, check seven before statement. The store holds
--- none of the twenty-three before this runs.
+-- none of the twenty-seven before this runs.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
 values
+  ('supertag', 'conclusion', 'supertag', 'project', 'live',
+   '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 9, "since": 7, "creatable_since": 7}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
   ('supertag', 'spec_import_hold', 'supertag', 'project', 'live', '{}',
    '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
   ('supertag', 'spec_node', 'supertag', 'project', 'live', '{}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'conclusion/statement', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "statement", "store_name": "statement", "position": 0}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'conclusion/difference', 'attribute', 'project', 'live',
+   '{"kind": "enum", "choices": ["files_differ", "code_breaks", "check_wrong", "statement_wrong"], "since": 7, "creatable_since": 7, "name": "difference", "store_name": "difference", "position": 1}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'conclusion/no_statement', 'attribute', 'project', 'live',
+   '{"kind": "bool", "since": 7, "creatable_since": 7, "name": "no_statement", "store_name": "no_statement", "position": 2}',
    '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
   ('attribute', 'requirement/kind', 'attribute', 'project', 'live',
    '{"kind": "enum", "choices": ["behavior", "structure", "property"], "since": 7, "creatable_since": 7, "name": "kind", "store_name": "kind", "position": 2}',
@@ -150,6 +170,14 @@ values
 -- at the time and by the writer of the node's row.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
+  ('attribute', 'conclusion/difference', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/base', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/base', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/job', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
@@ -201,6 +229,9 @@ values
 -- spelling of the node's id, so without it a node is no attribute of any type.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
+  ('attribute', 'conclusion/difference', 'attribute_of', 'supertag', 'conclusion', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'attribute_of', 'supertag', 'conclusion', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'attribute_of', 'supertag', 'conclusion', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/base', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/job', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/procedure', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
@@ -226,9 +257,29 @@ values
 -- The values each node this migration writes or moves carries, as the tuples they are, as the
 -- seed states every type node's: a value the row holds as JSON is written as that JSON's text and
 -- a string as itself, so `version` is `7` and `choices` is `["code", "production", "graph"]`. The
--- supertag node `component`, to which the seed gave no attribute, gains every value above.
+-- supertag node `component`, to which the seed gave no attribute, and the new supertag node
+-- `conclusion` each state every value above.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
+  ('attribute', 'conclusion/difference', 'choices', 'value', '["files_differ", "code_breaks", "check_wrong", "statement_wrong"]', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'kind', 'value', 'enum', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'name', 'value', 'difference', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'position', 'value', '1', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/difference', 'store_name', 'value', 'difference', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'kind', 'value', 'bool', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'name', 'value', 'no_statement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'position', 'value', '2', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/no_statement', 'store_name', 'value', 'no_statement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'name', 'value', 'statement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'position', 'value', '0', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'conclusion/statement', 'store_name', 'value', 'statement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/base', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/base', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/base', 'name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
@@ -365,15 +416,22 @@ values
   ('supertag', 'component', 'position', 'value', '8', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('supertag', 'component', 'render', 'value', 'host', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('supertag', 'component', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
-  ('supertag', 'component', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);
+  ('supertag', 'component', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'block_type', 'value', 'true', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'content', 'value', 'paragraph+', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'position', 'value', '9', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'render', 'value', 'host', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'conclusion', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);
 
 -- The version. Every block type's supertag node carries the version of the schema the store
 -- holds, and the schema the nodes build takes the highest of them, so each one moves to 7, not
 -- the new type alone. A supertag that declares no block type carries no version and is left
--- alone. The block types the store holds at this version are the eight below, and `component`,
--- which took 7 with its values above. Each of the eight carries what 20261116082319 gave it at
--- version 5, or, for criterion, what 20261116163700 gave it at version 6, now at version 7. No two
--- carry the same value, so each is a statement of its own.
+-- alone. The block types the store holds at this version are the eight below, and `component`
+-- and `conclusion`, which took 7 with their values above. Each of the eight carries what
+-- 20261116082319 gave it at version 5, or, for criterion, what 20261116163700 gave it at version 6,
+-- now at version 7. No two carry the same value, so each is a statement of its own.
 update graph_nodes
 set attributes = '{"block_type": true, "content": "block+", "render": "host", "version": 7, "position": 0}'::jsonb
 where (kind, id) in (('supertag', 'callout'));
@@ -408,7 +466,7 @@ where (kind, id) in (('supertag', 'criterion'));
 
 -- The move, as the tuple it is: a moved attribute is a later value appended under its name, so
 -- each block type's newest `version` tuple is the 7 its row now carries and the 6 before it stays
--- in its history. `component` states its 7 among its values above.
+-- in its history. `component` and `conclusion` state their 7 among their values above.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('supertag', 'ask', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),

@@ -3,6 +3,7 @@ package specstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,10 @@ import (
 )
 
 var person = model.Actor{Kind: "user", ID: "alice"}
+
+// issue is the name of the nth issue whose change request a test approves. The store keeps an
+// issue's name as the provenance of what its approval wrote and reads nothing else of it.
+func issue(n int) string { return fmt.Sprintf("<issue %d>", n) }
 
 // request is the change request of issue holding blocks, each `<id>|<block>`.
 func request(issue string, blocks ...string) specchange.Request {
@@ -80,21 +85,27 @@ func current(t *testing.T, store *store.Store) map[string]string {
 	return texts
 }
 
+// refusedAsRetired is whether err refuses an approval for writing an id the approved spec removed.
+func refusedAsRetired(err error) bool {
+	var refusal *Refusal
+	return errors.As(err, &refusal) && refusal.Code == RefusalNodeInvalid && strings.Contains(refusal.Detail, "retired-id")
+}
+
 // The approved spec keeps each version and each removal of a node in the order they were written,
 // numbers each version after the one before, and prints each from its fields; specgraph.Approved
 // reads the same nodes, a removed one as removed.
 func TestTheApprovedSpecKeepsEachVersionOfANode(t *testing.T) {
 	database := storetest.Open(t)
-	mustApply(t, database, "CORE-1", statement("a-bill-is-sent", "A bill is sent.", ""), statement("a-bill-is-kept", "A bill is kept.", ""))
-	mustApply(t, database, "CORE-2", statement("a-bill-is-sent", "A bill is sent once.", ` base="1"`))
-	mustApply(t, database, "CORE-3", statement("a-bill-is-kept", "A bill is kept.", ` base="1" removes="true"`))
+	mustApply(t, database, issue(1), statement("a-bill-is-sent", "A bill is sent.", ""), statement("a-bill-is-kept", "A bill is kept.", ""))
+	mustApply(t, database, issue(2), statement("a-bill-is-sent", "A bill is sent once.", ` base="1"`))
+	mustApply(t, database, issue(3), statement("a-bill-is-kept", "A bill is kept.", ` base="1" removes="true"`))
 	history, err := ReadNode(context.Background(), database.Pool, "CORE", "acme/app", "a-bill-is-sent")
 	if err != nil || history == nil {
 		t.Fatalf("read a-bill-is-sent: %v, %v", history, err)
 	}
 	if len(history.Versions) != 2 || history.Versions[0].Version != 1 || history.Versions[1].Version != 2 ||
-		history.Versions[0].Provenance.Issue != "CORE-1" || history.Versions[1].Provenance.Issue != "CORE-2" {
-		t.Errorf("a-bill-is-sent holds %+v, want version 1 of CORE-1 and version 2 of CORE-2", history.Versions)
+		history.Versions[0].Provenance.Issue != issue(1) || history.Versions[1].Provenance.Issue != issue(2) {
+		t.Errorf("a-bill-is-sent holds %+v, want version 1 of %s and version 2 of %s", history.Versions, issue(1), issue(2))
 	}
 	approved, err := Approved(context.Background(), database.Pool, "CORE", "acme/app")
 	if err != nil {
@@ -108,7 +119,7 @@ func TestTheApprovedSpecKeepsEachVersionOfANode(t *testing.T) {
 	if sent.Removed == nil || *sent.Removed || !strings.Contains(sent.Versions[1].Block, "A bill is sent once.") {
 		t.Errorf("a-bill-is-sent reads %+v, want version 2 current", sent)
 	}
-	if _, err := apply(database, "CORE-4", statement("a-bill-is-kept", "A bill is kept again.", "")); err == nil || !strings.Contains(err.Error(), "retired-id") {
+	if _, err := apply(database, issue(4), statement("a-bill-is-kept", "A bill is kept again.", "")); !refusedAsRetired(err) {
 		t.Errorf("writing the removed id again answers %v, want it refused as a retired id", err)
 	}
 }
@@ -118,14 +129,14 @@ func TestTheApprovedSpecKeepsEachVersionOfANode(t *testing.T) {
 // removal of each check that serves it now and did not then.
 func TestAnEarlierTextBringsBackItsChecks(t *testing.T) {
 	database := storetest.Open(t)
-	mustApply(t, database, "CORE-1",
+	mustApply(t, database, issue(1),
 		statement("a-bill-is-sent", "A bill is sent.", ""),
 		check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent.", ""))
-	mustApply(t, database, "CORE-2",
+	mustApply(t, database, issue(2),
 		statement("a-bill-is-sent", "A bill is sent by mail.", ` base="1"`),
 		check("a-sent-bill-reads-sent", "a-bill-is-sent", "A mailed bill reads sent.", ` base="1"`),
 		check("a-mailed-bill-has-a-stamp", "a-bill-is-sent", "A mailed bill has a stamp.", ""))
-	applied := mustApply(t, database, "CORE-3", statement("a-bill-is-sent", "A bill is sent.", ` base="2"`))
+	applied := mustApply(t, database, issue(3), statement("a-bill-is-sent", "A bill is sent.", ` base="2"`))
 	texts := current(t, database)
 	if !strings.Contains(texts["a-bill-is-sent"], "A bill is sent.\n") {
 		t.Errorf("a-bill-is-sent reads %q, want its first text back", texts["a-bill-is-sent"])
@@ -145,26 +156,84 @@ func TestAnEarlierTextBringsBackItsChecks(t *testing.T) {
 	}
 }
 
+// A check a later approval removed comes back when a request restores the text of its statement it
+// served (R25), as a version written after its removal, and goes again when a request restores the
+// text that removed it. Its id stays retired for any other write: a request that writes it as a new
+// node, and not as a check of a restored text, is refused, before the restore and after it.
+func TestRestoringAnEarlierTextBringsBackARemovedCheck(t *testing.T) {
+	database := storetest.Open(t)
+	mustApply(t, database, issue(1),
+		statement("a-bill-is-sent", "A bill is sent.", ""),
+		check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent.", ""))
+	mustApply(t, database, issue(2),
+		statement("a-bill-is-sent", "A bill is sent by mail.", ` base="1"`),
+		check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent.", ` base="1" removes="true"`))
+	if _, err := apply(database, issue(3), check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent again.", "")); !refusedAsRetired(err) {
+		t.Fatalf("writing the removed check as a new node answers %v, want it refused as a retired id", err)
+	}
+
+	restored, err := apply(database, issue(4), statement("a-bill-is-sent", "A bill is sent.", ` base="2"`))
+	if err != nil {
+		t.Fatalf("restoring the first text of a-bill-is-sent answers %v, want it approved with the check that text held", err)
+	}
+	if text := current(t, database)["a-sent-bill-reads-sent"]; !strings.Contains(text, "Claim: A sent bill reads sent.") {
+		t.Errorf("a-sent-bill-reads-sent reads %q, want the claim it held with the first text", text)
+	}
+	history, err := ReadNode(context.Background(), database.Pool, "CORE", "acme/app", "a-sent-bill-reads-sent")
+	if err != nil || history == nil {
+		t.Fatalf("read a-sent-bill-reads-sent: %v, %v", history, err)
+	}
+	if len(history.Versions) != 2 || len(history.Removals) != 1 || history.Versions[1].Version != 2 ||
+		history.Versions[1].Provenance.Act != ActBroughtBack || history.Versions[1].Provenance.BroughtBackWith != "a-bill-is-sent" {
+		t.Errorf("a-sent-bill-reads-sent holds versions %+v and removals %+v, want version 1, its removal, and version 2 brought back with a-bill-is-sent",
+			history.Versions, history.Removals)
+	}
+	if !writes(restored, "a-sent-bill-reads-sent", ActBroughtBack, false) {
+		t.Errorf("the restore wrote %+v, want a-sent-bill-reads-sent brought back", restored.Written)
+	}
+
+	reversed := mustApply(t, database, issue(5), statement("a-bill-is-sent", "A bill is sent by mail.", ` base="3"`))
+	if text, held := current(t, database)["a-sent-bill-reads-sent"]; held {
+		t.Errorf("a-sent-bill-reads-sent reads %q, want it removed again: it did not serve the text restored now", text)
+	}
+	if !writes(reversed, "a-sent-bill-reads-sent", ActBroughtBack, true) {
+		t.Errorf("the second restore wrote %+v, want the removal of a-sent-bill-reads-sent brought back with it", reversed.Written)
+	}
+	if _, err := apply(database, issue(6), check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent again.", "")); !refusedAsRetired(err) {
+		t.Errorf("writing the removed check as a new node after the restores answers %v, want it refused as a retired id", err)
+	}
+}
+
+// writes is whether the act applied wrote id by act, as a removal where removed.
+func writes(applied Applied, id, act string, removed bool) bool {
+	for _, written := range applied.Written {
+		if written.ID == id {
+			return written.Act == act && written.Removed == removed
+		}
+	}
+	return false
+}
+
 // Two approvals at one base are judged one after the other: the second waits on the repository's
 // lock while the first's transaction is open, and once the first commits it reads what the first
 // wrote and is refused as stale.
 func TestTheSecondApprovalAtOneBaseWaitsAndIsStale(t *testing.T) {
 	database := storetest.Open(t)
-	mustApply(t, database, "CORE-1", statement("a-bill-is-sent", "A bill is sent.", ""))
+	mustApply(t, database, issue(1), statement("a-bill-is-sent", "A bill is sent.", ""))
 	ctx := context.Background()
 	first, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	defer first.Rollback(ctx)
-	if _, err := Apply(ctx, first, Input{Project: "CORE", Repo: "acme/app", Issue: "CORE-2",
-		Request:    request("CORE-2", statement("a-bill-is-sent", "A bill is sent today.", ` base="1"`)),
-		Provenance: Provenance{Act: ActApproval, Issue: "CORE-2", Person: person}, Who: person}, RunNow(ctx, first)); err != nil {
-		t.Fatalf("approve CORE-2: %v", err)
+	if _, err := Apply(ctx, first, Input{Project: "CORE", Repo: "acme/app", Issue: issue(2),
+		Request:    request(issue(2), statement("a-bill-is-sent", "A bill is sent today.", ` base="1"`)),
+		Provenance: Provenance{Act: ActApproval, Issue: issue(2), Person: person}, Who: person}, RunNow(ctx, first)); err != nil {
+		t.Fatalf("approve %s: %v", issue(2), err)
 	}
 	second := make(chan error, 1)
 	go func() {
-		_, err := apply(database, "CORE-3", statement("a-bill-is-sent", "A bill is sent tomorrow.", ` base="1"`))
+		_, err := apply(database, issue(3), statement("a-bill-is-sent", "A bill is sent tomorrow.", ` base="1"`))
 		second <- err
 	}()
 	deadline := time.Now().Add(10 * time.Second)
@@ -187,7 +256,7 @@ func TestTheSecondApprovalAtOneBaseWaitsAndIsStale(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if err := first.Commit(ctx); err != nil {
-		t.Fatalf("commit CORE-2: %v", err)
+		t.Fatalf("commit %s: %v", issue(2), err)
 	}
 	var refusal *Refusal
 	if err := <-second; !errors.As(err, &refusal) || refusal.Code != RefusalStale || len(refusal.Stale) != 1 || refusal.Stale[0].Current != 2 {

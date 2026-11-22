@@ -12,14 +12,14 @@ import (
 // check's three fields are three paragraphs of its block.
 func TestFromVersionsReadsTheTypedBlocksOfEachVersion(t *testing.T) {
 	t.Parallel()
-	spec := VersionText{Document: "CORE-1/spec", Version: 3, Markdown: "# The spec\n\nProse.\n\n" +
+	spec := VersionText{Document: testIssue + "/spec", Version: 3, Markdown: "# The spec\n\nProse.\n\n" +
 		":::requirement{#a-bill-is-sent kind=\"behavior\" about=\"billing\"}\nA bill is sent.\n:::\n\n" +
 		":::component{#billing name=\"Billing\"}\nIt bills.\n:::\n\n" +
 		":::check{#a-check-in-the-spec statement=\"a-bill-is-sent\" subject=\"code\" procedure=\"agent\"}\nClaim: X.\n\nProcedure: Y.\n\nFailing example: Z.\n:::\n\n" +
 		"```\n:::requirement{#in-code kind=\"behavior\"}\nNot a block.\n:::\n```\n"}
-	checks := VersionText{Document: "CORE-1/verification-md", Version: 2, Markdown: ":::check{#a-bill-reads-sent statement=\"a-bill-is-sent\" subject=\"code\" procedure=\"agent\"}\n" +
+	checks := VersionText{Document: testIssue + "/verification-md", Version: 2, Markdown: ":::check{#a-bill-reads-sent statement=\"a-bill-is-sent\" subject=\"code\" procedure=\"agent\"}\n" +
 		"Claim: A sent bill reads sent.\n\nProcedure: The agent sends a bill.\n\nFailing example: A build that loses it.\n:::\n"}
-	request, err := FromVersions("CORE-1", spec, &checks)
+	request, err := FromVersions(testIssue, spec, &checks)
 	if err != nil {
 		t.Fatalf("read the versions: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestFromVersionsReadsTheTypedBlocksOfEachVersion(t *testing.T) {
 	for _, proposal := range request.Proposals {
 		got = append(got, proposal.Block+" "+proposal.Kind)
 	}
-	want := []string{"CORE-1/spec#a-bill-is-sent statement", "CORE-1/spec#billing component", "CORE-1/verification-md#a-bill-reads-sent check"}
+	want := []string{testIssue + "/spec#a-bill-is-sent statement", testIssue + "/spec#billing component", testIssue + "/verification-md#a-bill-reads-sent check"}
 	if len(got) != len(want) {
 		t.Fatalf("the request reads %v, want %v", got, want)
 	}

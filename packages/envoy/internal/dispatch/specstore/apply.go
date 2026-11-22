@@ -252,7 +252,8 @@ func sameNode(version *Version, node any) bool {
 // judgeMerged judges the approved spec as the plan would leave it against the approved spec as it
 // stands: each fault of specgraph.Validate the plan adds - a statement under no parent of the two,
 // a loop, a fault of a node - refuses the approval, and a fault the approved spec already held does
-// not.
+// not. A removed id stays retired for every write but one: the check a statement's restored text
+// brings back (R25), which takes that id's approved history up again rather than reusing it.
 func judgeMerged(state State, plan []planned) *Refusal {
 	current, retired := map[string]any{}, []string{}
 	for _, id := range state.sortedIDs() {
@@ -270,20 +271,26 @@ func judgeMerged(state State, plan []planned) *Refusal {
 		merged[id] = node
 	}
 	// A node written again over its own removal stays among the retired ids, and Validate refuses
-	// it as retired-id rather than take it.
+	// it as retired-id rather than take it, unless the plan brings it back with an earlier text of
+	// its statement.
+	broughtBack := map[string]bool{}
 	for _, write := range plan {
 		if write.remove {
 			delete(merged, write.id)
 			continue
 		}
 		merged[write.id] = write.node
+		if write.broughtBackWith != "" {
+			broughtBack[write.id] = true
+		}
 	}
+	stillRetired := slices.DeleteFunc(slices.Clone(retired), func(id string) bool { return broughtBack[id] })
 	before := map[string]bool{}
 	for _, problem := range specgraph.Validate(treeOf(current), specgraph.Options{Retired: retired}) {
 		before[problem.Node+"\x00"+problem.Detail] = true
 	}
 	var missing, loops, invalid []specgraph.Problem
-	for _, problem := range specgraph.Validate(treeOf(merged), specgraph.Options{Retired: retired}) {
+	for _, problem := range specgraph.Validate(treeOf(merged), specgraph.Options{Retired: stillRetired}) {
 		if before[problem.Node+"\x00"+problem.Detail] {
 			continue
 		}

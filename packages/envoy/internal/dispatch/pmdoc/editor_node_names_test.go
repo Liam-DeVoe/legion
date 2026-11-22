@@ -22,6 +22,8 @@ var editorNodeDifferences = map[string]string{
 	"ask":         "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"callout":     "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"check":       "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
+	"component":   "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
+	"conclusion":  "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"criterion":   "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"decision":    "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"plan_task":   "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",

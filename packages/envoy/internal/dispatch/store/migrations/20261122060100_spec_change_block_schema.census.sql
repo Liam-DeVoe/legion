@@ -1,5 +1,5 @@
--- This migration writes the type nodes of the store alone: it writes two `supertag` nodes and
--- twenty-one `attribute` nodes, moves the supertag node `component` to a block type, sets the
+-- This migration writes the type nodes of the store alone: it writes three `supertag` nodes and
+-- twenty-four `attribute` nodes, moves the supertag node `component` to a block type, sets the
 -- version on the block-type supertag nodes, and appends the tuples that state each value. Its
 -- ground is the node store's rule: "A supertag write ships as a migration, in the same release as
 -- the binary that handles it. It passes the pre-apply census." No route or command writes a node

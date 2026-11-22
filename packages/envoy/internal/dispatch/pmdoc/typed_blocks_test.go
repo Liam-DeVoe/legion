@@ -520,6 +520,39 @@ func TestTypedBlockAttributeValuesCarryTheKindTheSchemaDeclares(t *testing.T) {
 	}
 }
 
+// A conclusion (D6 of the work-units plan, block schema version 7) holds the approved statement it
+// concludes about and the kind of difference it found, or that it names no statement, each read
+// with the kind its type declares, and its evidence and outcomes as paragraphs of its body.
+func TestTheConclusionBlockHoldsItsStatementDifferenceAndEvidence(t *testing.T) {
+	const markdown = ":::conclusion{#c1 statement=\"a-bill-is-sent\" difference=\"code_breaks\"}\n" +
+		"Evidence: The test of a sent bill fails at the head.\n\nOutcomes: A sent bill reads sent again.\n:::\n\n" +
+		":::conclusion{#c2 no_statement=\"true\"}\nEvidence: The deploy job named the wrong host.\n\nOutcomes: none.\n:::\n"
+	tree, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("parse the conclusions: %v", err)
+	}
+	rendered, offsets, err := RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render the conclusions: %v", err)
+	}
+	if rendered != markdown {
+		t.Errorf("the conclusions render\n%q\nwant them as written\n%q", rendered, markdown)
+	}
+	attributes := map[string][]model.BlockAttributeValue{}
+	for _, offset := range offsets {
+		attributes[offset.ID] = offset.Attributes
+	}
+	want := map[string][]model.BlockAttributeValue{
+		"c1": {{Name: "statement", Value: "a-bill-is-sent", Kind: "string"}, {Name: "difference", Value: "code_breaks", Kind: "enum"}},
+		"c2": {{Name: "no_statement", Value: "true", Kind: "bool"}},
+	}
+	for id, values := range want {
+		if !reflect.DeepEqual(attributes[id], values) {
+			t.Errorf("the conclusion %s carries the attributes %+v, want %+v", id, attributes[id], values)
+		}
+	}
+}
+
 func TestTypedBlockDirectiveErrorsNameTheProblem(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -529,12 +562,17 @@ func TestTypedBlockDirectiveErrorsNameTheProblem(t *testing.T) {
 		{
 			name:     "unknown type",
 			markdown: ":::unknown{#block-1}\nBody.\n:::\n",
-			want:     `unknown typed block "unknown" (known types: ask, callout, check, component, criterion, decision, plan_task, reading, requirement)`,
+			want:     `unknown typed block "unknown" (known types: ask, callout, check, component, conclusion, criterion, decision, plan_task, reading, requirement)`,
 		},
 		{
 			name:     "invalid enum",
 			markdown: ":::callout{#block-1 kind=\"urgent\" title=\"Read this\"}\nBody.\n:::\n",
 			want:     `attribute "kind": must be one of note, warning, got "urgent"`,
+		},
+		{
+			name:     "a conclusion naming a difference that is none of the four",
+			markdown: ":::conclusion{#block-1 difference=\"looks_wrong\"}\nEvidence: E.\n\nOutcomes: O.\n:::\n",
+			want:     `attribute "difference": must be one of files_differ, code_breaks, check_wrong, statement_wrong, got "looks_wrong"`,
 		},
 		{
 			name:     "unknown attribute",
