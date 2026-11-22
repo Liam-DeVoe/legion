@@ -90,8 +90,8 @@ type memoryPeopleStore struct {
 
 // memoryPerson is one person's row in memoryPeopleStore: ConfirmedAt is the store clock's time of
 // the last confirmation, zero for none, Kind the member kind the last sign-in or confirmation
-// wrote, HostedDomain the `hd` it recorded, Held a recorded hold, SignedOut a sign-out or an
-// EndKeep that kept the refresh token, and SignedInAt the store clock's time of the last sign-in.
+// wrote, HostedDomain the `hd` it recorded, Held a recorded hold, SignedOut a sign-out that kept
+// the refresh token, and SignedInAt the store clock's time of the last sign-in.
 type memoryPerson struct {
 	RefreshToken string
 	Subject      string
@@ -1834,13 +1834,9 @@ func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject, refr
 	if err := s.sessions.RevokeSessions(ctx, email); err != nil {
 		return false, err
 	}
-	switch mode {
-	case auth.EndKeep:
-		person.ConfirmedAt, person.SignedOut = s.clock(), true
-	case auth.EndHold:
-		person.RefreshToken, person.ConfirmedAt, person.Held = "", time.Time{}, true
-	default:
-		person.RefreshToken, person.ConfirmedAt = "", time.Time{}
+	person.RefreshToken, person.ConfirmedAt = "", time.Time{}
+	if mode == auth.EndHold {
+		person.Held = true
 	}
 	s.people[email] = person
 	return true, nil

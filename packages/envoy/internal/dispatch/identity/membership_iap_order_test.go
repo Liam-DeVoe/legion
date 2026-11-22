@@ -184,7 +184,7 @@ func TestIAPMembershipPassCountsAnUnwrittenActiveHeld(t *testing.T) {
 			line = strings.TrimSpace(candidate)
 		}
 	}
-	if !strings.Contains(line, "confirmed=0 held=1 kept=0 unasked=0 forgotten=0") {
+	if !strings.Contains(line, "confirmed=0 held=1 unasked=0 forgotten=0") {
 		t.Fatalf("the pass's line is %q; want ada counted held=1 and confirmed=0: her hold stood", line)
 	}
 }

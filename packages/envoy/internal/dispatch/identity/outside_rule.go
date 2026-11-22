@@ -182,10 +182,11 @@ func onDomain(at, domain string) bool {
 	}
 }
 
-// End is DomainRule.End, logged in words that fit both kinds of person this rule admits: a
-// restricted member was never admitted by a Workspace membership, so "Google did not confirm the
-// person's membership of the domain" would misname why it ended. The reason names what the hourly
-// confirmation found: most often, for such a person, that no project names them any more.
+// End is DomainRule.End, logged in this rule's own words. It ends a refused refresh of a full
+// member's Google sign-in (Membership.end) under PasskeyRule, which embeds this rule and which
+// cmd/dispatch's signInRule builds for DISPATCH_SIGNIN_PASSKEY=1: no Google sign-in admits a
+// restricted member, and a passkey's sign-in is never refreshed (Membership.ConfirmFor), so a
+// full member is the one person it reaches. The reason names what the hourly confirmation found.
 func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode) (bool, error) {
 	return endSubject(ctx, people, email, read, reason, mode, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
 }

@@ -57,8 +57,8 @@ type MembershipPassEvent struct {
 
 // passCounts are the outcomes of one pass, each in one count, as its log line names them.
 type passCounts struct {
-	claimed                                   bool
-	confirmed, held, kept, unasked, forgotten int
+	claimed                             bool
+	confirmed, held, unasked, forgotten int
 }
 
 // Run runs one pass, in two steps, each claiming one row at a time so two passes never claim one
@@ -77,11 +77,11 @@ type passCounts struct {
 //     Google refuses.
 //
 // A pass that claimed any row logs one line of its counts: confirmed, a refresh that confirmed the
-// person or found them confirmed by another process since the claim; held, kept and forgotten, a
-// refresh that ended the sign-in in that mode, and forgotten also each forget of step 1 that
-// forgot the token (not one whose guard a sign-in or sign-out since the claim made miss); unasked,
-// every other outcome of a refresh. Step 1's checks that keep a token are not counted. A step that
-// cannot claim ends, and the other still runs; Run answers both failures.
+// person or found them confirmed by another process since the claim; held and forgotten, a refresh
+// that ended the sign-in in that mode, and forgotten also each forget of step 1 that forgot the
+// token (not one whose guard a sign-in or sign-out since the claim made miss); unasked, every other
+// outcome of a refresh. Step 1's checks that keep a token are not counted. A step that cannot claim
+// ends, and the other still runs; Run answers both failures.
 //
 // Under IAP identity Run runs checkDirectoryDue alone, since IAP keeps no refresh token to forget
 // or refresh, and counts an Active outcome confirmed, a Held one held, an Active one whose write
@@ -96,7 +96,7 @@ func (p MembershipPass) Run(ctx context.Context) error {
 		err = errors.Join(p.checkSignedOut(ctx, began, &counts), p.confirmDue(ctx, &counts))
 	}
 	if counts.claimed {
-		slog.Info("dispatch: membership pass", "confirmed", counts.confirmed, "held", counts.held, "kept", counts.kept, "unasked", counts.unasked, "forgotten", counts.forgotten)
+		slog.Info("dispatch: membership pass", "confirmed", counts.confirmed, "held", counts.held, "unasked", counts.unasked, "forgotten", counts.forgotten)
 	}
 	return err
 }
@@ -182,8 +182,6 @@ func (c *passCounts) count(outcome RefreshOutcome, err error) {
 		c.confirmed++
 	case outcome == RefreshHeld:
 		c.held++
-	case outcome == RefreshKept:
-		c.kept++
 	case outcome == RefreshForgot:
 		c.forgotten++
 	default:
