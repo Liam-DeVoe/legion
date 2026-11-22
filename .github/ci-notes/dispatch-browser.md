@@ -929,9 +929,11 @@ that ends at the code box or the credential 10.6 s, and a page that holds its ma
 more on the same box at a load average of about 1100: two input rows, 3.6 s and 5.0 s (five and
 six drivers at once), and a control row of three runs at once, 4.9 s. The stack child gained one
 driver run of those steps and took 94.3 s in all at a load average of about 900, inside its 750 s
-bound: about 344 s in all. The longest control row's own limit is 260 s (a short wait, two page
-waits at once, a short wait and 30 s), less than the stack's 780 s. 780 s and 344 s -> 19 min,
-and one more for the step's own start: 20 min.
+bound: about 344 s. The `grants` control row added after them, seven drivers at once with no
+browser, took 2.6 s on the same box at a load average of about 770: about 347 s in all. The
+longest control row's own limit is 260 s (a short wait, two page waits at once, a short wait and
+30 s), less than the stack's 780 s. 780 s and 347 s -> 19 min, and one more for the step's own
+start: 20 min.
 It costs nothing on a green run, which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone

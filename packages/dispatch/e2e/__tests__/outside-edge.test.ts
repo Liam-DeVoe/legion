@@ -20,6 +20,10 @@
  *    its status and holds its body back is UNKNOWN, written before the deadline;
  *  - `revoke` passes a credential only when the list, read again, no longer holds it, and a list
  *    that gives no answer, before the revoke or after it, is UNKNOWN;
+ *  - `grants` passes its list only holding the person's own sessions' grants, and its revoke only
+ *    on Dispatch's own 403 RESTRICTED_MEMBER; the broker's 403 NOT_APPROVER (relayed) and a 2xx
+ *    are FAIL, any other answer UNKNOWN, and with no probe id, one that is no UUID or no cookie,
+ *    it revokes nothing;
  *  - step 1 after its page loaded is FAIL or UNKNOWN, never PASS, for each way a sign-in falls
  *    short: no Create button, no sign-in, a refusal, no passkey, a landing on another origin, no
  *    cookie, no person, a page or a read with no answer; and a read whose status came and whose

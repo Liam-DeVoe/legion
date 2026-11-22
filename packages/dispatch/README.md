@@ -1053,6 +1053,16 @@ variable names one device-login code, matched whatever its letter case and with 
 hyphen, so `ABCD-EFGH` and `abcdefgh` keep the same login; it is no list and no prefix. A row passes
 only when the list, read again after the revoke, no longer holds the login, and reads `UNKNOWN`
 when the list gave no answer, before the revoke or after it.
+`grants` reads, with the kept cookie, what the person reaches of other sessions' credential
+grants: row `grants-list`, `GET /api/v1/credential-grants?approver=me`, passes on 200 holding only
+grants whose enrollment names the person as its operator and fails on 200 holding any other,
+naming how many and no grant's id or secret; row `grants-revoke`, the revoke of the grant
+`OUTSIDE_GRANTS_PROBE_ID` names, passes only on Dispatch's own refusal, 403 `RESTRICTED_MEMBER`,
+and fails on a 2xx or on the broker's 403 `NOT_APPROVER`, which shows Dispatch relayed it. Any
+other answer, or none, is `UNKNOWN`, and so is the revoke with no probe id or one that is no
+UUID, which revokes nothing. Its caller names a grant the broker lets no person end, so a revoke
+let through ends nothing. The rows go to `OUTSIDE_EDGE_GRANTS` too
+(`<state>/outside-edge-grants.tsv` when unset).
 `t5` is the browser's half of a delisting window: until `OUTSIDE_T5_DEADLINE` it asks
 `/auth/whoami` with the kept cookie, and once that is answered 401 it tries the kept passkey in a
 fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
@@ -1116,7 +1126,9 @@ run the driver against an outside origin stand-in (`e2e/__tests__/outside-edge-o
 `t5` against each answer of the passkey sign-in that is not its refusal (no answer, 404, 429,
 another code, a refusal whose body never comes) and a 2xx whose body never comes (`FAIL`),
 `revoke` against a revoke that ends nothing and a list that gives no answer before or after the
-revoke, the run against a link whose page does not load or names the link, the sign-in steps alone
+revoke, `grants` against Dispatch's refusal, the broker's relayed refusal, a 2xx, a list of
+another session's grant, other answers, and no probe id, one that is no UUID or no cookie, the
+run against a link whose page does not load or names the link, the sign-in steps alone
 against a sign-in that passes, one refused and a project list that is no answer (`sign-in`,
 `projects` and the link host's rules, and each other row a line `not run`), step 1 against each
 way a sign-in falls short after its page loaded (no Create button, no sign-in, a refusal, no
