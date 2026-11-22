@@ -12,31 +12,41 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v15's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
+// from, leak-check-v31's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
 // ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
+const ghPinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370ce571c2eafde3fe7c"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether
 // it returns for the call before it looks up any target. It reads the call as that check does
 // with no GH_HOST, which no call of these tests sets.
 //
-// The read is the check's, part for part (its gh_guard, is_read, collect and api_read): `--help`,
-// `-h` and `--version` first; then a call that begins with an option, whose words after -R/--repo
-// values and other options are read by is_read, and which the check refuses, so no read, where
-// they are not; then `gh api` (ghPinnedAPIRead); and any other call by is_read over its first two
-// words (ghPinnedIsRead).
+// The check first asks gh's aliases (gh_alias), for every call but exactly `alias list` and
+// `alias delete -- KEY`, which it lets go at once, and which this reads as is_read reads them.
+// After that the read is the check's, part for part (its gh_guard, is_read, collect and
+// api_read): `--help`, `-h` and `--version` first; then a call that begins with an option, whose
+// words after -R/--repo values and other options are read by is_read, and which the check
+// refuses, so no read, where they are not; then `gh api` (ghPinnedAPIRead); and any other call
+// by is_read over its first two words (ghPinnedIsRead).
 //
-// Four parts differ from the check. Two are stricter here: a GraphQL call is never a read here,
+// Five parts differ from the check. Two are stricter here: a GraphQL call is never a read here,
 // where the check reads a query with no mutation as one, and `gh secret`, which the check lets go
-// before it reads anything, is read here as is_read reads it. Two are looser, and in each the
-// check refuses the call before it looks up any target, so neither makes a call the port reads as
-// a read cost the check a lookup: the check refuses a first word that is a gh alias in
-// GH_CONFIG_DIR's config (gh_alias), which this reads as any other word, and `legion gh` refuses
-// such a call itself before the guard; and the check exits 2 on a missing or unreadable file an
-// argument names (file_ok), which this never looks for, so `api --input f --input=
-// repos/acme/widgets/pulls` with no file f is a read here. No call these tests count as a read
-// meets any of the four.
+// once it has asked gh's aliases and before it reads anything else, is read here as is_read reads
+// it. Three are looser, and in each the check refuses the call before it looks up any target, so
+// none makes a call the port reads as a read cost the check a lookup. The check refuses a call
+// that an alias gh lists matches (gh_alias): a key of one word that is one of the words gh may
+// read as the call's command, or a key of several words whose later words come, in that order,
+// among the arguments after the first such word, as `gh alias list` lists them for GH_CONFIG_DIR
+// and for each directory under LEGION_GH_OWNERS_DIR that holds a config.yml. This reads every
+// call as if gh lists no alias. `legion gh` refuses such a call itself, before the guard, only
+// where a word of the command path it walks is an alias that its parent's help lists (`pr pv2`
+// for the key `pr pv2`), so a call that the check matches more widely, such as `pr view pv2` for
+// that key, reaches the check. The check exits 2 where it cannot read gh's aliases: no gh to run,
+// a working directory that is gone, a LEGION_GH_OWNERS_DIR it cannot list, or a `gh alias list`
+// that fails or does not answer within its bound (read_gh_aliases). And the check exits 2 on a
+// missing or unreadable file an argument names (file_ok), which this never looks for, so
+// `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here. No call these
+// tests count as a read meets any of the five.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
@@ -111,9 +121,12 @@ var (
 // the last input as given.
 //
 // api_read then reads a read where the host is github.com, the endpoint holds no `://` and is not
-// `graphql` once its leading slashes are gone, the call has no input, and the method, or the
-// field mark where no method is given, is one of "0", "GET" and "HEAD": the check's
-// `(st.M or str(st.F)) in ("0", "GET", "HEAD")`, with the field mark 0 or 1.
+// GitHub's GraphQL one, and the call has no input, and the method, or the field mark where no
+// method is given, is one of "0", "GET" and "HEAD": the check's `(st.M or str(st.F)) in ("0",
+// "GET", "HEAD")`, with the field mark 0 or 1. The endpoint is GraphQL's where it is `graphql` once
+// its leading slashes are gone and it is cut at its first `?` or `#` (the check's
+// graphql_endpoint, which also strips a leading scheme and host: an endpoint holding `://` is no
+// read before that matters).
 func ghPinnedAPIRead(args []string) bool {
 	var endpoint, method, host, input, pending string
 	field := false
@@ -159,7 +172,11 @@ func ghPinnedAPIRead(args []string) bool {
 	if len(host) != len("github.com") || !strings.EqualFold(host, "github.com") || strings.Contains(endpoint, "://") {
 		return false
 	}
-	if strings.TrimLeft(endpoint, "/") == "graphql" || input != "" {
+	path := strings.TrimLeft(endpoint, "/")
+	if end := strings.IndexAny(path, "?#"); end >= 0 {
+		path = path[:end]
+	}
+	if path == "graphql" || input != "" {
 		return false
 	}
 	if method != "" {
@@ -323,7 +340,8 @@ func ghGeneratedSpellings() []ghSpelling {
 //
 // And end to end, against ghCheckReadingLikeThePinnedCheck, a call outside the read grammar is
 // guarded whole. Where the check reads it as no read — a listed leaf by its alias `pr ls`, a gh
-// api endpoint written as a whole URL, `-i=` with a false value, which collect reads as `-f`, `--`
+// api endpoint written as a whole URL, GitHub's GraphQL endpoint with a query or a fragment after
+// it (`graphql?x=1`, `/graphql#x`), `-i=` with a false value, which collect reads as `-f`, `--`
 // before a word collect reads as a method, an empty value before a second option collect then
 // takes as that value, so that the word after it is the method or the endpoint, a method other
 // than GET, a field and an input — the check looks up its target's visibility, and the guard reads
@@ -366,6 +384,8 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 	}{
 		{[]string{"pr", "ls", "-R", "acme/widgets"}, true, true},
 		{[]string{"api", "https://api.github.com/repos/acme/widgets/pulls"}, true, true},
+		{[]string{"api", "graphql?x=1"}, true, false},
+		{[]string{"api", "/graphql#x"}, true, false},
 		{[]string{"api", "-i=false", "repos/acme/widgets/pulls"}, true, true},
 		{[]string{"api", "repos/acme/widgets/pulls", "-i=f"}, true, true},
 		{[]string{"api", "-i=F", "repos/acme/widgets/pulls"}, true, true},

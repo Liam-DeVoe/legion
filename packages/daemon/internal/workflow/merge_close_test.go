@@ -20,7 +20,7 @@ import (
 
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
 // production check, under a project whose `production_check` names the tester, in the tester's
-// live session: the child is done on the record and on Dispatch, its architect is told
+// live session: the child is done on the record and on Dispatch, the architect above it is told
 // child-closed, five of its six claims are closed — the implementer's with the rest — and the
 // tester's is handed the check's first look, a start with no phase, fenced on the check's
 // look 1, whose task opens with the line a resumed session tells the check by, with no
@@ -239,10 +239,10 @@ func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T
 }
 
 // A merge that lands while the tree lingers still closes the member: its phase and status are done,
-// its architect is told child-closed, and its production check opens with look 1 as a wake start
-// row, since the linger already suspended its tester. It retires nobody and suspends nothing:
-// no issue_close and no IssueSuspend, which the linger's own rows already wrote and the tree's
-// close completes.
+// a child-closed is queued for the architect above it, and its production check opens with look 1
+// as a wake start row, since the linger already suspended its tester. It retires nobody and
+// suspends nothing: no issue_close and no IssueSuspend, which the linger's own rows already wrote
+// and the tree's close completes.
 func TestALingeringMembersMergeClosesItAndWakesItsCheck(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
@@ -622,8 +622,10 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 }
 
 // assertWaitNotice checks that the architect was told the close waits exactly once: one pr-merged
-// notice, naming the pull request and waiting, the keys the close is waiting for. The architect's
-// other notices — a child's close or park among them — are not this one's business.
+// notice, naming the pull request and waiting, the keys the close is waiting for, then the
+// sentence on a status the daemon has not taken yet and the rule that ends a child. The
+// architect's other notices — a child's close or its move out of the workflow among them — are not
+// this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice
@@ -632,7 +634,8 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is", waiting)
+	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow. LEGION-208 closes once the last of them leaves the workflow.", waiting) +
+		" " + record.StatusNotTakenYet + " " + record.EndChildRule
 	if len(got) != 1 || got[0].Reason != want {
 		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
 	}
@@ -716,10 +719,10 @@ func issueOutboxOf(t *testing.T, pool *pgxpool.Pool, issue, kind string) []outbo
 	return got
 }
 
-// superviseRowsOf decodes issue's supervise rows of op, oldest first, with no start passed over:
-// in this package every start carries a task — a phase worker's is one row and carries it
-// (StartOrOwe) — and the task-less starts admission brings back are written in internal/admit,
-// never here.
+// superviseRowsOf decodes issue's supervise rows of op, oldest first, with no start passed over.
+// In this package a phase worker's start is one row and carries its task (StartOrOwe); a child's
+// own architect's plain start carries none (gateOpened, reviveArchitect), and the task-less starts
+// admission brings back are written in internal/admit, never here.
 func superviseRowsOf(t *testing.T, pool *pgxpool.Pool, issue, op string) []record.SuperviseRequest {
 	t.Helper()
 	var requests []record.SuperviseRequest

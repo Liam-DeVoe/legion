@@ -53,7 +53,7 @@
 # is the outage another check drives and this one never sets.
 #
 # The curl calls the child makes carry no --cacert and no --resolve, which the check's own text
-# would have them carry for a stand-in behind TLS. The GitHub stand of cmd/dev-airlock-stands is
+# would have them carry for a stand-in behind TLS. The GitHub stand of cmd/dev-proxy-stands is
 # served over plain http on 127.0.0.1 (its plainStands): the broker mints a type's value with an
 # HTTP client that trusts this host's own roots and nothing else, so a minter endpoint behind TLS
 # would want a root in the pod's trust store. There is therefore no certificate to carry a name
@@ -96,6 +96,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
 	cat <<'EOF'
@@ -213,9 +216,7 @@ holds() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 is() { [ "$1" = "$2" ]; }
 lacks() { ! holds "$1" "$2"; }
 # counted judges a property that is about what a run asked GitHub for rather than how many times
-# it asked: the mint of a refused read-only narrowing asks once more without actions (secrets'
-# optionalReadOnlyPermission), so one ask of the search below is one record at the stand-in or
-# two.
+# it asked, so a count of at least one holds it.
 counted() { # <how many>
 	[ "${1:-0}" -gt 0 ]
 }
@@ -279,7 +280,7 @@ STACK_PID=$!
 STACK_STARTED=$SECONDS
 # One wait for each of the stack's two phases, so a wait that ends names the phase it ended in.
 # The first holds dev-broker.sh's six go builds, with the bound of a cold build cache: on a pod
-# of two CPUs with an empty cache the build of cmd/broker alone ran for more than 367 seconds
+# of two CPUs with an empty cache the build of cmd/cipherd alone ran for more than 367 seconds
 # (dispatch://INFRA-3099's tester, 2026-11-12), and the six together took 388 seconds in a cold
 # run later that day, so 1800 leaves room for a pod slower or busier than either. dev-broker.sh
 # logs the line this waits for once all six have ended. The second holds the start of what they
@@ -297,7 +298,7 @@ STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 # The database dev-broker.sh made for this run, which the one property about what the broker
 # itself wrote is read from. The name is the one dev-broker.sh logged as it created it, and the
 # server, the role and any password are DEV_BROKER_POSTGRES_URL's own, left exactly as the
-# caller gave them: the banner stars a password out, so a URL built from the banner could not
+# caller gave them: the banner leaves a password out, so a URL built from the banner could not
 # connect, and one parsed back out of it would put that password through this script.
 BROKER_DB_NAME="$(sed -n 's/^dev-broker: created isolated database \(.*\)$/\1/p' "$STACK_LOG" | head -n 1)"
 if [ -z "$BROKER_DB_NAME" ] || ! [[ "$DEV_BROKER_POSTGRES_URL" =~ ^(postgres(ql)?://[^/?]+)/[^/?]*(\?.*)?$ ]]; then
@@ -334,8 +335,9 @@ echo "github-narrowing-check: enrolled pod session $ENROLLMENT_ID (pod $DEV_BROK
 # --- The child the checks run ---------------------------------------------------------------
 #
 # It reads the token out of the variable whose name it is given - the released value never
-# reaches a command line - and prints one line per repository: the repository and the status
-# GitHub answered it, and no part of the answer's body.
+# reaches a command line, curl reading its header on standard input from printf, a shell builtin -
+# and prints one line per repository: the repository and the status GitHub answered it, and no
+# part of the answer's body.
 cat >"$READ_REPOSITORIES" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -343,7 +345,7 @@ name="$1"
 base="$2"
 shift 2
 for target in "$@"; do
-	printf '%s %s\n' "$target" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${!name}" "$base/repos/$target")"
+	printf '%s %s\n' "$target" "$(printf 'Authorization: Bearer %s' "${!name}" | curl -s -o /dev/null -w '%{http_code}' -H @- "$base/repos/$target")"
 done
 EOF
 chmod +x "$READ_REPOSITORIES"
@@ -418,9 +420,9 @@ asked_repositories() { # <index, from 0> <the repositories asked for, as a JSON 
 
 # standin_read is the status the stand-in answers a repository read with one token, and no part
 # of the answer's body. It is the one read this check makes with a token of its own rather than
-# through a child.
+# through a child, and it sends it on curl's standard input, in no command line.
 standin_read() { # <token> <owner/repository>
-	curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$DEV_BROKER_GITHUB_URL/repos/$2"
+	printf 'Authorization: Bearer %s' "$1" | curl -s -o /dev/null -w '%{http_code}' -H @- "$DEV_BROKER_GITHUB_URL/repos/$2"
 }
 
 # pending_records is how many credential-request records the broker holds. That is the record a
@@ -428,7 +430,7 @@ standin_read() { # <token> <owner/repository>
 # writes none, so the count before a run and after it is how that is read. The broker serves no
 # count of its own, so it comes from the broker's own database (BROKER_DB_URL).
 pending_records() {
-	psql "$BROKER_DB_URL" -v ON_ERROR_STOP=1 -Atqc 'select count(*) from credential_requests'
+	pg_url_run "$BROKER_DB_URL" psql -v ON_ERROR_STOP=1 -Atqc 'select count(*) from credential_requests'
 }
 
 # answers sets what the stand-in answers every token request from then on: ordinary, refuse,
@@ -475,9 +477,11 @@ approve_record() { # <record id>
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
 	local field
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
+	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
+	# command line.
+	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode "token=$(field token)" \
+		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
 		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
