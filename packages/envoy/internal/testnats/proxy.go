@@ -169,8 +169,8 @@ func (p *Proxy) serve() {
 // join dials the server for client and relays the two into each other, or closes client at once
 // while the proxy is cut or when the dial fails. It sets client's receive buffer first
 // (ProxyReceiveBuffer): the client sends nothing before the server's INFO, which reaches it only
-// once the relay has begun. A size the stack refuses leaves the stack's own, which HoldWriteLock
-// reads back.
+// once the relay has begun. A size the stack refuses leaves the stack's own, which
+// HandshakeHold.ParkAWrite reads back.
 func (p *Proxy) join(client net.Conn) {
 	if tcp, ok := client.(*net.TCPConn); ok && p.receiveBuffer > 0 {
 		_ = tcp.SetReadBuffer(p.receiveBuffer)

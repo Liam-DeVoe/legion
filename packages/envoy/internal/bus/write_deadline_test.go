@@ -9,7 +9,7 @@ import (
 
 // A client made with WithWriteDeadline closes within its deadline and a second while a write to a
 // socket that takes no byte holds nats.go's connection lock. The link freezes and the write stays
-// parked in its socket (testnats.HandshakeHold.HoldWriteLock), and the link is never thawed: only
+// parked in its socket (testnats.HandshakeHold.ParkAWrite), and the link is never thawed: only
 // the deadline ends the write, and Close, which waits for the lock, then takes it. Without the
 // option the write would hold the lock, and Close with it, for nats.go's default minute.
 func TestAClientWithAWriteDeadlineClosesWithinItWhileAWriteIsFrozen(t *testing.T) {
@@ -17,7 +17,7 @@ func TestAClientWithAWriteDeadlineClosesWithinItWhileAWriteIsFrozen(t *testing.T
 	client, hold := heldHandshakeClient(t, WithName(t.Name()), WithWriteDeadline(deadline))
 	conn := client.Connection()
 	writeHeld := time.Now()
-	hold.HoldWriteLock(t, conn)
+	hold.ParkAWrite(t, conn)
 	testnats.RequireLockHeld(t, conn)
 
 	closing := time.Now()

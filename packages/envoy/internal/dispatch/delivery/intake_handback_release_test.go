@@ -115,9 +115,10 @@ const (
 
 // stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
 // request with a second message of it behind, stops the holder, and holds a write on the holder's
-// link while a hand-back of the second message waits, after the connected read has answered and
-// before the publish (beforeHandBackPublish), so that publish waits for nats.go's lock. by names
-// whose hand-back that is:
+// link (testnats.HandshakeHold.ParkAWrite: a real write parked in the holder's socket, which the
+// client's write deadline can end) while a hand-back of the second message waits, after the
+// connected read has answered and before the publish (beforeHandBackPublish), so that publish
+// waits for nats.go's lock. by names whose hand-back that is:
 //   - stopsHandBack: the second message waits behind its key's handler, and the stop hands it
 //     back. Its publish goes on once the write is held. The row stops the holder only once the
 //     second message waits behind its key in the holder. Two messages outstanding at the server
@@ -328,7 +329,7 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish, h
 		t.Fatal(unreached + consumerState(publisher))
 	}
 	close(drainMayBegin)
-	row.thaw = link.HoldWriteLock(t, holderConn)
+	row.thaw = link.ParkAWrite(t, holderConn)
 	// Registered after every cleanup of the row's own, so a failure is read before they move the
 	// link, stop the processes or close the clients.
 	trace.printAtFailure(t)
@@ -1831,7 +1832,7 @@ func TestAHandBackRefusedDuringAReconnectLetsACleanStopReleaseTheHold(t *testing
 // The row runs a holder whose client writes with production's intake write deadline
 // (withIntakeWriteDeadline) through a link (testnats.HandshakeHold). Two messages are handled
 // before the freeze. The link then freezes with a write parked in the holder's socket
-// (HoldWriteLock), and a third message is published while it is frozen: the server pushes it to
+// (ParkAWrite), and a third message is published while it is frozen: the server pushes it to
 // the frozen socket, which never hands it to the holder. The row requires that the write ends, so
 // the connection is no longer connected, within IntakeWriteDeadline and 5 s of the freeze; then it
 // thaws the link, requires the same connection to reconnect (its reconnect count grown by one),
@@ -1876,7 +1877,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 	}
 	awaitEverythingAcknowledged(t, publisher)
 
-	thaw := link.HoldWriteLock(t, conn)
+	thaw := link.ParkAWrite(t, conn)
 	frozen := time.Now()
 	writeBound := time.After(IntakeWriteDeadline + 5*time.Second)
 	publishMergedPullRequest(t, publisher, numbers[2])
