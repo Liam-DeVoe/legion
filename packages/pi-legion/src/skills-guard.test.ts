@@ -702,6 +702,24 @@ test("an implementer and owner task is accepted on the evidence its steps give",
   expect(missing).toEqual([]);
 });
 
+// A person's later request is a requirement only in a spec version they approve, as the architect's
+// prompt parts say (`go/architect-common.md`, `roles/architect-root.md`). With no tester step only
+// the implementer runs the checks, except the owner's subagent in the last round of a parent whose
+// pull request already merged (`references/acceptance.md`, "The last round"). Each sentence a reader
+// of the acceptance showed false is gone. This shows the text ships, never that a role follows it.
+test("the architect's references say when a later request binds and who runs the checks again", () => {
+  expect([
+    ...lacks("legion-architect/references/acceptance.md", [
+      /later request is a requirement only in a spec version they approve/,
+      /^(?![\s\S]*request after your sign-off is a requirement of this issue)/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*your subagent then runs and records them/,
+      /^(?![\s\S]*nobody runs them again)/,
+    ]),
+  ]).toEqual([]);
+});
+
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
   expect([
     ...lacks("legion-worker/SKILL.md", [/no tester step[^.;]*the implementer's evidence serves/]),

@@ -69,8 +69,8 @@ If the pull request merged before its last round, move nothing back. Once the ch
 
 ## After your sign-off
 
-The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's own rules; you start none of it.
-A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
+The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's rules; you start none of it.
+A person's later request is a requirement only in a spec version they approve; then the role holding the phase makes the `request_backward_move`.
 When the merger reports:
 
 - a failed verification: tell it to move the issue back with `request_backward_move`, naming what failed;
