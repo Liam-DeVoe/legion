@@ -363,7 +363,9 @@
  * **build-cases --written <n>** writes up to n written cases of one skill, each a written task in
  * the context of a recorded session (`buildWrittenCases`, `chooseContext`, `writtenContext`;
  * README.md, "build-cases and build-tasks"): its messages the task, a read of
- * `skill://<skill>` and its result from `--old`; its real step the written-case reader's
+ * `skill://<skill>` and its result from `--old`, then a read of `skill://<skill>/<path>` and its
+ * result for each file of the task's `reads` (under `--drop-navigation`, the files the session
+ * build's navigation lines send the agent to); its real step the written-case reader's
  * following step, which the audit
  * must call `follows` (else `written-not-followed`), in a task the restate reader finds no
  * statement of the line in (else `written-restates`); its `source.kind` `written`. The context
@@ -392,10 +394,12 @@
  * id of the case that replaced it, or null); the summary's `navigation` lists each navigation line
  * with the steps dropped for it and counts the drops with a replacement and without
  * (`navigationCounts`), and the last line printed counts them too. In the `--written`
- * form, a task whose line is a navigation line is dropped (`written-navigation`), with no
- * replacement, and its summary lists those lines too. The summary's inputs record the flag
- * (`dropNavigation`), so a run that goes on with the other value is refused; a summary written
- * before the flag reads as one without it.
+ * form, the written-case reader is given the navigation lines of the session build's summary
+ * beside `--session-cases` (`sessionNavigation`), so a task's history reads the files they send
+ * the agent to before its step; a task whose line is a navigation line is dropped
+ * (`written-navigation`), with no replacement, and its summary lists those lines too. The
+ * summary's inputs record the flag (`dropNavigation`), so a run that goes on with the other value
+ * is refused; a summary written before the flag reads as one without it.
  *
  * **build-tasks** (the load test's tasks): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -641,6 +645,7 @@ import {
   TasksAnswer,
   type TasksInput,
   WrittenCaseAnswer,
+  type WrittenCaseInput,
 } from "./readers";
 import { isObject } from "./replay";
 
@@ -6479,26 +6484,42 @@ function writtenMessage(
   };
 }
 
-/** The id of a written case's read call of the skill. */
+/** The id of a written case's read call of the skill; its read of the nth file of the task's
+ *  `reads` (from 1) is `<WRITTEN_READ>_<n>`. */
 const WRITTEN_READ = "written_read";
-/** The index of a written case's read result in its messages: the task, the read's call, its
- *  result. */
-const WRITTEN_READ_RESULT = 2;
+
+/** The navigation lines the session build of the skill found (the `navigation.lines` of the
+ *  summary beside `--session-cases`, `<file>.summary.json`), each by its file, number and text;
+ *  none when there is no such summary. Refuses a summary there that is no build-cases summary
+ *  naming its navigation lines (NavigationSummary). */
+function sessionNavigation(casesFile: string): WrittenCaseInput["navigation"] {
+  const summaryFile = `${casesFile}.summary.json`;
+  if (!existsSync(summaryFile)) return [];
+  const parsed = NavigationSummary.safeParse(readJson(summaryFile));
+  if (!parsed.success) {
+    throw new Refused(
+      `${summaryFile}, beside --session-cases, is no build-cases summary that names its navigation lines: ${schemaFaults(parsed.error, "the file")}`
+    );
+  }
+  return parsed.data.navigation.lines.map(({ file, number, text }) => ({ file, number, text }));
+}
 
 /**
  * `build-cases --written <n>`: up to n written cases of one skill (README.md, "build-cases and
  * build-tasks"). The context session is `--context-session`'s, else chosen from `--sessions` in the
  * order `--seed` gives (`chooseContext`); its model, when served, else the served model with the
  * most reading sessions of the skill (`--reading-models`), else over the skills of `--model-pool`.
- * The written-case reader reads the base text, the session cases of `--session-cases` and the
- * context session's first user message once, and writes at most n tasks. Each task gives a case
- * whose messages are the task, a read of `skill://<skill>` and its result (from `--old`, as
- * arms.ts answers a history read, at the path the context session's first read of the skill
- * showed), unless the restate reader finds the line stated in the task (`written-restates`) or
- * the audit does not call the task's following step `follows` (`written-not-followed`). The peak
- * memory is read after each task decided, and above RUN_MEMORY_LIMIT_BYTES no task after it is
- * read (`BuildPeak`). Writes the cases file and `<out>.summary.json` whole at the end; it does not
- * go on from an earlier run.
+ * The written-case reader reads the base text, under `--drop-navigation` the navigation lines of
+ * the session build (`sessionNavigation`), the session cases of `--session-cases` and the context
+ * session's first user message once, and writes at most n tasks. Each task gives a case whose
+ * messages are the task, a read of `skill://<skill>` and its result, then a read of
+ * `skill://<skill>/<path>` and its result for each file of the task's `reads` (each from `--old`,
+ * as arms.ts answers a history read, at the directory the context session's first read of the
+ * skill showed), unless the restate reader finds the line stated in the task (`written-restates`)
+ * or the audit does not call the task's following step `follows` (`written-not-followed`). The
+ * peak memory is read after each task decided, and above RUN_MEMORY_LIMIT_BYTES no task after it
+ * is read (`BuildPeak`). Writes the cases file and `<out>.summary.json` whole at the end; it does
+ * not go on from an earlier run.
  */
 async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise<number> {
   const given = required(
@@ -6591,6 +6612,12 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
     }
   }
+  // Under --drop-navigation, the navigation lines the session build found: a task's history reads
+  // the files they send the agent to before its step. Without the flag, none.
+  const navigation =
+    values["drop-navigation"] === true && casesFile !== undefined
+      ? sessionNavigation(casesFile)
+      : [];
   const files = skillFiles(given.old);
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const run: CaseRun = {
@@ -6682,8 +6709,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
     }
 
-    // The written-case reader, once: the base text, the session cases and the context session's
-    // first user message.
+    // The written-case reader, once: the base text, the navigation lines, the session cases and
+    // the context session's first user message.
     const messagesOfContext = chosen.t.items.map((item) => item.slim);
     const firstUser = messagesOfContext.findIndex((message) => message.role === "user");
     const firstMessage = firstUser < 0 ? "" : messageText(chosen.t.message(firstUser)).trim();
@@ -6701,6 +6728,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         {
           skill: given.skill,
           files,
+          navigation,
           sessionCases: sessionCases.map((c) => ({
             step: stepText(c.realStep.content ?? []),
             criterion: c.criterion,
@@ -6721,7 +6749,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
 
     // What every case takes from the context session: its profile, the listing measure (a
     // top-level session's against the earliest subagent of it spawned under the build its profile
-    // is read at), the read call's message and the path its first read of the skill showed.
+    // is read at), the read calls' message and the directory its first read of the skill showed.
     const { first, init, profiled, listing } = chosen;
     const between = betweenOf(listing);
     let read = unasked(listing);
@@ -6748,16 +6776,23 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       profileSkills: [],
     };
     const template = chosen.t.message(first.call);
-    const readCall: SessionMessage = {
-      ...(template.role === "assistant" ? structuredClone(template) : { role: "assistant" }),
-      content: [{ type: "toolCall", id: WRITTEN_READ, name: "read", arguments: { path: target } }],
-      stopReason: "toolUse",
+    /** The read call `id` of the skill's file `file` (`skill://<skill>` for SKILL.md, else
+     *  `skill://<skill>/<file>`) and its result: that file of `--old` in the installed directory. */
+    const readOf = (file: string, id: string): SessionMessage[] => {
+      const url = file === "SKILL.md" ? target : `${target}/${file}`;
+      return [
+        {
+          ...(template.role === "assistant" ? structuredClone(template) : { role: "assistant" }),
+          content: [{ type: "toolCall", id, name: "read", arguments: { path: url } }],
+          stopReason: "toolUse",
+        },
+        readResult(oldArm, { file, target: url, shown: path.posix.join(installedDir, file) }, id),
+      ];
     };
-    const readAnswer = readResult(
-      oldArm,
-      { file: "SKILL.md", target, shown: path.posix.join(installedDir, "SKILL.md") },
-      WRITTEN_READ
-    );
+    const skillRead = readOf("SKILL.md", WRITTEN_READ);
+    const navigationWords = navigation
+      .map((line) => `${line.file}:${line.number} ${JSON.stringify(line.text)}`)
+      .join("; ");
     const readItems: Evidence[] = chosen.reads.map((read) => ({
       item: `${CONTEXT_READ}message ${read.index} reads [Skill file: ${read.header}]`,
       source: `${read.skill === undefined ? "a read of no skill:// URL" : `a read of skill://${read.skill}`} in the context session, before the written task: a written case's profile is built from the context session's reads up to its first read of the skill, as a session case's is from the reads before its step`,
@@ -6778,7 +6813,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       task: WrittenCaseAnswer["tasks"][number]
     ): Promise<boolean> => {
       const number = n + 1;
-      const record: Record<string, unknown> = { task: number, line: task.line };
+      const record: Record<string, unknown> = { task: number, line: task.line, reads: task.reads };
       records.push(record);
       const dropTask = (reason: DropReason, detail: string) => {
         Object.assign(record, { outcome: "dropped", reason, detail });
@@ -6792,8 +6827,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       const secrets = scrubbed({
         messages: [
           { role: "user", content: [{ type: "text", text: task.task }] },
-          readCall,
-          readAnswer,
+          ...skillRead,
+          ...task.reads.flatMap((each, at) => readOf(each, `${WRITTEN_READ}_${at + 1}`)),
         ] as SessionMessage[],
         systemPrompt: init?.systemPrompt,
         realStep: writtenMessage(task.followingStep, "following"),
@@ -6801,6 +6836,10 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         criterion: task.criterion,
       });
       const { messages, realStep, violatingStep, criterion } = secrets.value;
+      // Every read result: the skill's, then each of the task's reads.
+      const skillReads = messages.flatMap((message, index) =>
+        message.role === "toolResult" ? [index] : []
+      );
       // Under --drop-navigation, a task whose line the navigation reader calls one that only sends
       // the agent to a file of the skill gives no case, and nothing replaces it.
       if (run.dropNavigation) {
@@ -6829,8 +6868,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         }
       }
       try {
-        // The restatement check: the task and the read's call, the read's result left out.
-        const check = restatementWindows(messages, new Set([WRITTEN_READ_RESULT]));
+        // The restatement check: the task and the read calls, the read results left out.
+        const check = restatementWindows(messages, new Set(skillReads));
         const restatementCheck = { read: 0, before: check.checked, windows: check.windows.length };
         record.restatementCheck = restatementCheck;
         let restated: string | undefined;
@@ -6875,7 +6914,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
           "audit",
           {
             line: task.line.text,
-            before: beforeText({ messages, skill: given.skill, skillReads: [WRITTEN_READ_RESULT] }),
+            before: beforeText({ messages, skill: given.skill, skillReads }),
             step: stepText(realStep.content ?? []),
           },
           run.gateway
@@ -6911,7 +6950,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         context: chosen.context,
         profile: withRecordedPrompt(profiled.profile, init, secrets.value.systemPrompt),
         messages,
-        skillReads: [WRITTEN_READ_RESULT],
+        skillReads,
         realStep,
         violatingStep,
         source: { store: chosen.store.name, pathHash: contextPathHash, kind: "written" },
@@ -6929,8 +6968,12 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
           ...readItems,
           {
             item: `${WRITTEN_EVIDENCE}task ${number} of the written-case reader`,
-            source: `the written-case reader wrote the task, the line, the criterion, the following step (the case's real step) and the violating step from the base text (--old), ${sessionCases.length} session cases and the first user message of the context session; the restatement check (the restate reader) finds no statement of the line in the task, and the audit calls the following step follows`,
+            source: `the written-case reader wrote the task, the line, the criterion, the following step (the case's real step) and the violating step from the base text (--old), ${navigation.length === 0 ? "" : `the navigation lines of the session build (${navigationWords}), `}${sessionCases.length} session cases and the first user message of the context session; the restatement check (the restate reader) finds no statement of the line in the task, and the audit calls the following step follows`,
           },
+          ...task.reads.map((each) => ({
+            item: `${WRITTEN_EVIDENCE}reads ${target}/${each} after the skill`,
+            source: `the written-case reader names ${each} in the task's reads, a file the navigation lines of the session build send the agent to right after the skill (${navigationWords}); the history reads it after the read of the skill, its result the base text's ${each} (--old) as the arms answer a history read`,
+          })),
           { item: `${WRITTEN_EVIDENCE}context session ${contextName}`, source: how },
           {
             item: `${WRITTEN_EVIDENCE}model ${model.model}`,

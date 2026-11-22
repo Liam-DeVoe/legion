@@ -1032,10 +1032,11 @@ const WRITTEN_TASK = {
     toolCalls: [{ name: "write", arguments: { path: "report.md", content: "1. done, 2. done" } }],
   },
 };
-/** The stand-in written-case reader's tasks: one the build keeps; one whose task states the line
- *  in other words (RESTATED), which the stand-in restatement check finds; one whose task names
- *  the audit-breaks session, so the stand-in audit says its following step breaks the line; one
- *  whose line is NAVIGATION_LINE; and one whose following step reads references/x.md under LINE. */
+/** The stand-in written-case reader's tasks where `<navigation>` names no line: one the build
+ *  keeps; one whose task states the line in other words (RESTATED), which the stand-in restatement
+ *  check finds; one whose task names the audit-breaks session, so the stand-in audit says its
+ *  following step breaks the line; one whose line is NAVIGATION_LINE; and one whose following step
+ *  reads references/x.md under LINE. */
 const WRITTEN_TASKS = [
   WRITTEN_TASK,
   { ...WRITTEN_TASK, task: `Write the alpha report of the fixture project. ${RESTATED}` },
@@ -1054,6 +1055,23 @@ const WRITTEN_TASKS = [
     },
   },
 ];
+/** The stand-in written-case reader's one task where `<navigation>` names a line: its history reads
+ *  references/x.md after the skill, and X_LINE, a line of that file, decides the step after that
+ *  read. */
+const WRITTEN_READS_TASK = {
+  task: "Write the alpha report of the fixture project with each step's result.",
+  reads: ["references/x.md"],
+  line: { file: "references/x.md", number: 3, text: X_LINE },
+  criterion: {
+    pass: "The step starts each result line with its step number, counted from one.",
+    fail: "The step writes a result line without its step number.",
+  },
+  followingStep: WRITTEN_TASK.followingStep,
+  violatingStep: {
+    text: "",
+    toolCalls: [{ name: "write", arguments: { path: "report.md", content: "done\ndone" } }],
+  },
+};
 
 /** The stand-in reader's answer to `body`. */
 function readerAnswer(body: {
@@ -1067,6 +1085,9 @@ function readerAnswer(body: {
   if (system.startsWith(AUDIT_PROMPT)) return JSON.stringify(auditAnswer(name));
   if (system.startsWith(NAVIGATION_PROMPT)) return JSON.stringify(navigationAnswer(user));
   if (system.startsWith(WRITTEN_PROMPT)) {
+    if (user.includes("<navigation>\n<line ")) {
+      return JSON.stringify({ tasks: [WRITTEN_READS_TASK] });
+    }
     const count = Number(/<count>(\d+)<\/count>/.exec(user)?.[1] ?? "1");
     return JSON.stringify({ tasks: WRITTEN_TASKS.slice(0, count) });
   }
@@ -3933,10 +3954,20 @@ function writtenArgs(out: string, ...extra: string[]): string[] {
   ];
 }
 
-/** A cases file of one session case of alpha: F1's `task` step, which LINE governs. */
-function sessionCasesFile(): string {
+/** The navigation lines a session build of alpha found: SKILL.md's line 8, NAVIGATION_LINE. */
+const SESSION_NAVIGATION: NavigationCounts["lines"] = [
+  { file: "SKILL.md", number: 8, text: NAVIGATION_LINE, dropped: 1 },
+];
+
+/** A cases file of one session case of alpha: F1's `task` step, which LINE governs. With
+ *  `navigation`, a file of its own, beside which the session build's summary
+ *  (`<file>.summary.json`) names those navigation lines. */
+function sessionCasesFile(navigation?: NavigationCounts["lines"]): string {
   const messages = f1Messages();
-  const file = path.join(setupDir, "session-cases.jsonl");
+  const file = path.join(
+    setupDir,
+    navigation === undefined ? "session-cases.jsonl" : "session-cases-navigation.jsonl"
+  );
   const c = {
     id: "skills-1-f1",
     cut: "skills-1",
@@ -3962,6 +3993,18 @@ function sessionCasesFile(): string {
     sessionDigest: null,
   };
   writeFileSync(file, `${JSON.stringify(c)}\n`);
+  if (navigation !== undefined) {
+    const dropped = navigation.reduce((sum, line) => sum + line.dropped, 0);
+    writeFileSync(
+      `${file}.summary.json`,
+      JSON.stringify({
+        command: "build-cases",
+        cut: "skills-1",
+        skill: "alpha",
+        navigation: { lines: navigation, dropped, withReplacement: 0, withoutReplacement: dropped },
+      })
+    );
+  }
   return file;
 }
 
@@ -3978,7 +4021,13 @@ interface WrittenSummary {
   model: { model: string; how: string };
   casesBuilt: number;
   drops: Partial<Record<DropReason, number>>;
-  tasks: { task: number; outcome: string; reason?: DropReason; detail?: string }[];
+  tasks: {
+    task: number;
+    outcome: string;
+    reason?: DropReason;
+    detail?: string;
+    reads?: string[];
+  }[];
   stopped: string | null;
   peakRssBytes?: number;
 }
@@ -4010,7 +4059,7 @@ describe("build-cases --written", () => {
         "--context-session",
         `store_a:${contextHash}`,
         "--session-cases",
-        sessionCasesFile()
+        sessionCasesFile(SESSION_NAVIGATION)
       ),
       io(printed)
     );
@@ -4150,6 +4199,22 @@ describe("build-cases --written", () => {
     );
   });
 
+  // Catches: a build without --drop-navigation that hands the written-case reader the navigation
+  // lines of the session build, or puts a read beyond the skill's into a written case.
+  test("without --drop-navigation, the written-case reader's <navigation> is None. though the session build's summary names a navigation line, and the case reads only the skill", () => {
+    const [asked] = usersOf(requests, WRITTEN_PROMPT);
+    expect(asked).toContain("</skill>\n\n<navigation>\nNone.\n</navigation>\n\n<session-cases>\n");
+    expect(asked).not.toContain(`<line file="SKILL.md" number="8">`);
+    const [c] = loadCases(out, old);
+    expect([c?.id, c?.messages.length, c?.skillReads, c?.baseFile]).toEqual([
+      id,
+      3,
+      [2],
+      "SKILL.md",
+    ]);
+    expect(summaryOf<WrittenSummary>(out).tasks.map((each) => each.reads)).toEqual([[], [], []]);
+  });
+
   test("--reprofile keeps source.kind", async () => {
     const fresh = path.join(scratch, "written", "reprofiled.jsonl");
     const lines: string[] = [];
@@ -4239,6 +4304,92 @@ test("build-cases --written --drop-navigation drops a task whose line the naviga
   // The navigation reader read every task's line, before its restatement check.
   expect(usersOf(requests, NAVIGATION_PROMPT)).toHaveLength(5);
   expect(usersOf(requests, RESTATE_PROMPT)).toHaveLength(4);
+}, 60_000);
+
+// Catches: a skill whose SKILL.md first sends the agent to a file of the skill, which gets no
+// written task under --drop-navigation (every task's step is the read that line asks for); a
+// written case whose history lacks the read a session's history holds, or holds it out of order;
+// and the session build's navigation lines kept from the written-case reader.
+test("build-cases --written --drop-navigation gives the written-case reader the session build's navigation lines, and a task that reads references/x.md gives a case whose history reads the skill, then references/x.md, under a line of references/x.md", async () => {
+  const out = path.join(scratch, "written-reads", "cases.jsonl");
+  const context = `store_a:${fileHash(sessionPath("good"))}`;
+  const casesFile = sessionCasesFile(SESSION_NAVIGATION);
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    context,
+    "--session-cases",
+    casesFile,
+    "--drop-navigation"
+  );
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  expect(await main(args, io(printed))).toBe(EXIT.ok);
+  const requests = recorder.requests.slice(from);
+  // The reader read SKILL.md's line 8, the navigation line of the summary beside --session-cases.
+  const [asked] = usersOf(requests, WRITTEN_PROMPT);
+  expect(asked).toContain(
+    `</skill>\n\n<navigation>\n<line file="SKILL.md" number="8">\n${NAVIGATION_LINE}\n</line>\n</navigation>\n\n<session-cases>\n`
+  );
+
+  const messages = f1Messages();
+  const id = `skills-1-${pathHash(sessionPath("good")).slice(0, 12)}-w1`;
+  const cases = loadCases(out, old);
+  expect(cases.map((each) => each.id)).toEqual([id]);
+  const [c] = cases;
+  // The task, the read of skill://alpha and its result, then the read of references/x.md and its
+  // result: the old text at the paths the context session's own reads showed, as F1's hold them.
+  expect(c?.messages).toHaveLength(5);
+  expect(c?.messages[0]).toEqual({
+    role: "user",
+    content: [{ type: "text", text: WRITTEN_READS_TASK.task }],
+  });
+  const call = (toolCallId: string, target: string) => ({
+    role: "assistant",
+    content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: target } }],
+  });
+  expect(c?.messages[1]).toMatchObject(call("written_read", "skill://alpha"));
+  expect(c?.messages[1]?.content).toHaveLength(1);
+  expect(c?.messages[2]).toMatchObject({ role: "toolResult", toolCallId: "written_read" });
+  expect(c?.messages[2]?.content).toEqual(messages[2]?.content);
+  expect(c?.messages[3]).toMatchObject(call("written_read_1", "skill://alpha/references/x.md"));
+  expect(c?.messages[3]?.content).toHaveLength(1);
+  expect(c?.messages[4]).toMatchObject({ role: "toolResult", toolCallId: "written_read_1" });
+  expect(c?.messages[4]?.content).toEqual(messages[4]?.content);
+  expect(c?.skillReads).toEqual([2, 4]);
+  expect([c?.baseFile, c?.line, c?.criterion]).toEqual([
+    "references/x.md",
+    { text: X_LINE, lineNumber: 3, lineCount: 3 },
+    WRITTEN_READS_TASK.criterion,
+  ]);
+  expect(c?.evidence).toContainEqual({
+    item: "written case: reads skill://alpha/references/x.md after the skill",
+    source:
+      "the written-case reader names references/x.md in the task's reads, a file the navigation lines of the session build send the agent to right after the skill (SKILL.md:8 \"1. Read `references/x.md` before the first step.\"); the history reads it after the read of the skill, its result the base text's references/x.md (--old) as the arms answer a history read",
+  });
+
+  // The navigation reader judged the task's line; the restatement check read the task and the two
+  // read calls, never a file's text; the audit read both reads with their text left out.
+  expect(usersOf(requests, NAVIGATION_PROMPT)).toEqual([
+    `<files>\nSKILL.md\nreferences/x.md\n</files>\n\n<file>\nreferences/x.md\n</file>\n\n<line>\n${X_LINE}\n</line>`,
+  ]);
+  const [restate] = usersOf(requests, RESTATE_PROMPT);
+  expect(restate).toContain(`<message index="1" role="assistant">\n[assistant]\n[tool call: read]`);
+  expect(restate).toContain(`<message index="3" role="assistant">\n[assistant]\n${X_READ}`);
+  expect([
+    restate?.includes('<message index="2"'),
+    restate?.includes('<message index="4"'),
+  ]).toEqual([false, false]);
+  const left = "[tool result: read]\n[the text of a file of the skill, left out]";
+  expect(usersOf(requests, AUDIT_PROMPT)).toEqual([
+    `<line>\n${X_LINE}\n</line>\n\n<before>\n[user]\n${WRITTEN_READS_TASK.task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n${left}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha/references/x.md"}\n\n${left}\n</before>\n\n<step>\n[tool call: write] ${JSON.stringify(WRITTEN_READS_TASK.followingStep.toolCalls[0]?.arguments)}\n</step>`,
+  ]);
+
+  // The summary records the task's reads.
+  const summary = summaryOf<WrittenSummary>(out);
+  expect(summary.tasks.map((each) => [each.task, each.outcome, each.reads])).toEqual([
+    [1, `case ${id}`, ["references/x.md"]],
+  ]);
 }, 60_000);
 
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {

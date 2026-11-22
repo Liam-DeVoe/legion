@@ -83,11 +83,14 @@
  *   reader properties; the gaps the change fixes (each a finding by its number, or a style rule or
  *   property), the gaps it makes (each a rule), each with its file and line where given, and a
  *   one-line summary.
- * - `written-case`: a skill's base text, its session cases (each one's real step and criterion;
- *   none, when it has none) and the first user message of a recorded session that read it, and how
- *   many tasks to write; at most that many tasks of that session's kind of work in which a line of
- *   the skill decides the agent's first step after it reads the skill, each with the task (the
- *   user's message), the line (its file, number and text: a line of the base text, which the schema
+ * - `written-case`: a skill's base text, the navigation lines of its session build (none without
+ *   `--drop-navigation`), its session cases (each one's real step and criterion; none, when it has
+ *   none) and the first user message of a recorded session that read it, and how many tasks to
+ *   write; at most that many tasks of that session's kind of work in which a line of the skill
+ *   decides the agent's first step after it reads the skill and then the files the navigation
+ *   lines send it to, each with the task (the user's message), those files (`reads`: each a file of
+ *   the skill but SKILL.md, once; none where no navigation line is given), the line (its file,
+ *   number and text: a line of the base text and none of the navigation lines, which the schema
  *   checks), a criterion, a step that follows the line and a violating step (`build-cases
  *   --written`).
  *
@@ -1647,10 +1650,19 @@ const SessionCaseText = z.strictObject({
   step: NonBlank,
   criterion: z.strictObject({ pass: NonBlank, fail: NonBlank }),
 });
+/** A line of the skill that only sends the agent to a file of the skill, as the session build
+ *  found it (build.ts's NavigationCounts): its file, its number there and its text. */
+const NavigationLine = z.strictObject({
+  file: z.string().min(1),
+  number: z.int().positive(),
+  text: z.string(),
+});
 export const WrittenCaseInput = z.strictObject({
   skill: z.string().min(1),
   /** The skill's base text, every `.md` file of `--old` (`skillFiles`). */
   files: z.array(File).min(1),
+  /** The navigation lines of the session build of the skill (`--drop-navigation`), or none. */
+  navigation: z.array(NavigationLine),
   sessionCases: z.array(SessionCaseText),
   /** The first user message of the context session, whose context the tasks go in. */
   firstMessage: NonBlank,
@@ -1660,6 +1672,9 @@ export const WrittenCaseInput = z.strictObject({
 export type WrittenCaseInput = z.infer<typeof WrittenCaseInput>;
 const WrittenTask = z.strictObject({
   task: NonBlank,
+  /** The files of the skill the task's history reads after the skill, in that order: those the
+   *  navigation lines send the agent to. */
+  reads: z.array(z.string()).default([]),
   line: z.strictObject({ file: z.string().min(1), number: z.int().positive(), text: OneLine }),
   criterion: z.strictObject({ pass: NonBlank, fail: NonBlank }),
   followingStep: WrittenStep,
@@ -1679,9 +1694,35 @@ const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
           `holds ${answer.tasks.length} tasks, more than the ${input.count} asked for`
         );
       }
-      // Each task's line is a line of the base text: its file, its number and its text.
-      for (const [index, { line }] of answer.tasks.entries()) {
+      for (const [index, { line, reads }] of answer.tasks.entries()) {
+        // Each read is of a file of the skill other than SKILL.md, once, and only where a
+        // navigation line sends the agent to a file.
+        if (input.navigation.length === 0 && reads.length > 0) {
+          refuse(
+            ctx,
+            ["tasks", index, "reads"],
+            "names files, though <navigation> names no line that sends the agent to one"
+          );
+        }
+        for (const [at, read] of reads.entries()) {
+          const where = ["tasks", index, "reads", at];
+          if (read === "SKILL.md") {
+            refuse(ctx, where, "is SKILL.md, which the read of the skill shows");
+          } else if (!input.files.some((each) => each.path === read)) {
+            refuse(ctx, where, "is no file of the skill");
+          } else if (reads.indexOf(read) !== at) {
+            refuse(ctx, where, `reads ${read} twice`);
+          }
+        }
+        // Each task's line is a line of the base text (its file, its number and its text), and
+        // none of the navigation lines.
         const at = ["tasks", index, "line"];
+        const navigation = input.navigation.find(
+          (each) => each.file === line.file && each.text.trim() === line.text.trim()
+        );
+        if (navigation !== undefined) {
+          refuse(ctx, at, `is the navigation line ${navigation.file}:${navigation.number}`);
+        }
         const file = input.files.find((each) => each.path === line.file);
         if (file === undefined) {
           refuse(ctx, [...at, "file"], "is no file of the base text");
@@ -1698,6 +1739,16 @@ const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
   render: (input) =>
     [
       `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
+      `<navigation>\n${
+        input.navigation.length === 0
+          ? "None."
+          : input.navigation
+              .map(
+                (each) =>
+                  `<line file="${each.file}" number="${each.number}">\n${each.text}\n</line>`
+              )
+              .join("\n")
+      }\n</navigation>`,
       `<session-cases>\n${
         input.sessionCases.length === 0
           ? "None."

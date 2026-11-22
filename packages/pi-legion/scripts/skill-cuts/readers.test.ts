@@ -578,16 +578,30 @@ const make = (fields: Record<string, unknown>) => ({
 });
 const SUMMARY = "The change adds a step that finds a rule's reason before its deletion.";
 
-/** The written-case reader's input: alpha's base text, one session case, the context session's
- *  first user message, and at most two tasks. */
+/** The written-case reader's input: alpha's base text, one session case, no navigation line, the
+ *  context session's first user message, and at most two tasks. */
 const writtenCaseInput = {
   skill: "alpha",
   files: [{ path: "SKILL.md", text: SKILL_MD }],
+  navigation: [],
   sessionCases: [
     { step: '[tool call: write] {"path":"checklist.md","content":"1. ok"}', criterion: CRITERION },
   ],
   firstMessage: "Make the alpha checklist of the fixture project for the release.",
   count: 2,
+};
+/** SKILL.md's line 8, which only sends the agent to references/x.md. */
+const NAVIGATION_LINE = {
+  file: "SKILL.md",
+  number: 8,
+  text: "1. Read `references/x.md` before the first step.",
+};
+/** The written-case reader's input where the session build found SKILL.md's line 8 a navigation
+ *  line: alpha's two files (references/x.md has 3 lines). */
+const writtenNavigationInput = {
+  ...writtenCaseInput,
+  files: craftReaderInput.files,
+  navigation: [NAVIGATION_LINE],
 };
 /** A written task whose line, the base text's line 9, decides its first step. */
 const writtenTask = {
@@ -605,6 +619,12 @@ const writtenTask = {
 };
 /** `writtenTask` with `fields` in its place. */
 const task = (fields: Record<string, unknown>) => ({ ...writtenTask, ...fields });
+/** A written task whose history reads references/x.md after the skill, and whose line, that
+ *  file's line 3, decides the step after that read. */
+const readsTask = task({
+  reads: ["references/x.md"],
+  line: { file: "references/x.md", number: 3, text: "Read me first." },
+});
 
 const ROWS: Record<ReaderName, Row> = {
   restate: {
@@ -1563,6 +1583,67 @@ test("the written-case reader's request numbers the base text and gives the sess
   ]) {
     expect({ words, said: prompt.includes(words) }).toEqual({ words, said: true });
   }
+});
+
+// Catches: a written-case request that hides the navigation lines the session build found, so a
+// task is written under one, or a prompt that does not say the task's history then reads the files
+// those lines send the agent to, and tests the step after those reads.
+test("the written-case reader's request gives the session build's navigation lines after the skill, or None., and its prompt says the task's reads follow them", () => {
+  const userText = (input: unknown) =>
+    UserMessage.parse(readerBody("written-case", input).messages)[0]
+      .content.map((part) => part.text)
+      .join("\n\n");
+  expect(userText(writtenNavigationInput)).toContain(
+    `</file>\n</skill>\n\n<navigation>\n<line file="SKILL.md" number="8">\n${NAVIGATION_LINE.text}\n</line>\n</navigation>\n\n<session-cases>\n`
+  );
+  expect(userText(writtenCaseInput)).toContain(
+    "</file>\n</skill>\n\n<navigation>\nNone.\n</navigation>\n\n<session-cases>\n"
+  );
+  const prompt = loadPrompt("written-case").text;
+  for (const words of [
+    "- `<navigation>`: ",
+    "reads, right after the skill, each file of the skill those lines send it to, in their order",
+    "The task's step is then the agent's next step after those reads",
+    "it is none of the `<navigation>` lines",
+    "Where `<navigation>` is `None.`, `reads` is empty",
+    '"reads": []',
+  ]) {
+    expect({ words, said: prompt.includes(words) }).toEqual({ words, said: true });
+  }
+});
+
+// Catches: a written task whose history reads a file the skill does not hold, SKILL.md again or one
+// file twice; reads where no navigation line sends the agent to a file; or a task under a line that
+// only sends the agent to a file, whose step the arm with no skill fails by construction.
+test("the written-case answer takes reads absent as none, and refuses a read of no file of the skill, of SKILL.md or of one file twice, reads where <navigation> is None., and a task under a <navigation> line", () => {
+  const reader = READERS["written-case"];
+  const schema = reader.answer(reader.input.parse(writtenNavigationInput));
+  expect(parsedAnswer(schema, { tasks: [writtenTask] }).tasks[0]?.reads).toEqual([]);
+  expect(parsedAnswer(schema, { tasks: [readsTask] }).tasks[0]?.reads).toEqual(["references/x.md"]);
+  const rows: [unknown, string][] = [
+    [task({ reads: ["references/y.md"] }), "tasks.0.reads.0: is no file of the skill"],
+    [
+      task({ reads: ["SKILL.md"] }),
+      "tasks.0.reads.0: is SKILL.md, which the read of the skill shows",
+    ],
+    [
+      task({ reads: ["references/x.md", "references/x.md"] }),
+      "tasks.0.reads.1: reads references/x.md twice",
+    ],
+    [task({ line: NAVIGATION_LINE }), "tasks.0.line: is the navigation line SKILL.md:8"],
+    [
+      task({ line: { ...NAVIGATION_LINE, text: ` ${NAVIGATION_LINE.text}` } }),
+      "tasks.0.line: is the navigation line SKILL.md:8",
+    ],
+  ];
+  for (const [answer, why] of rows) {
+    const refused = refusal("written-case", writtenNavigationInput, { tasks: [answer] });
+    expect({ why, refused: refused?.includes(why) ? why : refused }).toEqual({ why, refused: why });
+  }
+  // Where <navigation> is None., a task reads nothing but the skill.
+  expect(refusal("written-case", writtenCaseInput, { tasks: [readsTask] })).toContain(
+    "tasks.0.reads: names files, though <navigation> names no line that sends the agent to one"
+  );
 });
 
 // The craft reader, and the style text's rule ids it judges (style.ts).

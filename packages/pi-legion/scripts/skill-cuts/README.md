@@ -1446,7 +1446,11 @@ withoutReplacement}`: each navigation line, by file and then number, with the st
 and how many dropped steps got a replacement case and how many did not; without the flag its
 lines are none and its counts 0. With the flag, the last line printed adds `<n> steps dropped for
 <n> navigation lines (<n> with a replacement case, <n> without) (--drop-navigation)`. In the
-`--written` form, a task whose line the `navigation` reader calls navigation is dropped
+`--written` form, the `written-case` reader is given the navigation lines of the session build
+(the `navigation.lines` of the summary beside `--session-cases`, `<session-cases>.summary.json`;
+none when there is no such file), so a task's history reads the files those lines send the agent
+to before its step (below); a file there that is no build-cases summary naming its navigation
+lines is refused (exit 2). A task whose line the `navigation` reader calls navigation is dropped
 (`written-navigation`), before its restatement check, with no replacement; a task whose following
 step reads a file of the skill under another line is not dropped for that read; and its summary's
 `navigation` lists those lines in the same form. The
@@ -1482,26 +1486,35 @@ sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models
 else the served model with the most reading sessions summed over the `--model-pool` files (each a
 models file of a skill of the set: give the flag once per file); with none, the build fails
 (exit 1). The `written-case` reader (`prompts/written-case.md`) is called once: it reads the base
-text (`--old`, each line numbered), each session case of `--session-cases` (its real step and its
-criterion; none when the flag is not given) and the context session's first user message, and
-writes at most n tasks in which a line of the skill decides the agent's first step after it reads
-the skill, each with the task (the user's message), the line (file, number and text; its schema
-refuses one that is not that line of the base text), the criterion, a following step and a
-violating step. Each task gives a case whose `messages` are the task as the user's message, an
-assistant call `read skill://<skill>` and its result: the base text's `SKILL.md`, answered as the
-arms answer a history read, at the path the context session's first read of the skill showed
-(`skillReads` points at it). Its `realStep` is the following step, its `violatingStep` the
-violating one, its `source` the context session's store and path hash with `kind` `written`, and
-its profile, working directory and system context the context session's; its evidence names each
-read of the context session its profile is built from (`context session read: …`), the task, the
-context session and the model. Secrets are taken out as from a session case. The `restate` reader
-reads the task and the read's call (never the skill's text): a restatement of the line drops the
-task (`written-restates`). The `audit` reader reads the line, the messages as the judge reads
-them and the following step: anything but `follows` drops the task (`written-not-followed`). The
-screen's three judge controls run on a written case as on a session case. The summary
-(`<out>.summary.json`) records the inputs, the context session, the model, each task's outcome
-(its case, or its drop reason and detail, with its restatement check and audit), the drops by
-reason, the readers' spend and the largest peak resident memory read (`peakRssBytes`). The build
+text (`--old`, each line numbered), the navigation lines of the session build (`<navigation>`:
+with `--drop-navigation`, those of the summary beside `--session-cases`, as above; else none),
+each session case of `--session-cases` (its real step and its criterion; none when the flag is
+not given) and the context session's first user message, and writes at most n tasks in which a
+line of the skill decides the agent's first step after it reads the skill and then, in their
+order, the files of the skill the navigation lines send it to. Each task comes with the task (the
+user's message), those files (`reads`: paths of the base text other than `SKILL.md`, each once;
+none where no navigation line is given, and none when the answer leaves it out), the line (file,
+number and text; its schema refuses one that is not that line of the base text, or that is a
+navigation line given, by its file and text), the criterion, a following step and a violating
+step. Each task gives a case whose `messages` are the task as the user's message, an assistant
+call `read skill://<skill>` and its result: the base text's `SKILL.md`, answered as the arms
+answer a history read, in the directory the context session's first read of the skill showed;
+then, for each file of `reads` in its order, a call `read skill://<skill>/<path>` and its result,
+that file of the base text answered the same way (`skillReads` points at every read result). Its
+`realStep` is the following step, its `violatingStep` the violating one, its `source` the context
+session's store and path hash with `kind` `written`, and its profile, working directory and
+system context the context session's; its evidence names each read of the context session its
+profile is built from (`context session read: …`), the task (and the navigation lines given),
+each read of `reads` (`written case: reads skill://<skill>/<path> after the skill`, with the
+navigation lines that send the agent there), the context session and the model. Secrets are taken
+out as from a session case. The `restate` reader reads the task and the read calls (never a
+file's text): a restatement of the line drops the task (`written-restates`). The `audit` reader
+reads the line, the messages as the judge reads them and the following step: anything but
+`follows` drops the task (`written-not-followed`). The screen's three judge controls run on a
+written case as on a session case. The summary (`<out>.summary.json`) records the inputs, the
+context session, the model, each task's line, `reads` and outcome (its case, or its drop reason
+and detail, with its restatement check and audit), the drops by reason, the readers' spend and
+the largest peak resident memory read (`peakRssBytes`). The build
 does not go on from an earlier run: an `--out` that is there is refused (exit 2). `--budget-usd`
 stops it once its readers cost that much (exit 3), with the cases built so far written; so does a
 peak resident memory above 1 GiB, read after each task decided (`stopped`: `the build's peak
