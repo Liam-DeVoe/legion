@@ -173,11 +173,17 @@ func (h *freshHub) stopService() {
 	service.Close()
 }
 
-// connect opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus): its
-// service account's token, its name, connecting in the background, to any of the hub's servers.
+// connect opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus) to any
+// of the hub's servers (connectTo).
 func (h *freshHub) connect(name string) (*bus.Client, error) {
+	return h.connectTo(h.urls(), name)
+}
+
+// connectTo opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus): its
+// service account's token, its name, connecting in the background, to any of urls.
+func (h *freshHub) connectTo(urls []string, name string) (*bus.Client, error) {
 	token := h.tokenFile
-	return bus.Connect(h.urls(),
+	return bus.Connect(urls,
 		bus.WithEnvironment(func(key string) (string, bool) {
 			if key == bus.ServiceTokenFileEnvVar {
 				return token, true

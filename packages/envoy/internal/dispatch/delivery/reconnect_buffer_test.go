@@ -61,18 +61,10 @@ func TestAConsumerCallSentWhileDispatchsConnectionIsCutNeverReachesTheServer(t *
 		t.Fatalf("the fresh gate did not admit the cutover done: %+v, %v", state, err)
 	}
 
-	// connect connects as Dispatch connects (freshHub.connect), through the network the row cuts.
+	// connect connects as Dispatch connects (freshHub.connectTo), through the network the row cuts.
 	connect := func(name string) *bus.Client {
 		t.Helper()
-		token := hub.tokenFile
-		client, err := bus.Connect([]string{network.URL()},
-			bus.WithEnvironment(func(key string) (string, bool) {
-				if key == bus.ServiceTokenFileEnvVar {
-					return token, true
-				}
-				return "", false
-			}),
-			bus.WithName(name), bus.WithConnectInBackground())
+		client, err := hub.connectTo([]string{network.URL()}, name)
 		if err != nil {
 			t.Fatalf("connect %s: %v", name, err)
 		}
