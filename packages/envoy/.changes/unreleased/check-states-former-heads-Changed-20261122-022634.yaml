@@ -7,10 +7,16 @@ body: |-
     at an open head. Before, a head the pull request left had its rows deleted with no event, so a
     tester's results at the head it tested, recorded after a push moved the pull request on,
     published nothing, and Legion moved the issue on the states from before the push. New table
-    `pull_request_former_heads` (migration `20261122042244`) keeps each head an open pull request
-    left, written by a trigger on `pull_request_heads` (migration `20261122042245`) in the
-    transaction of the write that moved the row, whichever build wrote it, so a head is kept
-    whether or not a settle ran while the pull request was there; a close, a merge or a delete of
+    `pull_request_former_heads` keeps each head an open pull request left, written by triggers on
+    `pull_request_heads` in the transaction of the write that moved the row, whichever build wrote
+    it (migration `20261122071001`, one transaction with the table and the seed), so a head is kept
+    whether or not a settle ran while the pull request was there. The install seeds, as
+    unverified candidates, the commits of results recorded on each open pull request's issue other
+    than its head, and marks those issues owed; the settler reads each such pull request's commits
+    from GitHub once and keeps the candidates they list (a failed read keeps a mark after the
+    backoff), so a head left before the release where a result was recorded publishes its states,
+    and one with no result is not known and needs none;
+    a close, a merge or a delete of
     the row drops its former heads, and the delete of a row stored under a repository's old name
     carries them to the canonical row where it is open, and marks that row's issue owed, in the
     delete's own trigger with both rows locked, whichever build deletes it, so no head write and no

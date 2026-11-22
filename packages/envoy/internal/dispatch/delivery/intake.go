@@ -757,17 +757,19 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 	return true, UpsertRunJobs(ctx, in.pool, repoFull, runID, jobs, JobsComplete(jobs))
 }
 
-// commitMessagePayload is one element of GET /repos/{owner}/{repo}/pulls/{number}/commits,
-// limited to the message field fetchCommitMessages reads (distinct from github_prs.go's
-// commitPayload, which reads the same endpoint's dates instead).
-type commitMessagePayload struct {
+// pullRequestCommitPayload is one element of GET /repos/{owner}/{repo}/pulls/{number}/commits,
+// limited to the two fields its readers read: the commit's sha (PullRequestCommits) and its
+// message (fetchCommitMessages). github_prs.go's commitPayload reads the same endpoint's dates.
+type pullRequestCommitPayload struct {
+	SHA    string `json:"sha"`
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
 }
 
-// maxCommitPages bounds fetchCommitMessages' pagination: 500 commits is already an enormous pull
-// request, and a PR beyond that is not worth the API cost of chasing its full history.
+// maxCommitPages bounds the pagination of a pull request's commits: 500 commits is already an
+// enormous pull request, and a PR beyond that is not worth the API cost of chasing its full
+// history. GitHub itself lists at most 250 commits of a pull request.
 const maxCommitPages = 5
 
 // fetchCommitMessages reads a pull request's commit messages, in commit order: what its session
@@ -787,32 +789,64 @@ func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, r
 // failed one included, so a caller can count what a read cost (reconcileAttributionInputs' call
 // budget).
 func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
+	commits, pages, err := fetchPullRequestCommits(ctx, client, token, owner, repo, number)
 	var messages []string
+	for _, c := range commits {
+		messages = append(messages, c.Commit.Message)
+	}
+	return messages, pages, err
+}
+
+// PullRequestCommits reads the commits GitHub lists for one pull request of repoFull, in commit
+// order, and answers their shas and how many pages it asked GitHub for, the failed one included:
+// the check states settler's one read of a pull request whose former heads the install seeded
+// (api/check_states.go, verifyFormerHeads). A repository the App cannot read comes back as the
+// App's own error (RepositoryUnreadable).
+func PullRequestCommits(ctx context.Context, client *githubapp.Client, repoFull string, number int) ([]string, int, error) {
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
+	if err != nil {
+		return nil, 0, err
+	}
+	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
+	commits, pages, err := fetchPullRequestCommits(ctx, client, token, owner, repo, number)
+	if err != nil {
+		return nil, pages, err
+	}
+	shas := make([]string, 0, len(commits))
+	for _, c := range commits {
+		shas = append(shas, c.SHA)
+	}
+	return shas, pages, nil
+}
+
+// fetchPullRequestCommits reads a pull request's commits, pages of 100 until the first that is
+// not full, at most maxCommitPages, asking token for each page's installation token. It answers
+// the commits of the pages it read and how many pages it asked for, the failed one included.
+func fetchPullRequestCommits(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]pullRequestCommitPayload, int, error) {
+	var commits []pullRequestCommitPayload
 	for page := 1; page <= maxCommitPages; page++ {
 		current, err := token()
 		if err != nil {
-			return messages, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
+			return commits, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
 		}
 		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
 		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
 		if err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return commits, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		if err := githubapp.CheckResponse(status, header, body); err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return commits, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
-		var commits []commitMessagePayload
-		if err := json.Unmarshal(body, &commits); err != nil {
-			return messages, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
+		var read []pullRequestCommitPayload
+		if err := json.Unmarshal(body, &read); err != nil {
+			return commits, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
 		}
-		for _, c := range commits {
-			messages = append(messages, c.Commit.Message)
-		}
-		if len(commits) < 100 {
-			return messages, page, nil
+		commits = append(commits, read...)
+		if len(read) < 100 {
+			return commits, page, nil
 		}
 	}
-	return messages, maxCommitPages, nil
+	return commits, maxCommitPages, nil
 }
 
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,

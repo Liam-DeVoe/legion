@@ -531,9 +531,10 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // row's head where it is another than the canonical row's, to the canonical name, where that row
 // is open: they are heads of the same pull request, which the check states settler keeps computing
 // while it stays open. The delete's own trigger does it (pull_request_former_heads_keep, migration
-// 20261122042244), in the delete's transaction with both rows locked, so a head write to either
-// row and a close of the canonical one are ordered with the carry, and a delete the release before
-// this one makes, which carries nothing itself, carries them too.
+// 20261122071001), in the delete's transaction with both rows locked, and marks the canonical
+// row's issue owed, so a head write to either row and a close of the canonical one are ordered
+// with the carry, and a delete the release before this one makes, which carries nothing itself,
+// carries them too.
 func upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {

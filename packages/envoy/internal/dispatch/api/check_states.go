@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -23,10 +26,13 @@ import (
 // (formerHeadsOf): the tester may have tested that head while the pull request moved on, and the
 // testing move reads the states at the head the tester tested, so a result recorded there after
 // the move still publishes its state there. Each write of pull_request_heads that moves an open
-// pull request keeps the head it left (pull_request_former_heads, migration 20261122042244, kept by
-// the trigger after it), in the writer's own transaction, so a head is a former head whether or not
-// a settle ran while the pull request was there. A head's states stop, and its rows go, once no
-// open pull request is or was at it: its pull requests closed or merged.
+// pull request keeps the head it left (pull_request_former_heads and the triggers that keep it,
+// migration 20261122071001), in the writer's own transaction, so a head is a former head whether
+// or not a settle ran while the pull request was there. A head an open pull request left before
+// that migration is known where a result was recorded at it: the migration seeds those commits as
+// candidates, which the settler checks against the pull request's commits once
+// (verifyFormerHeads). A head's states stop, and its rows go, once no open pull request is or was
+// at it: its pull requests closed or merged.
 //
 // A write that can change a state does not publish anything itself: a row trigger on each table a
 // state is computed from marks the issue owed, in the writer's own transaction
@@ -238,6 +244,10 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
+		unverified, err := c.verifyFormerHeads(ctx, issue, heads)
+		if err != nil {
+			return false, err
+		}
 		former, err := formerHeadsOf(ctx, pool, issue, heads)
 		if err != nil {
 			return false, err
@@ -250,6 +260,9 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
+		// A candidate a failed read of GitHub left unverified owes the issue another settle, as a
+		// state that reads read_failed does: publish keeps a mark due after the backoff.
+		readFailed = readFailed || unverified
 		if c.hooks.afterCompute != nil {
 			c.hooks.afterCompute(issue)
 		}
@@ -284,13 +297,14 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 // formerHeadsOf is each former head of an open pull request of issue, heads being the pull
 // requests delivery.HeadsAttributedTo answers: each head that pull request left while it was open
 // (pull_request_former_heads, which each write of pull_request_heads keeps in its own
-// transaction), but its current head. Each former head is the open pull request's row moved back to
-// that commit: at a commit an open pull request of its repository heads now, it names its pull
-// request among that open head's (checkStatesAtHeads), and else the computation reads it as it
-// reads an open head (formerHeadsApart, answerIssueChecks), and an event there names the open pull
-// requests that were at it. A closed or merged pull request keeps no former head, so publish
-// deletes the rows of a head no open pull request is or was at, as it deletes those of an open
-// head whose pull request closed.
+// transaction), but its current head, and but a candidate the install seeded that no read of the
+// pull request's commits has confirmed yet (verifyFormerHeads). Each former head is the open pull
+// request's row moved back to that commit: at a commit an open pull request of its repository
+// heads now, it names its pull request among that open head's (checkStatesAtHeads), and else the
+// computation reads it as it reads an open head (formerHeadsApart, answerIssueChecks), and an
+// event there names the open pull requests that were at it. A closed or merged pull request keeps
+// no former head, so publish deletes the rows of a head no open pull request is or was at, as it
+// deletes those of an open head whose pull request closed.
 //
 // The head whose read of GitHub's check runs started longest ago comes first, a head no read
 // started at before any (check_states.ci_read_at, which publish moves for each former head whose
@@ -313,6 +327,7 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 		join unnest($2::text[], $3::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
 		left join check_states published on published.issue_key = $1 and published.repo = former.repo
 			and published.head_sha = former.head_sha and published.check_block_id = ''
+		where former.verified
 		order by published.ci_read_at nulls first, former.left_at desc, former.repo, former.head_sha, former.number`,
 		issue, repos, numbers)
 	if err != nil {
@@ -340,6 +355,92 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 		return nil, fmt.Errorf("read the former heads of %s: %w", issue, err)
 	}
 	return former, nil
+}
+
+// verifyFormerHeads confirms the candidates the install seeded (pull_request_former_heads rows
+// whose verified is false, migration 20261122071001): the commits of results recorded on the
+// issue of an open pull request, which may or may not have been heads of that pull request. For
+// each open pull request of heads holding one, it reads the pull request's commits from GitHub
+// once (delivery.PullRequestCommits, a page of 100 commits per read, and GitHub lists 250 at
+// most), keeps each candidate among them as a former head and deletes the rest, in one statement.
+// So the read happens once per such pull request, in the first settle of its issue after the
+// install, which the install's mark owes. A repository the App cannot read, a deployment with no
+// App key, and a pull request GitHub answers 404 for can confirm nothing now or later: their
+// candidates are deleted. Any other failure leaves them as they are, and unverified answers true,
+// so the settle keeps a mark that reads them again after the backoff; until then a candidate is no
+// former head. Only a failed read of Dispatch's own database is an error.
+func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (unverified bool, err error) {
+	pool := c.server.deps.Store.Pool
+	var repos []string
+	var numbers []int
+	for _, head := range heads {
+		if head.Open {
+			repos, numbers = append(repos, head.Repo), append(numbers, head.Number)
+		}
+	}
+	if len(repos) == 0 {
+		return false, nil
+	}
+	rows, err := pool.Query(ctx, `
+		select distinct former.repo, former.number
+		from pull_request_former_heads former
+		join unnest($1::text[], $2::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
+		where not former.verified
+		order by former.repo, former.number`, repos, numbers)
+	if err != nil {
+		return false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
+	}
+	type pullRequest struct {
+		repo   string
+		number int
+	}
+	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pullRequest, error) {
+		var held pullRequest
+		return held, row.Scan(&held.repo, &held.number)
+	})
+	if err != nil {
+		return false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
+	}
+	for _, held := range candidates {
+		readCtx, cancel := ciReadBound(ctx)
+		commits, pages, readErr := delivery.PullRequestCommits(readCtx, c.server.deps.GitHub, held.repo, held.number)
+		cancel()
+		var status *githubapp.StatusError
+		switch {
+		case readErr == nil:
+		case delivery.RepositoryUnreadable(readErr) || errors.Is(readErr, githubapp.ErrNoAppKey) ||
+			(errors.As(readErr, &status) && status.Status == http.StatusNotFound):
+			commits = []string{}
+		default:
+			slog.Warn("dispatch: read the commits of a pull request whose former heads the install seeded",
+				"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "error", readErr)
+			unverified = true
+			continue
+		}
+		var kept, dropped int
+		if err := pool.QueryRow(ctx, `
+			with checked as (
+				select head_sha, head_sha = any($3) as listed from pull_request_former_heads
+				where repo = $1 and number = $2 and not verified
+			), kept as (
+				update pull_request_former_heads former set verified = true
+				from checked where checked.listed and former.repo = $1 and former.number = $2
+					and former.head_sha = checked.head_sha and not former.verified
+				returning 1
+			), dropped as (
+				delete from pull_request_former_heads former
+				using checked where not checked.listed and former.repo = $1 and former.number = $2
+					and former.head_sha = checked.head_sha and not former.verified
+				returning 1
+			)
+			select (select count(*) from kept), (select count(*) from dropped)`,
+			held.repo, held.number, commits).Scan(&kept, &dropped); err != nil {
+			return false, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
+		}
+		slog.Info("dispatch: check states verified the former heads the install seeded",
+			"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "kept", kept, "dropped", dropped, "error", readErr)
+	}
+	return unverified, nil
 }
 
 // formerHeadsApart is each of former, formerHeadsOf's, at a commit of a repository no open head of

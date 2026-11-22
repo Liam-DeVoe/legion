@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,34 @@ type ciJobGitHub struct {
 	// with the asking request's context, before GitHub answers, and holds that request for as
 	// long as it runs (holdCommitReads).
 	commitRead func(ctx context.Context, sha string)
+	// pullCommits is the commits GitHub lists for each pull request, by number; a pull request it
+	// holds none for is 404. pullCommitsStatus, when set, answers every such read with that status
+	// instead, and pullCommitReads counts the reads of each pull request's commits.
+	pullCommits       map[int][]string
+	pullCommitsStatus int
+	pullCommitReads   map[int]int
+}
+
+// setPullCommits has GitHub list shas as the commits of pull request number.
+func (g *ciJobGitHub) setPullCommits(number int, shas ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommits[number] = shas
+}
+
+// failPullCommits has GitHub answer every read of a pull request's commits with status, and 0
+// ends it.
+func (g *ciJobGitHub) failPullCommits(status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommitsStatus = status
+}
+
+// pullCommitReadsOf is how many times GitHub was asked for the commits of pull request number.
+func (g *ciJobGitHub) pullCommitReadsOf(number int) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullCommitReads[number]
 }
 
 // ciJobBranchHead is GitHub's answer for one branch's head: the commit it is at, or, where
@@ -178,6 +207,30 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		var number int
+		fmt.Sscan(r.PathValue("number"), &number)
+		g.pullCommitReads[number]++
+		shas, held := g.pullCommits[number]
+		switch {
+		case g.pullCommitsStatus != 0:
+			w.WriteHeader(g.pullCommitsStatus)
+			fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		case !held:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		commits := make([]map[string]any, 0, len(shas))
+		for _, sha := range shas {
+			commits = append(commits, map[string]any{"sha": sha, "commit": map[string]any{"message": "A commit"}})
+		}
+		body, _ := json.Marshal(commits)
+		_, _ = w.Write(body)
+	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"status":"diverged"}`)
 	})
@@ -213,10 +266,12 @@ type ciJobRig struct {
 func newCIJobRig(t *testing.T) *ciJobRig {
 	t.Helper()
 	github := &ciJobGitHub{
-		checkRuns:   map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
-		listings:    newCheckRunsFake(),
-		branches:    map[string]ciJobBranchHead{},
-		branchReads: map[string]int{},
+		checkRuns:       map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
+		listings:        newCheckRunsFake(),
+		branches:        map[string]ciJobBranchHead{},
+		branchReads:     map[string]int{},
+		pullCommits:     map[int][]string{},
+		pullCommitReads: map[int]int{},
 	}
 	_, pemText := githubapptest.Key(t)
 	rig := &ciJobRig{
