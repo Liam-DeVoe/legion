@@ -1920,12 +1920,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   GitHub failing; `this Dispatch does not answer the webhook App check` is a Dispatch older than
   the check: upgrade it. None of these leaves the repository out or stops the daemon.
 - **`intake: a missing durable consumer is created at the last message it applied`** (an info line
-  with `consumer` and `start`). One of the daemon's durable consumers was gone when the daemon
-  opened it, at boot or when the project's repositories changed (deleted by hand, or its stream
-  recreated), and the daemon created it again starting at the stream time of the last message it
-  applied, so the messages published while it was missing are delivered; the one at `start`,
-  applied already, is dropped as a duplicate. Nothing to do. A consumer the daemon has no applied
-  message recorded for starts at the next message instead, with no line.
+  with `consumer` and `start`), on the fixed names, the default. One of the daemon's durable
+  consumers was gone when the daemon opened it, at boot or when the project's repositories changed
+  (deleted by hand, or its stream recreated), and the daemon created it again starting at the
+  stream time of the last message it applied, so the messages published while it was missing are
+  delivered; the one at `start`, applied already, is dropped as a duplicate. Nothing to do. A
+  consumer the daemon has no applied message recorded for starts at the next message instead, with
+  no line. On fresh names (`consumer_names: fresh`) a missing consumer is made again under a
+  new name at the start its `intake_consumers` row proves, never by time, with no line.
 - **`intake: a missing durable consumer's last applied message is older than the stream's first
   message; …`** (a warning with `consumer`, `start` and `stream_first`). The stream keeps 72 hours
   of messages, and the last message the consumer applied is older than the oldest it still holds.
@@ -1934,6 +1936,54 @@ notice comes once per handoff commit, from whichever read finds it first.
   before it went missing. Any it had not reached may have been missed: the daemon applied none of
   them, and nothing replays them, so an issue one of them would have moved waits for its next
   event, or for the daemon's own read of its pull request at that issue's next handoff.
+- **`intake: a durable consumer's physical name could not be settled`** (an error line with
+  `consumer`, `physical`, `op` and `error`). The daemon runs with `consumer_names: fresh`, so
+  each of its durable consumers, the logical names `legion-go-<project>-dispatch`, `-github` and
+  `-wake` (`consumer`), is a physical consumer of its own at each creation,
+  `<logical>~<id>` (`physical`, empty when none was read), which the logical name's row of the
+  daemon's `intake_consumers` table selects. One step of settling that name failed (`op`): `select`
+  refuses before anything is made, `create` and `missing_current` are a create, `recover` settles a
+  create another boot left open, `update` is the boot's update of the selected consumer,
+  `connect` and `info` are the dial of one name's own connection and a read on it, and
+  `last_floor` records its floor. At the boot every step but `last_floor`, whose record only
+  narrows a later restart, stops the boot. The same line from a later step does not stop the
+  daemon: a repositories change is tried again, the state route's lag says the consumer is
+  unavailable, and the poll of a held release reads again. The `error` says why:
+  - `consumer names: the cutover has not run`: the database's sentinel row (`envoy.sentinel`) does
+    not say `done`, or says `rolled_back`. The operator's `envoy-infra consumer-names convert`
+    writes it in the maintenance window; until then run the daemon with the fixed names
+    (`consumer_names: fixed`, the default).
+  - `the selection store is missing` or `the selection store's sentinel is missing`: the table or
+    its sentinel row is gone. The daemon never falls back to the fixed names; the operator restores
+    the row.
+  - `intake_consumers' sentinel records no stream identity (stream_id)`: the cutover is marked done
+    but the sentinel does not say which ENVOY_NOTIFICATIONS the daemon's floors belong to, which
+    the operator's `convert` and `enroll` write. The daemon tags each floor it records with that
+    identity, and stops at its boot until it is written.
+  - `a durable consumer has a checkpoint and no selection record`: `consumer_positions` holds a
+    position for the logical name and `intake_consumers` no row, so the record was lost; a new
+    consumer at the next message would skip what the daemon had not applied. The operator gives it
+    a start with `envoy-infra consumer-names replay`.
+  - `no safe start is known`: the row selects a consumer the stream no longer holds, and proves no
+    start for one made again (no saved start, no floor read from that consumer on this stream).
+    The daemon never creates it by time or at the next message; the operator's `replay` gives it
+    a start.
+  - `connect <logical>/<id>: …`: every call on a consumer of fresh name `<logical>~<id>` goes on
+    a NATS connection of its own named `<logical>/<id>`, which the hub's auth service grants that
+    one consumer, and that connection was not admitted. Nothing was deleted, and the next boot
+    settles the step it left.
+
+  A name the daemon retired after a create nobody answered stays on the server, since the daemon's
+  grant has no consumer delete: `envoy-infra consumer-names status` lists it and `cleanup` deletes
+  it.
+- **`intake_consumers says this database's durable consumers were converted to fresh names (cutover
+  done), and legion.yaml's consumer_names is fixed: …`** (the daemon stopped). The operator's
+  consumer-names cutover converted the daemon's durable consumers to fresh names, and the daemon
+  runs with `consumer_names: fixed`, or with no `consumer_names`: creating the fixed names again
+  would run the race the cutover removed. The daemon reads the marker at its start and again after
+  each reconnect of its NATS connection, so one that only reconnected across the cutover stops at
+  that reconnect. Set `consumer_names: fresh` in `legion.yaml` and start it again. A database whose
+  cutover was rolled back (the sentinel reads `rolled_back`) runs the fixed names.
 - **`agent-secrets: the token login failed; retrying`** (an error line with the cause, the class
   it was sorted into and the retry schedule that class takes).
   With `runtime.kubernetes.agent_secrets` set, the daemon logs in to the

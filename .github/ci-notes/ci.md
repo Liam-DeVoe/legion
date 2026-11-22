@@ -243,6 +243,9 @@ holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
+and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
+patches nats-server with.
 No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
@@ -740,8 +743,14 @@ pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 ## envoy_e2e_local: The job reads no Markdown file: the listener, the renderer
 
 The job reads no Markdown file: the listener, the renderer and the contracts
-between them are its whole input, so a guide written under one of the directory
-patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/cipher-client/**'` and the rest) would start it for nothing.
+between them are its whole input, so a guide written under one of the tree
+patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`,
+`'packages/cipher-client/**'`, `'packages/contracts/src/**'` and the GitHub
+fixtures) would start it for nothing, and a `!` pattern per tree keeps Markdown
+there off it. A Go package directory the listener builds is held whole
+(`<dir>/*`): check-ci-filters.sh counts every file beside a package's Go files as
+read, so a package's README, such as `packages/envoy/consumernames/README.md`,
+stays on the filter, and no `!**/*.md` may exclude it.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 

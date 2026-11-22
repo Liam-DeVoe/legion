@@ -159,12 +159,19 @@ func (s source) seed() (string, error) {
 // without a credential. Every connection it opens pings as detectSilentCuts sets, because the
 // daemon dials NATS here and nowhere else: the pings are this package's, not a caller's to pass.
 //
+// Every connection it opens also keeps no reconnect buffer (nats.ReconnectBufSize(-1)): a publish
+// made while the connection is cut fails at once, where nats.go's default would hold it and send
+// it on the new connection. Each daemon connection creates or updates consumers of the daemon's
+// family, and a create that a guard passed before a cut must not reach the server after a hold's
+// release on its own, unchecked. An acknowledgement made while cut fails too and is logged; its
+// message is delivered again, which the daemon applies once.
+//
 // name is what the connection calls itself to the server, and it is a parameter rather than an
 // option because an option can be forgotten and an unnamed connection is one nobody can place:
 // an operator reading /connz on the Envoy NATS sees which process holds each connection, and a
 // test fixture reporting a connection a test left open can say which client it was. It is
-// appended after the caller's own options, beside detectSilentCuts, so a caller's own nats.Name
-// does not win here.
+// appended after the caller's own options, beside detectSilentCuts and the empty reconnect buffer,
+// so a caller's own nats.Name or buffer does not win here.
 //
 // It leaves nats.go's IgnoreAuthErrorAbort at its default: a seed's user is one a hub admits by its
 // own configuration, never asking the NATS auth service, and the auth service admits no connection
@@ -183,8 +190,8 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 		}
 		options = append(options, nats.Nkey(public, user.Sign))
 	}
-	// Last, so these pings and this name hold whatever a caller passed before them.
-	options = append(options, detectSilentCuts, nats.Name(name))
+	// Last, so these pings, this buffer and this name hold whatever a caller passed before them.
+	options = append(options, detectSilentCuts, nats.ReconnectBufSize(-1), nats.Name(name))
 	return nats.Connect(strings.Join(urls, ","), options...)
 }
 

@@ -140,6 +140,11 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // than any fixed wait allows. A test calls it after it starts a stopped member again, or after it
 // stops one, before it asks JetStream for anything that needs the meta group.
 //
+// The wait ends on that state, not on a fixed time, and a cluster that never converges fails the
+// wait naming the state it waited for, before go test ends the binary. A fixed 30 s bound failed
+// TestForcedOrderALameDuckReleasesTheHoldOnItsServer on a loaded machine with the meta leader
+// counting 2 of the 3 running members online, no member mute.
+//
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening over for every member,
 // since a restarted member has heard no one yet.
