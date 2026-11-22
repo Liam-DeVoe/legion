@@ -7678,7 +7678,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["SpecFormError"];
+          "application/json":
+            | components["schemas"]["SpecFormError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8218,7 +8220,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["SpecFormError"];
+          "application/json":
+            | components["schemas"]["SpecFormError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8479,7 +8483,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["SpecFormError"];
+          "application/json":
+            | components["schemas"]["SpecFormError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8633,7 +8639,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["SpecFormError"];
+          "application/json":
+            | components["schemas"]["SpecFormError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

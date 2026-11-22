@@ -1186,7 +1186,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SpecFormError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2064,7 +2071,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SpecFormError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2479,7 +2493,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SpecFormError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2714,7 +2735,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SpecFormError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
