@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // browserWrites is every route the server mounts beside the API's table that serves a write, and
@@ -20,30 +20,18 @@ var browserWrites = map[string]string{
 	"POST /auth/logout": "the sign-out resolves its caller and refuses one it cannot, and a second run revokes nothing more",
 	githubapi.Prefix:    "the GitHub proxy answers every method but GET 405 and writes nothing",
 	"/":                 "the dashboard's files are read and never written",
+	// The passkey ceremonies of a person from outside, at the outside origin's page alone: a
+	// begin writes nothing, and a finish records its ceremony used once.
+	"POST /auth/passkey/register/begin":  "a begin writes nothing: its ceremony rides in the signed cookie, and a second begin is a second ceremony",
+	"POST /auth/passkey/register/finish": "a finish records its ceremony used under a unique key, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
+	"POST /auth/passkey/login/begin":     "a begin writes nothing: its ceremony rides in the signed cookie, and a second begin is a second ceremony",
+	"POST /auth/passkey/login/finish":    "a finish records its ceremony used under a unique key, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
 }
 
-// recordingMux is the ServeMux the census hands the real mounting code (mount), keeping the
-// pattern of each route mounted on it.
-type recordingMux struct {
-	http.ServeMux
-	patterns []string
-}
-
-var _ api.RouteMux = (*recordingMux)(nil)
-
-func (m *recordingMux) Handle(pattern string, handler http.Handler) {
-	m.ServeMux.Handle(pattern, handler)
-	m.patterns = append(m.patterns, pattern)
-}
-
-func (m *recordingMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
-	m.Handle(pattern, http.HandlerFunc(handler))
-}
-
-// mounted is a recordingMux the server's own mounting code (mount) filled.
-func mounted(t *testing.T) *recordingMux {
+// mounted is a ServeMux the server's own mounting code (mount) filled.
+func mounted(t *testing.T) *http.ServeMux {
 	t.Helper()
-	mux := &recordingMux{}
+	mux := http.NewServeMux()
 	mount(newKeyedCensusContext(t), mux)
 	return mux
 }
@@ -79,18 +67,27 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 	}
 }
 
-// newKeyedCensusContext is a router's context with header identity, no sign-in and the test hooks
-// on, as newTestRouter builds one: the hooks mount nine more write rows, so the census covers
-// every row any server mounts.
+// newKeyedCensusContext is a router's context with header identity, no sign-in, passkey sign-in
+// on and the test hooks on, as newTestRouter builds one: the hooks mount nine more write rows and
+// passkey sign-in its four ceremonies, so the census covers every row any server mounts.
 func newKeyedCensusContext(t *testing.T) *AppContext {
 	t.Helper()
 	people := newMemoryPeople()
+	const outside = "https://outside.dispatch.test"
+	passkeyStore := store.NewPgPasskeys(store.NewPgPeopleStore(nil, testSigningKey, nil), outside)
+	ceremonies, err := identity.NewPasskeys(outside, passkeyStore, identity.PasskeyRule{})
+	if err != nil {
+		t.Fatalf("build the passkey ceremonies: %v", err)
+	}
 	ctx, err := BuildAppContext(AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
+		ServerURL:        "http://dispatch.test",
+		OutsideOrigin:    outside,
+		Passkeys:         ceremonies,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -99,27 +96,31 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 	return ctx
 }
 
-// writesBesideTheTable is every pattern of mux that serves a write and is no row of the API's
-// table, which GET /api/v1 lists, sorted.
-func writesBesideTheTable(t *testing.T, mux *recordingMux) []string {
+// writesBesideTheTable is every pattern mux serves (servedPatterns, read from the mux itself, so
+// a pattern mounted on it by any means is read) that serves a write and is no row of the API's
+// table, which GET /api/v1 lists, sorted. The index is read as a signed-in caller, as the POST
+// below is made: every route answers 401 to a request that names no one, the index included.
+func writesBesideTheTable(t *testing.T, mux *http.ServeMux) []string {
 	t.Helper()
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil))
-	var index struct {
+	index := httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil)
+	index.Header.Set("X-Dispatch-User", "alice@d.example")
+	mux.ServeHTTP(response, index)
+	var listed struct {
 		Routes []struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
 		} `json:"routes"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &index); err != nil || len(index.Routes) == 0 {
+	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil || len(listed.Routes) == 0 {
 		t.Fatalf("GET /api/v1 answered %d %s (%v), want the table's index", response.Code, response.Body.String(), err)
 	}
 	table := map[string]bool{}
-	for _, route := range index.Routes {
+	for _, route := range listed.Routes {
 		table[route.Method+" "+route.Path] = true
 	}
 	var outside []string
-	for _, pattern := range mux.patterns {
+	for _, pattern := range servedPatterns(t, mux) {
 		method, _, named := strings.Cut(pattern, " ")
 		if (!named || method == http.MethodPost || method == http.MethodPatch) && !table[pattern] {
 			outside = append(outside, pattern)

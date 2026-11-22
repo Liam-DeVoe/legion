@@ -111,7 +111,7 @@ func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
 	if canonical != "## Database\n\nUse SQLite\n" {
 		t.Fatalf("canonical = %q", canonical)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != canonical {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != canonical {
 		t.Fatalf("Text = %q (%v)", got, err)
 	}
 	loaded, err := service.persistence.Load(context.Background(), artifactID)
@@ -249,7 +249,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 		waitForNoLiveDocument(t, service, artifactID)
 	}
 
-	got, err := service.Text(ctx, artifactID)
+	got, err := service.Text(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read durable text: %v", err)
 	}
@@ -1095,7 +1095,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 		t.Fatalf("decode settle event payload: %v", err)
 	}
 	issueKey := "DOC-1"
-	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !reflect.DeepEqual(named.ReferencesChanged, want) {
 		t.Fatalf("settle event references_changed = %#v, want %#v", named.ReferencesChanged, want)
 	}
@@ -1145,7 +1145,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	if err := ledger.Commit(context.Background()); err != nil {
 		t.Fatalf("commit snapshot: %v", err)
 	}
-	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !snapshot.Wrote || !reflect.DeepEqual(snapshot.Changes.Targets, want) {
 		t.Fatalf("snapshot changes = %#v (wrote=%t), want %#v", snapshot.Changes.Targets, snapshot.Wrote, want)
 	}
@@ -1164,6 +1164,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	want = []model.ChangedReference{
 		{Kind: "ask", ID: askIDs[1], IssueKey: &issueKey},
 		{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey},
+		{Kind: "issue", ID: issueKey},
 	}
 	if !reflect.DeepEqual(named.Changes.Targets, want) {
 		t.Fatalf("named version changes = %#v, want %#v", named.Changes.Targets, want)

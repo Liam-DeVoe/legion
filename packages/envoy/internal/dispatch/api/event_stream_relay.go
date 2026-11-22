@@ -529,11 +529,15 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 
 // page reads the committed events in (after, through]: the relay's one read of the event log's
 // rows, the read an events subscription's catch-up also pages through (readEventsAfterID).
+//
+// The relay reads one page for every subscriber at once and resolves no credential, so it reads
+// as the server (everyReader), which sees every event; each socket sends on only what its own
+// viewer may read (eventReadableSQL).
 func (r *eventStreamRelay) page(ctx context.Context, after, through int64) ([]model.Event, error) {
 	if r.readAfter != nil {
 		return r.readAfter(ctx, after, through)
 	}
-	return r.server.readEventsAfterID(ctx, after, through, maxEventReplay)
+	return r.server.readEventsAfterID(ctx, everyReader, after, through, maxEventReplay)
 }
 
 // publish fans one page out to g's subscribers and moves g's cursor to its last event, under mu.

@@ -8,9 +8,13 @@
 // signing key, and drives the surface the other build's clients use: the CLI
 // (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
-// (twobuild_messages_test.go), and what the page admission does while the previous build's process
-// is live and once it has left the registry (twobuild_transition_test.go). This file is the
-// harness all four start their builds with.
+// (twobuild_messages_test.go), what the page admission does while the previous build's process
+// is live and once it has left the registry (twobuild_transition_test.go), and a person's hold,
+// which each build's sign-in and sign-out leave the other to read (twobuild_hold_test.go). This
+// file is the harness all five start their builds with.
+//
+// A row that signs people in asks for it (withSignInIssuer): the harness then starts one fake OIDC
+// issuer and starts both builds signing people in through it. The others start with no sign-in.
 //
 // The previous build is a directory packages/envoy/scripts/build-dispatch-build.sh writes, named by
 // DISPATCH_PREVIOUS_BUILD. The suite skips only when that variable is unset; a directory it names
@@ -30,9 +34,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -158,13 +166,31 @@ type twoBuilds struct {
 	build previousBuild
 	// binary is this tree's envoy-dispatch, built once so a restart runs the same binary.
 	binary string
+	// issuer is the fake OIDC issuer both builds sign people in through, nil for a row that asked
+	// for none (withSignInIssuer).
+	issuer *oidctest.Issuer
 }
 
-// newTwoBuilds opens the previous build, the database and the NATS server, and starts nothing.
-// newFirstRolloutBuilds is the same with the first-rollout build as the earlier one.
-func newTwoBuilds(t *testing.T) *twoBuilds {
+// twoBuildsOption is what a row asks of the harness beside the two builds, the database and NATS.
+type twoBuildsOption func(t *testing.T, b *twoBuilds)
+
+// withSignInIssuer starts one fake OIDC issuer (oidctest) that serves the code flow to the client
+// both builds sign people in as (cookieClientID), and has each build sign people in through it
+// (previousSignIn, currentSignIn). A row drives the issuer as Google and as a sign-in pool at once:
+// the claims it queues name the person both ways.
+func withSignInIssuer() twoBuildsOption {
+	return func(t *testing.T, b *twoBuilds) {
+		b.issuer = oidctest.New(t)
+		b.issuer.EnableCodeFlow(b.issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	}
+}
+
+// newTwoBuilds opens the previous build, the database and the NATS server, and starts nothing but
+// what opts ask for. newFirstRolloutBuilds is the same with the first-rollout build as the earlier
+// one.
+func newTwoBuilds(t *testing.T, opts ...twoBuildsOption) *twoBuilds {
 	t.Helper()
-	return newTwoBuildsOf(t, openPreviousBuild(t))
+	return newTwoBuildsOf(t, openPreviousBuild(t), opts...)
 }
 
 func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
@@ -173,12 +199,15 @@ func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
 }
 
 // newTwoBuildsOf's pair runs on the lane's database for build (laneDatabaseAfter), and fails the
-// test unless build booted on it first (requireEarlierBuildFirst).
-func newTwoBuildsOf(t *testing.T, build previousBuild) *twoBuilds {
+// test unless build booted on it first (requireEarlierBuildFirst). It then applies opts.
+func newTwoBuildsOf(t *testing.T, build previousBuild, opts ...twoBuildsOption) *twoBuilds {
 	t.Helper()
 	binary := cmdtest.Build(t, "envoy-dispatch")
 	b := &twoBuilds{dispatchPair: newPairOn(t, laneDatabaseAfter(t, build, binary)), build: build, binary: binary}
 	requireEarlierBuildFirst(t, b)
+	for _, opt := range opts {
+		opt(t, b)
+	}
 	return b
 }
 
@@ -198,8 +227,10 @@ func laneDatabaseAfter(t *testing.T, build previousBuild, current string) *store
 // text refuses wherever the later one edits a migration it holds: the lane would be red for every
 // pull request that edits a shipped migration, its replaces line in place
 // (TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration, which runs
-// this function with such a pair). The arrival mark a boot of a build before the owner lock stamps
-// (owner_lock_legacy_mark) is cleared after the boots, as every test database starts without one.
+// this function with such a pair). The arrival marks a boot of a build before the owner lock, or
+// before the account binding, stamps (owner_lock_legacy_mark, account_binding_legacy_mark; the
+// later build's own migration stamps the second from the earlier build's publish) are cleared after
+// the boots, as every test database starts without them.
 func laneDatabase(t *testing.T, key, earlier, later string) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, key, func(url string) error {
@@ -210,7 +241,7 @@ func laneDatabase(t *testing.T, key, earlier, later string) *store.Store {
 			return err
 		}
 		defer conn.Close(ctx)
-		_, err = conn.Exec(ctx, "delete from owner_lock_legacy_mark")
+		_, err = conn.Exec(ctx, "delete from owner_lock_legacy_mark; delete from account_binding_legacy_mark")
 		return err
 	})
 }
@@ -234,9 +265,59 @@ func migrateInOrder(t *testing.T, url string, binaries ...string) {
 	page := lanePage(t)
 	for _, binary := range binaries {
 		p := startDispatchProcessWith(t, url, dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: binary, WebDist: page})
-		p.waitHealthy(t)
+		p.waitBooted(t)
 		stop(t, p)
 	}
+}
+
+// bootHangGuard bounds a boot of the two-build lane only so a process that never serves fails the
+// test rather than its binary's timeout. It decides nothing about a boot that is slow: a boot here
+// migrates a database, publishes a page and registers, each as slow as the machine is, and a box
+// carrying a load in the hundreds has held one past a fixed 30 s with nothing wrong
+// (TestTheTwoBuildBootWaitsForReadinessNotTheClock).
+const bootHangGuard = 10 * time.Minute
+
+// waitBooted waits for p to serve: its listening line, then a 200 from /healthz while it still runs
+// (healthyWithin). The process exiting first fails the test at once, with the reason its output
+// gives; bootHangGuard fails a process that is still running and never served, naming the line and
+// the answer the wait was for.
+func (p *dispatchProcess) waitBooted(t *testing.T) {
+	t.Helper()
+	if err := p.healthyWithin(bootHangGuard); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTheTwoBuildBootWaitsForReadinessNotTheClock: a boot of the lane slower than the 30 s this
+// lane's boots were once held to (waitHealthy's bound) still passes waitBooted, which waits for the
+// process's listening line and a 200 from /healthz. The boot is slowed by a wrapper that sleeps
+// 35 s and then execs this tree's envoy-dispatch, so the process that serves, its inherited socket
+// and its exit are the server's own. The row requires the boot to have taken longer than 30 s, so
+// it fails, rather than passing for nothing, if the delay ever stops outlasting that bound.
+//
+// Control: waitBooted given waitHealthy's 30 s fails this row, "Dispatch never became healthy
+// within 30s", with the process still running and no listening line logged.
+func TestTheTwoBuildBootWaitsForReadinessNotTheClock(t *testing.T) {
+	const fixedBound = 30 * time.Second
+	delay := fixedBound + 5*time.Second
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("find sleep for the slowed boot: %v", err)
+	}
+	slowed := filepath.Join(t.TempDir(), "envoy-dispatch-slowed")
+	script := "#!/bin/sh\n" + sleep + " " + strconv.Itoa(int(delay.Seconds())) + "\nexec " + cmdtest.Build(t, "envoy-dispatch") + ` "$@"` + "\n"
+	if err := os.WriteFile(slowed, []byte(script), 0o755); err != nil {
+		t.Fatalf("write the slowed boot's wrapper: %v", err)
+	}
+	database := storetest.Open(t)
+	started := time.Now()
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Binary: slowed})
+	process.waitBooted(t)
+	if took := time.Since(started); took <= fixedBound {
+		t.Fatalf("the slowed boot served %s after its start, within the %s it was meant to outlast", took.Round(time.Millisecond), fixedBound)
+	}
+	t.Logf("the slowed boot served %s after its start", time.Since(started).Round(time.Millisecond))
+	stop(t, process)
 }
 
 // lanePage writes the web dist migrateInOrder's processes serve: an index.html that names
@@ -277,9 +358,57 @@ func requireEarlierBuildFirst(t *testing.T, b *twoBuilds) {
 	}
 }
 
-// options is what both builds' processes start with: the pair's NATS, the one signing key, and env.
-func (b *twoBuilds) options(env map[string]string) dispatchOptions {
-	return dispatchOptions{NATSURL: b.nats, SigningKey: multiprocessSigningKey, Env: env}
+// options is what both builds' processes start with: the pair's NATS, the one signing key, and env
+// over signIn, the build's own sign-in. A sign-in takes the session cookie as the person's
+// identity, so the process trusts no identity header, as a deployment that signs people in does
+// not. A nil signIn, a row's that asked for no issuer, adds nothing.
+func (b *twoBuilds) options(signIn, env map[string]string) dispatchOptions {
+	options := dispatchOptions{NATSURL: b.nats, SigningKey: multiprocessSigningKey, Env: env}
+	if signIn != nil {
+		options.Env = maps.Clone(signIn)
+		maps.Copy(options.Env, env)
+		options.Without = []string{"DISPATCH_IDENTITY_HEADER_TRUSTED"}
+	}
+	return options
+}
+
+// previousSignIn is the previous build's sign-in through the issuer, nil when the row has none.
+// The previous release refuses DISPATCH_SIGNIN_DOMAIN under any issuer but Google's, so it signs
+// people in as a sign-in pool's group: DISPATCH_SIGNIN_GROUP, cookieGroup, whose rule names the
+// person by the email in the pool username and records no Google account (`sub`).
+func (b *twoBuilds) previousSignIn() map[string]string {
+	env := b.cookieSignIn()
+	if env != nil {
+		env["DISPATCH_SIGNIN_GROUP"] = cookieGroup
+	}
+	return env
+}
+
+// currentSignIn is this tree's, nil when the row has none: the Workspace domain leaverDomain
+// (DISPATCH_SIGNIN_DOMAIN) under the issuer in Google's place, which the test hooks'
+// DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1 lets this tree take.
+func (b *twoBuilds) currentSignIn() map[string]string {
+	env := b.cookieSignIn()
+	if env != nil {
+		env["DISPATCH_SIGNIN_DOMAIN"] = leaverDomain
+		env["DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER"] = "1"
+	}
+	return env
+}
+
+// cookieSignIn is what both builds' sign-ins share: the session cookie as the identity, sent over
+// plain HTTP, and the issuer's client. It is nil when the row has no issuer.
+func (b *twoBuilds) cookieSignIn() map[string]string {
+	if b.issuer == nil {
+		return nil
+	}
+	return map[string]string{
+		"DISPATCH_IDENTITY":             "cookie",
+		"DISPATCH_INSECURE_COOKIE":      "1",
+		"DISPATCH_SIGNIN_ISSUER":        b.issuer.URL(),
+		"DISPATCH_SIGNIN_CLIENT_ID":     cookieClientID,
+		"DISPATCH_SIGNIN_CLIENT_SECRET": cookieClientSecret,
+	}
 }
 
 // startPrevious starts a process of the previous build, its own web app served, and returns once it
@@ -289,20 +418,20 @@ func (b *twoBuilds) options(env map[string]string) dispatchOptions {
 // bind would be any program's to take first, and the start would fail on `address already in use`.
 func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
-	options := b.options(env)
+	options := b.options(b.previousSignIn(), env)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
 	b.a = startDispatchProcessWith(t, b.databaseURL(t), options)
-	b.a.waitHealthy(t)
+	b.a.waitBooted(t)
 	return b.a
 }
 
 // startCurrent starts a process of this tree and returns once it answers /healthz.
 func (b *twoBuilds) startCurrent(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
-	options := b.options(env)
+	options := b.options(b.currentSignIn(), env)
 	options.Binary = b.binary
 	b.b = startDispatchProcessWith(t, b.databaseURL(t), options)
-	b.b.waitHealthy(t)
+	b.b.waitBooted(t)
 	return b.b
 }
 
@@ -360,33 +489,48 @@ func jsonBody(t *testing.T, value any) string {
 	return string(body)
 }
 
-// ───── the previous build's owner lock protocol ─────────────────────────────
+// ───── the previous build's protocols ───────────────────────────────────────
 
-// registeredOwnerLockProtocol waits up to within for the one server process database's registry
-// holds (server_processes) and answers the owner lock protocol it registered with
-// (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's default, for a build
-// before the owner lock, which writes no such column). process is that process, and name what a
-// failure calls it. The read polls, since a build may serve a moment before its registration
-// commits. It fails the test when the registry holds more than one process, when process exits
-// before its row reads, or when within passes first.
+// registeredProtocols is what a server process registers in server_processes that tells its build
+// apart from this tree's: its owner lock protocol (owner_lock_protocol: store.OwnerLockProtocol for
+// this tree, 0, the column's default, for a build before the owner lock, which writes no such
+// column) and its account binding (account_binding: store.AccountBindingProtocol for this tree, 0
+// for a build without the binding). The fields are exported for pgx.RowToStructByPos, which scans
+// exported fields alone.
+type registeredProtocols struct {
+	OwnerLock, AccountBinding int
+}
+
+// registeredOwnerLockProtocol is the owner lock protocol of the one server process database's
+// registry holds (registeredProcessProtocols).
 func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) int {
+	t.Helper()
+	return registeredProcessProtocols(t, database, process, name, within).OwnerLock
+}
+
+// registeredProcessProtocols waits up to within for the one server process database's registry
+// holds (server_processes) and answers the protocols it registered with (registeredProtocols).
+// process is that process, and name what a failure calls it. The read polls, since a build may
+// serve a moment before its registration commits. It fails the test when the registry holds more
+// than one process, when process exits before its row reads, or when within passes first.
+func registeredProcessProtocols(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) registeredProtocols {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for {
-		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
+		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol, account_binding from server_processes`)
 		if err != nil {
 			t.Fatalf("read the registered server processes: %v", err)
 		}
-		protocols, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		registered, err := pgx.CollectRows(rows, pgx.RowToStructByPos[registeredProtocols])
 		if err != nil {
 			t.Fatalf("read the registered server processes: %v", err)
 		}
 		switch {
-		case len(protocols) == 1:
-			return protocols[0]
-		case len(protocols) > 1:
-			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
-				len(protocols), protocols, name)
+		case len(registered) == 1:
+			return registered[0]
+		case len(registered) > 1:
+			t.Fatalf("the registry holds %d server processes, at owner lock protocols and account bindings %+v, where the %s's should be its only one",
+				len(registered), registered, name)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the %s registered no server process within %s:\n%s", name, within, process.Output.String())
@@ -399,38 +543,52 @@ func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *d
 	}
 }
 
-// probedOwnerLockProtocols is the owner lock protocol each previous build registered when
-// previousBuildOwnerLockProtocol booted it, by the build's directory. It lasts as long as the test
-// binary, so the rows that ask boot one probe between them.
-var probedOwnerLockProtocols = struct {
+// probedProtocols is the protocols each previous build registered when previousBuildProtocols
+// booted it, by the build's directory. It lasts as long as the test binary, so the rows that ask
+// boot one probe between them.
+var probedProtocols = struct {
 	sync.Mutex
-	byDir map[string]int
-}{byDir: map[string]int{}}
+	byDir map[string]registeredProtocols
+}{byDir: map[string]registeredProtocols{}}
 
-// previousBuildOwnerLockProtocol answers the owner lock protocol build registers, for a row that
-// must know it before build boots on the row's own database. A probe there would be the very thing
-// such a row tests: a build before the owner lock that boots on a database is an arrival there,
-// which stamps the database's mark of an earlier build (owner_lock_legacy_mark) for an hour
-// (store.OwnerLockMarkWindow) and puts every process of this tree on it in the mode beside an
-// earlier build. So the probe boots build once alone, on a database of its own (laneDatabaseAfter, a
-// clone the row's database is not, at this tree's schema in production's order, which build boots
-// on) and a NATS server of its own, reads the protocol its process registers
-// (registeredOwnerLockProtocol), and kills the process. The answer is kept by the build's directory
-// for the rest of the test binary, and a later row reads it without a boot.
+// previousBuildOwnerLockProtocol answers the owner lock protocol build registers
+// (previousBuildProtocols).
 func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	t.Helper()
-	probed := &probedOwnerLockProtocols
+	return previousBuildProtocols(t, build).OwnerLock
+}
+
+// previousBuildAccountBinding answers the account binding build registers
+// (previousBuildProtocols).
+func previousBuildAccountBinding(t *testing.T, build previousBuild) int {
+	t.Helper()
+	return previousBuildProtocols(t, build).AccountBinding
+}
+
+// previousBuildProtocols answers the protocols build registers, for a row that must know them
+// before build boots on the row's own database. A probe there would be the very thing such a row
+// tests: a build before the owner lock, or without the account binding, that boots on a database
+// is an arrival there, which stamps the database's mark of an earlier build (owner_lock_legacy_mark,
+// account_binding_legacy_mark) for an hour (store.OwnerLockMarkWindow) and puts every process of
+// this tree on it in the mode beside an earlier build. So the probe boots build once alone, on a
+// database of its own (laneDatabaseAfter, a clone the row's database is not, at this tree's schema
+// in production's order, which build boots on) and a NATS server of its own, reads the protocols
+// its process registers (registeredProcessProtocols), and kills the process. The answer is kept by
+// the build's directory for the rest of the test binary, and a later row reads it without a boot.
+func previousBuildProtocols(t *testing.T, build previousBuild) registeredProtocols {
+	t.Helper()
+	probed := &probedProtocols
 	probed.Lock()
 	defer probed.Unlock()
-	if protocol, known := probed.byDir[build.dir]; known {
-		return protocol
+	if protocols, known := probed.byDir[build.dir]; known {
+		return protocols
 	}
 	name := "probe of the previous build (" + shortCommit(build.commit) + ")"
 	database := laneDatabaseAfter(t, build, cmdtest.Build(t, "envoy-dispatch"))
 	_, nats := multiprocessNATS(t)
 	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
 		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
-	protocol := registeredOwnerLockProtocol(t, database, probe, name, 60*time.Second)
+	protocols := registeredProcessProtocols(t, database, probe, name, 60*time.Second)
 	if err := probe.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the %s: %v", name, err)
 	}
@@ -439,6 +597,6 @@ func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the %s was still running 30s after it was killed:\n%s", name, probe.Output.String())
 	}
-	probed.byDir[build.dir] = protocol
-	return protocol
+	probed.byDir[build.dir] = protocols
+	return protocols
 }

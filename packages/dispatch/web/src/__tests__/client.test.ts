@@ -9,6 +9,7 @@ import {
   type FetchImplementation,
   isCredentialFeatureOff,
   isDeliveryNotConfigured,
+  isDeploymentReadRefused,
   isDocumentNewerContent,
   isDocumentSchemaError,
   isReferencesTimeout,
@@ -723,6 +724,64 @@ test("API client sends project default assignee requests to their routes", async
   expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ assignee: "alice@example.com" });
 });
 
+test("API client sends project access and group requests to their routes", async () => {
+  const stub = stubFetch(() =>
+    Response.json({ groups: [], owner: "alice", people: [], project: "CORE", visibility: "public" })
+  );
+  const accessApi = createApiClient(stub.fetch);
+
+  await accessApi.getProjectAccess("CORE");
+  await accessApi.patchProjectAccess("CORE", { owner: "bob@example.com" }, keyed("patch-1"));
+  await accessApi.putProjectAccessPerson("CORE", "carol+x@example.com", keyed("put-1"));
+  await accessApi.deleteProjectAccessPerson("CORE", "carol+x@example.com", keyed("delete-1"));
+  await accessApi.putProjectAccessGroup("CORE", "crew", keyed("put-2"));
+  await accessApi.deleteProjectAccessGroup("CORE", "crew", keyed("delete-2"));
+  await accessApi.listAccessGroups();
+  await accessApi.putAccessGroup("crew", { members: ["carol@example.com"] }, keyed("put-3"));
+  await accessApi.deleteAccessGroup("crew", keyed("delete-3"));
+
+  expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
+    ["GET", "/api/v1/projects/CORE/access"],
+    ["PATCH", "/api/v1/projects/CORE/access"],
+    ["PUT", "/api/v1/projects/CORE/access/people/carol%2Bx%40example.com"],
+    ["DELETE", "/api/v1/projects/CORE/access/people/carol%2Bx%40example.com"],
+    ["PUT", "/api/v1/projects/CORE/access/groups/crew"],
+    ["DELETE", "/api/v1/projects/CORE/access/groups/crew"],
+    ["GET", "/api/v1/access-groups"],
+    ["PUT", "/api/v1/access-groups/crew"],
+    ["DELETE", "/api/v1/access-groups/crew"],
+  ]);
+  // The owner is the body of the PATCH; a person and a group are their own address, so their
+  // writes carry no body at all.
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ owner: "bob@example.com" });
+  expect(stub.requests[2]?.body).toBeUndefined();
+  expect(stub.requests[4]?.body).toBeUndefined();
+  expect(JSON.parse(stub.requests[7]?.body as string)).toEqual({ members: ["carol@example.com"] });
+});
+
+// The groups list is read a page at a time, each page's `next` passed as the next read's
+// `after`. A `next` that does not move - a page naming as its `next` an `after` already read -
+// would read the same page again for good, so the read stops at the repeat and fails naming it,
+// having read each page once.
+test("a groups page whose next does not move fails the read instead of reading it again", async () => {
+  const stub = stubFetch((request) =>
+    Response.json(
+      request.path.includes("after=")
+        ? { groups: [{ members: [], name: "crew", owner: "alice" }], next: "crew" }
+        : { groups: [{ members: [], name: "admins", owner: "alice" }], next: "crew" }
+    )
+  );
+  const accessApi = createApiClient(stub.fetch);
+
+  await expect(accessApi.listAccessGroups()).rejects.toThrow(
+    'GET /api/v1/access-groups named next "crew" again'
+  );
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/access-groups",
+    "/api/v1/access-groups?after=crew",
+  ]);
+});
+
 test("API client sends inline artifacts as JSON", async () => {
   const stub = stubFetch(() => Response.json({ artifact: {}, version: {} }));
   const api = createApiClient(stub.fetch);
@@ -857,7 +916,7 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
     ["GET", "/api/v1/artifacts/artifact-1/comments"],
     ["POST", "/api/v1/artifacts/artifact-1/comments"],
     ["GET", "/api/v1/artifacts/artifact-1/blocks"],
-    ["GET", "/api/v1/issues/CORE-1/references"],
+    ["GET", "/api/v1/issues/CORE-1/references?versions=latest"],
   ]);
   expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({
     content: "# Design notes\n",
@@ -1013,6 +1072,43 @@ test(
     expect(isRetryableQueryError(referencesTimeoutError)).toBe(false);
   }
 );
+
+test("a read of the whole deployment refused to a restricted member is definitive and not retried", async () => {
+  const refused = await createApiClient(
+    stubFetch(() =>
+      Response.json(
+        { code: "DEPLOYMENT_READ_REFUSED", error: "this caller is a restricted member" },
+        { status: 403 }
+      )
+    ).fetch
+  )
+    .getCredentialPending()
+    .catch((error: unknown) => error);
+  const forbidden = new ApiError(403, { code: "FORBIDDEN", error: "forbidden" });
+
+  expect(isDeploymentReadRefused(refused)).toBe(true);
+  expect(isRetryableQueryError(refused)).toBe(false);
+  // Only that code: another 403 is not the deployment's refusal.
+  expect(isDeploymentReadRefused(forbidden)).toBe(false);
+});
+
+test("isRetryableQueryError retries no 403, whatever its code, and still retries a 5xx", () => {
+  // A 403 is Dispatch's permanent answer to this credential: a deployment read refused to a
+  // restricted member, a route for a role the caller does not hold, a write it may not make.
+  // Asking again sends the same credential, so every read leaves it after one try.
+  for (const code of [
+    "DEPLOYMENT_READ_REFUSED",
+    "RESTRICTED_MEMBER",
+    "ACCESS_ACCOUNT_REQUIRED",
+    "FORBIDDEN",
+    undefined,
+  ]) {
+    const refusal = new ApiError(403, { code, error: "refused" });
+    expect({ code, retried: isRetryableQueryError(refusal) }).toEqual({ code, retried: false });
+  }
+  expect(isRetryableQueryError(new ApiError(500, { code: "INTERNAL", error: "boom" }))).toBe(true);
+  expect(isRetryableQueryError(new ApiError(409, { code: "CONFLICT", error: "again" }))).toBe(true);
+});
 
 test("a refusal keeps the server's Retry-After in delta-seconds, and no delay for a date or junk", async () => {
   const refusal = (headers: Record<string, string>) =>
@@ -1333,12 +1429,25 @@ const CLIENT_PLUMBING = new Set([
   "remove",
   "read",
   "patch",
+  // The one request every passkey ceremony step makes, its path its caller's; each of the four
+  // steps is in the census by its own name.
+  "passkeyStep",
 ]);
 
-/** The one write Dispatch's keyed layer does not take, and so the one the page makes outside the
- *  write path: `/auth/logout` is the same however often it is made, ends a session rather than
- *  writing anything a reload should resume, and sits outside the layer. */
-const UNKEYED_POSTS = new Set(["/auth/logout"]);
+/** The writes Dispatch's keyed layer does not take, and so the ones the page makes outside the
+ *  write path. `/auth/logout` is the same however often it is made, ends a session rather than
+ *  writing anything a reload should resume, and sits outside the layer. The four steps of a
+ *  passkey ceremony at the outside origin are sign-in calls of the same class: each is made
+ *  before any session exists, so no login could own a kept write of it, and its state is the
+ *  ceremony's own cookie, so a repeat after a lost answer is a new ceremony rather than a second
+ *  write of one. */
+const UNKEYED_POSTS = new Set([
+  "/auth/logout",
+  "/auth/passkey/register/begin",
+  "/auth/passkey/register/finish",
+  "/auth/passkey/login/begin",
+  "/auth/passkey/login/finish",
+]);
 
 /**
  * The one keyed write path, over every method the client has, found from the client itself rather

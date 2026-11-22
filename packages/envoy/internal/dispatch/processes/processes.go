@@ -21,7 +21,8 @@
 // which every owner lock's fleet read takes (store.LockOwner): a row at 0 counts there until it is
 // deregistered or pruned (store.OwnerLockLegacyWindow, PruneAge), and its insert, an earlier
 // build's registration or the return of its lapsed row, takes the owner lock gate (migration
-// 20261115200014).
+// 20261115200014); and the account binding it serves under (migration 20261120222130), which
+// the binding's fleet read takes the same way (store.AccountBindingHolds).
 package processes
 
 import (
@@ -31,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,11 +71,13 @@ const heartbeatTimeout = 2 * time.Second
 // two processes booting at once are serialised and the second one's read sees the first one's row.
 // Every heartbeat takes it too, so a process whose heartbeat lapsed and a process registering
 // meanwhile are serialised the same way (Registration.renew).
-// It is a single 64-bit key ("DPROCREG"): every other single-key advisory lock of the server is
-// either a hashtext, which Postgres widens from 32 bits and so never reaches this value, or one of
-// three fixed keys of their own (the migration runner's 8150001 in store/store.go, the events'
-// commit order "DISPATCH" in events/broker.go and the file backfill's "LEGION52" in
-// files/backfill.go), and the two-key form other locks take is a key space of its own.
+// It is a single 64-bit key ("DPROCREG"): every other single-key advisory lock of the server is a
+// hashtext, which Postgres widens from 32 bits and so never reaches this value, a group name's
+// 64-bit hashtextextended (access.LockGroupName), which reaches it only by a 64-bit hash
+// collision, or one of three fixed keys of their own (the migration runner's 8150001 in
+// store/store.go, the announcement passes' "DANNOUNC" in startup/started.go and the file
+// backfill's "LEGION52" in files/backfill.go), and the two-key form other locks take is a key
+// space of its own.
 const registryLock int64 = 0x4450524F43524547
 
 // pruneLease is the duty.Exclusive lease the prune loop runs under, so one process prunes per
@@ -198,8 +202,11 @@ func Bucketless(ctx context.Context, db Querier) ([]Process, error) {
 type Registration struct {
 	// ID is the row's instance id.
 	ID string
-	// instance is what the row was registered with, kept so a heartbeat that finds the row gone
-	// can write it again.
+	// instance is what the row holds, kept so a heartbeat that finds the row gone can write it
+	// again: what it was registered with, and the schema numbers RefreshSchema last wrote. mu
+	// guards it, since RefreshSchema runs on the schema installer's goroutine and the heartbeat
+	// on its own.
+	mu       sync.Mutex
 	instance Instance
 	// pool is the registry's own one-connection pool, which Register opens and Deregister closes
 	// (Register says why it is not the shared pool).
@@ -323,10 +330,11 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // instance, or, where the row is there already (a lapsed heartbeat, Registration.renew), stamps its
 // heartbeat. The second result is a failure to reach a decision. The caller commits.
 //
-// The row names this build's owner lock protocol, store.OwnerLockProtocol, which no Instance
-// carries: the column's default, 0, is an earlier build's, whose insert takes the owner lock gate
-// and stamps the earlier build's mark (migration 20261115200014), which a registration of this
-// build must never do.
+// The row names this build's owner lock protocol, store.OwnerLockProtocol, and its account
+// binding, store.AccountBindingProtocol, which no Instance carries: each column's default, 0, is
+// an earlier build's, whose insert takes that column's gate and stamps its earlier build's mark
+// (migrations 20261115200014 and 20261120222130), which a registration of this build must never
+// do.
 func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusal error, err error) {
 	live, err := Live(ctx, tx)
 	if err != nil {
@@ -343,12 +351,12 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol, account_binding)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
 		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
-		store.OwnerLockProtocol); err != nil {
+		store.OwnerLockProtocol, store.AccountBindingProtocol); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -437,6 +445,10 @@ func (r *Registration) beat(ctx context.Context) error {
 // never later than the moment this transaction acquires the lock the registrant held, so a row the
 // registrant counted as gone is one this transaction counts as lapsed too: a process never stamps
 // itself live again past a registrant that did not check its keys against it.
+//
+// It takes the registry pool's one connection, for its transaction, and then r.mu, to read the
+// instance it rejoins with. That is the one order the two are taken in, and RefreshSchema takes
+// them in it as well.
 func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -461,7 +473,10 @@ func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 		}
 		return nil, tx.Commit(ctx)
 	}
-	refusal, err = admit(ctx, tx, r.ID, r.instance)
+	r.mu.Lock()
+	instance := r.instance
+	r.mu.Unlock()
+	refusal, err = admit(ctx, tx, r.ID, instance)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +493,45 @@ func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	slog.Warn("dispatch: this server process's heartbeat had lapsed; it shares its signing keys with every live server process and rejoined the registry",
 		"instance", r.ID, "row", row)
 	return nil, nil
+}
+
+// RefreshSchema writes the document schema numbers current answers - the version this process
+// reads and the highest since among the elements it may create (pmdoc.SchemaVersion,
+// pmdoc.SchemaCreatable) - into this process's row, where they differ from what the row holds.
+// The row is written once at Register, and a reinstall of the store's schema can move either
+// number while the process runs: a type migration the store takes, at or below this build's
+// version, moves the version it installs, and a type the store adds or retires moves what it may
+// create. Every process's document socket admission reads the rows (docs.readSchemaFleet), this
+// process's own among them, so the server refreshes the row on each reinstall that moved the
+// schema, before it closes its document sockets, and the reconnects are admitted against the
+// numbers it serves now. current is called under the registration's lock, so of two refreshes
+// that race the one that read last writes last.
+//
+// The registry's pool holds one connection, and this takes it before r.mu, which is the order
+// renew takes the two: renew begins its transaction on that connection and only then reads
+// r.instance under r.mu, so a refresh holding r.mu while it waited for the connection would
+// wait on a heartbeat that waits on it. Both waits would then run out - the heartbeat at
+// heartbeatTimeout, holding the registry's advisory lock all the while, so every other process
+// misses a beat - and the numbers this writes would stay stale until the next switch.
+func (r *Registration) RefreshSchema(ctx context.Context, current func() (version, creatable int)) error {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("refresh this server process's schema numbers: %w", err)
+	}
+	defer conn.Release()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	version, creatable := current()
+	if version == r.instance.SchemaVersion && creatable == r.instance.SchemaCreatable {
+		return nil
+	}
+	if _, err := conn.Exec(ctx, `
+		update server_processes set schema_version = $2, schema_creatable = $3 where instance = $1`,
+		r.ID, version, creatable); err != nil {
+		return fmt.Errorf("refresh this server process's schema numbers: %w", err)
+	}
+	r.instance.SchemaVersion, r.instance.SchemaCreatable = version, creatable
+	return nil
 }
 
 // Deregister stops the heartbeat, deletes the row and closes the registry's pool. It is called

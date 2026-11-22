@@ -34,7 +34,7 @@ Each item below names a variable, then its purpose.
   The first is the current value; the API accepts every value, comparing a bearer with each in constant time.
   The document websocket takes no bearer at all: it is a person's cookie connection only.
   Whitespace at either end is ignored; startup refuses an empty entry (two whitespace characters in a row, a CR LF among them) or a repeated one, naming its position, never its value.
-  A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the rightmost `X-Forwarded-For` entry, which is the load balancer's view of the caller, or the connection's own address without one), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
+  A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the caller's address, as the access log's `address` below reads it), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
   Each field keeps its first 256 bytes, and the server remembers up to 10,000 callers; one past that is logged on each request.
   Callers that share an address and User-Agent share a line, so the log says whether a value on its way out is still in use, not who uses it.
 
@@ -159,6 +159,12 @@ Each item below names a variable, then its purpose.
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
+- `DISPATCH_DIRECTORY_ACCOUNT`, `DISPATCH_DIRECTORY_ADMIN`
+
+  Under `iap` identity alone, and required there: the boot refuses `DISPATCH_IDENTITY=iap` without both, naming each one missing, and refuses either one under any other identity.
+  The server builds its Workspace Directory reader from them at boot (`identity.NewDirectoryReader`), and a reader it cannot build, with no Application Default Credentials say, stops the boot: an `iap` server that could not read the Directory would hold nobody (Identity, `iap`, below).
+  Before IAP admits anyone, the deployment operator makes the Domain-wide Delegation grant and runs `envoy-dispatch directory-check` (Checking the Directory reads, below).
+
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
 Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/.git=KEY`, which reads as `acme/`, or `acme/..=KEY` is refused, naming the entry, and the boot with it.
 Existing dashboard mappings take precedence over this seed:
@@ -167,9 +173,49 @@ Dispatch resolves every external issue through the stored mapping, then falls ba
 An unmapped external repository without a default project is rejected.
 An issue created through the default also gets a `repo:owner/name` label.
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
+`DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (the infrastructure repository's `privateprojects.Projects()`).
+Only these projects, and those `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names (below), can be made private; the switch of one of these is its full switch.
+An entry that is not a project key, the old value `1` included, is ignored with one ERROR line at boot naming it, and the keys beside it still count: ignoring it fails closed, since it names no project, so the switch to private of the project it meant is refused while neither list names its key.
+Unset or empty, with `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` unset or empty too, no project can be made private, as before the settings existed.
+An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` while neither list names a project, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project neither list names, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming each such row with the cure the project census prints for it, or the command not run, and, for a full switch, `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
+This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a full switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project takes its full switch through the server until a build carries the writer.
+A switch to public is never refused by any of them.
+Nothing here stops the boot, because a boot that exits would stop every project:
+a project the database holds private that neither list names stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
+with either list, a store that cannot hold a private project yet, for any of the reasons a switch is `409 PRIVATE_PROJECTS_INCOMPLETE` for or for a node no row stands behind, is one ERROR line as each process starts and then one an hour per process, naming why: each row and node with the cure the project census prints for it (the backfill, the erase that removes an orphaned node, or none for a node that names another project), or the command not run.
+
+`DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names, comma-separated and read as `DISPATCH_PRIVATE_PROJECTS` is, the projects this deployment makes private before their full switch.
+Dispatch hides such a project from every person and credential that does not see it in its own reads, as any private project, while its namespace, its stores and its bus gate come with its full switch.
+Until then, the project's notifications on the hub reach any agent session that subscribes to them: this build gives the outbox no hold for a private project (`outbox.Deps.PrivateHubsReady` is unset), and nothing reads the `envoy_private_projects` bucket yet.
+Its owner's switch to private needs no provisioning and no bus record: it is never `409 PRIVATE_PROJECT_NOT_PROVISIONED` or `409 PRIVATE_PROJECTS_UNAVAILABLE`, writes nothing to the `envoy_private_projects` bucket, is still `409 PRIVATE_PROJECTS_INCOMPLETE` while the store cannot hold the project private, and appends `project.access_changed` as any switch does.
+So nobody takes such a project for a fully switched one: its access, the switch's answer included, carries `private_before_full_switch: true` while it is private; the boot logs one INFO line, `dispatch: private before its full switch`, naming each such project, and another naming each key of the list whose project is not private yet; and `/healthz` answers the fixed reason `private_before_full_switch` in `degraded`, naming no project, with `ok` and the status as they are.
+A key both settings name takes its full switch: its next switch to private needs its provisioning and writes its bus record.
+From the apply that adds such a key to `DISPATCH_PRIVATE_PROJECTS`, its access, the boot's lines and `/healthz` no longer name its project private before its full switch, though that switch has not run: in this build it is always `409 PRIVATE_PROJECTS_UNAVAILABLE` (above).
+Making the project public works as for any project.
+An entry that is not a project key is ignored with one ERROR line at boot naming the setting and the entry, and makes no project private: the switch to private of the project it meant is refused while neither setting names its key.
+
+Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` or `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
+The database's part is read at boot, right after the migrate and before any loop or the repository seed, and a boot whose read fails logs `dispatch: read the private projects` and exits 1, as one whose database will not open does; it is read again every 30 seconds after, and a later read that fails answers `1`.
+So the header lags the database by at most 30 seconds, and only where the list is empty: the switch to private refuses a project the list does not name (`409 PRIVATE_PROJECT_NOT_PROVISIONED`), and a non-empty list answers `1` without a read, so only a project made private outside the switch (a direct SQL write) answers `0` until the next read, while every read of projects already holds it private.
+No notification is involved, so none can be missed, and a restart reads at boot.
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
+
+`DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
+A request whose `Host` is its host, compared as a URL parser reads a host (the name without regard to case or trailing dots, the port as a number, the scheme's default being none: `outside.example.`, `outside.example:443`, `outside.example:0443`), is answered as that origin (`routes.sameHost`); another port is another origin.
+Startup refuses an outside origin on `DISPATCH_SERVER_URL`'s host, whatever either port, with the names compared the same way and a non-ASCII name first mapped as IDNA lookup maps it, as a browser opens it (`routes.HostName`), so `DISPATCH_SERVER_URL=https://dispatch.example.` or `https://ｄｉｓｐａｔｃｈ.example` beside `DISPATCH_OUTSIDE_ORIGIN=https://dispatch.example` is refused (`checkOutsideOrigin`).
+A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other, and an agent's broker token proof must name that origin (below), so an agent whose Dispatch URL is the outside origin signs for it.
+Every other request is answered as `DISPATCH_SERVER_URL`'s.
+At the outside origin `GET /auth/start` and `GET /auth/callback`, Google's sign-in, answer `404`, with passkey sign-in on or off (`routes.googleSignInHere`): Google signs in the Workspace's people alone, at `DISPATCH_SERVER_URL`, so the sign-in client lists no callback of the outside origin.
+Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
+under Google sign-in its host must also be a public domain name, a DNS name whose top-level domain is on the public suffix list and no IP address, since it is the relying party of every passkey enrolled there, which is a registrable domain name and never an IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.PasskeyHost`);
+a value that breaks any of these refuses startup.
+Beside header identity it refuses startup too, whatever `DISPATCH_IDENTITY_HEADER_TRUSTED` says, and beside `DISPATCH_DEV_SIGNIN=1`: each takes whoever a request header or a loopback client names, so anyone who reached the outside origin could name the person they are.
+A dashboard URL of either origin is read as a reference, by the server and by `rebuild-refs`, so a link written on one origin opens on the other.
 
 `DISPATCH_ALLOWED_LOGINS`, `DISPATCH_APP_CLIENT_SECRET` and `DISPATCH_ASSET_STORE_BUCKET` are removed:
 a boot that still sets any of them is refused, naming what replaced it.
@@ -186,31 +232,51 @@ A verified caller acts as the `session` it names in the request body, and every 
 — set from the token, never from the body.
 A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; it is never retried as a personal token.
 
+`DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
+a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
+Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`) and the repository answer (`GET /api/v1/access/projects/{key}/repositories`), the secrets broker's own account in production;
+a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
+every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
+The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
+
+The repository answer is the list of the repositories a project's issues resolve to, which the secrets broker reads for the edge listener, so that the GitHub events the edge listener relays to an outside person's agents are those of exactly these repositories:
+`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
+It is read live on each request from `refs.ProjectRepositoriesSQL`, the one rule of which repositories a project owns, which the GitHub proxy (`/api/github/rest/...`, under Routes) and Delivery read too, so the answer lists a repository exactly when that rule counts the project as its owner:
+issues are a repository's only owners, so a repository mapping gives the project nothing, and no recorded rename is read.
+An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list: its unread ancestors may name a repository the list would leave out.
+That refusal reaches only the secrets broker, so Dispatch also logs it at WARN, `dispatch: the repository answer is unresolved`, with `project` and `issue`, for the operator who must repair the chain.
+
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
 — `Authorization: DPoP <token>` with a `DPoP:` proof header signed by the key the token is bound to
 — because that RFC refuses a DPoP-bound token presented under any other scheme;
 the server decides a request by its scheme before it reads any token, so such a presentation is never retried as a bearer, and a bearer is never sent to this check.
-The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with `DISPATCH_SERVER_URL` as the origin the proof's `htu` must name.
+The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with the origin the request came to as the origin the proof's `htu` must name:
+`DISPATCH_OUTSIDE_ORIGIN` for a request whose `Host` is its host, compared without regard to case, and `DISPATCH_SERVER_URL` for every other request, whatever a forwarded header says.
+A proof naming one origin is refused `401 BROKER_TOKEN_PROOF_INVALID` at the other, so an agent signs for the origin of the Dispatch URL it sends to.
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
-A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
-a token scoped to its person names no single project and carries none.
+A token scoped to one project lists that project, set from the token and never from the body, and writes that project alone (below);
+a token scoped to its person lists the projects its trade asked for, or none.
 A read-only token names no project either.
 Every actor such a write records carries `proven: true`, as a browser's person does, while a session a body names under any other credential carries no `proven`:
 a reader that trusts only a session the server saw proved reads that mark, and a document version's author keeps it only when every write merged into that author carried it.
 Each refusal is its own code and none repeats the token:
-`401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
+`401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live, or the token records an account a revocation names while Dispatch records another for its person, Identity below), `401 BROKER_ACCOUNT_NOT_SIGNED_IN` (the token records an account Dispatch does not record for its person and no revocation names: it acts once that account signs in to Dispatch), `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` (the token records no account Dispatch can name and its credential was made before Dispatch recorded its person's account, or within five minutes after, or at a time the broker did not record: sign in again at the broker), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
 it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+A token that names a person Dispatch holds is `401 MEMBERSHIP_HELD` (Identity, below), after every refusal above; under `iap`, one whose broker answered its person not held only until a deadline that has passed is `503 BROKER_UNAVAILABLE` with `Retry-After: 60` (Identity, below).
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and closes (1008) once the caller no longer resolves, or once a personal token's projects or scopes are other than when it opened, so a token narrowed to fewer projects reads nothing more of the ones it lost on a socket it already held.
+For a broker-issued credential that re-resolution is the broker's introspection answer alone, with the admission of the person the token names (below):
 the upgrade's proof authenticated it and cannot be presented a second time.
+The document socket takes no such token: it admits a person by the cookie alone, and its heartbeat re-resolves that cookie alone, whatever else the upgrade carried.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
 No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
@@ -228,39 +294,109 @@ It holds the OAuth scope `read` alone and the project scope `none`, names a serv
 Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
-The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
-`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz` and `/livez` take no broker token at all.
+`/healthz` and `/livez` take no credential (`routes.Process`), so they answer a request that carries such a token as they answer any other caller, and none of the four makes a write for it; `GET /metrics` is a row of the table, so it answers such a token `403 READ_ONLY_TOKEN` as the rows above do.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
-A credential that names one project may write that project and nothing else.
+A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`; `access.CredentialCovers` is the same list rule in Go).
+A personal token's list is its row's `projects`, which Settings, `POST /api/v1/me/agent-tokens` and `PATCH /api/v1/me/agent-tokens/{id}` write:
+at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
+A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list; every other credential lists none.
+A full member's list decides only which private projects the credential reads and writes: it reads and writes every public project its person sees, whatever it lists, and a private project only when it lists it and its person sees it.
+A restricted member's list narrows what that person sees to the projects it lists, whatever the deployment holds.
+A broker token an operator's entry scoped to one project keeps the write scope such a token has always had, whatever the deployment holds: it writes that project alone (below).
+
+- A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
+
+- A full member's credential sees the public projects its person sees, and the private projects its list names that its person sees.
+
+- A restricted member's credential that lists projects sees those of them its person sees, and nothing of any other project; one that lists none sees the public projects its person sees.
+
+- A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects and the private projects its list names.
+
+A caller is an open viewer when its person is not a restricted member, whatever its credential lists.
+An open viewer reads every person and every row of the whole deployment, and every session and role but those below (`access.SessionClause`, `access.RoleClause`).
+Apart from a session's own credential, which always reads its session, no caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
+A session that has acted in no project is judged, while a project is private, by the projects the listener names for it in Dispatch's stored copy of the listener's sessions (the `route_roster` row): a session the listener sends no projects for is read by no caller but itself, and an open viewer reads one whose list names only projects it sees, an empty list included.
+While a project is private and `session_projects_filled` holds no row, no caller reads a session but its own, an open one or not (Filling the sessions' projects, below).
+Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
+every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
+The one exception is a restricted member's own machine logins: at a browser, `GET /api/v1/machine-logins` answers them their own and no service's (`api.restrictedOwnLoginRoutes`); through a token of theirs it is `403 OAUTH_SCOPE_REQUIRED` where the token lacks the route's scopes, as their agent's `named` token and any broker token of theirs do (a restricted member's broker token holds no scope, `api.brokerTokenActor`), since the route's scope gate refuses those first, and `403 RESTRICTED_MEMBER` through their personal token, which holds them.
+The live agent view on `/ws/live` relays a session's whole transcript, which holds whatever the session read, so it is narrower than the agents list (`access.SessionContentClause`): a caller that is not open watches only a session that its own person's broker-issued token alone is tied to (`session_owners`), with a listener list that names only projects it sees, or with no list only where the caller's own credential sees every project its person sees (the person's browser, or a token whose list names each), since a credential of the same person that sees fewer projects must not read what a session on a wider one read; while a project is private, an open viewer watches a session that wrote in no project it does not see when its listener list names only projects it sees, or, with no list, when a broker-issued token tied the session to somebody and every private project each such person sees is one it sees too.
+A listener list counts there only while Dispatch's stored copy of the listener's sessions has not passed its `expires_at` (five seconds after the listener's answer): past it, the session is judged as one whose listener sent no list, since a token traded again since may name a private project the old list leaves out.
+Every private project a stored copy lists for a session, expired or not, stays recorded as one the session reached (`session_reached_projects`).
+No viewer but the server and the session itself watches a session that reached a project the viewer does not see (`session_reached_projects`): an access change that takes a project from a person (off its list, a group taken off the list or the person out of the group, the group deleted, an owner change) records the project against every session tied to that person, in the write's own transaction; a switch of a project from public to private, by the server or by an SQL statement alone, records it at the switch's commit (the projects table's trigger `projects_made_private_reached`, migration `20261121173500_project_private_reached`, its function replaced by `20261121200500_project_private_listed`) against every session whose stored listener list names it, since that session's credential still reads it; and a listener record that lists a private project for a session records it too, in the write's own transaction, so neither a lost project nor a narrowed list hides what the transcript holds; nothing removes such a pair.
+A switch to private hides what is written in the project from the switch on; it does not withdraw what sessions read while the project was public, which every full member could read then, so it records nothing against a session for the people tied to it.
+Every request of a caller who does not see every object, and each re-check of a live socket's caller, refreshes that stored copy before it reads anything, and so does the document service before it reads a room for a person: it asks the listener (one call, shared by every process) once the copy has three seconds or less of its five left (`routeRosterTTL` less `routeRosterTimeout`), so the request's own reads meet a copy that has not expired, and a request that waits on the listener after that (a reply's role lookup, a comment's mention lookups, a keyed send's repeat) refreshes again before it reads back.
+While the listener does not answer, such a request waits up to two seconds (`routeRosterTimeout`) for that call before it reads; an open caller of a deployment with no private project reads nothing for it.
+A sign-in or an hourly confirmation that makes a full member restricted takes projects from that person too (every public project and every one a group admitted them to, unless it names them), so it records, in the same transaction, each project the person saw before and no longer sees against every session tied to them (`store.RecordReachedProjects`, which every such change calls).
+Dispatch ties a session to its person when it verifies the session's broker-issued token, on a read as on a write, before the request reads anything, and records each private project that token lists as one the session reached, since the listener's record of a session's list is only a sample and a token traded to a wider list and back between two samples reads under the wider one; while a project is private, a verified request whose tie cannot be written is `503 DATABASE_UNAVAILABLE`, so no session reads under a person it is not tied to, and an access change that takes a project from that person finds every session that read under them.
+While no project is private nothing reads the tie to decide anything, so such a request is served, the failure logged, and the session's next request writes the tie.
+The view asks the rule again before the session's replay and before each batch of its frames, so a write that ties the session to another person or records a project it newly wrote in or reached ends a view that may no longer read it before the replay or the next frame; it reads nothing for the server or the viewer's own session, and for an open viewer resolved while no project was private it reads only whether one is now, resolving the viewer again when one is.
+While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
+A direct conversation is read by its parties and by an open viewer, each only when it may see every session in the conversation and read each one's content by the live agent view's rule (`access.PartyClause`, which holds every session party to `access.SessionContentClause` as well as `access.SessionClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions its own person proved, and the conversation of a session alone (its files) only where its own person alone proved that session; a file of a session's conversation, that file's graph node and an ask or a comment on it are read by the same rule, since what a session writes can hold whatever it read, while the agents list keeps `access.SessionClause` alone.
+While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
+A project the caller does not see, and every object in it, answers exactly as one no row holds.
+With no private project in the deployment, a full member's credential sees every project its person sees, whatever it lists.
+A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other private project the daemon runs, minted by a person who sees them:
+the shared token, and a token that does not list the project, read a private project as missing.
+
+A credential writes the projects it sees, and nothing else: a full member's credential every public project its person sees and the private projects its list names, and a restricted member's the projects its list and its person both name.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
-a `GET` row declares nothing), in four classes:
+a `GET` row declares what it reads instead, `readClasses` in `internal/dispatch/api/read_classes.go`), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
-*a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
+*a project the body names* — the issue create and the going request, whose project their address does not name;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
 and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
-`Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
+`Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler.
 
-The project check resolves the project the addressed object belongs to
-— an issue key, a project key, an artifact id, an ask id, a comment id or a message id, each by one read
-— and lets through only a target that resolves to the caller's own project.
-It fails closed, so a target that resolves to another project, to no project at all (an object belonging to none), or to nothing at all (no such row, or an id Postgres will not read as a uuid) is `403 PROJECT_SCOPE`, naming the project the credential covers and the project the write belongs to where one resolved, and nothing of the credential.
-The two refusals still read differently — a target of another project names that project, one that resolved to nothing says the write resolves to no project of that credential's
-— so failing closed does not close an existence oracle and does not claim to.
-Nothing is read out that way: no GET route is project-scoped, so every answer this check can colour is a refusal of the caller's own write.
-Each resolver sends the raw path value to Postgres, as the handler behind it does, so the check reads a path exactly as the handler then addresses its row by it
-— Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
-A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
-a credential that may write one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body, or from the repository an external ref names, rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
-— before the ref is resolved to an issue already imported, and before anything is written.
+The first resolves the caller's viewer once for the write and hands it to the handler, and every read the write makes binds it.
+An object of a project the caller does not see is a row that read does not find, so the write answers it exactly as an object nobody holds
+— the same status and the same bytes, and nothing written — whether the path names it or a field of the body does (a parent, a `blocked_by` target, a rank neighbour, a reply's parent).
+A private project a credential's list does not name is one it does not see, so this is what holds a full member's credential to its list for private projects, and a restricted member's for every project.
+`TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
+A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
+a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
+an open viewer sees every person, and every session `access.SessionClause` passes it, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
+No such message, nor its Retry, is queued for its session (`mayQueueForUnknownSession`), and its attempt is written `failed` in the transaction that records it, never pending, so the delivery sweep, which resolves a session as the server, finds none to send (`TestAMessageToAHiddenSessionNeverLeavesAnAttemptOwed`).
+A delivery's reply (`POST /api/v1/comments/{id}/reply`, `POST /api/v1/messages/{id}/reply`) reads a mention, or a message's target, by the target alone, not by the session a mention resolved to when its comment was written, so the session that holds a mentioned role now answers the attempt a Retry sent it (`TestAReplyFromAMentionedRolesNewHolderIsTaken`); an attempt pinned to a session the caller may not see answers as an attempt no row holds, `404`, naming nothing of that session, whoever replies (`TestAReplyToAnAttemptPinnedToASessionItsCallerDoesNotSeeAnswersAsNoAttempt`).
+A design gate naming a document its writer may not see is refused as one naming no document.
+The Inbox's writes - Mark all read, a dismissal or restore, and one thread's read mark - read the caller's threads as its list reads them, so a thread of a project the caller does not see, and an Agent thread whose conversation it may not read, is neither locked, written, counted nor announced (`TestAnInboxWriteNeverReachesAThreadItsCallerMayNotSee`).
+A claim of an issue the caller sees, held by a session the caller may not see, asks the listener nothing about that session: the holder keeps the claim and the refusal names none, whether the session runs or not (`TestAClaimOverAHolderItsCallerMayNotSeeAsksTheListenerNothing`).
+A credential's writes are held to a list when it lists a project, whatever its person: a list decides which private projects a full member's credential reads, and a write of the whole deployment stays a person's or an unlisted credential's.
+A full member's broker token acting as its person is held so only while a project is private, since its trade list held none of its writes before projects could be private.
+A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose writes are held to a list (`this request's credential may write <list> and nothing else; <METHOD> <PATTERN> belongs to the deployment rather than to a project`, the words a broker token scoped to one project has always been refused in) and `403 RESTRICTED_MEMBER` to a restricted member:
+what it writes belongs to no project such a viewer could be held to.
+The one exception is a restricted member at a browser deciding, listing or ending a machine login of their own, which is how an outside person approves and revokes the device login of their own agents: `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve`, `.../{id}/deny`, `GET /api/v1/machine-logins` and `POST /api/v1/machine-logins/{id}/revoke` reach their handlers for that member's cookie alone (`api.restrictedOwnLoginRoutes`, `api.atBrowser`), never for their personal token or a broker token, so no agent of theirs decides, lists or ends any credential: a token of theirs that lacks the route's scopes, their agent's `named` token among them (it holds none), is `403 OAUTH_SCOPE_REQUIRED` from the route's scope gate, and one that holds them is `403 RESTRICTED_MEMBER`.
+The list answers them their own machine logins and no service's, and the revoke ends only one of those (`api.ownMachineLogins`); any other id is `403 RESTRICTED_MEMBER` and no revoke reaches the broker.
+Each looks the code the member typed up at the broker first and relays the lookup, approve or deny only for a machine login whose approver is that member, which names no service and, for a decision, is the record its path names (`api.ownMachineLogin`); any other record, another person's machine login, a service's, a shared secret's request or a secret request of the member's own, is `403 RESTRICTED_MEMBER`, naming none of its facts, and the broker is asked to decide nothing.
+The broker holds that member's machine to one project (`project_scope` `named`), so the token it mints acts for them in that project alone and holds no scope of a person's own.
+When the owner takes a restricted member off an access list that names them, the removal records in its own transaction that Dispatch owes the broker the revocation of every machine login the member approved (`api.removePerson`, `api.recordMachineLoginRevocation`, table `machine_login_revocations`), whatever other project's list still names them, as R16 reads, and the broker revocation loop pays it after the commit (`api.revokeOwedMachineLogins`), again until the broker confirms; the revoke ends the logins' refresh and every token traded from them.
+Dispatch's database orders the member's approvals against it, so no clock of the broker's is compared: an approval Dispatch relays for a restricted member holds their approval lock until the broker answers (`store.HoldMachineLoginApprovals`), the removal waits for it before it records, and while the revocation is owed their approve is `409 MACHINE_LOGIN_REVOCATION_OWED`, so every login the pass finds was approved before the removal.
+The approval does not wait for that lock: while another approve of the member's is at the broker, or a removal of theirs is being recorded, their approve is `409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT` at once, so a burst of approves holds at most one database connection across a broker call.
+The removal takes the member's approval lock before the project's owner lock (`access.LockForAccessWrite`, `store.LockMachineLoginApprovals`), so its wait for an approve the broker has not answered holds up no other write of the project's access.
+It takes it only where a read that takes no lock finds that the list names the person and that they are a restricted member, so a removal that owes nothing, which any full member can send through a project of their own, holds up no approve of theirs.
+A removal that finds the member on the list only once it holds the project's lock, their addition having committed meanwhile, takes their approval lock then without waiting, and while an approve or another removal of theirs holds it, it is `409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT` and changes nothing.
+The record takes the member's approval lock itself in that way (`store.RecordMachineLoginRevocation`), so a write that did not take it first is refused rather than recorded unordered against an approve in flight.
+An approve Dispatch gave up on before the broker answered (its client's five seconds, or the browser gone) can still commit its login after the removal, while the broker's handler of it runs, which is at most its 45-second request deadline and 15-second write margin (`wire.RequestDeadline`, `wire.RequestWriteMargin`); so a pass revokes what it lists whenever it runs, and settles the revocation only when its claim came that minute after the removal (`api.machineLoginSettleAfter`, both times Dispatch's database's), and the member approves a new login once it has, about a minute after the removal commits.
+An approve that a proxy between Dispatch and the broker held past Dispatch's call and sent on later is outside that minute, and so is one whose `COMMIT` the broker's database took longer than the 15-second margin to complete: the broker's `WriteTimeout` bounds the writing of its answer, not its database's commit, so the margin is an assumption about that database (`wire.RequestWriteMargin`).
+The removal never waits on the broker: the member's browser and personal tokens lose the project from the commit on by Dispatch's own check of the lists, and the broker checks every trade against Dispatch, so a removal ends the member's tokens for the project within 325 seconds even while the broker is down.
+A removal from a list that does not name the person owes nothing.
+A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential whose writes are held to a list is refused those two.
+`POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so before anything is read a credential that lists projects is refused a project its list does not cover (a private project it does not list, and, for a restricted member's credential, any project it does not list), and a broker token scoped to one project any other, `403 PROJECT_SCOPE`, naming its list and the project the body named.
+A private project the caller does not see is refused in the words a project nobody holds is.
+`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
+Any other caller's `repo`, and a mapping `PUT` that leaves the mapping its project's default, is `403 REPOSITORY_NOT_AVAILABLE` (`this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch`) when the GitHub proxy would hide that repository from the caller (`refs.RepositoryHidden`, with the caller as the viewer): a repository an issue the caller sees already resolves to stays open to the write, and with no private project nothing is refused.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
 addressing another session's conversation is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
+The session addressed is also read as the caller sees it (`access.SessionClause`): to a restricted member, or to a credential acting for one, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
+to an open viewer, so is a session that has acted in a private project the viewer does not see, whether or not anything else it did is public, and, while a project is private, a session that has acted in no project and that the listener does not list, or lists with a project the viewer does not see.
+A deployment that holds no private project answers every open viewer as before, at the cost of no read.
 
 The sign-in check refuses every write by a credential that names a service and no person
 — an access token the broker issued to a machine nobody has signed in on
@@ -270,10 +406,9 @@ Its reads are untouched: the machine reads everything its session may read, and 
 A broker token that does name a person, and every other credential, reaches the handler as before.
 A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
-The project and session checks are a no-op for a credential that carries no project and proves no session
-— a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
-That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
-A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
+An open viewer whose credential proves no session — a full member's browser cookie or personal agent token, a Kubernetes service-account token and the shared token — is refused by the project and session checks only a write to an object of a project it does not see, which answers as missing, and, where its credential lists a project, a write of the whole deployment.
+With no private project in the deployment, such a caller sees every project, so the checks refuse it only that write of the whole deployment.
+A read-only token lists no project, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -575,12 +710,18 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 `DISPATCH_IDENTITY` controls how browser requests identify a person, always by lowercase email:
 
-- `cookie` (the default) accepts signed `dsession` cookies, which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
-  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set;
-  both, some without the others, a domain under any issuer but `https://accounts.google.com`, a group under that one, or a domain that is not a lowercase DNS name refuse the boot, each naming what is wrong (`checkSignInSettings`).
+- `cookie` (the default) accepts the signed session cookie (`__Host-dsession`, or `dsession`: see the session cookie, below), which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
+  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
+  `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
+  `DISPATCH_SIGNIN_PASSKEY=1` (below) needs the domain, `DISPATCH_OUTSIDE_ORIGIN` and `DISPATCH_TRUSTED_PROXY_RANGES`, and refuses the boot under `iap` identity and header identity, each naming the setting.
+
+  - `DISPATCH_TRUSTED_PROXY_RANGES` names the front doors whose `X-Forwarded-For` the passkey begins' bound reads: comma-separated CIDRs, IPv4 or IPv6, each written as its network and none `/0`; an entry that is empty or breaks that rule refuses the boot, named by its position (`parseTrustedProxyRanges`).
+    Behind Google's external Application Load Balancer, production names its proxy ranges `35.191.0.0/16`, `130.211.0.0/22` and `2600:2d00:1:1::/64` ([Google's firewall rules page](https://cloud.google.com/load-balancing/docs/firewall-rules)), and never the address of the balancer's forwarding rule.
+    Google's regional external Application Load Balancer reaches Dispatch from its proxy-only subnet and appends its forwarding rule's address after the client's, as the global one does, but that subnet is not one of the ranges above, so Dispatch reads it as another front door: listing the subnet alone, the rightmost entry outside the ranges is the forwarding rule's address, and every client shares its bound; list the forwarding rule's address too.
+    A front door the component builds itself, such as the tailnet mode's in-cluster forwarder, is in none of Google's ranges either: list it, or its begins key on the forwarder and share one bound.
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
-  it issues no `dsession` cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
+  it issues no session cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
   A cookie minted while sign-in was on still verifies for its thirty days, since the key signing it is the deployment's `DISPATCH_SIGNING_KEY` and outlives the configuration, and with no issuer nothing is left to confirm that the person it names may still use Dispatch.
   The agent-token API is served as it always is, and `GET /auth/start` answers `503 SIGNIN_UNCONFIGURED`.
   That is what a sandbox deployment runs (`envoy-infra:gcp:Dispatch` with its tailnet inputs unset, which has no origin an OAuth provider takes).
@@ -606,30 +747,217 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
-  Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
+- A restricted member (`people.member_kind` `restricted`) is a person from outside the domain whom some project's owner is or some project's access list names directly (`access.Listed`; a group on a list never admits such a person).
+  No Google sign-in admits one: at the canonical origin an account whose `hd` is not the domain gets the 403 page saying it is not in the domain, whatever a list names, and the outside origin serves no Google sign-in at all (`/auth/start` and `/auth/callback` answer `404` on its host at any port, with passkey sign-in on or off, since a browser sends that host's cookies to every port of it), so the Google client's OAuth consent screen stays Internal and lists `<DISPATCH_SERVER_URL>/auth/callback` alone.
+  A person from outside signs in with a passkey (`DISPATCH_SIGNIN_PASSKEY`, below), and the rule that admits restricted members (`identity.PasskeyRule`, over the `identity.OutsideRule` it embeds) answers for them.
+  An address on a domain the Workspace owns, or on a subdomain of one, is never a restricted member's: the rule refuses it without reading the lists (`identity.ErrWorkspaceAddress`, `identity.WorkspaceAddress`), else a person from outside holding it would read every project that lists the member, even before the member's first sign-in.
+  The Workspace's domains are `DISPATCH_SIGNIN_DOMAIN` and each one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists (`identity.OutsideRule.WorkspaceDomains`): list every domain the Workspace owns;
+  a Workspace account (`hd` the domain) still signs in as a full member at an address on any of them.
+  An internationalized entry is written in Unicode or as its A-labels, and the rule holds it as its A-labels (`idna.Lookup.ToASCII`);
+  an address's domain is compared without one trailing dot and, when written in Unicode, also as IDNA lookup maps it, so `bob@bücher.example`, `Bob@BÜCHER.example` and the sign-in domain in fullwidth letters are refused as their A-label spellings are.
+  For a domain the Workspace owns that the setting does not list, a restricted member never takes the address of a full member who signed in under another Google account, or under none:
+  the passkey store's enrollment (`PgPasskeys.Enroll`) is refused before it writes (`refuseAMembersAddress`) and again under the address's lock (`signInAccountTx`), each `auth.ErrAddressHeldByMember`, which records nothing, so the member's sessions and refresh token stand.
+  A restricted member's Google sign-in that an earlier build admitted ends at its next hourly confirmation (below), since the refreshed account is not in the domain.
+
+- With `DISPATCH_SIGNIN_PASSKEY=1` beside the domain, a person outside it whom a project's access list names directly signs in as a restricted member with a passkey, at `DISPATCH_OUTSIDE_ORIGIN` alone, and with no Google account (`identity.PasskeyRule`, `identity.Passkeys`, the `/auth/passkey/*` routes below).
+  Google signs in the domain's people alone, as without the setting.
+  List every other domain the Workspace owns in `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`: an address on a domain it does not list is no Workspace address to this rule, so the owner can make a link for a Workspace member's address there before the member first signs in with Google, and the passkey enrolled with it keeps signing in as that address after the Workspace offboards the member, since no passkey sign-in or confirmation asks Google.
+  The project's owner makes a single-use link for the person in their browser (`POST /api/v1/projects/{key}/access/people/{email}/invitations`, which any token is refused): `<DISPATCH_OUTSIDE_ORIGIN>/enroll#<token>`, 32 random bytes, base64url, in the URL fragment, which no server logs and no browser sends on, of which `outside_invitations` keeps only the SHA-256.
+  The answer is `201 {url, made_at, expires_at}`, both times on the database's clock: `made_at` is the key the Access tab holds the link by, matched against `open_invitations` (below).
+  It lapses 24 hours after it was made, or at its first use, and a newer link for the same person and project, the person's removal from that project's list and the owner's Reset each end it.
+  The owner gets no link for an email the list does not name directly (`409 PERSON_NOT_LISTED`: a group never counts), for an address on a domain the Workspace owns (`400 WORKSPACE_ADDRESS`: `DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` or a subdomain of one), or for a full member's (`409 FULL_MEMBER`).
+  One owner binds a person from outside: a passkey reads every project that names its person, so the owner gets no link for a person a project of another owner names directly (`409 LISTED_BY_ANOTHER_OWNER`), the enrollment reads that again under the address's lock (`403 LISTED_BY_ANOTHER_OWNER`), a list naming an address whose passkey a link of someone other than the project's owner enrolled is `409 PASSKEY_OF_ANOTHER_OWNER`, and so is giving a project to another owner while a person it names directly holds one, each until that link's maker resets the person.
+  A passkey's sign-in reads it once more under the address's lock, against who made the passkey's link, and is `403 LISTED_BY_ANOTHER_OWNER` while a project of another owner names the person directly, whatever wrote that list.
+  The list's and the transfer's refusals, and the end of the account at a removal from the last list (below), run whatever `DISPATCH_SIGNIN_PASSKEY` says (`api.Deps.PasskeyAccounts`): passkeys enrolled while it was on outlive it being off, so nothing written while it is off leaves one that reads another owner's project, or a removed person's account, standing once it is on again.
+  A Google sign-in that replaces a passkey's account, a full member's of an address of the Workspace on another domain, deletes that account's passkeys in its own transaction (`PgPeopleStore.signInAccountTx`), so none signs in again or counts as another owner's passkey of the address.
+  A `LISTED_BY_ANOTHER_OWNER` block clears when the other project's owner takes the person off its list, or an operator does; the owner's access answer names those people from outside (`listed_by_another_owner`: never a full member or a Workspace address, which no link is made for whatever else names them), and offers no link for them.
+
+- With `DISPATCH_SIGNIN_PASSKEY=1`, the person's first enrollment makes their account: a subject of 16 random bytes, base64url, recorded in `people.sub` under the issuer `people.sub_issuer` names, the outside origin, through the same account binding a Google sign-in goes through (`PgPeopleStore.signInAccountTx`).
+  `people.sub_issuer` moves only with `sub`, and a row with no `sub` holds none (migration `20261120165538`'s guard), and a passkey's row holds no refresh token (`people_sign_in_stands`): its sign-in stands while `confirmed_at` holds a time.
+  The hourly confirmation of a passkey's sign-in asks the rule again (`AdmitsRestricted`) and whether the person holds a passkey;
+  a person no list names directly any more, or whose address is now on a domain the Workspace owns, has their account ended in one transaction (`PgPasskeys.End`, `EndAccountTx`): a new passkey subject through the account binding, which revokes their personal tokens and owes the secrets broker the old account's revocation, then their sign-in ended and their passkeys deleted, and is told why as above.
+  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list and, in one transaction, owes the secrets broker the revocation of the machine logins they approved, as a removal from a list does, ends their unused links of every project, and ends their account the same way (`PgPasskeys.EndAccountTx`, which refuses a full member's address, read under the address's lock), so a machine login approved with it while the Reset ran is refused or ended too.
+  So a later owner who names the address names a new account, and nothing the old one made acts for it.
+  The owner's browser reads, on the project's access answer, each passkey of a listed person: when it was enrolled, who made the link that enrolled it (`made_by`) and, where the owner sees it, that link's project (`passkeys`), whom it can make a link for now (`invitable`), whom another owner's project names (`listed_by_another_owner`), and each link of the project that can still enroll someone, its address, `made_at` and `expires_at` and never its token (`open_invitations`); no other caller reads them, and a deployment without the setting answers none.
+  The Access tab drops a link it shows once a read made after the link landed no longer lists it open: a Reset, a newer link, a delisting or the person's enrollment ended it, from this tab or another.
+  With the setting turned off, a passkey's cookie is refused at its next use, `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF` (below), and the person's tokens are refused as below.
+
+- A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that admits them at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`):
+  it acts only while `DISPATCH_SIGNIN_PASSKEY=1`, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
+  lists that cannot be read are `503 IDENTITY_UNAVAILABLE`, never an accept.
+  So a deployment that stops admitting restricted members, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation (a passkey's at once when the owner takes them off the last list, and at its next use once `DISPATCH_SIGNIN_PASSKEY` is off).
+  None of these revokes the token, so it acts again once all hold again;
+  another Google account's sign-in to the address revokes a personal token (below).
+  A personal token's owner's member kind is read in the token's own lookup (`api.personalTokenActor`), by the owner in the form `people.email` holds (`canonical_login`, migration `20261117000831`: `model.CanonicalLogin` in SQL, every Unicode space trimmed and A-Z lowered), whatever case or surrounding space the token's row spells it with, so a full member's token, and one whose owner has no `people` row, reads nothing more and answers as before.
+  A broker-issued token naming a person reads, in one statement more by the `people` key (`api.brokerPersonAdmitted`), that person's member kind, the account `people.sub` records and when (`people.sub_recorded_at`, below), and answers as before for a full member and for a person with no row while its account is theirs;
+  one naming a service and no person reads nothing more.
+
+- With either issuer, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
-  the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
+  the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold:
+  under the sign-in pool it forgets the refresh token, and under the two Google rules it holds the person or, for a restricted member whom only the access lists refuse, keeps the token (below).
+  With either issuer it ends them, and records a confirmation, only while the person's row still records the Google account (none for a sign-in pool's row) and the refresh token that refresh read (`PgPeopleStore.EndSubject`, `PgPeopleStore.ConfirmSubject`), so the answer to a refresh that began before the person signed in again, which stored another token, neither ends nor overwrites that newer sign-in.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
   A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
   Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
   An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
-  Logout ends Dispatch's session only, not the issuer's.
+  Logout ends Dispatch's session only, not the issuer's, and under the two Google rules it can keep the refresh token (below).
+
+- Under the two Google rules (`DISPATCH_SIGNIN_DOMAIN`, with passkey sign-in, `DISPATCH_SIGNIN_PASSKEY=1`, on or off), a refresh the rule refuses holds the person: their personal tokens and the broker credentials that name them are refused until they sign in again, and nothing is revoked.
+  `PgPeopleStore.EndSubject` ends the sessions and forgets the refresh token as above, and records the hold in the same transaction (`people.held_since`, the database's `clock_timestamp()`, migration `20261117174706`).
+  A row records a hold while `held_since` is later than `signed_in_at`, so the person's next sign-in releases it, a sign-in by a build older than the hold included.
+  Each refusal holds: Google's `invalid_grant`, whatever its cause; a refreshed ID token that names another Google account or another address than the row records, both compared before the rule runs; one with no subject, no email, or an email Google has not verified; and every other refusal of the rule, a full member's `hd` that is not the domain among them.
+  Three refusals of a restricted member's row hold nobody, since the restricted admission rule decides that member's tokens at each use (above) and admits them again with no sign-in: no list names the account (`ErrNotListed`), its address is on a domain the Workspace owns (`ErrWorkspaceAddress`), or the deployment no longer signs in accounts from outside the domain (`ErrNotInDomain`).
+  Those end the sessions, keep the refresh token, set the confirmation to the end's time and mark the row signed out (below), so the membership pass goes on asking Google, and Google's later refusal holds them.
+  A row that records no Google account forgets its token and holds nobody, and so does every refusal under the sign-in pool.
+  Access lists that cannot be read end nothing and hold nobody, as above.
+
+- Whether Dispatch holds a person is `identity.Membership.Standing`, which reads the person's row and the database's time in one statement and answers by the first of these that applies:
+  under any other rule, not held;
+  a recorded hold, held;
+  no row, or no stored refresh token, not held, so a person whose token Dispatch forgot (a sign-out with no access that outlives the browser, below, or a sign-in ended before Dispatch recorded holds) or who never signed in is not checked;
+  a stored token that does not open, on a row that records a Google account, not held while the last confirmation is younger than 24 hours and held after (the unopenable rule), until a sign-in replaces the token, or the token opens again and Google confirms the person;
+  a confirmation younger than an hour (`identity.MembershipMaxAge`), not held;
+  and otherwise a refresh with Google, the one a request's hourly confirmation runs, shared by every caller in the process, which `Standing` waits for at most 2 seconds.
+  A refresh that confirms the person or ends their sign-in answers what the row records after it.
+  Google not reached (every refresh failure but `invalid_grant`, ten seconds without an answer included) and a refresh still running after the 2 seconds answer by the 24-hour rule: not held while the last confirmation is younger than 24 hours, and held after, until a refresh confirms the person.
+  Access lists that cannot be read, and any other failure, give no answer while the confirmation is younger than 24 hours, and the 24-hour rule after.
+  For 60 seconds after a refresh of a person ended with Google not reached or the lists unreadable, the process starts no new refresh of them and answers as that refresh did, and while one has run more than 2 seconds it answers the 24-hour rule at once, so an outage of Google costs each person at most one 2-second wait for each refresh in each process.
+  The 24-hour rule and the unopenable rule record nothing.
+
+- Under the two Google rules, a personal token reads its owner's hold in the statement that already reads its row (`api.personalTokenActor`): a recorded hold is `401 MEMBERSHIP_HELD` at once, an owner with no stored refresh token or a confirmation younger than an hour reads nothing more, and only an older confirmation asks `Standing`, which can add up to 2 seconds to that request; under any other rule no token is held, a recorded hold included.
+  A revoked token is `401 TOKEN_REVOKED` first, and a restricted member's admission rule answers before the hold.
+  The refusal's words say what ends the hold: for a recorded hold and the unopenable rule, "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"; for the 24-hour rule, "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation".
+  When `Standing` gives no answer the token is `503 IDENTITY_UNAVAILABLE`, never an accept, and the refusal logs `msg="dispatch: a personal token was refused: whether Dispatch holds its owner could not be read"` at WARN.
+  A broker-issued token naming a person is `401 MEMBERSHIP_HELD` when the person's row records a hold, read in the statement that reads their member kind and account (`api.brokerPersonAdmitted`), in the personal token's words; and when the broker's introspection answers it `held` (`ciphertoken.Caller.Held`), in the broker's words, "<person>'s credentials are held by Dispatch; they work again when <person> signs in to Dispatch, or when Dispatch can confirm <person> with Google again".
+  That answer carries every hold the broker learned from the person route (below), the 24-hour and unopenable rules' included, and the five-second cache of introspection answers keeps it as it keeps any live answer; Dispatch asks `Standing` nothing for a broker token.
+  The token's revocation and account checks (below) and the restricted admission rule answer before the hold, and a live socket's heartbeat runs the same checks, so it closes at its next heartbeat after the refusal.
+  A machine login's approve or deny reads the caller's hold again right before Dispatch relays it (`api.approverStanding`): a personal token's by the steps above, a broker token's recorded hold, and a cookie's session generation, which a hold advances; a held caller is `401 MEMBERSHIP_HELD`, and the broker is not called.
+
+- The person route the secrets broker reads (`GET /api/v1/access/person`, `DISPATCH_ACCESS_ACCOUNTS` above) answers, beside `member_kind`, `held`, `Standing`'s answer, and `as_of`, the database time of the read it rests on, so a broker that keeps answers from several processes keeps the latest (`api.personStanding`).
+  A person no row holds is `held: false`, and so is everyone where no Google rule signs people in.
+  When `Standing` gives no answer the route still answers `200` with `member_kind`, leaves `held` out, and logs `msg="dispatch: the person answer leaves held out: whether Dispatch holds the person could not be read"` at WARN; the broker reads that answer as Dispatch not asked.
+  Under `iap`, every answer that is not held also carries `not_held_until` (below).
+
+- Under the two Google rules, `POST /auth/logout` ends the person's browser sessions, then asks whether they have access that outlives the browser (`cipher.OutlivingAccess`): an unrevoked personal token in `agent_tokens`, or, at the secrets broker, a live machine login of their own, an unrevoked sign-in on a machine, an exchange entry that names them, or a Kubernetes service account `BROKER_POD_OPERATORS` maps to them, whether or not a pod of it holds a live login, which the broker counts on `GET /v1/person-access` within the broker client's 5 seconds.
+  With any such access, or when the broker cannot be asked (a broker without that route answers `404`, which counts as cannot), it keeps the refresh token and the confirmation, for membership checks only, and marks the row signed out (`people.signed_out_at`, later than `signed_in_at`); with none, it forgets the token, as under the sign-in pool.
+  Either write applies only while `signed_in_at` is the one the sign-out read first, so a sign-in that commits while the broker is asked keeps its own token.
+  A kept token never makes a browser session: only the sign-in callback makes one.
+  With no broker configured (`DISPATCH_AGENT_SECRETS_URL` unset) it reads `agent_tokens` alone.
+  A failure logs at WARN: `msg="dispatch: a sign-out could not ask whether the person has access that outlives the browser; keeping their refresh token"`, and, for the writes, `msg="dispatch: keep the signed-out person's refresh token failed"` or `msg="dispatch: forget the sign-in's refresh token failed"`; a sign-out whose first read of the row fails is `500` and logs `msg="dispatch: read the sign-in a sign-out ends failed"`.
+
+- Under the two Google rules the maintenance sweep runs the membership pass last (`identity.MembershipPass`, Background loops, below), so each stored refresh token is checked about once an hour whether or not its person makes a request, and Google's refusal holds a person who uses only a personal token or a broker credential, and one who signed in before Dispatch recorded holds.
+  First it takes, one row at a time, up to 20 signed-out rows with a stored token whose last check (`people.outliving_checked_at`) is null or older than an hour, starting none 10 seconds or more into the pass, and asks of each, within 5 seconds, whether the person still has access that outlives the browser: with none it forgets the token, guarded by the `signed_out_at` and `signed_in_at` it read; when the ask fails it keeps the token and logs `msg="dispatch: the membership pass could not ask whether a signed-out person has access that outlives the browser; keeping their refresh token"` at WARN.
+  Then it takes, one at a time, up to 20 rows with a stored token whose later of the confirmation and the last attempt (`people.confirm_tried_at`) is older than an hour, the one due longest first, starting none 20 seconds or more into that step, stamps the attempt and refreshes it (`Membership.ConfirmFor`), so a row that could not be confirmed is tried again an hour later.
+  A pass ends within 50 seconds.
+  Each pass that claimed a row logs `msg="dispatch: membership pass" confirmed=<n> held=<n> kept=<n> unasked=<n> forgotten=<n>` at INFO: `confirmed`, a refresh that confirmed the person or found them confirmed since the claim; `held`, `kept` and `forgotten`, a refresh that ended the sign-in that way, and `forgotten` also each forget of the first step; and `unasked`, every other outcome of a refresh, Google not reached, a token that does not open and access lists that cannot be read among them.
+  A pass that fails logs `msg="dispatch: membership pass failed"` at WARN.
+
+- A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
+  `reason` is `WORKSPACE_ADDRESS` for a restricted member whose address is now on a domain the Workspace owns (`identity.ErrWorkspaceAddress`), whatever the lists say;
+  `NOT_LISTED` once no list names the account;
+  or `OUTSIDE_SIGNIN_OFF` for a restricted member once the deployment admits nobody from outside (`DomainRule.SignedOutReason`), a passkey's account at its very next request, since the refusal of its cookie writes nothing.
+  It is read from the address's row and the lists at each request (`SignInRule.SignedOutReason`), not kept from the request that ended the sign-in, so it reaches the person whichever of their requests ran the confirmation, a live socket's heartbeat included, and whichever server process answers the next one, and it needs no column of its own.
+  A sign-out, an expired cookie, a person a list still names at an address on no domain the Workspace owns, an address another account or another sign-in holds now and a full member are told none;
+  a deployment that never admitted a restricted member holds none, so it answers as it always has.
+  A person who signed out and whom the rule would refuse now is told why too (`WORKSPACE_ADDRESS` or `NOT_LISTED`), at another browser still holding the session the sign-out ended.
 
 - A person is their email, so an address passed from one account to another is one person.
   In domain mode `people.sub` records the Google account (`sub`, never reused) that last signed in to the address:
-  a sign-in under another `sub` ends every session of the address in the transaction that records the new one (a failed revoke records nothing, so the retry revokes again), logged `msg="dispatch: a sign-in under another Google account ended every session of the address"` at WARN with the email, and the hourly confirmation ends them when the refreshed token's `sub` is not the recorded one.
+  a sign-in under another `sub`, or to a row that records none, ends every session of the address;
+  one under another `sub`, which replaces the account the row recorded, also revokes every personal `dsp_` token the address owns (`agent_tokens.revoked_at`, the owner compared in the form `people.email` holds, `canonical_login`), whatever member kind the row held and the sign-in records.
+  Both happen in the transaction that records the new `sub`, so a failed revoke records nothing and the retry revokes again;
+  the sign-in logs `msg="dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address"` at WARN with the email and `tokens_revoked`, how many tokens it revoked, or, at a row that recorded no account, `msg="dispatch: a sign-in under another Google account ended every session of the address"` with the email, as before.
+  So no cookie or token of a replaced account acts as the new one, and each such token answers `401 TOKEN_REVOKED` from then on:
+  neither the old holder's of an address Google gave to another account, nor those of an account outside the Workspace that took an address on another domain the Workspace owns before its member first signed in, since the member's first sign-in takes the address back.
+  A row recorded with no Google account (a Cognito pool's sign-in, header identity, dev sign-in) replaces no account, so its first Google sign-in revokes the address's tokens that record another account or none, and owes each other account's revocation: a token recording none predates the recording, and `people.sub_recorded_at` (below) held it only to its clock.
+  `SignInSubject` is the one write of `people.sub`: `ConfirmSubject`, which confirms a sign-in pool's row too, under the empty subject that row records, writes only while the row records the refresh's `sub` and still holds the refresh token that refresh read, so a confirmation that began before the person signed in again leaves the newer sign-in's token and member kind, and never writes `sub`; `EndSubject`, `Record` and `SignIn` (group mode) never write it.
+  The hourly confirmation ends the sessions when the refreshed token's `sub` is not the recorded one;
+  an outside account's sign-in to a full member's address is refused instead (above).
   A sign-in whose address another account signs in to between its record and its cookie gets `409 SIGNIN_SUPERSEDED` and no cookie:
   after reading the session generation the callback checks that the row still records its `sub`.
-  Group mode neither reads nor writes `sub`, so there the old holder of a reassigned address keeps the cookies they have until their cookie expires, 30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or disabled.
+  Group mode neither reads nor writes `sub`, so there the old holder of a reassigned address keeps the cookies they have until their cookie expires, 30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or disabled, and keeps their personal tokens until someone revokes them.
 
-  The refresh token is stored sealed (`people.refresh_token`):
+- The refresh token is stored sealed (`people.refresh_token`):
   AES-256-GCM under a key derived from the current key of `DISPATCH_SIGNING_KEY` with HKDF and a fixed purpose label, bound to the person's email, in a format whose `v1:` prefix names its version.
   A value is opened under each key of the set in turn, the GCM tag refusing a key it was not sealed under;
   it names no key, so the `v1:` format is byte for byte the one earlier releases write and read.
   A stored value that does not open (sealed under a key the set does not hold, moved from another person's row, or in plain text) counts as no refresh token:
   each read of it logs `msg="dispatch: a stored refresh token did not open; the person signs in again"` at WARN with the email and never the value, and writes nothing;
   the person's request answers `401 NO_IDENTITY`, and their next sign-in replaces the value.
+  Under the two Google rules that person's personal tokens and broker credentials go on by the unopenable rule (above): served while the last confirmation is younger than 24 hours, and held after.
+
+- While a build without the account binding is in the fleet, the sign-in revokes nothing and logs `msg="dispatch: a sign-in under another Google account ended every session of the address and revoked nothing: a build without the account binding is in the fleet"` at WARN with the email and `replaced_subject`, the account to revoke at the broker by hand should the catch-up not run, or `msg="dispatch: the first Google account recorded for the address revoked nothing of it: …"` with the email and `subject`.
+  The binding catches the change up once it holds (Two builds at once, "The account binding beside a build without it").
+
+- The credentials a replaced account holds at the secrets broker (`DISPATCH_AGENT_SECRETS_URL`) end with its hold on the address too:
+  the sign-in that replaces the `sub` an address's row records also records, in its own transaction, that Dispatch owes the broker a revocation of that account (`broker_revocations`, migration `20261116232217`), so a process that dies after the commit loses none.
+  The row names the address, Dispatch's sign-in issuer (`DISPATCH_SIGNIN_ISSUER`, spelled as `oidc.CanonicalIssuer` spells it), the replaced `sub` and the `sub` that took the address, with the moment of its commit on the database's clock (`recorded_at`, read by the transaction's last statement).
+  It is one row per replaced account, so two replacements of one address before the first is paid are both paid; an account replaced again is its row owed again under the next `generation`.
+  A process with no broker configured records none (`store.WithBrokerRevocations`, which `peopleOptions` gives the people store only with `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_SIGNIN_ISSUER` set), since only a process with a broker pays one.
+  Set `DISPATCH_AGENT_SECRETS_URL` on every process of a deployment with a broker: a replacement a process without it serves records nothing, and the replaced account's broker credentials are never revoked.
+  The replaced account's member kind does not matter: the hourly confirmation restricts an account under the same `sub` once it leaves the Workspace (`ConfirmSubject`), so a restricted row can name an account that made broker credentials while it was full, and the broker may still refuse the account that takes the address for a revocation a pass already paid, which only a revoke naming that account as the holder lifts.
+  So a member who reclaims an address an outsider took keeps their own broker tokens working throughout, since they record the member's account; only the address's tokens recording no account made before the reclaim or within five minutes after are refused (below).
+  The broker revocation loop (`api.RunBrokerRevocations`, Background loops, below) pays it after the commit with one call, `POST /v1/person-subjects/revoke` naming the address, the issuer, the replaced `sub`, the holder's `sub` and the row's `session_generation` (`cipher.Client.RevokePersonSubject`).
+  The broker records the Google account behind each sign-in on a machine and the approving account of each machine login, so it ends, in one transaction, every sign-in and every machine login of the address's own machines that the replaced account made, or that records no account (one made before the broker recorded any), whenever it issued them, with every token minted under them, the session tokens exchanged under them included, and every session they enrolled.
+  It refuses the replaced account any new sign-in or approval under the address, a sign-in with a Google token it got before the address moved included, and leaves every credential of the new holder's and every service's login.
+  A revocation the broker confirms (`200`) is settled at the generation the pass claimed, logged `msg="dispatch: the secrets broker revoked the credentials of an account another Google account took the address of"` at WARN with the email, `signins`, `machine_logins` and `tokens_ended`.
+  Any other answer leaves it owed, logged at ERROR and tried again 30 seconds after its claim, by any process, until the broker confirms: a `404` too, which the route never answers, so it is a wrong `DISPATCH_AGENT_SECRETS_URL`, a proxy in the way or a broker without the route.
+  An address's revocations are paid one at a time, in the order of the session generations their replacements left, which is the order the broker judges them by (`brokerRevocationPayOrder`: the generation first, then the recording's time, which alone would pay them out of order after the database clock stepped back), and never within 30 seconds of the last claim of one of them, since each also tells the broker to stop refusing the account that took the address, which may be one an earlier revocation named.
+  A revocation a process with a broker recorded waits, on a process with none, for the first pass of one that has one.
+
+  - A passkey's account (its issuer the outside origin), which the owner's Reset replaces, is logged `msg="dispatch: the secrets broker revoked the credentials of a passkey account the project owner's Reset replaced"` instead (`api.revokedLog`).
+
+- A broker revocation's row also records `session_generation`, the address's `user_sessions.generation` as the recording's own statement reads it, after the sign-in's write of `people.sub` moved it: the generation the replacement left (`recordBrokerRevocationSQL`, at the insert and at the upsert alike).
+  The database refuses, with SQLSTATE 23514, a recording naming any other generation, and any change of it outside a recording (migration `20261118152422`'s `guard_broker_revocation_columns()`).
+  The revocation's call to the broker carries it, and the broker refuses an approve whose check read a lower generation (below).
+  A revocation the broker answers `200` with state `superseded` (its generation is below the one the broker applied at the address) is left owed, since the broker ended nothing: the loop never hears that answer while Dispatch's generations and the broker's agree, so it is logged at ERROR, `msg="dispatch: the secrets broker answered a revocation superseded: …"`, with the email, issuer, `subject`, the `session_generation` sent, the broker's `superseded_by` and the address's generation now (`address_session_generation`), and counted in `envoy_dispatch_broker_revocations_superseded_total` (below); the runbook's After a restore page gives the recovery, a reset of every person's sessions, tokens and broker credentials.
+
+- An account that takes the address back while a broker revocation of it is still owed is owed nothing: the sign-in that takes it back settles every revocation of the address still owed for its own account, in its transaction, just before it records the revocation of the account it replaces (`settleReclaimedBrokerRevocationsSQL`).
+  Paid, such a revocation would end what the account made after taking the address back, and the broker would refuse it until the revocation of the account it took the address from was paid, 30 seconds later at the least.
+  One a pass has claimed is settled too, so a call the broker did not confirm is never tried again; a call still in flight cannot be recalled, and may end what the account made since, but the revocation the sign-in records is paid after it and deletes the broker's refusal of the account.
+  A revocation of the account that a pass paid before it took the address back leaves the broker refusing it as well, and the revocation the sign-in records, of the account it takes the address from, whatever member kind that account's row held by then, deletes that refusal too.
+
+- `/metrics` carries the broker revocations owed, each series read from the table when a scrape asks for it, two reads a scrape, so every process reports the deployment's (`api.RegisterBrokerRevocationMetrics`):
+  `envoy_dispatch_broker_revocations_owed`, how many the broker has not confirmed, and `envoy_dispatch_broker_revocation_oldest_owed_seconds`, how long the oldest has been owed since its replacing sign-in, written only while one is owed;
+  a read that fails writes no sample.
+  Beside them, `envoy_dispatch_broker_revocations_superseded_total` counts each `superseded` answer this process's loop heard, for a revocation it leaves owed (`api.NewBrokerRevocationsSuperseded`): any count means a replaced account's broker credentials were not ended.
+  A revocation the broker confirms is owed for the pass its commit wakes, a second or so, and 30 seconds more for each earlier revocation of its address it waits behind, so an age past a few minutes is one the broker does not confirm, whose replaced account's credentials the broker still holds for the secret reads it serves without asking Dispatch, until it settles or an operator revokes them at the broker and clears it (Clearing a broker revocation, below); Dispatch itself refuses them from the replacing commit either way.
+  The machine-login revocations a removal from an access list owes are on `/metrics` the same way (`api.RegisterMachineLoginRevocationMetrics`): `envoy_dispatch_machine_login_revocations_owed`, how many the broker has not confirmed, and `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, how long the oldest has been owed since its removal, written only while one is owed.
+  A pass settles one about a minute after its removal commits (`api.machineLoginSettleAfter`), so an age past a few minutes is one the broker does not confirm.
+  Until it settles, the member's machine logins still refresh and every approve of a machine login by the member is `409 MACHINE_LOGIN_REVOCATION_OWED`; an operator revokes the logins at the broker and settles it by hand (Clearing a machine-login revocation, below).
+  Their trades are refused once the broker's 30-second cache of Dispatch's answer runs out either way.
+
+- A broker token names the Google account its credential records at the broker, the introspection's `account_issuer` and `account_subject`: the person token that made the sign-in on a machine it was minted under, or the account whose approve Dispatch relayed for the machine login it was exchanged from.
+  When that issuer is Dispatch's sign-in issuer, Dispatch holds the token to that account in the read that also reads the person's member kind (`api.brokerPersonAdmitted`, `api.brokerTokenAccount`), on every route and at a live socket's next heartbeat.
+  A token recording the account `people.sub` records now, the holder's own, acts, a revocation unsettled or not: the broker answers the account the token's own trade recorded on it when it was minted, never one read from another row, and no recorded account ever changes, so no token the replaced account traded records the holder's.
+  A token recording another account is refused `401 BROKER_TOKEN_NOT_ACTIVE` when a revocation names that account as the replaced one or as an earlier holder, so the replaced account's broker token stops at the commit of the sign-in that replaces it.
+  It is refused `401 BROKER_ACCOUNT_NOT_SIGNED_IN`, saying to sign in to Dispatch, when no revocation does: a broker token of an account Google gave the address to acts only once that account has signed in to Dispatch, and a client does not take this code for a stale token, so it does not trade again on every request.
+
+- A token that records no account, which is every token minted before the broker recorded the account on its token or of a machine login an older Dispatch approved, might be any holder's, so Dispatch holds it to when its credential was made at the broker (the introspection's `credential_created_at`, the sign-in's or the machine login's creation time from the broker database's clock, never the token's own `iat`, which a refresh renews), against when `people` recorded the address's account (`people.sub_recorded_at`, stamped from Dispatch's database clock by a trigger on every change of `sub`, the first included, which refuses any other change of it: migration `20261117175133`).
+  Made before the recording, it may be the account that held the address before, and it is refused `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT`, on every route and at a live socket's next heartbeat, for good, the broker's revocation paid or not.
+  The two times come from two databases' clocks, so a credential made less than five minutes after the recording counts as made before it (`api.brokerCredentialMargin`), and so does one whose time the broker did not record: a skew refuses, never admits, at the cost of one sign-in at the broker again for a credential made in those five minutes.
+  Made at least five minutes after, it acts, and a personal token it mints records the address's account, so the no-account state stops there; a `sub_recorded_at` the migration left null refuses nothing, so no credential is refused at the upgrade.
+  The recorded account itself never disappears, since every comparison needs `people.sub`: the database refuses setting it to null, deleting a row that records one, and truncating `people`, each with SQLSTATE 23514 (migration `20261117175133`, its null rule now kept by `20261118041916`'s column trigger).
+  Every column these rules read moves only as Dispatch's own writers move it, whatever statement is sent (migration `20261118041916`): an address never changes, a recorded account is never the empty string, a session's generation never moves back and its row is never removed, a `people` row a session names is never deleted, and a personal token's owner, hash, account, creation time and revoke are written once.
+  Recording an account, a fresh row's first included, ends the address's sessions in the same statement, so no statement can change the account a cookie's session stands for without ending it.
+  A personal token recording no account is held the same way to its own `created_at`, one clock with no margin (`api.tokenAccountReplaced`).
+  A token that records an account of another issuer, whose `sub` is no account `people` records (a sign-in pool's `sub` is the pool's, the broker's is Google's), is refused `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` once `people` records an account for its person, whenever it was made: no broker credential records such an account where Dispatch's sign-in records Google's, and a time would admit one the replaced account made under that issuer after the margin.
+  A token an operator's exchange entry mapped (the introspection's `project_scope` `named`, recording no account and no credential creation: a pod's account, a workflow, or a Google machine's account the broker lists for the person) is held to no account and no time: no person's credential made it, and a pod cannot sign in again.
+  A restricted member's machine login trades for a `named` token too, held to one project, and a person's credential made that one: it records the account that approved the login and when the login was made, and is held to its account as a `person` token is (`api.personCredential`).
+  Every check and record of the account above, and the sign-in's revocations, hold only while no build without the binding is in the fleet, from such a build's dashboard publish until its registration is gone and its mark has aged out: beside one, Dispatch admits, records and revokes as that build does (Two builds at once, "The account binding beside a build without it").
+
+- A machine login's approve or deny (`POST /api/v1/credential-requests/{id}/approve`, `.../deny`, keyed or not) is relayed only while its caller still holds the address: an approve mints a credential in the approver's name, and the broker decides a denial whatever account asks, so a deny relayed for a caller who lost the address would let the replaced account deny the new holder's pending machine login.
+  So once its body has arrived, right before the broker is called, Dispatch reads the caller's standing again (`api.approverStanding`): a cookie's session generation, and a personal token's `revoked_at` and account, the checks its mint makes; a broker-issued token never approves, since none holds the `approve` scope.
+  A caller that lost the address while its client held the body back, however long, is refused as its next request would be (`401 NO_IDENTITY`, `401 TOKEN_REVOKED`), and the broker is not called.
+  A deny names no account.
+  The approve names the account bound to the credential that made it, `approver_issuer` (the sign-in issuer, or the outside origin for a passkey's account, `people.sub_issuer`) and `approver_subject`, read in that same re-read (`api.credentialSubjectSQL`, `api.approverStanding`), never whichever account holds the address when it is relayed.
+  A cookie's account is the address's recorded `sub`, which is the cookie's own while its session generation stands, since every change of `people.sub` ends the address's sessions, and none on a deployment that signs people in through a Cognito pool, whose sign-in records no account (the router is handed no sign-in issuer there, `accountIssuer`); a personal token's is the account its mint recorded (`agent_tokens.subject`, migration `20261117064356`, which migration `20261118041916`'s trigger refuses to change, with its `created_at`), and a token whose account `people.sub` no longer records is refused `401 TOKEN_REVOKED` at its next request, its approve's re-read and its mint (`api.tokenAccountReplaced`); and a personal token recording none made after the address's account was recorded is bound to that account.
+  The broker records it on the login it mints, so a later revocation of that account ends the login; a credential bound to no account (a token minted before that migration or by the release before it, or a row that recorded none) sends neither field, so the login records none and any later revocation of the address ends it.
+  Every approve also sends `approver_session_generation`, the address's `user_sessions.generation` (0 when it holds no row) read in that same re-read, so the generation the check saw; a deny sends none.
+  The broker refuses an approve carrying a generation below one a revocation of the address recorded (`403 APPROVER_REPLACED`), whatever account it names: its check passed before that replacement, which every recording of an account moves the generation for.
+  Deploy the broker that takes these fields and serves `POST /v1/person-subjects/revoke` before this Dispatch: an older broker answers such an approve `400 INVALID_DECISION`, since it refuses a body field it does not know, and the revoke `404`, which leaves each revocation owed.
 
 - A refresh token stored in plain text (by the release before sealing, or by a task of it still serving during a roll or after a rollback) can be redeemed by anyone holding a copy of the row and the app client's secret until it expires, and forgetting it does not end it, so Dispatch retires it:
   at every boot, after migrations, it revokes each plain-text token at the pool's revocation endpoint (the `revocation_endpoint` the issuer's discovery document names) as the app client, then clears it and its confirmation while the row still holds that value.
@@ -668,7 +996,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET` and `DISPATCH_SIGNIN_GROUP` are refused beside it, and so are dev sign-in and `DISPATCH_IAP_AUDIENCE` under any other identity.
 
 - Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
-  Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  Dispatch keeps no session cookie, refresh token or sign-in confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
   a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
@@ -685,6 +1013,30 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
   Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
 
+- Under `iap`, IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispatch; it follows each person's Google Workspace account in the Directory instead, through the reader `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` configure (`identity.Membership.Directory`).
+  A check reads `users.get` for the person's address and has three outcomes, which share one 15-second deadline with the database write of the outcome: Active, the person's own account neither suspended nor archived, confirms them, releases a hold, and fixes `not_held_until` 24 hours later; Held, an account suspended, archived or missing, or an answer whose `primaryEmail` is another address (the asked address made an alias of a colleague's account), records a hold; and Failed, any other answer, a timeout or a write that missed the deadline, changes nothing but the time of the check, and logs `msg="dispatch: a Workspace Directory check failed; ..."` at WARN.
+  An Active outcome rests on the check's own read of the person's row, made before its Directory read, and checks run in every process at once: its write changes nothing while the row holds a hold recorded at or after that read, a Held outcome of a check that read the Directory later, which stands (the check logs `msg="dispatch: a Workspace Directory check answered Active, and wrote nothing: ..."` at INFO).
+  Each Held outcome records the hold at its own time (`people.held_since`), not at the time of the row's first one, so this holds as well for a row that was already held when the earlier check read it and is held again: an account restored and suspended again while two checks of it run.
+  The membership pass checks each full member's row about once an hour, held rows and rows that never made a request included, and runs no sign-out step (its line counts an Active outcome `confirmed`, a Held one `held`, an Active one whose write changed nothing because a later check's hold stands `held` too, and a Failed one `unasked`).
+
+- Under `iap`, a personal token asks at every use, and the person route the secrets broker reads answers the same: a recorded hold is `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the token's owner; an Active answer younger than an hour is served; an older one makes the request check the Directory, waiting at most 2 seconds, and starts no new check for a minute after a Failed one; and while no Active answer is younger than 24 hours (`not_held_until`), the token is `503 IDENTITY_UNAVAILABLE`, never served and never held.
+  So an outage of the Directory longer than 24 hours stops every personal token until it answers again, and a person whom IAP admits but whose row has no Active answer yet waits for the first check.
+  Only an Active answer releases a hold: IAP's assertion, however valid, records the person and nothing more.
+  The person route carries `not_held_until` on every answer that is not held: the last Active answer plus 24 hours, or `as_of` itself for a person no Active answer confirmed in 24 hours or no row holds, which the broker refuses as a deadline passed; a held answer carries none.
+  At Dispatch a broker token whose person is held is `401 MEMBERSHIP_HELD` in the words a personal token gets here, and so is a held person's approve or deny of a machine login; the Envoy listener refuses such a token `401 MEMBERSHIP_HELD` in its own words, which name the person and hold under every rule.
+  At both, a broker token whose introspection answered its person not held past that deadline is `503 BROKER_UNAVAILABLE` with `Retry-After: 60`.
+  An approve or deny of a machine login, a personal token's mint and a change of a token's scopes at a person's browser, which presents only IAP's assertion, ask the same once the request's body has arrived: `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the caller, for a held person, and `503 IDENTITY_UNAVAILABLE` past their deadline; IAP still admits the browser itself.
+
+- Under `iap`, a Held outcome logs `msg="dispatch: the Workspace Directory reports a person's account suspended, archived, missing or another's; their credentials are held"` at INFO with the email, and an Active or Held outcome whose write fails logs `msg="dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed"` (or `Held`) at WARN.
+  A people store that records no Directory outcome fails every check and logs `msg="dispatch: a Workspace Directory check cannot record its outcome; the person is not confirmed"` at ERROR.
+  At boot an `iap` server logs `msg="dispatch: naming people from Identity-Aware Proxy's signed assertion"` at INFO with `audience`, `keys`, `domain`, `directory_account` and `directory_admin`, and one that cannot build its Directory reader logs `msg="dispatch: build the request identity"` at ERROR and exits 1.
+
+- Under `iap`, the person's own account is the one whose id the row stores from its first Active answer, or, before one is stored, the one whose `primaryEmail` is the address, letter case ignored.
+  An answer for the address itself, neither suspended nor archived, with another account's id (an address the Workspace deleted and created again for another person) asks the question a sign-out asks (`cipher.OutlivingAccess`, above), inside the check's 15 seconds: while the address still has an unrevoked personal token, or at the broker a live machine login, an unrevoked sign-in on a machine, an exchange entry that names it or an account `BROKER_POD_OPERATORS` maps to it, or the question fails, the answer is Held and the stored id stays; once it has none, the answer is Active, the row stores the new account's id, and the person is confirmed and released with no request of their own.
+  A question or a write that runs past the 15 seconds makes the check Failed, which leaves the stored id, the confirmation, `not_held_until` and the hold as they were.
+  An answer whose `primaryEmail` is another address is Held whatever the address holds, and an answer with the stored id asks the broker nothing.
+  So the operator ends the earlier person's access ("Ending a person's access" in `docs/site/src/content/docs/dispatch/running-dispatch.md`), and the next check confirms the new person; with no broker configured the question reads personal tokens alone.
+
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
   The harness must set `DISPATCH_IDENTITY_HEADER_TRUSTED=1`;
@@ -692,8 +1044,37 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 The people Dispatch has seen, either way, are the assignee picker's options and the only names an issue may be assigned to.
 
+The session cookie a sign-in issues is signed, HttpOnly, `SameSite=Strict`, host-only (`Path=/` and no `Domain`), and lasts 30 days (`auth.SetSessionCookie`).
+At `DISPATCH_SERVER_URL` it is `Secure` unless `DISPATCH_INSECURE_COOKIE` is set; at `DISPATCH_OUTSIDE_ORIGIN` it follows that origin's scheme (below).
 `DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing.
 Do not use it on an HTTPS deployment.
+
+The cookie's name depends on the origin, so that every release keeps the build before it working (Running more than one process, below):
+
+- At `DISPATCH_OUTSIDE_ORIGIN` the session cookie has one name, which a sign-in there issues and a request there is read by alone.
+  It follows the outside origin's scheme, whatever `DISPATCH_INSECURE_COOKIE` says: at an `https` outside origin it is `__Host-dsession`, `Secure`, which a browser takes only from that host itself over HTTPS, so no other host under its domain and no answer over plain HTTP can set a session there; at an `http` one (a test harness's) it is `dsession`, not `Secure`, since a browser takes no `Secure` cookie, a `__Host-` one included, over plain HTTP.
+  Where it is `__Host-dsession`, a `dsession` there is no session, and an unsafe request carrying one is no request with a session cookie.
+  A request is the outside origin's for this whenever its `Host` names the outside origin's host, at any port: a browser sends one host's cookies to every port of it.
+  The one name holds because no browser holds a session for the outside origin that the build before this one issued: the first release that serves `DISPATCH_OUTSIDE_ORIGIN` must be this one or a later one.
+  A build that served it earlier issued `dsession` there; a deployment that ran it would sign each person from outside out once when this release rolls out, and a roll between the two builds would answer them `401 NO_IDENTITY`.
+
+- At `DISPATCH_SERVER_URL` the session cookie moves from `dsession` to `__Host-dsession` in three releases:
+
+  1. This release still issues `dsession` there under every setting, so the release before it reads every session it issues, during a rolling update and after a rollback.
+     It reads both names (`auth.SessionFromRequest`, and `auth.HasSessionCookie` for the origin check): the first one a request carries with a non-empty value, `__Host-dsession` before `dsession`, so a `__Host-dsession` beside a `dsession` is read alone, whether or not it verifies.
+     Each sign-in clears `__Host-dsession`, which the next release may have set, so the browser keeps only the session it is given.
+
+  2. The next release issues `__Host-dsession` there where the cookie is Secure, and clears `dsession` at each sign-in.
+     It rolls out only once every process runs this release, and a rollback from it goes back no further than this release: a rollback across both releases signs out everyone who signed in on the next one.
+
+  3. A release at least 30 days after the next one (a session's lifetime) stops reading `dsession` there where the cookie is Secure.
+     Under `DISPATCH_INSECURE_COOKIE` the cookie stays `dsession`.
+
+  So the `__Host-` prefix guards no session at `DISPATCH_SERVER_URL` before the next release.
+  From it, a browser that has signed in holds `__Host-dsession`, and a `dsession` another host sets beside it signs in nobody else; until the third release, a browser that holds no `__Host-dsession` (one that has not signed in since, or has signed out) can still be given a session as `dsession` by another host under the domain or by an answer over plain HTTP.
+
+`POST /auth/logout` clears the cookie under both names at either origin (`auth.ClearSessionCookies`), each clear `Secure` where that origin issues the cookie `Secure`, and the `__Host-` one always.
+Nothing else writes the cookie: no request re-issues or extends a session.
 
 `DISPATCH_DEV_SIGNIN=1` adds a second way to get the cookie on a local instance:
 `GET /auth/_dev/signin?login=<email>` records the lowercased person and issues the session cookie an issuer sign-in does, with no issuer exchange and no group check.
@@ -704,6 +1085,107 @@ a `dsp_` token it mints, and the session and token rows its sign-out changes, li
 A dev-sign-in server therefore needs a database of its own.
 The one exception to the per-process key is a harness that runs several dev-sign-in processes on one database on purpose, as the browser suite's two-process mode does:
 `DISPATCH_DEV_SIGNIN_SHARED_KEY` gives them one key, derived from the value under a dev-only label, so their cookies are each other's and never a production server's.
+
+### Clearing a broker revocation
+
+```sh
+envoy-dispatch clear-broker-revocation <email>
+envoy-dispatch clear-broker-revocation <email> <subject>:<generation>...
+```
+
+settle, without the broker, a revocation Dispatch owes the secrets broker that the broker never confirms, which `envoy_dispatch_broker_revocation_oldest_owed_seconds` shows and which the loop keeps asking the broker for.
+Given the address alone (in any case and spacing), it lists every revocation of the address still owed, one line each, `clear-broker-revocation: <email> owes <subject>:<generation> (issuer <issuer>, taken by <subject>, session generation <generation or `none`>)`, and settles nothing.
+The session generation is the address's own when the revocation was recorded, and `none` for a row recorded before migration `20261118152422` added the column, which the broker refuses on every call (`400 SESSION_GENERATION_REQUIRED`), so the loop never settles such a row: the runbook's record-again block records it again with the address's generation, and this line is where an operator finds it.
+Given the names that list printed, it settles exactly those, each only at the generation named and only while it is owed (`store.BrokerRevocations.Clear`), and prints `clear-broker-revocation: <email> <subject>:<generation> cleared` for each:
+a revocation recorded after the list, or an account replaced again since and owed under a later generation, stays owed, and is named `is not owed` until it is listed and named again.
+It changes nothing Dispatch admits, which holds every broker token to its own account or creation time from the replacing commit (Identity, above), and it revokes nothing at the broker:
+a credential of the replaced account that the broker still holds goes on reading the secrets the broker serves without asking Dispatch, so revoke it at the broker first.
+It also leaves the broker refusing the account the address came back to, when the broker had recorded that account replaced, since only a revocation naming that account as the holder lifts the refusal.
+Recording the revocation again, as the runbook and the store README give it, has the loop pay it and recovers both.
+It exits 0 once it listed what is owed or settled every revocation named, 1 when nothing of the address is owed, when a revocation named is not owed at that generation, or when the database cannot be opened, read or written, and 2 for anything but one address followed by well-formed `<subject>:<generation>` names.
+
+### Changing the Workspace domain
+
+```sh
+envoy-dispatch forget-hosted-domains
+```
+
+Under `DISPATCH_SIGNIN_DOMAIN`, each sign-in and each hourly confirmation records the Workspace domain its ID token carried (`hd`).
+Dispatch does not start while at least one full member's row holds a refresh token and records a domain, and none of those rows records `DISPATCH_SIGNIN_DOMAIN`, compared byte for byte: a mistyped domain would hold every member at their next hourly check.
+Its error names the domain it was given, the domains the rows record, and this command.
+A row that records no domain does not count, and neither does a restricted member's.
+The boot reads `people` once for this check, after it retires the refresh tokens stored in plain text (above), and from that read, under `DISPATCH_SIGNIN_DOMAIN` (and so under `iap`), it logs `msg="dispatch: people census" checkable=<n> held=<n> uncheckable=<n>` at INFO: the rows that record no hold, hold a refresh token (whether or not it opens) and record a Google account; the rows with a recorded hold; and every other row, whose sign-in Dispatch cannot check by a refresh.
+A row that only IAP recorded holds no refresh token, so under `iap` it is in the third count unless it is held, and the Directory checks it all the same.
+A refused boot logs `msg="dispatch: check the sign-in domain against the people"` at ERROR with the error and exits 1.
+
+For an intended change of domain: stop every Dispatch process; once Google gives the new `hd`, run `envoy-dispatch forget-hosted-domains` once; then start every process with the new domain.
+It forgets the domain every row recorded and prints how many rows it changed, `forget-hosted-domains: <n> people rows no longer record a Workspace domain; ...`; each row records a domain again at its next confirmation.
+It holds and releases nobody.
+A process that runs with the old domain after Google's change holds each full member whose refresh it runs, and that member must then sign in again.
+It exits 0 once it forgot the domains, 1 when the database cannot be opened or written, and 2 for any argument.
+
+### Checking the Directory reads
+
+```sh
+envoy-dispatch directory-check --active <login> --held <login> --scope-probe <scope>
+```
+
+checks, before IAP admits anyone, that an `iap` deployment's Workspace Directory reads work and that the signer's grant gives nothing more.
+It builds the reader Dispatch builds from `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` (`identity.DirectoryReader`): the process's own Google identity calls IAM `signJwt` on the signer for a JWT naming the delegated user and `https://www.googleapis.com/auth/admin.directory.user.readonly`, trades it at Google's token endpoint, and reads `users.get` with `fields=id,suspended,archived,primaryEmail`.
+It checks each login once, as a person with no stored Directory user id, so by its primary address, and prints one line for each, `<login>: Active`, `<login>: Held` or `<login>: Failed (<reason>)`.
+Then it asks Google for a token for `--scope-probe`, a scope the grant must not give (`https://www.googleapis.com/auth/admin.directory.user`, say), with the same signer and delegated user, and prints `scope <scope>: granted`, `scope <scope>: refused (<OAuth error code>)`, or `scope <scope>: Failed (<reason>)` when Google gave neither answer.
+A reason names the step that failed (`signJwt`, the token exchange or the Directory read) and the HTTP status of its answer, and never a word Google wrote; an OAuth error code prints only when it is lowercase letters and underscores.
+Each check and the probe has the 15 seconds a check in the server has.
+It needs no server and no database.
+
+It exits 0 only when the `--active` login is Active, the `--held` login (a suspended, archived or deleted account) is Held, and Google refuses the probe with `unauthorized_client`;
+1 for any other verdict, each named on stderr, or when the reader cannot be built (no Application Default Credentials);
+and 2 for a missing or blank flag, an argument, or `DISPATCH_DIRECTORY_ACCOUNT` or `DISPATCH_DIRECTORY_ADMIN` unset.
+Google states that a new Domain-wide Delegation grant can take up to 24 hours to take effect, so a run that fails at the token exchange soon after the grant may pass later.
+
+### Clearing a machine-login revocation
+
+A machine-login revocation the broker never confirms, which `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` past a few minutes shows and the loop logs at ERROR (`the machine logins of a restricted member taken off an access list were not revoked`), leaves the member's machine logins refreshing, and refuses every approve of a machine login by the member `409 MACHINE_LOGIN_REVOCATION_OWED`, until it settles.
+No command settles it; settling it by hand revokes nothing at the broker, so first revoke the member's machine logins there, with the calls the loop makes as Dispatch's own ServiceAccount.
+Mint a token of that account for the broker's audience as the After a restore page's machine-login block does (`kubectl create token`, an hour at most), then list the member's logins and revoke each one the list names with `service` null:
+
+```sh
+(
+umask 077
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+email='<the address, as people.email holds it>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+curl -sS --fail-with-body -H @"$header" --get --data-urlencode "approver=$email" "$broker_url/v1/launcher-credentials"
+# For each credential_id the list names with "service":null:
+curl -sS --fail-with-body -X POST -H @"$header" -d "{\"approver\":\"$email\"}" "$broker_url/v1/launcher-credentials/<credential_id>/revoke-by-approver"
+)
+```
+
+Once the list names no login of the member's with `service` null, settle the revocation the database owes now, at the generation it reads, which tells the broker nothing.
+psql gets `DATABASE_URL` with its password taken out as its argument, and the password as `PGPASSWORD`, read from the terminal into the subshell's environment, as the deploy scripts give it: no process's arguments carry the password, since `/proc/<pid>/cmdline` is readable by every user of the machine, and no file holds it.
+
+```sh
+(
+url='<DATABASE_URL with its password taken out>'
+email='<the address, as people.email holds it>'
+IFS= read -rsp 'Dispatch database password: ' PGPASSWORD && echo && export PGPASSWORD || exit 1
+psql "$url" -X -v ON_ERROR_STOP=1 -v email="$email" <<'SQL' || exit 1
+select generation, recorded_at from machine_login_revocations where email = lower(btrim(:'email')) and done_at is null;
+SQL
+IFS= read -rp 'the generation it printed: ' generation || exit 1
+psql "$url" -X -v ON_ERROR_STOP=1 -v email="$email" -v generation="$generation" <<'SQL'
+update machine_login_revocations set done_at = now() where email = lower(btrim(:'email')) and generation = :'generation' and done_at is null returning email, generation, recorded_at, done_at;
+SQL
+)
+```
+
+The select prints the generation still owed, none when nothing of the address is owed.
+The update settles that generation alone, and prints the row it settled and `UPDATE 1`, the settlement's one trace, which goes with the incident's record; the member approves a new machine login from then on.
+It prints `UPDATE 0` and no row when that generation is settled already, or when a removal recorded the revocation again since, under the next generation: then list the member's logins at the broker again, revoke what it names, and settle the generation the select prints next.
+A removal recorded after the update owes it again, and the loop pays that one as any other.
 
 ## Local Postgres
 
@@ -763,7 +1245,7 @@ and the subjects a measurement binds — the largest project, the heavily linked
 
 Measurements are taken with durability on and memory pinned, and every number is recorded beside those settings:
 `fsync=on`, `synchronous_commit=on`, `full_page_writes=on`, and a `shared_buffers`, `maintenance_work_mem` and `effective_cache_size` the run names.
-A cluster with the write settings off leaves no page all-visible, and a small `shared_buffers` decides a share-of-plan reading on its own.
+A cluster with `synchronous_commit` off can leave a vacuum that runs before the seed's commit is flushed to the write-ahead log with no page all-visible, since a row is marked committed only after that flush, so an index-only plan reads as costly as a bitmap one; and a small `shared_buffers` decides a share-of-plan reading on its own.
 A full run at `--scale 1` takes about an hour and twenty minutes and leaves a database of about 14 GB.
 
 **What the seeded documents do not carry.**
@@ -1033,6 +1515,7 @@ What the two processes share, and what each keeps to itself:
   when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
   The listener gives that copy up after its retry window with the agent wake, and the session reads it when it registers again under its id within the stream's 72 hours.
   A process with no NATS (`DISPATCH_NATS_DISABLED=1` without test hooks), a failed publish, a role target, a send whose request set `connected_only`, and a model or thinking switch, which is sent `connected_only` whatever its request says, still settle `failed`.
+  So does a message to a session the attempt's writer may not see - the request's caller, or for the sweep the person who asked for the attempt - which the resolve answers `no live session` before the listener is asked; while any project is private that includes a session nobody holds, which has neither a project nor a listener record that places it (`mayQueueForUnknownSession`).
   A process killed during the wait leaves the attempt to the delivery sweep.
 
 - Times that one process writes and another compares come from the database's clock, never a host's:
@@ -1071,7 +1554,7 @@ What the two processes share, and what each keeps to itself:
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
   Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers, for each of the four callers of the two intakes' holds and for each of the two callers of the keyword fill's hold, twenty-four (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
-  The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, the outbox publishes under its hold (above), and the keyword fill writes under a hold of its own (Background loops, below);
+  The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue, the task progress reconciliation and the broker revocation loop claim their own work, the outbox publishes under its hold (above), and the keyword fill writes under a hold of its own (Background loops, below);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
 
@@ -1106,7 +1589,8 @@ What the two processes share, and what each keeps to itself:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
 
 - `server.started` names the build every live process serves, once each time that build changes.
-  A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
+  A process that finds every live process serving one stamped, non-empty commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, with `tuple_kinds` the relation kinds its build writes as tuples of the node and tuple store (`refs.TupleKinds`, the kinds `graph_edges`' tuple arm renders);
+  a process whose heartbeat lapsed is no live process, so the fleet it reads can agree on another build's commit, and it inserts nothing for that commit, which it would otherwise name with its own build's kinds;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
   Each process looks every 5 seconds, and an advisory lock keeps two from inserting or publishing at once.
   So a roll announces nothing until its last old process is gone, a restart of every process on one commit announces nothing, and a rollback to an earlier commit announces it again.
@@ -1444,10 +1928,68 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Main carries the same path for any lapse, such as a stalled database; the lapse here needs earlier processes with no dashboard, which the image never runs.
   This was found by reading the code (`processes.go` `Live`, `admit`, `renew`), not measured.
 
+- **The account binding beside a build without it.**
+  A build without the account binding (every release before it) checks no Google account, records none and revokes nothing when another account signs in to an address, so beside it a replaced account's credentials act on that build whatever this one does.
+  So the binding is one rule over the fleet: while a build without it is in the fleet, this build checks, records and replaces no account either (`store.AccountBindingHolds`, migration `20261120222130_account_binding_fleet`), and once none is, the binding starts.
+  Each process registers the binding it serves under (`server_processes.account_binding`), and names it in its `dashboard_builds` row too: a build with the binding writes 1 (`store.AccountBindingProtocol`), and every build before it, which names its columns, reads the default 0, whatever its owner lock protocol.
+  A build without the binding is in the fleet as an earlier build is for the owner lock, by the same two windows (above): while a row of it at 0 has heartbeated within 10 minutes, or for an hour after it last arrived, at its dashboard publish (the first thing its boot writes, before its repairs and the background passes that start before its registration) or at its registration.
+  Each such arrival takes the binding's gate (`store.AccountBindingGateKey`, the owner lock gate's namespace with key 1) exclusively and stamps `account_binding_legacy_mark` (the triggers `dashboard_builds_account_binding_legacy_arrival` and `server_processes_account_binding_legacy_arrival`; a registration waits for the gate at most 2 seconds, then fails with `55P03`), and the migration stamps that mark at the newest publish already in `dashboard_builds` within the hour.
+  A sign-in, a mint and a decision's re-read read the fleet once in their transaction, after the address's lock, and when it holds no such build they keep the gate shared to their commit, so an arrival commits only after them; a personal token's or a broker token's admission and the membership answer read it in their own statement.
+  Meanwhile this build's sign-in records `people.sub` and ends the address's sessions, as every build does (the database's triggers end them and stamp `people.sub_recorded_at` whichever build changes `sub`), and revokes no token and owes the broker nothing, logged `msg="dispatch: a sign-in under another Google account ended every session of the address and revoked nothing: a build without the account binding is in the fleet"` at WARN with the email and `replaced_subject`, or, at an address's first recording, `msg="dispatch: the first Google account recorded for the address revoked nothing of it: a build without the account binding is in the fleet"` with the email and `subject`; a mint records no account; an approve names none; every credential of the address acts as it did before the binding.
+
+- **An account change the binding did not revoke.**
+  Each change of an address's account that this build's sign-in does not revoke is kept (`account_binding_replacements`: the address, the account replaced and the change's `sub_recorded_at`, migration `20261121121717_account_binding_replacements`).
+  This build's sign-in that read the binding as off keeps its own change in its own transaction, by that reading (`store.PgPeopleStore.SignInSubject`).
+  It marks its transaction before it writes `sub` (`dispatch.account_binding_writer`, transaction-local), and the trigger `people_account_binding_replacement` keeps every change that a transaction without the mark makes, an insert recording `sub` or an update changing it, whatever the fleet reads (migration `20261121180429_account_binding_unmarked_changes`): a build without the binding's sign-in, and so one through a process the fleet does not see (An earlier build in the fleet, above), is kept and caught up, never lost.
+  The trigger announces every change of `sub` on `dispatch_broker_revocations`, kept or not, so the revocation loop wakes at its commit.
+  Once the last process without the binding has deregistered and its mark has aged out, this build refuses every credential the binding refuses, the overlap's own included: a token recording an account `people` no longer records, one recording none that was made before the address's last recording, which the database stamped during the overlap too, and one recording none that was made at or after a kept replacement, which the replaced account could have minted through either build (`api.tokenAccountReplaced`).
+  The binding then catches each kept replacement up once (`store.CatchUpAccountBinding`, under the address's lock): it revokes every personal token of the address that records no account and was made since the first kept replacement, the new holder's own included, so the new holder mints again; owes the broker a revocation of each replaced account that does not hold the address now, naming the holder, which the loop pays as it pays any; and deletes the address's rows, so a second catch-up does nothing.
+  A sign-in of the address catches it up first, in its own transaction; otherwise the broker revocation loop does (`api.RunBrokerRevocations`), which each kept replacement wakes and which reads the fleet again every 10 seconds while an address has something to catch up, broker or none.
+  Each catch-up is logged `msg="dispatch: the account binding holds and caught up what it did not revoke at the address while it was off: …"` at WARN with the email, `replaced_subjects`, `first_recording`, `refused_live`, `tokens_revoked`, `owed` and `holder`.
+  A first recording made meanwhile is kept the same way (its replaced account null), and its catch-up does what the first recording would have done with the binding on: it revokes every personal token of the address that records an account other than the holder's or none, and owes the broker each account other than the holder's that a token of the address recorded (`otherAccountsSQL`), so no personal token from before the recording, and none one minted since, acts as the holder's.
+  A machine login such a token approved while the binding was off is not a personal token: the approve named no account, so the login records none, and when no token of the address recorded another account the catch-up owes the broker nothing, so the login stays live at the broker, and Dispatch admits it when it was made 5 minutes or more after the recording (Limits, below).
+
+- **How long a change the binding did not revoke stands.**
+  A change made while the binding is off stands only for these windows: while the binding is off, the replaced account's credentials act on both builds, as on a build without the binding; from the moment it holds, each credential above is refused; and, unless a sign-in of the address comes first, the loop's next pass catches the change up and, with a broker configured, records the revocation it owes, which that pass claims and pays unless revocations owed before it fill its claim (`brokerRevocationBatch`, five in production; the rest go a pass apart) or a revocation of the address is owed before it or was claimed in the last 30 seconds.
+  That next pass starts within 10 seconds of the later of that moment and the end of the pass in flight then: while an address has something to catch up and the binding is off, each pass asks for the next 10 seconds after it ends (`accountBindingCatchUpPoll`), and a pass in flight runs as long as its catch-ups' waits on an address's lock and its broker calls take, up to five calls at the broker client's 5-second bound each in production.
+  A change a build without the binding makes while the binding holds (a process the fleet does not see) is caught up by the pass its announcement wakes, which starts once the pass in flight, if any, has ended, and no sooner than a second after that pass started (`brokerRevocationMinGap`): about a second after the commit when no pass is running, else up to the rest of the pass in flight, as above; a change committed while the loop's LISTEN connection is down wakes it once that connection listens again, since the hub wakes the loop after each LISTEN.
+  Until then that process admits the replaced account's credentials on its own requests, as it admits them for every request it serves, and this build refuses them.
+  That needs a build without the binding serving beside this one, which production's one replica under `Recreate` rules out (Reverting, and when the binding starts, below).
+
+- **A token the binding refuses, and what it minted.**
+  The binding refuses a token recording an account `people` no longer records, however and whenever it was minted, and one recording none that was made before the address's recording (`store.RefusedTokenSQL`), but refusing revokes nothing.
+  Such a token stays live after a change no sign-in revoked: a kept replacement's tokens recording the replaced account, and the address's own tokens from before a kept first recording.
+  The only other such token is one from before a change the database stamped and did not keep, which a build without the binding makes only by signing in while this release's migrations run, after `20261117175133` starts stamping `people.sub_recorded_at` and before `20261121180429` keeps every unmarked change (until `20261121121717` nothing keeps a change, and from it until `20261121180429` the trigger keeps one only while the fleet read sees a build without the binding), so beside the migrating build, which `Recreate` rules out; a recording made before this release has no recording time, so its tokens are not refused at all (Limits, below).
+  Each time a build without the binding is in the fleet, every build admits a refused token, and a token it mints then records no account and was made after the recording.
+  So the binding also refuses a token recording no account that was made while a token of the address it refuses was live, made at or after it and before its revocation (`store.MintedWhileRefusedLiveSQL`, in `api.tokenAccountReplaced`): such a token mints nothing and approves nothing as the holder from the moment the binding holds, and `agent_tokens` keeps no link from a token to the credential that minted it, so the holder's own tokens recording no account made in that time are refused with it (the holder mints again).
+  That refusal can read only the address's tokens, through the index `agent_tokens_canonical_owner` on `canonical_login(owner)` (migration `20261119020200_agent_tokens_canonical_owner`, built concurrently, with a census of `select 0`), since every request of a token recording no account made after its address's recording asks it; `api.TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssTokens` holds the request's statement to that index.
+  The catch-up (`store.CatchUpAccountBinding`, a sign-in's with the binding on and the loop's alike) revokes every live token of the address the binding refuses this way, which changes no answer while the binding holds: no build admits a revoked token, so no later build without the binding in the fleet admits it again, and a token minted after every refused token was revoked is neither refused nor revoked.
+  The loop finds such an address (`store.AccountBindingCatchUpAddresses`) and reads the fleet every 10 seconds while one waits for the binding to hold.
+  When the catch-up revokes a refused token, it owes the broker a revocation of each account a token of the address recorded that does not hold it, naming the holder, and the broker's revocation of such an account also ends every machine login of the address that records no approving account (`enroll.Service.RevokePersonSubject`), one such a token approved while the binding was off included.
+  Each such catch-up is logged as above, with `refused_live` true.
+
+- **Limits.**
+  The binding acts only on what Dispatch records, and these limits remain.
+  A token recording no account names no account: when every refused token of an address records none and no token of it recorded another account, the catch-up owes the broker nothing, so a machine login such a token approved while the binding was off, which records no approving account and was made 5 minutes or more after the recording, stays live at the broker and is admitted by Dispatch (`api.brokerAccountReplaced`).
+  A replaced account on record is owed, so this arises only where no record names a replaced account: at a first recording kept while the binding was off, which replaces none, so its catch-up owes only the accounts the address's tokens recorded (`otherAccountsSQL`); and at a change the database stamped and did not keep (A token the binding refuses, above).
+  It is kept by design: with no replacement on record the login is taken as the current holder's, and closing it would revoke the current holders' credentials when the binding first holds.
+  An address whose account was recorded before this release has no recording time (no earlier release carries `people.sub_recorded_at`, migration `20261117175133`), so its tokens recording no account are bound to no recording and act as the holder's, as before the binding (`api.tokenAccountReplaced`); the binding refuses them once the address's account changes again, a change it revokes or keeps.
+  A refused token that mints through a build without the binding, in a request that build authenticated before the token's own revocation and inserted after it (that build re-checks nothing at its insert), makes a token the binding neither refuses nor revokes, since no refused token was live when it was made; it needs that build serving beside this one.
+
+- **Reverting, and when the binding starts.**
+  A revert to a build without the binding, once replacements exist, is the same hazard under a rolling update as under `Recreate`: that build checks no account, so a replaced account's credentials act on it, and while it is in the fleet this build checks none either.
+  Such a build also lets an account that a recorded revocation names take its address back with no settlement; the revocation pass then settles that revocation rather than sending it (`store.BrokerRevocations.SettleHeld`), since paid it would end the holder's broker credentials, logged `msg="dispatch: a claimed broker revocation names the account its address records again, which took the address back with no settlement (a build without the account binding signed it in); it is settled, not sent"` at WARN with the email and `subject`.
+  The pass itself runs whatever the fleet holds: it records and replaces no account, and it pays only what a sign-in recorded while the binding held.
+  The binding can start up to an hour after the last process without it stopped, `Recreate` included: the fence cannot tell a build that stopped from one still booting within its mark's hour, so a deploy less than an hour after such a build's last boot (its publish, which the migration's mark starts at) waits out that hour.
+  The first rollout of this release has no two builds serving at once: the production deployment holds Dispatch's app Deployment to one replica (example-org/deployment, `dispatch/main.go:547`) and refuses an apply that renders it with any strategy but `Recreate` (`holdAppRecreate`, `dispatch/main.go:971-990`, registered at `:932`), and the release it rolls from deletes its process's row once its drain ends (`legion-envoy-v32.24.1`, `cmd/dispatch/registry.go:93`).
+  Its only time with the binding off is that hour, when the release before it booted less than an hour before the migration, or 10 minutes after a heartbeat of a process that did not deregister: this build then serves alone as a build without the binding does, and the catch-ups above take up what it admitted once the binding holds.
+  The two-build test runs a roll through both builds (`TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet`, `twobuild_account_binding_test.go`).
+
 The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test -tags twobuild
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
 It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, races a write of each build on one issue, the previous build's committing first, boots the previous build, with its web app, while a write of this tree is between its owner lock and its write, and boots it with no web app while a write of this tree holds the gate longer than the registration's bound, which refuses that registration and keeps every heartbeat of this tree inside the live window.
+On the previous build it makes a document again where this build removed one, and removes a document this build made, and holds the census to naming each document's node `gone` and `orphaned` and the backfill and the printed erase to curing them (`twobuild_nodes_test.go`).
 It also runs the page admission across the earlier build's departure.
 Beside the previous release, a page of this tree is admitted by that release's numbers, and it stays writable throughout when they are this tree's own.
 The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds the first-rollout build as well, with `--commit edb69e0d7588ec037847182e74a04a343a0664c9` (the release tagged `legion-envoy-v30.20.2`), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.
@@ -1496,7 +2038,8 @@ Dispatch's background loops come in three shapes, so that a database nobody writ
 
 **Woken loops** run a pass at start and then only when a Postgres notification says their work may have changed, or when a due time their last pass asked for comes round.
 With nothing written and nothing due they hold no timer and send no statement.
-The four that run passes (`duty.RunWoken`) start two passes no closer together than the period of the ticker each replaced, so under load each runs no more often than that ticker did.
+Four of those that run passes (`duty.RunWoken`) start two passes no closer together than the period of the ticker each replaced, so under load each runs no more often than that ticker did;
+the broker revocation loop replaced none.
 
 - The embedding queue (`embedqueue.Run`) scans when a write enqueues a row:
   the issue trigger's `embeddings_enqueue` (migration `0151`) and each indexer's `embeddings_enqueue_window` (migration `20261102233625`) notify `dispatch_embeddings` for a new row or a text whose hash changed, and a write that leaves the text as it was notifies nothing.
@@ -1538,11 +2081,30 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   the cursor row each page holds is what serialises two processes woken by one commit, the first pass included, since the row is there from `0154` with a null `event_id`.
   The second process's page waits on the row and then reads the cursor the first advanced, so it judges what the first did not rather than the same page twice, and no wake is given up to another process's pass.
 
+- The broker revocation loop (`api.RunBrokerRevocations`) is woken by a row trigger on `broker_revocations` (`20261116232217`) that notifies `dispatch_broker_revocations` each time a people write records a revocation (Identity, above), and by `people_account_binding_replacement`, which notifies it at every change of an address's account (An account change the binding did not revoke, above).
+  A pass claims up to `brokerRevocationBatch` owed revocations (five at the production broker client's 5-second bound on a call), at most one of an address, the earliest it owes, and none of an address one of whose revocations was claimed in the last 30 s, stamping each tried, and makes one call to the secrets broker for each;
+  one the broker confirms it settles at the generation it claimed, and one it does not is left owed.
+  It then reads when the earliest owed revocation may be claimed, 30 s after the last claim of its address, and arms one timer for it.
+  Passes start at least 1 s apart.
+  It takes no lease:
+  the claim's stamp keeps a second process's pass, woken by the same commit, off the addresses the first is paying, and the claim and the settlement notify nothing.
+
 - The delivery settings both GitHub intakes route by are one cache per process (`delivery.SettingsCache`), read at start and again when `delivery_settings` changes:
   `delivery_settings_changed` notifies `dispatch_delivery_settings` (`0156`) for a change to any column but the freshness ones every GitHub event and reconcile pass rewrite.
   A settings change reaches a running intake without a restart, and neither intake reads the row per message or on a timer;
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
+
+- The block schema is one value per process, built from the store's type nodes (`schemanodes.Installer`), installed at boot beside the migration run and again when a supertag or attribute node changes:
+  the triggers of migration `20261109051232` notify `dispatch_block_schema`.
+  A type is data, so a type added by a migration reaches a running server without a restart;
+  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value the install refuses; `schemanodes.Installer` makes both checks, the read's (`schemanodes.Read`) and the install's (`pmdoc.Install`).
+  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
+  A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
+  A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
+  The subcommands that parse or write documents (`backfill-block-ids`, `backfill-anchor-blocks`, `backfill-graph-store`, `rebuild-refs`, `erase`) install the store's schema too, after their migration run, so they hold documents to the store's types and not to the file this binary embeds.
+  `backfill-files` moves file bytes and parses no document, so it installs no schema.
 
 - The record of GitHub reads, which `/healthz` answers as `github` (Routes, below), is one copy per process (`githubreads.Copy`), read at start and again each time any process writes `github_read_attempts`:
   the table's row trigger notifies `dispatch_github_read_attempts` (`20261118020802`) with the read's name, and each of the four loops that read GitHub under a lease (the delivery reconcile, the architecture import, the webhook redelivery sweep and the CI reconcile, below) writes its read's row at the end of each pass that asked GitHub anything or met a failure, unless this process's shutdown cut the pass short.
@@ -1587,9 +2149,11 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), sends every delivery a process that died left owed (Keyed writes, below), and last, under the two Google rules and under `iap`, runs the membership pass (Identity, above), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
+  Each pass also logs an ERROR line for each project the database holds private that neither `DISPATCH_PRIVATE_PROJECTS` nor `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names, and, with either list, the loop logs an ERROR line while the store cannot hold a private project once as it starts in each process and then once an hour per process (Required configuration, above).
+  The lease holds until the pass returns, so no two processes run a membership pass at once, and a slow pass, up to 50 seconds, delays only the next run's work.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
@@ -1605,6 +2169,9 @@ A lease taken per pass would move the fill from one process to another at each p
 The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
 So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
 A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
+`DISPATCH_SEARCH_FILL=off`, read once at boot, defers the fill: the process starts no fill, takes no hold, writes no row of the table or its cursor, and logs `dispatch: the keyword fill is deferred; this process fills no keyword table` once (`setting=DISPATCH_SEARCH_FILL value=off`).
+No route reads the table yet (Search, below), so search answers alike with the fill off, and a later boot with it `on` or unset starts the fill from the cursor where it stands.
+`on` and unset start the fill; any other value refuses the boot, naming the variable.
 
 - The hold has the values of the delivery intakes' holds.
   It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.
@@ -1834,7 +2401,7 @@ What the operator does:
   Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
   The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch on main that names none fails the check.
   On a dispatch of another branch that names none, a full run started by hand, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
-  It fails a head file whose first replaces line is not the base's first identity, a head file that accepts no text of the base's, and a base file whose version the head no longer has a file of, each naming the lines to add, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
+  It fails a head file whose first replaces line is not the base's first identity, a head file whose replaces lines do not begin with the base's, in the base's order, then one naming the base's file itself, name and checksum, since each of those is an identity or a text a database the base accepts may record, and a base file whose version the head no longer has a file of, each naming the lines to begin with, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
   A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
 
 **The limit.**
@@ -2257,6 +2824,8 @@ Its census answers `0` for the same reasons.
 Migration `0135_server_processes` creates two tables:
 `server_processes`, the registry of live server processes, and `server_build_announcements`, each build the fleet has announced as `server.started` (Running more than one process, above).
 It reads, locks and rewrites nothing that exists, and the release before it neither reads nor writes either table, so that release runs over the new schema unchanged and the census answers `0`.
+Migration `20261115051200_server_build_announcements_tuple_kinds` later adds `tuple_kinds` to `server_build_announcements`, a nullable `text[]` with no default: the relation kinds the announced build writes as tuples, from which the release that deletes an old arm of `graph_edges` reads whether the release a rollback would reach answers that arm's kinds from the store too.
+A row a build of an earlier release inserts names only `commit` and lists no kinds, which is true of it; the column rewrites no row, the release before it never reads it, and its census answers `0`.
 
 Migration `0136_dashboard_assets` creates `dashboard_builds`, `dashboard_assets` and `dashboard_build_assets`, where every server process publishes its dashboard build's assets at boot and from which it answers a page of another build that asks it for that build's chunks (`internal/dispatch/dashboard`).
 It creates tables and touches no row; its census answers `0`.
@@ -2415,6 +2984,17 @@ The key is `read`, and a check holds it to the four names `webhook_redelivery`, 
 two checks hold `cause` to that length and null exactly when `succeeded` is true.
 The loop that holds a read's lease writes that read's row over the one before it when its pass ends (`store.GitHubReadAttempts.Record`), and a row trigger notifies `dispatch_github_read_attempts` with the read's name at each write, which refreshes every process's copy of the record (Background loops, above).
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
+Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
+`heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
+The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.
+The build is a plain `create index` in the runner's transaction, not `concurrently`: production runs one app pod under `Recreate`, which migrates before it listens, so no writer runs while the build holds `SHARE` on `block_refs` for one scan of the table.
+The census admits it only while `block_refs` is under `CensusTableLimit` and refuses it above, and then the build must be rewritten in the concurrent form (`-- pgmigrate:non-transactional`, `create index concurrently if not exists`, alone in its file) before the deployment can move.
+The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read the stopped pod left running, which can outlast the runner's three attempts of 5 s.
+That bound holds on each try, and `store.Migrate` tries a migration up to 3 times after a lock timeout (`pgmigrate.RetryLockTimeouts`), so the drop waits up to 120 s on each of those 3 tries.
+Where two builds serve at once, the build holds off the earlier build's writes to `block_refs` for its scan, and the drop its reads and writes for as long as it waits, up to 120 s on each of `store.Migrate`'s 3 tries.
+Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+The release before them reads `block_refs` by `to_kind` and `to_id` alone, which the new index serves, so it runs unchanged beside them.
 
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
 `schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);
@@ -2688,7 +3268,7 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but for the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below).
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -2920,6 +3500,106 @@ It reports locks, sizes and counts — what a migration would wait behind and ho
 that one-release gap is the author's to reason about, and the two-build test (Two builds at once, above) boots the previous release on this tree's schema and drives it.
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
+
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+The owner gives the project to another full member from the project's Access tab, at any time.
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`).
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+A project created after it is owned by the person `POST /api/v1/projects` creates it for, and an insert that names no owner takes its default assignee as owner (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run right after `DISPATCH_DEFAULT_PROJECT`'s check):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
+or give each one an owner with the command above.
+The migration's census answers `0`, because a census that counts refuses the deploy and these projects are repaired after it.
+So read them before the deploy, on the release still serving, with the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
+
+### Making a project public without the server
+
+A project the database holds private that neither `DISPATCH_PRIVATE_PROJECTS` nor `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names any longer stays private, and only its owner's switch to public changes its visibility, so nothing of it reaches anyone who could not see it before.
+Its owner decides the repair: put the key back on the infrastructure repository's private project list (`shared/legion/privateprojects/lists.go`) or on `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH`, or make the project public.
+The owner makes it public from the Access tab; an operator makes it public with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-visibility <KEY> public
+```
+
+It reads `DATABASE_URL` and makes the change in one transaction that appends `project.access_changed`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-visibility"}` (`access.SetVisibility`).
+It makes a project public only, so it makes no bus call, and this build has no writer of the hub's private-projects record (`envoy_private_projects`), so no key of the project was written there for anything to remove.
+It exits 0 once the change commits;
+2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
+and 1 when the database cannot be opened or written.
+
+To take a key off `DISPATCH_PRIVATE_PROJECTS` and `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` on purpose, so that neither names it, make its project public first, by either way above, and only then remove the key: a key removed first leaves its project private and reported, at boot, at every maintenance pass and in `/healthz`, until one of the two repairs.
+
+### Filling the sessions' projects
+
+`session_projects` records which projects each agent session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
+It records only a session the event's credential proved: an actor of kind `session` whose `act` names that same session and no personal token, which a broker-issued token's write carries (`events.provedSession`, `api.bearerSessionActor`).
+A credential that proves no session, the shared token or a personal token, names one in the request body, and its write records nothing, so no holder of a project's token can make another session look like one of that project's agents.
+From migration `20261116015736_project_access` on, every event append of such a session records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.QueueAppend`);
+the table has no unique key, on purpose, as the migration's header says.
+The events written before that are covered once, by:
+
+```sh
+envoy-dispatch backfill-session-projects [--reset]
+```
+
+Run it after the deploy that carries the live insert, so every event is covered by the one or the other.
+It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement each, and records the pair the live insert would have recorded:
+for an event whose stored actor is a proven session (`actor->>'kind'` is `session`, `actor->'act'->>'session'` is `actor->>'id'`, and `actor->'act'->>'token_id'` is empty or absent), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
+A person's event, a session a request body named, and an event of no project record nothing.
+The project is the one the issue or document is in when the fill reads it.
+A pair a row already holds is not written again, so a second run writes no pair, and a run interrupted anywhere is run again from the start.
+Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
+It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
+
+The same statement records, in `session_owners`, the person each proven session's `owner` names, canonical by `model.CanonicalLogin`'s rule, as every live append of a proven session and every verified broker-issued token does: the live agent view reads it (`access.SessionContentClause`).
+`--reset` does not empty it, since no build recorded it under another rule, and it neither writes nor empties `session_reached_projects`, whose pairs only access changes, member kind changes and listener records write and nothing removes.
+
+Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
+Until it has run, no caller of a deployment that holds a private project reads a session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet, or, in the middle of a `--reset` refill, its row in a project the caller sees back before its row in one the caller does not see.
+Under `Recreate` the build before has stopped when the migration runs.
+A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first runs the migration's two deletes, each in a statement of its own, and then fills.
+The migration's census answers `0`, because a census that counts refuses the deploy; the count it drops is `select count(*) from session_projects;` on the release still serving.
+
+### Scrubbing the access events
+
+`project.access_changed` names its project and its change and nothing else (`model.ProjectAccessEventPayload`), since every reader of the project's events reads it, credentials without the person scope included.
+Who a change named, and the owner and visibility it left, are the server's own record of the event, `project_access_changes`, written in the event's transaction (`access.recordProjectChanges`) and read only by a live resume, to tell whether a change in its gap moved what its caller sees; no route serves it.
+The release of migration `20261116015736_project_access` stored the project's whole access on the payload, its people's emails included, and `GET /api/v1/events/log` serves a stored payload as it was stored.
+After the deploy, run:
+
+```sh
+envoy-dispatch scrub-access-events
+```
+
+It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement and transaction each, beside the running server, and rewrites each `project.access_changed` whose payload holds anything else to `jsonb_build_object('project', payload->'project', 'change', payload->'change')`, first copying the payload's `principal`, `owner` and `visibility` into `project_access_changes` where no row holds that event.
+It is a command and not a migration because no index of `events` leads with `type`, so a migration would read the whole table in one transaction at boot.
+Once it has read every event it writes the one `access_events_scrubbed` row (migration `20261116085957_project_access_changes`, which creates both tables), none when a run before it did, and prints `scrub-access-events: events=<read> rewritten=<written> scrubbed`; a second run rewrites nothing.
+It exits 0 then, 1 when the database cannot be opened or written, and 2 for any argument.
+Until that row exists no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`, naming the command).
+A deployment that rolls runs it once the last old pod is gone, since an old build appends the old shape until then.
+Copies the outbox already published stay on the bus until its retention ends; they were published while every project was public, and only that project's tokens read them.
 
 ### Pre-deploy census
 
@@ -3194,7 +3874,31 @@ It refuses:
   - a migration that does not parse, since the census cannot see whether it creates an event trigger.
 
   The report still prints the table's size beside the limit and says why the migration is exempt, and its lock holders refuse it as they refuse any other.
-  A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption;
+  A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption.
+
+  - A table above the limit is also admitted, table by table, for bounded writes (`boundedWrites` in `internal/pgmigrate/exempt.go`), when every statement of the migration that touches it, as the census reads touches, is one of these, as Postgres's own parser reads it:
+
+    - an `insert` into the table of a `values` list of at most 1,000 rows (`pgmigrate.BoundedWriteRows`), each value a literal, with no `with`, `returning` or `overriding`, and with no `on conflict` or with `on conflict … do nothing`, under any conflict target or none.
+      A conflict target only names the index Postgres checks, and Postgres evaluates none of it on a row, so a target of index expressions with a predicate (`on conflict (from_kind, from_id, kind, md5(to_id), source_event, asserted) where to_kind = 'value' and source_event <> 0 do nothing`) counts as no target does.
+
+    - an `update` of the table, under its name or an alias, with no `with`, `from` or `returning`, that sets columns to literals and names at most 1,000 rows by its primary key, in a `where` clause of `pk = v`, `pk in (v, …)`, `(pk1, pk2) in ((v, v), …)` or `pk1 = v and pk2 = v`, which names each column of the key once and nothing else.
+      It sets no column of the primary key and no column a foreign key references, since a change of such a key checks the table that references it.
+      Each key value is a string constant or `null`, which takes the column's type, an integer constant for a `smallint`, `integer` or `bigint` column, or a cast to the column's own type: a comparison Postgres searches the key's index by, where `seq = 1.5` casts a `bigint` column to `numeric` and scans the table.
+
+  - A literal is what Postgres stores as an added column's default without a rewrite, and none of them reads a table: a constant (a negative number and `null` among them), an `array[…]` of constants, a cast of one of those to a type the census admits for a column (`'{"a":1}'::jsonb`), a SQL value function (`current_timestamp`), or a call of no argument of a stable or immutable `pg_catalog` function under the rules for a default (`now()`).
+    A cast and a call need the catalog reads, so a migration without them has only the others.
+    An operator, a subquery, a call with arguments (`jsonb_build_object(…)`), a function outside `pg_catalog` and a column reference are not literals, and neither is `default`, since the census does not read the default it stands for.
+    Such a write takes ROW EXCLUSIVE, which holds off no read and no write of another row, and reads and writes only the rows it names, so its time grows with its rows and not with the table:
+    on this pod's PostgreSQL 18.6, over `graph_tuples` at 3,000,000 rows and 1.2 GiB, an insert of 1,000 literal rows took 63 to 194 ms and an update of 1,000 rows by `seq` 170 to 344 ms, where 10,000 took 1.0 s and 2.9 s (`pgmigrate.BoundedWriteRows` holds the measurement).
+
+  - The table is held to more, since each of these makes a write of one row able to read the whole table:
+    no rule (`pg_rewrite`), no row-level security (`relrowsecurity`), and, for an `update` without `only`, no child table.
+    The census reads the table's keys, rules and triggers as they stand before any pending migration applies, so no earlier pending migration may touch the table with more than bounded writes, and neither the migration nor an earlier pending one may hold a statement whose effect the census cannot read, the ones that take the exceptions above from every later migration.
+    Nor may the migration hold a statement after which its names can resolve to another table, a `set` of any setting but `lock_timeout` and `statement_timeout` among them.
+    An enabled trigger of the table, and the default of a column an insert leaves out, run for each row written, and the census reads neither, as it reads no function's body:
+    neither refuses, and the report prints the admission with the number of statements, the bound and the table's enabled triggers.
+    An enabled event trigger does not take the admission away either, since an `insert` and an `update` fire none.
+    A migration that writes rows of such a table any other way is refused with what is not bounded (`…, and lock table is not one`, `…, and an insert of 1,001 rows, above the 1,000 a bounded write may hold, is not one`), and one that writes none of its rows and is not exempt above is refused on the size alone;
 
 - a session holding a lock on a touched table whose transaction has been open at least a minute (`pgmigrate.CensusLongTransaction`):
   the migration would give up on that lock during the rollout;
@@ -3271,7 +3975,7 @@ Read-only does not stop `pg_terminate_backend` (which, as that role, ends the se
 `Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8`, the settings the runner applies each migration with, so Postgres reads its literals the same way.
 Review is the control past that, since any non-zero integer a census answers is printed.
 
-**What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
+**What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names, the names of the enabled triggers of a table admitted for bounded writes, and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
 never query text, "not visible" for a field Postgres hides, and "autovacuum worker" for one).
 For a census that fails, its file name and the SQLSTATE;
 Postgres's own message only when the error points into the census's own text (a position, which a parse or analysis error carries), since then it quotes that text and its identifiers.
@@ -3280,6 +3984,342 @@ a data exception's quotes the row value that failed to cast, and a `reg*` cast's
 the advice about an earlier migration creating a missing name is given only for a name the census's own text spells.
 The census writes nothing.
 An argument `envoy-dispatch` does not know is refused with exit 2, never served, so an image that predates a subcommand cannot boot and migrate when a deployment asks it for one.
+
+### The node and tuple store census
+
+`envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
+It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
+It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+
+For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
+a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with the state it is at (`a live node no row projects`).
+A state a later release adds, such as `proposed`, is a node a row projects as one at `live` is, so a build of this release reads no difference for it during a roll or after a rollback.
+The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
+a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
+A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
+A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
+The kinds are:
+
+- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every live block node that states a link now other than its `in_document` and `part_of`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
+
+- `person`, `session`, `role` and a role's page, which no table projects.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
+  A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
+  The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
+  A person's and a session's row side also hold what the event log keeps of a comment `envoy-dispatch erase` took: the erase deletes the comment's row and the delivery attempts that cannot exist without it and keeps its events with their `actor`, so the author the `actor` of its `comment.created` or `comment.answered` event names, and every session a `comment.delivery` receipt says the listener took an attempt to, are held to those events.
+  The erase never takes a session and takes a person only when asked to, so without those events a node it left would be a difference no erase can close; a person the erase took is held to no event older than that erase.
+  The census reads each of these row sides once a run, in one statement, and binds the names into every statement that reads that kind's rows; `backfill-graph-store` reads the same definition for roles and for sessions.
+  A session's own page is no part of this census.
+
+  An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
+  The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
+
+- The project of every node: `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
+  Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
+  It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> gone=<n> differs=<n> unscoped=<n> orphaned=<n>`: a row whose node the store does not hold, a row whose node is gone (a node at any other state, a later release's `proposed` included, is there) or is another row's, a row whose node names another project or other parties than the row's, a row whose node names neither, and a node no row stands behind.
+  A second line per kind, `census: project past_bound kind=<kind> addresses=<n>`, counts its rows whose address is past the store's bound - a document whose `ref_key` is, a block whose address is, a comment on such a document - which no writer projects; they are in no count of the first line and no finding, as the store lines' `addresses_past_bound=` are.
+  `gone` and `orphaned` are read for an issue, a document, an ask and a message, whose rows only their own creates write and only a document's removal deletes; the store census above reads both directions for a comment and a block.
+  A document the removal can take - one of an issue that is not its spec, plays no role and is a document - gives up its address to the next document of that issue and name, so a node there may be an earlier row's: the census reads the newest state statement a create, removal or backfill made as this row's only when the row's own `artifact.created` caused it, or when it is at the sentinel and the row has no such event; a later release's mark is passed over.
+  Every release appends that event for such a document, so no shared time makes an earlier row's statement read as a later one's.
+  Every other document keeps its address while the store holds it, and a node not `gone` is enough for it; not all of them record an `artifact.created` of their own (`issue.created` records a spec, and a conversation's upload appends no event).
+  A removal made to take another shape of document must add it to `graphcensus.removableDocument` in the same change, which `TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent` holds.
+  This build's removal states the node gone as it deletes the row, and a build before this one writes no node, so during a roll or after a rollback each class can appear on a healthy database: `gone` is a document an earlier build created at an address this build's removal stated gone, which `backfill-graph-store` gives a live node, and `orphaned` is a document an earlier build removed after this build wrote its node, which only `envoy-dispatch erase --node artifact:<ref_key>` removes (it erases a node of these kinds only once no row stands behind it).
+  Any count of the five refuses the census, and the first rows and nodes of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read), each ending with its cure: `; run envoy-dispatch backfill-graph-store` for `missing`, `gone` and `unscoped`, which the backfill writes, but for a row naming a party the store refuses (one empty or holding white space), which no writer and no pass of the backfill writes a node for and whose line says no command cures it; for `orphaned`, `; remove it with: envoy-dispatch erase --node <kind>:<id>`, quoted for a POSIX shell where the node needs it, which lists the erase and the digest its `--confirm` takes; and for `differs`, which a node in another project is at any state, that no command cures it: a node's project never moves, and a person must compare the row with its node.
+  The refusal line names the same cures.
+  An address past the store's bound is left out, as its writer leaves it out of the store.
+
+It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it.
+A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
+
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
+
+`envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
+the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds or, for a kind no table holds yet, is assumed to hold; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+The kinds are a term for each kind R20 gives the five children of the parent change, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it (`moved_by=`, one of the five names below), its writes inside the window and its share of the tuples a day.
+Where a write states facts beyond its node, each such fact is a term of its own, counted over the writes that state it:
+
+- `this-change`, this change itself: a comment's node and its three base attributes (visibility, state, and project or parties), and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; the node and three base attributes of an issue, an artifact, an ask and a message, and the `gone` state a document's removal states of its node (`artifact_removed`); a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
+
+- `inbox-child`, the child that moves the inbox, the messages and the read state: a message's `authored_by` and `part_of`, and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
+
+- `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's `child_of` and `needs`; an artifact's `part_of` its issue and a document version's node; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
+
+- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's `answer_state`, question, options, `authored_by`, `anchored_to` and `owned_by` that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
+
+- `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
+
+Each term a table can count is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and passes on the growth pass alone, which refuses nothing.
+No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
+Each version is parsed against the block schema the store's type nodes declare, read in the census's own transaction, and against the schema this binary embeds only where the store holds no type node, so a type the store holds and the file lacks does not read as unreadable.
+A kind production writes no row of before its child ships (a criterion, a decision, a reading, and every kind of `lenses-child`) has no history to read, so its term carries an assumed rate instead of reading zero, its `driver=` states that rate and the reason for it, and its share line ends `rate=assumed`.
+A decision, a reading and a criterion are blocks of a document, whose node and placement the block terms count already, so each of those terms counts only the tuples it states beyond a block's.
+It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null, or this build's mark `store_owed_at` set, by the backfill or by the block-index tick's marking of the documents the events after its build's cursor name, of a marking rule a build of this binary's rule lists, as the tick's own count reads it), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+No column dates a null version, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and a document holding the backfill's mark is dated the same way, and the line says so under `dated_by=`.
+The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
+The growth pass refuses nothing on size.
+Once the store is backfilled `graph_tuples` stays past the limit, so a pass that refused on size would refuse every run;
+the gate is the migration census's bounded-write rule instead, under which a pending migration writes rows of a table above the limit only as an insert of at most 1,000 literal rows or an update of at most 1,000 rows by their primary key (`pgmigrate.BoundedWriteRows`, "Pre-deploy census" above).
+Beside each table at or above the limit now, and each store table that projection puts past the limit inside a year, the pass names that rule on a line of its own, with the table's verdict now (`absent` for a table the database does not hold) and its year's (`unprojected` for a table other than the two store tables):
+`census: sizing bounded-writes table=graph_tuples now=inside year=past: a pending migration that writes rows of graph_tuples may write them only with bounded writes once it is above the limit (pgmigrate's census: an insert of at most 1,000 literal rows, or an update of at most 1,000 rows by their primary key)`.
+So `--store --sizing` exits 1 only where the store census itself refuses and 2 where it could not make a read, and the pass's last line is always `census: sizing ok`.
+A backlog refuses nothing either: how large a backlog is too large depends on the write rate the lines above it carry, and the driver that watches it decides.
+Every figure comes from a count or from a timestamp the database already holds, so two runs over one unchanged database print the same output.
+A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured when the store was built (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
+the output says so on the line that uses it.
+`--sizing` without `--store` is a usage error: it is that census's growth pass and not a census of its own.
+
+### Backfilling the node and tuple store
+
+`envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
+It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
+A comment batch takes each comment's owner lock before writing and rechecks that its row still exists and names no node, so a second run's cached batch cannot restore a comment that the erase removed.
+It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
+a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
+Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
+Once every row of a kind the store can hold names its node, the run reports that kind `complete=true`, which is the moment the arm of `graph_edges` over that kind's table answers nothing.
+
+It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
+The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
+The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+It then writes a live node for every issue, document, ask and message written before its kind's writer wrote one, or created by an earlier build at an address whose node is gone, or whose node names neither a project nor parties, and gives every comment and block node written before a node named its project that project, or its conversation's party.
+Each pass walks only the rows its marker does not mark - a node not `gone` naming a project or parties for an issue, a document, an ask and a message, whose rows name no node in a column of their own, and for a document the removal can take such a node whose newest create, removal or backfill statement is the row's own (as the census above reads it), and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
+A node that is its row's own and not `gone` is written again keeping the state and the visibility another write gave it, a later release's included, and states only the project or parties it lacks; a node held `gone`, or one another row left, is written as its new row makes it, and comes back `live`.
+A batch of documents takes each document's owner lock first - its issue's, or the document's own where no issue owns it - which is the lock a removal of an issue's document takes, and writes only nodes whose document still has the id the batch read.
+A document made again at the address, even within the same microsecond, has another id, so a removal or a re-created document that commits while the batch reads leaves no live node behind and no node describing the removed row.
+A node the backfill makes is made by its row's own author at its row's own `created_at`; a node the store already holds keeps the `made_at` and `made_by` it has.
+The row's author states the node live, and the backfill itself states gone a document's node that stood live for an earlier row; each statement is dated at the row's `created_at` or one microsecond past the newest statement the store holds about the node where that is later, so a read as of a time reads the order the store appended in.
+A document's statements are caused by its own `artifact.created` event where the backfill finds one; an issue's, an ask's and a message's, and a document's with no such event, are at the sentinel.
+A filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
+The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 gone=0 differs=0 unscoped=0` for every project-owned kind, and `orphaned=0` unless an earlier build removed a document whose node this one wrote, which the erase removes (Erasing a node, below).
+
+A block's parent is the one fact it does not write.
+The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
+So the run marks each document it touched, and the reconciliation's index pass writes every block's node, its `part_of` tuple and `parent_block_id`, which is that column's one writer, and clears the mark.
+The mark is `document_block_versions.store_owed_at`, a column migration `20261116221539` adds and only this release reads or writes, and not the null `version` that `rebuild-refs` sets and every release reads; beside it `store_owed_rule`, which migration `20261120122600` adds, records the marking rule of the build that set it (below).
+A process of the release before this one, during a roll or after a rollback, reads a null `version` as its own debt: it indexes the document, writes the rows and states nothing in the store, and the document would be owed nothing again.
+It never reads or clears `store_owed_at`, so this release's reconciliation, which lists a document holding it as it lists one whose `version` is null, still reaches the document and states every parent (`TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent`).
+The batch that names a document's block nodes writes the mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches marked (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
+So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
+`TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
+
+A document that the release before this one edits during a roll, after this build's drain has cleared its mark, carries no mark, and neither does a document that release creates after the drain, the spec of an issue it creates included, nor a comment it writes after the backfill:
+that release writes the version's rows and the comment's row with no node, states nothing in the store and never sets `store_owed_at`.
+So every block-index tick reads the events after its build's cursor, whether or not another build serves, and marks owed every document an `artifact.version` or `artifact.created` event names, and every document of each issue an `issue.created` event names, whose `document_block_versions.store_version` is not its `version`.
+`store_version` is the version whose blocks this build's index pass last stated in the store, and only that pass writes it, so a document this build wrote and indexed is not marked again.
+A document the release before indexed after the store stated it, one it created, whose `store_version` is null, and one whose `version` is still owed an index (null) are marked, and so is a version that only drops, moves or rewords a block, which leaves no row naming no node (`TestAVersionThePreviousReleaseWritesThatOnlyDropsABlockReachesTheStore`).
+A version event names its document in `payload->>'artifact_id'`, and the event that creates a document carries the whole artifact and names it in `payload->'artifact'->>'id'`.
+An issue's create records its spec's version 1 with the `issue.created` event alone, which names the issue in its `issue_key` and no document, so the tick marks every `doc` artifact of that issue, read from `artifacts` by issue key.
+The tick also reads `comment.created` and `comment.answered` events, each of which names the comment it stores in `payload->>'id'`, and gives each such comment whose row names no node the backfill's own write for that row, in the tick's transaction: its node, the facts its row projects and who wrote it, with that event as their cause (`TestACommentThePreviousReleaseWritesAfterTheBackfillReachesTheStore`).
+That is the backfill's contract applied to the rows the log names: a row that names its node is left alone, so it is no reconcile.
+The tick does all of this before it lists the owed documents, so the same tick drains a document it marks when its batch has room.
+Because every tick reads its events, which build's ticks come first in each period of the shared block-index lease, and so whether this build ticks while the release before serves at all, decides nothing (`TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore`), and neither does a rollback or a roll forward that stops one build before it starts the other (`TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore`).
+The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads, and its `event_id` is the highest event id the build's ticks have read or passed; its `marking_rule` (migration `20261120122600`) is the marking rule of that build.
+A build that holds a row starts at its own row, however old, and reads every event since, one page a tick.
+A build with no row of its own inserts one at its first tick that reads a proven safe horizon: at the highest `event_id` a row of a build of its own marking rule holds; where no such row exists, at the horizon the newest backfill of its own rule recorded when it began; and where neither exists, at that tick's horizon, so the cursor never starts at the beginning of the log (`TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`, `TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore`, `TestASecondBuildsFirstTickReadsNoEventBelowTheCursorAnotherBuildLeft`).
+A build reads no cursor and no horizon of another rule, since that build or that backfill marked what its own rule owes (`TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon`, `TestAHigherRuleStartsAtItsOwnHorizonAboveALowerRulesBackfill`, `TestABuildWithOnlyALowerRulesHorizonStartsAtItsSafeHorizon`).
+The backfill's horizons are the rows of `graph_backfill_horizon`, which the same migration creates and migration `20261120122600` keys by `marking_rule`: one row for each rule.
+Before it reads any row, `backfill-graph-store` takes a mark of the event log, waits until no transaction that can still write an event took its transaction id before the mark (`events.Horizon.WriterFloor`), and records the newest event id the mark saw, at or below which every event was final by then, so every event the run cannot have seen is above it; it prints it as `backfill-graph-store: horizon=<id>`, and each run replaces the row of its own marking rule and leaves every other rule's (`TestABackfillOfALowerMarkingRuleLeavesAHigherRulesHorizon`).
+The cursor moves with each tick, so each tick reads only the events since the last one, and nothing scans a whole table.
+A tick reads at most 1,000 events, in id order, after the cursor and at or below the safe horizon (`events.Horizon.Safe`), because event ids are not commit order and an uncapped read could pass an event that is still committing.
+A full page moves the cursor to the last event it read and brings the next tick 2 s later; otherwise the cursor moves to the horizon, and it never moves past it.
+The mark is the backfill's own, set in one statement that takes the documents' `document_block_versions` rows in ascending `artifact_id` order and no owner row.
+The tick's transaction takes its cursor row first, then those rows, and only then the comments' nodes, tuples and rows, since every writer under the revision fence takes a document's `document_block_versions` row before any node it writes; the marks, the comments and the cursor's move commit together.
+The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, `comments=`, the comments it gave their nodes, and `another_build=`, whether a live process of the registry (`server_processes`) registered a commit other than this process's own (`main.buildCommit`, which `docs.Deps.BuildCommit` carries), which decides nothing of what the tick marks (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`) and decides whether it owes the object pass (below).
+The migration's census answers `0`: the two tables are new and hold no row at deploy.
+
+That release also writes an issue, a document, an ask and a message with no node, a file it uploads to an agent's conversation appends no event at all, and its removal of a document states nothing, so the node this build wrote for it stands behind no row.
+So the tick records in its cursor's row that its build owes the object pass (`block_index_event_cursors.object_nodes_owed_at`, in the statement that moves the cursor) and then runs it, on four kinds of tick.
+One is a tick that finds a process of another build serving, and the first tick that finds none after one did (`block_index_event_cursors.another_build_seen`, which each tick writes in the same statement), whichever process of the build runs it.
+Another is a tick whose events create a row with no node or remove a document whose node still stands (`graphcensus.EventsOweObjectPass`): `issue.created`, `artifact.created`, `ask.opened`, `message.created`, `message.answered` or `artifact.removed`; the two builds share one block-index lease, so a process of that release whose ticks come first in each period can hold every period while it serves, and this build's next tick then finds it gone and its rows named only by their events.
+That read takes only the rows those events name, through their unique keys: 2 to 3 ms over 50 events and 8 ms over 1,000 at production's row counts.
+The others are each process's first tick, since a process that starts may follow a release that wrote while none of this build's ran, and a tick once 10 minutes have passed since the process's last pass finished; neither reads an event, so both hold before a horizon is proven, an event log that holds no event included (`TestAnEmptyLogsConversationFileGetsItsNodeFromTheTicks`).
+A file uploaded to an agent's conversation appends no event, so such a file waits that long and one tick at most for its node, and the census names it `missing` meanwhile.
+The pass writes, through the backfill's own batch, the node of every row its marker does not mark (`graphcensus.WriteOwedObjectNodes`, which reads rows, not events), and states gone every document node the census reads as `orphaned` at an issue's address (`graphcensus.StateOrphanedGone`), as this build's own removal states it: the node as it stands, gone, under that release's own `artifact.removed` event, stated by the block-index tick, so the store keeps every statement it held and a removed document's history is the same whichever build served the removal.
+So a roll leaves no project-owned row without its node and no such node without its row, with no second `backfill-graph-store` and no erase by hand.
+No writer of this build commits a node before its row: each writes it in the transaction that writes its row, and the pass writes one only for a row that stands under the owner locks it takes; the sweep takes the issue's owner lock, then the node's row, and reads under that lock whether a row stands, so a create that commits a row meanwhile keeps its node.
+A tick writes at most 4 batches and states at most 20 nodes gone, and a kind that fails holds back neither the other kinds nor the sweep; a pass that fails or stops with work left keeps the debt, which only a pass that finishes clears, so whichever process of the build holds the lease next runs it again, and the tick's line carries `object_nodes=` and `orphans_gone=`.
+A row whose node the store holds in another project, live or gone, which no writer makes since a node's project never moves, is left by the pass and the backfill alike while every other row is written; it holds back no debt, the tick logs it at error, and the census names the row for a person to read.
+Such a row, and a row between a party the store refuses, spends none of the 4 batches and opens no transaction: the pass leaves it before it writes the batch it falls in, and each pass reads it again, two index reads for each 200 of them.
+The pass reads the four tables whole and the document nodes through `artifacts`' and `issues`' unique keys: at production's row counts (2,000 issues, 4,000 documents, 8,000 asks and 6,000 messages, a tenth of `dispatch-seed --scale 1`'s) a write pass with nothing to write took 97 to 190 ms and the orphan read 7 to 8 ms, and at ten times them 0.9 to 1.8 s, with one run of seven at 8.6 s, and 30 to 35 ms.
+So each process that holds the lease spends one such pass every 10 minutes while this build serves alone, and one on every tick while a process of another build serves.
+
+The marking rule versions what a block-index pass and the tick owe: which documents a build marks and which comments its tick writes.
+The code declares it once, `refs.BlockIndexMarkingRule`, and raises it whenever what a pass owes changes; `TestTheMarkingRuleNamesTheStatementsItMarksWith` pins a digest of the statements that decide it for each value of the rule, so a change to one of them that keeps the rule fails.
+Rule 1 is the rule's first value, the rule of a build whose nodes carry no scope; if this change ships in the release that brings the rule, no build of rule 1 is ever deployed.
+Rule 2 adds every node's scope: the tick's comment write and the backfill's block and comment reads carry the project or the parties of each node they write.
+A build of rule 2 reads no cursor and no horizon of rule 1 (`TestARuleOneCursorDoesNotStopARuleTwoBuildFromMarking`): where no backfill of rule 2 recorded a horizon, its first tick starts at that tick's safe horizon, so after its first deploy `backfill-graph-store` runs once, reading every row a build of rule 1 left owed and filling the project of every comment and block node such a build wrote with none.
+Every statement that marks a document writes its build's rule into `store_owed_rule` and keeps the higher of the stored rule and its own where a mark already stands; one that marks only a document holding no mark reads a mark of a lower rule as none and raises it (`TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States`).
+The column is `not null default 1`: the release before this one and the trigger `document_block_versions_owe` insert rows without naming it, so a mark no later rule wrote is rule 1's.
+A pass of rule r lists a document whose mark is of rule r or lower, and one marked by a higher rule only where its `store_version` is null or below its `version`, which is work of its own there; it wins the fence at the version the row stands at only where a mark stands and the same holds; and it clears the mark only where the mark's rule is r or lower, decided in the fence's own statement against the row as it then stands (`TestALowerRulesDrainLeavesAHigherRulesMark`, `TestAHigherRulesPassListsAndClearsALowerRulesMark`, `TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand`).
+So a build of rule 1 that drains a document a build of rule 2 marked, during a roll or after a rollback, states the version and leaves the mark for the build of rule 2.
+The tick's `owed_documents` and the sizing's backlog count only the documents the build lists (`TestABuildsBacklogCountsOnlyTheDocumentsItLists`).
+Migration `20261120122600`'s census answers `0`: each column's constant default is kept in the catalog and rewrites no row, and every row that stands reads rule 1.
+
+A row the release before this one deleted is nothing the run reads.
+That release, indexing a version of a document the store has stated, deletes the `document_blocks` row of each block the version drops and the `block_refs` row of each link a block stops holding, and it states no node `gone` and retracts no tuple.
+No row is left to read, and a node stated `gone` because its row is missing would be a repair.
+What the run reads instead is the two versions the document's own row records: `version`, which that release writes, and `store_version`, the version at which this release's index pass last stated the document's blocks, which the same migration adds and only that pass writes.
+A document whose `store_version` is below its `version` is one another release indexed after the store stated it, and the run marks it too.
+The reconciliation's index pass over its latest version finds the store last stated the document at a version other than the latest one any release indexed, so it reads what the store still asserts of the document beside the rows and decides from the version's render: a block the store holds live that the version does not hold is stated `gone`, as a block a version drops is, and a link the store asserts that no block of the version holds is retracted (`TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill`).
+A version of the document that this release writes before the run does the same, in its own index pass.
+No release deletes a comment's row: no route of either deletes one, and a document is removed only while no comment points at it, so a comment leaves nothing to state `gone`.
+
+It is no repair.
+Its input is each row's own content and the two versions each document's row records: it never reads one side of a projection to write the other, so a row its marker marks is left alone and a kind whose rows disagree with the store is for the census to report.
+Two reads of the store's own statements decide no fact and only order what it writes: for a document the removal can take, the cause of its node's newest state statement, its marker (above); and the time of a node's newest statement, which it dates past where the row's `created_at` is no later, so a read of the node as of a time keeps the order the store appended in.
+It is safe to run again at any time, after a rollback as well: every pass walks only the rows its marker does not mark - a row that names no node, or for an issue, a document, an ask and a message a row no node at a state but `gone` stands for, or for a document the removal can take a row whose node's live statement is another row's - writes the marker in the transaction that writes its tuples, and reads no marked row, its guards included; a document is marked only while it holds no mark and the store has not stated its latest indexed version; and no release before this one drains the mark.
+The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
+So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
+It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
+
+### Erasing a node
+
+`envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
+It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
+It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
+It refuses a `role`, a `page` and a `session` the same way: a node of that kind holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close.
+It refuses an `issue`, an `artifact`, an `ask` and a `message` while its row stands, read under the node's lock: a node of that kind holds its text in its own row - the issue's title, the document's name and versions, the ask's question, the message's body - and in the events about it, which the erase does not reach, so erasing the node would report an erasure that left the text in place.
+No command erases that text: the object's own route changes its current text, and its events keep what it held before.
+A node of one of those kinds, at any state but `gone`, with no row behind it holds no text: it is a document an earlier build removed during a roll or after a rollback without stating its node gone, the project census's `orphaned` class, and the erase removes it and its tuples, which is that class's one remedy.
+
+It changes only the rows that derive from the node, and what derives from a node is fixed by the node, never by a search for its bytes.
+Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, its own embedding rows and window state, its own keyword versions, and the events about it.
+A block derives more: the whole text it held at every version (`document_block_texts`, read whole and never as its 480-rune excerpt), the excerpts cut from it, and its own document's editing state, search rows and windows, and every version of that document the block stands in holding the erased text.
+A comment derives the margin record that holds its body in the document it is anchored to, and a reply its entry in its thread root's record there.
+A comment's erase ends no version, and it replaces the history of each document whose margin record holds the body, keeping every other comment's anchor mark and margin record there.
+A row anywhere else that holds the same bytes derives from another node and is that node's text: a comment reading `Yes` leaves every other issue's spec and every other person's event that says `Yes` as it is, and a block leaves a sibling block of its own document that repeats its words.
+The run lists each such row, by its table, its key and the address a reader knows it by, and changes nothing in it; an operator erases a comment's or a block's text by a run over that node, and no run erases an issue's, a document's, an ask's or a message's, as above.
+
+It removes, in one transaction: the tuples the listing named out of the node and into it, its row, its projection rows and the rows that cannot exist without them, its block's texts, the versions of its own document the erased block stands in holding the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
+It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document, its issue and its version.
+A block stands in a version where its newest `document_block_texts` row at or before that version holds the text, since the indexer writes a block's row only at a version that made, changed or dropped it; a version no block-aware build indexed goes wherever its markdown holds the text, and the listing says for each version why it goes.
+A tuple another writer commits into the node after the listing was read refuses the run with an error, naming its seq, and nothing is removed.
+
+It rewrites, with a marker naming the node and the `graph_erasures` record where the bytes were, what derives from the node and may not go:
+
+- **The blocks that hold the erased block** (`document_block_texts.text` and `document_blocks.excerpt` of each block up its `parent_block_id` chain whose text quotes it): each projects a block node of its own, and a live node no row projects is a difference `census --store` reads.
+  The text is rewritten only at a version the erased block stands in, read as for the versions above, since at any other version the same words are the holding block's own, and the listing names each such text as a row the run leaves.
+  It is rewritten only where the erased text stands as a block of its own, at the start of a line after its markdown framing and at the end of a line, so a sibling's words inside a longer line stand.
+  An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+  An excerpt cut from a version the erased block does not stand in stays as it is, with the text it was cut from.
+
+- **The excerpt a mention of the document shows** (`refs.excerpt_text`) where it was cut from the erased block or one holding it: it is cleared and marked owed, so the reconciliation cuts it again from the latest version left.
+
+- **The events about the node** (`events.payload`): a comment's own events, whose payload is the comment or names it as `comment_id`, and a block's document events (`artifact.*`, `block.*`).
+  The log is append-only, so the row stays with its id, its time and its actor, and the bytes go only from inside the JSON string values of its payload, each by the class the erase's payload classification (`grapherase.payloadClassification`) gives its path for the event's type.
+  The classification names every string of each payload the erase reads - a comment's own events (`comment.*` and `suggestion.*`), its `comment.delivery` receipts, and `artifact.version`, `artifact.human_edited`, `artifact.approved` and `artifact.changes_requested` - by its path from the payload's top level, such as `author.origin.host`, `ask_sessions[]` or `version.authors[].act.token_name`, in one of three classes.
+  The node's own words, or a value that can carry them, lose every erased text wherever it stands: a comment's `body`, a suggestion's `replace_with`, and what a send of the comment answered (a receipt's `error`, an attempt's `error` and `resolve_error`), which can echo what the send carried.
+  Another node's words, which the payload quotes, lose an erased text only where it stands as a block of its own, so another node's words around it stand.
+  A document event's payload quotes the whole document, so in its `name`, its `diff`, a version's `summary` and a review's `reason` the erased text is replaced only where it stands as a block of its own, as in a container's text, and a sibling's line in a version's markdown or a diff stands.
+  A comment's own event quotes other nodes beside what its author wrote - the anchor's `quote` of the document it is anchored to and the text of the table its anchor's block stands in (`anchor_block.table`'s `header` and `cells`), that document's `artifact_name`, the `ask_question` of the ask it replies to and the `text` of the `reply_block` it answers - and in those the erased text is replaced only where it stands as a block of its own.
+  A comment's own event whose `body_truncated` is true carries only the first part of its body (`model.EventBody`), cut at the last blank line, else line break, else character within 32,000 units, so the cut can fall inside a block and leave that block's head; the erase reads the cut of the body as it stands (below), so only the event of a body the comment held before an edit carries a cut that no erased text matches whole, and since every cut body is the comment's own text to its last byte, each is replaced whole with the marker.
+
+- **Who wrote or acted, in those events**, is identity, which is never rewritten, as a key never is, since it is not the node's text: every actor (an event's `author`, `resolved_by` and `actor`, and a version's `authors`) with its `kind` and `id`, the `origin` its session reported (`host`, `machine`, `cwd`, `tmux`, `pane`, `session_title`), the `owner`, `service` and `project` its credential named and the `act` of the agent that acted for its person (`session`, `token_id`, `token_name`, `scopes`); every list of sessions or people (`ask_sessions`, `thread_logins`, `editors`, and the `suppressed_authors` an older build wrote); and every id, key, address, state, kind, digest and time of the payload stand as the event wrote them.
+  So an erase of `kind` leaves every `"kind"` key and the kind each one names and redacts a body reading `kind`, an erase of `sent` leaves a receipt's `state` reading `sent`, an erase of `approved` leaves an author's `origin.host` reading `approved-host`, and an erase of a text that is part of a session's id leaves that id whole.
+  A path the classification does not name - a key a later or an older build writes, or any path of a type it does not hold - is read by the rule it replaced: a value under a structural key - an identifier (`id`, every key ending in `_id`, `_key`, `_slug` or `_logins`, `reply_to`, `answers`, `editors`, `owner`, `session`, `service` and `project`, and a digest, `sha256`, every key ending in `_sha256` and `content_sha256_source`), an address (`target`, `route` and every key ending in `_route`, `ref`, `node`, `slug`), a state or kind enumeration (`kind`, `type`, `state`, `status`, `role`, `delivery`, `turn`, `scopes`, `mime`, `waiting_on`, and every key ending in `_type`, `_kinds`, `_state`, `_status` or `_waiting_on`) or a time (`at` and every key ending in `_at`), at every depth alike (`grapherase.structuralKey`) - is left, and any other is content: the node's own words in a comment's event and quoted words in a document's, and for a type the classification does not hold, own words in an event about a comment and quoted words in one about a block.
+  The fallback names the structure rather than the content, so a field another build adds that holds what somebody wrote still loses the erased bytes; a test of the classification fails on any string of a payload this build writes that it does not name, so no field of this build is left to the fallback.
+  An event about the node whose payload still holds the erased text once redacted - in an identity value, or in a value that quotes another node - is listed as a row the run leaves holding it, beside the line naming it redacted where the redaction rewrote another of its values.
+
+- **The live editing state** of a block's document, and of each document whose margin record holds an erased comment's body (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`), the ygo history its room loads from.
+  A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited: the erase replaces the whole history with one fresh update of the live document as it leaves it, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
+  For a block, that update holds the live document with the marker in place of the erased text inside the erased block's own range and nowhere else.
+  For a comment, it holds the live document with the comment's margin record, or a reply's entry in its root's record, taken out and nothing else.
+  A reply's entry is found by its author and the time the reply was made, never by its text, since an edit of a reply does not write the root's record again and the entry keeps the body the reply had before.
+  Every other block, anchor mark and margin record stands as it was, so another comment stays anchored and its suggestion can still be accepted.
+  A kept record that quotes the erased text - a suggestion's replacement, or another comment's body - is that comment's text, and the listing names it as left, by its document, its mark id and its comment, since those bytes stay in the new history.
+  The change is announced, so a room any server holds of the document finds its history replaced, closes and reloads.
+  It writes no version: the document reads as its live text, ahead of whatever version the erase left it.
+  What that costs is the edits before the erase as separate steps, the anchor marks inside the erased block, and the keystrokes of an editor open on it that were not yet stored.
+  A history that does not load, a tree outside the schema, and a redaction that drops an open ask block refuse the erase, naming the document.
+  The match is byte for byte on markdown: where the erased block holds the erased bytes but its markdown spells them otherwise - an escaped `*` or `_`, for one - the seed would keep them, so the run lists the document as **not redacted** and refuses, removing nothing.
+
+- **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
+
+- **The keyword versions** (`search_text_versions`), which the keyword fill writes from the event log: every version of the node's own text goes, and an issue whose spec lost a version has the `search` of each of its versions that names that version (`spec_artifact_id`, `spec_version`) written again, by the expression the fill writes it with (`textversions.RestateIssueVectors`), which then reads no markdown for the version that went and keeps the issue's key and the title the row holds.
+  The listing names each by its key and its `event_seq`, as deleted or as rewritten.
+  The erase holds the fill back by its cursor row, the one row of `search_text_versions_fill`, which it takes `for share` before its first owner lock, and so before it reads under its locks, creating it where none is (`textversions.HoldFillBack`): a batch takes that row `for update` before it reads anything, so a batch in flight, which may have read the erased text, commits before the erase reads, and no batch writes until the erase ends.
+  A batch that waits on the row past its 5-second `lock_timeout` fails, and the fill tries it again.
+  A fill that reads the comment's events after the erase, as one does after a reset of the log empties the table, reads them redacted and writes the marker as the comment's version, so the table holds no erased byte however often it is filled again.
+
+- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved, in two steps.
+  Inside the transaction, under the locks, the erase takes out of each project's statistics every lexeme an item it deleted or rewrote no longer holds (`api.ForgetErasedTermsTx`): `search_term_stats` holds lexemes, and one of the erased text that stood there after the commit would be the erased words, still stored.
+  It reads them from the old vectors `search_term_queue` carries for those items: the rows its own writes queued, the row it queues itself for each `document_search` row it deletes (`20261101182522`'s trigger fires on an insert or an update of that table alone), and the rows queued before the erase for the same items and for the documents it deleted versions of, the oldest of which carries the vector the counts hold.
+  It deletes all of those queue rows, since any of them can carry the erased words, and clears the project's `search_term_totals.snapshot`, so the project's next refresh pass counts it in full.
+  Each of those statements reads the queue, the erased items and the rows it deletes by their keys, and one totals row; none reads another item of the project, so no writer of the node's issue or document waits on a count of the whole project.
+  It takes the `search_term_totals` row of each project of its owners and of the documents it reads them through before its first owner lock, clearing the snapshot there (`api.TakeErasedTermTotalsTx`): a refresh pass holds that row for its whole transaction, which production's logs show reaching 18.5 s for one project, and the erase waits for it there, holding nothing a writer of the node's issue or document waits on.
+  Under the locks it waits on none of those rows, and on the row of any other project its items name for 100 ms at most; none is expected, since every item it changes stands under an owner it holds, and past that bound it removes nothing and exits 2, naming the project whose statistics a running pass held and saying the erase can be run again.
+  After the commit, outside the locks, the erase counts each such project again in full, each in a transaction of its own, as a refresh pass counts one (`api.RefreshSearchTermStats`), which gives back the counts of the lexemes it took out that other items still hold; it prints the projects on a `term statistics counted again after the commit:` line.
+  A count that fails there is no failure of the erase, and the command exits 0: the statistics hold none of the erased words and lack only those counts, which the related-item check probes live until the project's next refresh pass, a full one, writes them again; the command prints the project, the error and that fallback.
+
+- **The embedding store** (`embeddings`, with `embedding_window_states`): the node's own rows and window state go, and for a block the windows of its document whose `covers` name it or whose snapshot holds its text, its document's whole-text row and, where the document is a spec, the issue's row; each such issue's row is written again by the statement migration `0140`'s trigger runs, and the document is marked owed its windows (`document_block_versions.windows_owed_at`) where a version with markdown is left.
+
+- **The stored display trees** (`text_trees`), keyed by the SHA-256 of a whole text: the row of every text the erase removes or rewrites goes, by its key, inside the transaction - the node's own texts, each deleted version's markdown, the texts of the blocks holding it, each event-payload string the redaction rewrites and its document's live text.
+  Where an event of the node carried a body it cut, that body may be the head of one the comment held before an edit, and no row holds that earlier body whole, so no key of its tree is known: the erase then also takes every tree that holds a text node of the node's own texts or of the cut body, as a stored tree spells it (`grapherase.treeNeedles`), and the listing says so on a `display trees of an earlier body` line.
+  Finding those trees reads every row of `text_trees`, so a confirmed run reads their keys in its search before the locks (`treeKeysHolding`), deletes them by key inside the transaction, and reads every tree for those text nodes once more after the commit, which takes a tree stored after that search.
+  A tree of another text that holds one of those text nodes goes as well, and is made from its text again the next time that text is read, as every deleted tree is.
+  A read that began before the commit stores the trees it read on a goroutine of its own, bounded by `api.StoreTreesTimeout` (30 seconds), so the command waits that bound out after the commit and deletes the same trees once more, counting what it found on a `text_trees swept after the commit: <n>` line.
+  The keys and text nodes are held in the command's memory alone, since each is the digest or a part of an erased text, so a sweep that fails cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
+
+It refuses, removing nothing, while a live row of another node states something about this one, and names each so an operator erases or edits it first.
+A reply whose `reply_to` names an erased comment points at its projection through a nullable reference; a block inside an erased block states `part_of` into it and names it in `parent_block_id`; a block citing it states `mentions` or a pointer into it and holds a `block_refs` row; a comment states `authored_by` into its author.
+The erase deletes the tuples into the node, so such a row would go on stating a fact the store no longer holds, which `census --store` reads as a difference; refusing it keeps the census at zero after every erase that runs.
+A person is refused as well while a comment a session the server proved theirs wrote still has its row: that row's `author` is the session, with the person as its `owner`, and `census --store` names the person from it, though the comment's `authored_by` names the session and only the session's `alias_of` names the person (`graphcensus.ProvedSessionComments`, the census's own reading of that row).
+
+It removes nothing until an operator has read what it would.
+Run with `--node` alone, it reads every row it would delete, rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no writer, prints that listing - each version and review with its document, its issue and its version, each event row with its id, each row it leaves with its table and key - with its SHA-256 on a `listing digest:` line, and exits 1.
+Run with `--confirm <digest>`, it first searches again for the rows it leaves, in a read-only transaction of its own that takes no lock, then takes its locks, reads the rest of the listing again in a transaction of its own under them, and erases only when that listing has the digest it was given; a listing that changed since is refused with both digests, exit 1, and nothing is removed.
+The listing's search for the rows it leaves reads every text, jsonb, bytea and tsvector column of every table, so a store a later build adds is listed without anyone naming it; a pgvector `vector` holds the numbers an embedder made of a text and never the text, and is not searched.
+It searches for each erased text whole and, for a text longer than an event carries, for the first part that a copy carries in its place (`model.EventBody`, the text trimmed first as a version an accepted suggestion names is): such a copy is cut at a line break or a character as well as at a blank line, so it can end inside a block and hold no erased text whole, and the listing still names the row.
+That search scans every table, and every writer of an issue or a document takes the owner's lock first, so a confirmed run searches before it takes its first lock and no write to the node's issue or document waits for the search.
+A row holding the erased bytes written between the search and the locks is therefore not on the listing the digest covers, and the run leaves it as it leaves every row it lists.
+Once it has committed, the run searches again, outside its locks, in a read-only transaction of its own, and prints each row that search finds and the first did not under a `rows that hold the erased bytes and derive from another node, written after the search and found after the commit, left as they are: <n>` line, after the term statistics lines and before the `text_trees` line; like the listing, those rows go into the report alone and not into `graph_erasures`.
+A search after the commit that fails leaves the erase standing: the sweep of `text_trees` still runs, the section says the search failed, and the command prints the report, then the error, and exits 2, as it does when the sweep fails.
+Once it holds its locks, a confirmed run holds the writers of the node's issue or document for the rest of its work: the read of the rest of the listing, the erase and the commit.
+Two reads of a whole large table stay out of that hold as well.
+The events about the node are read by a predicate on their payload that no index serves, so the search before the locks reads every event for it and keeps the ids it finds; under the locks the run reads those ids through the log's key and the events of the owners it took through the log's owner indexes, with the same predicate.
+Every event that predicate reads is written under the owner of the node it names, with that owner's lock taken before the insert, so an event about the node written after the search waits for the run's locks and is on the listing they read.
+The keys of the display trees that hold a text node of an erased text (the stored display trees, above) are read in the search before the locks the same way.
+Every other read under the locks probes an index: the count of the rows that point at the node through a nullable foreign key, which refuses the run while one does, and the check of each such key that the delete of the node's row makes, read `comment_deliveries` and `asks` through `comment_deliveries_reply_id` and `asks_handed_back_reply_id` (migrations `20261119020000` and `20261119020100`), the two such columns that had no index.
+Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
+
+It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then everything else.
+Before the owner rows it takes two rows that a background pass holds for a whole transaction, so that it waits for such a pass holding no owner row, which no writer of the node's issue or document then waits on: the `search_term_totals` row of each project of its owners, in key order (the term statistics, above), and then the keyword fill's cursor row `for share` (the keyword versions, above).
+The order allows them there because no writer that holds an owner row takes either: a totals row is otherwise taken only by the term-statistics refresh (the leased pass, the related-item check's refresh of a project with no statistics, and the erase's own count after its commit), and the cursor row only by the fill's batches, each of which takes it first and alone; none of them takes an owner row or waits on anything a writer of one holds.
+Taking its projection rows before it writes anything is what orders it against the block index tick's window arm, which holds a comment's row `for no key update` and no owner row while it writes that comment's windows: the erase waits at the row before it has deleted a window, rather than deleting the windows first and meeting the arm in a deadlock.
+The owner rows are the node's own - a comment's issue, or the owner of the document it is on - and a block's document's: the document's issue, or the document's own row when no issue owns it.
+It takes no owner row of a row it leaves, since it writes none of them.
+It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
+Which owners those are is read before they are locked, so it is read again under them, and a write that meanwhile moved the node under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row; after three tries it removes nothing and exits 2, naming each such owner.
+
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it took the erased words out of and counts again after the commit, and the listing's digest, with who ran it (the database role, the account and the host) and when.
+That row holds no erased text and none of the rows the run left, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
+Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
+A node the store does not hold is exit 2, naming it.
+`e2e/acceptance/graph-erase.sh` erases a comment and then a block of a document, each by its digest, and searches every column of every table of the database for the erased bytes, with a control row planted in the same search, marking each hit as derived from the node or not: a derived hit after the erase fails it, and so does any change to the rows it planted for other nodes holding the same bytes.
+
+### The view over the store
+
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
+The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`, the list `refs.TupleKinds` holds and the announcer writes into `server_build_announcements.tuple_kinds`;
+the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
+No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
+
+Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
+One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
+The join is what keeps a rollback whole, since a build of the previous release retracts nothing in the store: a row it deletes leaves its tuple standing and answers from neither arm, and a row it deletes and writes again with no node answers once, from its old arm.
+The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from a live attribute node, so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+The reads of the `block_refs` rows themselves, a document's links out (`refs.Edges`) and `refs.BlockLinks`, make the same test of a row that names its node (`refs.blockRefListed`), so no reader lists a link another hides; a row that names no node keeps the `to_types` its index copied.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
 
 ## Stored-order check
 
@@ -3326,7 +4366,7 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeLoaders`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
 Each block of a document is a node of the graph too (migration `0121`).
@@ -3829,6 +4869,7 @@ Each item below names a field of the line, then what it holds.
 
   The route's own pattern (`/api/v1/issues/{key}`), so one route's requests group together whatever ids their paths carry;
   `unmatched` for a path under `/api`, `/v1`, `/auth`, `/ws` or `/healthz` that no route answers.
+  A route that answers at one origin alone (`/auth/start` and `/auth/callback` at `DISPATCH_SERVER_URL`, the passkey ceremonies at `DISPATCH_OUTSIDE_ORIGIN`) answers the other the same `404` and logs that request under its own pattern, once.
 
 - `path`
 
@@ -3845,7 +4886,9 @@ Each item below names a field of the line, then what it holds.
 
 - `address`
 
-  The rightmost `X-Forwarded-For` entry, the address the load balancer in front of Dispatch saw, or the connection's own address when there is none.
+  The caller's address (`auth.ForwardedAddress`).
+  On a connection from Google's external load balancer (a peer in `35.191.0.0/16` or `130.211.0.0/22`), it is the second-to-last entry of the one `X-Forwarded-For` line, the client address the balancer appends before its own, as the secrets broker's edge reads it; a header that is not one such line is ignored there, and the line names the balancer's own address.
+  On any other connection it is the rightmost `X-Forwarded-For` entry, the address the load balancer in front of Dispatch saw, or the connection's own address when there is none.
 
 - `peer`
 
@@ -3889,9 +4932,9 @@ The text in it a caller wrote, `method`, `path`, a session's `caller`, `address`
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.
 
 Every route the server answers writes one:
-every `/api/v1` route, the document websocket and the live socket (`/ws/live`), `/auth/*`, the GitHub proxy `/api/github/rest/`, and the 404 an `unmatched` path gets (a known path called with a method its route does not serve is one too).
+every route of the API's table (every `/api/v1` route and `GET /metrics`), the document websocket and the live socket (`/ws/live`), `/auth/*`, the GitHub proxy `/api/github/rest/`, and the 404 an `unmatched` path gets (a known path called with a method its route does not serve is one too).
 The dashboard's own pages and assets write none, so a browser's page loads do not bury the callers.
-`/healthz`, which a load balancer calls every few seconds, `/livez`, which a liveness or startup probe calls, and `/metrics`, which a scraper calls, write none either.
+`/healthz`, which a load balancer calls every few seconds, and `/livez`, which a liveness or startup probe calls, write none either.
 Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
@@ -3899,20 +4942,24 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 ## Routes
 
-`GET /api/v1` (no credential) is the authoritative list:
-every mounted `/api/v1` route with its `method`, `path`, `auth` (`public`, `any`, `human`, or `bearer`), and `description`, sorted by path then method.
+`GET /api/v1` is the authoritative list, for any signed-in person or agent credential:
+every route of the table, the `/api/v1` routes and `GET /metrics`, with its `method`, `path`, `auth` (`any` or `bearer`), and `description`, sorted by path then method.
+Every route Dispatch serves needs a credential but `GET /auth/start`, `GET /auth/callback`, `/healthz`, `/livez` and the dashboard's own files, at `DISPATCH_SERVER_URL` and at `DISPATCH_OUTSIDE_ORIGIN` alike, and as `HEAD` or `OPTIONS` too (refused, or answered `404` or `405`);
+none grants access by the caller's network address or a header naming one, or takes the origin a request came to from `X-Forwarded-Host` (`TestEveryRouteNeedsACredentialButTheNamedOnes`, `TestNoRouteGrantsAccessByNetworkAddress`).
 `envoy-dispatch routes` prints the same body from the table alone, with no database or listener and never a test hook;
 the docs site's HTTP API reference is generated from it.
 `envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
 The list below is a summary.
-An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
-/v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
+An unknown path under `/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez` or `/metrics`, in any case (`/API/V1`, `/metrics/`), is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
+/v1/issues","hint":"GET /api/v1, with a credential, lists every route"}`, never the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
 The dashboard's pages (`index.html` and the shell served for a browser route) carry `Cache-Control: no-cache` and an `ETag` of their bytes, no `Last-Modified`, and its hashed `/assets` files `public, max-age=31536000, immutable`, so a browser keeps no page from another build.
+At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer also carries `Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the enrollment page an owner's link opens or the passkey sign-in, and the pages load no plugin object and take no `<base>`; the policy names no script source, so the page's inline script runs.
+The canonical origin's answers carry neither header.
 
 
 In this list, header identity means only the test/local harness mode described above.
@@ -3920,9 +4967,9 @@ Production Dispatch uses cookie identity through the sign-in pool.
 
 Each item below names a path with its method and identity, then its purpose.
 
-- `/api/v1` (GET; none)
+- `/api/v1` (GET; cookie, trusted header, or bearer)
 
-  List every `/api/v1` route with its auth and purpose.
+  List every route of the API's table with its auth and purpose.
 
 - `/api/v1/limits` (GET; cookie, trusted header, or bearer)
 
@@ -3936,29 +4983,58 @@ Each item below names a path with its method and identity, then its purpose.
 
   Start Google sign-in at the sign-in issuer:
   the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
+  The issuer sends the browser back to `DISPATCH_SERVER_URL`'s callback, the one origin that serves Google's sign-in.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
+  At `DISPATCH_OUTSIDE_ORIGIN` it answers the `404` a path no route serves answers, as `/auth/callback` does there, with passkey sign-in on or off: a person from outside signs in there with a passkey (below), or not at all.
 
 - `/auth/callback` (GET; sign-in state)
 
   Exchange the issuer's code and sign in the person `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` admits:
   under a group, named by the email in their pool username, anyone outside the group refused with a 403 page naming them;
-  under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason.
-  Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
+  under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason;
+  Record the person, their member kind and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account, or none, held it, and revoking its personal tokens when another account did), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
+- `/auth/passkey/register/begin`, `/auth/passkey/register/finish`, `/auth/passkey/login/begin`, `/auth/passkey/login/finish` (POST; none, at `DISPATCH_OUTSIDE_ORIGIN` alone, with `DISPATCH_SIGNIN_PASSKEY=1`)
+
+  A restricted member's passkey ceremonies (`routes/passkey.go`, `identity.Passkeys`, WebAuthn through `github.com/go-webauthn/webauthn`): the relying party ID is the outside origin's host and the one origin it takes is the outside origin, every credential is discoverable, user verification is required and no attestation is asked for.
+  At `DISPATCH_SERVER_URL`, and on a server without the setting, each answers the `404` a path no route serves answers; a request from a page of another origin (an `Origin` that is not the outside origin, or none with `Sec-Fetch-Site` other than `same-origin`) is `403` "invalid request origin".
+  `register/begin` takes `{"token"}`, the fragment of the owner's link (`POST /api/v1/projects/{key}/access/people/{email}/invitations`), and answers the options `navigator.credentials.create` takes, naming as the user the invited address and as the user handle the person's passkey subject: 16 random bytes, base64url, made at their first enrollment and kept after.
+  Beside them it answers `invitation`, `{"project", "made_by"}`: the key of the project the link is for and the login of the owner who made it, which the enrollment page names before the person makes a passkey.
+  It uses no link.
+  `register/finish` takes what `navigator.credentials.create` made and, in one transaction, uses the link, signs the person in as a restricted member through the account binding (`PgPeopleStore.signInAccountTx`, under the issuer `people.sub_issuer` records, the outside origin) and stores the passkey (table `passkeys`), answering `{"login"}` and the outside origin's session cookie: `__Host-dsession` at an `https` outside origin, `dsession` at an `http` one (the session cookie, above).
+  `login/begin` takes `{}` and answers the options `navigator.credentials.get` takes, naming no credential; `login/finish` takes what it made, verifies it against the passkey its credential id names and its user handle, asks the rule again (`AdmitsRestricted`), stores the new signature counter and signs the person in, answering `{"login"}` and the cookie.
+
+  - A begin reads and writes nothing: it carries its ceremony to the finish in the signed, HttpOnly, `SameSite=Strict` cookie `__Host-dispatch_passkey_ceremony` (Secure, `Path=/`, no `Domain`, so no other host under the outside origin's domain can set it; `dispatch_passkey_ceremony` under `DISPATCH_INSECURE_COOKIE`), so whichever process the finish reaches completes it, within five minutes;
+    the finish clears the cookie and records the ceremony's challenge by its SHA-256 under a unique key (table `passkey_ceremonies`, kept a minute past the ceremony's lapse, so a database clock ahead of the process's frees no used row while its cookie still verifies): an enrollment's once its answer verifies, in the transaction that records the enrollment, and a sign-in's before its answer is checked, in a transaction of its own (`PgPasskeys.UseCeremony`), so one begin allows one sign-in finish whether or not its answer verifies; either way an answer is taken once, even for a passkey whose counter stays 0, and the same ceremony again is `400 CEREMONY_EXPIRED`.
+
+  - Each process takes 10 begins at once from one client address and then one a second; one beyond is `429 PASSKEY_RATE_LIMITED` with `Retry-After: 1`.
+    An IPv6 address is bounded as its /64, since one host commonly holds a whole /64.
+    The address is the connection's own, whatever `X-Forwarded-For` it carries, unless the connection comes from a front door `DISPATCH_TRUSTED_PROXY_RANGES` names (`auth.BoundAddress`).
+    From such a front door in Google's load balancer's proxy ranges it is the client address the balancer appended, the entry second to last, as [Google documents the header](https://cloud.google.com/load-balancing/docs/https#x-forwarded-for_header) (`[SUPPLIED,]CLIENT_IP,LOAD_BALANCER_IP`); from any other front door it names, it is the rightmost `X-Forwarded-For` entry that is not itself in those ranges, as an nginx-style proxy appends the client last.
+    A request from a trusted front door carrying more than one `X-Forwarded-For` line is `400 FORWARDED_FOR_INVALID`, and one whose header names no client address is bounded by the front door's own address.
+    There is no bound every address shares, so a stranger with many addresses cannot refuse the person's begins, behind Google's load balancer or behind another front door the setting names: the limiter remembers at most 10,000 addresses, and a new address while it holds that many is served without being remembered.
+
+  - Refusals: `404 INVITATION_UNKNOWN` (no link has the token: never made, or ended by a newer link, a removal from the list or the owner's Reset), `410 INVITATION_USED`, `410 INVITATION_EXPIRED` (24 hours after it was made), `403 INVITATION_NOT_LISTED` (the project's list no longer names the email directly), `403 LISTED_BY_ANOTHER_OWNER` (a project whose owner did not make the link names the email directly), `403 WORKSPACE_ADDRESS` (the address is on a domain the Workspace owns), `409 FULL_MEMBER` (a full member's address), `503 MEMBERSHIP_UNREADABLE` (the lists cannot be read; nothing changes), `401 PASSKEY_UNKNOWN` (no passkey has the credential, or the address records another account), `401 PASSKEY_SIGN_COUNT` (the signature counter did not go up while either it or the stored one is non-zero, WebAuthn Level 3 §7.2 step 22), `403 NOT_LISTED` at a sign-in of a person no list names directly any more, which also ends their account as a removal from their last list does, `400 CEREMONY_EXPIRED` (the ceremony is missing, lapsed or used, or another enrollment of the address finished first) and `400 PASSKEY_REFUSED` (the answer does not verify).
+
 - `/auth/logout` (POST; cookie or trusted header)
 
-  End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
+  End the person's Dispatch sessions and clear the session cookie under both its names (`__Host-dsession` and `dsession`).
+  Under the sign-in pool it forgets their refresh token; under the two Google rules it keeps the token, marking the row signed out, while the person has access that outlives the browser or the broker cannot be asked, and forgets it otherwise (Identity, above).
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
-  Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
+  Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered;
+  `member_kind: "restricted"` only for a restricted member, and `origins`, the canonical origin then `DISPATCH_OUTSIDE_ORIGIN`, only where that is set, so a full member's answer from a server at one origin carries those three keys alone.
+  The head is the highest id of an event the person can see, so no event of a project they do not see moves it; an open person of a deployment that holds no private project reads the log's head itself.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
+  That 401 is `{"code":"NO_IDENTITY","error":"unauthorized"}`, except for a person from outside the domain whose sign-in the hourly confirmation ended, whose 401 here and on every route adds `reason` (`NOT_LISTED`, `OUTSIDE_SIGNIN_OFF` or `WORKSPACE_ADDRESS`) and `login`, their address, and says why in `error` (Identity, above).
+  At `DISPATCH_OUTSIDE_ORIGIN` that 401 also carries `sign_in: "passkey"`, with passkey sign-in on or off, so the page there offers the passkey and no Google sign-in, which that origin does not serve (`routes.whoamiSignIn`).
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
@@ -3981,6 +5057,14 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
+  A person reads a repository when an issue of a project the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the person does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
+  A repository mapping and a recorded rename give no project a repository.
+  An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
+  A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
+  A person who is not an open viewer reads only a repository an issue of a project the person sees resolves to.
+  Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
+  While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
+  With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
 
@@ -4002,6 +5086,13 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
+
+  - `degraded` lists fixed reasons and is absent when none holds, as the last of the reads `privateProjectsState` makes every 30 seconds found them:
+    `private_project_unprovisioned` while the database holds a private project that neither `DISPATCH_PRIVATE_PROJECTS` nor `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names,
+    then `private_before_full_switch` while it holds a project private before its full switch (Required configuration, above).
+    Each is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the line the boot logs, so a project made private after the boot is named at the next boot, and for an unprovisioned one in every maintenance pass's line too.
+    Neither decides `ok` or the status, since such a project stays private and the server serves every other one.
+
   `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
   a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.
   It is `null` where no GitHub App is configured (neither the `DISPATCH_APP_*` settings nor `app.json` name one, `loadAppCredentials`), and otherwise holds `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`, in that order, each `{state, at, cause}`:
@@ -4009,15 +5100,17 @@ Each item below names a path with its method and identity, then its purpose.
   - `state` is `succeeded` when the newest recorded attempt sent requests to GitHub and noted no failure, `failed` when it noted one, `no_attempt` while the record holds no attempt of the read, `unknown` until this process's first read of the record succeeds, and `off` where this process does not run the read:
     all four without the App private key, and `webhook_redelivery` and `ci_reconcile` without NATS as well, since `webhookSweeper` and `ciReconciler` build nothing without a NATS client.
     `at` is when that attempt was recorded as its pass ended, by the database's clock, in RFC 3339 UTC, and is `null` unless the state is `succeeded` or `failed`.
-    `cause` is the text of the attempt's first failure, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut;
+    `cause` is the class of the attempt's first failure (`gitHubReadCauseClass`): `status <n>` for the first HTTP status that failure names, which is the status GitHub answered, since the client words an answer it notes as a failure with its status ahead of any body, and `no status` for a failure that names none (a request GitHub never answered, or a failure of the read's own);
     it is `null` unless the state is `failed`, and the entry's Go type sets neither where the state carries none (`gitHubReadEntryOf`).
+    The failure's own text, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut, is `github_read_attempts.cause`.
 
   - The probe sends the database nothing for `github` and waits on nothing:
     it answers from this process's copy of `github_read_attempts` (`githubreads.Copy`), read at start and again each time any process writes a row (Background loops, above), and a read that fails keeps the copy it had.
     So a missing table or a failed read of the record changes neither `db`, `ok` nor the status.
     During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
 
-  - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
+  - `/healthz` never answers a failure's text: the route takes no credential, whoever reaches the port reads it, from outside too where the deployment has an outside origin, and a GitHub error carries the URL it asked, which names the repository the read read, one a private project maps or one GitHub keeps private.
+    So in every deployment, with a private project or none, it answers the class alone, which names no repository, and the operator reads the text in `github_read_attempts` (`TestHealthzNamesNoPrivateProjectToACallerWithNoCredential`).
 
   - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
     they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
@@ -4075,17 +5168,20 @@ Each item below names a path with its method and identity, then its purpose.
   the events with id greater than `after` (default 0), oldest first, at most `limit` (1–1000, default 1000), each as the issue and document event lists serve it.
   An invalid value is `400 INVALID_QUERY`.
 
-- `/metrics` (GET; none)
+- `/metrics` (GET; cookie, trusted header, or bearer)
 
   The process's metrics in the Prometheus text format:
   `envoy_dispatch_outbox_publish_failures_total{reason}`, one count per destination of an outbox publish attempt that was not reached, `reason` being `denied` (the server refused it under the connection's own publish permissions), `refused` (NATS refuses the envelope or its subject however often it is retried), `unanswered` (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer, for every holder alike) or `failed` (every other failure);
   and `envoy_dispatch_outbox_role_forwards_held_total{holder_state}`, one count per role forward a holder's resolution held pending with nothing sent, `holder_state` being `unresponsive` (the holder is past the live window), `undated` (nothing dates the holder) or `unresolved` (the role claim or the holder's session could not be read).
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
-  It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
+  `envoy_dispatch_broker_revocations_owed` and `envoy_dispatch_broker_revocation_oldest_owed_seconds` are the revocations Dispatch owes the secrets broker and the age of the oldest, each read from the database when a scrape asks for it, two reads a scrape (Identity, above);
+  `envoy_dispatch_broker_revocations_superseded_total` counts each `superseded` answer this process heard, for a revocation it leaves owed, each one a replaced account whose broker credentials were not ended (Identity, above).
+  `envoy_dispatch_machine_login_revocations_owed` and `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` are the revocations of restricted members' machine logins that removals from access lists owe the secrets broker and the age of the oldest, read the same way (Identity, above).
+  It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and every caller that reads the deployment reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
   `envoy_dispatch_document_replacements_unguarded_total`, with no label, counts the whole-document uploads that replaced a document naming no token for the version they replace, which Dispatch takes unchecked until every deployed `dispatch` client sends one (INFRA-4980); each also logs one INFO line naming the artifact and the document (`api.noteUnguardedReplacement`), and no caller: the access log's line for the same upload names the caller and its User-Agent, so the two are joined on the upload's path and time.
-  It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
-  Nothing scrapes it yet.
+  It is a row of the API's route table, so it is never the dashboard's shell and it needs a credential:
+  its read is of the whole deployment, which an open viewer reads, the deployment's shared agent token included, and a restricted member's credential, or one acting for one, is `403 DEPLOYMENT_READ_REFUSED`.
 
 - `/api/v1/artifacts/_test/quiesce` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
@@ -4172,16 +5268,35 @@ Each item below names a path with its method and identity, then its purpose.
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
+  An events subscription sends only the events its caller may read, by the rule `GET /api/v1/events/log` reads by, for what the caller sees as resolved from the credential the upgrade proved: resolved when the subscription starts, and again at each `project.access_changed`, `access_group.changed` and `project.created`.
+  When the caller's projects moved, other than by a project just made, the subscription ends as `behind`.
   An events subscription resumes after a decimal event id;
-  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
+  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, across a `project.access_changed` or `access_group.changed`, or above the head (a log that was reset).
+  Its `since` is the resume as the page sent it, and otherwise the newest event the caller can see, as `event_head` is.
+  A delivery view's `seq` and `changed_at` are the newest change of a repository the caller sees, so a change of a repository it does not see moves neither.
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
-  past them, or once the log is reset, it ends as `behind` and the page subscribes again.
+  past them, across an access change, or once the log is reset, it ends as `behind` and the page subscribes again.
   An agent view holds at most 8 MiB of queued frames and ends as `behind` past that.
   A page that stops reading meets the socket's own bounds first (#2449):
   the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
   the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
   A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
+  Its heartbeat also closes it with 1008 once the person a cookie, a personal token or a broker-issued token acts for is of another member kind than when it opened (the hourly confirmation restricted a member whose account left the Workspace), one read of `people` by its key each heartbeat (`api.whileCallerResolves`, 15 s), since an events subscription reads what its caller sees again only at an event that can move it, and a change of member kind appends none; the page's new socket reads under the new kind.
+  A delivery view is read again for its reader at the same change, which the people write announces on `dispatch_access_changed` (`store.AccessChangedChannel`), as an access write does, so a member it restricted is refused the deployment's views (`DEPLOYMENT_READ_REFUSED`) from that commit.
+
+- `/ws/doc/{room}` (GET; the browser identity the deployment configures: the sign-in cookie, or the IAP assertion under `DISPATCH_IDENTITY=iap`)
+
+  A person's document socket.
+  A room the person may not read, a document of a project they do not see, is refused exactly as a room no document holds is (`404`).
+  Once an owner, a visibility, an access list, a group or a person's member kind changes, every process closes each document socket whose person no longer reads its room, and each socket of a person whose access that re-check cannot read, with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects and the reconnect's admission reads the person again; a person who no longer reads the room gets that refusal (`docs.Service.recheckAccess`, on the room-sync channel `dispatch_access_changed`, `store.AccessChangedChannel`, after each LISTEN, and on every socket heartbeat, `StreamHeartbeat`'s 15 s, which `api.Register` runs it on, `docs.Service.RunAccessRecheck`: a change made by SQL alone announces nothing, and that pass closes its sockets within a heartbeat).
+  A member kind changes when a sign-in or the hourly confirmation writes a kind the row did not hold (`PgPeopleStore.SignIn`, `SignInSubject` and `ConfirmSubject` announce it in their own transaction), such as a member whose account left the Workspace and whom some project's list names, who stays signed in as a restricted member and no longer reads a public project that does not name them.
+  A socket still being admitted when its person loses the room is refused before its upgrade with that same `404`, never upgraded onto the room.
+  Before each data frame of a room (a document update or an awareness update) goes out on an upgraded socket, the socket also asks whether its person still reads the room (`docs.recheckedConn`, `docs.Service.socketAsk`), and reads the database for it only when it holds no answer: before its first data frame after admission, and once the process's access epoch has moved since its last read (`docs.accessEpoch`), so a stream of frames with no access change reads nothing, in a deployment with a private project as in one without (R9).
+  The epoch moves on each notification on `dispatch_access_changed` and on `dispatch_session_access_changed`, which a write announces inside its own statement when it ties a session to a person, records a project the session wrote in or reached, stores the listener's answer, or fills or resets the session projects (`events.SessionAccessChannel`), so a socket that may no longer read the room closes with `4412` before the first frame after the notification reaches its process; it moves too on each LISTEN that stands or is lost and on every socket heartbeat, and while no LISTEN stands every data frame reads.
+  What that leaves is the notification's delivery: a frame the room writes between a write's commit and its notification's arrival goes out under the answer read before; a change made by SQL alone, which announces nothing, is read at the first frame after the next heartbeat.
+  For a person whose browser was open at admission the read is only whether a project is private while none is, once per move of the epoch for every socket of the process, and a failed read of it passes the frame on the last answer the socket read, so a database that does not answer closes no socket of a deployment that holds no private project; once a project is private the rule decides, and a failed read of it closes the socket with `4412`, on which the provider reconnects.
+  A control frame asks nothing, and once the socket's own context has ended (a re-check revoked it) every data frame is dropped.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -4249,6 +5364,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
+  Only the sessions the caller may see are listed: those `access.SessionClause` passes, for an open viewer every one but those that have acted in a private project it does not see and, while a project is private, those that have acted in none and are listed with a project it does not see.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4265,11 +5381,11 @@ Each item below names a path with its method and identity, then its purpose.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
   `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
-  Not an authorization boundary: direct-message text already reaches every caller through `GET /api/v1/events`, and a person may read any session's list.
+  A caller reads the list of a session it may see (`access.SessionClause`), and only the answers of projects it sees and of its own direct conversations.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  List the projects the caller sees (`key`, `name`, `open_asks`, `gated_steps`, `created_at`, and `visibility: "private"` on a private project, absent on a public one), ordered by key.
   A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
@@ -4295,8 +5411,10 @@ Each item below names a path with its method and identity, then its purpose.
   A mapping stored under `acme/..` is removed only by a request that sends the dots percent-encoded and keeps them, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E` from curl with `--path-as-is` or from a client that builds the path itself: a browser resolves `..` and `%2E%2E` as dot segments, so the dashboard's delete of such a mapping does not reach it; a `/` in a name is written `%2F`.
   The CI reconcile's warning about such a mapping names the request that removes it (`removed_by`), the path that spells the mapping's own name, split at the first `/` that leaves neither half empty nor a lone `/`, with a `/` inside a half written `%2F` (`DELETE /api/v1/settings/repo-projects/%2Fa/b` removes a mapping direct SQL stored as `/a/b`); for a mapping no path spells — a name with no `/`, one whose only `/` begins or ends it (`/acme`, or `acme/`, which a PUT of `acme/.git` stored before the rule above), or one each of whose `/` leaves nothing or a lone `/` on one side (`acme//`) — it names no request and says the mapping is removed by SQL.
   A `renamed_to` stored under such a name is no mapping's own name, so a removal of that name removes nothing: the warning names the PUT of the mapping it belongs to instead (`mended_by`), which mends it with a `renamed_to` GitHub allows, or `""` to clear it, and where that mapping's own name is one the PUT refuses or reads as another mapping's, it names that mapping's removal in the PUT's place (`removed_by`).
+  A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
+  The repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer read, is the exception: it reads no rename.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
 
@@ -4320,7 +5438,9 @@ Each item below names a path with its method and identity, then its purpose.
   `200 {installed}`, `false` when GitHub answers 404.
   A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPO_PROJECT`, and GitHub is asked nothing.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  The Legion daemon asks it for every repository it serves, for `legion state`.
+  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it: a rate limit already held on the App answers that limit.
+  With no private project every open viewer reads every repository's answer from GitHub, as before.
+  The Legion daemon asks it for every repository it serves, for `legion state`, so a daemon whose credential does not see a private project reads that project's repositories as not installed.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
 
@@ -4368,26 +5488,38 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/agent-tokens` (GET, POST; cookie, trusted header, or bearer; GET needs the `person` scope, POST `person` and `approve`)
 
-  List personal-token metadata, each row with the `scopes` its token holds, or mint a personal agent token `{name, scopes?}`.
+  List personal-token metadata, each row with the `scopes` its token holds and the `projects` it lists, absent when it lists none, or mint a personal agent token `{name, scopes?, projects?}`.
   `scopes` defaults to the set the caller's own credential holds;
   a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
+  `projects` is the list of projects the token may use, at most 16, each one the caller sees, stored sorted with each key once, else `400 TOKEN_PROJECTS_INPUT`;
+  it defaults to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
+  The mint takes the owner's `people` row for share, the row a sign-in under another Google account takes for update, and inserts only while its caller still holds the address (a cookie's session generation is still its login's, and a personal token is not revoked and its account still holds the address, `api.tokenAccountReplaced`); a broker-issued token never mints, since none holds the `approve` scope:
+  a mint racing that sign-in writes nothing and is refused as the caller's next request is, `401 NO_IDENTITY` for a cookie and `401 TOKEN_REVOKED` for a personal token.
+  Under `iap`, a mint at the person's browser is `401 MEMBERSHIP_HELD` while the Workspace Directory holds them and `503 IDENTITY_UNAVAILABLE` past their deadline (Identity, above).
+  A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
+  at the person's own browser, `projects_hidden: true` marks a token that lists a project the person no longer sees, and it is absent everywhere else.
 
 - `/api/v1/me/agent-tokens/{id}` (PATCH, DELETE; cookie, trusted header, or bearer; needs the `person` and `approve` scopes)
 
-  PATCH sets the token's scopes `{scopes}` — the whole set it is to hold, refused as the mint's are — and answers the token; DELETE revokes it.
+  PATCH sets the token's scopes and projects `{scopes, projects?}` — the whole set and list it is to hold, refused as the mint's are, and a `projects` left out keeps the list — and answers the token as the list does; DELETE revokes it.
   Another person's token, or none, is `404 NOT_FOUND`.
 
 - `/api/v1/users` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
+  A restricted member, and a credential acting for one, read only their own person and the people of the projects they see (`access.PersonClause`).
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
-  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
+  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, projects, private_projects, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `project` is the one project key that credential may write, null where it names none).
+  `projects` is the projects the credential lists, sorted, and absent when it lists none, and for a full member's broker-issued token while no project is private, as before lists existed (a full member's list decides only which private projects it reads, and it reads every public project whatever it lists; a restricted member's list decides every project it reads);
+  `private_projects` is those of `projects` the caller must treat as private, sorted, and absent when there is none: a private project's key, a key the credential no longer sees whatever its project's visibility, and a key that names no project, so a key is public exactly when it is in `projects` and not here, and the field tells nothing of a project the caller cannot see;
+  `project` is deprecated: the one project the credential's writes are held to, where they are held to one (a credential whose list holds its writes and names one key, or a broker-issued token an operator's entry scoped to one project), and null for every other credential).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
+  Either shape carries `member_kind: "restricted"` when the person the caller is or acts for is a restricted member, and leaves it out for everyone else;
+  a member kind that cannot be read is `503 IDENTITY_UNAVAILABLE`.
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
 
@@ -4515,8 +5647,16 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/references?versions=` (GET; cookie, trusted header, or bearer)
 
-  Read the issue's eight-hop artifact reference closure; a reference to a block reaches the block's document while a current version holds the block.
-  An `If-None-Match` value equal to the response ETag returns `304`.
+  Read the issue's references, one hop in each direction: `{links, linked_from, members, truncated}` (`model.IssueReferences`).
+  The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while the graph read lists it.
+  `links` is every node the issue's own content links to, and `linked_from` every node that links to the issue or to its own content.
+  Each holds one row for each node, `{node, name, kinds, via}`: the node as `GET /api/v1/references` names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end of those links.
+  A block of a document counts as that document while a current version holds the block, and a part of an ask or a block of a comment or a message counts as its item.
+  The issue and its own content are in neither list, nor is a node that only a structural edge joins to the issue, such as its parent or a child.
+  Each list is in the order of the node's kind, then its id, and is `[]` when it has no row.
+  `members` is the documents of `links`, each with its versions and its row's via, and `truncated` is false: a member's `depth` is always 1, since the read reads one hop, and both fields stay for the clients that read them.
+  Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers `503 REFERENCES_TIMEOUT`, to be asked again later.
+  An `If-None-Match` value equal to the response ETag returns `304`; the ETag moves when a row of either list changes, as a new link into the issue's content or an edit of a linked node changes one.
   `versions=latest` leaves each member's `artifact.versions` holding only its latest version and carries its own ETag;
   absent, empty or `all` is the full answer; any other value, or `versions` given more than once, is `400 INVALID_QUERY`.
 
@@ -4575,6 +5715,8 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  A restricted member, or a credential acting for one, names no `repo`: a create that names it, a string or `null`, is `403 RESTRICTED_MEMBER` (`a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository`) before the body's project, parent or external ref is read and before anything is written, so their issue takes the repository it resolves to, its nearest parent's or its project's default.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the body's project is read as the caller reads it, so a hidden project still answers `404`; `null` is never refused.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -4589,6 +5731,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  A restricted member, or a credential acting for one, sets, changes and clears no issue's `repo`: a patch that names it, a string or `null`, is `403 RESTRICTED_MEMBER` in the create's words, before the issue is read and before anything is written, so it answers alike for an issue the caller does not see and for one nobody holds.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the issue is read as the caller reads it, so a hidden issue still answers `404`; `null` is never refused.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
@@ -4919,7 +6063,7 @@ Each item below names a path with its method and identity, then its purpose.
     It goes into a pull request, which can be public, so the reading keeps only plain words: a word every rune of which is a visible letter, a digit or one of `. , ; : ! ? ' " - ( ) /`.
     Every other rune drops its word whole: many of them, such as emphasis and strikethrough (`*`, `_`, `~`), code, HTML, links, escapes, character references, math, mentions and every Unicode dash, quotation mark or invisible character, can split, join, hide or forge a key or a host once the pull request renders it, and the rule allows these few runes rather than list which; `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` and `it’s` leave the line too, while the record keeps the whole reading.
     Of the plain words it also leaves out every one that holds `://`, a host below `.internal.` or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of a project this Dispatch holds, judged as written and under NFKC; a public host written as `www.` and a domain, which GitHub renders as a link, stays.
-    The public text check refuses a host below `.internal.` and not one ending in `.internal`: it guards the whole repository, where names such as `metadata.google.internal` and `host.docker.internal` are well known, while the line is pasted into public text with no reader in between.
+    The public text check refuses a host below `.internal.` everywhere, and one ending in `.internal` only in a pull request's own text, where it still lets `metadata.google.internal` and `host.docker.internal` pass: over the whole repository such names are well known, while the line is pasted into public text with no reader in between and drops them too.
     A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)` and `fix/acme-12-lines` each hold one.
     `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
     What is left, when it is longer than 80 runes, is cut at the last blank within its first 80 runes, or, where those runes hold no blank, at the limit itself, with `…` where it was cut; a cut text is judged again, since a cut at the limit can fall inside a word and leave a key the whole word did not hold; a reading of which nothing is left, before the cut or after that second judging, says `The reading holds only words this line leaves out.`, and a result with no reading says `The role recorded no reading.`
@@ -5278,6 +6422,8 @@ It also names a target whose edge the write kept but whose excerpt it moved:
 an edit of an ask's question or a comment's body that changes the head of its text names every target the text still cites, a document version names each target whose stored excerpt it changed and each target a block it changed still cites, and a retitle names the issue's parent and the issues it is blocked by, whose panels show its title.
 A document version also names each block it changed or deleted that something cites, since every link to the block shows its text, and a comment's or issue message's write names each target whose link it moved from one of the item's blocks to another.
 An issue write that adds or removes a `blocked_by` entry names each blocker it added or removed, whose `referenced_by_count` counts the edge, and an `issue.created` names every blocker the new issue holds.
+A changed target that is an issue's own content (a document of the issue or a block of it, an ask of it or a part of it, a comment, a message, or a block of one) also names that issue, as a target of kind `issue`, once and after the other targets, unless the write names that issue already; a comment, a message and their blocks still name no target of their own.
+Those issues count toward the cap of `issue` (`refs.CountedChangeLimit`), so a page holding that issue's references read (`GET /api/v1/issues/{key}/references`, whose `linked_from` lists what links into the issue's content) refreshes it on that target.
 Each field is absent from an event written before it existed.
 
 ## Dispatch topics

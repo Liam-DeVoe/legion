@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { focusOnDocument } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -68,7 +69,8 @@ export interface MultiSelectProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
-  /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
+  /** Shown, and announced, in the footer pinned below the list, e.g. a host's validation message
+   *  for a rejected `onCreate`. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
   readonly emptyMessage: string;
@@ -189,6 +191,43 @@ export function MultiSelect({
     wasOpen.current = open;
   }, [open]);
 
+  // Every row, the Create row and Clear are buttons, so the focus can reach one, as a screen
+  // reader's cursor puts it there, and a press of each can take that focus to the body, where
+  // Escape no longer reaches the popover. Clear and the Create row always leave with their own
+  // press, Clear as the pick empties and the Create row as its value is made and the search
+  // empties, so a press of one that holds the focus gives it to the search box at the press
+  // itself, and the move does not depend on when the host applies the pick. A row's press need not
+  // take the row away. It can move the row, since a host can order the rows by the pick
+  // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
+  // ends a commit that took the focus away, it focuses again the element that held it before,
+  // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
+  // takes off the page loses the focus to the body, as in Details a label only the open draft
+  // holds does as the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's
+  // and the project's, so that label is listed only while the draft holds it. So a press of a row
+  // that holds the focus only notes it, and the commit that answers the press gives the search box
+  // the focus only where that commit took the row off the page. A pointer press focuses none of
+  // them (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the
+  // options take away holds no press, and its focus stays on the page's body, as for every change
+  // the reader did not make. A popover that closes takes the search box along, and the close above
+  // gives the focus back to the trigger instead.
+  const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget === document.activeElement) inputRef.current?.focus();
+  };
+  // Whether a row was pressed while it held the focus, until the commit that answers the press:
+  // the press asks for a render, so that commit comes even where the press changes nothing else.
+  const focusedRowPressed = useRef(false);
+  const [, renderAfterPress] = useState(0);
+  const noteFocusedRow = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget !== document.activeElement) return;
+    focusedRowPressed.current = true;
+    renderAfterPress((renders) => renders + 1);
+  };
+  useEffect(() => {
+    const pressed = focusedRowPressed.current;
+    focusedRowPressed.current = false;
+    if (pressed && focusOnDocument()) inputRef.current?.focus();
+  });
+
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" && rows.length > 0) {
       event.preventDefault();
@@ -288,6 +327,7 @@ export function MultiSelect({
                   id={optionId(option)}
                   key={option}
                   onClick={() => toggle(option)}
+                  onClickCapture={noteFocusedRow}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
@@ -324,6 +364,7 @@ export function MultiSelect({
                 disabled={disabled}
                 id={optionId(createValue)}
                 onClick={() => create(createValue)}
+                onClickCapture={focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 role="option"
                 type="button"
@@ -340,24 +381,39 @@ export function MultiSelect({
               </p>
             ) : null}
           </div>
-          {error === null ? null : (
-            <p
-              className={`border-t px-3 py-2 text-sm ${tooltips ? `${borderDefault} ${dangerText}` : ON_PAGE.failure}`}
-            >
-              {error}
-            </p>
-          )}
-          {selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
-              <button
-                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
-                disabled={disabled}
-                onClick={() => onChange([])}
-                onMouseDown={(event) => event.preventDefault()}
-                type="button"
-              >
-                Clear {label.toLocaleLowerCase()}
-              </button>
+          {/* The rows scroll under this footer, so an error drawn after them would sit below the
+              row just pressed, or under the footer itself: it is drawn here, in view, and
+              announced. */}
+          {error === null && selected.length === 0 ? null : (
+            <div className={`sticky bottom-0 border-t ${tooltips ? card : ON_PAGE.panel}`}>
+              {error === null ? null : (
+                <p
+                  className={`px-3 py-2 text-sm ${tooltips ? dangerText : ON_PAGE.failure}`}
+                  role="alert"
+                >
+                  {error}
+                </p>
+              )}
+              {selected.length === 0 ? null : (
+                <div
+                  className={
+                    error === null
+                      ? "p-2"
+                      : `border-t p-2 ${tooltips ? borderDefault : ON_PAGE.panel}`
+                  }
+                >
+                  <button
+                    className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
+                    disabled={disabled}
+                    onClick={() => onChange([])}
+                    onClickCapture={focusSearchFirst}
+                    onMouseDown={(event) => event.preventDefault()}
+                    type="button"
+                  >
+                    Clear {label.toLocaleLowerCase()}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </AnchoredPanel>

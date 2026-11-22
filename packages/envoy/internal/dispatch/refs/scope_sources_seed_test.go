@@ -294,7 +294,7 @@ func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
 			if source.Kind != "comment" {
 				continue
 			}
-			scope, err := ScopeOf(ctx, tx, source.Kind, source.ID)
+			scope, err := ScopeOf(ctx, tx, serverReader, source.Kind, source.ID)
 			if err != nil {
 				t.Fatalf("the scope of comment %s: %v", source.ID, err)
 			}

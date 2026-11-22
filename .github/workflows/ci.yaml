@@ -63,6 +63,7 @@ env:
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
+      "dispatch-project-access": "dispatch_project_access",
       "listener-server-change": "listener_server_change",
       "broker-multiprocess": "broker_multiprocess",
       "airlock-lean": "airlock_lean",
@@ -100,7 +101,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
-      # Each output reads the one dorny/paths-filter step below. Rule 19 of
+      # Each output but ref_is_main reads the one dorny/paths-filter step below. Rule 19 of
       # .github/scripts/check-ci-filters.sh refuses an output naming a filter .github/ci-filters.yaml does not hold.
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
@@ -199,6 +200,8 @@ jobs:
       dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-jobs-go-step-alone-behind-a-gate-of-its-own
       dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
+      # why: .github/ci-notes/ci.md#the-private-projects-blob-drivers-job
+      dispatch_project_access: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_project_access }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
@@ -216,6 +219,8 @@ jobs:
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
       # why: .github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || toJSON(steps.filter.outputs) }}
+      # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+      ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
       # why: .github/ci-notes/ci.md#on-pull_request-dornypaths-filter-reads-the-file-list-from-the-api-and-reads
       - if: github.event_name != 'pull_request'
@@ -236,6 +241,10 @@ jobs:
         with:
           predicate-quantifier: some-with-excludes
           filters: .github/ci-filters.yaml
+      # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+      - name: Read whether this run's ref is exactly refs/heads/main
+        id: ref
+        run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
@@ -708,6 +717,19 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
 
+  # why: .github/ci-notes/ci.md#the-private-projects-blob-drivers-job
+  dispatch-project-access:
+    needs: changes
+    if: needs.changes.outputs.dispatch_project_access == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read
+    uses: ./.github/workflows/ci-job-dispatch-project-access.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#the-server-change-soak
   listener-server-change:
     needs: changes
@@ -839,6 +861,8 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-pr-title-job-what-it-checks-and-why-it-posts-nothing
   pr-title:
+    # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+    name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
@@ -897,6 +921,8 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
   ci-ok:
+    # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+    name: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}
     needs:
       - changes
       - lint
@@ -933,6 +959,7 @@ jobs:
       - dispatch-memory
       - dispatch-multiprocess
       - dispatch-two-builds
+      - dispatch-project-access
       - listener-server-change
       - broker-multiprocess
       - airlock-lean
@@ -986,7 +1013,7 @@ jobs:
 
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

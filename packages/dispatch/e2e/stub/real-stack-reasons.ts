@@ -39,7 +39,8 @@ export const realStackReasons: Record<string, string> = {
     "the view is built from the session's replay over the relay, and each turn is drawn under the id Dispatch minted for the message it answers, folded with the reply the server stored",
   "agent-skill-completion.e2e.ts":
     "completion reads the session's commands from the replay the live relay carries, and what Send hands over is read back from the fake Envoy",
-  "agent-tokens.e2e.ts": "token mint, attribution, privacy between two contexts, revoke",
+  "agent-tokens.e2e.ts":
+    "token mint, attribution, privacy between two contexts, revoke; the projects a token names, minted and edited, re-read after a reload",
   "agent-view-cost.e2e.ts":
     "every view opens on a transcript at the stream's limit the relay replays, and the gap row turns on the relay itself: a frame published while a viewer is subscribed reaches the page, and one published to a sleeping view reaches nobody and is kept nowhere",
   "agent-view-settings.e2e.ts":
@@ -141,6 +142,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -186,6 +189,8 @@ export const realStackReasons: Record<string, string> = {
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
+  "issue-page-h.e2e.ts":
+    "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
   "issue-page-p.e2e.ts":
     "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
@@ -258,6 +263,8 @@ export const realStackReasons: Record<string, string> = {
     "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-access-ui.e2e.ts":
+    "the owner check, the email check and a group's existence are the server's to refuse, the added person and group, the Slack channels and the new owner are read back after a reload, and giving the project away moves the owner check to another person",
   "project-default-assignee.e2e.ts":
     "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
@@ -267,6 +274,8 @@ export const realStackReasons: Record<string, string> = {
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
   "refresh-freshness.e2e.ts": "writes after load must reach the open page within 2 s",
+  "restricted-member.e2e.ts":
+    "the member kind whoami answers and the projects the server lists are its read rule over the people row and the access list the row writes: bob, whom PRIV's list names, is listed PRIV and not the public CORE; the delivery timeline answers him the pull requests of PRIV's issues alone, and the server's refusals of a deployment read are the instrument that shows his pages ask for none",
   "result-commit.e2e.ts": "the result line is read in the document margin's Pinned tab",
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",

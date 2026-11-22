@@ -234,6 +234,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its
@@ -268,6 +273,14 @@ type SessionInfo struct {
 	Roles          []string `json:"roles"`
 	UpdatedAt      int64    `json:"updated_at"`
 	LastSeen       int64    `json:"last_seen"`
+	// Projects is the sorted list of the projects the session's credential names (K6), which
+	// Dispatch reads to filter its agents list and serves to no caller: [] for a credential that
+	// names none. Nil, and so absent, while the listener records no list for the session, so a
+	// list of sessions from a listener that does not is the bytes it always was. It is a pointer
+	// so that the two stay apart on the wire: a list the listener did not send is one Dispatch does
+	// not know, which it must not read as a credential that names no project
+	// (access.SessionClause), and an empty []string under omitempty would send [] as no key.
+	Projects *[]string `json:"projects,omitempty"`
 	// The plugin the session registered through and its build; absent for a session whose plugin
 	// predates the fields.
 	Plugin        string `json:"plugin,omitempty"`

@@ -19,12 +19,14 @@
  * would kill a process its row is still using: the probe the seven driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
- * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the fake Dispatch
- * host `outside-path-reach-fixtures.ts` starts for the rows of the four `outside-path-reach*`
- * test files, and the processes `local-instance-support.test.ts` starts through its
- * `Supervisor`. Two subprocesses a row can wait for run outside it, as stated edges. One is the
- * psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch databases
- * of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the hosts of the
+ * fake Dispatches and of the stand-in edges that `fakeHost` of `outside-path-reach-fixtures.ts`
+ * starts, one for each fake a row of the four `outside-path-reach*` test files or of the three
+ * `outside-edge-refusals*` ones asks for, and the processes `local-instance-support.test.ts`
+ * starts through its `Supervisor`. Two subprocesses a row can wait for run outside it, as stated
+ * edges. One is the psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts` and
+ * `node-projects-horizon-hold.test.ts`, and the scratch databases of
+ * `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
  * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`. The
  * other is the `ps` that reads the process table on a machine with no `/proc`, here
  * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
@@ -46,7 +48,7 @@
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` are the largest cost lines of the
- * five-run whole-lane checks recorded on Dispatch issue INFRA-3082 at heads 32078f86 through
+ * five-run whole-lane checks recorded on the issue that set these bounds, at heads 32078f86 through
  * a691dbe5, each run `bun test --parallel --timeout 60000 e2e/__tests__` under nine busy loops,
  * three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16. Three readings are older, and
  * each names the run it came from: the driver's 3.59 s and the listing's 76.20 s and 78.4 s. A
@@ -83,30 +85,50 @@
  *   own 60 s, the longest of that file's holds in two runs on that developer box at a load average
  *   of about 380 on 2026-11-21 (61.36 s in the other); the holds ended by release or refused took
  *   12.85 s or less. 68.73 s x 3 = 206.19 s, so 210 s.
+ * - `wholeIndexSweep`, against 82 s: the one run of `restricted-sweep-judging.test.ts` over the
+ *   whole route index, about 400 requests to that file's fake Dispatch, each a curl and a jq. On
+ *   the dev box at a load of 500 to 1200, with two more runs of that file and a run of
+ *   `restricted-sweep.test.ts`'s stacks beside it, on 2026-11-20 and 2026-11-21, it finished in
+ *   32.4 s, 37.6 s, 48.7 s and 49.4 s, and was stopped at the `short` bound it then had after 65 s
+ *   and after 82 s, so a correct run there takes longer than 82 s. 300 s is more than three times
+ *   82 s.
+ * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
+ *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
+ *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
+ *   2026-11-21. Their median was 3.6 s, and 9 of the 30 took 55 s to 175 s, each a run whose every
+ *   probe answered and whose verdict was right, slowed throughout by the starting and ending of
+ *   its processes, never by a probe's timeout. A tester's 80 runs of the script against a TLS
+ *   edge at a load of about 1,000 to 1,500 the day before read a median of 2.7 s and at most 86.3
+ *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
+ *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
+ *   an input it refuses, stays under `short`.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a driver run against the stand-in origin after
- * 75 s, a listing after 6 minutes, the generation after 6.5 minutes, the outside driver's stack
- * after 12.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
- * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
- * fires before the row's limit and the failure names the child. The lane runs in the
- * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
- * in 158 s (job 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of
- * those the lane started about 2 minutes in. A stuck listing therefore fails about 8 minutes into
- * the job: more than twice as long as a green run of the job, and well inside its limit, so the
- * job reports the failure rather than losing it to a kill from outside. The largest row limit
- * below the two-stack row's is 450 000 ms, on the two rows that start seven `short` children one
- * after another (the first rows of `harness-signin.test.ts` and of the `DISPATCH_E2E_PROCESSES`
- * block of `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does
- * not total). A hung child of either fails at its own 60 s bound; the row's limit fires only
- * when the row itself stalls outside its children, at most 7.5 minutes from its start, so such a
- * row, stalled from the lane's start, fails about 9.5 minutes into the job. The
- * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips
- * unless `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and the
- * `dispatch-ui` job names neither. `outside-edge.test.ts`'s stack rows skip on the same rule
- * there, and run in `.github/workflows/dispatch-browser.yaml`'s two-process job, which names the
- * image: that step's 14-minute budget is set above their 780 000 ms row limit, so a stuck stack
- * fails there by its own name before the step is killed.
+ * 75 s, a hold of the outside driver after 3.5 minutes, a whole-index sweep after 5 minutes, a
+ * listing after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9
+ * minutes, the outside driver's stack after 12.5 minutes, and the two-stack build after 30
+ * minutes. A row's limit is what `rowLimit` reads from the bounds of
+ * what the row waits for, plus 30 s for its own work, so the child's bound fires before the row's
+ * limit and the failure names the child. The lane runs in the `dispatch-ui` job of
+ * `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green in 158 s (job
+ * 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of those the lane
+ * started about 2 minutes in. A stuck listing therefore fails about 8 minutes into the job, and a
+ * stuck run of the edge check about 11: more than twice as long as a green run of the job, and
+ * inside its limit, so the job reports the failure rather than losing it to a kill from outside.
+ * The largest row limit below the two-stack row's is 1 110 000 ms, on the edge check's host-name
+ * row, which runs the check twice; a hung run of it fails at its own 540 s bound, and the row's
+ * limit fires only when the row itself stalls outside its children. Each row that runs the edge
+ * check once states 570 000 ms, and the two rows that start seven `short` children one after
+ * another state 450 000 ms (the first rows of `harness-signin.test.ts` and of the
+ * `DISPATCH_E2E_PROCESSES` block of `round-robin-proxy.test.ts`, each read from its lists through
+ * a spread the guard does not total): a hung child of either fails at its own 60 s bound. The
+ * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips unless
+ * `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names
+ * either. `outside-edge.test.ts`'s stack rows skip on the same rule there, and run in
+ * `.github/workflows/dispatch-browser.yaml`'s two-process job, which names the image: that step's
+ * 16-minute budget is set above their 780 000 ms row limit, so a stuck stack fails there by its
+ * own name before the step is killed.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -133,6 +155,11 @@ export const bounds = Object.freeze({
   /** One `hold` of the outside driver against a stand-in edge, which ends at its own 60 s at the
    *  longest: no browser, no stack. */
   outsideEdgeHold: 210_000,
+  /** One run of `e2e/acceptance/restricted-sweep.sh` over the whole route index against the fake
+   *  Dispatch of `restricted-sweep-judging.test.ts`: about 400 requests, each a curl and a jq. */
+  wholeIndexSweep: 300_000,
+  /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
+  edgeRun: 540_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
@@ -840,10 +867,13 @@ async function drain(
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Six files of this directory run children that are
+ *  This never throws for an exit status. Eleven files of this directory run children that are
  *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
  *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts`,
- *  `replace-blocks-guard.test.ts` and `round-robin-proxy.test.ts` - so a helper that always threw
+ *  `outside-agent-acceptance.test.ts`, `outside-agent-public.test.ts`,
+ *  `outside-edge-refusals.test.ts` (through `outside-edge-refusals-fixtures.ts`),
+ *  `replace-blocks-guard.test.ts`, `round-robin-proxy.test.ts`, `unit-repeat.test.ts` and
+ *  `visual-run.test.ts` - so a helper that always threw
  *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
  *  builds its message from `named`.
  *

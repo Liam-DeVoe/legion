@@ -177,11 +177,11 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 	if err != nil {
 		return "", err
 	}
-	options := append(redirectTo(redirectURL), gooidc.Nonce(nonce))
+	asks := append(redirectTo(redirectURL), gooidc.Nonce(nonce))
 	if f.hostedDomain != "" {
-		options = append(options, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"), oauth2.SetAuthURLParam("hd", f.hostedDomain))
+		asks = append(asks, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"), oauth2.SetAuthURLParam("hd", f.hostedDomain))
 	}
-	return issuer.config.AuthCodeURL(state, options...), nil
+	return issuer.config.AuthCodeURL(state, asks...), nil
 }
 
 // Exchange trades the code the issuer redirected to redirectURL for the signed-in person's ID

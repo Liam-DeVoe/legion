@@ -14,6 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -27,7 +29,7 @@ import (
 func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	r := newRig(t)
+	r := newHoldRig(t)
 	enrollmentID, key := r.benSession(t, "ben-box")
 	a := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
 	page := "/approve/" + a.recordID
@@ -76,6 +78,13 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 		{"a record the broker does not have", func(t *testing.T) ciphertest.Response {
 			return b.Get(t, "/approve/"+strings.Repeat("a", 64))
 		}, http.StatusNotFound, "NOT_FOUND"},
+		{"a page a person Dispatch calls a restricted member opens", func(t *testing.T) ciphertest.Response {
+			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberRestricted})
+			restricted := newRig(t, func(s *rigSetup) { s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) })
+			viewer := restricted.browser(t)
+			viewer.SignIn(t, a.recordID, person(ada))
+			return viewer.Get(t, page)
+		}, http.StatusForbidden, "NOT_APPROVER"},
 		{"a decision form it cannot read", func(t *testing.T) ciphertest.Response {
 			return b.FromPage(t, "/approve", unreadable)
 		}, http.StatusBadRequest, "FORM_UNREADABLE"},
@@ -104,6 +113,11 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			form.Set("record", later.recordID)
 			return b.FromPage(t, "/approve", form)
 		}, http.StatusForbidden, "RECORD_NOT_PRINTED"},
+		{"a decision by an approver Dispatch holds", func(t *testing.T) ciphertest.Response {
+			r.hold(ada)
+			defer r.release(ada)
+			return b.FromPage(t, "/approve", decision(formA, "approve"))
+		}, http.StatusForbidden, "MEMBERSHIP_HELD"},
 		{"a decision from another origin", func(t *testing.T) ciphertest.Response {
 			return b.Post(t, "/approve", decision(formA, "approve"), elsewhere)
 		}, http.StatusForbidden, "ORIGIN_REFUSED"},
@@ -136,6 +150,14 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			fresh, callback := started(t, claims)
 			return fresh.Get(t, callback.String())
 		}, http.StatusForbidden, "SIGN_IN_ACCOUNT_REFUSED"},
+		{"an account another account replaced", func(t *testing.T) ciphertest.Response {
+			const replaced = "sub-replaced-" + carol
+			r.revokeSubject(t, carol, replaced, "sub-"+carol)
+			claims := person(carol)
+			claims["sub"] = replaced
+			fresh, callback := started(t, claims)
+			return fresh.Get(t, callback.String())
+		}, http.StatusForbidden, "SIGN_IN_ACCOUNT_REPLACED"},
 		{"a sign-out form it cannot read", func(t *testing.T) ciphertest.Response {
 			return b.FromPage(t, "/signin/logout", unreadable)
 		}, http.StatusBadRequest, "FORM_UNREADABLE"},
@@ -169,8 +191,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 17 {
-		t.Fatalf("the table drove %d of the page's 17 refusals", driven)
+	if driven != 20 {
+		t.Fatalf("the table drove %d of the page's 20 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.

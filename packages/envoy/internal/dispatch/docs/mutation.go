@@ -21,6 +21,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -1001,7 +1002,13 @@ func placeList(places []string) string {
 // narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
 // settlement retracts the ask of a block that leaves the document there.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
-	open, err := s.openAskBlocks(ctx, artifactID)
+	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target)
+}
+
+// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's open asks through q,
+// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
+func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node) error {
+	open, err := openAskBlocksIn(ctx, q, artifactID)
 	if err != nil {
 		return err
 	}
@@ -1018,7 +1025,7 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string,
 // so refusing on it would name the caller a block they never wrote, with advice they cannot act
 // on.
 func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}) error {
-	open, err := s.openAskBlocks(ctx, artifactID)
+	open, err := openAskBlocksIn(ctx, s.queryFrom(ctx), artifactID)
 	if err != nil {
 		return err
 	}
@@ -1030,9 +1037,9 @@ func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID st
 	return refuseLostAskBlocks(open)
 }
 
-// openAskBlocks is the block id of each open ask of the document.
-func (s *Service) openAskBlocks(ctx context.Context, artifactID string) (map[string]struct{}, error) {
-	rows, err := s.queryFrom(ctx).Query(ctx, `
+// openAskBlocksIn is the block id of each open ask of the document, read through q.
+func openAskBlocksIn(ctx context.Context, q Queryer, artifactID string) (map[string]struct{}, error) {
+	rows, err := q.Query(ctx, `
 		select block_id from asks
 		where block_artifact_id = $1 and state = 'open' and block_id is not null
 	`, artifactID)
@@ -1102,9 +1109,9 @@ func droppedAskBlocks(before, after *pmdoc.Node) map[string]struct{} {
 	return dropped
 }
 
-// Text returns the rendered document the caller sees (readDocument).
-func (s *Service) Text(ctx context.Context, artifactID string) (string, error) {
-	read, tree, err := s.readDocument(ctx, artifactID)
+// Text returns the rendered document who sees (readDocument).
+func (s *Service) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
+	read, tree, err := s.readDocument(ctx, who, artifactID)
 	switch {
 	case err != nil:
 		return "", err
@@ -1117,16 +1124,16 @@ func (s *Service) Text(ctx context.Context, artifactID string) (string, error) {
 }
 
 // TextWithToken returns canonical markdown and a token over its full Proof tree,
-// including inline marks that canonical Markdown does not render. It answers the markdown and
-// the token the document's latest version stored, without reading the document, where that
-// version is still the document's state (storedText); otherwise it reads the document and
-// renders it.
-func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
-	markdown, token, served, err := s.storedText(ctx, artifactID)
+// including inline marks that canonical Markdown does not render, as who reads it: a document who
+// may not read is pgx.ErrNoRows (storedText). It answers the markdown and the token the document's
+// latest version stored, without reading the document, where that version is still the document's
+// state (storedText); otherwise it reads the document and renders it.
+func (s *Service) TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error) {
+	markdown, token, served, err := s.storedText(ctx, who, artifactID)
 	if err != nil || served {
 		return markdown, token, err
 	}
-	read, tree, err := s.readDocument(ctx, artifactID)
+	read, tree, err := s.readDocument(ctx, who, artifactID)
 	switch {
 	case err != nil:
 		return "", "", err
@@ -1138,17 +1145,18 @@ func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string,
 	return renderTokenTree(tree)
 }
 
-// readDocument is the document the caller sees, read without loading or writing its room, so it
-// also reads a closed issue's document: the tree of the calling transaction's fork or of the
-// resident room, or of the stored document when that room is behind the stored head (heldTree),
-// else the rendering of the stored document (coldRead), or the stored document's tree where the
-// rendering does not take it. A document with no stored state has neither, and no error.
-func (s *Service) readDocument(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
-	tree, held, err := s.heldTree(ctx, artifactID)
+// readDocument is the document who sees, read without loading or writing its room, so it also
+// reads a closed issue's document: the tree of the calling transaction's fork or of the resident
+// room, or of the stored document when that room is behind the stored head (heldTree), else the
+// rendering of the stored document (coldRead), or the stored document's tree where the rendering
+// does not take it. A document with no stored state has neither, and no error. A resident room's
+// document who may not read is pgx.ErrNoRows (readStoredHead).
+func (s *Service) readDocument(ctx context.Context, who model.Actor, artifactID string) (*documentRead, *pmdoc.Node, error) {
+	tree, held, err := s.heldTree(ctx, who, artifactID)
 	if err != nil || held {
 		return nil, tree, err
 	}
-	return s.coldRead(ctx, artifactID)
+	return s.coldRead(ctx, who, artifactID)
 }
 
 // heldTree is the tree of the document where this server holds it, once a failed room's recovery
@@ -1161,7 +1169,7 @@ func (s *Service) readDocument(ctx context.Context, artifactID string) (*documen
 // is what keeps such a read from going backwards: the stored document at that head is missing the
 // room's own update whose append is still in flight, and no read takes back text the room has
 // already sent its browsers.
-func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.Node, held bool, err error) {
+func (s *Service) heldTree(ctx context.Context, who model.Actor, artifactID string) (tree *pmdoc.Node, held bool, err error) {
 	if err := s.awaitRoomRecovery(ctx, artifactID); err != nil {
 		return nil, false, err
 	}
@@ -1177,7 +1185,7 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 	if live == nil {
 		return nil, false, nil
 	}
-	head, err := s.readStoredHead(ctx, artifactID)
+	head, err := s.readStoredHead(ctx, who, artifactID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1197,8 +1205,8 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 // document decoded), with the durable state it decoded the document from, nil when this server
 // holds the document. A durable history that does not decode is ErrDocumentUnloadable and fails
 // the room, as ygo's own load of it would.
-func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, error) {
-	tree, held, err := s.heldTree(ctx, artifactID)
+func (s *Service) loadTree(ctx context.Context, who model.Actor, artifactID string) (*pmdoc.Node, *persistence.LoadResult, error) {
+	tree, held, err := s.heldTree(ctx, who, artifactID)
 	if err != nil || held {
 		return tree, nil, err
 	}
@@ -1236,17 +1244,18 @@ func renderTokenTree(tree *pmdoc.Node) (string, string, error) {
 	return markdown, token, nil
 }
 
-// Blocks returns each stamped block and its byte range in canonical markdown.
-func (s *Service) Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
-	_, blocks, err := s.TextWithBlocks(ctx, artifactID)
+// Blocks returns each stamped block and its byte range in canonical markdown, of the document who
+// sees (TextWithBlocks).
+func (s *Service) Blocks(ctx context.Context, who model.Actor, artifactID string) ([]model.ArtifactBlock, error) {
+	_, blocks, err := s.TextWithBlocks(ctx, who, artifactID)
 	return blocks, err
 }
 
-// TextWithBlocks renders the document the caller sees (readDocument) once and returns its
-// canonical markdown beside the blocks whose byte ranges index into it. The blocks are the
-// caller's own: it may write into them (References).
-func (s *Service) TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
-	read, tree, err := s.readDocument(ctx, artifactID)
+// TextWithBlocks renders the document who sees (readDocument) once and returns its canonical
+// markdown beside the blocks whose byte ranges index into it. The blocks are the caller's own: it
+// may write into them (References).
+func (s *Service) TextWithBlocks(ctx context.Context, who model.Actor, artifactID string) (string, []model.ArtifactBlock, error) {
+	read, tree, err := s.readDocument(ctx, who, artifactID)
 	switch {
 	case err != nil:
 		return "", nil, err
@@ -1258,14 +1267,14 @@ func (s *Service) TextWithBlocks(ctx context.Context, artifactID string) (string
 	return documentBlocks(tree)
 }
 
-// TextWithTokenAndBlocks renders the document the caller sees (readDocument) once and returns its
+// TextWithTokenAndBlocks renders the document who sees (readDocument) once and returns its
 // canonical markdown, its whole-document token and the blocks whose byte ranges index into it,
 // all from that one rendering. A write that lands between two reads cannot leave the blocks
 // indexing markdown they were not computed over, which two reads allow. The blocks are the
 // caller's own, as TextWithBlocks hands them out. A tree holding a value the document token
 // cannot encode is the error TextWithToken gives for it, since this read answers that token.
-func (s *Service) TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error) {
-	read, tree, err := s.readDocument(ctx, artifactID)
+func (s *Service) TextWithTokenAndBlocks(ctx context.Context, who model.Actor, artifactID string) (string, string, []model.ArtifactBlock, error) {
+	read, tree, err := s.readDocument(ctx, who, artifactID)
 	switch {
 	case err != nil:
 		return "", "", nil, err
@@ -1380,11 +1389,10 @@ func blockTable(rows []pmdoc.TableRow) *model.BlockTable {
 	return table
 }
 
-// BlockPath is where the block carrying blockID stands in the document the caller sees
-// (readDocument): pmdoc.ErrTargetNotFound when no block carries it, a document with no state
-// included.
-func (s *Service) BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error) {
-	read, tree, err := s.readDocument(ctx, artifactID)
+// BlockPath is where the block carrying blockID stands in the document who sees (readDocument):
+// pmdoc.ErrTargetNotFound when no block carries it, a document with no state included.
+func (s *Service) BlockPath(ctx context.Context, who model.Actor, artifactID, blockID string) (model.BlockPath, error) {
+	read, tree, err := s.readDocument(ctx, who, artifactID)
 	if err != nil {
 		return model.BlockPath{}, err
 	}
@@ -1516,7 +1524,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
@@ -2013,7 +2021,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // serviceTransact wraps Server.Apply's transact so the room's update observer can tell the
@@ -2371,10 +2379,13 @@ func contentChangedSinceVersion(ctx context.Context, tx pgx.Tx, artifactID strin
 
 // versionWriteResult is a written version together with the counted reference targets its body
 // moved: the caller that appends the version event names them, so a reader holding those
-// nodes' batched backlink counts refreshes exactly their rows.
+// nodes' batched backlink counts refreshes exactly their rows. blocks is what the version's
+// block index stated in the node and tuple store, which that same caller appends under the
+// event it appends (graphstore.Caused).
 type versionWriteResult struct {
 	version model.Version
 	changes model.ReferenceChanges
+	blocks  graphstore.Uncaused
 }
 
 // renderedTree is a document tree with its canonical markdown and each identified block's byte
@@ -2443,7 +2454,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// The version's references, its mentions' excerpts and its blocks are indexed from the render
 	// this version's markdown came from, in its own transaction, so GET /api/v1/references serves
 	// them without rendering the document.
-	changes, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
+	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
 	if err != nil {
 		return versionWriteResult{}, err
 	}
@@ -2455,7 +2466,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// the person (MoveApprovalAsk). A move over versions written while the issue was closed
 		// names the editor a closed issue's settlement kept, where this version names
 		// SettlementActor only because it adds none of that editor's text (versionWrite.keptEditor).
-		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.serverURL); err != nil {
+		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.origins); err != nil {
 			return versionWriteResult{}, err
 		}
 		// A human's approval carries to the version this writes by carryApproval's rules: his
@@ -2484,7 +2495,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 			ledger.recordVersion(artifactID, version, *spec.capture)
 		}
 	}
-	return versionWriteResult{version: version, changes: changes}, nil
+	return versionWriteResult{version: version, changes: changes, blocks: blocks}, nil
 }
 
 // queueVersionInsert is how every document version is written: it numbers and dates the next

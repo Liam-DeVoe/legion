@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -243,6 +243,13 @@ beforeEach(() => {
   resetAdviceMemory();
 });
 
+// A row that holds the clock releases it when its command settles. One that timed out before
+// then would leave it held for every later row and file of the process, so each row ends on the
+// real clock.
+afterEach(() => {
+  setSystemTime();
+});
+
 async function runInbox(): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -324,6 +331,26 @@ describe("dispatch inbox", () => {
     // The asks are the greater part of the Inbox, and one failed read does not cost them.
     expect(stdout).toContain("Waiting on agents 2\n");
     expect(stdout).toContain("Later 1\n");
+  });
+
+  // The credential list is a read of the whole deployment, which Dispatch refuses a restricted
+  // member and a credential that lists projects. Such a caller has no list to read, so its Inbox
+  // counts and lists none and warns nothing, as the web Inbox never asks them for it; the row
+  // above is what any other refusal still reads as.
+  test("a credential the deployment's reads are refused to counts no credential request and warns nothing", async () => {
+    pendingAnswer = refusal(
+      "DEPLOYMENT_READ_REFUSED",
+      "this read is the deployment's, which a restricted member may not make",
+      403
+    );
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("Needs you 2\n");
+    expect(stdout).toContain("Waiting on agents 2\n");
+    expect(stdout.trimEnd().endsWith("Credential requests 0")).toBe(true);
   });
 
   test("a null credential-requests body counts 0 and lists nothing", async () => {
@@ -458,7 +485,10 @@ describe("dispatch inbox", () => {
       ),
     };
 
-    const { code, stdout, stderr } = await runInbox();
+    // The command dates each age by its own clock when it prints, after its four reads: the clock
+    // stands at `now` until then, so each age is the one written above, however long they take.
+    setSystemTime(new Date(now));
+    const { code, stdout, stderr } = await runInbox().finally(() => setSystemTime());
 
     expect(stderr).toBe("");
     expect(code).toBe(0);

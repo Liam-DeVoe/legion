@@ -400,10 +400,21 @@ var (
 	// Both are the scoped shape (meaningOneProject), because every caller of either binds a
 	// project as $2 - the fixture's own (documentSearchFixture.project) and the measurement
 	// subject's (statement_timing_test.go) - and that is the shape search and the check send for
-	// such a call (runMeaningSearch, relatedMeaningStatementFor).
-	searchQueryMeaningOverMainsDocumentArm  = searchQOpener(12) + searchQueryMeaningBody(mainSearchKeywordLegsSQL, searchFusedSQL, "", meaningOneProject)
-	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(mainRelatedKeywordLegs, relatedFusedSQL, "", meaningOneProject)
+	// such a call (runMeaningSearch, relatedMeaningStatementFor). Each binds the acting
+	// credential where the statement it is the oracle of binds it, since both are this
+	// release's own body; main's legs bind no project rule, which a reader that sees every
+	// project (everyReader) reads the same as this release's legs.
+	searchQueryMeaningOverMainsDocumentArm = searchQOpener(12) +
+		searchQueryMeaningBody(mainLegs(mainSearchKeywordLegsSQL), searchFusedSQL, "", searchMeaningSeenParam, meaningOneProject)
+	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) +
+		searchQueryMeaningBody(mainLegs(mainRelatedKeywordLegs), relatedFusedSQL, "", 14, meaningOneProject)
 )
+
+// mainLegs is main's keyword legs as this release's bodies take legs: rendered for a parameter
+// main's text never reads.
+func mainLegs(legs string) func(seen int) string {
+	return func(int) string { return legs }
+}
 
 // mainRelatedProbeSQL is main's relatedProbeSQL, the fifth statement of R1.
 const mainRelatedProbeSQL = `

@@ -1,15 +1,21 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -92,14 +98,17 @@ func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, cla
 	// rig.now is the people store's clock, which stands in for the database's: it dates each
 	// confirmation and measures its age, and Membership reads no clock of its own.
 	rig.people.now = func() time.Time { return rig.now }
-	if err := rule.WriteSignIn(context.Background(), rig.people, memberEmail, subject, session.RefreshToken); err != nil {
+	person, err := rule.Person(context.Background(), session.Claims)
+	if err != nil || person.Email != memberEmail {
+		t.Fatalf("the rule names %+v (%v) for the sign-in, want %s", person, err, memberEmail)
+	}
+	if err := rule.WriteSignIn(context.Background(), rig.people, person, subject, session.RefreshToken); err != nil {
 		t.Fatalf("record sign-in: %v", err)
 	}
 	rig.membership = &Membership{
-		People:   rig.people,
-		Sessions: rig.sessions,
-		SignIn:   flow,
-		Rule:     rule,
+		People: rig.people,
+		SignIn: flow,
+		Rule:   rule,
 	}
 	return rig
 }
@@ -209,6 +218,65 @@ func TestDomainMembershipEndsTheSessionOfARowWithNoSubject(t *testing.T) {
 		t.Fatalf("Confirm of a row with no subject refreshed at the issuer (%d refreshes, want %d)", got, refreshes)
 	}
 	assertSessionEnded(t, rig)
+}
+
+// failingWrites is testPeopleStore whose two writes of a refresh's outcome, ConfirmSubject and
+// EndSubject, fail with err, as a database that stops answering between a confirmation's read of
+// the row and its write does.
+type failingWrites struct {
+	*testPeopleStore
+	err error
+}
+
+func (s failingWrites) ConfirmSubject(context.Context, string, string, string, string, string, model.MemberKind) error {
+	return s.err
+}
+
+func (s failingWrites) EndSubject(context.Context, string, string, string, auth.EndMode) (bool, error) {
+	return false, s.err
+}
+
+// A Google rule's confirmation whose write fails logs a WARN line naming the person and the
+// write's error, as a Workspace Directory check's failed write does: the write of a refresh Google
+// confirmed, and the end of a refresh Google refused (invalid_grant). Either refresh records
+// nothing, so the request is refused (RefreshFailed, with the write's error) and the next
+// confirmation asks Google again. The membership pass drops the error and counts the person
+// unasked, so the WARN line is the only record of the failure.
+//
+// Control: remove either slog.Warn (Membership.refresh's after WriteConfirm, endSubject's after
+// EndSubject) and its row fails, naming what was logged.
+func TestDomainMembershipLogsAFailedWriteAtWarn(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		refuse  bool
+		message string
+	}{
+		{"the write of a refresh Google confirmed", false, "dispatch: the sign-in issuer confirmed a lapsed membership, and its write failed"},
+		{"the end of a refresh Google refused", true, "dispatch: a failed confirmation could not end the sign-in, as its write failed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+			rig := newDomainMembershipRig(t)
+			if c.refuse {
+				rig.issuer.RevokeGrants()
+			}
+			down := errors.New("the database is down")
+			rig.membership.People = failingWrites{testPeopleStore: rig.people, err: down}
+			rig.now = rig.now.Add(2 * time.Hour)
+			if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, down) || outcome != RefreshFailed {
+				t.Fatalf("ConfirmFor with the write failing: outcome %d, err = %v; want RefreshFailed and the write's error", outcome, err)
+			}
+			warned := false
+			for line := range strings.Lines(logs.String()) {
+				warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, c.message) &&
+					strings.Contains(line, "email="+memberEmail) && strings.Contains(line, `error="the database is down"`)
+			}
+			if !warned {
+				t.Fatalf("logged %q; want a WARN line %q with the email and the write's error", strings.TrimSpace(logs.String()), c.message)
+			}
+		})
+	}
 }
 
 func TestMembershipConfirmedWithinTheHourAsksTheIssuerNothing(t *testing.T) {
@@ -424,7 +492,7 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	rig.now = rig.now.Add(2 * time.Hour)
 	var newGeneration int64
 	rig.membership.SignIn = refresherFunc(func(ctx context.Context, _ string) (oidc.Session, error) {
-		if err := rig.people.SignInSubject(ctx, memberEmail, "google-subject-B", "refresh-B"); err != nil {
+		if err := rig.people.SignInSubject(ctx, memberEmail, "google-subject-B", "refresh-B", "", model.MemberFull); err != nil {
 			t.Errorf("the new account's sign-in: %v", err)
 		}
 		generation, err := rig.sessions.EnsureSession(ctx, memberEmail)
@@ -443,5 +511,53 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	}
 	if membership, _ := rig.people.get(memberEmail); membership.Subject != "google-subject-B" || membership.RefreshToken != "refresh-B" {
 		t.Fatalf("the row after the old account's failure: %#v, want google-subject-B with refresh-B", membership)
+	}
+}
+
+// A restricted member's Google sign-in that an earlier build admitted from outside the domain ends
+// at its next hourly confirmation under OutsideRule, whatever a list names: the refreshed account
+// is of no Workspace, so the rule refuses it (ErrNotInDomain) without reading the lists, and every
+// session ends. The restricted member is not held: the row keeps its refresh token for membership
+// checks, reads signed out, and records the end's time as its confirmation (endModeFor's EndKeep),
+// and the session's next request is told why it ended. The log line is the rule's own words, that
+// the confirmation no longer admits the person, with the reason, and nothing of a membership of the
+// domain, which this person never had.
+func TestOutsideRuleEndsAGoogleSignInOfARestrictedMemberAtTheHourlyConfirmation(t *testing.T) {
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+	rig := newDomainMembershipRig(t)
+	rig.issuer.UpdateGrants(func(claims map[string]any) { delete(claims, "hd") })
+	rig.people.mu.Lock()
+	person := rig.people.people[memberEmail]
+	person.Kind = model.MemberRestricted
+	rig.people.people[memberEmail] = person
+	rig.people.mu.Unlock()
+	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
+	rig.membership.Rule = OutsideRule{DomainRule: DomainRule{Domain: memberDomain}, People: lister}
+	signedIn, _ := rig.people.get(memberEmail)
+	rig.now = rig.now.Add(2 * time.Hour)
+	if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) || outcome != RefreshKept {
+		t.Fatalf("Confirm past the hour of a Google account of no Workspace: outcome %d, err = %v; want RefreshKept and ErrNoIdentity", outcome, err)
+	}
+	if asked := lister.calls(); len(asked) != 0 {
+		t.Fatalf("the lister was asked %q at a Google refresh, want no call", asked)
+	}
+	if generation := rig.sessions.generation(memberEmail); generation != 1 {
+		t.Fatalf("session generation after the end = %d, want 1 (every cookie revoked)", generation)
+	}
+	kept, _ := rig.people.get(memberEmail)
+	if kept.RefreshToken != signedIn.RefreshToken || !kept.SignedOut || kept.Held || !kept.ConfirmedAt.Equal(rig.now) {
+		t.Fatalf("the ended row = %#v, want its refresh token kept, signed out, not held, and confirmed at the end's time %s", kept, rig.now)
+	}
+	login := CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions, Membership: rig.membership}
+	var told *SignedOut
+	if _, err := login.Login(cookieRequest(t, memberEmail, 0)); !errors.As(err, &told) || told.Reason != SignedOutWorkspaceAddress {
+		t.Fatalf("the ended session's next request: err = %v, want SignedOut with reason %s (the address is on the Workspace's domain)", err, SignedOutWorkspaceAddress)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
+		!strings.Contains(logged, "not in the domain that may use Dispatch") ||
+		strings.Contains(logged, "membership of the domain") {
+		t.Errorf("the end's log line = %q, want it to say the confirmation no longer admits the person, with the reason, and nothing of a membership of the domain", logged)
 	}
 }

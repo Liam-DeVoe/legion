@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -43,7 +44,7 @@ func awaitTermStatsRefresh(t *testing.T, srv *server, project string) {
 // pickTerms picks from text as an ask's question is picked: the whole text is its title.
 func pickTerms(t *testing.T, srv *server, project, text string, exclude relatedExclusion) relatedTerms {
 	t.Helper()
-	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, project, text, text, exclude, probeUnknownTerms)
+	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, everyReader, project, text, text, exclude, probeUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick related terms: %v", err)
 	}
@@ -395,8 +396,11 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 	if term, _ := pickedTerm(picked, "walrus"); term.Surface != "Walruses" {
 		t.Fatalf("walrus's surface = %q, want the text's own 'Walruses'", term.Surface)
 	}
-	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, ""),
-		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK)
+	// The related q binds nothing of its own, so the body's own eight parameters are followed by
+	// the acting credential at $9.
+	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "", 9),
+		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK,
+		refs.VisibilityArg(everyReader))
 	if err != nil {
 		t.Fatalf("run the keyword body under the related q: %v", err)
 	}
@@ -429,7 +433,7 @@ func TestRelatedTermsSurfacesComeFromTheTitleAlone(t *testing.T) {
 
 	title := "Walruses on the move"
 	text := title + "\nThey cross the tundra each spring."
-	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, "SURF", text, title, relatedExclusion{}, probeUnknownTerms)
+	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, everyReader, "SURF", text, title, relatedExclusion{}, probeUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick related terms: %v", err)
 	}
@@ -438,7 +442,7 @@ func TestRelatedTermsSurfacesComeFromTheTitleAlone(t *testing.T) {
 	if !pickedWalrus || !pickedTundra || walrus.Surface != "Walruses" || tundra.Surface != "" {
 		t.Fatalf("terms %+v, want walrus written 'Walruses' as the title has it and tundra, only in the spec, with no surface", picked.Terms)
 	}
-	untitled, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, "SURF", text, "", relatedExclusion{}, probeUnknownTerms)
+	untitled, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, everyReader, "SURF", text, "", relatedExclusion{}, probeUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick related terms with no title: %v", err)
 	}

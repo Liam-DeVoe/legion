@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,9 +6,10 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
-import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
+import { type FakeLiveSockets, installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
@@ -22,6 +23,8 @@ import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
+import { COMPACT_VIEWPORT_QUERY, MD_VIEWPORT_QUERY } from "./features/shell/useDialog";
+import { userPreferenceStorageKey } from "./features/shell/userPreference";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -68,7 +71,7 @@ test("signing out shows the sign-in page without a reload and ends the event fee
   );
 
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     // The shell is drawn once the draft stores have loaded for its person (`shellFor` in
     // `AuthGate`), a render after the sign-in check answers, and the event feed opens its socket
     // in the shell's own effect: so the socket is waited for, not read the moment the text shows.
@@ -187,7 +190,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
   );
   const otherTab = new BroadcastChannel("dispatch-sign-in");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     const refused = aliceWrite(queryClient, attempts, true);
@@ -203,7 +206,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
 
     login = "bob";
     act(() => otherTab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     expect(await out).toBeInstanceOf(SendStoppedError);
     expect(keptWrites()).toEqual([]);
@@ -266,7 +269,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
   const rereadWhoAmI = () =>
     act(() => void queryClient.invalidateQueries({ queryKey: ["whoami"] }));
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const keys: string[] = [];
     let up = false;
     let out: Promise<{ key: string } | null> = Promise.resolve(null);
@@ -318,7 +321,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     signedIn = true;
     up = true;
     await rereadWhoAmI();
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     expect(await out).toEqual({ key: "CORE-1" });
     expect(new Set(keys).size).toBe(1);
     expect(writesOf(queryClient).rows()).toMatchObject([
@@ -396,7 +399,7 @@ test("signing out asks first, then drops every write here and tells every other 
     return leaving.defaultPrevented;
   };
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
@@ -410,7 +413,7 @@ test("signing out asks first, then drops every write here and tells every other 
       "Sign out and discard 2 unsent changes?\n\n• CORE-1 set to done\n• CORE-2 set to done",
     ]);
     expect(logout).not.toHaveBeenCalled();
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(writesOf(queryClient).rows()).toHaveLength(2);
     expect(keptWrites()).toHaveLength(2);
 
@@ -490,7 +493,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     </MemoryRouter>
   );
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
@@ -998,9 +1001,14 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   }
 });
 
-/** The shell at `/`, signed in as alice, its event feed subscribed on the page's live socket;
- *  returns the teardown. */
-async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
+/** The shell at `/`, signed in as alice, once its event feed has opened the page's live socket,
+ *  the one socket of `sockets`; returns the teardown. The shell is drawn a render after the
+ *  sign-in check answers, once the draft stores have loaded (`shellFor` in `AuthGate`), and its
+ *  event feed opens the socket in an effect of its own, so "Signed in as alice" can show before
+ *  any socket exists: whether it has by then depends on what else the test file's order left
+ *  pending, and a caller that drives the socket at once would find none ("no live socket was
+ *  opened"). So this waits for the socket itself, and a caller drives it from the first line. */
+async function renderSignedIn(sockets: FakeLiveSockets, whoAmI: () => Promise<AuthenticatedUser>) {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({
@@ -1028,25 +1036,32 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await screen.findByText("Signed in as alice");
-  return () => {
+  const teardown = () => {
     view.unmount();
     liveSocketFor(queryClient).close();
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   };
+  try {
+    await screen.findByText(wholeText("Signed in as alice"));
+    await waitFor(() => expect(sockets.sockets).toHaveLength(1));
+  } catch (error) {
+    // The caller's own restore runs only once this answers, so a wait that fails puts the real
+    // WebSocket back here, and no later test of the file opens a fake one.
+    teardown();
+    sockets.restore();
+    throw error;
+  }
+  return teardown;
 }
 
 test("the connection pill follows the live socket: none while it connects, Reconnecting… once lost, and a Reload once two minutes pass", async () => {
   const sockets = installFakeLiveSockets();
-  const teardown = await renderSignedIn(async () => ({
+  const teardown = await renderSignedIn(sockets, async () => ({
     event_head: "0",
     kind: "user",
     login: "alice",
   }));
-  // The shell is drawn a render after the sign-in check answers, once the draft stores have loaded
-  // (`shellFor` in `AuthGate`), and its event feed opens the socket in an effect of its own.
-  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   // Every timer the socket sets from here on runs on the test's clock.
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.5);
@@ -1096,11 +1111,10 @@ test("the connection pill follows the live socket: none while it connects, Recon
 test("a live socket refused once the person is signed out takes the page to sign-in", async () => {
   const sockets = installFakeLiveSockets();
   let signedIn = true;
-  const teardown = await renderSignedIn(async () => {
+  const teardown = await renderSignedIn(sockets, async () => {
     if (!signedIn) throw new ApiError(401, { error: "unauthorized" });
     return { event_head: "0", kind: "user", login: "alice" };
   });
-  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   try {
     act(() => sockets.latest().open());
     signedIn = false;
@@ -1110,5 +1124,298 @@ test("a live socket refused once the person is signed out takes the page to sign
   } finally {
     teardown();
     sockets.restore();
+  }
+});
+
+/** The shell signed in as alice until its live socket is refused and whoami answers `signedOut`:
+ *  the way a page already open meets the hourly confirmation that ended its sign-in. Returns the
+ *  sign-in page's text, once it shows. */
+async function signInPageAfter(signedOut: ApiError): Promise<string> {
+  const sockets = installFakeLiveSockets();
+  let signedIn = true;
+  const teardown = await renderSignedIn(sockets, async () => {
+    if (!signedIn) throw signedOut;
+    return { event_head: "0", kind: "user", login: "alice" };
+  });
+  try {
+    act(() => sockets.latest().open());
+    signedIn = false;
+    act(() => sockets.latest().drop(1008));
+    await screen.findByRole("link", { name: "Sign in with Google" });
+    return screen.getByRole("main").textContent ?? "";
+  } finally {
+    teardown();
+    sockets.restore();
+  }
+}
+
+/** The sign-in page's text as it has always read. */
+const SIGN_IN_PAGE_TEXT =
+  "DispatchMake the next decision clear.Sign in to review your team's open decisions.Sign in with Google";
+
+// A sign-in the hourly confirmation ended is told in plain words on the sign-in page, from the
+// reason and the address Dispatch's `401 NO_IDENTITY` names.
+test("the sign-in page says why Dispatch signed the person out", async () => {
+  for (const [reason, words] of [
+    [
+      "NOT_LISTED",
+      "You were signed out because no Dispatch project's access list names alice@other.example any more.",
+    ],
+    [
+      "OUTSIDE_SIGNIN_OFF",
+      "You were signed out because Dispatch no longer signs in alice@other.example or any other account outside its Google Workspace domain.",
+    ],
+    [
+      "WORKSPACE_ADDRESS",
+      "You were signed out because alice@other.example is an address on a domain the Google Workspace owns, which signs in only as a Workspace account. Sign in with your Google Workspace account.",
+    ],
+  ] as const) {
+    const page = await signInPageAfter(
+      new ApiError(401, {
+        code: "NO_IDENTITY",
+        error: "signed out",
+        login: "alice@other.example",
+        reason,
+      })
+    );
+    expect(page).toBe(
+      `DispatchMake the next decision clear.${words}Sign in to review your team's open decisions.Sign in with Google`
+    );
+  }
+});
+
+// A 401 that gives no reason - a sign-out, a lapsed cookie, none at all - shows the sign-in page
+// alone, as does a reason this page does not know or a 401 from something in front of Dispatch.
+test("the sign-in page says nothing more for a 401 without a reason it knows", async () => {
+  for (const signedOut of [
+    new ApiError(401, { code: "NO_IDENTITY", error: "unauthorized" }),
+    new ApiError(401, {
+      code: "NO_IDENTITY",
+      error: "signed out",
+      login: "alice@other.example",
+      reason: "A_REASON_OF_A_LATER_RELEASE",
+    }),
+    new ApiError(401, {
+      error: "unauthorized",
+      login: "alice@other.example",
+      reason: "NOT_LISTED",
+    }),
+  ]) {
+    expect(await signInPageAfter(signedOut)).toBe(SIGN_IN_PAGE_TEXT);
+  }
+});
+
+const BOB_RESTRICTED: AuthenticatedUser = {
+  event_head: "0",
+  kind: "user",
+  login: "bob",
+  member_kind: "restricted",
+};
+
+/** The shell at `path`, signed in as `user`, on a phone-sized screen when `compact` is set, from
+ *  the md width up when `wide` is, and on a wide one otherwise (matching neither query); returns
+ *  the priorities read, to count, and the teardown. */
+function renderShellAt(
+  user: AuthenticatedUser,
+  path: string,
+  compact = false,
+  wide = false
+): { listPriorities: Mock<typeof api.listPriorities>; teardown: () => void } {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches:
+        (compact && query === COMPACT_VIEWPORT_QUERY) || (wide && query === MD_VIEWPORT_QUERY),
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  const spies = [
+    listPriorities,
+    spyOn(api, "whoAmI").mockResolvedValue(user),
+    spyOn(api, "listIssues").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "getInbox").mockResolvedValue([]),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <AuthGate />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    listPriorities,
+    teardown: () => {
+      view.unmount();
+      liveSocketFor(queryClient).close();
+      for (const spy of spies) spy.mockRestore();
+      window.matchMedia = originalMatchMedia;
+    },
+  };
+}
+
+// A restricted member reads only the projects that name them (R4 of the private-projects spec),
+// so Priorities and Pipeline, the views over every project, are no page of theirs: an address of
+// Priorities, of one priority or of Pipeline answers Page not found, and nothing reads the
+// priorities. Delivery is theirs: its timeline and measures answer them the pull requests whose
+// issue they see, so its address opens the page. A full member's address opens the page, as it
+// always did.
+test("a restricted member's Priorities and Pipeline addresses answer Page not found, and their Delivery address opens the page", async () => {
+  for (const path of ["/priorities", "/priorities/launch", "/pipeline"]) {
+    const { listPriorities, teardown } = renderShellAt(BOB_RESTRICTED, path);
+    try {
+      expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+      expect(listPriorities).not.toHaveBeenCalled();
+    } finally {
+      teardown();
+    }
+  }
+
+  const delivery = renderShellAt(BOB_RESTRICTED, "/delivery");
+  try {
+    expect(await screen.findByRole("heading", { name: "Delivery timeline" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+    expect(delivery.listPriorities).not.toHaveBeenCalled();
+  } finally {
+    delivery.teardown();
+  }
+
+  const { teardown } = renderShellAt(
+    { event_head: "0", kind: "user", login: "alice" },
+    "/priorities"
+  );
+  try {
+    expect(await screen.findByRole("heading", { name: "Priorities" })).toBeTruthy();
+  } finally {
+    teardown();
+  }
+});
+
+// The issue page's icon rail (the outline page, from the md width up) offers what the sidebar
+// does: a restricted member's names neither Priorities nor Pipeline, whose addresses answer them
+// Page not found, and keeps Delivery; a full member's names all three.
+test("a restricted member's icon rail on an issue page offers neither Priorities nor Pipeline", async () => {
+  // Nothing here is about the issue, and no Dispatch answers its reads, so they are answered at
+  // the client with the failure the page has always seen rather than reaching the network.
+  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+  const issueReads = [
+    spyOn(api, "getIssue").mockRejectedValue(unread),
+    spyOn(api, "listComments").mockRejectedValue(unread),
+    spyOn(api, "listIssueAsks").mockRejectedValue(unread),
+  ];
+  try {
+    for (const [person, offered] of [
+      [BOB_RESTRICTED, false],
+      [{ event_head: "0", kind: "user", login: "alice" }, true],
+    ] as const) {
+      const choice = userPreferenceStorageKey(person.login, "issue.page");
+      window.localStorage.setItem(choice, "outline");
+      const shell = renderShellAt(person, "/issues/CORE-1", false, true);
+      try {
+        const rail = await screen.findByTestId("icon-rail");
+        expect(within(rail).getByRole("link", { name: "Delivery" })).toBeTruthy();
+        for (const name of ["Priorities", "Pipeline"]) {
+          expect(within(rail).queryByRole("link", { name }) !== null).toBe(offered);
+        }
+        expect(shell.listPriorities).not.toHaveBeenCalled();
+      } finally {
+        shell.teardown();
+        window.localStorage.removeItem(choice);
+      }
+    }
+  } finally {
+    for (const read of issueReads) read.mockRestore();
+  }
+});
+
+// The broadcasts are the deployment's own rows, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED): that page is no page of theirs, and answers Page not found without a
+// read. The machine-login page is theirs, the one credential page they reach: they approve there
+// the device login of their own agents, and list and revoke their own machine logins, which is the
+// one list of machine logins Dispatch answers them. A full member's Broadcasts page reads the
+// broadcasts, as it always did.
+test("a restricted member's Broadcasts addresses answer Page not found, and their machine-login page lists their own logins", async () => {
+  const broadcasts = [
+    spyOn(api, "listBroadcasts").mockResolvedValue([]),
+    spyOn(api, "getBroadcast").mockRejectedValue(new Error("no broadcast read is expected")),
+  ];
+  const machineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    machine_code_page: true,
+  });
+  try {
+    for (const path of ["/agents/broadcasts", "/agents/broadcasts/b-1"]) {
+      const { teardown } = renderShellAt(BOB_RESTRICTED, path);
+      try {
+        expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+        for (const read of [...broadcasts, machineLogins]) expect(read).not.toHaveBeenCalled();
+      } finally {
+        teardown();
+      }
+    }
+
+    const machine = renderShellAt(BOB_RESTRICTED, "/credentials/machine");
+    try {
+      expect(await screen.findByRole("heading", { name: "Enter machine login code" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+      await waitFor(() => expect(machineLogins).toHaveBeenCalled());
+      for (const read of broadcasts) expect(read).not.toHaveBeenCalled();
+    } finally {
+      machine.teardown();
+    }
+    const { teardown } = renderShellAt(
+      { event_head: "0", kind: "user", login: "alice" },
+      "/agents/broadcasts"
+    );
+    try {
+      await waitFor(() => expect(broadcasts[0]).toHaveBeenCalled());
+      expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+    } finally {
+      teardown();
+    }
+  } finally {
+    for (const read of [...broadcasts, machineLogins]) read.mockRestore();
+    capabilities.mockRestore();
+  }
+});
+
+// The phone header's Peek is the rail's Peek where the rail is a sheet, and `i` is the key that
+// opens the same drawer: a restricted member is offered neither. A full member's header keeps its
+// Peek.
+test("a restricted member's phone header has no Peek, and i opens no inbox drawer", async () => {
+  const user = userEvent.setup();
+  const peek = { name: "Peek at the inbox without leaving this page" };
+  const restricted = renderShellAt(BOB_RESTRICTED, "/nowhere", true);
+  try {
+    await screen.findByRole("heading", { name: "Page not found" });
+    expect(screen.getByRole("button", { name: "Open navigation" })).toBeTruthy();
+    expect(screen.queryByRole("button", peek)).toBeNull();
+    await user.keyboard("i");
+    expect(screen.queryByTestId("inbox-drawer")).toBeNull();
+  } finally {
+    restricted.teardown();
+  }
+
+  const full = renderShellAt({ event_head: "0", kind: "user", login: "alice" }, "/nowhere", true);
+  try {
+    await screen.findByRole("heading", { name: "Page not found" });
+    expect(screen.getByRole("button", peek)).toBeTruthy();
+    await user.keyboard("i");
+    expect(await screen.findByTestId("inbox-drawer")).toBeTruthy();
+  } finally {
+    full.teardown();
   }
 });

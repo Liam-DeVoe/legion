@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -50,13 +52,20 @@ const (
 	mentionPendingDelay = 2 * time.Second
 	// recordTimeout bounds the write of a batch's or a fallback pass's outcome (recordBatch,
 	// recordFallbackCopies), which a stopping process still makes after its context has ended: one
-	// statement, which a healthy database answers in milliseconds, so a write that takes longer is
-	// left undone, and the batch, or the row, is read again.
+	// statement, and before a batch's the read of the roles its mention receipts' sessions claimed
+	// (sessionsInARole), each of which a healthy database answers in milliseconds, so a write that
+	// takes longer is left undone, and the batch, or the row, is read again.
 	recordTimeout = 5 * time.Second
 	// claimTimeout bounds the fallback pass's claim (claimFallbackCopies), which runs outside the
 	// pass's own context so that one ending mid-statement cannot leave its rows claimed for the
 	// claim it took. It is one statement too, so it is given the bound its pass's write is given.
 	claimTimeout = recordTimeout
+	// privateHoldRecheck is how often the outbox looks again while the private-delivery hold keeps
+	// an event or a fallback copy of a private project unpublished (Deps.holdsPrivate,
+	// Outbox.nextRetry): PrivateHubsReady is a func, which signals nothing when it turns true, so
+	// the retry timer is armed to this, and the scan it starts asks the func anew. It is the most a
+	// private project's event waits, past the moment every hub is proven, for its publish.
+	privateHoldRecheck = 5 * time.Second
 )
 
 // Publisher is the NATS client the outbox publishes through (bus.Client).
@@ -119,6 +128,34 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// PrivateHubsReady reports whether every hub admits this Dispatch to the private projects'
+	// subjects, the proof a private event waits on before it is published (the private-delivery
+	// hold, holdsPrivate): while it answers false, the batch's read leaves out every owner whose
+	// project the database holds private (readBatchSQL, privateOwnerSQL), the fallback pass claims
+	// no copy of such an owner's event (claimFallbackCopies), and the retry timer looks again every
+	// privateHoldWait while one waits (Outbox.nextRetry); once it answers true, the next scan reads
+	// and publishes them. A public project's events publish as before. Each batch and pass read
+	// asks it once, and the batches of one scan ask side by side; the timer's read asks it only
+	// when no read since the timer's last one found the hold on (heldReads). A nil func holds
+	// nothing, which is safe while no project can be private; cmd/dispatch sets it once a hub can
+	// prove it.
+	PrivateHubsReady func() bool
+	// privateHoldWait is how long the retry timer waits, while the hold keeps something, before it
+	// starts a scan that asks PrivateHubsReady again, and zero is privateHoldRecheck, which is what
+	// cmd/dispatch runs. A test shortens it; it is unexported, so no importer can.
+	privateHoldWait time.Duration
+	// heldReads notes that a read the private-delivery hold binds into - a batch's read (readRows)
+	// or the fallback pass's claim (claimFallbackCopies) - asked PrivateHubsReady and found the
+	// hold on (holdRead), and the retry timer's read takes the note and clears it
+	// (heldSinceRetry), and then arms the hold's re-poll whatever the func answers by then
+	// (Outbox.nextRetry). A read and the timer's read after it are moments apart, and the func
+	// signals nothing when it turns true: a timer that went by its own ask alone would, when the
+	// hubs turned proven in between, read the back-offs alone and arm nothing for what the read
+	// held - an event never tried, a copy never claimed, neither of which has one - which then
+	// waited for an unrelated wake. New makes it, one per outbox, which every copy of that
+	// outbox's Deps shares; a read run with none - one by itself, as this package's tests run
+	// it - notes nothing.
+	heldReads *atomic.Bool
 	// Metrics is the registry New registers the gauges of the fallback copies held behind an
 	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
 	Metrics *metrics.Registry
@@ -145,6 +182,39 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// privateHoldDelay is how long the retry timer waits while the private-delivery hold keeps
+// something (Outbox.nextRetry), from privateHoldWait.
+func (d Deps) privateHoldDelay() time.Duration {
+	if d.privateHoldWait > 0 {
+		return d.privateHoldWait
+	}
+	return privateHoldRecheck
+}
+
+// holdsPrivate reports whether the private-delivery hold is on now: PrivateHubsReady is set and
+// answers false. A nil func is no hold. A read the hold binds into asks through holdRead instead.
+func (d Deps) holdsPrivate() bool {
+	return d.PrivateHubsReady != nil && !d.PrivateHubsReady()
+}
+
+// holdRead is holdsPrivate for a read the hold binds into, a batch's read (readRows) or the
+// fallback pass's claim (claimFallbackCopies): an answer that the hold is on is also noted
+// (heldReads), for the retry timer's next read (Outbox.nextRetry).
+func (d Deps) holdRead() bool {
+	held := d.holdsPrivate()
+	if held && d.heldReads != nil {
+		d.heldReads.Store(true)
+	}
+	return held
+}
+
+// heldSinceRetry reports whether a read found the hold on since the retry timer's last read, and
+// clears the note (heldReads), so what a read held arms the timer once: at the timer's read that
+// follows it, and not at every one after.
+func (d Deps) heldSinceRetry() bool {
+	return d.heldReads != nil && d.heldReads.Swap(false)
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
@@ -334,6 +404,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	// scheduled is the record's own check, on the database's clock (recordBatch).
 	settleAndRecord := func(owned []*batchEvent, releaseUnacknowledged bool) (settlement, error) {
 		var outcomes []outcome
+		var settled []*batchEvent
 		var done settlement
 		for _, event := range owned {
 			if !event.due {
@@ -345,6 +416,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			event.outcome = settleEvent(event, releaseUnacknowledged)
 			event.outcome.owed, event.outcome.owedKnown, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), true, event.ownerSeq
 			outcomes = append(outcomes, event.outcome)
+			settled = append(settled, event)
 			switch event.outcome.state {
 			case published:
 				done.published++
@@ -367,7 +439,12 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		// accepted and releases the rest.
 		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 		defer cancel()
-		holds, err := recordBatch(record, deps, outcomes, holder)
+		inARole, err := sessionsInARole(record, deps, settled)
+		if err != nil {
+			return done, fmt.Errorf("record the batch's outcome: %w", err)
+		}
+		reached := deliveredGraph(settled, inARole, time.Now())
+		holds, err := recordBatch(record, deps, outcomes, holder, reached)
 		done.holds = holds
 		return done, err
 	}
@@ -856,12 +933,21 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // owner whose events wait, and that no event was written to since, rewrites no row a batch finds
 // as it left it.
 //
+// Beside the events' own rows it writes what the batch delivered into the node and tuple store
+// (deliveredGraph), as further arms of this one statement (graphstore.WriteArms): the nodes of
+// the roles and sessions it reached, the pages under them, each role's held_by tuple and the
+// delivered_to tuple of every delivery. Those arms are written whoever holds the publisher
+// hold, as the reached destinations are: a delivery that happened is no schedule to make. They
+// take no owner row - this statement runs on a pooled connection with no transaction of its own
+// - and each is repeat-safe under the store's two partial repeat keys, which is what a record
+// that is retried needs.
+//
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
 // leaves too: they are sent again by the next scan or the next holder. JetStream drops each repeat
 // inside its duplicate window by its MsgId, a role forward's included (roleForward.send), and a
 // role's holder drops a repeat forward by its dedupe key (internal/contracts/dedupe.go).
-func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid.UUID) (bool, error) {
+func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid.UUID, reached graphWrite) (bool, error) {
 	if len(outcomes) == 0 {
 		return true, nil
 	}
@@ -904,6 +990,20 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			owed = append(owed, key)
 		}
 	}
+	// The store's arms are numbered after this statement's own parameters and bound after
+	// them, so the first arm's number is read off the list rather than written out: a column
+	// added to or dropped from the record statement would otherwise misnumber every $n the
+	// arms bind. A batch that reached no node of the store adds neither text nor parameter.
+	args := []any{publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
+		owedKnown, owedIDs, owed, owedSeqs}
+	arms, stored, err := graphstore.WriteArms(len(args)+1, reached.nodes, reached.tuples, reached.claims)
+	if err != nil {
+		return false, fmt.Errorf("record the batch's outcome: %w", err)
+	}
+	if arms != "" {
+		arms = ",\n" + arms
+	}
+	args = append(args, stored...)
 	var holds bool
 	if err := deps.lanes.statement(func() error {
 		return deps.Store.Pool.QueryRow(ctx, `
@@ -953,10 +1053,9 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			where e.id = o.id and e.published_at is null
 			  and (o.state = 'published' or h.mine or r.id is not null)
 			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}') or e.owed_seq is distinct from o.owed_seq)
-		)
+		)`+arms+`
 		select mine from hold
-	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
-			owedKnown, owedIDs, owed, owedSeqs).Scan(&holds)
+	`, args...).Scan(&holds)
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}
@@ -1003,7 +1102,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 		}
 		event.item = item
 		resolvable = append(resolvable, event)
-		_, _, _ = eventDestinations(ctx, deps, event, want)
+		_, _ = eventDestinations(ctx, deps, event, want)
 	}
 	// The lookups' statements run one after another, and the gate is held from the first to the
 	// last (lanes.statement), so no other batch's statement is run between two of them.
@@ -1019,7 +1118,8 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 	// of every session they would send a copy to (unpinnedRoleMentions, mentionHolds).
 	resolved := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
 	for _, event := range resolvable {
-		event.destinationsOf, event.mentionPending, event.resolveErr = eventDestinations(ctx, deps, event, found)
+		to, err := eventDestinations(ctx, deps, event, found)
+		event.destinationsOf, event.mentionPending, event.resolveErr = to.list, to.mentionPending, err
 		event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
 		var unanswered *unansweredRecipients
 		event.incomplete = errors.As(event.resolveErr, &unanswered)
@@ -1151,13 +1251,15 @@ func (d *destinations) err(cause error) error {
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
-// its follower routes and the previous claimant's notice. mentionPending reports a session's copy
-// held back for a mention still being sent (destinations.leftTo). The mention deliveries of a new
-// comment that names a mention at all (payloadHasMentions) are read before anything else, so a
-// lookup of them that fails
-// leaves the event with no destination. Any other lookup that fails, or a route that does not
-// parse, ends the list there: the destinations before it are returned with the error, which backs
-// the event off once they are sent. So a recipient read the batch has no answer for
+// its follower routes and the previous claimant's notice. It answers the whole reading: the list,
+// and whether a session's copy was held back for a mention still being sent (destinations.leftTo).
+// A session a mention already delivered the comment to is no destination of it, and the batch
+// sends it nothing: that delivery is recorded under the attempt's own receipt (deliveredGraph).
+// The mention deliveries of a new comment that
+// names a mention at all (payloadHasMentions) are read before anything else, so a lookup of them
+// that fails leaves the event with no destination. Any other lookup that fails, or a route that
+// does not parse, ends the list there: the destinations before it are returned with the error,
+// which backs the event off once they are sent. So a recipient read the batch has no answer for
 // (unansweredRecipients) still lets the owner topic, the route and the claimant go first. A settle
 // or a hold of a held-back copy that failed ends no list and is returned with the whole of it
 // (destinations.err).
@@ -1165,14 +1267,15 @@ func (d *destinations) err(cause error) error {
 // ctx and deps are what such a settle or hold runs on (mentionComment): the batch's context and
 // its store. A pass over a lookup that answers nothing (wanted) reads no attempt, so it makes
 // neither.
-func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (list []destination, mentionPending bool, err error) {
+func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (*destinations, error) {
 	event := item.event
 	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered}
+	var err error
 	if event.Type == "comment.created" && payloadHasMentions(event.Payload) {
 		commentID := payloadString(event.Payload, "id")
 		d.comment = mentionComment{ctx: ctx, deps: deps, event: event, id: commentID}
 		if d.mentions, err = look.mentionDeliveries(commentID); err != nil {
-			return nil, false, err
+			return d, err
 		}
 	}
 	ownerTopic := item.item.Topic
@@ -1183,22 +1286,22 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 	if event.Notify && !targeted {
 		if !suppressesCurrentRoute(event.Payload, routing.route, d) {
 			if err := addRoute(d, routing.route); err != nil {
-				return d.list, d.mentionPending, d.err(err)
+				return d, d.err(err)
 			}
 		}
 		addClaimantRoute(event, routing.claimant, d)
 		if err := addPrimaryDocumentAuthors(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, d.err(err)
+			return d, d.err(err)
 		}
 		if err := addAuthorRoutes(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, d.err(err)
+			return d, d.err(err)
 		}
 	}
 	if err := addFollowerRoutes(event, look, d); err != nil {
-		return d.list, d.mentionPending, d.err(err)
+		return d, d.err(err)
 	}
 	addPreviousClaimant(event, d)
-	return d.list, d.mentionPending, d.err(nil)
+	return d, d.err(nil)
 }
 
 // addRoute adds the owner's route: a session route is the session's own subject, and a role route

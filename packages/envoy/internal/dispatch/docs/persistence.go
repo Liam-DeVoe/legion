@@ -194,14 +194,14 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	return p.head(ctx, rooms, room)
 }
 
-// DocumentStamp is the room's DocumentStamp now, read through the pool that owns loads, as Head
-// reads the head.
-func (p *PgVersioned) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+// DocumentStamp is the room's DocumentStamp now for the reader whose viewer viewer is, read
+// through the pool that owns loads, as Head reads the head (readDocumentStamp).
+func (p *PgVersioned) DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {
 		return DocumentStamp{}, err
 	}
-	return readDocumentStamp(ctx, rooms, room)
+	return readDocumentStamp(ctx, rooms, room, viewer)
 }
 
 // AppendUpdate validates and stores one incremental V1 update as content: a batch of one
@@ -411,6 +411,14 @@ const clearSettlementPendingStatement = `
 		on conflict (artifact_id) do update set last_actor = excluded.last_actor
 	)
 	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
+
+// clearSettlementPendingRow is clearSettlementPending for a closed issue's settlement that saved
+// nothing (settlement.savedNothing): it deletes the document's pending row alone and leaves the
+// closed edit source the settlement before it kept, in the settlement's write phase as
+// clearSettlementPending does.
+func clearSettlementPendingRow(ctx context.Context, tx pgx.Tx, room string) error {
+	return writeExec(ctx, tx, "clear the document's pending settlement", `delete from doc_settlements_pending where artifact_id = $1::uuid`, room)
+}
 
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work

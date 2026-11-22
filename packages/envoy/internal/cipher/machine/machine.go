@@ -28,8 +28,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 var (
@@ -50,11 +52,85 @@ var (
 	// already holds a live launcher credential under another record: a machine signed two logins
 	// with one key and the first was approved. The record stays pending.
 	ErrKeyHoldsLiveCredential = errors.New("this machine login's key already holds a live launcher credential")
+	// ErrApproverReplaced is ApplyDecision's refusal to approve a login as an account that no
+	// longer holds the approver's address: Dispatch gave the address to another account and named
+	// this one replaced (enroll.Service.RevokePersonSubject). Nothing is minted and the record
+	// stays pending, for the account that holds the address now.
+	ErrApproverReplaced = errors.New("the account approving this machine login no longer holds its approver's address: another account holds it now")
+	// ErrApprovalNamesNoAccount is ApplyDecision's refusal to approve, naming no account and
+	// carrying no session generation, a login whose approver's address Dispatch has named an
+	// account replaced at within ApprovalInFlightWindow: the broker cannot tell such an approval is
+	// not the replaced account's. Once Dispatch records an address's account, every approve it
+	// relays from a credential that still holds the address names an account, so one naming none
+	// may be an approval whose check passed before a replacement and lands after its revocation,
+	// which would otherwise mint a login recording none that the paid revocation no longer ends (or
+	// one relayed by an older Dispatch, which names no account at all). A current Dispatch's approve
+	// carries the generation its check read, and ErrApprovalCheckedBeforeReplacement decides it
+	// exactly instead. It is an ErrApproverReplaced, answered 403 APPROVER_REPLACED; nothing is
+	// minted and the record stays pending.
+	ErrApprovalNamesNoAccount = fmt.Errorf("%w: this approval names no account, and another account has held the address since, so approve it again from Dispatch, which names the account that holds it now", ErrApproverReplaced)
+	// ErrApprovalCheckedBeforeReplacement is ApplyDecision's refusal of an approval whose session
+	// generation, the one Dispatch's check of the approver read, is below the generation a revoke
+	// recorded a replacement of the approver's address at: Dispatch checked that approver before the
+	// address passed to another account, whichever account the approval names, and the revoke that
+	// ended what the replaced account and every credential recording no account held has already
+	// committed, so it would not end the login this approval mints. It is an ErrApproverReplaced,
+	// answered 403 APPROVER_REPLACED; nothing is minted and the record stays pending, for an
+	// approval checked again at Dispatch.
+	ErrApprovalCheckedBeforeReplacement = fmt.Errorf("%w: Dispatch checked this approval before another account took the address, so approve it again from Dispatch", ErrApproverReplaced)
 	// ErrNotLive is Refreshed's and Live's refusal for a launcher credential that is revoked or
 	// past its expiry: a refresh never revives a login that has ended. It is an
 	// oauth.ErrLoginEnded, so the token endpoint refuses it invalid_grant.
 	ErrNotLive = fmt.Errorf("%w: this machine login's credential is revoked or expired", oauth.ErrLoginEnded)
 )
+
+// ApprovalInFlightWindow is how long after Dispatch names an account replaced at an address an
+// approval is refused when no session generation places it against that replacement: one that
+// carries no generation (an older or rolled-back Dispatch's approve) and names no account
+// (ErrApprovalNamesNoAccount). It applies only to that one: every revoke carries a generation, so
+// an approval carrying one is decided by the two generations alone.
+//
+// It is the relay's own bound, the longest an approve can be in flight from its check at Dispatch
+// to the broker's decision, so the fallback refuses every approve whose check passed before the
+// replacement:
+//
+//   - Dispatch checks the approver (api.approverStanding) and relays the approve at once, through
+//     a client every broker call of which ends after 5 s
+//     (packages/envoy/internal/dispatch/cipher/client.go:43, defaultTimeout): the approve
+//     reaches the broker within 5 s of the check or not at all;
+//   - the broker ends every request's context 45 s after it arrives
+//     (packages/envoy/cmd/cipherd/main.go:878, requestDeadline, which withRequestDeadline puts on
+//     the request), so the approval's transaction, whose now() the window is measured to, begins
+//     within 45 s of the approve's arrival or not at all.
+//
+// So such an approval's transaction begins less than 5 s + 45 s = 50 s after its check. The revoke
+// it is weighed against was sent only once the replacing sign-in had committed, after that check,
+// so its replaced_at (the revoke transaction's now()) is later than the check, and the approval's
+// now() is less than 50 s after it: the window refuses it. Both times the window compares are the
+// broker's own clock. The cost is that an approve from an older Dispatch naming no account is
+// refused for 50 s after a replacement at its address, and is approved again from Dispatch.
+//
+// For context only, the measured times are far inside that bound: on 2026-11-18, between 12:37Z
+// and 13:08Z, with go1.27.3, GOMAXPROCS=8 and -p 4 on a 288-core box at load averages from 207 to
+// 308, the longest time from Dispatch's handler being handed an approve to the test's broker
+// receiving its relay was 13.29 ms (internal/dispatch/api's tests, 20 relays; cmd/dispatch's
+// longest of 10 was 6.85 ms; `ENVOY_TIME_APPROVALS=1 go test -count=1 -v -timeout 40m` on each,
+// their APPROVE-RELAYED-IN lines), and the longest ApplyDecision of an approval, start to return,
+// lock waits included, was 43.08 ms (internal/cipher/machine's tests, 633 approvals, among them the
+// 600 of TestARevokeAndAnApprovalByTheReplacedAccountNeverLeaveItALiveLogin, timed by the tests'
+// applyDecision, their APPROVAL-DECIDED-IN lines).
+const ApprovalInFlightWindow = 50 * time.Second
+
+// NewApprovalsWithoutGeneration registers broker_machine_login_approvals_without_generation_total
+// on r and answers it, for Service.ApprovalsWithoutGeneration: each machine-login approve that
+// carries no approver_session_generation, which a Dispatch from before the field relays, and which
+// only ApprovalInFlightWindow decides against a replacement. The broker deploys before the Dispatch
+// that sends the field, since a broker without it refuses the field; once the counter stays at zero
+// no relaying Dispatch omits it, and the fallback can come out.
+func NewApprovalsWithoutGeneration(r *metrics.Registry) *metrics.Counter {
+	return r.NewCounter("broker_machine_login_approvals_without_generation_total",
+		"Machine-login approves that carried no approver_session_generation, from a Dispatch from before the field; the no-generation fallback (machine.ApprovalInFlightWindow) comes out once it stays at zero.")
+}
 
 type Service struct {
 	Store  *store.Store
@@ -62,9 +138,17 @@ type Service struct {
 	// Policy is the secret policy, whose version a machine-login record carries.
 	Policy *policy.Current
 
-	Audience   string
-	Skew       time.Duration
-	PendingTTL time.Duration
+	// Audience is what a new login's request object must name as its aud exactly
+	// (BROKER_PUBLIC_URL): the broker's own address as the login's caller reached it.
+	Audience string
+	// EdgeAudience is BROKER_EDGE_URL, the broker's address at its edge, and "" for a broker with
+	// no edge. A login the edge opens is held to it exactly (AtEdge), and a record read back for
+	// its lookup or its decision, which Dispatch relays to Audience, is held to the origin of
+	// either address (record.VerifyStoredRequestObject): each is this broker, and the record's
+	// object was held to the one its caller reached when the login was opened.
+	EdgeAudience string
+	Skew         time.Duration
+	PendingTTL   time.Duration
 	// CredentialLifetime is how long a minted credential lasts, and how far each refresh of its
 	// device login moves its expiry.
 	CredentialLifetime time.Duration
@@ -81,6 +165,10 @@ type Service struct {
 	// and confirmation code — a confirmation-fatigue/notification-spam vector against the named
 	// operator.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)
+
+	// ApprovalsWithoutGeneration counts each approve ApplyDecision is handed that carries no
+	// session generation (NewApprovalsWithoutGeneration); nil counts nothing.
+	ApprovalsWithoutGeneration *metrics.Counter
 }
 
 // jtiRetentionMargin is how long past a request object's expiry its jti is remembered, mirroring
@@ -88,7 +176,7 @@ type Service struct {
 const jtiRetentionMargin = time.Minute
 
 // embeddedJWK extracts the raw JWK embedded in a request object's JWS header. It is called only
-// after record.VerifyRequestObject already checked that JWS's signature and structure, so
+// after record.VerifyStoredRequestObject already checked that JWS's signature and structure, so
 // ApplyDecision can store the exact public key material a launcher credential is bound to.
 func embeddedJWK(compact string) (json.RawMessage, error) {
 	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
@@ -105,12 +193,44 @@ func deref(s *string) string {
 	return *s
 }
 
-// verifyLauncherRequest verifies a machine request object for a launcher credential at now: its
-// signature and freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a
-// reason naming no more projects than a new request may (record.CheckReasonProjects), then the
-// caller's own check, then its jti, which it records, so a replayed request is refused. Every
+// AtEdge is s as the broker's edge opens a login with: the same store, enrollment, policy and
+// provider, with the edge's address as the audience a login's request object must name. It
+// answers nil for a service with no EdgeAudience, a broker with no edge. The edge opens logins
+// and decides none, so what it answers is read only by LoginDevice, by CheckPersonLogin (the
+// edge's pre-check of its shared device bucket) and by the device route's own bucket spend, which
+// verify an object against Audience.
+func (s *Service) AtEdge() *Service {
+	if s.EdgeAudience == "" {
+		return nil
+	}
+	edge := *s
+	edge.Audience = s.EdgeAudience
+	return &edge
+}
+
+// verifyLauncherRequest verifies a machine request object for a launcher credential at now
+// (checkLauncherRequest), then its jti, which it records, so a replayed request is refused. Every
 // refusal but check's own is record.ErrRequestInvalid.
 func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
+	obj, err := s.checkLauncherRequest(compact, now, check)
+	if err != nil {
+		return record.RequestObject{}, err
+	}
+	fresh, err := s.Replay(ctx, obj.JTI, obj.Expires.Add(s.Skew+jtiRetentionMargin))
+	if err != nil {
+		return record.RequestObject{}, err
+	}
+	if !fresh {
+		return record.RequestObject{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
+	}
+	return obj, nil
+}
+
+// checkLauncherRequest is verifyLauncherRequest short of its jti: the object's signature and
+// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a reason naming
+// no more projects than a new request may (record.CheckReasonProjects), then the caller's own
+// check. It reads and writes nothing.
+func (s *Service) checkLauncherRequest(compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
 	obj, err := record.VerifyRequestObject(compact, s.Audience, s.Skew, now)
 	if err != nil {
 		return record.RequestObject{}, err
@@ -124,14 +244,17 @@ func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now
 	if err := check(obj); err != nil {
 		return record.RequestObject{}, err
 	}
-	fresh, err := s.Replay(ctx, obj.JTI, obj.Expires.Add(s.Skew+jtiRetentionMargin))
-	if err != nil {
-		return record.RequestObject{}, err
-	}
-	if !fresh {
-		return record.RequestObject{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
-	}
 	return obj, nil
+}
+
+// CheckPersonLogin reports, with nil, that compact and dpopJKT are a person's machine login
+// LoginDevice would open at now, short of the one check that needs the store, whether its jti was
+// seen before: every other refusal of verifyPersonLogin, the same way. It reads and writes
+// nothing, so a caller can judge a request before it spends anything on it (the edge's shared
+// device bucket).
+func (s *Service) CheckPersonLogin(compact, dpopJKT string, now time.Time) error {
+	_, err := s.checkLauncherRequest(compact, now, personLoginCheck(dpopJKT))
+	return err
 }
 
 // LoginDevice opens a person's machine login as an OAuth device authorization: the provider's
@@ -173,25 +296,34 @@ func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode str
 // verifyPersonLogin verifies a person's machine login request object at now (verifyLauncherRequest)
 // and answers the approver its login_hint names. A request naming a service is
 // ErrServiceLogsInWithToken, and one naming no person, or record.AnyoneApprover, or whose key
-// thumbprint is not dpopJKT, is record.ErrRequestInvalid, each checked before the jti is recorded.
-func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (approver string, err error) {
-	_, err = s.verifyLauncherRequest(ctx, compact, now, func(obj record.RequestObject) error {
+// thumbprint is not dpopJKT, is record.ErrRequestInvalid, each checked before the jti is recorded
+// (personLoginCheck).
+func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (string, error) {
+	obj, err := s.verifyLauncherRequest(ctx, compact, now, personLoginCheck(dpopJKT))
+	if err != nil {
+		return "", err
+	}
+	return record.CanonicalLogin(obj.LoginHint), nil
+}
+
+// personLoginCheck is the check of a person's machine login request object: no service, a login_hint
+// naming a person other than record.AnyoneApprover, and a key thumbprint that is dpopJKT.
+func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
+	return func(obj record.RequestObject) error {
 		if obj.Service() != "" {
 			return ErrServiceLogsInWithToken
 		}
-		approver = record.CanonicalLogin(obj.LoginHint)
-		if approver == "" {
+		switch record.CanonicalLogin(obj.LoginHint) {
+		case "":
 			return fmt.Errorf("%w: login_hint is required for a person's machine login", record.ErrRequestInvalid)
-		}
-		if approver == record.AnyoneApprover {
+		case record.AnyoneApprover:
 			return fmt.Errorf("%w: a person's machine login's login_hint names its operator, never %q", record.ErrRequestInvalid, record.AnyoneApprover)
 		}
 		if dpopJKT != obj.Thumbprint {
 			return fmt.Errorf("%w: dpop_jkt is not the request object's key thumbprint", record.ErrRequestInvalid)
 		}
 		return nil
-	})
-	return approver, err
+	}
 }
 
 // ApplyDecision decides a pending machine login. code must match the record's own — a wrong code
@@ -200,8 +332,10 @@ func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now tim
 // the record's rule admits (record.ErrNotApprover), checked next against the request object its
 // record embeds, re-verified as of the record's creation: a person's machine login is decided by
 // that person alone, and a service's login, which a broker before TokenLogin opened, is approved by
-// no one (a service logs in with its token now), though it may still be denied. So another login is
-// refused the same way whatever the record's state. A record that already carries a decision is
+// no one (a service logs in with its token now), though it may still be denied, by anyone signed in
+// but a person Dispatch calls a restricted member, who is no approver of a secret (serviceDenier).
+// So another login is refused the same way whatever the record's state. A record that already
+// carries a decision is
 // ErrAlreadyDecided, and one that expired undecided — recorded expired by the sweeper, or past its
 // expires_at before the sweeper got to it — is ErrLoginExpired, both checked under the record's
 // row lock before anything is minted, so a second decision, one racing the first and one after
@@ -211,7 +345,38 @@ func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now tim
 // decision, so a crash between the two never orphans a credential no decision names. A key that
 // already holds a live credential under another record is ErrKeyHoldsLiveCredential, and the
 // record stays pending.
-func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string) (state, credentialID string, err error) {
+//
+// account is the identity provider's account the deciding human signed in to Dispatch as, which
+// Dispatch relays beside login (the zero value for an older Dispatch, which relays none). An
+// approval records it on the credential it mints, and is ErrApproverReplaced, minting nothing,
+// when that account no longer holds login's address (store.SubjectReplaced). It reads that after
+// taking login's lock (store.LockPerson), which the revoke of a replaced account takes too
+// (enroll.Service.RevokePersonSubject): an approval that took it first has committed its
+// credential before the revoke reads login's machine logins, and the revoke ends it; one that
+// waited reads what the revoke recorded, and is refused.
+//
+// generation is the session generation of login's address at Dispatch as Dispatch's check of the
+// approver read it, which a current Dispatch relays (approver_session_generation), and nil for an
+// approve that carries none (an older or rolled-back Dispatch). Every recording of an account at
+// Dispatch moves that generation in its own transaction, and the revoke records the generation its
+// replacement left. So an approval carrying a generation is ErrApprovalCheckedBeforeReplacement,
+// whatever account it names, when a replacement of login's address was recorded at a greater one
+// (store.SubjectReplacedAfter), read under the same lock: its check passed before the address
+// moved, and the revoke, having ended every credential of the address recording none, would no
+// longer end the login it mints. An approval carrying no generation that names no account is
+// ErrApprovalNamesNoAccount when Dispatch named any account replaced at login's address within
+// ApprovalInFlightWindow (store.SubjectReplacedWithin), read under the same lock, since nothing
+// else places it before or after the move; one carrying no generation that names an account is
+// held to that account alone, as above. A denial mints nothing and takes away nothing anyone
+// holds, so it is decided whatever the account and the generation.
+func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string, account store.IssuerSubject, generation *int64) (state, credentialID string, err error) {
+	if approve && generation == nil {
+		s.ApprovalsWithoutGeneration.Inc()
+	}
+	var denier serviceDenier
+	if !approve {
+		denier = s.readServiceDenier(ctx, recordID, login)
+	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return "", "", err
@@ -254,7 +419,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 
 	// now is the record's own creation time: the request object's iat and exp bound how fresh it
 	// had to be when its login was opened, never how long the login may wait for its decision.
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil {
 		return "", "", err
 	}
@@ -262,6 +427,14 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	login, err = body.ApproverLogin(record.KindLauncherCredential, obj.Service(), login, nil)
 	if err != nil {
 		return "", "", err
+	}
+	if !approve && obj.Service() != "" {
+		switch {
+		case denier.err != nil:
+			return "", "", denier.err
+		case denier.restricted:
+			return "", "", errRestrictedDenier
+		}
 	}
 	var decided string
 	if err := tx.QueryRow(ctx, `select coalesce((select event from credential_request_events where record_id=$1 and event = any($2)), '')`, recordID, record.TerminalEventNames()).
@@ -292,8 +465,36 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		if body.LifetimeSeconds == nil {
 			return "", "", fmt.Errorf("machine login record has no credential lifetime")
 		}
+		if err := store.LockPerson(ctx, tx, login); err != nil {
+			return "", "", err
+		}
+		replaced, err := store.SubjectReplaced(ctx, tx, login, account)
+		if err != nil {
+			return "", "", err
+		}
+		if replaced {
+			return "", "", ErrApproverReplaced
+		}
+		switch {
+		case generation != nil:
+			checkedBefore, err := store.SubjectReplacedAfter(ctx, tx, login, *generation)
+			if err != nil {
+				return "", "", err
+			}
+			if checkedBefore {
+				return "", "", ErrApprovalCheckedBeforeReplacement
+			}
+		case !account.Recorded():
+			recent, err := store.SubjectReplacedWithin(ctx, tx, login, ApprovalInFlightWindow)
+			if err != nil {
+				return "", "", err
+			}
+			if recent {
+				return "", "", ErrApprovalNamesNoAccount
+			}
+		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
-			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second))
+			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second), account)
 		if store.IsUniqueViolation(err) {
 			return "", "", ErrKeyHoldsLiveCredential
 		}
@@ -321,6 +522,64 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		return "issued", *credID, nil
 	}
 	return "denied", "", nil
+}
+
+// errRestrictedDenier is ApplyDecision's refusal of a deny of a service's login by a person
+// Dispatch calls a restricted member: record.ErrNotApprover, which the API answers 403
+// NOT_APPROVER with these words (projectaccess.NoApprover).
+var errRestrictedDenier = projectaccess.NoApprover(record.ErrNotApprover, "a secret or of a service's machine login, so they deny no service's machine login")
+
+// serviceDenier is what a deny reads of its deciding person before ApplyDecision's transaction,
+// for a service's login (readServiceDenier): whether Dispatch calls the person a restricted member,
+// or why that could not be read. Its zero value asks nothing of the transaction.
+type serviceDenier struct {
+	restricted bool
+	err        error
+}
+
+// readServiceDenier reads, on the pool and before ApplyDecision's transaction, since it may ask
+// Dispatch, whether a deny of record recordID by login is a restricted member's deny of a service's
+// login, the one deny such a person may not make: a person who sees only the projects that name
+// them is no approver of a secret (requests' restricted_approver.go), and a service's login is
+// every signed-in person's to deny for no other reason. It asks Dispatch (projectaccess.Restricted,
+// through the enroll service's client) only for a record that is a service's login, so a person's
+// deny of their own machine login asks nothing; a broker with no client of Dispatch asks nothing
+// either. The read runs within projectaccess.RelayedReadBound, since Dispatch relays the deny and
+// waits for its answer no longer than that read could otherwise take. A failure to ask, one the
+// bound cut short included, is the *projectaccess.MemberKindUncheckable it carries, and a failure
+// to read the record is that read's error; the transaction answers either for a service's login
+// alone, after the code and the record's own rule: a check that cannot decide refuses. It reads
+// the record's request object as the transaction does (record.VerifyStoredRequestObject, this
+// broker's by the origin of its address or its edge's), so every record the transaction reads as
+// a service's login, one whose aud spells the broker's address with a trailing slash included, is
+// one it asks about. A record it finds no row for, or cannot parse or verify, asks nothing: the
+// transaction reads it again by the same rule and refuses it.
+func (s *Service) readServiceDenier(ctx context.Context, recordID, login string) serviceDenier {
+	if s.Enroll == nil || s.Enroll.Projects == nil {
+		return serviceDenier{}
+	}
+	var canonical string
+	var createdAt time.Time
+	err := s.Store.Pool.QueryRow(ctx, `select body, created_at from credential_requests where id=$1 and kind='launcher_credential'`, recordID).
+		Scan(&canonical, &createdAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return serviceDenier{}
+	case err != nil:
+		return serviceDenier{err: err}
+	}
+	body, err := record.ParseBody(canonical)
+	if err != nil {
+		return serviceDenier{}
+	}
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
+	if err != nil || obj.Service() == "" {
+		return serviceDenier{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, projectaccess.RelayedReadBound)
+	defer cancel()
+	restricted, err := projectaccess.Restricted(ctx, s.Enroll.Projects, record.CanonicalLogin(login))
+	return serviceDenier{restricted: restricted, err: err}
 }
 
 // decideDevice records a decision on the device login whose user code is code, in tx: an
@@ -504,7 +763,7 @@ func (s *Service) LookupByCode(ctx context.Context, code string) (RecordView, er
 	if err != nil {
 		return RecordView{}, err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil {
 		return RecordView{}, err
 	}

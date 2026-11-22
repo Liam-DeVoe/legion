@@ -47,9 +47,9 @@ func routeIndexLines(routes []apiRoute) string {
 func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
-		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
+		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authBearer}},
 	})
-	want := "DELETE /api/v1/things/{id} public\nGET /api/v1/things/{id} any\n"
+	want := "DELETE /api/v1/things/{id} bearer\nGET /api/v1/things/{id} any\n"
 	if got != want {
 		t.Fatalf("routeIndexLines = %q, want %q", got, want)
 	}
@@ -60,7 +60,9 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
@@ -165,7 +167,9 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if served := response.Body.String(); served != output.String() {
 		t.Fatalf("printed index differs from GET /api/v1:\nprinted %s\nserved  %s", output.String(), served)
 	}
@@ -199,7 +203,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has no handler", key)
 		}
 		switch route.Auth {
-		case authPublic, authAny, authBearer:
+		case authAny, authBearer:
 		default:
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
@@ -380,6 +384,7 @@ func routeProbePath(pattern string) string {
 		{"{id}", "00000000-0000-0000-0000-000000000001"},
 		{"{session_id}", "s1"},
 		{"{block_id}", "b1"},
+		{"{login}", "alice"},
 		{"{owner}", "owner"},
 		{"{repo}", "repo"},
 		{"{slug}", "spec"},
@@ -521,8 +526,6 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	for _, route := range (&server{}).routes() {
 		t.Run(route.Method+" "+route.Pattern, func(t *testing.T) {
 			switch route.Auth {
-			case authPublic:
-				expectAdmitted(t, route, "anonymous")
 			case authAny:
 				expectRefused(t, route, "anonymous")
 				expectAdmitted(t, route, "cookie")
@@ -555,6 +558,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 		"GET /api/v1/users",
+		// A person's own page is no older row either: it reads what one person wrote and what
+		// reached them, so a credential that proves no person has no business on it.
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
@@ -626,6 +632,23 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The scope edit is the one route that was no row at all before INFRA-1017: it is the
 		// person's own, as the mint and the revoke beside it are.
 		"PATCH /api/v1/me/agent-tokens/{id}",
+		// Who may see a project, and the groups an access list names, are this change's own rows
+		// (INFRA-3862). Each names or acts as a person — the project's owner, the group's owner,
+		// the people a list names — which Dispatch takes from the credential and never from the
+		// request, so a credential the deployment configured is nobody to change them.
+		"GET /api/v1/projects/{key}/access",
+		"PATCH /api/v1/projects/{key}/access",
+		"PUT /api/v1/projects/{key}/access/people/{email}",
+		"DELETE /api/v1/projects/{key}/access/people/{email}",
+		// The owner's link for a person from outside and the owner's Reset of one: the owner's
+		// browser alone makes either (BROWSER_SESSION_REQUIRED for any token).
+		"POST /api/v1/projects/{key}/access/people/{email}/invitations",
+		"POST /api/v1/projects/{key}/access/people/{email}/reset",
+		"PUT /api/v1/projects/{key}/access/groups/{name}",
+		"DELETE /api/v1/projects/{key}/access/groups/{name}",
+		"GET /api/v1/access-groups",
+		"PUT /api/v1/access-groups/{name}",
+		"DELETE /api/v1/access-groups/{name}",
 	}
 	for _, name := range browserOnly {
 		scopes, named := routeScopes[name]

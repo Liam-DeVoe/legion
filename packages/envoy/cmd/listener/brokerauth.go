@@ -163,7 +163,7 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: b.config.BrokerURL,
 		Account:   b.config.account(),
-		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
+		Origins:   []string{strings.TrimSuffix(b.config.Origin, "/")},
 		Replay:    spentProofs{kv: kv},
 		// The listener trusts no forwarding header for this: it has no proxy-trust setting of
 		// its own, and a bucket keyed on a header a caller writes bounds nothing. The connection
@@ -188,6 +188,14 @@ func (b *brokerTokens) verify(r *http.Request) (ciphertoken.Caller, error) {
 		return ciphertoken.Caller{}, errBrokerTokensStarting
 	}
 	return verifier.Verify(r.Context(), r)
+}
+
+// lapsed reports whether caller, one verify answered, is a not-held answer whose deadline has
+// passed by the verifier's own clock (ciphertoken.Verifier.Lapsed), which apiAuth refuses as
+// unavailable.
+func (b *brokerTokens) lapsed(caller ciphertoken.Caller) bool {
+	verifier := b.verifier.Load()
+	return verifier != nil && verifier.Lapsed(caller)
 }
 
 // retryAfter is the wait a rate-limited caller is given, in seconds.

@@ -58,6 +58,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // speedRuns is how many times each priorities operation is run and timed after its warm-up runs
@@ -355,13 +356,13 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", speedCorpusPage)
 
 // speedPageArguments are the arguments one page of the open listing takes, in the order
-// listIssues builds them: no filter but `open`, and the page's limit and offset last. Both
-// statement texts take the same list, which is what lets one measurement stand against the
-// other (issueSummaryQuery).
+// listIssues builds them: no filter but `open`, the server's own viewer, and the page's limit and
+// offset last. Both statement texts take the same list, which is what lets one measurement stand
+// against the other (issueSummaryQuery).
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, refs.VisibilityArg(everyReader), limit, offset,
 	}
 }
 
@@ -475,8 +476,9 @@ func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, argume
 
 // speedLiterals writes the page's arguments (speedPageArguments) as the literals an EXECUTE names,
 // since an EXECUTE under EXPLAIN takes no bound parameter: a string, a flag, a number, an empty
-// list and a null time are every value the page's arguments hold, and any other stops the test
-// rather than be written wrong.
+// list, a null time and the caller's viewer (refs.VisibilityArg's JSON, which the statement reads
+// as jsonb, written as its text quoted) are every value the page's arguments hold, and any other
+// stops the test rather than be written wrong.
 func speedLiterals(t *testing.T, arguments []any) string {
 	t.Helper()
 	literals := make([]string, 0, len(arguments))
@@ -503,6 +505,11 @@ func speedLiterals(t *testing.T, arguments []any) string {
 				t.Fatalf("write %v as a literal: only the null time is written", value)
 			}
 			literals = append(literals, "null")
+		case []byte:
+			if !json.Valid(value) {
+				t.Fatalf("write %q as a literal: only the viewer's JSON is written", value)
+			}
+			literals = append(literals, "'"+strings.ReplaceAll(string(value), "'", "''")+"'")
 		default:
 			t.Fatalf("write a %T as a literal: no literal is written for it", argument)
 		}

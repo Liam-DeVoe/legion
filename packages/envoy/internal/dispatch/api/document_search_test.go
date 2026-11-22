@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -62,6 +63,16 @@ func (s documentSearchStatement) oracleArgs() []any {
 		return s.oracleArguments
 	}
 	return s.arguments
+}
+
+// documentSearchSeen is the acting credential every statement of this build binds last
+// (refs.VisibilityArg): these reads act for the server's own viewer, which proves no author and
+// sees every project, which is what a read of a corpus holding no author-private node and no
+// private project answers for anyone. Search's own two statements take it from
+// searchQueryArguments; the related-item check's four are bound by hand here, as the check binds
+// them.
+func documentSearchSeen() []any {
+	return []any{refs.VisibilityArg(everyReader)}
 }
 
 // documentSearchFixture is the corpus of R1's plan and equality tests: one project whose
@@ -178,7 +189,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 	// Search's own two statements bind the search bar's filters and the issues a query names by
 	// key beside the parameters main's text knows; this subject names no issue and no filter, so
 	// both sides of each comparison read the same rows.
-	subject := searchParameters{text: word, project: f.project, limit: searchDefaultLimit}
+	subject := searchParameters{text: word, project: f.project, limit: searchDefaultLimit, who: everyReader}
 	searchArguments := searchQueryArguments(subject)
 	searchMeaningArguments := searchMeaningQueryArguments(subject, queryVector(), f.embedder.Identity())
 	relatedKeyword, relatedMeaning := f.relatedArguments()
@@ -207,24 +218,27 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			holds:     documents,
 		},
 		{
-			name:      "the related-item check's keyword stage",
-			statement: relatedKeywordQuery,
-			oracle:    mainRelatedKeywordQuery,
-			arguments: relatedKeyword,
-			holds:     documents,
+			name:            "the related-item check's keyword stage",
+			statement:       relatedKeywordQuery,
+			oracle:          mainRelatedKeywordQuery,
+			arguments:       slices.Concat(relatedKeyword, documentSearchSeen()),
+			oracleArguments: relatedKeyword,
+			holds:           documents,
 		},
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningScopedQuery,
 			oracle:    relatedMeaningQueryOverMainsDocumentArm,
-			arguments: relatedMeaning,
+			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
 		{
 			name:      "the related-terms probe",
 			statement: relatedProbeSQL,
 			oracle:    mainRelatedProbeSQL,
-			arguments: []any{f.project, probeLexemes, "", (*string)(nil)},
+			arguments: []any{f.project, probeLexemes, "", (*string)(nil), relatedViewer(everyReader)},
+			// main's text binds no viewer.
+			oracleArguments: []any{f.project, probeLexemes, "", (*string)(nil)},
 			// The probe declares no order, so its answer is a set.
 			sorted: true,
 			// Only documents hold documentSearchDocumentWord, so answering it is the document
@@ -274,14 +288,14 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 		{
 			name:      "the related-item check's keyword stage, excluding its own issue",
 			statement: relatedKeywordExcludingQuery,
-			arguments: slices.Concat(keyword, owners),
+			arguments: slices.Concat(keyword, owners, documentSearchSeen()),
 		},
 		{
 			// The scoped shape, as the plain pair above is: these arguments bind the fixture's
 			// project (relatedMeaningStatementFor).
 			name:      "the related-item check's meaning stage, excluding its own issue",
 			statement: relatedMeaningScopedExcludingQuery,
-			arguments: slices.Concat(meaning, owners),
+			arguments: slices.Concat(meaning, owners, documentSearchSeen()),
 		},
 	}
 }

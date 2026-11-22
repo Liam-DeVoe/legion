@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -130,7 +132,6 @@ var (
 var (
 	tailnetDNSNameRule = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`)
 	namespaceRule      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	secretKeyRule      = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
@@ -145,6 +146,21 @@ var (
 	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
 	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
+
+// secretKeyChars are the characters of a key of a Secret's data.
+var secretKeyChars = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+
+// secretKeyRule says what a key of a Secret's data may be, as Kubernetes holds it
+// (k8s.io/apimachinery's validation.IsConfigMapKey, which validates a Secret's keys too).
+const secretKeyRule = `a Secret's key: letters, digits, "-", "_" and ".", at most 253 characters, and neither "." nor ".." nor ` +
+	`one that begins with ".."`
+
+// isSecretKey reports whether key can be a key of a Secret's data (secretKeyRule). The API server
+// refuses a Secret with any other key, so a secretKeyRef to one names a key no Secret holds, and
+// the pod that reads it never starts.
+func isSecretKey(key string) bool {
+	return len(key) <= 253 && secretKeyChars.MatchString(key) && key != "." && key != ".." && !strings.HasPrefix(key, "..")
+}
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
 // value the consumer's program knows when it runs; the pulumi.*Input fields may come from another
@@ -202,31 +218,32 @@ type DispatchArgs struct {
 	// app's NetworkPolicy admits an in-cluster one only through allowedNamespaces. It needs the
 	// tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own
 	// origin is an in-cluster http:// address where browser sign-in is refused. With the sign-in
-	// inputs set its host must also be one weborigin.GoogleRedirectHost takes: the Google client
-	// then lists its callback, or, with signInPasskey, the host is the passkey's relying party ID,
-	// a domain name. Unset renders nothing.
+	// inputs set its host must also be one weborigin.PasskeyHost takes, a public domain name, since
+	// people from outside sign in there with a passkey whose relying party is that host; Dispatch
+	// serves no Google sign-in there, so the Google client lists no callback of it. Unset renders
+	// nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
-	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
-	// signInDomain sign in as a restricted member while some project's owner or access list names
-	// its email directly. It needs the sign-in inputs and is no member of their group, so a
-	// deployment that sets them leaves it unset and renders what it always rendered.
-	SignInOutside bool `pulumi:"signInOutside,optional"`
 	// SignInPasskey renders DISPATCH_SIGNIN_PASSKEY=1, which turns on Dispatch's passkey sign-in at
 	// outsideOrigin for people from outside the company: the passkey's relying party is that origin
 	// and its relying party ID that origin's host, so it needs outsideOrigin and renders right after
 	// DISPATCH_OUTSIDE_ORIGIN. It needs the sign-in inputs too, though it is no member of their
 	// group: a person from outside enrolls a passkey with an invitation a project owner makes while
-	// signed in through Google, so without them nobody could invite anyone. It replaces the Google
-	// sign-in of people from outside that signInOutside turns on, so it is refused beside
-	// signInOutside. It is refused beside iapAudience, since IAP signs a person in, and in the
-	// sandbox, which serves no https origin. With it the Google client lists no
-	// <outsideOrigin>/auth/callback, which Dispatch then answers 404; outsideOrigin's host is still
-	// held to weborigin.GoogleRedirectHost, which keeps it a domain name, never an IP address, as a
-	// relying party ID must be. A deployment that sets it lists every other domain its Workspace
-	// owns in signInWorkspaceDomains: Dispatch takes an address on a domain left out for an outside
-	// person's, so a Workspace account there could hold a passkey, which Workspace offboarding does
-	// not end. Unset renders nothing.
+	// signed in through Google, so without them nobody could invite anyone. It is refused beside
+	// iapAudience, since IAP signs a person in, and in the sandbox, which serves no https origin. A
+	// deployment that sets it lists every other domain its Workspace owns in signInWorkspaceDomains:
+	// Dispatch takes an address on a domain left out for an outside person's, so a Workspace account
+	// there could hold a passkey, which Workspace offboarding does not end. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
+	// TrustedProxyRanges are the front doors whose X-Forwarded-For Dispatch trusts when it bounds
+	// the passkey ceremonies' begins per client address, rendered as DISPATCH_TRUSTED_PROXY_RANGES
+	// right after DISPATCH_SIGNIN_PASSKEY, the entries comma-joined in the order given. With
+	// signInPasskey and this unset it renders Google's external Application Load Balancer's proxy
+	// ranges, 35.191.0.0/16, 130.211.0.0/22 and 2600:2d00:1:1::/64
+	// (https://cloud.google.com/load-balancing/docs/firewall-rules), whose X-Forwarded-For Dispatch
+	// reads in the format Google documents; set it when another front door serves outsideOrigin.
+	// Each is a CIDR net.ParseCIDR takes, written as its network, with a prefix longer than /0. It
+	// needs signInPasskey. Unset without signInPasskey renders nothing.
+	TrustedProxyRanges []string `pulumi:"trustedProxyRanges,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -237,11 +254,11 @@ type DispatchArgs struct {
 	// weborigin.GoogleRedirectHost takes, since the Google client then lists
 	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
 	// name is the origin of a Dispatch on the tailnet; a second origin beside that one is
-	// outsideOrigin. With it the sign-in inputs, signInWorkspaceDomains, signInOutside,
-	// outsideOrigin and signInPasskey are taken without the tailnet inputs, natsInCluster is
-	// required, as it is in the sandbox, and allowedNamespaces is not, since the entrance admits its
-	// own traffic. Unset, Dispatch is reached as it always was: at the front door's name or, in the
-	// sandbox, inside its cluster.
+	// outsideOrigin. With it the sign-in inputs, signInWorkspaceDomains, outsideOrigin and
+	// signInPasskey are taken without the tailnet inputs, natsInCluster is required, as it is in the
+	// sandbox, and allowedNamespaces is not, since the entrance admits its own traffic. Unset,
+	// Dispatch is reached as it always was: at the front door's name or, in the sandbox, inside its
+	// cluster.
 	PublicOrigin string `pulumi:"publicOrigin,optional"`
 	// IapAudience turns on the IAP door: a browser reaches Dispatch through Identity-Aware Proxy
 	// on the deployment's load balancer, and Dispatch names its person from the signed header IAP
@@ -251,13 +268,38 @@ type DispatchArgs struct {
 	// /projects/<project number>/global/backendServices/<backend service id>
 	// (https://cloud.google.com/iap/docs/signed-headers-howto), and may be another resource's
 	// output, such as one built from the backend service's own id. It needs publicOrigin, the
-	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
+	// origin that load balancer serves, signInDomain, the Workspace domain whose accounts may
 	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
-	// claim to; it is refused beside signInClientId, signInClientSecret, signInWorkspaceDomains,
-	// signInOutside, signInPasskey and outsideOrigin: IAP signs a person in, and a browser reaches
-	// Dispatch through it alone. Unset renders none of the three variables, and Dispatch keeps its
-	// default identity.
+	// claim to, and directoryAccount and directoryAdmin, the Workspace Directory reads Dispatch
+	// checks each person through behind this door; it is refused beside signInClientId,
+	// signInClientSecret, signInWorkspaceDomains, signInPasskey and outsideOrigin: IAP signs a person
+	// in, and a browser reaches Dispatch through it alone. Unset renders none of the five variables,
+	// and Dispatch keeps its default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
+	// DirectoryAccount is the email of the service account Dispatch reads the Google Workspace
+	// Directory through behind the IAP door, rendered as DISPATCH_DIRECTORY_ACCOUNT beside
+	// DISPATCH_IDENTITY=iap. Behind that door Dispatch keeps no Google refresh token, so it checks
+	// each full member's Workspace account through the Directory API once an hour instead, and holds
+	// a person whose account is suspended, archived or gone. The account has no key and no project
+	// role: the app's own workload principal holds roles/iam.serviceAccountTokenCreator on it and
+	// calls IAM signJwt on it, so no key leaves Google. The person steps come before IAP admits
+	// anyone: a Workspace super administrator gives directoryAdmin an administrator role whose only
+	// privilege is Users > Read, and authorizes this account's numeric client ID for Domain-wide
+	// Delegation with exactly the scope https://www.googleapis.com/auth/admin.directory.user.readonly,
+	// which Google states can take up to 24 hours to take effect. It may be another resource's or
+	// stack's output, such as the export of the program that declares the account, and is judged
+	// once it resolves: a blank value, which Dispatch reads as unset, or one holding an nkey seed is
+	// refused naming directoryAccount. iapAudience requires it, since Dispatch refuses to boot behind
+	// the IAP door without it, and it is refused without iapAudience.
+	DirectoryAccount pulumi.StringInput `pulumi:"directoryAccount,optional"`
+	// DirectoryAdmin is the email of the Workspace user Dispatch's Directory reads act as, through
+	// directoryAccount's Domain-wide Delegation, rendered as DISPATCH_DIRECTORY_ADMIN beside
+	// DISPATCH_IDENTITY=iap: a user whose only administrator privilege is Users > Read, which the
+	// person steps directoryAccount names give it. It may be another resource's output or secret
+	// configuration, whose secrecy the rendered variable keeps, and is judged once it resolves, as
+	// directoryAccount is: a blank value or one holding an nkey seed is refused naming
+	// directoryAdmin. iapAudience requires it, and it is refused without iapAudience.
+	DirectoryAdmin pulumi.StringInput `pulumi:"directoryAdmin,optional"`
 	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
 	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
 	// peers on 8766 in the app's own NetworkPolicy, beside allowedNamespaces' peers, so one policy
@@ -299,12 +341,48 @@ type DispatchArgs struct {
 	// Turning this on opens Dispatch to every workload that can get a token for that audience
 	// under that issuer: such a caller reaches every one of Dispatch's authAny routes, the
 	// writes among them (an issue's create and status, a message), as a service actor, and a
-	// service actor holds no scope and no subject list, so Dispatch admits whatever subject
-	// the token names (serviceTokenActor, internal/dispatch/api/server.go). Only the
-	// audience bounds it. Pick one no other workload of the cluster asks the kubelet for, and
-	// leave it unset where no caller needs it.
+	// service actor holds no scope, so with oidcAccounts unset Dispatch admits whatever subject
+	// the token names (serviceTokenActor, internal/dispatch/api/server.go) and only the
+	// audience bounds it. Pick one no other workload of the cluster asks the kubelet for, set
+	// oidcAccounts to the subjects that call, and leave the audience unset where no caller
+	// needs it.
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
+	// OidcAccounts is DISPATCH_OIDC_ACCOUNTS, comma-joined: the Kubernetes service-account
+	// subjects, each system:serviceaccount:<namespace>:<name>, whose tokens the verifier admits.
+	// Unset or empty renders nothing, and Dispatch admits every account of the issuer and the
+	// audience, as it did before the input existed. It narrows the verifier oidcAudience turns
+	// on, so it is refused without oidcAudience, as oidcIssuer is.
+	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
+	// AccessAccounts is DISPATCH_ACCESS_ACCOUNTS, comma-joined: the service-account subjects that
+	// may read the routes of Dispatch's read class accessAccount (cmd/dispatch's README lists
+	// them), the secrets broker's system:serviceaccount:dispatch:envoy-broker in production. Where
+	// oidcAccounts is set, Dispatch refuses to boot with an access account it leaves out; with
+	// oidcAccounts unset, every account is admitted and any may be an access account. Unset or
+	// empty renders nothing, and no account reads those routes. It is refused without
+	// oidcAudience, as oidcIssuer is.
+	AccessAccounts []string `pulumi:"accessAccounts,optional"`
+
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
+	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
+	// one. Unset renders nothing.
+	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
+	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
+	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); a
+	// switch of one of these to private is its full switch, and PrivateBeforeFullSwitch names the
+	// other projects that can be made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each
+	// key once; empty or unset renders nothing. An entry that is not a project key is ignored, with
+	// a warning at preview naming it, as Dispatch's boot ignores and logs one.
+	PrivateProjects []string `pulumi:"privateProjects,optional"`
+	// PrivateBeforeFullSwitch are the keys of the projects the deployment makes private before
+	// their full switch (the private-projects spec's "Day one and the full switch"): Dispatch hides
+	// such a project in its own reads as any private project, while its namespace, stores and bus
+	// gate come with its full switch, so its switch to private needs no provisioning. Until then,
+	// the project's notifications on the hub reach any agent session that subscribes to them. It
+	// renders DISPATCH_PRIVATE_BEFORE_FULL_SWITCH, sorted and each key once; empty or unset renders
+	// nothing. An entry that is not a project key is ignored, with a warning at preview naming it,
+	// as Dispatch's boot ignores and logs one.
+	PrivateBeforeFullSwitch []string `pulumi:"privateBeforeFullSwitch,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
@@ -480,6 +558,12 @@ type DispatchArgs struct {
 	// namespace: only the component's own tailnet front door, which Tailscale Serve on 443 proxies
 	// through, reaches the app.
 	AllowedNamespaces []string `pulumi:"allowedNamespaces,optional"`
+	// AllowedApps names the apps, by their pods' app label, whose pods in the component's own
+	// namespace the app's NetworkPolicy admits on port 8766: one rule per app, beside the
+	// allowedNamespaces rule. The secrets broker, envoy-broker in production, runs in Dispatch's
+	// own namespace, which an allowedNamespaces entry would open to every pod. Unset or empty
+	// admits no such pod.
+	AllowedApps []string `pulumi:"allowedApps,optional"`
 
 	// AzureEmbedEndpoint turns on meaning search through Azure AI Foundry: DISPATCH_EMBEDDER=azure
 	// and DISPATCH_AZURE_EMBED_ENDPOINT, the base URL the embeddings route is appended to (such as
@@ -576,6 +660,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
+		{"projectOwnerFallback", args.ProjectOwnerFallback},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -633,9 +718,20 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 			return fmt.Sprintf("allowedNamespaces[%d]", i), true
 		}
 	}
-	for i, cidr := range args.LoadBalancerSourceRanges {
-		if bus.HoldsSeed(cidr) {
-			return fmt.Sprintf("loadBalancerSourceRanges[%d]", i), true
+	for _, list := range []struct {
+		input  string
+		values []string
+	}{
+		{"loadBalancerSourceRanges", args.LoadBalancerSourceRanges},
+		{"trustedProxyRanges", args.TrustedProxyRanges},
+		{"oidcAccounts", args.OidcAccounts},
+		{"accessAccounts", args.AccessAccounts},
+		{"allowedApps", args.AllowedApps},
+	} {
+		for i, value := range list.values {
+			if bus.HoldsSeed(value) {
+				return fmt.Sprintf("%s[%d]", list.input, i), true
+			}
 		}
 	}
 	if args.AzureFederationAudience != nil && bus.HoldsSeed(*args.AzureFederationAudience) {
@@ -699,13 +795,15 @@ type Dispatch struct {
 // from args, since it may be another resource's output.
 // With neither group and no publicOrigin the component is the sandbox: Dispatch is reached in the
 // cluster alone, by readers the app's NetworkPolicy admits, and tailnetDNSName, tags, the
-// tailscale and tools images, outsideOrigin, signIn, signInWorkspaceDomains, signInOutside and
-// signInPasskey are empty, since nothing reads them. signInWorkspaceDomains and signInOutside are
-// set only with signInOn, outsideOrigin is "" when its input is unset, where the component renders
-// no second origin, and signInPasskey is set only with outsideOrigin and signInOn.
+// tailscale and tools images, outsideOrigin, signIn, signInWorkspaceDomains and signInPasskey are
+// empty, since nothing reads them. signInWorkspaceDomains is set only with signInOn, outsideOrigin
+// is "" when its input is unset, where the component renders no second origin, and signInPasskey
+// is set only with outsideOrigin and signInOn.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
-// field here. existingCluster is the input of that name, its name and location checked
+// field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
+// projectOwnerFallback "" and an empty privateProjects or privateBeforeFullSwitch render nothing.
+// existingCluster is the input of that name, its name and location checked
 // (resolveDispatchExistingCluster), which NewDispatch looks the cluster up by and runs Dispatch
 // in, and nil without that input, where the component makes a cluster of its own.
 // existingDatabaseInstance is true while the input of that name is set, where the component makes
@@ -722,12 +820,20 @@ type dispatchSettings struct {
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
-	signInOutside, signInPasskey                bool
+	signInPasskey                               bool
+	// trustedProxyRanges is what DISPATCH_TRUSTED_PROXY_RANGES renders, set only with signInPasskey:
+	// the trustedProxyRanges input, or dispatchGoogleProxyRanges where it is unset.
+	trustedProxyRanges                          []string
 	signInWorkspaceDomains                      []string
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
+	oidcAccounts, accessAccounts                []string
+	projectOwnerFallback                        string
+	privateProjects, privateProjectsIgnored     []string
+	privateBeforeFullSwitch                     []string
+	privateBeforeFullSwitchIgnored              []string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1029,10 +1135,21 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 	}
 }
 
+// dispatchDirectoryInputs is the Directory group: the signer and the delegated Workspace user
+// Dispatch's Workspace Directory reads sign as and act as behind the IAP door. Both with
+// iapAudience, which refuses to run without either (refuseDispatchIAP), and neither without it.
+// Written here alone, as the other groups are.
+func dispatchDirectoryInputs(args *DispatchArgs) []dispatchInput {
+	return []dispatchInput{
+		{"directoryAccount", args.DirectoryAccount != nil},
+		{"directoryAdmin", args.DirectoryAdmin != nil},
+	}
+}
+
 // dispatchDatabaseInputs are the four inputs that configure the Cloud SQL instance the component
 // makes, in the order a refusal judges them in: newDispatchExistingDatabaseInstance refuses each
 // beside existingDatabaseInstance, which replaces that instance, and dispatchClusterOnlyRefusals
-// takes them from here. Written here alone, as the two groups are.
+// takes them from here. Written here alone, as the three groups are.
 func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
 	return []dispatchInput{
 		{"databaseVersion", args.DatabaseVersion != nil},
@@ -1051,15 +1168,15 @@ func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
 // true is the only value that leaves the cluster this mode makes a subnetwork. existingCluster and
 // existingDatabaseInstance are among the refused: one names the cluster Dispatch runs in and the
 // other the database instance it uses, and clusterOnly runs no Dispatch, always makes its own
-// cluster and uses no database. The eight inputs of the two groups and the four database inputs
-// come from their own definitions (dispatchTailnetInputs, dispatchSignInInputs and
-// dispatchDatabaseInputs), so an input any of them gains is refused here without being written
-// down a second time.
+// cluster and uses no database. The ten inputs of the three groups and the four database inputs
+// come from their own definitions (dispatchTailnetInputs, dispatchSignInInputs,
+// dispatchDirectoryInputs and dispatchDatabaseInputs), so an input any of them gains is refused
+// here without being written down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
-	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
+	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), dispatchDirectoryInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
-		{"signInOutside", args.SignInOutside},
 		{"signInPasskey", args.SignInPasskey},
+		{"trustedProxyRanges", len(args.TrustedProxyRanges) > 0},
 		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
@@ -1073,6 +1190,11 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"oidcAccounts", len(args.OidcAccounts) > 0},
+		{"accessAccounts", len(args.AccessAccounts) > 0},
+		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
+		{"privateProjects", len(args.PrivateProjects) > 0},
+		{"privateBeforeFullSwitch", len(args.PrivateBeforeFullSwitch) > 0},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1103,6 +1225,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"frontDoorPdbMinAvailable", args.FrontDoorPdbMinAvailable != nil},
 		{"listenerPdbMinAvailable", args.ListenerPdbMinAvailable != nil},
 		{"allowedNamespaces", len(args.AllowedNamespaces) > 0},
+		{"allowedApps", len(args.AllowedApps) > 0},
 		{"azureEmbedEndpoint", args.AzureEmbedEndpoint != nil},
 		{"azureEmbedDeployment", args.AzureEmbedDeployment != nil},
 		{"azureEmbedTokensPerMinute", args.AzureEmbedTokensPerMinute != nil},
@@ -1200,22 +1323,19 @@ const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset and publicOrigin is unset,
 // which is what asks for the mode: no front door is built and no origin is served, so a sign-in
-// input, signInWorkspaceDomains and signInOutside among them, would ask an OAuth provider to
-// redirect to an in-cluster http:// address, signInPasskey would sign people in at a second origin
-// the sandbox cannot have, outsideOrigin would add an origin for outside sign-in to a Dispatch
-// where browser sign-in is refused, and the app's own policy is its only ingress; what any
-// Dispatch without a front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is
-// refused by its own name rather than accepted and quietly dropped. The sign-in inputs are refused
-// here, before the sign-in group's own checks, so one sent to a sandbox is refused for being sent
-// at all and not for the rest of its group being missing.
+// input, signInWorkspaceDomains among them, would ask an OAuth provider to redirect to an
+// in-cluster http:// address, signInPasskey would sign people in at a second origin the sandbox
+// cannot have, outsideOrigin would add an origin for outside sign-in to a Dispatch where browser
+// sign-in is refused, and the app's own policy is its only ingress; what any Dispatch without a
+// front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is refused by its own name
+// rather than accepted and quietly dropped. The sign-in inputs are refused here, before the sign-in
+// group's own checks, so one sent to a sandbox is refused for being sent at all and not for the
+// rest of its group being missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
 			return core.InputErrorf(in.input, dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
 		}
-	}
-	if args.SignInOutside {
-		return core.InputErrorf("signInOutside", dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
 	}
 	if len(args.SignInWorkspaceDomains) > 0 {
 		return core.InputErrorf("signInWorkspaceDomains", dispatchSandboxSignInRefusal, "signInWorkspaceDomains", "signInWorkspaceDomains")
@@ -1283,14 +1403,18 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 // no request through the tailnet front door or into the sandbox carries IAP's signed header. It
 // needs signInDomain, the Workspace domain whose accounts may use Dispatch, which Dispatch holds
 // the signed header's hd claim to by the membership rule its own sign-in uses, and which it
-// refuses to boot without under IAP. And it refuses the Google client (signInClientId,
-// signInClientSecret), signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP
-// signs a person in and a browser reaches Dispatch through it alone, so Dispatch runs no sign-in of
-// its own, by Google or by passkey, and serves no second origin for outside sign-in. Each is
-// refused by its own name, signInPasskey before outsideOrigin, which a consumer sets for it, and
-// all of them before the sign-in group's own checks, which the IAP door does not run, so a client
-// input sent beside IAP is refused for being sent at all. The audience's own value may be another
-// resource's output, so it is judged once it resolves (dispatchIAPAudience).
+// refuses to boot without under IAP. It needs directoryAccount and directoryAdmin: behind this door
+// Dispatch keeps no Google refresh token, so it checks each person's Workspace account through the
+// Directory API instead, signing as the one and reading as the other, and refuses to boot without
+// either. And it refuses the Google client (signInClientId, signInClientSecret),
+// signInWorkspaceDomains, signInPasskey and outsideOrigin: IAP signs a person in and a browser
+// reaches Dispatch through it alone, so Dispatch runs no sign-in of its own, by Google or by
+// passkey, and serves no second origin for outside sign-in. Each is refused by its own name,
+// signInPasskey before outsideOrigin, which a consumer sets for it, and all of them before the
+// sign-in group's own checks, which the IAP door does not run, so a client input sent beside IAP is
+// refused for being sent at all. The audience's and the Directory inputs' own values may be other
+// resources' outputs, so each is judged once it resolves (dispatchIAPAudience,
+// dispatchDirectorySetting).
 func refuseDispatchIAP(args *DispatchArgs) error {
 	if args.PublicOrigin == "" {
 		return core.InputErrorf("iapAudience", "iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
@@ -1299,7 +1423,6 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 	for _, in := range []dispatchInput{
 		{"signInClientId", args.SignInClientId != ""},
 		{"signInClientSecret", args.SignInClientSecret != nil},
-		{"signInOutside", args.SignInOutside},
 	} {
 		if in.set {
 			return core.InputErrorf(in.input, signIn, in.input, in.input)
@@ -1316,6 +1439,11 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 	}
 	if !dispatchDomainName(args.SignInDomain) {
 		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
+	}
+	for _, in := range dispatchDirectoryInputs(args) {
+		if !in.set {
+			return core.InputErrorf(in.input, "iapAudience needs %s: behind the IAP door Dispatch checks each person's Google Workspace account through the Directory API, signing as directoryAccount and reading as directoryAdmin, and refuses to boot without either; set %s, or unset iapAudience", in.input, in.input)
+		}
 	}
 	return nil
 }
@@ -1402,10 +1530,9 @@ func refuseDispatchWorkspaceDomains(domains []string) error {
 // owner names it in a refusal ("the front door's", "publicOrigin's"). It must be a web origin
 // weborigin.Parse takes, whose refusals it prefixes with the input's name; the component adds that
 // the origin is https, as Dispatch's own is, that its host is not ownHost, whose origin Dispatch
-// already is, and, with the sign-in inputs set, that its host is one weborigin.GoogleRedirectHost
-// takes: without signInPasskey the Google client must then list <outsideOrigin>/auth/callback,
-// and with it, where Dispatch answers that path 404 and the client lists no callback there, the
-// host is the passkey's relying party ID, which must be a domain name, never an IP address. That
+// already is, and, with the sign-in inputs set, that its host is one weborigin.PasskeyHost takes,
+// since people from outside sign in there with a passkey whose relying party is that host, a
+// registrable domain name and never an IP address (Dispatch serves no Google sign-in there); that
 // function's refusals it prefixes with "outsideOrigin's ".
 func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
@@ -1425,7 +1552,7 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 	if !signInOn {
 		return origin.String(), nil
 	}
-	if err := weborigin.GoogleRedirectHost(host); err != nil {
+	if err := weborigin.PasskeyHost(host); err != nil {
 		return "", core.InputErrorf("outsideOrigin", "outsideOrigin's %w", err)
 	}
 	return origin.String(), nil
@@ -1435,6 +1562,70 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // letter, then up to 62 lowercase letters, digits or hyphens, the last not a hyphen
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// appLabelValueRule is a non-empty Kubernetes label value, which an allowedApps entry is: the app
+// label of the pods the app's NetworkPolicy admits. It is at most 63 characters, a letter or digit
+// at each end, with letters, digits, dashes, underscores and dots between. An empty value would
+// make a rule for pods labelled app="", and a value of another shape fails only at apply.
+var appLabelValueRule = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
+
+// refuseDispatchAccessValues refuses, when the stack plans, the access values Dispatch refuses at
+// boot (cmd/dispatch checkAccessSettings), naming the input, so one typo never reaches a Deployment
+// whose one replica would then not start: an account that is not a service account's subject, an
+// access account a set oidcAccounts leaves out, and an owner fallback that is not a lowercase email.
+func refuseDispatchAccessValues(args *DispatchArgs) error {
+	for _, list := range []struct {
+		input    string
+		accounts []string
+	}{{"oidcAccounts", args.OidcAccounts}, {"accessAccounts", args.AccessAccounts}} {
+		for i, account := range list.accounts {
+			if !principal.ServiceAccountSubject.MatchString(account) {
+				return core.InputErrorf(list.input, "%s[%d] %q is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>, one account to an entry", list.input, i, account)
+			}
+		}
+	}
+	if len(args.OidcAccounts) > 0 {
+		for i, account := range args.AccessAccounts {
+			if !slices.Contains(args.OidcAccounts, account) {
+				return core.InputErrorf("accessAccounts", "accessAccounts[%d] %q is not among oidcAccounts: an access account must be one the deployment admits", i, account)
+			}
+		}
+	}
+	if fallback := args.ProjectOwnerFallback; fallback != "" && principal.CheckPersonLogin(fallback) != nil {
+		return core.InputErrorf("projectOwnerFallback", "projectOwnerFallback must be a lowercase email, the one a full member signed in with")
+	}
+	return nil
+}
+
+// dispatchGoogleProxyRanges are Google's external Application Load Balancer's proxy ranges, IPv4
+// then IPv6 (https://cloud.google.com/load-balancing/docs/firewall-rules), which
+// DISPATCH_TRUSTED_PROXY_RANGES renders with signInPasskey and trustedProxyRanges unset.
+var dispatchGoogleProxyRanges = []string{"35.191.0.0/16", "130.211.0.0/22", "2600:2d00:1:1::/64"}
+
+// refuseDispatchTrustedProxyRanges judges trustedProxyRanges: it needs signInPasskey, since
+// Dispatch reads it only to bound the passkey ceremonies' begins, and each entry must be a CIDR
+// written as its network, which net.ParseCIDR takes and which is the network it names, so the
+// setting trusts what it says, with a prefix longer than /0: 0.0.0.0/0 or ::/0 would trust every
+// peer's X-Forwarded-For, and any caller would pick the address its begins are bounded by. Dispatch
+// refuses to boot on each of these too.
+func refuseDispatchTrustedProxyRanges(args *DispatchArgs) error {
+	if len(args.TrustedProxyRanges) > 0 && !args.SignInPasskey {
+		return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges needs signInPasskey: Dispatch reads it only to bound the passkey ceremonies' begins per client address; set signInPasskey, or unset trustedProxyRanges")
+	}
+	for i, cidr := range args.TrustedProxyRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
+		}
+		if network.String() != cidr {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q trusts every peer's X-Forwarded-For, so any caller would pick the address its begins are bounded by: name the front doors' own ranges, such as 130.211.0.0/22", i, cidr)
+		}
+	}
+	return nil
+}
 
 // refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
@@ -1610,7 +1801,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// is set, and what the sandbox cannot by a fourth while both are unset. The IAP door is judged
 	// first, so a sign-in input sent beside it is refused for being sent at all; it takes
 	// signInDomain alone of the sign-in group and runs no Google sign-in, so the group is off
-	// beside it.
+	// beside it. The Directory group configures reads Dispatch makes only behind that door, so
+	// either of its inputs without iapAudience is refused by its own name.
 	tailnetGroup, signInGroup := dispatchTailnetInputs(args), dispatchSignInInputs(args)
 	frontDoor, signInOn := dispatchGroupSet(tailnetGroup), dispatchGroupSet(signInGroup)
 	if args.IapAudience != nil {
@@ -1618,6 +1810,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 		signInOn = false
+	} else {
+		for _, in := range dispatchDirectoryInputs(args) {
+			if in.set {
+				return dispatchSettings{}, core.InputErrorf(in.input, "%s is refused without iapAudience: Dispatch reads the Google Workspace Directory only behind the IAP door, and refuses the setting at boot outside it; unset %s, or set iapAudience", in.input, in.input)
+			}
+		}
 	}
 	if err := refuseDispatchEntrance(args); err != nil {
 		return dispatchSettings{}, err
@@ -1659,9 +1857,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchWorkspaceDomains(args.SignInWorkspaceDomains); err != nil {
 			return dispatchSettings{}, err
 		}
-	} else if args.SignInOutside {
-		return dispatchSettings{}, core.InputErrorf("signInOutside", "signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
-			dispatchGroupClause("sign-in", signInGroup))
 	} else if len(args.SignInWorkspaceDomains) > 0 {
 		return dispatchSettings{}, core.InputErrorf("signInWorkspaceDomains", "signInWorkspaceDomains needs browser sign-in: it names the other domains of the Google Workspace that signInDomain names, which Dispatch reads only with Google sign-in; set the sign-in inputs, or unset signInWorkspaceDomains%s",
 			dispatchGroupClause("sign-in", signInGroup))
@@ -1669,9 +1864,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// Passkey sign-in is served at the second origin alone, whose host the passkey is made for, and
 	// a person from outside enrolls a passkey with an invitation a project owner makes while signed
 	// in through Google, so it needs the sign-in inputs too; their clause names each one still unset.
-	// It replaces the Google sign-in of people from outside that signInOutside turns on, so the two
-	// are refused together. The sandbox and the IAP door have refused it above, each by a rule of
-	// its own.
+	// The sandbox and the IAP door have refused it above, each by a rule of its own.
 	if args.SignInPasskey {
 		if outsideOrigin == "" {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin: Dispatch serves passkey sign-in at that origin alone, and a passkey is made for its host; set outsideOrigin, or unset signInPasskey")
@@ -1680,9 +1873,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs browser sign-in: a project owner, signed in through Google, makes the invitation a person from outside enrolls a passkey with, so without it nobody could invite anyone; set the sign-in inputs, or unset signInPasskey%s",
 				dispatchGroupClause("sign-in", signInGroup))
 		}
-		if args.SignInOutside {
-			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey is refused beside signInOutside: passkey sign-in replaces the Google sign-in of people from outside the company that signInOutside turns on; unset signInOutside, or unset signInPasskey")
-		}
+	}
+	if err := refuseDispatchTrustedProxyRanges(args); err != nil {
+		return dispatchSettings{}, err
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
@@ -1740,19 +1933,30 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("agentSecretsUrl", "agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
 		}
 	}
-	// The service-account verifier is one required input and one override, not a group: the
-	// audience turns it on and the issuer defaults to the cluster's own, so an issuer sent
-	// without an audience would configure nothing and is refused rather than dropped. Dispatch
-	// itself refuses half the pair (oidc.ConfigFromEnv), which is why the component renders
-	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
-	if args.OidcIssuer != "" && args.OidcAudience == "" {
-		return dispatchSettings{}, core.InputErrorf("oidcAudience", "oidcAudience is required when oidcIssuer is set")
+	// The service-account verifier is one required input, one override and two allow-lists, not
+	// a group: the audience turns it on, the issuer defaults to the cluster's own, and the two
+	// lists narrow which accounts it admits and which of them are access accounts, so any of the
+	// three sent without an audience would configure nothing and is refused rather than dropped.
+	// Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which is why the
+	// component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
+	// The refusal names oidcAudience, the input the operator has to set.
+	if args.OidcAudience == "" {
+		if err := refuseDispatchInputsWithout("oidcAudience", "the audience turns on Dispatch's service-account verifier, which oidcIssuer, oidcAccounts and accessAccounts only configure", []dispatchInput{
+			{"oidcIssuer", args.OidcIssuer != ""},
+			{"oidcAccounts", len(args.OidcAccounts) > 0},
+			{"accessAccounts", len(args.AccessAccounts) > 0},
+		}); err != nil {
+			return dispatchSettings{}, core.InputErrorf("oidcAudience", "%w", errors.Unwrap(err))
+		}
 	}
 	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
 	// held to the shape the hub listener's is: an empty query or fragment, which url.Parse reads as
 	// none, is not the issuer a token names.
 	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
 		return dispatchSettings{}, core.InputErrorf("oidcIssuer", "oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
+	}
+	if err := refuseDispatchAccessValues(args); err != nil {
+		return dispatchSettings{}, err
 	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
@@ -1778,7 +1982,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsSubdomain(args.AppPrivateKeySecretName) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretName", "appPrivateKeySecretName %q must be a DNS subdomain", args.AppPrivateKeySecretName)
 		}
-		if !secretKeyRule.MatchString(args.AppPrivateKeySecretKey) {
+		if !isSecretKey(args.AppPrivateKeySecretKey) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
 		}
 	}
@@ -1815,9 +2019,14 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// The domain and each Workspace domain render trimmed, which is what Dispatch reads of them
 	// (dispatchDomainName, workspaceDomainRule).
 	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
-	s.signInOutside = args.SignInOutside
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
+	if args.SignInPasskey {
+		s.trustedProxyRanges = slices.Clone(args.TrustedProxyRanges)
+		if len(s.trustedProxyRanges) == 0 {
+			s.trustedProxyRanges = slices.Clone(dispatchGoogleProxyRanges)
+		}
+	}
 	if len(args.SignInWorkspaceDomains) > 0 {
 		s.signInWorkspaceDomains = make([]string, len(args.SignInWorkspaceDomains))
 		for i, domain := range args.SignInWorkspaceDomains {
@@ -1830,6 +2039,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.oidcAccounts = args.OidcAccounts
+	s.accessAccounts = args.AccessAccounts
+	s.projectOwnerFallback = args.ProjectOwnerFallback
+	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
+	s.privateBeforeFullSwitch, s.privateBeforeFullSwitchIgnored = dispatchPrivateProjects(args.PrivateBeforeFullSwitch)
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1918,7 +2132,51 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("allowedNamespaces", "allowedNamespaces[%d] %q must be a DNS label", i, namespace)
 		}
 	}
+	for i, app := range args.AllowedApps {
+		if !appLabelValueRule.MatchString(app) {
+			return dispatchSettings{}, core.InputErrorf("allowedApps", "allowedApps[%d] %q must be a pod's app label value: 1 to 63 letters, digits, dashes, underscores and dots, a letter or digit at each end", i, app)
+		}
+	}
 	return s, nil
+}
+
+// dispatchPrivateProjects is privateProjects or privateBeforeFullSwitch as
+// DISPATCH_PRIVATE_PROJECTS or DISPATCH_PRIVATE_BEFORE_FULL_SWITCH renders it: sorted and each key
+// once. An entry that is not a project key is never rendered: it is answered in ignored, in the
+// order given, and NewDispatch prints it at preview (dispatchIgnoredEntryWarnings), as Dispatch's
+// boot ignores and logs one. Ignoring it fails closed: it names no project, so the switch to
+// private of the project it meant is refused while no list names its key.
+func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
+	for _, entry := range entries {
+		if !contracts.ValidProjectKey(entry) {
+			ignored = append(ignored, entry)
+			continue
+		}
+		keys = append(keys, entry)
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys), ignored
+}
+
+// dispatchIgnoredEntryWarnings are the warnings NewDispatch prints at preview, one for each entry
+// of privateProjects and of privateBeforeFullSwitch that is not a project key, in that order, each
+// naming what the entry would have done. Each is a warning, not an error: the Pulumi SDK reads an
+// error as a fatal condition (pulumi.Context.Log.Error), and the entry is ignored, not refused.
+func dispatchIgnoredEntryWarnings(s dispatchSettings) []string {
+	var warnings []string
+	for _, list := range []struct {
+		input, named string
+		ignored      []string
+	}{
+		{"privateProjects", "no project is provisioned by it", s.privateProjectsIgnored},
+		{"privateBeforeFullSwitch", "no project is made private before its full switch by it", s.privateBeforeFullSwitchIgnored},
+	} {
+		for _, entry := range list.ignored {
+			warnings = append(warnings, fmt.Sprintf("%s: %q is not a project key (%s), so it is ignored: %s, and Dispatch logs the same ERROR at boot",
+				list.input, entry, contracts.ProjectKeyRule, list.named))
+		}
+	}
+	return warnings
 }
 
 // dnsLabel reports whether value is a DNS-1123 label: namespaceRule's shape, at most 63 characters.
@@ -2299,6 +2557,11 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	s, err := newDispatchSettings(args)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+	}
+	for _, warning := range dispatchIgnoredEntryWarnings(s) {
+		if err := ctx.Log.Warn(warning, nil); err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
 	}
 	if err := providers.Require(ctx.Context(), dispatchType, "gcp", opts...); err != nil {
 		return nil, err

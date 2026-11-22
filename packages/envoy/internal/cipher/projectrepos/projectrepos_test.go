@@ -15,8 +15,8 @@ import (
 )
 
 // standIn serves PRIV, whose issues resolve to acme/pub and acme/two, and EMPTY, whose issues
-// resolve to none. Each also has a mapped list of its own, which the membership answer carries and
-// the repository answer must not: a client that read it would answer acme/mapped.
+// resolve to none. Each also has a mapped list of its own, which no answer carries and the
+// repository answer must not: a client that read it would answer acme/mapped.
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
@@ -180,8 +180,9 @@ func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) 
 // TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne: one Dispatch, read by both of the broker's
 // clients with one account as cmd/cipherd wires them, keeps two lists of a project's repositories
 // apart. The repository client answers the list the project's issues resolve to, and never the
-// list Dispatch maps to the project, which the membership client is answered on the same Dispatch;
-// a project none of whose issues resolves to a repository is [], whatever is mapped to it.
+// list Dispatch maps to the project; the membership client is answered on the same Dispatch with
+// the same account, and its answer names no repositories at all; a project none of whose issues
+// resolves to a repository is [], whatever is mapped to it.
 func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
 	server := standIn(t)
 	for project, want := range map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": {}} {
@@ -190,8 +191,8 @@ func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
 			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the mapped one", project, got, err, want)
 		}
 		answer, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), project, "")
-		if err != nil || !reflect.DeepEqual(answer.Repositories, []string{"acme/mapped"}) {
-			t.Fatalf("Access(%s) from the same Dispatch with the same account = %q, %v; want its mapped list acme/mapped", project, answer.Repositories, err)
+		if err != nil || answer.Project != project {
+			t.Fatalf("Access(%s) from the same Dispatch with the same account = %+v, %v; want that project's answer", project, answer, err)
 		}
 	}
 }

@@ -19,39 +19,40 @@ import (
 )
 
 // lockedComment is the prologue of every change to an existing comment - resolve, reopen, edit,
-// accept, reject: read the comment, take its owner's lock and refuse a closed owner, then read it
-// again in a statement after that lock, so the mutation decides on the comment as the lock's
-// previous holder left it. It takes no row lock: every writer of a comment holds its owner's
-// lock, so the comment holds still until this transaction ends.
-func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	open, err := s.lockOwnerOfComment(ctx, tx, id)
+// accept, reject: read the comment as who may read it, take its owner's lock and refuse a closed
+// owner, then read it again, as who may read it, in a statement after that lock, so the mutation
+// decides on the comment as the lock's previous holder left it. It takes no row lock: every writer
+// of a comment holds its owner's lock, so the comment holds still until this transaction ends. A
+// comment who may not read is pgx.ErrNoRows, as an id no comment holds is.
+func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Comment, error) {
+	open, err := s.lockOwnerOfComment(ctx, tx, who, id)
 	if err != nil {
 		return model.Comment{}, err
 	}
 	if err := refuseClosed(open, refusedWhenClosed); err != nil {
 		return model.Comment{}, err
 	}
-	return s.loadComment(ctx, tx, id)
+	return s.loadComment(ctx, tx, who, id)
 }
 
 // lockedCommentForDelivery is the same prologue for a comment's mention delivery and the
 // mentioned agent's reply to it, which a closed issue still takes: it takes the owner's lock in
 // the same order without the closed refusal.
-func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	if _, err := s.lockOwnerOfComment(ctx, tx, id); err != nil {
+func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Comment, error) {
+	if _, err := s.lockOwnerOfComment(ctx, tx, who, id); err != nil {
 		return model.Comment{}, err
 	}
-	return s.loadComment(ctx, tx, id)
+	return s.loadComment(ctx, tx, who, id)
 }
 
-// lockOwnerOfComment reads the comment and locks its owner, answering whether that owner is
-// open.
-func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
-	unlockedComment, err := s.loadComment(ctx, tx, id)
+// lockOwnerOfComment reads the comment as who may read it (loadComment) and locks its owner,
+// answering whether that owner is open.
+func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (bool, error) {
+	unlockedComment, err := s.loadComment(ctx, tx, who, id)
 	if err != nil {
 		return false, err
 	}
-	_, open, err := ownerStatus(ctx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), lockedOwnerRead(tx))
+	_, open, err := ownerStatus(ctx, who, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), lockedOwnerRead(tx))
 	return open, err
 }
 
@@ -72,6 +73,11 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The writer's reader, resolved before the transaction holds a connection (lockedComment).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -80,7 +86,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedComment(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -109,7 +115,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	comment.ResolvedAt = nil
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, true)
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -195,6 +201,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		}
 		carried = &refs.CarriedEdit{BaseRevision: *input.BaseRevision, Blocks: input.Blocks}
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -203,7 +213,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedComment(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -241,7 +251,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -252,7 +262,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, true)
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -305,6 +315,10 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -313,7 +327,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedComment(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -400,7 +414,8 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 				// Only the orphaned key is written, the one key this refusal decides: writing the
 				// whole anchor would write back every other key of the column as this transaction
 				// read it, which is not what orphaning an anchor means. The narrow write says what
-				// it changes.
+				// it changes, and the artifact the comment's anchored_to tuple names stays among
+				// the rest, so this write restates nothing the store holds.
 				if err := queueExec(ledger, `
 					update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
 				`, comment.ID); err != nil {
@@ -457,7 +472,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	}
 	s.registerCommentAnchor(ledger, comment, actor, true)
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

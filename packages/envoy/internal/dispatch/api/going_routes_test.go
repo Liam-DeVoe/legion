@@ -133,7 +133,7 @@ func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
+		stored, _, err := rig.server.readGoingStream(context.Background(), everyReader, id, 0)
 		if err != nil {
 			t.Fatalf("read the run's frames: %v", err)
 		}
@@ -204,7 +204,7 @@ func TestGoingRequestRecordsTheQuestionAndItsFramesReachTheRecord(t *testing.T) 
 	if window := run.EndsAt.Sub(run.CreatedAt); window != contracts.GoingRunWindow {
 		t.Errorf("the run's window is %v, want %v", window, contracts.GoingRunWindow)
 	}
-	recorded, err := rig.server.readGoingRequest(context.Background(), run.ID)
+	recorded, err := rig.server.readGoingRequest(context.Background(), everyReader, run.ID)
 	if err != nil {
 		t.Fatalf("read the recorded run: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
 // dropped asks for.
 func TestGoingStreamReplaysStoredFramesAndResumes(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
-	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?")
+	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -408,7 +408,7 @@ func (s *goingStreamSink) text() string {
 func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
-	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 // one answer, word for word: an id tells a caller nothing it did not already know.
 func TestGoingStreamAnswersEveryRunItWillNotServeAlike(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
-	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?")
+	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -614,6 +614,47 @@ func TestGoingStreamRefusesAnotherOwnersPersonalToken(t *testing.T) {
 	}
 }
 
+// A run an earlier build stored keeps its asker's owner in the case that build wrote it, and no
+// backfill rewrites it, while the token that asked it now resolves with its owner canonical. The
+// stream compares the two through model.Actor.SameCredential, which reads an owner in its
+// canonical form on both sides, so the run is served to the token that asked it. The run is
+// asked through the route and its author's owner then restated under "Dana@Example.COM", in case
+// only, as such a build stored it.
+func TestAGoingRunAskedUnderAnEarlierBuildsOwnerAnswersItsCanonicalOwner(t *testing.T) {
+	const owner, stored = "dana@example.com", "Dana@Example.COM"
+	rig := newGoingRoutesRig(t, nil)
+	dana := personalTokenOwnedBy(t, rig.database, owner, model.ScopePerson)
+
+	asked := rig.askUnder(t, dana, map[string]any{"words": "who asked this run?"})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("ask under dana's token: status=%d body=%s", asked.Code, asked.Body.String())
+	}
+	run := decodeBody[askedRun](t, asked)
+	rig.awaitTerminal(t, run.ID)
+	if moved, err := rig.database.Pool.Exec(context.Background(),
+		`update going_requests set author = jsonb_set(author, '{owner}', to_jsonb($2::text)) where id = $1::uuid`, run.ID, stored); err != nil {
+		t.Fatalf("store the run under the owner %s: %v", stored, err)
+	} else if moved.RowsAffected() != 1 {
+		t.Fatalf("restated %d run(s) with id %s, want the run", moved.RowsAffected(), run.ID)
+	}
+	recorded, err := rig.server.readGoingRequest(context.Background(), model.ServerReader, run.ID)
+	if err != nil {
+		t.Fatalf("read the recorded run: %v", err)
+	}
+	if recorded.Author.Owner == nil || *recorded.Author.Owner != stored {
+		t.Fatalf("the record holds the author %+v, want the owner %s an earlier build stored", recorded.Author, stored)
+	}
+
+	response := rig.streamUnder(t, run.ID, dana)
+	if response.Code != http.StatusOK {
+		t.Fatalf("the going run asked under the owner %s answers %d to the same token's canonical owner %s, want 200", stored, response.Code, owner)
+	}
+	want := fmt.Sprintf("id: 1\nevent: %s\ndata: {\"code\":\"%s\"}\n\n", contracts.GoingEventError, contracts.GoingErrorNoModelConfigured)
+	if response.Body.String() != want {
+		t.Fatalf("the stream wrote %q, want the run's one frame %q", response.Body.String(), want)
+	}
+}
+
 // The POST refuses a credential that names nobody and records nothing. The deployment's shared
 // token resolves as {} (server.go), so the run it asked for would name no session, no person
 // and no workload, and the stream serves such a run to nobody: the model would be called and
@@ -651,7 +692,7 @@ func TestGoingRequestRefusesAnAskerThatNamesNobody(t *testing.T) {
 func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
 
-	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?")
+	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?", false)
 	if err != nil {
 		t.Fatalf("record a run naming nobody: %v", err)
 	}
@@ -664,7 +705,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	}
 
 	subject := "system:serviceaccount:dispatch:answerer"
-	pod, err := rig.server.recordGoingRequest(context.Background(), model.Actor{Service: &subject}, "", "what is this pod running?")
+	pod, err := rig.server.recordGoingRequest(context.Background(), model.Actor{Service: &subject}, "", "what is this pod running?", false)
 	if err != nil {
 		t.Fatalf("record a pod's run: %v", err)
 	}
@@ -681,7 +722,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 func TestGoingStreamReadsAResumePointPastTheSequenceColumnAsNone(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
-	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}

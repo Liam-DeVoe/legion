@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -120,16 +122,24 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		}
 		// The caller is resolved once a request: every layer below and the handler read this.
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
-		// Who asks, which decides only whether a direct message's first line is listed among
-		// the candidates: a person reads any, and a bearer the conversations the session it
-		// names in ?session= is in, the claim the message routes already read.
+		// Who asks: the reader decides which items a prefix may name at all, since an item
+		// reserved for another author, or of a project the reader does not see, is no candidate
+		// (refs.ResolvePrefix), and whether a direct message's first line is listed among the
+		// candidates: a person reads any, and a bearer the conversations the session it names in
+		// ?session= is in, the claim the message routes already read. The reader is resolved once
+		// a request, too: the handler's readerOf reads this one.
+		who, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		r = r.WithContext(withReader(r.Context(), who))
 		viewer := refs.Viewer{Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session"))}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {
 				scope.IssueKey = r.PathValue("key")
 			}
-			if !s.resolvePathValue(w, r, "id", entry.Kind, scope, id, viewer, itemNotFound(entry.NotFound, id)) {
+			if !s.resolvePathValue(w, r, "id", entry.Kind, scope, id, who, viewer, itemNotFound(entry.NotFound, id)) {
 				return
 			}
 		}
@@ -138,14 +148,14 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			// blocks of the document the {id} names, read under the id the step above left
 			// there. An {id} that is no document's names no blocks to match among, and the
 			// route answers for that {id} rather than for its block.
-			document, err := s.documentRefKey(r.Context(), r.PathValue("id"))
+			document, err := s.documentRefKey(r.Context(), who, r.PathValue("id"))
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
 			if document != "" {
 				scope := refs.Scope{Document: document}
-				if !s.resolvePathValue(w, r, "block_id", "block", scope, blockID, viewer, entry.BlockNotFound) {
+				if !s.resolvePathValue(w, r, "block_id", "block", scope, blockID, who, viewer, entry.BlockNotFound) {
 					return
 				}
 			}
@@ -155,10 +165,10 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 }
 
 // resolvePathValue rewrites the path value `name`, written as the prefix of an id of kind, to
-// the whole id it names within scope, and reports whether the request may go on: false once it
-// has written the answer itself. notFound is the 404 code this route answers for an id of that
-// kind it does not hold, and notFoundNone the route that answers no 404 for one, whose value is
-// then left as written for the handler to answer for. It is the one caller of wholeID that has
+// the whole id it names within scope for who, and reports whether the request may go on: false
+// once it has written the answer itself. notFound is the 404 code this route answers for an id of
+// that kind it does not hold, and notFoundNone the route that answers no 404 for one, whose value
+// is then left as written for the handler to answer for. It is the one caller of wholeID that has
 // a route code, so it is the one that writes a 404.
 func (s *server) resolvePathValue(
 	w http.ResponseWriter,
@@ -166,10 +176,11 @@ func (s *server) resolvePathValue(
 	name, kind string,
 	scope refs.Scope,
 	prefix string,
+	who model.Actor,
 	viewer refs.Viewer,
 	notFound string,
 ) bool {
-	whole, err := s.wholeID(r.Context(), kind, scope, prefix, viewer)
+	whole, err := s.wholeID(r.Context(), kind, scope, prefix, who, viewer)
 	if err != nil {
 		s.writeIDPrefixError(w, err)
 		return false
@@ -185,20 +196,21 @@ func (s *server) resolvePathValue(
 	return true
 }
 
-// wholeID is the whole id prefix names within scope, and "" for a prefix nothing carries, which
-// each caller answers for itself: the prefix layer with the 404 its route answers for a whole id
-// of that kind (resolvePathValue), and the reference reads by leaving the reference as written.
-// An error is the answer the caller has to write rather than one it can go on from, and
-// writeIDPrefixError writes it: the 409 of a prefix two items or more carry, or a database that
-// could not be read.
+// wholeID is the whole id prefix names within scope, among the items who may see, and "" for a
+// prefix none of them carries, which each caller answers for itself: the prefix layer with the
+// 404 its route answers for a whole id of that kind (resolvePathValue), and the reference reads
+// by leaving the reference as written. An error is the answer the caller has to write rather than
+// one it can go on from, and writeIDPrefixError writes it: the 409 of a prefix two items or more
+// carry, or a database that could not be read.
 func (s *server) wholeID(
 	ctx context.Context,
 	kind string,
 	scope refs.Scope,
 	prefix string,
+	who model.Actor,
 	viewer refs.Viewer,
 ) (string, error) {
-	candidate, err := refs.ResolvePrefix(ctx, s.deps.Store.Pool, kind, scope, prefix, viewer)
+	candidate, err := refs.ResolvePrefix(ctx, s.deps.Store.Pool, who, kind, scope, prefix, viewer)
 	switch {
 	case err == nil:
 		return candidate.ID, nil
@@ -238,18 +250,20 @@ func itemNotFound(notFound, prefix string) string {
 }
 
 // documentRefKey is the ref_key of the document id names, the address refs.Scope holds a
-// document under; "" for an id that is no uuid or that no document has, which is an id the
-// route behind this is about to refuse anyway.
+// document under; "" for an id that is no uuid, that no document has, or whose document who may
+// not read (access.DocumentClause), which is an id the route behind this is about to refuse
+// anyway.
 //
 // The id is the one this layer canonicalized a step earlier (canonicalizeUUIDPath), so it is
 // sent as it stands, and the parse here decides one thing only: whether the value is an id at
 // all, since a value that is none names no document.
-func (s *server) documentRefKey(ctx context.Context, id string) (string, error) {
+func (s *server) documentRefKey(ctx context.Context, who model.Actor, id string) (string, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return "", nil
 	}
 	var refKey string
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, id).Scan(&refKey); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid and `+access.DocumentClause("artifacts", "$2"),
+		id, refs.VisibilityArg(who)).Scan(&refKey); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil
 		}

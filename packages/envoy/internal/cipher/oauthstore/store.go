@@ -25,8 +25,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"authelia.com/provider/oauth2"
 	hoauth2 "authelia.com/provider/oauth2/handler/oauth2"
@@ -321,12 +324,36 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 	return nil, fmt.Errorf("oauthstore stores *oauth2.DefaultSession and *ExchangeSession sessions, got %T", request.GetSession())
 }
 
+// ErrUnstorableText is a request the store keeps no row of, because text it would write cannot be
+// stored: a key or value of the form a stored request carries, or a DPoP proof's jti, holds a
+// control character (unicode.IsControl, U+0000 among them), or a proof's jti and htu together are
+// longer than maxStoredProofKey. Postgres writes U+0000 in neither text nor jsonb, and refuses a
+// key too long for the primary key's btree (SQLSTATE 54000), so such a write failed and answered
+// 500 where the caller sent a request nobody could serve; the other control characters are
+// refused with it, since no client of the broker writes one in any of those fields. The provider
+// answers it 400 invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is
+// written. Dispatch's replay store refuses the same proofs (its store.ErrUnstorableProof).
+var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, or a DPoP proof's jti and target URI too long, which the store does not keep")
+
+// holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
+// them).
+func holdsControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
 // flatten is the request as a row's JSON, its session the one the request holds rather than the
-// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip.
+// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip. A form
+// whose key or value holds a control character is ErrUnstorableText: every row a request is stored
+// as passes through here, so the refusal holds for each of them, before anything is written.
 func flatten(request oauth2.Requester) (storedRequest, error) {
 	client := request.GetClient()
 	if client == nil {
 		return storedRequest{}, errors.New("oauthstore: the request names no client")
+	}
+	for key, values := range request.GetRequestForm() {
+		if holdsControl(key) || slices.ContainsFunc(values, holdsControl) {
+			return storedRequest{}, ErrUnstorableText
+		}
 	}
 	return storedRequest{
 		ClientID: client.GetID(),
@@ -763,15 +790,17 @@ func LockCredential(ctx context.Context, credentialID string) error {
 }
 
 // EndCredential deactivates, in tx, every access and refresh token whose session names the
-// launcher credential, so revoking the credential also ends the machine login's tokens.
-func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) error {
+// launcher credential, so revoking the credential also ends the machine login's tokens. It
+// answers how many live access tokens it ended.
+func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) (int, error) {
 	if _, err := tx.Exec(ctx, `update oauth_refresh_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's refresh tokens: %w", err)
+		return 0, fmt.Errorf("end the credential's refresh tokens: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's access tokens: %w", err)
+	tag, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID)
+	if err != nil {
+		return 0, fmt.Errorf("end the credential's access tokens: %w", err)
 	}
-	return nil
+	return int(tag.RowsAffected()), nil
 }
 
 // DeleteCredentialTokens deletes, in tx, every access and refresh token whose session names the
@@ -793,11 +822,22 @@ func DeleteCredentialTokens(ctx context.Context, tx pgx.Tx, credentialID string)
 // database's, so the margin covers skew between the two.
 const jtiRetentionMargin = time.Minute
 
+// maxStoredProofKey bounds the bytes of a recorded proof's jti and htu together, under the primary
+// key (jti, htu)'s btree limit of 2,704 bytes a tuple: the tuple adds to the two texts at most 26
+// bytes (its header, a length header for each column and alignment), and 2,048 leaves that and
+// more. Dispatch's replay store holds the same bound for the same key.
+const maxStoredProofKey = 2048
+
 // CheckAndSetDPoPProofUsed records a DPoP proof as used until exp plus jtiRetentionMargin, keyed
 // on its jti and target URI (htu), and reports whether it already was. The insert, or the takeover
 // of an expired record of the same key, is one statement, so two requests presenting the same
-// proof cannot both see it unused. Sweep deletes expired records.
+// proof cannot both see it unused. Sweep deletes expired records. A proof whose jti holds a control
+// character, or whose jti and htu are over maxStoredProofKey bytes together, is ErrUnstorableText,
+// and records nothing.
 func (s *Store) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
+	if strings.IndexFunc(jti, unicode.IsControl) >= 0 || len(jti)+len(htu) > maxStoredProofKey {
+		return false, ErrUnstorableText
+	}
 	var recorded bool
 	err := s.db(ctx).QueryRow(ctx, `insert into oauth_dpop_proofs (jti, htu, expires_at) values ($1, $2, $3)
 		on conflict (jti, htu) do update set expires_at = excluded.expires_at

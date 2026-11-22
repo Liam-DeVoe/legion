@@ -10,9 +10,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
-import { api, isNoIdentity, isUnauthorized } from "./api/client";
+import { ApiError, api, isNoIdentity, isUnauthorized, type SignedOut } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
@@ -56,8 +56,10 @@ import {
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
+  buildPersonPath,
   buildProjectPath,
   liveViewSessionOf,
+  PERSON_PATH,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -77,6 +79,7 @@ import {
 } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
+import { ShellMessagePage } from "./features/shell/ShellMessagePage";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
   SIGN_OUT_SETTLE_MS,
@@ -94,6 +97,9 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
+import { Enroll } from "./features/signin/Enroll";
+import { ENROLL_PATH } from "./features/signin/enroll-path";
+import { PasskeySignIn } from "./features/signin/PasskeySignIn";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
@@ -101,6 +107,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { isRestrictedMember } from "./hooks/useRestrictedMember";
 import {
   backdrop50,
   badgeBlocking,
@@ -111,7 +118,6 @@ import {
   calloutDangerBorder,
   calloutWarningBorder,
   canvasText,
-  card,
   linkHoverText,
   linkText,
   pagePaperBg,
@@ -132,7 +138,6 @@ import {
   railText,
   skeletonBg,
   statusConnecting,
-  textMutedOnSurface,
   textSecondaryOnSurface,
   textTransparent,
 } from "./theme/classes";
@@ -192,6 +197,9 @@ const PipelinePage = lazy(() =>
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
+const PersonPage = lazy(() =>
+  import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
+);
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
@@ -244,6 +252,16 @@ function IssuePageFallback(): ReactNode {
   );
 }
 
+/** The pages that show only the deployment's own rows - Priorities and Pipeline and the
+ *  broadcasts - which Dispatch refuses a restricted member (403 DEPLOYMENT_READ_REFUSED,
+ *  `readclass.Deployment` in `api/read_classes.go`). Such a person reads only the projects that
+ *  name them (R4 of the private-projects spec), so these are no page of theirs, and their addresses
+ *  answer as an unknown one does, before any read. The machine-login page is routed outside them:
+ *  it is a restricted member's too, listing their own machine logins. */
+function DeploymentPages({ restricted }: { restricted: boolean }): ReactNode {
+  return restricted ? <NotFoundPage /> : <Outlet />;
+}
+
 /**
  * What the new issue page's frame holds while the page's code loads (R10):
  * the header's two lines, the view row's five controls and the first rows, as boxes with no word
@@ -275,20 +293,6 @@ function IssueFrameFallback(): ReactNode {
   );
 }
 
-function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
-  return (
-    <main className={`grid min-h-dvh place-items-center px-6 ${canvasText}`}>
-      <section className={`w-full max-w-md rounded-2xl p-8 shadow-sm ${card}`}>
-        <p className={`text-sm font-medium tracking-wide uppercase ${textMutedOnSurface}`}>
-          Dispatch
-        </p>
-        <h1 className="mt-3 text-2xl font-semibold">{title}</h1>
-        {children}
-      </section>
-    </main>
-  );
-}
-
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
   // From the reading pane's width the page fills the viewport (`fillsViewport` below), and the
@@ -310,28 +314,59 @@ function InboxPage(): ReactNode {
 
 /** The sign-in page. A session that lapsed shows what it keeps for its person (`KeptWrites`), and
  *  its sign-in link asks nothing on leaving: the page comes back to this tab, where every kept
- *  write resumes (`Writes.leavingToSignIn`). */
-function SignInPage(): ReactNode {
+ *  write resumes (`Writes.leavingToSignIn`). A sign-in Dispatch ended says why first
+ *  (`signedOut`, from its `401`); a sign-out, a lapsed cookie and a deployment that gives no
+ *  reason show the page as it always read. Where the origin's one sign-in is a passkey
+ *  (`passkey`, the outside origin's `401`), the page offers the passkey in place of the Google
+ *  link, which that origin does not serve. */
+function SignInPage({
+  passkey,
+  signedOut,
+}: {
+  passkey: boolean;
+  signedOut: SignedOut | undefined;
+}): ReactNode {
   const queryClient = useQueryClient();
   return (
     <ShellMessagePage title="Make the next decision clear.">
-      <p className={`mt-3 ${textSecondaryOnSurface}`}>
-        Sign in to review your team&apos;s open decisions.
-      </p>
-      <a
-        className={`mt-8 inline-flex rounded-lg px-4 py-2 font-semibold ${primaryButtonBg} ${primaryButtonHoverBg}`}
-        href="/auth/start"
-        onClick={(event) => {
-          // A press that opens the link elsewhere leaves this page in place.
-          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          writesOf(queryClient).leavingToSignIn();
-        }}
-      >
-        Sign in with Google
-      </a>
+      {signedOut === undefined ? null : (
+        <p className={`mt-3 font-medium ${textSecondaryOnSurface}`}>{signedOutWords(signedOut)}</p>
+      )}
+      {passkey ? (
+        <PasskeySignIn />
+      ) : (
+        <>
+          <p className={`mt-3 ${textSecondaryOnSurface}`}>
+            Sign in to review your team&apos;s open decisions.
+          </p>
+          <a
+            className={`mt-8 inline-flex rounded-lg px-4 py-2 font-semibold ${primaryButtonBg} ${primaryButtonHoverBg}`}
+            href="/auth/start"
+            onClick={(event) => {
+              // A press that opens the link elsewhere leaves this page in place.
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              writesOf(queryClient).leavingToSignIn();
+            }}
+          >
+            Sign in with Google
+          </a>
+        </>
+      )}
       <KeptWrites />
     </ShellMessagePage>
   );
+}
+
+/** Why Dispatch signed the person out, in plain words naming their address. */
+function signedOutWords({ login, reason }: SignedOut): string {
+  switch (reason) {
+    case "NOT_LISTED":
+      return `You were signed out because no Dispatch project's access list names ${login} any more.`;
+    case "OUTSIDE_SIGNIN_OFF":
+      return `You were signed out because Dispatch no longer signs in ${login} or any other account outside its Google Workspace domain.`;
+    case "WORKSPACE_ADDRESS":
+      return `You were signed out because ${login} is an address on a domain the Google Workspace owns, which signs in only as a Workspace account. Sign in with your Google Workspace account.`;
+  }
 }
 
 function ConnectionErrorPage({ onRetry }: { onRetry: () => void }): ReactNode {
@@ -466,7 +501,19 @@ function NavigationContents({
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
           above is read on every visit, so the footer sits under it rather than over it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        {/* The login is the way in to the reader's own page: what they wrote and what reached
+            them, which no other surface lists. The underline is what tells the link from the
+            text around it, which colour alone does not. */}
+        <p className={`px-2 text-sm ${railMutedText}`}>
+          Signed in as{" "}
+          <Link
+            className={`underline ${railAccentText} ${railAccentHoverText}`}
+            onClick={onClose}
+            to={buildPersonPath(user.login)}
+          >
+            {user.login}
+          </Link>
+        </p>
         <button
           className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
           disabled={signOutPending}
@@ -699,6 +746,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
+  // A restricted member is offered none of the deployment's own pages (`DeploymentPages`), and
+  // no Peek either: in the rail (`Sidebar`), in the phone header or by its key.
+  const restricted = isRestrictedMember(user);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -757,7 +807,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setInboxDrawerOpen((open) => !open),
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
-      when: () => !routeIsInbox(location.pathname),
+      when: () => !restricted && !routeIsInbox(location.pathname),
     },
     {
       id: "toggle-sidebar",
@@ -965,14 +1015,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <span className={inboxBadgeClass}>{inboxLabel}</span>
               ) : (
                 <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
-                  >
-                    Peek
-                  </button>
+                  {restricted ? null : (
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                  )}
                   <Link className={inboxBadgeClass} to="/">
                     {inboxLabel}
                   </Link>
@@ -1022,6 +1074,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             navigationOpen={navigationOpen}
             onOpenNavigation={() => setNavigationOpen(true)}
             project={routeProject}
+            restricted={restricted}
             user={user}
           />
         ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
@@ -1086,25 +1139,36 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                   path="/replies"
                 />
                 <Route element={<AgentsPage />} path="/agents" />
-                <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
-                <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
                 <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
-                <Route element={<PrioritiesPage />} path="/priorities" />
-                <Route element={<PriorityPage />} path="/priorities/:id" />
+                {/* Delivery is a restricted member's page too: its timeline and measures answer
+                    them the pull requests whose issue they see, and the page leaves out what it
+                    would read of the deployment's own (`DeliveryPage`). */}
+                <Route element={<DeliveryPage />} path="/delivery" />
+                {/* The machine-login page is a restricted member's page too: they approve there the
+                    device login of their own agents, the one credential Dispatch lets them decide,
+                    and the page lists and revokes their own machine logins alone, as Dispatch
+                    answers them (`MachineLoginPage`, `MachineLoginsSection` with `ownOnly`). */}
+                <Route element={<MachineLoginRoute />} path="/credentials/machine" />
+                <Route element={<DeploymentPages restricted={restricted} />}>
+                  <Route element={<PrioritiesPage />} path="/priorities" />
+                  <Route element={<PriorityPage />} path="/priorities/:id" />
+                  <Route element={<PipelinePage />} path="/pipeline" />
+                  <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
+                  <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
+                </Route>
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                <Route element={<ProjectPage />} path="/projects/:key/access" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
-                <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelinePage />} path="/pipeline" />
+                <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>
@@ -1302,7 +1366,8 @@ export function AuthGate(): ReactNode {
   // A definitive auth outcome always wins, even over stale "signed in" data from before a
   // session expired or was revoked — otherwise a revoked user keeps the authenticated shell.
   if (signedOut) {
-    return <SignInPage />;
+    const refusal = whoAmI.error instanceof ApiError ? whoAmI.error : undefined;
+    return <SignInPage passkey={refusal?.passkeySignIn === true} signedOut={refusal?.signedOut} />;
   }
   if (whoAmI.data !== undefined) {
     return shellFor === whoAmI.data.login ? (
@@ -1314,6 +1379,8 @@ export function AuthGate(): ReactNode {
   return <ConnectionErrorPage onRetry={() => void whoAmI.refetch()} />;
 }
 
+/** The app: the owner's enrollment link opens its page whoever is signed in, since the person it
+ *  was made for has no session yet; every other address goes through the sign-in gate. */
 export function App(): ReactNode {
-  return <AuthGate />;
+  return useLocation().pathname === ENROLL_PATH ? <Enroll /> : <AuthGate />;
 }

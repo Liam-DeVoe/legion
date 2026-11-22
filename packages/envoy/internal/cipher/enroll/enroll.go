@@ -105,6 +105,12 @@ var (
 	// that refusal's own text and the exchange's do, and names no holder: whoever holds the name
 	// is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
+	// ErrRestrictedMember refuses an enrollment that would act for a person Dispatch calls a
+	// restricted member (projectaccess.MemberRestricted): a person an access list admitted from
+	// outside the deployment's sign-in domain. Such a person's machine login enrolls no session,
+	// so none of their agents is released a secret; their login still trades for a token that
+	// names their projects, which is all their agents need. Nothing is written.
+	ErrRestrictedMember = errors.New("a restricted member's machine login enrolls no session, and the broker releases no secret to that person's agents")
 	// ErrProjectsInvalid refuses a list of projects that is no credential's list
 	// (oauthwire.ValidProjects): more than 16 keys, a key that is no Dispatch project key, or one
 	// named twice.
@@ -123,11 +129,12 @@ var (
 	// ErrProjectNotVisible refuses a session naming a project its person may not see, or one
 	// Dispatch does not hold: the two read alike, so a refusal never says whether a project exists.
 	ErrProjectNotVisible = errors.New("the session names a project its person cannot see")
-	// ErrProjectsRequired refuses a session of a restricted member that names no project, a
-	// person's pod among them: such a person sees only the projects that name them, so their
-	// session names which (projectaccess.ErrListRequired). `agent-secrets register`,
-	// `enroll --helper` and `enroll --pod` each read AGENT_SECRETS_PROJECTS, so the one setting
-	// the refusal names is the one each of them reads.
+	// ErrProjectsRequired refuses a session under the sign-in of a person Dispatch calls a
+	// restricted member that names no project: such a person sees only the projects that name
+	// them, so their session names which (projectaccess.ErrListRequired). A restricted member's
+	// machine login and pod login never reach it: they enroll nothing at all
+	// (ErrRestrictedMember). `agent-secrets register` and `enroll --helper` each read
+	// AGENT_SECRETS_PROJECTS, so the one setting the refusal names is the one each of them reads.
 	ErrProjectsRequired = errors.New("a restricted member's session names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on")
 )
 
@@ -274,9 +281,11 @@ type Service struct {
 	Pod PodVerifier
 
 	// Projects asks Dispatch whether a person may see a project and what kind of member they are
-	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): Create checks a session's list through it
-	// before its transaction begins. nil on a broker with no such client, which enrolls a session
-	// naming no project as before and refuses one that names any (ErrProjectsUnchecked).
+	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL). Create asks it, before its transaction
+	// begins, first of the person every enrollment under a person's machine login or pod login acts
+	// for, refusing a restricted member (ErrRestrictedMember), and then checks a session's list
+	// through it. nil on a broker with no such client, which asks nothing, enrolls a session naming
+	// no project as before and refuses one that names any (ErrProjectsUnchecked).
 	Projects projectaccess.Access
 
 	// Sessions binds every enrollment that names a session to the principal its name is held
@@ -356,25 +365,29 @@ type execer interface {
 // proof.SignLauncher proof presents, and exactly what AuthenticateLauncher's issuance-chain
 // re-verification checks against recordID's approved credential-request record. recordID may be
 // "" only for a credential with no backing record at all (test fixtures unrelated to the
-// machine-login flow); AuthenticateLauncher refuses such a credential outright.
-func (s *Service) mintLauncherCredential(ctx context.Context, exec execer, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
+// machine-login flow); AuthenticateLauncher refuses such a credential outright. approver is the
+// account that approved it (migration 0041), which a revoke of that account, once it no longer
+// holds the operator's address, ends it by; the zero value records none, as an approval an
+// older Dispatch relayed carries none.
+func (s *Service) mintLauncherCredential(ctx context.Context, exec execer, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
 	if operator != nil {
 		operator = new(record.CanonicalLogin(*operator))
 	}
 	id := uuid.New()
-	_, err := exec.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires)
+	_, err := exec.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at, approver_issuer, approver_subject)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires, nullable(approver.Issuer), nullable(approver.Subject))
 	if err != nil {
 		return uuid.Nil, err
 	}
 	return id, nil
 }
 
-// MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine,
-// inside tx, joined to the caller's own transaction — machine.Service.ApplyDecision's own approval
-// commit.
-func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, operator, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
-	return s.mintLauncherCredential(ctx, tx, &operator, nil, host, thumbprint, jwk, recordID, expires)
+// MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine and
+// approved by the account approver, inside tx, joined to the caller's own transaction —
+// machine.Service.ApplyDecision's own approval commit.
+func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, operator, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
+	return s.mintLauncherCredential(ctx, tx, &operator, nil, host, thumbprint, jwk, recordID, expires, approver)
 }
 
 // TokenLogin is one verified token login, as IssueTokenLogin records it: the identity the token
@@ -707,6 +720,14 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // a service's), even after the caller's launcher proof was verified, is
 // ErrUnauthenticated.
 //
+// An enrollment that acts for a person — under a person's machine login or pod login — is made
+// only once Dispatch has said that person is no restricted member (checkMember): a restricted
+// member's login enrolls nothing (ErrRestrictedMember), and while Dispatch cannot be asked
+// nothing is enrolled (projectaccess.MemberKindUncheckable). A person's sign-in on a machine is
+// not held to that check; its session is held to the list rule alone (checkProjects), which asks
+// Dispatch the person's member kind for an empty list and whether they may see each project
+// named.
+//
 // An enrollment that names a session also records the principal its grants follow
 // (carryPrincipal), and takes what every predecessor of that name under that principal, or under
 // an account paired with its own (SessionBinder.PairedWith), still holds: its grants, its pending
@@ -775,6 +796,15 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 	if len(in.Projects) == 0 {
 		in.Projects = nil
 	}
+	// The list's own shape is refused before Dispatch is asked anything (checkProjectList); then
+	// the person's member kind (checkMember), and then the list against that person
+	// (checkProjects).
+	if err := checkProjectList(in); err != nil {
+		return Enrollment{}, err
+	}
+	if err := s.checkMember(ctx, cred, in); err != nil {
+		return Enrollment{}, err
+	}
 	if err := s.checkProjects(ctx, in); err != nil {
 		return Enrollment{}, err
 	}
@@ -806,13 +836,60 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 	return Enrollment{}, fmt.Errorf("create enrollment: exhausted retries after concurrent changes to runtime %s", in.RuntimeID)
 }
 
-// checkProjects is Create's rule for the projects a session names, run before any transaction
-// begins so that no call to Dispatch holds a row lock or a pooled connection: the list must be a
-// credential's list (ErrProjectsInvalid); only an enrollment acting for a person names one
-// (ErrProjectsNeedAPerson); a list is taken only where the broker can check it with Dispatch
-// (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the rule the
-// token exchange applies too, decides: every project named must be one the person may see
-// (ErrProjectNotVisible), and a restricted member must name at least one (ErrProjectsRequired).
+// checkMember is Create's rule for the person an enrollment acts for, run once every other check
+// of the caller has passed and before any transaction begins, so that no call to Dispatch holds
+// a row lock or a pooled connection (the rule internal/cipher/projectaccess states for every
+// caller). It asks Dispatch what kind of member in.Operator is: a restricted member, a person an
+// access list admitted from outside the deployment's sign-in domain, is ErrRestrictedMember, so
+// that person's agents get no session to be released a secret under, however their machine login
+// was approved and whichever route the launcher reached; a full member, and a person Dispatch
+// holds no row for, enroll as before. Any failure to ask — Dispatch not answering, Dispatch
+// refusing the broker's own account (dispatchread.ErrBrokerRefused), a kind this broker does not
+// know (projectaccess.ErrUnknownMemberKind) — is the *projectaccess.MemberKindUncheckable
+// projectaccess.Restricted returns: a check that cannot decide refuses, and the launcher enrols
+// again.
+//
+// It asks nothing for an enrollment that acts for no person (a service's pod, a machine's own
+// session), for a person's sign-in on a machine, whose person the broker verified against
+// BROKER_SIGNIN_DOMAIN itself when the token exchange minted the credential (such a session is
+// held to checkProjects' list rule alone), and on a broker with no client of Dispatch (Projects
+// nil).
+func (s *Service) checkMember(ctx context.Context, cred Credential, in Enrollment) error {
+	if s.Projects == nil || in.Operator == nil || signInCredential(cred.Subject) {
+		return nil
+	}
+	restricted, err := projectaccess.Restricted(ctx, s.Projects, *in.Operator)
+	switch {
+	case err != nil:
+		return err
+	case restricted:
+		return fmt.Errorf("%w: %s is a restricted member", ErrRestrictedMember, *in.Operator)
+	}
+	return nil
+}
+
+// checkProjectList is Create's rule for the shape of the list a session names, which asks Dispatch
+// nothing and so runs before any question: the list must be a credential's list
+// (ErrProjectsInvalid), and only an enrollment acting for a person names one
+// (ErrProjectsNeedAPerson).
+func checkProjectList(in Enrollment) error {
+	if err := oauthwire.ValidProjects(in.Projects); err != nil {
+		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
+	}
+	if len(in.Projects) > 0 && in.Operator == nil {
+		return ErrProjectsNeedAPerson
+	}
+	return nil
+}
+
+// checkProjects is Create's rule for the projects a session names, run once checkProjectList and
+// checkMember have passed and before any transaction begins, so that no call to Dispatch holds a
+// row lock or a pooled connection: a list is taken only where the broker can check it with
+// Dispatch (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the
+// rule the token exchange applies too, decides: every project named must be one the person may
+// see (ErrProjectNotVisible), and a restricted member must name at least one
+// (ErrProjectsRequired), which an enrollment meets only where checkMember asked nothing (a
+// person's sign-in) or Dispatch's answer changed between the two reads.
 // An empty list enrolls as before with no client, and with a client whose Dispatch could not be
 // asked the member kind (projectaccess.ErrUnchecked): the session is enrolled, and a line says it
 // was enrolled unchecked. A list Dispatch did not answer for is refused, since taking it
@@ -825,18 +902,13 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // the project-access error it met.
 //
 // A person's pod (PersonPodLogin) is held to this rule exactly as its person's session is: it acts
-// for its person, so it names its projects, and they are checked against that person. That is
-// what keeps a restricted member's pod to what the member's own session sees, and lets it enrol
-// at all, since such a member must name a project. Its operator is what says so: authorized has
-// already refused an operator to every pod but a live person's pod login's own, so a pod reaches
-// here with an operator only as that, and every other pod, a service's, names no project.
+// for its person, so it names its projects, and they are checked against that person. A
+// restricted member's pod never reaches here: checkMember refuses it first, as it refuses that
+// member's machine login, since a restricted member's login enrolls no session at all. Its
+// operator is what says so: authorized has already refused an operator to every pod but a live
+// person's pod login's own, so a pod reaches here with an operator only as that, and every other
+// pod, a service's, names no project.
 func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
-	if err := oauthwire.ValidProjects(in.Projects); err != nil {
-		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
-	}
-	if len(in.Projects) > 0 && in.Operator == nil {
-		return ErrProjectsNeedAPerson
-	}
 	if s.Projects == nil || in.Operator == nil {
 		if len(in.Projects) > 0 {
 			return fmt.Errorf("%w: this broker holds no client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL)", ErrProjectsUnchecked)
@@ -2386,23 +2458,39 @@ func signInCredential(subject *string) bool {
 	return exchange.ReadSubject(*subject).Kind == exchange.SubjectSignIn
 }
 
-// liveCredentials is LiveCredentials, every service's login among them only when services is set.
-// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
-// and every subject that the setting maps ($4). So one statement holds the whole rule. A
-// credential with no subject matches neither array, and the rule of an unmapped credential
-// decides it.
-func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
-	person = record.CanonicalLogin(person)
-	if person == "" || person == record.AnyoneApprover {
-		return nil, nil
-	}
-	mine, mapped := []string{}, make([]string, 0, len(s.PodOperators))
+// PodOperatorMappings counts the Kubernetes service accounts that BROKER_POD_OPERATORS maps to
+// person (record.CanonicalLogin), whether or not a pod of one holds a live login: a pod of each can
+// log in as person at any time with its own token, with no step of theirs. GET /v1/person-access
+// counts it as access that outlives the browser, as it counts an exchange entry.
+func (s *Service) PodOperatorMappings(person string) int {
+	mine, _ := s.podAccounts(record.CanonicalLogin(person))
+	return len(mine)
+}
+
+// podAccounts answers the subjects BROKER_POD_OPERATORS maps to person, a login as
+// record.CanonicalLogin spells it (mine), and every subject it maps (mapped).
+func (s *Service) podAccounts(person string) (mine, mapped []string) {
+	mine, mapped = []string{}, make([]string, 0, len(s.PodOperators))
 	for subject := range s.PodOperators {
 		mapped = append(mapped, subject)
 		if s.PodOperator(&subject) == person {
 			mine = append(mine, subject)
 		}
 	}
+	return mine, mapped
+}
+
+// liveCredentials is LiveCredentials, every service's login among them only when services is set.
+// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
+// and every subject that the setting maps ($4) (podAccounts). So one statement holds the whole
+// rule. A credential with no subject matches neither array, and the rule of an unmapped credential
+// decides it.
+func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
+	person = record.CanonicalLogin(person)
+	if person == "" || person == record.AnyoneApprover {
+		return nil, nil
+	}
+	mine, mapped := s.podAccounts(person)
 	// c.subject = any(...) is null for a credential with no subject, and coalesce reads that
 	// null as "not mapped". So a login a person approved, which has no subject, keeps the rule of
 	// an unmapped credential.
@@ -2536,7 +2624,7 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 	if revokedAt != nil {
 		return nil
 	}
-	if err := endCredential(ctx, tx, id, host, service, actor, "its machine login was revoked"); err != nil {
+	if _, err := endCredential(ctx, tx, id, host, service, actor, "its machine login was revoked"); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -2610,7 +2698,8 @@ func RevokeReusedCredential(ctx context.Context, tx pgx.Tx, id string) error {
 	if err != nil {
 		return err
 	}
-	return endCredential(ctx, tx, id, host, service, ReuseActor, "its machine login's refresh token was reused")
+	_, err = endCredential(ctx, tx, id, host, service, ReuseActor, "its machine login's refresh token was reused")
+	return err
 }
 
 // RevokePersonSignIn ends the sign-in id of person — the sign-in `agent-secrets login` made on
@@ -2637,31 +2726,80 @@ func (s *Service) RevokePersonSignIn(ctx context.Context, id, person, actor stri
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	thumbprint, ended, err := store.RevokePersonSignInTx(ctx, tx, id, person)
+	_, ended, err := endSignIn(ctx, tx, id, person, actor, "the person revoked this machine's sign-in")
 	if err != nil {
 		return 0, err
 	}
-	if thumbprint != "" {
-		var credential, host string
-		var service *string
-		err := tx.QueryRow(ctx, `select id, host, service from launcher_credentials
-			where key_thumbprint = $1 and revoked_at is null for no key update`, thumbprint).Scan(&credential, &host, &service)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-		case err != nil:
-			return 0, err
-		default:
-			if err := endCredential(ctx, tx, credential, host, service, actor, "the person revoked this machine's sign-in"); err != nil {
-				return 0, err
-			}
-		}
-	}
 	return ended, tx.Commit(ctx)
+}
+
+// endSignIn ends sign-in id of person in tx and everything it holds, as RevokePersonSignIn
+// describes, writing actor and reason on every row it writes. It answers whether this call
+// ended it (false for a sign-in already revoked, which changes nothing) and how many live access
+// tokens ended with it: those its trades minted, and any other naming the credential it held.
+// An id no sign-in of that person has is store.ErrNoSignIn.
+func endSignIn(ctx context.Context, tx pgx.Tx, id, person, actor, reason string) (bool, int, error) {
+	thumbprint, ended, err := store.RevokePersonSignInTx(ctx, tx, id, person)
+	if err != nil || thumbprint == "" {
+		return false, 0, err
+	}
+	var credential, host string
+	var service *string
+	err = tx.QueryRow(ctx, `select id, host, service from launcher_credentials
+		where key_thumbprint = $1 and revoked_at is null for no key update`, thumbprint).Scan(&credential, &host, &service)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return true, ended, nil
+	case err != nil:
+		return false, 0, err
+	}
+	more, err := endCredential(ctx, tx, credential, host, service, actor, reason)
+	if err != nil {
+		return false, 0, err
+	}
+	return true, ended + more, nil
+}
+
+// NoAccountSignInActor is the actor RecordPersonSignIn records when a trade ends a sign-in that
+// recorded no account: the broker, which cannot tell whose that sign-in was.
+const NoAccountSignInActor = "broker:sign-in-recording-no-account"
+
+// RecordPersonSignIn records a person's trade in tx (store.RecordPersonSignIn), the exchange's own
+// transaction, and, when that trade ended a sign-in from before migration 0041, which records no
+// account and so might have been any account's, ends the launcher credential that sign-in held and
+// every session it enrolled (endCredential), as revoking the sign-in does. The sessions another
+// account enrolled there would otherwise go on reading that account's secrets on this box after a
+// revoke of that account, which ends the sign-ins recording it or none and so no longer finds a
+// row recording this trade's. The trade then mints the sign-in's credential afresh
+// (oauth.Provider.personCredential), so the box enrols its sessions again once. The credential is
+// found by the box key's thumbprint and by the subject that names this person's sign-in on this
+// machine with this key (exchange.PersonSubject), which is the credential the sign-in's own trades
+// minted and no other credential that came to hold the key. Every refusal is store's, unchanged.
+func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in store.SignInTrade) error {
+	ended, err := store.RecordPersonSignIn(ctx, tx, in)
+	if err != nil || !ended {
+		return err
+	}
+	var credential, host string
+	var service *string
+	err = tx.QueryRow(ctx, `select id, host, service from launcher_credentials
+		where key_thumbprint = $1 and subject = $2 and revoked_at is null for no key update`,
+		in.Thumbprint, exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)).Scan(&credential, &host, &service)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	_, err = endCredential(ctx, tx, credential, host, service, NoAccountSignInActor,
+		"a trade ended the sign-in that held it, which recorded no account")
+	return err
 }
 
 // endCredential revokes launcher credential id in tx, whose row the caller holds: it sets
 // revoked_at, ends its OAuth tokens, ends every enrollment it made that has not ended
 // (endEnrollment, reason), and writes one launcher_credential.revoked audit row, each as actor.
+// It answers how many live access tokens it ended.
 //
 // A person revoking a machine login, or their sign-in on a box, means every secret that login
 // reached, so each of its enrollments ends terminally: the grants are revoked and the pending
@@ -2670,31 +2808,34 @@ func (s *Service) RevokePersonSignIn(ctx context.Context, id, person, actor stri
 // and still holds its session's grants, and leaving them would let the next enrollment of that
 // session name, on a box the person has not revoked, adopt a grant the person has just taken
 // back.
-func endCredential(ctx context.Context, tx pgx.Tx, id, host string, service *string, actor, reason string) error {
+func endCredential(ctx context.Context, tx pgx.Tx, id, host string, service *string, actor, reason string) (int, error) {
 	if _, err := tx.Exec(ctx, `update launcher_credentials set revoked_at=now() where id=$1`, id); err != nil {
-		return err
+		return 0, err
 	}
 	// A device login's tokens name the credential, so its next refresh is refused too.
-	if err := oauthstore.EndCredential(ctx, tx, id); err != nil {
-		return err
+	tokens, err := oauthstore.EndCredential(ctx, tx, id)
+	if err != nil {
+		return 0, err
 	}
 	rows, err := tx.Query(ctx, `select id from enrollments where launcher_credential_id=$1 and (revoked_at is null or dormant_since is not null) order by id for update`, id)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	ended, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, enrollment := range ended {
 		if _, err := endEnrollment(ctx, tx, enrollment, actor, "enrollment.revoked", reason, endTerminal); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	_, err = tx.Exec(ctx, `insert into audit (kind, actor, detail) values ('launcher_credential.revoked',$1,
+	if _, err := tx.Exec(ctx, `insert into audit (kind, actor, detail) values ('launcher_credential.revoked',$1,
 		jsonb_strip_nulls(jsonb_build_object('credential_id',$2::text,'host',$3::text,'service',$4::text,'enrollments',coalesce(to_jsonb($5::text[]),'[]'::jsonb))))`,
-		actor, id, host, service, ended)
-	return err
+		actor, id, host, service, ended); err != nil {
+		return 0, err
+	}
+	return tokens, nil
 }
 
 // Lookup answers proof.Verifier's Lookup callback. id comes from an untrusted proof's eid claim,

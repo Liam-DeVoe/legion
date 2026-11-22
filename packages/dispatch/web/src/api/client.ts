@@ -1,5 +1,8 @@
 import {
   AUTH_NO_IDENTITY,
+  AUTH_SIGN_IN_PASSKEY,
+  AUTH_SIGNED_OUT_REASONS,
+  type AuthSignedOutReason,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
@@ -12,12 +15,19 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  type PasskeyAssertion,
+  type PasskeyEnrollmentOptions,
+  type PasskeyEnrollmentStart,
+  type PasskeyRegistration,
+  type PasskeyRequestOptions,
+  type PasskeySignedIn,
   REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
 } from "@legion/contracts";
 
+import { setDispatchOrigins } from "./origins";
 import {
   type Answer,
   type Body,
@@ -35,6 +45,7 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
+  AccessGroup,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
@@ -44,6 +55,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  IssueReferencesAnswer,
   NewIssueSettings,
   TargetCandidate,
   UserIssueState,
@@ -88,6 +100,16 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  reason?: string;
+  login?: string;
+  sign_in?: string;
+}
+
+/** Why Dispatch signed the person out, and the address it signed out, as its `401
+ *  AUTH_NO_IDENTITY` names them (`AUTH_SIGNED_OUT_REASONS`). */
+export interface SignedOut {
+  readonly login: string;
+  readonly reason: AuthSignedOutReason;
 }
 
 export class ApiError extends Error {
@@ -102,6 +124,14 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** Why Dispatch signed the person out, for its own `401 AUTH_NO_IDENTITY` naming a reason this
+   *  page knows and the address; undefined for every other answer, a sign-out's and an expired
+   *  cookie's 401 among them. */
+  readonly signedOut: SignedOut | undefined;
+  /** Whether this is Dispatch's own `401 AUTH_NO_IDENTITY` at an origin whose one sign-in is a
+   *  passkey (`sign_in: AUTH_SIGN_IN_PASSKEY`, the outside origin's), so the sign-in page offers
+   *  the passkey and no Google link. */
+  readonly passkeySignIn: boolean;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -111,7 +141,23 @@ export class ApiError extends Error {
     this.state = payload.state;
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
+    this.signedOut = signedOutOf(status, payload);
+    this.passkeySignIn =
+      status === 401 &&
+      payload.code === AUTH_NO_IDENTITY &&
+      payload.sign_in === AUTH_SIGN_IN_PASSKEY;
   }
+}
+
+/** The reason and address a `401 AUTH_NO_IDENTITY` gives for a sign-out, when it gives a reason
+ *  `AUTH_SIGNED_OUT_REASONS` names and an address to name. */
+function signedOutOf(status: number, payload: ErrorPayload): SignedOut | undefined {
+  const { code, login, reason } = payload;
+  if (status !== 401 || code !== AUTH_NO_IDENTITY || typeof login !== "string" || login === "") {
+    return undefined;
+  }
+  const known = AUTH_SIGNED_OUT_REASONS.find((named) => named === reason);
+  return known === undefined ? undefined : { login, reason: known };
 }
 
 /** A request the browser could not get an answer to at all: the connection failed or dropped
@@ -364,6 +410,16 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
   );
 }
 
+// A read of the whole deployment - the pending credential requests among them - answers this 403
+// to a viewer that is not open: a restricted member, or a credential acting for one. A full
+// member's credential reads it whatever projects it lists, as the shared token does. It is
+// definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
+export function isDeploymentReadRefused(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
+  );
+}
+
 // A stored document outside the Proof schema is a repairable state, not a transient failure:
 // retrying the read cannot repair it, while opening its live editor could let the browser rewrite it.
 export function isDocumentSchemaError(error: unknown): boolean {
@@ -397,9 +453,10 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
-// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
-// costs the database the whole bound each time, so an automatic retry only multiplies that cost
-// and shows nothing more. The page offers its own Retry instead.
+// An issue's references read, one hop each way, cut at the server's 2 s bound (`503
+// REFERENCES_TIMEOUT`): a read that reaches the bound costs the database the whole of it, so an
+// automatic retry only multiplies that cost and shows nothing more. The page offers its own Retry
+// instead.
 export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
 }
@@ -437,13 +494,16 @@ export function isAgentListRefilling(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "ENVOY_REFILLING";
 }
 
-// The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
-// definitive or too costly to send again at once; any other failure (dropped connection, a read
-// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
-// couple of automatic attempts before surfacing a Retry affordance to the user.
+// The retry policy every query in the app shares: an auth outcome (401), any 403, a missing
+// architecture source, an unconfigured credential broker or delivery timeline, a stored document
+// outside Proof's schema, a stored history that cannot load, or a reference closure cut at its
+// bound is definitive or too costly to send again at once; any other failure (dropped connection,
+// a read past its deadline, 5xx, a document holding content this build cannot read yet) is worth
+// a couple of automatic attempts before surfacing a Retry affordance to the user. A 403 is
+// Dispatch's permanent answer to the credential the request carried (a deployment read refused to
+// a restricted member, a role the caller does not hold), and a retry carries the same credential.
 export function isRetryableQueryError(error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 403) return false;
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
@@ -975,9 +1035,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
-   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it, each saying beside it what that
+   *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
+   *  `getIssueReferences`, which a build older than the document answers with less. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1076,6 +1136,136 @@ export class DispatchApiClient {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
   }
 
+  /** Who may see `project` and who changes that: its owner, its visibility, and the people (by
+   *  email) and groups (by name) its access list names, each sorted. Needs the `person` scope. */
+  getProjectAccess(project: string) {
+    return this.read("/api/v1/projects/{key}/access", { key: project });
+  }
+
+  /** Gives the project to another full member (`owner`) or sets its visibility; only its owner
+   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it.
+   *  This and the four access-list writes below need the `person` and `approve` scopes. */
+  patchProjectAccess(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/access", "patch">,
+    bounds: WriteBounds
+  ) {
+    return this.patch("/api/v1/projects/{key}/access", { key: project }, input, bounds);
+  }
+
+  /** Names a person on the project's access list by email; the owner's alone. */
+  putProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/access/people/{email}",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Takes a person off the project's access list; the owner's alone. */
+  deleteProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.remove(
+      "/api/v1/projects/{key}/access/people/{email}",
+      { email, key: project },
+      bounds
+    );
+  }
+
+  /** Makes a person from outside the link that enrolls their passkey: `{url, made_at, expires_at}`,
+   *  the outside origin's `/enroll#<token>`, when Dispatch made it and the moment 24 hours on when
+   *  it stops, and it ends any earlier unused link of theirs for the project. The owner's alone,
+   *  from a browser session (`403 BROWSER_SESSION_REQUIRED` for a token). The answer holds the
+   *  token, so Dispatch keeps none of it under the write's key: a repeat is `409 KEY_COMMITTED`, a
+   *  link made whose answer is gone, and a new press makes a new link. */
+  createProjectInvitation(project: string, email: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/access/people/{email}/invitations",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** The owner's Reset of a person from outside: deletes their passkeys and their unused links of
+   *  every project, ends their sign-in, and revokes their personal tokens and the device logins
+   *  they approved, at once. Answers the project's access as the write left it. */
+  resetProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/access/people/{email}/reset",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Names a group on the project's access list (`404 GROUP_NOT_FOUND` for none of that name);
+   *  the owner's alone. */
+  putProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/access/groups/{name}",
+      { key: project, name },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Takes a group off the project's access list; the owner's alone. */
+  deleteProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
+    return this.remove(
+      "/api/v1/projects/{key}/access/groups/{name}",
+      { key: project, name },
+      bounds
+    );
+  }
+
+  /** One page of the groups an access list can name, by name: at most 100 after the name `after`,
+   *  with `next` naming where the next page starts, absent on the last page. */
+  listAccessGroupsPage(after?: string) {
+    return this.read("/api/v1/access-groups", {}, after === undefined ? undefined : { after });
+  }
+
+  /** Every group an access list can name, by name, each with its owner and its members' emails:
+   *  every page of `listAccessGroupsPage`, read in turn. Settings → Groups and the Access tab's
+   *  group picker both read this whole list. A page's `next` is the last name it holds, so the
+   *  cursor only moves on; a `next` the read has already passed as `after` would read the same
+   *  pages again for good, so the read stops there and fails naming it. */
+  async listAccessGroups(): Promise<AccessGroup[]> {
+    const groups: AccessGroup[] = [];
+    const passed = new Set<string>();
+    let after: string | undefined;
+    do {
+      const page = await this.listAccessGroupsPage(after);
+      groups.push(...(page.groups ?? []));
+      after = page.next;
+      if (after !== undefined) {
+        if (passed.has(after)) {
+          throw new Error(
+            `GET /api/v1/access-groups named next ${JSON.stringify(after)} again, a page it already answered, so the groups were not read whole`
+          );
+        }
+        passed.add(after);
+      }
+    } while (after !== undefined);
+    return groups;
+  }
+
+  /** Makes group `name` with its writer as owner, or writes its members again for its owner
+   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). This and the delete below need the `person`
+   *  and `approve` scopes, as the access-list writes do. */
+  putAccessGroup(
+    name: string,
+    input: Body<"/api/v1/access-groups/{name}", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/access-groups/{name}", { name }, input, bounds);
+  }
+
+  /** Deletes group `name`, which takes it off every access list; its owner's alone. */
+  async deleteAccessGroup(name: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/access-groups/{name}", { name }, bounds);
+  }
+
   /** Every project's architecture sources, by project and then in the order each was added. */
   listArchitectureSources() {
     return this.read("/api/v1/settings/architecture-sources", {});
@@ -1139,14 +1329,15 @@ export class DispatchApiClient {
   }
 
   /** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
-   *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
-   *  itself is refused, as it is at the mint. */
-  setAgentTokenScopes(
+   *  replaces the set it holds now, and, when the body names them, the whole list of projects it
+   *  may use; a body with no `projects` leaves the list as it is. Answers the updated token. A
+   *  scope the caller does not hold itself is refused, as it is at the mint. */
+  updateAgentToken(
     id: string,
-    scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"],
+    input: Body<"/api/v1/me/agent-tokens/{id}", "patch">,
     bounds: WriteBounds
   ) {
-    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, { scopes }, bounds);
+    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, input, bounds);
   }
 
   async revokeAgentToken(id: string, bounds: WriteBounds): Promise<void> {
@@ -1359,6 +1550,12 @@ export class DispatchApiClient {
    *  one page at a time. Needs the `person` scope. */
   listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
     return this.read("/api/v1/me/answers", {}, page);
+  }
+
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
@@ -1709,8 +1906,13 @@ export class DispatchApiClient {
     );
   }
 
-  getIssueReferences(key: string) {
-    return this.read("/api/v1/issues/{key}/references", { key });
+  /** The issue's references read, each member carrying its latest version alone
+   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions.
+   *  The document's body holds `links` and `linked_from`, which a Dispatch from before the
+   *  one-hop read does not send, so this read answers `IssueReferencesAnswer`, where both may be
+   *  absent. */
+  getIssueReferences(key: string): Promise<IssueReferencesAnswer> {
+    return this.read("/api/v1/issues/{key}/references", { key }, { versions: "latest" });
   }
 
   /** Everyone who worked the issue, running or not: people, and agent sessions merged with the
@@ -1854,15 +2056,59 @@ export class DispatchApiClient {
   }
 
   /** The signed-in person. `/auth/*` sits outside the `/api/v1` route table the document is
-   *  rendered from, so this one read names its path and its answer itself. */
-  whoAmI(): Promise<AuthenticatedUser> {
-    return this.json<AuthenticatedUser>("/auth/whoami");
+   *  rendered from, so this one read names its path and its answer itself. The origins the
+   *  answer names are the ones every dashboard URL is read against from then on
+   *  (`setDispatchOrigins`); an answer naming none leaves the page's own alone. */
+  async whoAmI(): Promise<AuthenticatedUser> {
+    const user = await this.json<AuthenticatedUser>("/auth/whoami");
+    setDispatchOrigins(user.origins ?? []);
+    return user;
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the
    *  same however often it is made, so it goes with no key. */
   logout(): Promise<{ ok: true }> {
     return this.json<{ ok: true }>("/auth/logout", { method: "POST" });
+  }
+
+  /** One step of a passkey ceremony at the outside origin (`@legion/contracts`' `PasskeyRefusal`
+   *  for its refusals). `/auth/passkey/*` sits outside the route table and the keyed layer, as
+   *  `/auth/logout` does: each step's state is the ceremony's own cookie, and a repeat after a
+   *  lost answer is a new ceremony, not a second write of one. It goes under the read deadline,
+   *  so a step Dispatch never answers ends in a refusal the person can try again. */
+  private passkeyStep<T>(path: string, body: unknown): Promise<T> {
+    return this.json<T>(
+      path,
+      {
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+      REQUEST_DEADLINE_MS
+    );
+  }
+
+  /** The enrollment's options for the link whose fragment is `token`, which it checks and leaves
+   *  unused, with the project the link is for and the owner who made it. */
+  passkeyEnrollmentOptions(token: string): Promise<PasskeyEnrollmentOptions> {
+    return this.passkeyStep("/auth/passkey/register/begin", {
+      token,
+    } satisfies PasskeyEnrollmentStart);
+  }
+
+  /** Stores the passkey the browser made, uses the link, and signs its person in. */
+  passkeyEnroll(registration: PasskeyRegistration): Promise<PasskeySignedIn> {
+    return this.passkeyStep("/auth/passkey/register/finish", registration);
+  }
+
+  /** A sign-in's options, for any passkey Dispatch holds. */
+  passkeySignInOptions(): Promise<PasskeyRequestOptions> {
+    return this.passkeyStep("/auth/passkey/login/begin", {});
+  }
+
+  /** Signs the passkey's person in from the signature the browser made. */
+  passkeySignIn(assertion: PasskeyAssertion): Promise<PasskeySignedIn> {
+    return this.passkeyStep("/auth/passkey/login/finish", assertion);
   }
 
   /** A read through Dispatch's GitHub proxy; it makes no write. The proxy carries any GitHub path
@@ -1946,14 +2192,15 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
    *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
-   *  or expired with a session still running. */
+   *  or expired with a session still running. A restricted member is answered their own machines'
+   *  alone. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
   /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
-   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
-   *  the login enrolled ends with it. */
+   *  of the viewer's pods'; a restricted member revokes only one of their own machines'. Dispatch
+   *  names the viewer as the person revoking, and every session the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

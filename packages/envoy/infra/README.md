@@ -25,8 +25,10 @@ More than 1 needs a clustered NATS: a single server, which is what `aws:NatsServ
 `ENVOY_NATS_REPLICAS`.
 
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
-stored there ([NATS seeds](#nats-seeds)), and prints what the AWS components register for a program
-that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)).
+stored there ([NATS seeds](#nats-seeds)), prints what the AWS components register for a program
+that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), and checks a
+clustered hub's routes after its route authorization's rollout (`envoy-infra routes`,
+[docs/nats-hub.md](docs/nats-hub.md#route-authorization)).
 
 ## Install
 
@@ -211,8 +213,9 @@ pod starts on them.
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
+| `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
 | `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
@@ -258,8 +261,9 @@ input:
   Tailscale's rule, `replicas` below 2, and no listener in either place; a listener in both places
   (`listener` and `tailnet.listener`); of the listener, each refusal naming the path it is declared
   at: no `machineId` without `tailnet`, a `machineId` the shared machine-id rule refuses, an empty
-  `nkey`, a `seedSecretName` that is not a DNS subdomain, a `seedSecretKey` outside
-  `[-._a-zA-Z0-9]+`, no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
+  `nkey`, a `seedSecretName` that is not a DNS subdomain, a `seedSecretKey` that is no Secret's
+  key (letters, digits, `-`, `_` and `.`, at most 253 characters, and neither `.` nor `..` nor
+  one that begins with `..`), no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
   `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
@@ -531,7 +535,8 @@ first `pulumi up`:
 
 - The cluster enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane V2, and has nodes
   in three zones. The policy is what keeps a pod other than the hub's from joining the cluster on
-  6222, since the routes carry no credential. It is also what keeps every other pod of the cluster
+  6222, since the routes carry no credential unless `routeAuthorization` has reached
+  `authorization`. It is also what keeps every other pod of the cluster
   off the session listener's `/v1` on 9020 where that listener is a `tailnet.listener` with no
   `clientNamespaces`, which serves `/v1` with no credential at all
   (`ENVOY_API_ALLOW_UNAUTHENTICATED=1`, and the component takes no token input for it). A caller
@@ -693,14 +698,15 @@ runs `envoy-dispatch` beside the Cloud SQL Auth Proxy native sidecar; the front 
 that the component declares itself; and `<hostname>-listener`, which runs `envoy-listener` alone.
 Tailscale Serve on the front door is the tailnet ingress on port 443, and proxies to the app's
 ClusterIP Service on port 8766, which also serves Dispatch's API in-cluster to the namespaces
-`allowedNamespaces` names; a NetworkPolicy refuses every other namespace. The front door's SOCKS5
-Service on port 1055, which only a deployment without `natsInCluster` has, and the listener's
-Service on port 9020 are reachable only from the workloads their own policies name: the app and
-the listener may dial the proxy, and the app alone may dial the listener. The front door is built
-only where the tailnet inputs are set: with that whole group unset the component builds none, and
-Dispatch is then reached at `publicOrigin`, whose entrance is the deployment's own (the public
-origin, below), or, without it, at the app's own Service inside the cluster, by the namespaces
-`allowedNamespaces` names alone (the sandbox, below). With `clusterOnly` it deploys the cluster,
+`allowedNamespaces` names and to the pods of its own namespace whose app `allowedApps` names; a
+NetworkPolicy refuses every other namespace and pod. The front door's SOCKS5 Service on port 1055,
+which only a deployment without `natsInCluster` has, and the listener's Service on port 9020 are
+reachable only from the workloads their own policies name: the app and the listener may dial the
+proxy, and the app alone may dial the listener. The front door is built only where the tailnet
+inputs are set: with that whole group unset the component builds none, and Dispatch is then reached
+at `publicOrigin`, whose entrance is the deployment's own (the public origin, below), or, without
+it, at the app's own Service inside the cluster, by the namespaces `allowedNamespaces` names and
+the apps `allowedApps` names alone (the sandbox, below). With `clusterOnly` it deploys the cluster,
 its VPC and Cloud NAT alone and none of the rest. The cluster and the Cloud SQL instance are the
 component's own unless `existingCluster` or `existingDatabaseInstance` names one that another
 program makes ([A cluster and a database instance the component does not
@@ -717,7 +723,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
-| Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
+| Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces`, the `allowedApps` (one rule each) and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
 | Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
@@ -757,10 +763,11 @@ The sandbox builds every resource of that table except the front door's: no Tail
 no `<hostname>-tailnet-auth-key` or `<hostname>-tailnet-tls` Secret, neither the Role nor the
 RoleBinding `<hostname>-tailnet-tls`, and no `<hostname>-serve` ConfigMap. Two Deployments
 remain, the app and the listener, each with its Service, its NetworkPolicy and the budget its own
-input turns on, and the app's policy admits the `allowedNamespaces` alone. The Secret
-`<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
-alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds exactly what the
-sandbox builds, and its Secret adds `DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
+input turns on, and the app's policy admits the `allowedNamespaces` and the `allowedApps` alone.
+The Secret `<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and
+`DISPATCH_SIGNING_KEY` alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin`
+builds exactly what the sandbox builds, and its Secret adds `DISPATCH_SIGNIN_CLIENT_SECRET` with
+the sign-in inputs.
 
 ### A cluster and a database instance the component does not make
 
@@ -922,9 +929,10 @@ builds the front door and serves Dispatch at its tailnet name, and
 the sign-in group `signInClientId`, `signInClientSecret` and `signInDomain`, which runs people's
 browser sign-in. With the tailnet group unset the component is the sandbox (below); with the
 sign-in group unset Dispatch takes agent tokens alone and nobody signs in through a browser: no
-`DISPATCH_SIGNIN_*` variable is rendered, and the app refuses every `dsession` cookie, one minted
-while sign-in was on included, since the deployment's own `DISPATCH_SIGNING_KEY` goes on verifying
-such a cookie for its thirty days and nobody is left to confirm the person is still a member. A
+`DISPATCH_SIGNIN_*` variable is rendered, and the app refuses every session cookie
+(`__Host-dsession`, or `dsession`), one minted while sign-in was on included, since the
+deployment's own `DISPATCH_SIGNING_KEY` goes on verifying such a cookie for its thirty days and
+nobody is left to confirm the person is still a member. A
 personal agent token a person minted in Settings while sign-in was on keeps acting for that
 person, and with no sign-in nobody can sign in to revoke it, so revoke those tokens before a stack
 drops its sign-in inputs. Such a stack also pins an `envoyImage` built from a cybermonklabs/legion
@@ -972,6 +980,13 @@ name, since each configures the instance the component no longer makes. Without 
 it refuses `regionalNetwork: false`, since the component's own cluster takes its addresses from
 that subnetwork.
 
+`allowedApps`, empty by default, names apps by their pods' `app` label: the app's NetworkPolicy
+admits, on port 8766, the pods of the component's own namespace that wear `app=<name>`, one rule
+per app beside the `allowedNamespaces` rule (after it, before the front door's). The secrets
+broker, `envoy-broker` in production, runs in Dispatch's own namespace, which an
+`allowedNamespaces` entry would open to every pod. A pod of another namespace wearing the label is
+not admitted by it.
+
 `clusterOnly`, `false` by default, builds the cluster alone: the VPC, its subnetwork, the router,
 Cloud NAT and the Autopilot cluster, and nothing else. It registers no private services access
 range and no peering, no Cloud SQL instance, database or user, no generated password, no Secret
@@ -1002,11 +1017,12 @@ does not build, and every sign-in input, since browser sign-in needs a redirect 
 provider takes and an in-cluster `http://` address is not one. The `url` output and the app's
 `DISPATCH_SERVER_URL` are then `http://<hostname>.<namespace>.svc.cluster.local:8766`, the app's
 own ClusterIP Service, which terminates no TLS, so Dispatch is reached inside its own cluster
-alone, by the pods of the namespaces `allowedNamespaces` names, with the agent tokens its API
-takes. Its app gets no `DISPATCH_SIGNIN_*` setting, so nobody signs in through a browser and every
-request that needs a person answers `401 NO_IDENTITY`, one carrying a `dsession` cookie minted
-while a stack ran sign-in included: the deployment's own `DISPATCH_SIGNING_KEY` still verifies that
-cookie for its thirty days, and no membership check is left behind it. A sandbox stack pins an
+alone, by the pods of the namespaces `allowedNamespaces` names and of the apps `allowedApps` names,
+with the agent tokens its API takes. Its app gets no `DISPATCH_SIGNIN_*` setting, so nobody signs
+in through a browser and every request that needs a person answers `401 NO_IDENTITY`, one carrying
+a session cookie (`__Host-dsession`, or `dsession`) minted while a stack ran sign-in included: the
+deployment's own `DISPATCH_SIGNING_KEY` still verifies that cookie for its thirty days, and no
+membership check is left behind it. A sandbox stack pins an
 `envoyImage` built from a cybermonklabs/legion `main` commit at or after this change: `envoy-dispatch` in
 an older image exits 1 when it is given no `DISPATCH_SIGNIN_*` setting, so the app's pods never
 start.
@@ -1019,12 +1035,11 @@ the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the t
 front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group, `signInWorkspaceDomains`, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes
-them beside the front door; with the sign-in group its host must be one Google takes in a
-redirect URI, as `outsideOrigin`'s must, and the Google client lists
-`<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the entrance forwards to
-the app's Service `<hostname>` on port 8766, or straight to the app's pods, labelled
-`app=<hostname>`, through a network endpoint group of that Service.
+group, `signInWorkspaceDomains`, `outsideOrigin` and `signInPasskey` as it takes them beside the
+front door; with the sign-in group its host must be one Google takes in a redirect URI, and the
+Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the
+entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
+labelled `app=<hostname>`, through a network endpoint group of that Service.
 
 `loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
 entrance, and each needs `publicOrigin`; beside the tailnet group or in the sandbox each is refused,
@@ -1055,18 +1070,43 @@ audience that header's token carries for a backend service,
 `/projects/<project number>/global/backendServices/<backend service id>`, both numbers, and may
 come from another resource or stack, such as one built from the backend service's own id; once it
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
-is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
+is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves,
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
-`signInOutside`, `signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser
-reaches Dispatch through it alone. It renders `DISPATCH_IDENTITY=iap`,
-`DISPATCH_IAP_AUDIENCE=<iapAudience>` and `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's
-container, in the place the sign-in variables hold, right before `DISPATCH_SERVER_URL`, and no
-other `DISPATCH_SIGNIN_*` variable; the Secret
-holds no client secret. Its `envoyImage` must be built from a cybermonklabs/legion `main` commit
-whose `envoy-dispatch` takes `DISPATCH_IDENTITY=iap`: an older one refuses that identity mode at
-boot, so the app's pods never start. With `iapAudience` unset none of the three variables
-renders, and Dispatch keeps its default identity.
+token's `hd` claim to, and `directoryAccount` and `directoryAdmin` (below); it refuses
+`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInPasskey` and
+`outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch through it alone.
+It renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>`,
+`DISPATCH_SIGNIN_DOMAIN=<signInDomain>`, `DISPATCH_DIRECTORY_ACCOUNT=<directoryAccount>` and
+`DISPATCH_DIRECTORY_ADMIN=<directoryAdmin>` on the app's container, in that order, in the place the
+sign-in variables hold, right before `DISPATCH_SERVER_URL`, and no other `DISPATCH_SIGNIN_*`
+variable; the Secret holds no client secret. Its `envoyImage` must be built from a
+cybermonklabs/legion `main` commit whose `envoy-dispatch` takes `DISPATCH_IDENTITY=iap`: an older
+one refuses that identity mode at boot, so the app's pods never start. A build that takes it but
+predates the two Directory settings ignores them, as it ignores every variable its settings table
+does not list, and checks nobody through the Directory. With `iapAudience` unset none of the five
+variables renders, and Dispatch keeps its default identity.
+
+`directoryAccount` and `directoryAdmin`, both unset by default, are required with `iapAudience`
+and refused without it, each by its own name. Behind the IAP door Dispatch keeps no Google refresh
+token, so it checks each full member's Google Workspace account through the Directory API once an
+hour instead, and holds a person whose account is suspended, archived or gone. `directoryAccount`
+is the email of the service account those reads sign as: one with no key and no project role, on
+which the app's Workload Identity principal (the form of the `principal` output, below) holds
+`roles/iam.serviceAccountTokenCreator`, so Dispatch calls IAM `signJwt` on it and no key leaves
+Google. `directoryAdmin` is the email of the Workspace user the reads act as, through that
+account's Domain-wide Delegation. Either may come from another resource or stack, such as the
+export of the program that declares the account, and a secret `directoryAdmin` stays secret in
+the rendered pod; once each resolves, a blank value, which Dispatch reads as unset, or one holding
+an nkey seed is refused naming the input and never echoing it. Before IAP admits anyone, a
+Workspace super administrator makes two person steps: give the delegated user an administrator
+role whose only privilege is Users > Read, and, in the Admin console under Security, Access and
+data control, API controls, Manage Domain Wide Delegation, authorize the signer's numeric client
+ID for exactly `https://www.googleapis.com/auth/admin.directory.user.readonly`. Google states that
+the grant can take up to 24 hours to take effect. The component enables no Google API: enable
+`iamcredentials.googleapis.com`, which serves `signJwt`, and `admin.googleapis.com`, which serves
+the Directory's `users.get`, in the project that holds the `directoryAccount` service account.
+`envoy-dispatch directory-check` (`packages/envoy/cmd/dispatch/README.md`) then checks the reads
+and that the grant gives nothing more, before IAP admits anyone.
 
 IAP guards only the requests that come through the load balancer. The pods of `allowedNamespaces`,
 and the addresses of `loadBalancerSourceRanges`, reach the app's Service on 8766 directly, without
@@ -1076,9 +1116,9 @@ without a header IAP signed for `iapAudience` is refused by that check, and noth
 app refuses it first. Keep `allowedNamespaces` to the namespaces whose pods call Dispatch, and
 `loadBalancerSourceRanges` to the load balancer's own ranges; a `/0` range is refused.
 
-`outsideOrigin` and `signInOutside`, both unset by default, are the component's part of sign-in
-for people from outside the company. Neither is in a group, and with both unset the component
-renders exactly what it rendered before they existed. `outsideOrigin` is a second origin Dispatch
+`outsideOrigin`, unset by default, is the component's part of sign-in for people from outside the
+company. It is in no group, and with it unset the component renders exactly what it rendered
+before it existed. `outsideOrigin` is a second origin Dispatch
 is reached at: an `https` origin written as a browser writes it, with a lowercase scheme, no
 `:443`, a port (if any) of 1 to 65535 with no leading zero, and no path, user, query or fragment
 (a trailing slash is trimmed). Its host is not the front door's `<hostname>.<tailnetDnsName>`,
@@ -1093,24 +1133,17 @@ after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and f
 app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
 in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
-and `signInPasskey` unset, the Google client `signInClientId` names must list the rendered
-`DISPATCH_OUTSIDE_ORIGIN` followed by `/auth/callback` as an authorized redirect URI, beside
-`https://<hostname>.<tailnetDnsName>/auth/callback`. So with the sign-in inputs the component
-also refuses a host Google refuses there: a raw IP address, and one whose top-level domain is not
-on the public suffix list, a single label among them ([Redirect URI validation
-rules](https://developers.google.com/identity/protocols/oauth2/web-server)). With `signInPasskey`
-the client lists no callback at that origin, and the check stays for the reason the
-`signInPasskey` paragraph below gives.
-`signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
-which lets a verified Google account outside `signInDomain` sign in as a restricted member while
-some project's owner or access list names its email directly, never through a group; with it,
-that client's OAuth consent screen's audience must be External, since an Internal one admits no
-account outside the organization. Both inputs need the tailnet group or `publicOrigin`, so the
-sandbox refuses each by name, and `signInOutside` needs the sign-in group too, refused without it
-with the clause naming each sign-in input still unset. Beside `publicOrigin` the second origin's
-host is not `publicOrigin`'s, as beside the front door it is not the front door's. An `envoyImage` whose `envoy-dispatch` predates the two
-settings ignores both, as it ignores every variable its settings table
-(`packages/envoy/cmd/dispatch/settings.go`) does not list.
+people from outside sign in at it with a passkey, whose relying party is its host, a registrable
+domain name and never an IP address, so with them the component also refuses a raw IP address,
+and a host whose top-level domain is not on the public suffix list, a single label among them
+(`weborigin.PasskeyHost`). Dispatch serves no Google sign-in at the outside origin
+(`/auth/start` and `/auth/callback` answer 404 there), so the Google client `signInClientId`
+names lists no callback of it, only that of Dispatch's own origin, the front door's or `publicOrigin`.
+The input needs the tailnet group or `publicOrigin`, so the sandbox refuses it by name. Beside
+`publicOrigin` the second origin's host is not `publicOrigin`'s, as beside the front door it is
+not the front door's. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as
+it ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
+list.
 
 `signInPasskey`, unset by default, renders `DISPATCH_SIGNIN_PASSKEY=1` on the app's container,
 right after `DISPATCH_OUTSIDE_ORIGIN`, which turns on Dispatch's passkey sign-in at `outsideOrigin`
@@ -1119,30 +1152,43 @@ party ID is that origin's host. It needs `outsideOrigin` and is refused without 
 needs the sign-in group too, though it is not in that group: a person from outside enrolls a
 passkey with an invitation a project owner makes while signed in through Google, so without that
 group nobody could invite anyone, and it is refused with the clause naming each sign-in input
-still unset. With it, Google signs in the Workspace's own people alone, and Dispatch answers
-`/auth/start` and `/auth/callback` at `outsideOrigin` with 404, so the Google client lists no
-`<outsideOrigin>/auth/callback`. Leave it out: Google refuses a redirect URI the client does not
-list, so an `envoyImage` that predates the setting cannot sign anyone in through Google at that
-origin either. The second origin's host is still held to the rule the `outsideOrigin` paragraph
-states for a redirect URI's host, since the sign-in inputs are set, and that rule keeps it a
-domain name, never an IP address: a passkey's relying party ID must be a domain name. List every
+still unset. Google signs in the Workspace's own people alone, and Dispatch answers
+`/auth/start` and `/auth/callback` at `outsideOrigin` with 404 whether it is set or not, so the
+Google client lists no `<outsideOrigin>/auth/callback`. The second origin's host is held to the
+rule the `outsideOrigin` paragraph states, since the sign-in inputs are set, and that rule keeps it
+a domain name, never an IP address: a passkey's relying party ID must be a domain name. List every
 other domain the Workspace owns in `signInWorkspaceDomains` (below). Dispatch refuses an
 invitation to an address on `signInDomain`, on a listed domain or on a subdomain of either, and
 takes an address on a domain left out for an outside person's, so a Workspace account on that
 domain could hold a passkey, which Workspace offboarding does not end: suspending or deleting the
-account in the Workspace touches no passkey. It replaces the Google sign-in of people from
-outside that `signInOutside` turns on, so the two are refused together. The sandbox refuses it by
+account in the Workspace touches no passkey. The sandbox refuses it by
 name, as it refuses `outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With
 it unset the component renders exactly what it rendered before it existed. An `envoyImage` whose
 `envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings table
 does not list.
 
+`trustedProxyRanges`, optional, lists the front doors whose `X-Forwarded-For` Dispatch trusts when it
+bounds the passkey ceremonies' begins per client address. It renders
+`DISPATCH_TRUSTED_PROXY_RANGES` on the app's container right after `DISPATCH_SIGNIN_PASSKEY`, the
+entries comma-joined in the order given. With `signInPasskey` set and this input unset, it renders
+Google's external Application Load Balancer's proxy ranges, `35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`
+([Google's firewall rules page](https://cloud.google.com/load-balancing/docs/firewall-rules)). Dispatch
+reads a connection from those ranges in the format
+[Google documents](https://cloud.google.com/load-balancing/docs/https#x-forwarded-for_header),
+`[SUPPLIED,]CLIENT_IP,LOAD_BALANCER_IP`, so the address of the balancer's forwarding rule is never
+listed. Set the input when another front door serves `outsideOrigin`: Dispatch reads a connection
+from any other range it lists as the rightmost entry that is not itself in the ranges, and every
+other connection by its own address. Each entry is a CIDR `net.ParseCIDR` takes, written as its
+network, with a prefix longer than `/0`, and the input needs `signInPasskey`; each refusal names
+`trustedProxyRanges`. Dispatch refuses `DISPATCH_SIGNIN_PASSKEY=1` without the setting, so an
+`envoyImage` that reads it needs this component version. Without `signInPasskey` it renders nothing.
+
 `signInWorkspaceDomains`, unset by default, lists the other domains the Google Workspace owns
 beside `signInDomain`. It renders `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` on the app's container, the
-entries comma-joined in the order given, right after `DISPATCH_SIGNIN_DOMAIN`, or after
-`DISPATCH_SIGNIN_OUTSIDE` when `signInOutside` is set. Dispatch treats an address on `signInDomain`,
-on one of these domains, or on a subdomain of either as a Workspace address, which no invitation
-or outside sign-in may use, so list every domain the Workspace owns. Dispatch reads the setting
+entries comma-joined in the order given, right after `DISPATCH_SIGNIN_DOMAIN`. Dispatch treats an
+address on `signInDomain`, on one of these domains, or on a subdomain of either as a Workspace
+address, which no invitation or passkey may use, so list every domain the Workspace owns. Dispatch
+reads the setting
 only with Google sign-in, so the input needs the sign-in group, though it is not in that group. It
 is refused without that group, with the clause naming each sign-in input still unset; the sandbox
 and `iapAudience` refuse it by name. Each entry must be one Dispatch takes once it trims the
@@ -1482,10 +1528,54 @@ to boot holding one of the pair alone, so the component renders both or neither,
 Dispatch with its own pod's token. Turning it on opens Dispatch to every workload that can get a
 token for that audience under that issuer — such a caller reaches every one of Dispatch's
 `authAny` routes as a service actor, the writes among them (an issue's create and status, a
-message), and that actor holds no scope and has a subject Dispatch does not check against any
-list, so the audience is the whole of the bound. Pick one no other workload of the cluster asks the
-kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
-behaves today: neither variable renders and no token is verified.
+message), and that actor holds no scope, so with `oidcAccounts` unset Dispatch admits whatever
+subject the token names and the audience is the whole of the bound. Pick one no other workload of
+the cluster asks the kubelet for, set `oidcAccounts` to the accounts that call, and leave
+`oidcAudience` unset where no caller needs it, which is how Dispatch behaves today: neither
+variable renders and no token is verified.
+
+`oidcAccounts` (plain, a list) narrows that verifier to the Kubernetes service accounts it names,
+each as the subject `system:serviceaccount:<namespace>:<name>`: it renders
+`DISPATCH_OIDC_ACCOUNTS`, the subjects comma-joined in the order given, and Dispatch then refuses a
+token of the issuer and the audience whose subject the list does not name. Unset or empty, nothing
+renders and Dispatch admits every account of the issuer and the audience, as it did before the
+input existed. It is refused without `oidcAudience`, as `oidcIssuer` is.
+
+`accessAccounts` (plain, a list) names the service-account subjects that may read Dispatch's
+membership answer and repository answer, whose routes the `DISPATCH_ACCESS_ACCOUNTS` paragraph of
+`packages/envoy/cmd/dispatch/README.md` lists: it renders `DISPATCH_ACCESS_ACCOUNTS`,
+comma-joined. Production sets `system:serviceaccount:dispatch:envoy-broker`, the secrets broker.
+Where `oidcAccounts` is set, Dispatch refuses to boot with an access account it leaves out; with
+`oidcAccounts` unset, every account is admitted and any may be an access account. Unset or empty,
+nothing renders and no account reads those routes. It is refused without `oidcAudience`, as
+`oidcIssuer` is.
+
+`projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a
+full member, whom Dispatch makes, at boot, the owner of every project the migration left without
+one. Unset, nothing renders.
+
+`privateProjects` (a list of project keys) is the keys of the projects whose private namespace,
+stores and grants the deployment has provisioned (the infrastructure repository passes `privateprojects.Projects()`);
+a switch of one of these to private is its full switch, and `privateBeforeFullSwitch` names the
+other projects that can be made private. It renders `DISPATCH_PRIVATE_PROJECTS=<KEY>,<KEY>`, sorted and each
+key once; empty or unset renders nothing, so the pod is the one it always was. An entry that is not a
+project key is ignored: it does not render, and `pulumi preview` prints a warning naming it, as
+Dispatch's boot ignores and logs one, so the project it meant is never provisioned. Set it only
+with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
+does not know the setting ignores it, and no project of that deployment can be made private.
+
+`privateBeforeFullSwitch` (a list of project keys) is the keys of the projects the deployment makes
+private before their full switch: in its own reads Dispatch hides such a project from every person
+and credential that does not see it, as any private project, while its namespace, stores and bus
+gate come with its full switch. Until then, the project's notifications on the hub reach any agent
+session that subscribes to them. Its switch to private needs no provisioning and no bus record, and still needs
+a complete store. It renders `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=<KEY>,<KEY>` right after
+`DISPATCH_PRIVATE_PROJECTS`, sorted and each key once; empty or unset renders nothing, so the pod is
+the one it always was. An entry that is not a project key is ignored as one of `privateProjects` is:
+it does not render, and `pulumi preview` prints a warning naming it. A key `privateProjects` also
+names takes its full switch. Set it only with an `envoyImage` whose `envoy-dispatch` reads the
+setting: a binary that does not know it ignores it, and refuses the switch to private of a
+project `privateProjects` does not name.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
@@ -1582,18 +1672,22 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
-above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
-tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
-`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInOutside`, `signInPasskey`
-or `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend
-service's, a `signInOutside` without the sign-in inputs, a `signInPasskey` without `outsideOrigin`
-or the sign-in inputs or beside `signInOutside`, a `signInWorkspaceDomains` without the sign-in
-inputs or with an entry Dispatch would refuse, an
+`oidcIssuer`, `oidcAccounts` or `accessAccounts` with no `oidcAudience`, an `oidcAccounts` or
+`accessAccounts` entry that is not a service account's subject
+(`system:serviceaccount:<namespace>:<name>`, so no entry holds a comma), an `accessAccounts` entry
+a set `oidcAccounts` leaves out, a `projectOwnerFallback` that is not a lowercase email (the three
+refusals Dispatch would otherwise make at boot), an `outsideOrigin` that breaks the rule the
+paragraph on it above states, a `publicOrigin` that breaks the rule its own paragraph states or is
+set beside the tailnet inputs, an `iapAudience` without `publicOrigin`, `signInDomain`,
+`directoryAccount` or `directoryAdmin` or beside `signInClientId`, `signInClientSecret`,
+`signInWorkspaceDomains`, `signInPasskey` or `outsideOrigin`, a `directoryAccount` or
+`directoryAdmin` without `iapAudience`, and, once it resolves, an `iapAudience` of another form
+than a backend service's, a `signInPasskey` without `outsideOrigin` or the sign-in inputs, a
+`signInWorkspaceDomains` without the sign-in inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
-`appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
-`[-._a-zA-Z0-9]+`, and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+`appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
+Secret's key (as `seedSecretKey`'s rule above), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or
@@ -1604,12 +1698,14 @@ sign-in is shared; and, of the answerer's group, any `azureChat` input without
 `azureChatDeployment` or without the keyless sign-in, a `chatEndpoint` without `chatTokenSecret`
 or `chatModel`, and an empty `azureChatApiVersion`, `azureChatScope` or `chatModel`.
 Once each Pulumi input resolves, before any child takes it, it refuses a seed in
-`tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, `azureEmbedEndpoint`,
-`azureEmbedDeployment`, `azureEmbedKeySecret`, `azureTenantId`, `azureClientId`,
-`azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint`, `chatTokenSecret` and
-`existingDatabaseInstance`; a blank or
-whitespace-only `tailnetAuthKey` or `signInClientSecret`, neither of which can work blank (the
-front door cannot join the tailnet, Dispatch refuses a blank sign-in secret at boot) — each a
+`tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, `directoryAccount`,
+`directoryAdmin`, `azureEmbedEndpoint`, `azureEmbedDeployment`, `azureEmbedKeySecret`,
+`azureTenantId`, `azureClientId`, `azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint`,
+`chatTokenSecret` and `existingDatabaseInstance`; a blank or whitespace-only `tailnetAuthKey` or
+`signInClientSecret`, neither of which can work blank (the front door cannot join the tailnet,
+Dispatch refuses a blank sign-in secret at boot), and a blank or whitespace-only
+`directoryAccount` or `directoryAdmin`, which Dispatch reads as unset, so it would not boot behind
+the IAP door — each a
 refusal naming the input and never echoing it; and a `natsUrl` that holds a seed, is local
 (without `natsInCluster` the pods reach NATS only through the front door's SOCKS5 proxy, and
 with it they dial the URL themselves, so a loopback address would have them dial themselves), is
@@ -2258,22 +2354,20 @@ JetStream numbers both containers carry; every other property above is unchanged
       streamMaxBytes: 1073741824
 ```
 
-A deployment that lets people from outside the company sign in names the second origin they reach
-it at and turns outside sign-in on; every other property above is unchanged:
+A deployment that people from outside the company reach names the second origin they reach it at;
+every other property above is unchanged:
 
 ```yaml
       outsideOrigin: https://dispatch-outside.example.com
-      signInOutside: true
       # Only where what serves that origin runs in this cluster: its namespace.
       allowedNamespaces: [example-outside]
 ```
 
-Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com` and
-`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)). A deployment that signs them in with a passkey
-instead sets `signInPasskey: true` in place of `signInOutside: true`; the component refuses the
-two together. Its app then carries `DISPATCH_SIGNIN_PASSKEY=1` right after
-`DISPATCH_OUTSIDE_ORIGIN`, and no `DISPATCH_SIGNIN_OUTSIDE`. Either deployment lists the other
-domains its Workspace owns, so that Dispatch treats an address on any of them as the Workspace's:
+Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com`
+([Inputs](#inputs-1)). A deployment that signs them in with a passkey also sets
+`signInPasskey: true`, and its app then carries `DISPATCH_SIGNIN_PASSKEY=1` right after
+`DISPATCH_OUTSIDE_ORIGIN`. It lists the other domains its Workspace owns, so that Dispatch treats
+an address on any of them as the Workspace's:
 
 ```yaml
       signInWorkspaceDomains: [example.net, example.org]
@@ -2311,12 +2405,14 @@ resources:
 Its `url` output is `http://example-dispatch.dispatch.svc.cluster.local:8766`, and the pods of the
 namespace `example-agents` are the only readers the app's NetworkPolicy admits. They read it with
 agent tokens: its app has no `DISPATCH_SIGNIN_*` setting, so nobody signs in through a browser and
-every request that needs a person answers `401 NO_IDENTITY`, one carrying a `dsession` cookie from
-a stack that ran sign-in before included.
+every request that needs a person answers `401 NO_IDENTITY`, one carrying a session cookie
+(`__Host-dsession`, or `dsession`) from a stack that ran sign-in before included.
 
 A stack behind the IAP door sets no tailnet input and no Google client, and sets `publicOrigin`,
 the origin its own load balancer serves, `iapAudience`, the audience of that load balancer's
-backend service, and `signInDomain`, the domain whose accounts may use Dispatch:
+backend service, `signInDomain`, the domain whose accounts may use Dispatch, and
+`directoryAccount` and `directoryAdmin`, the signer and the delegated user its Workspace Directory
+reads sign as and act as:
 
 ```yaml
 resources:
@@ -2337,6 +2433,8 @@ resources:
       publicOrigin: https://dispatch.example.com
       iapAudience: /projects/<project number>/global/backendServices/${backendService.generatedId}
       signInDomain: example.com
+      directoryAccount: dispatch-directory@example-project.iam.gserviceaccount.com
+      directoryAdmin: directory-reader@example.com
       allowedNamespaces: [example-agents]
     options:
       providers:
@@ -2345,8 +2443,10 @@ resources:
 ```
 
 Its `url` output is `https://dispatch.example.com`, and its app carries `DISPATCH_IDENTITY=iap`,
-`DISPATCH_IAP_AUDIENCE` and `DISPATCH_SIGNIN_DOMAIN=example.com` and no other `DISPATCH_SIGNIN_*`
-setting. The load balancer, its backend service with IAP on, its certificate and the
+`DISPATCH_IAP_AUDIENCE`, `DISPATCH_SIGNIN_DOMAIN=example.com`, `DISPATCH_DIRECTORY_ACCOUNT` and
+`DISPATCH_DIRECTORY_ADMIN` and no other `DISPATCH_SIGNIN_*` setting. The person steps of
+`directoryAccount`'s paragraph come before IAP admits anyone. The load balancer, its backend
+service with IAP on, its certificate and the
 NetworkPolicy that admits its ranges to the app's port 8766 are the stack's own ([Inputs](#inputs-1)).
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.
@@ -3626,7 +3726,7 @@ Manager Secret Version Adder (`roles/secretmanager.secretVersionAdder`).
 
 `core.Authorization` is a NATS server's nkey authorization: the users it knows by public key, what
 each may publish and subscribe to, the user a client presenting no credential becomes, and, with
-a callout, the auth service ([dispatch://INFRA-840](dispatch://INFRA-840)) that admits every
+a callout, the auth service that admits every
 other client. A NATS server's configuration is rendered from it, so it holds public keys only.
 `aws:NatsService` takes it as its `authorization` input, an `aws:Authorization` of `aws:User`s,
 with the properties below; `envoy-infra render nats-start-script` reads the same from its file,
@@ -3638,8 +3738,8 @@ server's from their `users`, `listener` and `sessionUser`, with `authCallout` an
 [The hub's users](docs/nats-hub.md#the-hubs-users) and
 [The auth service](docs/nats-hub.md#the-auth-service)). A hub refuses its own listener beside
 `authCallout`, naming both: the listener connects as a user whose seed the hub stores, and its
-service identity, with which it would connect through the auth service, arrives with
-dispatch://INFRA-840 (t-e-13). With `privateProjects`, a hub also refuses an
+service identity, with which it would connect through the auth service, arrives in a later
+change. With `privateProjects`, a hub also refuses an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
 <machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
@@ -3656,7 +3756,7 @@ none.
 | `callout.issuer` | With a callout: the public key of the account, `A` and 55 more characters, whose seed signs the auth service's answers. The server admits only a user whose JWT that key issued. |
 | `callout.xkey` | With a callout: a curve public key, `X` and 55 more characters. The server seals each request to the auth service with it, so only the service reads a client's token. Required: without it nats-server sends each connecting client's token to the auth service unsealed, on `$SYS.REQ.USER.AUTH`. |
 | `callout.serviceUser` | With a callout: the name of the keyed user the auth service connects as. |
-| `privateProjects` | Optional: the deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862), R12). It needs `callout`, no user but the auth service's, and that user granted no more than the auth service's grant. |
+| `privateProjects` | Optional: the deployment may make a Dispatch project private, as its own requirement for private projects asks. It needs `callout`, no user but the auth service's, and that user granted no more than the auth service's grant. |
 
 A user with no `nkey` is pending: it stands for a seed whose key the server is not told yet, such
 as one whose secret is declared but not yet written. It needs `hasSeed`, takes no rules and is not
@@ -3772,14 +3872,14 @@ before, after 3 to 4 if it sent data up to the hang. Under nats-server's default
 2 minutes, `ping_max` 2: `const.go:120-123`) it is 4 to 8 minutes. `core/nats_ping_live_test.go`
 measures it on the hub's image, with the control that under the defaults the hung replica keeps its
 place and clients are refused. The ping is the hub's backstop for a replica that stops reading its
-connection, because its process froze or its node lost its network. dispatch://INFRA-840 must give
+connection, because its process froze or its node lost its network. The auth service must give
 the auth service a liveness probe that restarts a replica whose process stops answering, which acts
 in seconds. A liveness probe does nothing when a replica's node loses its network: then only these
 lines act, in 40 to 80 s. The lines do not catch a replica whose request handler deadlocks while its
 process runs, since nats.go answers a PING from its read loop (nats.go v1.55.0 `processPing`,
 called at `nats.go:4278`, from `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
 group: a queue subscriber leaves the group only when the service itself unsubscribes or closes its
-connection, so INFRA-840's service must do that when its handler stops answering.
+connection, so the auth service must do that when its handler stops answering.
 
 The two options apply to every client connection on the server. A client whose event loop blocks,
 or whose link stalls, keeps its connection through any stall shorter than 40 s, and is closed as
@@ -3915,7 +4015,7 @@ user a host's sessions share (`HostPermissions`) and Dispatch's.
 So every session on a host can write another session's record in any of those buckets, its
 session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
 them.
-dispatch://INFRA-840, which gives each session a NATS user of its own, is the place that narrows
+The auth service's per-session credentials, which give each session a NATS user of its own, are what narrow
 that reach; nothing here can, since one user serves every session on the host.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
@@ -3948,8 +4048,8 @@ relay frames, and `agentstream.*.frames`, and subscribes to its own relay subjec
 and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
-relay frames, until the per-session credentials
-of dispatch://INFRA-840.
+relay frames, until the auth service's
+per-session credentials.
 It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
@@ -3968,7 +4068,7 @@ A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its liste
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
 session on the host share: in each direction the listener's base entries, the session consumers'
 left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
-shared host user's sessions at today's reach until dispatch://INFRA-840;
+shared host user's sessions at today's reach until the auth service's per-session credentials;
 a listener connecting as this user can give its sessions no consumer, so it refuses their
 registrations `no_grant`. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
 `listener` holds `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one

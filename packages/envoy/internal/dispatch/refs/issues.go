@@ -7,15 +7,17 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // IssueDepthCap is the most links an issue may sit below its root: a create or reparent that
 // would put an issue deeper is refused (the api package's refuseParentTooDeep), so it bounds
 // every recursive issue walk — the ancestor walk below, the children subtree walk, the
 // components and repository walks that climb a whole read's chains together, the architecture
-// tree's containment walks, and the legion-label walk — like Closure's depth cap: the queries
-// terminate even if a raced reparent ever commits a cycle. api's parentDepthCap is this number,
-// and the walks it builds as SQL text splice it in.
+// tree's containment walks, and the legion-label walk — so the queries terminate even if a raced
+// reparent ever commits a cycle. api's parentDepthCap is this number, and the walks it builds as
+// SQL text splice it in.
 const IssueDepthCap = 32
 
 // issueDepthCapSQL is IssueDepthCap spliced into the walks built as SQL text.
@@ -27,6 +29,12 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // server's one recursive ancestor walk: an issue event's ancestors (api's issueAncestors), a
 // reparent's cycle refusal (api's validateIssueParent, which reads it from the proposed parent)
 // and a block pointer's ancestor rule (docs' refuseBlockPointers) are all this query.
+//
+// It binds no visibility predicate and takes no acting person, because it lists no issue to a
+// reader: every caller is a rule of a write - those three and the scope a result's check resolves
+// in - and a rule that skipped an issue it may not see would let a cycle through that issue, or
+// route an event short of its root. The near-copy gate reads the chain as its caller sees it
+// (IssueAncestorsAsSeen), since it runs before the create knows its parent is one the caller sees.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -48,6 +56,35 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 	return ancestors, nil
 }
 
+// IssueAncestorsAsSeen is IssueAncestors for a write that names key on behalf of who before it
+// knows who may see it: the near-copy gate of a create with a parent, which runs before the
+// create's transaction. An issue who may not see answers [], as an issue no row has does, in the
+// same one statement, so a parent of a project who may not see costs the rows a parent nobody
+// holds costs. Only the walk's first issue is judged: a parent and the issues above it are of one
+// project, since a parent names an issue of its child's project and no route moves an issue
+// between projects.
+func IssueAncestorsAsSeen(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
+	ancestors := []string{}
+	if key == "" {
+		return ancestors, nil
+	}
+	if err := q.QueryRow(ctx, `
+		with recursive ancestors as (
+			select p.key, p.parent_key, 1 as depth
+			from issues i join issues p on p.key = i.parent_key
+			where i.key = $1 and `+VisibleKind("issue", "i.key", "$3")+`
+			union
+			select i.key, i.parent_key, a.depth + 1
+			from issues i join ancestors a on i.key = a.parent_key
+			where a.depth < $2
+		)
+		select coalesce(array_agg(key order by depth), '{}') from ancestors
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&ancestors); err != nil {
+		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
+	}
+	return ancestors, nil
+}
+
 // IssueDescendants is every issue below the issue key on `child_of`, at any status, read through
 // q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor walk
 // above, so the query terminates even if a raced reparent ever commits a cycle. The key itself is
@@ -55,7 +92,10 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 // This is the server's one recursive descendant walk over whole subtrees: api's coverage read is
 // this query. api's issueChildrenStatement is a different read — one row per direct child, with
 // a rollup over that child's own subtree — and stays its own.
-func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
+//
+// It answers for who: an issue who may not see is not in the answer, and the walk does not pass
+// below it, so neither it nor the issues it holds are reached through it (VisibleKind).
+func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
 	descendants := []string{}
 	if key == "" {
 		return descendants, nil
@@ -63,13 +103,14 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 	if err := q.QueryRow(ctx, `
 		with recursive descendants as (
 			select c.key, 1 as depth from issues c where c.parent_key = $1
+			  and `+VisibleKind("issue", "c.key", "$3")+`
 			union
 			select c.key, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
-			where d.depth < $2
+			where d.depth < $2 and `+VisibleKind("issue", "c.key", "$3")+`
 		)
 		select coalesce(array_agg(key order by key), '{}') from descendants
-	`, key, IssueDepthCap).Scan(&descendants); err != nil {
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&descendants); err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}
 	return descendants, nil
@@ -119,6 +160,14 @@ var IssueRepoTerms = `repo_chain as (
 // default alone.
 const IssueRepoJoin = `left join repo on repo.key = i.key
 	left join repo_projects repo_default on repo_default.project = i.project_key and repo_default.is_default`
+
+// projectDefaultRepoSQL is the default repository of the project projectExpr names, read as
+// IssueRepoJoin reads it (the project's default mapping), null where it has none: the repository an
+// issue of that project resolves to when its chain names none. RepositoryClause's index path
+// (repositorySeen) reads it, so the default comes from this file's one read of it.
+func projectDefaultRepoSQL(projectExpr string) string {
+	return `(select max(repo_default.repo) from repo_projects repo_default where repo_default.project = (` + projectExpr + `) and repo_default.is_default)`
+}
 
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
 // its chain names, else its project's default mapping, else null. A statement that holds an

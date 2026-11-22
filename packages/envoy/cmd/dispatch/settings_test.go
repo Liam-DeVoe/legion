@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -37,9 +39,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -221,18 +226,49 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 // testSigningKey is the one-key set appContextFor gives the router.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
-// appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store
-// and the request identity main builds for boot (requestIdentityFor) filled in, so a request
-// carrying signedIn's cookie is that person's. built.People is a store with no database unless the
-// case's requests record people (dev sign-in, a pool sign-in, header identity).
+// appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store,
+// the sign-in rule (signInRule, its lister over built.Store as main's is over the database) and the
+// request identity main builds for boot (requestIdentityFor) filled in, so a request carrying
+// signedIn's cookie is that person's. built.People is a store with no database unless the case's
+// requests record people (dev sign-in, a pool sign-in, header identity). built.Sessions is
+// currentSessions unless the case passes the database's own, as one whose sign-ins record Google
+// accounts must: recording an account moves the session generation in the database itself
+// (migration 20261118041916), which the mint's and the approve's re-read compare a cookie with.
 func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
 	}
-	built.Sessions = currentSessions{}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn)
-	return routes.BuildAppContext(appContextOptions(boot, built))
+	if built.Sessions == nil {
+		built.Sessions = currentSessions{}
+	}
+	rule, err := signInRule(boot, accessLister(built.Store))
+	if err != nil {
+		return nil, err
+	}
+	accounts, ceremonies, err := passkeySignIn(boot, pgPeople(built.People), rule)
+	if err != nil {
+		return nil, err
+	}
+	built.Passkeys, built.PasskeyAccounts = ceremonies, accounts
+	var membership *identity.Membership
+	built.Identity, membership, err = requestIdentityFor(built.Lifetime, boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, ceremonyStore(ceremonies))
+	if err != nil {
+		return nil, err
+	}
+	return buildAppContext(boot, rule, built, membership)
+}
+
+// pgPeople is the Postgres people store people is, or holds (testPeople), for the passkey store
+// main builds over the same one (passkeySignIn).
+func pgPeople(people auth.PeopleStore) *store.PgPeopleStore {
+	switch people := people.(type) {
+	case *store.PgPeopleStore:
+		return people
+	case testPeople:
+		return people.PgPeopleStore
+	}
+	return nil
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -344,14 +380,26 @@ func googleSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, h
 }
 
 // codeFlowSignIn runs a whole sign-in through handler against issuer as the person claims names:
-// start, the issuer's sign-in, and the callback, whose answer it returns.
-func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any) *httptest.ResponseRecorder {
+// start, the issuer's sign-in, and the callback, from a browser carrying cookies beside the state
+// cookie, whose answer it returns.
+func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	return codeFlowSignInAt(t, handler, issuer, "dispatch.test", claims, cookies...)
+}
+
+// codeFlowSignInAt is codeFlowSignIn with the start and the callback both sent to host, a host the
+// canonical origin answers at: the outside origin serves no Google sign-in.
+func codeFlowSignInAt(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, host string, claims map[string]any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	issuer.SignInAs(claims)
-	start := startSignIn(t, handler)
+	start := httptest.NewRecorder()
+	handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/start", nil))
+	if start.Code != http.StatusFound {
+		t.Fatalf("GET /auth/start at %s: %d %s, want a redirect to the sign-in issuer", host, start.Code, start.Body.String())
+	}
 	code, state := issuer.Authorize(t, start.Header().Get("Location"))
-	callback := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
-	for _, cookie := range start.Result().Cookies() {
+	callback := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
+	for _, cookie := range append(start.Result().Cookies(), cookies...) {
 		callback.AddCookie(cookie)
 	}
 	response := httptest.NewRecorder()
@@ -363,7 +411,7 @@ func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer,
 func whoamiAfter(handler http.Handler, signIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 	for _, cookie := range signIn.Result().Cookies() {
-		if cookie.Name == "dsession" {
+		if isSessionCookie(cookie) {
 			request.AddCookie(cookie)
 		}
 	}
@@ -385,9 +433,10 @@ func ageConfirmation(t *testing.T, people testPeople, email string) {
 	}
 }
 
-// sessionCookieSet reports whether response set Dispatch's session cookie.
+// sessionCookieSet reports whether response set Dispatch's session cookie, under either name
+// (isSessionCookie).
 func sessionCookieSet(response *httptest.ResponseRecorder) bool {
-	return slices.ContainsFunc(response.Result().Cookies(), func(cookie *http.Cookie) bool { return cookie.Name == "dsession" && cookie.Value != "" })
+	return slices.ContainsFunc(response.Result().Cookies(), isSessionCookie)
 }
 
 // errorCode is the code of a JSON error response.
@@ -446,7 +495,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		})
 		request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 		response := httptest.NewRecorder()
-		routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+		// A database, as every deployment has: the read check resolves the signed-in caller's
+		// viewer from it before the route reads the broker, and a server with none reads every
+		// caller as the closed viewer, which no deployment-wide read admits.
+		routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/credential-requests: %d %s", response.Code, response.Body.String())
 		}
@@ -529,7 +581,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("iap router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
 				people := peopleStore(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
 				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
 				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
@@ -558,7 +610,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// another backend service is refused, the same assertion for this one admitted.
 			t.Run("router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
 				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
 					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
@@ -566,6 +618,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("the same assertion for DISPATCH_IAP_AUDIENCE: GET /auth/whoami answered %d %s, want 200", response.Code, response.Body.String())
 				}
 			})
+		},
+		// directory-check reads both, trimmed: the signer is the account each signJwt names, and
+		// the delegated user the subject of each JWT it asks IAM to sign. The server reads both
+		// under IAP identity alone, trimmed, into the Directory reader it builds at boot
+		// (TestIAPReleaseNeedsNoAssertion follows them to signJwt), and refuses either elsewhere.
+		"DISPATCH_DIRECTORY_ACCOUNT": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ", "DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}) {
+				if sign.Principal != directoryCheckSigner || sign.Issuer != directoryCheckSigner {
+					t.Errorf("signJwt on %q with iss %q, want the trimmed DISPATCH_DIRECTORY_ACCOUNT", sign.Principal, sign.Issuer)
+				}
+			}
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " table@example.com "}))); err != nil || iap.DirectoryAccount != "table@example.com" {
+				t.Errorf("iap: DirectoryAccount = %q, %v", iap.DirectoryAccount, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner}, "DISPATCH_DIRECTORY_ACCOUNT is read only with DISPATCH_IDENTITY=iap")
+		},
+		"DISPATCH_DIRECTORY_ADMIN": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner, "DISPATCH_DIRECTORY_ADMIN": " " + directoryCheckAdmin + " "}) {
+				if sign.Subject != directoryCheckAdmin {
+					t.Errorf("a JWT for %q, want the trimmed DISPATCH_DIRECTORY_ADMIN", sign.Subject)
+				}
+			}
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_DIRECTORY_ADMIN": " table@example.com "}))); err != nil || iap.DirectoryAdmin != "table@example.com" {
+				t.Errorf("iap: DirectoryAdmin = %q, %v", iap.DirectoryAdmin, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}, "DISPATCH_DIRECTORY_ADMIN is read only with DISPATCH_IDENTITY=iap")
 		},
 		"DISPATCH_SIGNIN_ISSUER": func(t *testing.T) {
 			pool := signInPool(t, "dispatch-client", "client-secret")
@@ -701,6 +779,41 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("an account that left example.com, past the hour: whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
 			})
+		},
+		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
+		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,
+		"DISPATCH_SIGNIN_PASSKEY":           passkeySettingReachesItsReaders,
+		// Boot parses each entry, trimmed, as a CIDR and refuses passkey sign-in without them, and
+		// the router is handed them as boot parsed them, which the passkey begins' bound reads
+		// (TestABeginThroughAnotherTrustedProxyIsBoundedByItsClient drives that bound end to end).
+		"DISPATCH_TRUSTED_PROXY_RANGES": func(t *testing.T) {
+			passkey := map[string]string{
+				"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
+				"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": "https://outside.example.com",
+				"DISPATCH_TRUSTED_PROXY_RANGES": " 192.0.2.0/24 , 2001:db8:100::/48 ",
+			}
+			boot := resolveWith(t, passkey)
+			const want = "[192.0.2.0/24 2001:db8:100::/48]"
+			if got := fmt.Sprint(boot.TrustedProxyRanges); got != want {
+				t.Errorf("TrustedProxyRanges = %s, want %s", got, want)
+			}
+			if got := fmt.Sprint(appContextOptions(boot, nil, routes.AppContextOptions{}).TrustedProxyRanges); got != want {
+				t.Errorf("appContextOptions hands the router TrustedProxyRanges %s, want %s", got, want)
+			}
+			passkey["DISPATCH_TRUSTED_PROXY_RANGES"] = ""
+			refusedWith(t, passkey, "DISPATCH_SIGNIN_PASSKEY needs DISPATCH_TRUSTED_PROXY_RANGES")
+			passkey["DISPATCH_TRUSTED_PROXY_RANGES"] = "192.0.2.0/24,example.com"
+			refusedWith(t, passkey, "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 must be a CIDR")
+		},
+		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
+			domain := map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_TEST_HOOKS": "1"}
+			refusedWith(t, domain, "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com")
+			domain["DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER"] = "1"
+			if boot := resolveWith(t, domain); !boot.TestSignInDomainIssuer || boot.SignInDomain != "example.com" {
+				t.Errorf("DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1: TestSignInDomainIssuer %t, SignInDomain %q", boot.TestSignInDomainIssuer, boot.SignInDomain)
+			}
+			delete(domain, "DISPATCH_TEST_HOOKS")
+			refusedWith(t, domain, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER")
 		},
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": func(t *testing.T) {
 			for _, value := range []string{"", "true"} {
@@ -976,15 +1089,25 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
 			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.OutboxPublishes {
 				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
 			}
 			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
 			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); !options.OutboxPublishes {
 				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
+			}
+		},
+		"DISPATCH_SEARCH_FILL": func(t *testing.T) {
+			for value, off := range map[string]bool{"": false, "on": false, "off": true} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_SEARCH_FILL": value}); boot.SearchFillOff != off {
+					t.Errorf("DISPATCH_SEARCH_FILL=%q: SearchFillOff = %v, want %v", value, boot.SearchFillOff, off)
+				}
+			}
+			for _, value := range []string{"OFF", "Off", " off", "0", "false", "no", "yes", "1"} {
+				refusedWith(t, map[string]string{"DISPATCH_SEARCH_FILL": value}, `DISPATCH_SEARCH_FILL="`+value+`" (expected on or off)`)
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
@@ -1133,6 +1256,117 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 				if response := create(nil); errorCode(response) != "PROJECT_UNMAPPED" {
 					t.Errorf("unset: POST /api/v1/issues answered %d %s, want PROJECT_UNMAPPED", response.Code, response.Body.String())
+				}
+			})
+		},
+		"DISPATCH_PROJECT_OWNER_FALLBACK": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": " operator@example.com "}); boot.ProjectOwnerFallback != "operator@example.com" {
+				t.Errorf("ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			if boot := resolveWith(t, nil); boot.ProjectOwnerFallback != "" {
+				t.Errorf("unset: ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
+				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
+			}
+			// Its reader is the boot's owner check (store.EnsureProjectOwners), right after the
+			// default project's: over a project with no owner a process refuses to serve, naming
+			// the project and both repairs, until the setting names a full member, whom the boot
+			// then makes the project's owner.
+			t.Run("boot", func(t *testing.T) {
+				ctx := context.Background()
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(ctx, `
+					insert into people (email, member_kind) values ('operator@example.com', 'full');
+					alter table projects disable trigger projects_owner_from_default;
+					insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
+					alter table projects enable trigger projects_owner_from_default;
+				`); err != nil {
+					t.Fatalf("seed a project with no owner: %v", err)
+				}
+				refused := startDispatchProcess(t, database.Pool.Config().ConnString())
+				refused.WaitExit(t, "its start over a project with no owner")
+				output := refused.Output.String()
+				if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+					t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
+				}
+				for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
+					if !strings.Contains(output, named) {
+						t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
+					}
+				}
+				served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+					Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
+				})
+				served.waitHealthy(t)
+				var owner string
+				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
+					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
+				}
+			})
+		},
+		"DISPATCH_PRIVATE_PROJECTS": func(t *testing.T) {
+			// The list's own reading is TestThePrivateProjectsSettingIsAListOfKeys. Its reader: the
+			// owner's switch of PRIV to private, refused with no list before anything is read, with
+			// a list that names another project for want of PRIV on it, and with PRIV on it only for
+			// want of a bus to hold the private-projects record, which this router is given none of.
+			t.Run("router", func(t *testing.T) {
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(context.Background(), `
+					insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice@example.com');
+					insert into session_projects_filled default values;
+					insert into access_events_scrubbed default values;
+				`); err != nil {
+					t.Fatalf("seed alice's project PRIV: %v", err)
+				}
+				for value, want := range map[string]string{"": "PRIVATE_PROJECTS_OFF", "OTHER": "PRIVATE_PROJECT_NOT_PROVISIONED", "PRIV": "PRIVATE_PROJECTS_UNAVAILABLE"} {
+					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Sec-Fetch-Site", "same-origin")
+					response := httptest.NewRecorder()
+					routerFor(t, resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": value}), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
+					if response.Code != http.StatusConflict || errorCode(response) != want {
+						t.Errorf("DISPATCH_PRIVATE_PROJECTS=%q: PATCH PRIV private answered %d %s, want 409 %s", value, response.Code, response.Body.String(), want)
+					}
+				}
+			})
+		},
+		"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": func(t *testing.T) {
+			// The list's own reading is TestThePrivateBeforeFullSwitchSettingIsAListOfKeys. Its
+			// reader: the owner's switch of PRIV to private, which with PRIV on it alone needs no
+			// bus, though this router is given none, with another key on it alone is refused for
+			// want of PRIV on either list, and with PRIV on DISPATCH_PRIVATE_PROJECTS too is PRIV's
+			// full switch, refused for want of a bus to hold its record.
+			t.Run("router", func(t *testing.T) {
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(context.Background(), `
+					insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice@example.com');
+					insert into session_projects_filled default values;
+					insert into access_events_scrubbed default values;
+				`); err != nil {
+					t.Fatalf("seed alice's project PRIV: %v", err)
+				}
+				for _, row := range []struct {
+					value, provisioned string
+					want               int
+					code               string
+				}{
+					{"OTHER", "", http.StatusConflict, "PRIVATE_PROJECT_NOT_PROVISIONED"},
+					{"PRIV", "", http.StatusOK, ""},
+					{"PRIV", "PRIV", http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE"},
+				} {
+					if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'public' where key = 'PRIV'`); err != nil {
+						t.Fatalf("make PRIV public: %v", err)
+					}
+					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Sec-Fetch-Site", "same-origin")
+					response := httptest.NewRecorder()
+					env := map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": row.value, "DISPATCH_PRIVATE_PROJECTS": row.provisioned}
+					routerFor(t, resolveWith(t, env), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
+					if response.Code != row.want || errorCode(response) != row.code {
+						t.Errorf("%v: PATCH PRIV private answered %d %s, want %d %s", env, response.Code, response.Body.String(), row.want, row.code)
+					}
 				}
 			})
 		},
@@ -1400,7 +1634,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				whoami := func(handler http.Handler, signedIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 					request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 					for _, cookie := range signedIn.Result().Cookies() {
-						if cookie.Name == "dsession" {
+						if isSessionCookie(cookie) {
 							request.AddCookie(cookie)
 						}
 					}
@@ -1464,6 +1698,142 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example"}, "DISPATCH_OIDC_AUDIENCE")
 		},
+		"DISPATCH_OIDC_ACCOUNTS": func(t *testing.T) {
+			const listed, unlisted = "system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:legion:legion-worker"
+			issuer := oidctest.New(t)
+			key := issuer.PublishKey(t, "signing-key")
+			verifying := func(accounts string) map[string]string {
+				return map[string]string{"DISPATCH_OIDC_ISSUER": issuer.URL(), "DISPATCH_OIDC_AUDIENCE": "dispatch", "DISPATCH_OIDC_ACCOUNTS": accounts}
+			}
+			if boot := resolveWith(t, verifying(" "+listed+" , "+unlisted+" ")); !slices.Equal(boot.OIDCAccounts, []string{listed, unlisted}) {
+				t.Errorf("OIDCAccounts = %q", boot.OIDCAccounts)
+			}
+			if boot := resolveWith(t, verifying(" ")); boot.OIDCAccounts != nil {
+				t.Errorf("blank: OIDCAccounts = %q, want none", boot.OIDCAccounts)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_OIDC_ACCOUNTS": listed}, "DISPATCH_OIDC_ACCOUNTS is set but DISPATCH_OIDC_AUDIENCE is not")
+			for value, naming := range map[string]string{
+				"legion-worker":                                 "DISPATCH_OIDC_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject",
+				"system:serviceaccount:legion":                  "DISPATCH_OIDC_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject",
+				listed + ",system:serviceaccount:Legion:worker": "DISPATCH_OIDC_ACCOUNTS entry 2 of 2 is not a Kubernetes service account's subject",
+				listed + ",":                                    "DISPATCH_OIDC_ACCOUNTS entry 2 of 2 is empty",
+				listed + ", ," + unlisted:                       "DISPATCH_OIDC_ACCOUNTS entry 2 of 3 is empty",
+			} {
+				refusedWith(t, verifying(value), naming)
+			}
+			// Its reader is the API's service-token check (Deps.OIDCAccounts), which the router takes
+			// through appContextOptions: a verified token of an account the list does not name is
+			// refused before any handler runs, and one it names is served.
+			boot := resolveWith(t, verifying(listed))
+			verifier := serviceTokenVerifier(boot)
+			if err := verifier.Discover(t.Context()); err != nil {
+				t.Fatalf("discover the service-account token issuer: %v", err)
+			}
+			handler := routerFor(t, boot, routes.AppContextOptions{OIDC: verifier})
+			whoami := func(subject string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+				request.Header.Set("Authorization", "Bearer "+issuer.Mint(t, key, issuer.Claims(subject, "dispatch")))
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+			if response := whoami(listed); response.Code != http.StatusOK {
+				t.Errorf("DISPATCH_OIDC_ACCOUNTS=%s: GET /api/v1/whoami as %s = %d %s, want 200", listed, listed, response.Code, response.Body.String())
+			}
+			if response := whoami(unlisted); response.Code != http.StatusUnauthorized || errorCode(response) != "SERVICE_ACCOUNT_NOT_ADMITTED" {
+				t.Errorf("DISPATCH_OIDC_ACCOUNTS=%s: GET /api/v1/whoami as %s = %d %s, want 401 SERVICE_ACCOUNT_NOT_ADMITTED", listed, unlisted, response.Code, response.Body.String())
+			}
+			// With an audience and no list, every account of the issuer is admitted, as before the
+			// setting existed, and the boot says so in one warning; a list, or no audience, says
+			// nothing.
+			t.Run("warning", func(t *testing.T) {
+				var logged cmdtest.LockedBuffer
+				logtest.SetDefault(t, slog.NewJSONHandler(&logged, nil))
+				const warning = "DISPATCH_OIDC_ACCOUNTS is unset"
+				warnings := func() []map[string]any {
+					t.Helper()
+					var lines []map[string]any
+					for line := range strings.Lines(logged.String()) {
+						var entry map[string]any
+						if err := json.Unmarshal([]byte(line), &entry); err != nil {
+							t.Fatalf("decode log line %q: %v", line, err)
+						}
+						if message, _ := entry["msg"].(string); strings.Contains(message, warning) {
+							lines = append(lines, entry)
+						}
+					}
+					return lines
+				}
+				boot := resolveWith(t, verifying(""))
+				if lines := warnings(); len(lines) != 0 {
+					t.Fatalf("resolveBootConfig logged %v; it only reads the environment, and main logs the warning", lines)
+				}
+				warnEveryServiceAccountAdmitted(boot)
+				if lines := warnings(); len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["audience"] != "dispatch" {
+					t.Fatalf("an audience and no list logged %v, want one WARN naming the audience", lines)
+				}
+				warnEveryServiceAccountAdmitted(resolveWith(t, verifying(listed)))
+				warnEveryServiceAccountAdmitted(resolveWith(t, nil))
+				if lines := warnings(); len(lines) != 1 {
+					t.Errorf("a list, then no audience, logged the warning again: %v", lines)
+				}
+			})
+		},
+		"DISPATCH_ACCESS_ACCOUNTS": func(t *testing.T) {
+			const broker, reader = "system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:legion:reader"
+			verifying := func(overrides map[string]string) map[string]string {
+				values := map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example", "DISPATCH_OIDC_AUDIENCE": "dispatch"}
+				maps.Copy(values, overrides)
+				return values
+			}
+			boot := resolveWith(t, verifying(map[string]string{"DISPATCH_OIDC_ACCOUNTS": broker + "," + reader, "DISPATCH_ACCESS_ACCOUNTS": " " + broker + " "}))
+			if !slices.Equal(boot.AccessAccounts, []string{broker}) {
+				t.Errorf("AccessAccounts = %q", boot.AccessAccounts)
+			}
+			// Its reader is the API's membership answer (Deps.AccessAccounts), which the router
+			// takes through appContextOptions: an account the list names reads it, and another
+			// account the deployment admits is refused before anything is read.
+			if got := appContextOptions(boot, nil, routes.AppContextOptions{}).AccessAccounts; !slices.Equal(got, []string{broker}) {
+				t.Errorf("appContextOptions hands the router AccessAccounts %q, want %q", got, []string{broker})
+			}
+			issuer := oidctest.New(t)
+			key := issuer.PublishKey(t, "signing-key")
+			served := resolveWith(t, map[string]string{
+				"DISPATCH_OIDC_ISSUER": issuer.URL(), "DISPATCH_OIDC_AUDIENCE": "dispatch",
+				"DISPATCH_OIDC_ACCOUNTS": broker + "," + reader, "DISPATCH_ACCESS_ACCOUNTS": broker,
+			})
+			verifier := serviceTokenVerifier(served)
+			if err := verifier.Discover(t.Context()); err != nil {
+				t.Fatalf("discover the service-account token issuer: %v", err)
+			}
+			handler := routerFor(t, served, routes.AppContextOptions{OIDC: verifier, Store: storetest.Open(t)})
+			answer := func(subject string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/access/person?person=alice@example.com", nil)
+				request.Header.Set("Authorization", "Bearer "+issuer.Mint(t, key, issuer.Claims(subject, "dispatch")))
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+			if response := answer(broker); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"member_kind":"none"`) {
+				t.Errorf("DISPATCH_ACCESS_ACCOUNTS=%s: GET /api/v1/access/person as %s = %d %s, want 200 with member_kind none", broker, broker, response.Code, response.Body.String())
+			}
+			if response := answer(reader); response.Code != http.StatusForbidden || errorCode(response) != "ACCESS_ACCOUNT_REQUIRED" {
+				t.Errorf("DISPATCH_ACCESS_ACCOUNTS=%s: GET /api/v1/access/person as %s = %d %s, want 403 ACCESS_ACCOUNT_REQUIRED", broker, reader, response.Code, response.Body.String())
+			}
+			// With no list of admitted accounts every account of the issuer is admitted, so any
+			// account may be one that reads the answer.
+			if boot := resolveWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker})); !slices.Equal(boot.AccessAccounts, []string{broker}) {
+				t.Errorf("no DISPATCH_OIDC_ACCOUNTS: AccessAccounts = %q", boot.AccessAccounts)
+			}
+			if boot := resolveWith(t, verifying(nil)); boot.AccessAccounts != nil {
+				t.Errorf("unset: AccessAccounts = %q, want none", boot.AccessAccounts)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker}, "DISPATCH_ACCESS_ACCOUNTS is set but DISPATCH_OIDC_AUDIENCE is not")
+			refusedWith(t, verifying(map[string]string{"DISPATCH_OIDC_ACCOUNTS": reader, "DISPATCH_ACCESS_ACCOUNTS": broker}),
+				"DISPATCH_ACCESS_ACCOUNTS names "+broker+", which DISPATCH_OIDC_ACCOUNTS does not admit")
+			refusedWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": "envoy-broker"}), "DISPATCH_ACCESS_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject")
+			refusedWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker + ","}), "DISPATCH_ACCESS_ACCOUNTS entry 2 of 2 is empty")
+		},
 		"DISPATCH_AGENT_SECRETS_URL": func(t *testing.T) {
 			tokenFile := writeFile(t, "account-token", "account-token")
 			if boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}); boot.AgentSecretsURL != "https://broker.example" {
@@ -1479,7 +1849,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
-				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{}).ServeHTTP(response, request)
+				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
 					t.Errorf("unset: GET /api/v1/credential-requests answered %d %s, want 200 null", response.Code, response.Body.String())
 				}
@@ -1812,14 +2182,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_HOOKS=true: hooks on, want only 1 to mount them")
 			}
 			// The routes the flag mounts: the e2e harness's hooks that close every open live socket, as
-			// a restart (1012) or the socket's age (4001) does.
+			// a restart (1012) or the socket's age (4001) does. They are deployment writes, and a router
+			// with no database reads every caller as the closed viewer, which no deployment write
+			// admits, so the router gets the store a deployment has.
 			t.Run("router", func(t *testing.T) {
 				for _, hook := range []string{"/api/v1/live/_test/disconnect", "/api/v1/live/_test/rotate"} {
 					for value, want := range map[string]int{"1": http.StatusOK, "": http.StatusNotFound} {
 						request := signedIn(t, httptest.NewRequest(http.MethodPost, hook, nil), "alice")
 						request.Header.Set("Sec-Fetch-Site", "same-origin")
 						response := httptest.NewRecorder()
-						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{}).ServeHTTP(response, request)
+						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 						if response.Code != want {
 							t.Errorf("DISPATCH_TEST_HOOKS=%q: POST %s answered %d %s, want %d", value, hook, response.Code, response.Body.String(), want)
 						}
@@ -1884,7 +2256,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.RouteRosterTTL != longTTL {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL: RouteRosterTTL = %v, want %v", boot.RouteRosterTTL, longTTL)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.RouteRosterTTL != longTTL {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.RouteRosterTTL != longTTL {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL: the router is handed RouteRosterTTL = %v, want %v", options.RouteRosterTTL, longTTL)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -1905,7 +2277,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.ListenerTakeoverWindow != shortWindow {
 				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: ListenerTakeoverWindow = %v, want %v", boot.ListenerTakeoverWindow, shortWindow)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
 				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: the router is handed ListenerTakeoverWindow = %v, want %v", options.ListenerTakeoverWindow, shortWindow)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -1926,7 +2298,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.HorizonStallAfter != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: HorizonStallAfter = %v, want %v", boot.HorizonStallAfter, quick)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: the router is handed HorizonStallAfter = %v, want %v", options.HorizonStallAfter, quick)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -1947,7 +2319,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.HorizonWarnEvery != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: HorizonWarnEvery = %v, want %v", boot.HorizonWarnEvery, quick)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: the router is handed HorizonWarnEvery = %v, want %v", options.HorizonWarnEvery, quick)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -2183,7 +2555,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		MaxDocConnections: 16,
 		TestHooksEnabled:  true,
 	}
-	got := documentDeps(boot, docs.Deps{})
+	got := documentDeps(boot, "", docs.Deps{})
 	for _, field := range []struct {
 		name      string
 		got, want any
@@ -2202,6 +2574,22 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	}
 }
 
+// The document service reads a dashboard link as the API does, whatever the server URL ends in:
+// api.NewDeps trims one trailing `/` before it builds its origins, and documentDeps trims the same
+// one, so a server URL ending in `//` reads `/issues/ABC-1` under it as an issue in both, and a
+// server URL ending in one `/` or none does too.
+func TestDocumentDepsReadLinksAsTheAPIDoes(t *testing.T) {
+	for _, serverURL := range []string{"https://dispatch.example", "https://dispatch.example/", "https://dispatch.example//"} {
+		apiOrigins := text.NewOrigins(strings.TrimSuffix(serverURL, "/"))
+		docOrigins := documentDeps(bootConfig{}, serverURL, docs.Deps{}).Origins
+		const page = "https://dispatch.example/issues/ABC-1"
+		api, document := text.Extract(page, apiOrigins), text.Extract(page, docOrigins)
+		if !reflect.DeepEqual(document, api) || len(api) != 1 || api[0].Kind != "issue" {
+			t.Errorf("server URL %q: the document service reads %s as %+v and the API as %+v, want both the issue", serverURL, page, document, api)
+		}
+	}
+}
+
 // documentCapReachesTheService hands name, one of the document service's caps, to the service
 // main builds (newDocumentService) through the settings read alone, and reads back the cap it
 // sets (capOf of docs.Service.RoomCapsForTest): unset, the service's own default of 1,000; set,
@@ -2210,7 +2598,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, docs.Deps{}).RoomCapsForTest()); got != want {
+		if got := capOf(newDocumentService(boot, "", docs.Deps{}).RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}
@@ -2317,7 +2705,7 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 			})
 			request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 			response := httptest.NewRecorder()
-			routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+			routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 			if called {
 				t.Fatal("the broker was called with no token Dispatch could read")
 			}
@@ -2331,5 +2719,87 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 				t.Fatalf("GET /api/v1/credential-requests = %d %s: the broker was never called, so the answer must name Dispatch's own unreadable ServiceAccount token, not an unreachable broker", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+// DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects the deployment has
+// provisioned as private: each entry trimmed, empty ones dropped, the list deduplicated and sorted.
+// An entry that is no project key, the old on/off value 1 included, is never read as a key: the
+// boot keeps the keys beside it, ignores that entry and logs one ERROR line naming it, so the
+// project it meant is never provisioned and its switch to private is refused while neither list
+// names its key (it fails closed). Control: a setting that read the entry would put it on the
+// list.
+func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": " PRIV, ALPHA ,PRIV,"}); !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || len(boot.PrivateProjectsIgnored) != 0 {
+		t.Errorf(`DISPATCH_PRIVATE_PROJECTS=" PRIV, ALPHA ,PRIV,": PrivateProjects = %q, ignored %q; want [ALPHA PRIV], none ignored`, boot.PrivateProjects, boot.PrivateProjectsIgnored)
+	}
+	for name, overrides := range map[string]map[string]string{"unset": {}, "empty": {"DISPATCH_PRIVATE_PROJECTS": ""}} {
+		if boot := resolveWith(t, overrides); len(boot.PrivateProjects) != 0 || len(boot.PrivateProjectsIgnored) != 0 {
+			t.Errorf("%s: PrivateProjects = %q, ignored %q; want no project and nothing ignored", name, boot.PrivateProjects, boot.PrivateProjectsIgnored)
+		}
+	}
+	for _, entry := range []string{"1", "priv"} {
+		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "ALPHA," + entry + ",PRIV"})
+		if !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || !slices.Equal(boot.PrivateProjectsIgnored, []string{entry}) {
+			t.Errorf("DISPATCH_PRIVATE_PROJECTS=ALPHA,%s,PRIV: PrivateProjects = %q, ignored %q; want [ALPHA PRIV], %q ignored", entry, boot.PrivateProjects, boot.PrivateProjectsIgnored, entry)
+		}
+		var logged cmdtest.LockedBuffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		reportIgnoredPrivateProjects(privateProjectsVariable, boot.PrivateProjectsIgnored)
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
+			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming it and the switch's refusal", entry, logged.String())
+		}
+	}
+}
+
+// DISPATCH_PRIVATE_BEFORE_FULL_SWITCH is read exactly as DISPATCH_PRIVATE_PROJECTS is: the
+// comma-separated keys of the projects the deployment makes private before their full switch, each
+// entry trimmed, empty ones dropped, the list deduplicated and sorted. An entry that is no project
+// key is never read as a key: the boot keeps the keys beside it, ignores that entry and logs one
+// ERROR line naming the setting, the entry and the refusal a switch of the project it meant gets
+// while neither list names its key: 409 PRIVATE_PROJECTS_OFF while both lists are empty, as a
+// mistyped day-one key leaves them when it is this setting's only entry, else 409
+// PRIVATE_PROJECT_NOT_PROVISIONED. Neither list reads the other's entries, and a key both name
+// takes its full switch: the boot leaves it on DISPATCH_PRIVATE_PROJECTS alone, so the two lists
+// every reader gets are disjoint (api.NewDeps refuses lists that are not). Control: a setting that
+// read the entry would put it on the list.
+func TestThePrivateBeforeFullSwitchSettingIsAListOfKeys(t *testing.T) {
+	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": " PRIV, ALPHA ,PRIV,"})
+	if !slices.Equal(boot.PrivateBeforeFullSwitch, []string{"ALPHA", "PRIV"}) || len(boot.PrivateBeforeFullSwitchIgnored) != 0 || len(boot.PrivateProjects) != 0 {
+		t.Errorf(`DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=" PRIV, ALPHA ,PRIV,": PrivateBeforeFullSwitch = %q, ignored %q, PrivateProjects %q; want [ALPHA PRIV], none ignored, no provisioned project`,
+			boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored, boot.PrivateProjects)
+	}
+	for name, overrides := range map[string]map[string]string{"unset": {}, "empty": {"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": ""}} {
+		if boot := resolveWith(t, overrides); len(boot.PrivateBeforeFullSwitch) != 0 || len(boot.PrivateBeforeFullSwitchIgnored) != 0 {
+			t.Errorf("%s: PrivateBeforeFullSwitch = %q, ignored %q; want no project and nothing ignored", name, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored)
+		}
+	}
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "FULL,1", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "DAYONE"}); !slices.Equal(boot.PrivateProjects, []string{"FULL"}) ||
+		!slices.Equal(boot.PrivateBeforeFullSwitch, []string{"DAYONE"}) || !slices.Equal(boot.PrivateProjectsIgnored, []string{"1"}) || len(boot.PrivateBeforeFullSwitchIgnored) != 0 {
+		t.Errorf("both settings set: PrivateProjects %q ignored %q, PrivateBeforeFullSwitch %q ignored %q; want [FULL] ignoring 1, and [DAYONE] ignoring none",
+			boot.PrivateProjects, boot.PrivateProjectsIgnored, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored)
+	}
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "PRIV", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "PRIV,DAYONE"}); !slices.Equal(boot.PrivateProjects, []string{"PRIV"}) ||
+		!slices.Equal(boot.PrivateBeforeFullSwitch, []string{"DAYONE"}) {
+		t.Errorf("PRIV on both settings: PrivateProjects %q, PrivateBeforeFullSwitch %q; want [PRIV] and [DAYONE]: a key both name takes its full switch",
+			boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
+	}
+	for _, entry := range []string{"1", "priv"} {
+		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "ALPHA," + entry + ",PRIV"})
+		if !slices.Equal(boot.PrivateBeforeFullSwitch, []string{"ALPHA", "PRIV"}) || !slices.Equal(boot.PrivateBeforeFullSwitchIgnored, []string{entry}) {
+			t.Errorf("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=ALPHA,%s,PRIV: PrivateBeforeFullSwitch = %q, ignored %q; want [ALPHA PRIV], %q ignored",
+				entry, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored, entry)
+		}
+		var logged cmdtest.LockedBuffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		reportIgnoredPrivateProjects(privateBeforeFullSwitchVariable, boot.PrivateBeforeFullSwitchIgnored)
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) ||
+			!strings.Contains(lines[0], "setting=DISPATCH_PRIVATE_BEFORE_FULL_SWITCH") ||
+			!strings.Contains(lines[0], "PRIVATE_PROJECTS_OFF") || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
+			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming the setting, the entry and the switch's refusal "+
+				"both while both lists are empty (PRIVATE_PROJECTS_OFF) and while only the key is missing (PRIVATE_PROJECT_NOT_PROVISIONED)", entry, logged.String())
+		}
 	}
 }

@@ -1,12 +1,14 @@
 import { askProject } from "../features/inbox/list-row";
-import { buildDispatchReference } from "../features/refs/routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
+  accessGroupsQuery,
   agentMessagesQuery,
   architectureSourcesQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
+  projectAccessQuery,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectsQuery,
@@ -1062,6 +1064,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
   }
+  if (event.type === "project.access_changed") {
+    // A person or a group named or taken off, or the project given to another owner: the
+    // project's Access tab, which is the one read that carries who may see it. A switch of its
+    // visibility moves its row of the project list too, which carries the visibility, for every
+    // reader who sees the project either way.
+    const access = { queryKey: projectAccessQuery(event.payload.project).queryKey };
+    return event.payload.change === "visibility" ? [access, { queryKey: projectsKey }] : [access];
+  }
+  if (event.type === "access_group.changed") {
+    // A group made, written or deleted, by anybody. It belongs to no project; a delete's removal
+    // from each list that named it comes as that project's own project.access_changed.
+    return [{ queryKey: accessGroupsQuery().queryKey }];
+  }
   if (event.type === "subscription.remove_requested") {
     return [];
   }
@@ -1175,6 +1190,15 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
+      // An issue's decisions.md sends this event alone on its first upload, no version, and the
+      // outline and the margin beside the spec read the decisions under events alone
+      // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
+      // that document by its role, which it writes as it creates the row; a server built before
+      // roles sends none, and names it by its slug alone.
+      const { role, slug } = event.payload.artifact;
+      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
+        targets.push({ exact: true, queryKey: ["decisions", key] });
+      }
     }
     return targets;
   }
@@ -1585,7 +1609,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * event refreshes: those whose key holds an address it changes the words under, on a comment's
  * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
  * and none on any other event. The issue page's names reads are kept fresh by events
- * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * (`reference-target.ts`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
  * addresses it names, so a page that comes to hold another set reads again under a key of its
  * own: only a change of words under the same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or

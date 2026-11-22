@@ -10,7 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -30,13 +32,17 @@ import (
 // myRepliesDismissed, with that route's parameters $1 login, $2 issue, $3 document) whose mark -
 // the column that state is ordered by, named by mark - is at or before $4, of the priorities ($5,
 // null for every one, with $6 for a thread whose issue carries none) and the projects ($7, null
-// for every one) the request names. It answers each thread's id, the owner this transaction locks
-// before it writes - its issue or its document - and the row's own version (user_threads.version,
-// migration 20261105093500), which is what a filtered dismissal holds the row to, the server
-// standing in for the page there (inboxDismissMarkThreads, api/inbox_dismiss.go); the mark-all
-// answers it and ignores it, since one read serves both routes. The project whose event announces
-// the write is not read here: the update answers the project of every row it moved, and those are
-// the projects this transaction locks, after the rows (lockInboxReadOwners).
+// for every one) the request names, of a project the viewer $8 binds sees (access.ProjectClause
+// over the row's own project, as the list's myRepliesSeen reads it): a thread of a project the
+// caller may not see is no row here, so it is neither locked, nor written, nor counted, nor
+// announced, as it is no row of the list. It answers each thread's id, the owner this
+// transaction locks before it writes - its issue or its document - and the row's own version
+// (user_threads.version, migration 20261105093500), which is what a filtered dismissal holds the
+// row to, the server standing in for the page there (inboxDismissMarkThreads,
+// api/inbox_dismiss.go); the mark-all answers it and ignores it, since one read serves both
+// routes. The project whose event announces the write is not read here: the update answers the
+// project of every row it moved, and those are the projects this transaction locks, after the
+// rows (lockInboxReadOwners).
 //
 // One builder rather than a statement per state and route: the mark-all reads the caller's unread
 // rows and the dismiss route the Inbox's own or the dismissed ones (api/inbox_dismiss.go), and the
@@ -71,6 +77,7 @@ func inboxReplyMatchQuery(source, mark string) string {
 	where m.` + mark + ` <= least($4::text::timestamptz, now())
 	  and ($5::int[] is null or i.priority = any($5::int[]) or ($6::boolean and i.priority is null))
 	  and ($7::text[] is null or owner.project_key = any($7::text[]))
+	  and ` + access.ProjectClause("owner.project_key", "$8") + `
 	order by m.thread_id`
 }
 
@@ -98,6 +105,36 @@ func inboxAgentRootsQuery(roots, replies, match string) string {
 	order by r.root_id`
 }
 
+// inboxAgentRead is one Agent read of the two write routes, in the two shapes the list route
+// reads a state's roots in (myAgentSeenAnd): every, the statement every reader read before a
+// project could be private, for a reader that sees every object (seesEveryObject, R9); and seen,
+// which narrows the roots to the conversations the reader may read (agentConversationSeen) and
+// binds its viewer at $5, after the read's own four parameters. So a conversation the caller may
+// not read is no Agent row of these writes either: none of its replies is marked read, none of
+// its roots is dismissed or restored, and it counts in no answer, as it is no row of the list.
+type inboxAgentRead struct {
+	every, seen string
+}
+
+// newInboxAgentRead builds both shapes of one Agent read over the roots roots builds from a
+// narrowing (myAgentUnreadRootsAnd and its siblings), row naming the message the narrowing is
+// asked of there.
+func newInboxAgentRead(roots func(seen string) string, row, replies, match string) inboxAgentRead {
+	return inboxAgentRead{
+		every: inboxAgentRootsQuery(roots(""), replies, match),
+		seen:  inboxAgentRootsQuery(roots(myAgentSeenAnd(row, "$5")), replies, match),
+	}
+}
+
+// statementFor is the read's statement for who and its parameters: args, the read's own four,
+// and for a reader that may not see every object its viewer after them.
+func (read inboxAgentRead) statementFor(who model.Actor, args []any) (string, []any) {
+	if seesEveryObject(who) {
+		return read.every, args
+	}
+	return read.seen, append(args, refs.VisibilityArg(who))
+}
+
 // inboxAgentUnreadReplies is what a write that marks the thread read selects,
 // inboxAgentRepliedThrough the narrowing the Inbox's own states take - the roots whose newest
 // session reply is at or before the mark ($4) - and inboxAgentNewestReply the column every one
@@ -113,11 +150,11 @@ const (
 )
 
 // inboxReadAgentThreads is the list route's own unread roots with that read over them: the roots
-// holding a reply this login has not read, and each root's own facts, are myAgentUnreadRoots and
-// myAgentRootsWithFacts, the constants myAgentRowsQuery is built from (api/replies_agent.go), so a
-// change to either moves the list and this button together.
-var inboxReadAgentThreads = inboxAgentRootsQuery(
-	myAgentUnreadRoots, inboxAgentUnreadReplies, inboxAgentRepliedThrough)
+// holding a reply this login has not read, and each root's own facts, are myAgentUnreadRootsAnd
+// and myAgentRootsWithFacts, the constants myAgentRowsQuery is built from (api/replies_agent.go),
+// so a change to either moves the list and this button together.
+var inboxReadAgentThreads = newInboxAgentRead(
+	myAgentUnreadRootsAnd, "m", inboxAgentUnreadReplies, inboxAgentRepliedThrough)
 
 // The lock statements of this transaction, which it takes in the order markInboxReadThreads
 // writes down: the owners of the threads it marks, in shared mode (lockInboxReadOwners,
@@ -362,9 +399,15 @@ func newInboxReadThreads() inboxReadThreads {
 	}
 }
 
-// markInboxRead answers POST /api/v1/me/inbox/read.
+// markInboxRead answers POST /api/v1/me/inbox/read. The threads it marks are read as the request's
+// reader reads the list (readInboxReadThreads), so a thread the caller's credential may not see is
+// no thread of the press.
 func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -389,7 +432,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	marked, events, err := s.markInboxReadThreads(r.Context(), actor, *input.ReadThrough, scope)
+	marked, events, err := s.markInboxReadThreads(r.Context(), who, actor, *input.ReadThrough, scope)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -479,8 +522,52 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // wants, whichever order the writer itself reaches the project in: a block ask's answer appends
 // an anchor refresh, and so takes the project, before its own update moves those rows, and it
 // is ordered all the same.
+//
+// The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
+// sequence of its own. Its writers do not all run their steps in one order - one learns its
+// event id before it has a node to write, another writes the node first and moves source_event
+// later - so a numbered step would be false for some of them, while each of these holds for
+// every writer:
+//
+//  1. the owner's lock comes first, through store.LockOwner (store/ownerlock.go) or
+//     lockArtifactOwner (docs/service.go), as it does for every other writer above: the advisory
+//     lock, taken before the read phase reads what the write phase writes, and so before any
+//     row of the store is taken. The owner's row is taken later, in the write phase, where an
+//     event the writer appends takes it; while an earlier build, which serialises on the row,
+//     is in the fleet, the row is taken right after the advisory lock (store.LockOwners);
+//  2. a node's graph_nodes row is written before any projection row whose foreign key names it
+//     (document_blocks, block_refs and comments, migration 20261109022248), so the write that
+//     makes a node and the write that points at it never meet in the opposite order;
+//  3. the event is appended before the tuples whose cause it is, so a tuple's source_event
+//     names a row the log already holds;
+//  4. a graph_nodes write touching several nodes takes them in ascending (kind, id)
+//     (graphstore's queueNodes), so two such writes cannot each hold what the other waits for;
+//  5. a writer under the revision fence (R23 of this change: the version write, the
+//     block index reconciliation tick and the backfill) takes the document's owner lock, through
+//     lockArtifactOwner or events.LockOwnerRows, then the document's document_block_versions row
+//     `for no key update` (indexOwedDocument, refs' queueStand, graphcensus's
+//     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
+//     the asks the settlement opens are followed), before it writes a node, a tuple or a
+//     projection row, so two passes over one document queue at the fence and the one that loses
+//     it has written nothing.
+//
+// Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
+// updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
+// and invariant 3 is about which rows exist, not about which are held. The one exception is the
+// erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
+// tuples and its node row, and takes this same order to do it: the lock of every owner it writes
+// under, then the node row, then the rest of the rows it locks before it reads (its projection
+// rows) (grapherase's lockInStoreOrder). Before its first owner lock it takes two rows no writer
+// holding an owner lock takes, each of which a background pass holds for a whole transaction of
+// its own: the term statistics totals row of each project of its owners
+// (api.TakeErasedTermTotalsTx), and the keyword fill's cursor row, which holds the fill back until
+// the erase ends (textversions.HoldFillBack), so it waits for such a pass holding no owner lock,
+// which no writer of the node's issue or document then waits on. A writer owning no
+// issue and no document - an operator's own write, a session-addressed event - takes no owner
+// lock at all, and invariant 1 says nothing about it. graphstore's
+// TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.
 func (s *server) markInboxReadThreads(
-	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
+	ctx context.Context, who, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {
 	login := model.CanonicalLogin(actor.ID)
 	tx, err := s.begin(ctx)
@@ -491,7 +578,7 @@ func (s *server) markInboxReadThreads(
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
-	read, err := readInboxReadThreads(ctx, tx, actor, login,
+	read, err := readInboxReadThreads(ctx, tx, who, actor, login,
 		inboxReadReplyThreads, inboxReadAgentThreads, readThrough, scope)
 	if err != nil {
 		return 0, nil, err
@@ -566,21 +653,27 @@ func (s *server) commitInboxMarks(
 // (readInboxDismissThreads, api/inbox_dismiss.go) - which is why the two statements and the mark
 // are given to it rather than named in it. The mark is bound rather than read here, so it is
 // whatever the caller binds its own text as: the mark-all's string, the dismissal's *string.
+//
+// Both reads are held to who, the request's reader, as the list route holds the rows it shows:
+// a Reply thread of a project who may not see, and an Agent thread whose conversation who may not
+// read, match no row, so neither is locked, written, counted nor announced, and a narrowing that
+// names such a thread's issue, document or project answers exactly as one naming an owner nobody
+// holds.
 func readInboxReadThreads(
-	ctx context.Context, tx pgx.Tx, actor model.Actor, login string,
-	replyThreads, agentThreads string, mark any, scope inboxReadScope,
+	ctx context.Context, tx pgx.Tx, who, actor model.Actor, login string,
+	replyThreads string, agentThreads inboxAgentRead, mark any, scope inboxReadScope,
 ) (inboxReadThreads, error) {
 	read := newInboxReadThreads()
 	if scope.wantsReplyThreads() {
 		if err := readInboxReplyRows(ctx, tx, &read, replyThreads,
 			login, scope.issue, scope.artifact, mark,
-			scope.priorities, scope.priorityNone, scope.projects); err != nil {
+			scope.priorities, scope.priorityNone, scope.projects, refs.VisibilityArg(who)); err != nil {
 			return read, err
 		}
 	}
 	if scope.wantsAgentThreads() {
-		args := append(unreadDirectRepliesArgs(actor.ID, nil), mark)
-		if err := readInboxAgentRows(ctx, tx, &read, agentThreads, args); err != nil {
+		query, args := agentThreads.statementFor(who, append(unreadDirectRepliesArgs(actor.ID, nil), mark))
+		if err := readInboxAgentRows(ctx, tx, &read, query, args); err != nil {
 			return read, err
 		}
 	}

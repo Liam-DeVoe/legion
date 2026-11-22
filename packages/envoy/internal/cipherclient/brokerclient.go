@@ -193,9 +193,11 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 //
 // `membership_held` (oauthwire.MembershipHeld): Dispatch holds the person this credential
 // names, because Google refused their Dispatch sign-in, or no refresh has confirmed them for 24
-// hours. A hold revokes nothing, and the person's next Dispatch sign-in, or the next refresh that
-// confirms them, ends it, so the identity this client trades is served again then with no new
-// login. A client that stopped on it would need a restart after every hold.
+// hours, or, behind Identity-Aware Proxy, the Workspace Directory no longer confirms their
+// account. A hold revokes nothing, and the person's next Dispatch sign-in, the next refresh that
+// confirms them, or the Directory's next active answer ends it, so the identity this client trades
+// is served again then with no new login. A client that stopped on it would need a restart after
+// every hold.
 func (e *RefusedError) Permanent() bool {
 	switch {
 	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
@@ -286,6 +288,10 @@ type Client struct {
 
 	mu   sync.Mutex
 	held *Token
+	// renewAt is when Token trades again for the held token: its renewal time as it landed
+	// (renewalAt), RenewBefore ahead of its expiry, or halfway through what was left of the life of
+	// one shorter than that. The TypeScript client keeps the same one time (#renewAt).
+	renewAt time.Time
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -347,7 +353,8 @@ func New(cfg Config) (*Client, error) {
 // under the minted credential signs with it.
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
-// Token is a live access token: the held one while it is good for longer than RenewBefore, and
+// Token is a live access token: the held one until its renewal time (RenewBefore ahead of its
+// expiry, or halfway through what was left of the life of one shorter than that, RenewalAt), and
 // otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
 // trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
 // Dispatch holds), while the held token is still live answers that token, since a client that
@@ -358,12 +365,12 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.held.Expiry.Add(-c.renewBefore)) {
+	if c.held != nil && c.now().Before(c.renewAt) {
 		return c.held, nil
 	}
 	token, err := c.trade(ctx)
 	if err == nil {
-		c.held = token
+		c.hold(token)
 		return token, nil
 	}
 	var refused *RefusedError
@@ -374,6 +381,11 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	}
 	c.held = nil
 	return nil, err
+}
+
+// hold keeps token as the held one, and when Token trades again for it (renewalAt). c.mu is held.
+func (c *Client) hold(token *Token) {
+	c.held, c.renewAt = token, c.renewalAt(token, c.now())
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first
@@ -402,7 +414,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Lock()
 		token, err := c.trade(ctx)
 		if err == nil {
-			c.held = token
+			c.hold(token)
 		}
 		c.mu.Unlock()
 		switch {
