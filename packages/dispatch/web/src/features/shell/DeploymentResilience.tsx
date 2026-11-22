@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderStrong,
   card,
@@ -290,6 +291,11 @@ export function DeploymentResilience(): ReactNode {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const dismissed = useRef(false);
   const lastVersionCheckAt = useRef(0);
+  // The banner is the one element of the foot's banner layer (`hooks/useFootInset.ts` lists the
+  // foot's layers and the elements in each): it sits 1rem above the page layer and publishes how
+  // far up it reaches, so the status corner rides above it.
+  const bannerRef = useRef<HTMLElement>(null);
+  useFootInset(bannerRef, updateAvailable, "banner");
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -325,7 +331,8 @@ export function DeploymentResilience(): ReactNode {
   return (
     <section
       aria-label="A new version is available"
-      className={`fixed right-4 bottom-4 left-4 z-50 mx-auto flex max-w-md items-center justify-between gap-3 rounded-xl border p-3 shadow-lg ${card} ${borderStrong}`}
+      className={`fixed right-4 bottom-[calc(var(--foot-page-inset,0px)_+_1rem)] left-4 z-50 mx-auto flex max-w-md items-center justify-between gap-3 rounded-xl border p-3 shadow-lg ${card} ${borderStrong}`}
+      ref={bannerRef}
       role="status"
     >
       <p className={`text-sm ${textSecondaryOnSurface}`}>A new version is available - Reload</p>

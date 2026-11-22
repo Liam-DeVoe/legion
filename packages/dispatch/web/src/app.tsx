@@ -100,7 +100,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -666,13 +666,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // The status corner floats over the foot of the screen as the composers it sits above do, so
-  // it publishes its own reach the same way: a control floating at that foot - the
-  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
-  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
-  // nothing and the property is unset.
+  // The status corner is the top layer of the foot of the screen (`hooks/useFootInset.ts` lists
+  // the foot's layers, the elements in each, and the controls that read the top one): it
+  // publishes its own reach there, so those controls ride above the whole corner rather than
+  // under the pending-writes indicator or the connection pill. An empty corner has no box, so it
+  // adds nothing.
   const statusCornerRef = useRef<HTMLDivElement>(null);
-  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
+  useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
@@ -918,14 +918,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           Skip to content
         </a>
         {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
-            cannot keep for a reload above the connection pill. Above the highest composer fixed
-            at the foot of the screen (`--foot-composer-inset`, `useFootInset`), so neither sits
-            over its controls; otherwise just above the phone's bottom bar. Only what it shows
-            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
-            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
-            offers a reload, and the page keeps trying underneath. */}
+            cannot keep for a reload above the connection pill. It stands 1rem above the foot's
+            banner layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in
+            each), so it lies over nothing else fixed or stuck at the foot of the screen, and
+            below `xl` never lower than its floor. Only what it shows takes the pointer. A socket
+            Dispatch refuses carries no status the page can read, so nothing in the pill is
+            terminal: once reconnecting has gone on for two minutes it offers a reload, and the
+            page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-banner-inset,0px)_+_1rem)] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />

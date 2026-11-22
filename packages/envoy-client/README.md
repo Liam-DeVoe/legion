@@ -1247,11 +1247,21 @@ The one exception is a call whose whole output is one JSON object (`dispatch iss
 `printsJson`): a cut object is no JSON object, so it is printed whole on every host, and the CLI
 prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
 prints the refusal, then each issue that holds the rule as `KEY [status] title`, then what to do
-next, and exits 1, as a near copy's refusal does. A create (`dispatch issue`) is refused only under
-a done parent and takes no flag that moves it, so it prints how to reopen that parent first
+next, and exits 1, as a near copy's refusal does.
+That last part follows what the call changed, so it names no step that does not work.
+A create (`dispatch issue`) is refused only under a done parent and takes no flag that moves it,
+so it prints how to reopen that parent first
 (`dispatch issue-update --issue <PARENT> --status <a status in work>`) or file the issue under an
-open parent or none. Every other command prints the flags of `dispatch issue-update` that move
-the issues.
+open parent or none.
+A reparent (`dispatch issue-update --parent <PARENT>`) refused for the parent it names, which no
+flag of the command moves, is told to move that parent first
+(`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`), then to run the
+reparent again, with `--issue` and `--status` only where the call had them.
+A status change prints the flags of `dispatch issue-update --status` that move the issues.
+Those flags go with `--status` alone, and with `--reason` for done, so a call that also changed
+another field is told to send that change in a call of its own.
+A reparent refused for a child, against the status it also wrote, is told to run the status change
+first, in a call of its own, and the reparent after it, without `--status`.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
