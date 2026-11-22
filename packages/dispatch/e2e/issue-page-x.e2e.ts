@@ -235,6 +235,13 @@ function blockOf(address: string): string | undefined {
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }
 
+/** The block id `address` names; throws, naming `what`, where it names no block. */
+function blockNamed(address: string, what: string): string {
+  const block = blockOf(address);
+  if (block === undefined) throw new Error(`${what}'s address names no block`);
+  return block;
+}
+
 /** Fails where an element of the page has a raw value of the tree read, or a word-list key, as
  *  its whole text: the page names a node's life and its reader in its own words alone. */
 async function expectNoRawValue(page: Page, where: string): Promise<void> {
@@ -379,8 +386,9 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
   const { ids } = seeded;
   // The load draws the outline once its tree read answers, after the page itself: wait for the
   // load to settle, as each other step does, and read the rows only once statement 7's is drawn,
-  // which opens every branch on the way (`drawnRowId`). Read at once, the rows were none; opened
-  // before the load settled, a row took back the focus the opener left for the page.
+  // which opens every branch on the way (`drawnRowId`). Read before the tree read answers, the
+  // outline holds no rows; opened before the load settles, a row takes back the focus the opener
+  // leaves for the page.
   await gotoSettled(page, traffic, plain);
   await drawnRowId(page, ids.statement7, "statement 7");
   let items = await treeItemsDrawn(page);
@@ -515,8 +523,7 @@ async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise
   const { ids } = seeded;
   // A `#b-` fragment names a block by its id in its document, which the tree read's own id for
   // the block (`<KEY>/<slug>#<block id>`) is not: it is read from the block's address.
-  const block = blockOf(seeded.addresses.statement8);
-  if (block === undefined) throw new Error("statement 8's address names no block");
+  const block = blockNamed(seeded.addresses.statement8, "statement 8");
   for (const address of [
     `${plain}?node=${encodeURIComponent(ids.statement8)}`,
     `${plain}#b-${encodeURIComponent(block)}`,
@@ -533,9 +540,7 @@ async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise
       `${address} does not open statement 8's line`
     ).toBe("true");
   }
-  const decisionBlock = blockOf(seeded.addresses.waitingDecision);
-  if (decisionBlock === undefined)
-    throw new Error("the overtaken decision's address names no block");
+  const decisionBlock = blockNamed(seeded.addresses.waitingDecision, "the overtaken decision");
   await gotoIssue(page, `${presetPath(key, "decisions")}#b-${encodeURIComponent(decisionBlock)}`);
   const decision = nodeRow(page, treeId(ids.waitingDecision)).first();
   await expect
@@ -742,8 +747,7 @@ async function expectSettled(page: Page, read: ProposedPage): Promise<void> {
   await page.unroute(SETTLE_ROUTE, hold);
   const settles = settlesSent(traffic.requests);
   expect(settles.length, "Enter on Settle does not send one settle").toBe(1);
-  const statement7Block = blockOf(seeded.addresses.statement7);
-  if (statement7Block === undefined) throw new Error("statement 7's address names no block");
+  const statement7Block = blockNamed(seeded.addresses.statement7, "statement 7");
   expect(blockOf(settles[0] ?? ""), "the settle does not name statement 7's address").toBe(
     statement7Block
   );
@@ -949,18 +953,20 @@ async function readAsReader(
   const plain = presetPath(key, "conversation");
   await gotoSettled(page, traffic, plain);
   const answer = await heldAnswer(tree, `${who}'s tree read`);
+  let folded: FoldedCount[] = [];
   await expect
     .poll(
-      async () =>
-        (await foldedCounts(page)).flatMap((row) => {
+      async () => {
+        folded = await foldedCounts(page);
+        return folded.flatMap((row) => {
           if (row.readId === null) return [];
           const held = heldUnder(answer, key, row.readId);
           return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
-        }),
+        });
+      },
       { message: `${who}'s folds do not count what ${who}'s tree read holds under them` }
     )
     .toEqual([]);
-  const folded = await foldedCounts(page);
   await focusThePage(page);
   await page.keyboard.press("z");
   await page.keyboard.press("z");
@@ -994,11 +1000,11 @@ async function readAsReader(
       .poll(
         async () => {
           count = await filterCount(page, view);
-          return Number.isNaN(count);
+          return count;
         },
         { message: `${who}'s ${name} control draws no count` }
       )
-      .toBe(false);
+      .not.toBeNaN();
     filters[view] = count;
     texts.push({ text: await issuePage(page).innerText(), where: `the ${name} view` });
   }

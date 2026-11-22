@@ -133,22 +133,26 @@ function liveFeedOn(client: QueryClient): () => void {
   };
 }
 
-/** How a case draws its row: the node, `PROPOSED` where none is given, and the live feed, up
- *  where none is said, as the shell's event feed holds it. */
+/** How a case draws its row: the node, `PROPOSED` where none is given; the live feed, up where
+ *  none is said, as the shell's event feed holds it; the number of first reads of the coverage
+ *  that fail, none where none is said; and the coverage each other read answers, no requirement
+ *  where none is given. */
 interface RowOptions {
+  readonly covered?: unknown;
+  readonly failedCoverage?: number;
   readonly feed?: "up" | "down";
   readonly node?: TreeNode;
 }
 
 /** The focused proposed row `options.node`, drawn in the tree of `KEY` as `IssueTree` draws its
  *  rows (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
- *  `failedCoverage` reads of the coverage failing, and each other read of it answered `covered`. */
+ *  `options.failedCoverage` reads of the coverage failing, and each other read of it answered
+ *  `options.covered`. */
 function drawRow(
   answer: (attempt: number) => Promise<unknown>,
-  failedCoverage = 0,
-  covered: unknown = { requirements: [] },
   options: RowOptions = {}
 ): DrawnRow {
+  const { covered = { requirements: [] }, failedCoverage = 0 } = options;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -304,7 +308,7 @@ test("a 200 drops the held views and reads the open one again", async () => {
 test("a 200 reads the tree again while the coverage read is marked stale", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<unknown>();
-  const drawn = drawRow(() => landing.promise, 1);
+  const drawn = drawRow(() => landing.promise, { failedCoverage: 1 });
   const coverage = issueCoverageQuery(KEY).queryKey;
   // What was read once the settle landed: the first read is the coverage's that failed.
   const landed = () => drawn.reads.slice(1);
@@ -347,8 +351,10 @@ test("a 200 reads the tree again while the coverage read is marked stale", async
 test("a 200 that changes the coverage reads the coverage, the tree and the open view once each", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<unknown>();
-  const drawn = drawRow(() => landing.promise, 0, {
-    requirements: [{ block_id: "r7", checks: 0, gaps: [], plan_tasks: 0, ref: REFERENCE }],
+  const drawn = drawRow(() => landing.promise, {
+    covered: {
+      requirements: [{ block_id: "r7", checks: 0, gaps: [], plan_tasks: 0, ref: REFERENCE }],
+    },
   });
   try {
     await user.click(drawn.settle());
@@ -377,7 +383,7 @@ test("a 200 that changes the coverage reads the coverage, the tree and the open 
 test("a settle of another issue's node holds the reads of the tree it is drawn in", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<unknown>();
-  const drawn = drawRow(() => landing.promise, 0, { requirements: [] }, { node: OTHER_ISSUE });
+  const drawn = drawRow(() => landing.promise, { node: OTHER_ISSUE });
   try {
     await user.click(drawn.settle());
     await waitFor(() => expect(drawn.sent).toHaveLength(1));
@@ -441,7 +447,7 @@ test("each refusal says its sentence and leaves the mark", async () => {
 test("with the live feed down a refusal leaves the row and its mark as drawn", async () => {
   const user = userEvent.setup();
   const refused = new ApiError(403, { code: "SETTLE_NOT_PERMITTED", error: "not permitted" });
-  const drawn = drawRow(() => Promise.reject(refused), 0, { requirements: [] }, { feed: "down" });
+  const drawn = drawRow(() => Promise.reject(refused), { feed: "down" });
   try {
     await user.click(drawn.settle());
     await waitFor(() => expect(drawn.sentence()?.textContent).toBe(SETTLE_ANSWERS.not_permitted));

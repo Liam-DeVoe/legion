@@ -3,6 +3,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
 import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import { blockIdOfNode } from "../web/src/features/issue-page/decision-review";
 import type { Preset } from "../web/src/features/issue-page/page-words";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
@@ -192,7 +193,7 @@ export function seededNode(
   what: string
 ): IssueTreeNode {
   const node = answer.nodes?.find(
-    (one) => (one.block_id ?? one.id) === id && one.supertag === supertag && ownOf(one, key)
+    (one) => blockIdOfNode(one) === id && one.supertag === supertag && ownOf(one, key)
   );
   if (node === undefined) throw new Error(`the tree read of ${key} holds no ${what} (${id})`);
   return node;
@@ -205,7 +206,7 @@ export function addressIn(node: IssueTreeNode, key: string): string {
     throw new Error(`the tree read names no document for ${node.supertag} ${node.id}`);
   }
   return buildDispatchReference({
-    block: { id: node.block_id ?? node.id },
+    block: { id: blockIdOfNode(node) },
     key: node.issue ?? key,
     kind: "artifact",
     slug: node.document.slug,
@@ -460,7 +461,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   const before = await readUntil(
     () => treeReadAs(key),
     (read) =>
-      (read.nodes ?? []).some((node) => (node.block_id ?? node.id) === SHAPING_DECISION_ID) &&
+      (read.nodes ?? []).some((node) => blockIdOfNode(node) === SHAPING_DECISION_ID) &&
       (read.nodes ?? []).some((node) => node.text.includes(STATEMENT_9_WORDS)),
     `the tree read of ${key} never holds statement 9's words and the decision that shapes statement 7`
   );
@@ -858,19 +859,21 @@ export function foldedCounts(page: Page): Promise<FoldedCount[]> {
  *  caller reads it inside `expect.poll`, which reads it again until the count holds. */
 export async function filterCount(page: Page, preset: Preset): Promise<number> {
   const count = presetCount(page, preset);
-  // Every caller polls this, so a count read before the page draws it is read again.
   if ((await count.count()) === 0) return Number.NaN;
-  return Number(String(await count.first().textContent()).trim());
+  return Number((await count.first().textContent())?.trim());
 }
 
 /** How many nodes a filter's flag says ask something of the reader: the checks that fail, the
- *  decisions that wait for review; 0 where it draws none. Every caller reads it inside
- *  `expect.poll`, which reads it again until the count holds. */
+ *  decisions that wait for review. NaN while the page draws no preset row, and 0 only where the
+ *  drawn row draws no such flag, so a poll that waits for 0 cannot pass on a read made before
+ *  the row is drawn. Every caller reads it inside `expect.poll`, which reads it again until the
+ *  count holds. */
 export async function flagCount(page: Page, word: "failing" | "to_review"): Promise<number> {
-  const flag = presetRow(page).locator(`[data-preset-flag="${word}"] [data-author-text]`);
-  // Every caller polls this, so a flag read before the page draws it is read again.
+  const row = presetRow(page);
+  if ((await row.count()) === 0) return Number.NaN;
+  const flag = row.locator(`[data-preset-flag="${word}"] [data-author-text]`);
   if ((await flag.count()) === 0) return 0;
-  return Number(String(await flag.first().textContent()).trim());
+  return Number((await flag.first().textContent())?.trim());
 }
 
 /** The Verification summary's "N of M covered": how many statements carry a check, of how many
@@ -880,10 +883,9 @@ export async function coveredCount(
   page: Page
 ): Promise<{ readonly covered: number; readonly of: number } | null> {
   const line = issuePage(page).locator("[data-verification-covered]");
-  // Every caller polls this, so a summary read before the page draws it is read again.
   if ((await line.count()) === 0) return null;
   const [covered, of] = await line.locator("[data-author-text]").allTextContents();
-  return { covered: Number(String(covered).trim()), of: Number(String(of).trim()) };
+  return { covered: Number(covered?.trim()), of: Number(of?.trim()) };
 }
 
 /** Details' "Referenced by" list of the focused row (`node-references/NodeReferences.tsx`):

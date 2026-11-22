@@ -2371,6 +2371,36 @@ test("an opened Spec line keeps a run that waits on the asks read", async () => 
   }
 });
 
+// Under Spec an overtaken question that heads a run shaped nothing that still stands, so the
+// statements under it that no other decision shaped are headed by none. Opened while the asks
+// read is out, the line draws two such statements side by side as one run beside one cell, as
+// it does once that read is in: neither waits on a person's decision.
+test("an opened Spec line draws two statements under an overtaken question as one run while the asks read is out", async () => {
+  const user = userEvent.setup();
+  const root = stamped(
+    specIssueTree([
+      answeredAsk(
+        "ask-1",
+        { at: "2026-11-14T09:00:00Z", text: "Draw it." },
+        { children: [statement("r1"), statement("r2")] }
+      ),
+    ]),
+    { "ask-1": { life: "overtaken" } }
+  );
+  const view = drawSpec(root, { asksOut: true });
+  try {
+    const line = theLine(view.container);
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    expect(cellBeside(view.container, "spec#b-r1")).toHaveAttribute(
+      "data-spec-statements",
+      "spec#b-r1 spec#b-r2"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // Under Spec a closed statement folds out of the runs before they are built: two statements one
 // decision shaped, with an overtaken statement between them, are one run beside one cell of that
 // decision, as they are with no statement between them.
@@ -2782,6 +2812,11 @@ function readNode(
   return treeNode(id, supertag, parent, { text: `Words of ${id}.`, ...extra });
 }
 
+/** The ask `id` as a view's answer names it as a node's parent, with `readNode`'s words. */
+function askLine(id: string): IssueTreeParent {
+  return { first_line: `Words of ${id}.`, id, kind: "ask", supertag: "ask" };
+}
+
 /** The read's own id of the block `id` of the issue's document `slug`, as the route names a
  *  typed block (`<KEY>/<slug>#<block id>`). */
 function blockReadId(slug: string, id: string): string {
@@ -3044,12 +3079,7 @@ test("a statement under an overtaken question a view draws no row for draws no N
       readBlock("r3", "requirement", "spec", 1, { parent: "ask-1" }),
       readBlock("c3", "check", "verification-md", 1, { parent: "r3" }),
     ]);
-    const asks: IssueTreeParent = {
-      first_line: "Words of ask-1.",
-      id: "ask-1",
-      kind: "ask",
-      supertag: "ask",
-    };
+    const asks = askLine("ask-1");
     const spec = readAnswer([
       readBlock("r1", "requirement", "spec", 0, { role: "query" }),
       readBlock("r3", "requirement", "spec", 1, { parent: asks, role: "query" }),
@@ -3134,7 +3164,7 @@ test("a words match lifted under a parent the outline holds under an overtaken n
   const spec = readAnswer([
     readBlock("r1", "requirement", "spec", 0, { role: "query", text: "The page draws r1." }),
     readBlock("r2", "requirement", "spec", 1, {
-      parent: { first_line: "Words of ask-1.", id: "ask-1", kind: "ask", supertag: "ask" },
+      parent: askLine("ask-1"),
       role: "query",
       text: "The page draws r2.",
     }),
@@ -3168,12 +3198,6 @@ test("a words match lifted under a parent the outline holds under an overtaken n
 // questions of one overtaken comment fold with that comment alone, though each carries its own
 // question as its parent line, so the line says "1 overtaken".
 test("the Verification issue's line counts the overtaken node its statements stand under once", () => {
-  const asked = (id: string): IssueTreeParent => ({
-    first_line: `Words of ${id}.`,
-    id,
-    kind: "ask",
-    supertag: "ask",
-  });
   const outline = outlineOf([
     readBlock("r1", "requirement", "spec", 0),
     readBlock("c1", "check", "verification-md", 0, { parent: "r1" }),
@@ -3188,9 +3212,9 @@ test("the Verification issue's line counts the overtaken node its statements sta
   const verification = readAnswer([
     readBlock("r1", "requirement", "spec", 0, { role: "context" }),
     readBlock("c1", "check", "verification-md", 0, { parent: "r1", role: "query" }),
-    readBlock("r3", "requirement", "spec", 1, { parent: asked("ask-1"), role: "context" }),
+    readBlock("r3", "requirement", "spec", 1, { parent: askLine("ask-1"), role: "context" }),
     readBlock("c3", "check", "verification-md", 1, { parent: "r3", role: "query" }),
-    readBlock("r4", "requirement", "spec", 2, { parent: asked("ask-2"), role: "context" }),
+    readBlock("r4", "requirement", "spec", 2, { parent: askLine("ask-2"), role: "context" }),
     readBlock("c4", "check", "verification-md", 2, { parent: "r4", role: "query" }),
   ]);
   const root = { ...outline, views: { verification } };

@@ -910,6 +910,12 @@ interface FoldedLines {
 /** No statement folded, which is every view whose statements stand under no overtaken node. */
 const NO_FOLDS: FoldedLines = { holding: new Map(), lines: new Map() };
 
+/** The head of a folded statement whose run's head is closed and that no other decision shaped
+ *  (`foldedLines`). Every such statement shares this one object: until the asks read holds an
+ *  answer `runsOf` keys a head that draws no decision by the head itself, so a head of its own
+ *  would split two such statements side by side into two runs until that read answers. */
+const NO_HEAD: Headed["head"] = Object.freeze({});
+
 /**
  * The lines the body folds its statements at or under an overtaken node to, each drawn closed,
  * by the group that draws it. A statement folds with the topmost overtaken node it stands at or
@@ -960,7 +966,7 @@ function foldedLines(
         if (asked !== undefined && closed.has(asked.node ?? asked.id)) {
           const [next, ...rest] = statement.alsoShapedBy;
           into.folded.push({
-            head: next === undefined ? {} : { decision: next },
+            head: next === undefined ? NO_HEAD : { decision: next },
             statement: { ...statement, alsoShapedBy: rest },
           });
         } else {
