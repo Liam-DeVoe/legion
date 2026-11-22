@@ -3152,7 +3152,7 @@ package api
 // and 202. Read the base's own number and every open pull request again at the next merge rather
 // than from this line.)
 //
-// 225: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
+// 227: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
 // issue's workspace, and its git runs no program a configuration names. Every launch of a reviewer
 // is told LEGION_WORKSPACE at that clone: under tmux `<state_dir>/reviews/<owner>/<repo>/<issue>`,
 // and in a pod `/legion/reviews/<owner>/<repo>/<issue>` (workspace.ReviewLocation), which the
@@ -3166,18 +3166,41 @@ package api
 // cannot serve such a launch: its launcher would sweep and restore the review location, no
 // role-init of it makes the clone, and its shim's adoption fails in the missing directory. So the
 // image probe, which holds the image's plugin to this number, refuses an earlier image.
-// The same contract carries the reviewer's verdict: handoff_complete takes `approve` and `changes`
-// from a reviewer, with `commit` and, where the tester's pass carries, `testedCommit`, and refuses a
-// reviewer's completion with no such word (REVIEWER_VERDICT_REQUIRED), a reviewer's or a tester's
-// verdict with no commit (VERDICT_COMMIT_REQUIRED), and a verdict or a testedCommit from any other
-// role (VERDICT_ROLE_FORBIDDEN); a reviewer claim served on the contract before this one has its
-// `pass` read as `approve` and its `fail` as `changes`. POST /legion/v1/review-verdict takes the
-// round's recorded reviewer's verdict on a head past review, refusing another caller
-// (VERDICT_CALLER_FORBIDDEN), a head that is not the current one (VERDICT_HEAD_NOT_CURRENT) and a
+// The same contract carries the verdict of each review step from its own agent. A phase
+// completion carries a verdict only where its step is of the type review (`plan.TypeReview`):
+// handoff_complete takes the reviewer's `approve` or `changes`, with the `commit` it reviewed, and
+// refuses a reviewer's completion with no such word (REVIEWER_VERDICT_REQUIRED) and a verdict with
+// no commit (VERDICT_COMMIT_REQUIRED); the workflow takes the verdict only from the claim the
+// step's record names as its agent, and refuses any other claim's with nothing recorded
+// (VERDICT_CALLER_FORBIDDEN, 403). A reviewer claim served on the contract before this one has its
+// `pass` read as `approve` and its `fail` as `changes`. 206's `VERDICT_NOT_TAKEN` is narrowed to a
+// testing step's completion, which names no verdict and may name 219's `returnTo`, the step its
+// task returns to should the check states at the head it tested fail its step (on any other
+// completion `returnTo` is `400 RETURN_TO_NEEDS_FAIL`); a tester's plugin below 206 still has its
+// verdict ignored. Every other role's verdict, the architect's and the merger's among them, is
+// refused `VERDICT_ROLE_FORBIDDEN` at any contract: the owner's acceptance is its sign_off.
+// Neither handoff_complete nor review-verdict takes the commit of a tester's pass, a field this
+// entry first gave both: a body that names it is refused as any member a route does not read is.
+// `POST /legion/v1/signoff` names a required `commit`, the head the owner accepts, and an
+// architect's `POST /legion/v1/phase/backward` out of accepting a required `commit`, the head it
+// sends back (MISSING_FIELD where it names none; a phase worker's move needs none). The workflow
+// takes either only where that commit is the pull request's current head, and otherwise refuses it
+// with nothing recorded or moved (VERDICT_HEAD_NOT_CURRENT, 409); it records the sign-off there as
+// the owner's acceptance's `approve`, and the move back as its `changes`.
+// POST /legion/v1/review-verdict takes the verdict of the agent of a review step of the issue's
+// task on a head past review: the reviewer's, and that of the architect that ran the owner's
+// acceptance, which names the issue it is for in an optional `issue` (the reviewer leaves it out,
+// and the grant's issue is the one). It refuses the controller and a claim that is the agent of no
+// review step of the task (VERDICT_CALLER_FORBIDDEN), a word that is neither verdict
+// (REVIEWER_VERDICT_REQUIRED), no commit (VERDICT_COMMIT_REQUIRED), an issue the daemon does not
+// record (ISSUE_NOT_FOUND), a head that is not the current one (VERDICT_HEAD_NOT_CURRENT) and a
 // phase that is not accepting, retro or merging (VERDICT_NOT_PAST_REVIEW).
 // And one App serves every role, each with its own token set: a GitHub credential's `app` names
 // the role's set (implementer, merger, architect, planner, tester, reviewer or controller) in
-// place of the two Apps' `implement` and `review`.
+// place of the two Apps' `implement` and `review`. A step's role takes the set of its step's type,
+// and a claim whose role has no set is not launched: `appauth.SetFor` answers `ErrNoTokenSet`
+// naming the role, and the claim's start fails with it before any lease is minted or any object of
+// its pod is made.
 // The same contract carries side reviews of a pull request no Legion tree opened, on a repository
 // whose verdict entry sets side_reviews: POST /legion/v1/pull-request-reviewer, from the controller's
 // session alone, names a running reviewer for the pull request at its current head, and
@@ -3188,11 +3211,6 @@ package api
 // reviewer claim (VERDICT_REVIEWER_NOT_LIVE); both refuse a malformed repository name
 // (INVALID_REPOSITORY), and answer GitHub's refusal of their pull request read as
 // GITHUB_RATE_LIMITED, GITHUB_READ_REFUSED or PULL_REQUEST_READ_FAILED.
-// Beside 206's rule that a phase completion carries no verdict, this entry keeps the reviewer's:
-// `VERDICT_NOT_TAKEN` refuses a verdict on every phase completion but the reviewer's, whose
-// `approve` or `changes` stands as above, and a tester's completion, which names no verdict, may
-// name 219's `returnTo`, the step its task returns to should the check states at the head it
-// tested fail its step; on any other completion `returnTo` is `400 RETURN_TO_NEEDS_FAIL`.
 // (This entry took 200 at first, at a reading of `const DaemonAPIVersion` at main and at
 // refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made with
 // .github/scripts/check-daemon-api-contract.sh at 2026-11-20T21:14:22Z, which found main at 193 and
@@ -3207,14 +3225,18 @@ package api
 // highest any open pull request declared, so this entry moved to 224. A second reading before its
 // commit, from 2026-11-22T07:20:45Z to 07:24:44Z, found #4960 moved to 224, the highest any open
 // pull request declares, and main still at 205, so this entry moved to 225, the lowest number
-// above every one of them. Read main's own number and every open pull request again at every
-// forward merge rather than from this line.)
-const DaemonAPIVersion = 225
+// above every one of them. A reading before the commit that wrote each review step's verdict into
+// this entry, from 2026-11-22T15:39:25Z to 15:43:22Z, found main at 213, 225 declared by #3712 and
+// #4580, and 226 by #4175, the highest any open pull request declares, so this entry moved to
+// 227, the lowest number above every one of them. Read main's own number and every open pull
+// request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 227
 
 // CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
 // entry of 206 above): a plugin at it or above has its completion naming one refused
 // VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
 // across the upgrade still completes and Dispatch's check states decide its phase. A later bump
 // of DaemonAPIVersion leaves it where it is. Under the reviewer's verdict (ReviewerVerdictContract)
-// the refusal holds on every completion but the reviewer's.
+// the refusal holds on a testing step's completion alone: a review step's carries its verdict, and
+// every other role's is refused VERDICT_ROLE_FORBIDDEN.
 const CheckStatesContract = 206

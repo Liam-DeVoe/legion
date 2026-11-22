@@ -3,9 +3,11 @@ body: |-
     The `legion` tool's `handoff_complete` takes `approve` or `changes` from a reviewer, with the
     commit it reviewed. `review_verdict` sends a verdict on a head that moved past review, and is
     offered to the agent of a review step: the reviewer, and the owner's acceptance session, an
-    architect, which names the issue it accepted. A controller session gets
-    `pull_request_reviewer` and `pull_request_verdict` for side reviews of pull requests no Legion
-    tree opened. Each needs a daemon of the matching contract.
+    architect, which names the issue it accepted. `sign_off` names the `commit` the owner accepts,
+    and an architect's `request_backward_move` the `commit` it sends back; the daemon takes either
+    only at the pull request's current head. A controller session gets `pull_request_reviewer` and
+    `pull_request_verdict` for side reviews of pull requests no Legion tree opened. Each needs a
+    daemon of the matching contract.
 time: 2026-11-21T23:55:33Z
 custom:
     Issue: pr4802
