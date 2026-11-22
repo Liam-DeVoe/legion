@@ -512,14 +512,17 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 // wrote its sleep's process id before the bound ended, the bound also has a floor: the check
 // started before that file was written, so the bound is no shorter than what was left of the
 // deadline when the file was written, less 50 ms for the file's coarser clock. Rounding to whole
-// seconds keeps that order, so the floor needs no more slack. Where there is no file there is no
-// floor to read; a file written after the deadline, before the stop reached the stand-in, gives a
-// floor of 0 s or less, which any bound meets, so the test asks for no floor either way. A run with
-// no file says in its log that it read no floor, and any other failure to read the file fails the
-// test, since it says nothing of when the stand-in wrote. The kill reaches the sleep bash started in the check's own process group (stoppedPush): a sleep the
+// seconds keeps that order, so the floor needs no more slack. The floor is what a wrong bound
+// fails, so the caller's bound is 10 s, long enough that the stand-in has written its process id
+// before it ends: at a load average of 1,500, a bound of 2 s left the file unwritten in some runs.
+// Where there is no file there is no floor to read; a file written after the deadline, before the
+// stop reached the stand-in, gives a floor of 0 s or less, which any bound meets, so the test asks
+// for no floor either way. A run with no file says in its log that it read no floor, and any other
+// failure to read the file fails the test, since it says nothing of when the stand-in wrote. The
+// kill reaches the sleep bash started in the check's own process group (stoppedPush): a sleep the
 // kill missed would hold the output pipe open, and exec would wait its WaitDelay for it.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
-	const theBound = 2 * time.Second
+	const theBound = 10 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), theBound)
 	defer cancel()
 	failed, _, pids := stoppedPush(t, ctx, nil)
