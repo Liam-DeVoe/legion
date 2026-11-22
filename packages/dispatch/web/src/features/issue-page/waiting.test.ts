@@ -161,6 +161,7 @@ function waitingDecision(blockId: string, shaped: readonly string[]): Decision {
     kept: null,
     kind: "agent",
     links: shaped.map((one) => ({
+      changed_since_tie: false,
       created_at: "2026-11-05T00:00:00Z",
       created_version: 1,
       from_block: blockId,

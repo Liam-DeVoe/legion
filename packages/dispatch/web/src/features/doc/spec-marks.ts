@@ -15,9 +15,8 @@ import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { isDecisionEntry, withEntries } from "../issue/decision-entries";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
-/** What a stale block says when the reader rests on it: its own text changed after a decision tied
- *  it (`shapedNodeChanged`). */
-export const STALE_BLOCK_TITLE = "This block changed after a decision that shaped it.";
+/** What a stale block says when the reader rests on it. */
+export const STALE_BLOCK_TITLE = "A decision that shaped this block changed after it.";
 
 /** One block of the spec as its `part_of` edge reads it: the version in which its text last
  *  changed (none where the server never recorded one) and the head of its text. */
@@ -45,16 +44,6 @@ export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   queryKey: ["decisions", issueKey] as const,
 });
 
-/** Whether the spec node a decision shaped changed after the decision tied it: its text last
- *  changed in a version whose event (`text_changed_event`) is later than the event that wrote the
- *  `shaped` tuple (`event`). Where either event is absent - a tie or a version no event recorded -
- *  the server's own comparison by the database's clock (`stale`) says it. */
-export function shapedNodeChanged(link: DecisionLink): boolean {
-  const event = link.event ?? null;
-  const changed = link.text_changed_event ?? null;
-  return event !== null && changed !== null ? changed > event : link.stale;
-}
-
 /** The address of issue `issueKey`'s spec as the server names a document (`dispatch://<KEY>/spec`),
  *  which a `shaped` link's `to.document` holds for a block of the spec. */
 export function issueSpecAddress(issueKey: string): string {
@@ -73,9 +62,11 @@ export function linkReachesDocument(link: DecisionLink, address: string, refKey?
   if (link.to.document !== undefined) return link.to.document === address;
   return refKey !== undefined && link.to.id.startsWith(`${refKey}#`);
 }
-/** Every spec block a decision shaped whose text changed after the decision tied it, each once,
- *  in the order the read names them: the `shaped` links of the Decisions read's decisions
- *  (isDecisionEntry). With `address`, only the blocks of the document at that address, whose
+
+/** Every spec block a stale link of any decision names, each once, in the order the read names
+ *  them: the `shaped` links of the Decisions read's decisions (isDecisionEntry). A link is stale
+ *  when its decision changed after it first linked the block and the block has not changed since
+ *  (`DecisionLink.stale`). With `address`, only the blocks of the document at that address, whose
  *  ref_key is `refKey` (linkReachesDocument). */
 export function staleSpecBlocks(
   decisions: IssueDecisions | undefined,
@@ -88,9 +79,7 @@ export function staleSpecBlocks(
     for (const link of entry.shaped ?? []) {
       const blockId = link.to.block_id;
       if (address !== undefined && !linkReachesDocument(link, address, refKey)) continue;
-      if (shapedNodeChanged(link) && blockId !== undefined && !stale.includes(blockId)) {
-        stale.push(blockId);
-      }
+      if (link.stale && blockId !== undefined && !stale.includes(blockId)) stale.push(blockId);
     }
   }
   return stale;

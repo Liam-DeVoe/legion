@@ -238,16 +238,20 @@ it as a `:::reading` block.
 
 When every ask block is settled and the spec proposes something the person has not already
 agreed to, run `dispatch request-approval` with a short `--summary` of what is new. The person
-approves that version, or requests changes with a reason. Their answer to an ask block writes no
-version and carries no approval: the answer stays on the ask, and an approval stands as it was. A
-later version leaves the approval stale, unless Dispatch carries the approval to it. Dispatch
-carries it when that version's text is the approved text, or when every change in it is a reading
-inside a decision or an answered ask, an ask block attribute the server owns, or the write of
-Dispatch's decisions step. Dispatch then records the approval in the person's name at the new
-version, so request nothing for it. When an answer means text outside the block must change,
-rewrite that text and request approval again with a one-sentence `--summary` naming what changed
-since the earlier approval; the card shows that approval and a **Show diff** control that carries
-the detail.
+approves that version, or requests changes with a reason. Their answer to an ask block, its
+resolve or decline, and the issue's close or reopen each write one version, whose only change is
+that block's `state` and, where the ask is answered, `answered_by` and `answered_at` (the block of
+an open ask holds no `state`). No version holds the answer's words or the options chosen: they
+stay on the ask. Such a version carries no approval of its own. Dispatch carries an approval
+across the version an answer, a resolve, a decline or a reopen writes, and not across a close's.
+Any other later version leaves the approval stale, unless Dispatch carries the approval to it.
+Dispatch carries it when that version's text is the approved text, or when every change in
+it is a reading inside a decision or an answered ask, an ask block attribute the server owns, or
+the write of Dispatch's decisions step. Dispatch then records the approval in the person's name at
+the new version, so request nothing for it. When an answer means text outside the block must
+change, rewrite that text and request approval again with a one-sentence `--summary` naming what
+changed since the earlier approval; the card shows that approval and a **Show diff** control that
+carries the detail.
 
 ## Whose turn it is
 

@@ -431,7 +431,7 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 }
 
 // An upload of the text a person approved carries his approval to the version it writes
-// (docs.CarryRestoredApproval). Everything that carry is decided on - the document's newest
+// (docs.CarryUploadedApproval). Everything that carry is decided on - the document's newest
 // review, the approved version's text, its decision blocks' rows and the open approval request -
 // is read in the route's read phase, and what it writes - the request's answer, when one is open,
 // and the review - is queued with the route's own writes, so the window is that one batch and the

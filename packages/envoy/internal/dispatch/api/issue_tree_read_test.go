@@ -461,8 +461,9 @@ func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key,
 // TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes: on a converted issue, the
 // decision node answers every member of model.Decision equal to GET /api/v1/issues/{key}/decisions'
 // for the same decision; after the words of the requirement its shaped tuple names change, its
-// link answers stale, as the decisions read's does; and the read answers the decision's decided_by
-// person as context with the tuple.
+// link answers changed_since_tie and not stale, and after the decision's own words change, stale,
+// each as the decisions read's does; and the read answers the decision's decided_by person as
+// context with the tuple.
 func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
@@ -473,13 +474,18 @@ func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.
 	}
 	node := readDecisionDocument(t, database, issue.Key, "spec").address("d1")
 	before := requireDecisionAsRead(t, "before the requirement's words change", handler, issue.Key, node)
-	if len(before.Links) != 1 || before.Links[0].Stale {
-		t.Fatalf("the decision answers the links %+v, want one link that is not stale", before.Links)
+	if len(before.Links) != 1 || before.Links[0].Stale || before.Links[0].ChangedSinceTie {
+		t.Fatalf("the decision answers the links %+v, want one link that is neither stale nor changed since the tie", before.Links)
 	}
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "An urgent ask comes first.", "with": "An urgent ask always comes first."}})
 	after := requireDecisionAsRead(t, "after the requirement's words change", handler, issue.Key, node)
-	if len(after.Links) != 1 || !after.Links[0].Stale {
-		t.Errorf("after the requirement's words changed the decision answers the links %+v, want its link stale", after.Links)
+	if len(after.Links) != 1 || !after.Links[0].ChangedSinceTie || after.Links[0].Stale {
+		t.Errorf("after the requirement's words changed the decision answers the links %+v, want its link changed since the tie and not stale, the decision's words unchanged since the tie", after.Links)
+	}
+	editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "We order the list by urgency.", "with": "We order the list by urgency, then by age."}})
+	reworded := requireDecisionAsRead(t, "after the decision's own words change", handler, issue.Key, node)
+	if len(reworded.Links) != 1 || !reworded.Links[0].Stale || !reworded.Links[0].ChangedSinceTie {
+		t.Errorf("after the decision's own words changed the decision answers the links %+v, want its link stale, the decision changed after the tie and the requirement not since, and still changed since the tie", reworded.Links)
 	}
 
 	read := treeRead(t, handler, issue.Key, "", "alice", false)
