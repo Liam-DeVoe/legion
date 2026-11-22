@@ -2253,6 +2253,7 @@ BROWSER_SUITE_STEPS = (
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 CI_RESULTS_STEP = "A CI job's result through the real broker and a real Dispatch"
+CI_RESULTS_REFUSAL_STEP = "A CI job's refused result prints no workflow command"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
@@ -3742,10 +3743,16 @@ GATES = [
                    f"{at(STALL, CI_RESULTS_STEP)}",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
         script_run("packages/envoy-client/test/ci-results-stack.ts",
-                   'packages: ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/cipher"],',
-                   f"the secrets broker, cluster token issuer and results-grant producer that rig hands buildGoBinaries, run by "
-                   f"{at(STALL, CI_RESULTS_STEP)}",
-                   ENVOY, ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/cipher"], mode="build"),
+                   'packages: ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/dev-proxy-stands"],',
+                   f"the secrets brokers, cluster token issuer and the airlock's authority and fronts that rig hands "
+                   f"buildGoBinaries, run by {at(STALL, CI_RESULTS_STEP)} and "
+                   f"{at(STALL, CI_RESULTS_REFUSAL_STEP)}",
+                   ENVOY, ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/dev-proxy-stands"], mode="build"),
+        script_run("packages/envoy-client/test/ci-results-stack.ts",
+                   'const spawned = Bun.spawn(["go", "build", "-o", binary, "./cmd/cipher"], {',
+                   f"buildAgentSecrets, the results-grant producer that rig builds as agent-secrets, run by "
+                   f"{at(STALL, CI_RESULTS_STEP)} and {at(STALL, CI_RESULTS_REFUSAL_STEP)}",
+                   ENVOY, ["./cmd/cipher"], mode="build"),
         script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
                    'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
                    f"the packages that test hands buildGoBinaries, run by "

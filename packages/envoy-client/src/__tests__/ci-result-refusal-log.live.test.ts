@@ -91,10 +91,7 @@ describe.skipIf(!dispatchStackEnabled)("a CI job's refusal, as its log holds it"
       checkRunId: 4301,
     });
     const child = Bun.spawn(
-      [
-        stack.agentSecrets,
-        "result-grant",
-        "--",
+      stack.jobCommand([
         process.execPath,
         ENTRY,
         "result",
@@ -106,7 +103,7 @@ describe.skipIf(!dispatchStackEnabled)("a CI job's refusal, as its log holds it"
         "pass",
         "--commit",
         sha,
-      ],
+      ]),
       {
         env: { PATH: SHELL_PATH, HOME: cliState, DISPATCH_STATE_DIR: cliState, ...env },
         stdout: "pipe",

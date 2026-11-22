@@ -116,11 +116,16 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
-      # A CI job's result over the whole path a job writes it through: the real CLI, run as the
-      # job's own process, trades the job's OIDC token from a stand-in of GitHub at the real
-      # secrets broker for a token that writes results only, and the real Dispatch server stores
-      # the result or refuses it (packages/envoy-client/test/ci-results-stack.ts). It builds the
-      # broker and the server from this tree, on this job's Postgres.
+      # A CI job's result over the whole path a job writes it through: the real
+      # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
+      # the real secrets broker for the airlock placeholder of a result grant, the real CLI, run
+      # as its child, writes with that placeholder alone through the broker's airlock proxy,
+      # which puts the run's results token in its place, and the real Dispatch server stores the
+      # result or refuses it (packages/envoy-client/test/ci-results-stack.ts). The stack runs two
+      # brokers on one database behind two `dev-proxy-stands front`s, one for their API ports and
+      # one for their proxy ports. It builds from this tree ./cmd/cipherd, ./cmd/dev-oidc-issuer,
+      # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
+      # on this job's Postgres; it needs no container and no fixed port.
       - name: A CI job's result through the real broker and a real Dispatch
         run: bun test src/__tests__/ci-results.live.test.ts
         working-directory: packages/envoy-client

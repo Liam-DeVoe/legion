@@ -147,15 +147,15 @@ A results-only credential reaches no other Dispatch route. A normal session can 
 
 ## Real local verification
 
-With a local Postgres server and Docker available, run:
+With a local Postgres server, run:
 
 ```sh
 DISPATCH_TEST_DATABASE_URL=postgres://… bun packages/envoy-client/test/ci-results-stack.ts
 ```
 
-The stack runs the real broker and Dispatch, built from this checkout, with a stand-in for GitHub and a TLS front door in an owned, capped container. No fixed host port is claimed and no host network setting is changed. It seeds project ACME and one commit with the probe spec, prints the variables of one job of a push run and complete `agent-secrets result-grant -- …` commands, the controls among them (another commit, another job, another route and a forged token), and runs until Ctrl-C.
+The stack runs two real brokers on one database and the real Dispatch, built from this checkout, with a stand-in for GitHub. It claims no fixed host port and changes no host setting. As two pods of one deployment, the brokers sit behind one `dev-proxy-stands front` for their API ports and another for their proxy ports, and each new connection goes to the next broker in turn. Dispatch's public URL is `https://dispatch.ci-results.test`, a name no resolver answers, and each broker's private destination (`BROKER_AIRLOCK_PRIVATE_UPSTREAM`) is Dispatch's own loopback port, which `BROKER_AIRLOCK_TEST_DIAL_ALLOW` lets the proxy dial. So a job's write reaches Dispatch through the proxy alone, and a write around it opens no connection. The stack seeds project ACME and one commit with the probe spec, prints the variables of one job of a push run and complete `agent-secrets result-grant -- …` commands, the controls among them (another commit, another job, a write around the proxy and a forged token), and runs until Ctrl-C.
 
-`src/__tests__/ci-results.live.test.ts` runs the same stack with `LEGION_E2E_DISPATCH_STACK=1` and `DISPATCH_TEST_DATABASE_URL`. It asserts the stored statement and its run-only recorder, wrong-commit and wrong-job refusals, forged issuer and unlisted-ref refusals, a random access token refused as not active, session-token restrictions, results-only route restrictions, no person in the stored result or the command's output, refusals of spec files that the graph logic refuses, and an observed text of 1 MiB stored as its start and its end.
+`src/__tests__/ci-results.live.test.ts` runs the same stack with `LEGION_E2E_DISPATCH_STACK=1` and `DISPATCH_TEST_DATABASE_URL`, each CI job's command under `agent-secrets result-grant`. It asserts the stored statement and its run-only recorder, wrong-commit and wrong-job refusals, forged issuer and unlisted-ref refusals, a random access token refused as not active, session-token restrictions, results-only route restrictions, no person in the stored result or the command's output, refusals of spec files that the graph logic refuses, and an observed text of 1 MiB stored as its start and its end. Its rows A1 to A7 hold the airlock itself: a result stored with the placeholder alone in the job's environment and the results token bound to a broker's own key, with one proxy line for the write; a write around the proxy that cannot authenticate; two runs that cannot use each other's grant; a grant that ended refused at the proxy's CONNECT; another private address and an address in `BROKER_AIRLOCK_CLUSTER_RANGES` refused; one grant served by both brokers; and Dispatch seeing the broker's address and never the command's forwarding headers.
 
 To exercise the forged-issuer case separately:
 
