@@ -121,6 +121,17 @@ function setScrollY(value: number): void {
   Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
 }
 
+/** Resolves once `count` animation frames have run. */
+function frames(count: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const step = (left: number) => {
+    if (left === 0) resolve();
+    else requestAnimationFrame(() => step(left - 1));
+  };
+  step(count);
+  return promise;
+}
+
 beforeEach(() => {
   scrollYDescriptor = Object.getOwnPropertyDescriptor(window, "scrollY");
   originalScrollBy = window.scrollBy;
@@ -512,9 +523,10 @@ function watchScrollsIntoView(): {
 // A Dismiss over two marked rows: the selection bar's hand-off has put the focus in the row after
 // them while they are still drawn. They go, and the rows after them move up into their place, as
 // the reader asked. The view stays where the reader put it. For that commit the browser's own
-// scroll anchoring is off on the document's root, whose value the window takes, and it is back
-// on once the commit is in.
-test("rows the host names as leaving let the focused row below them move up into their place, with no scroll", () => {
+// scroll anchoring is off on the document's root, whose value the window takes, and it stays off
+// through the rendering update after it, since WebKit adjusts at a layout after the commit: it is
+// back on two frames later.
+test("rows the host names as leaving let the focused row below them move up into their place, with no scroll", async () => {
   const going = (id: string) => id === "r3" || id === "r4";
   const view = render(<List leaving={going} rows={ids(12)} />);
   try {
@@ -530,6 +542,10 @@ test("rows the host names as leaving let the focused row below them move up into
     expect(window.scrollY).toBe(100);
     expect(focused).toHaveFocus();
     expect(anchoringSeen.at(-1)).toBe("none");
+    expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
+    await frames(1);
+    expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
+    await frames(1);
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("");
   } finally {
     view.unmount();
@@ -759,7 +775,8 @@ test("a focused row the named rows leave partly in sight is brought whole into s
 // In a named box the anchor keeps the place it last saw the hand's row at. Once the rows the
 // press took away have let that row move up, the kept place is where the row stands now, so the
 // next commit keeps it there rather than putting it back where it stood before. The box's own
-// scroll anchoring is off for the press's commit alone, and gets back the value it had.
+// scroll anchoring is off from the press's commit until the next commit no press takes rows away
+// in, which gives it back the value it had.
 test("in a named box the kept place moves up with the focused row, and the next commit keeps the row there", async () => {
   const user = userEvent.setup();
   const going = (id: string) => id === "r3" || id === "r4";
@@ -781,13 +798,16 @@ test("in a named box the kept place moves up with the focused row, and the next 
     expect(viewportTop("r6")).toBe(place);
     expect(scroller.scrollTop).toBe(100);
     expect(anchoringSeen.at(-1)).toBe("none");
-    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+    // Still off: no rendering update has run since. The next commit no press takes rows away in
+    // gives it back, with the value the box had.
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     // A row arrives at the end of the list, below the hand's row.
     view.rerender(<List leaving={going} rows={[...kept, "r13"]} scroller={scrollerRef} />);
     expect(viewportTop("r6")).toBe(place);
     expect(scroller.scrollTop).toBe(100);
     expect(anchoringSeen.at(-1)).toBe("auto");
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
     view.unmount();
   }
