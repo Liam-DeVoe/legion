@@ -251,8 +251,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
   "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing, and names in `commit` " +
-  "the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing, and names in " +
+  "`commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
   "current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. " +
   "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
   "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +

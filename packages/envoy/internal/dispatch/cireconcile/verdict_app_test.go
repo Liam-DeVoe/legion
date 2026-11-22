@@ -16,7 +16,7 @@ func eachRead(t *testing.T, check func(t *testing.T, h *harness)) {
 	}{{name: "answered by the query"}, {name: "read over REST", rest: true}} {
 		t.Run(read.name, func(t *testing.T) {
 			h := newHarness(t, verdictAppID)
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			if read.rest {
 				h.github.refuseChecks(gitHubRepository, headSHA)

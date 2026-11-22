@@ -759,9 +759,9 @@ type Source interface {
 // next bundle, and one that installed it must mint at that same bundle, with no cached set
 // between the account's change and the role's reach. Under the App's JWT it asks GitHub every
 // time. In token mode the one answer that outlives a call is a finished run of the command no
-// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back
-// (below), so a call within that time may be answered with that run's release. What it read
-// replaces the installation ids the Manager holds, so a mint that follows reaches the
+// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back, so a
+// call within that time may be answered with that run's release. What it read replaces the
+// installation ids the Manager holds, so a mint that follows reaches the
 // installation the read names and an owner no longer listed is looked for again rather than
 // minted on a stale id.
 //
@@ -783,27 +783,11 @@ type Source interface {
 // GitHub. A caller whose own context ends before the read does gets the context's error alone:
 // GitHub has not answered yet, and no person is waited on.
 //
-// In token mode the call reads under the caller's own context (readInstalledOwners), and every
-// rule of the command's run is runTokenCommand's alone. The run belongs to no caller either: it
-// runs on the Manager's own context, bounded by tokenCommandLimit, so a caller that leaves ends
-// neither the run nor the wait of a caller that joined it. A caller waits for the run at most
-// installationReadLimit, as long as it waited for the shared read before reads in token mode
-// went to runTokenCommand directly. A caller whose context ends, or whose wait reaches that
-// bound, before the run ends is answered ErrCommandPending in a TransientError, which wraps the
-// context's error too, while the command goes on; the boot's key proof reads that answer as
-// pending and spends no attempt on it (internal/daemon's appAttempt), so a grant that waits on a
-// person's approval holds the boot without ending it. A run that finishes with no caller waiting
-// is kept for finishedRunKeep, and the first caller of the scope to come takes it and forgets it
-// (runTokenCommand, forgetRun): the key proof's next attempt gets the release of the run its
-// earlier attempt started, and a grant a person approved is not asked for again.
+// In token mode each call waits for the command's run under its own context for at most
+// installationReadLimit, and runTokenCommand's doc holds every rule of that run.
 //
-// AppLogin in token mode reads the same scope (anyInstallation, everyInstallation), so a login
-// read joins a run in flight that this call started, or takes a finished run kept for
-// finishedRunKeep and forgets it, and the next call does not get that release but joins another
-// run in flight or runs the command again; a call here does the same to a run a login read
-// started. At the boot the login read runs before the key proof (internal/daemon's openWorkflow)
-// and passes only once it has taken a run's release, so the key proof never takes a release the
-// login read was answered with: its first read joins a run in flight or runs the command again.
+// AppLogin in token mode reads the same scope, so a login read and a call here share one run and
+// what is kept of it; anyInstallation says what that means for the boot's key proof.
 func (m *Manager) InstalledOwners(ctx context.Context) ([]string, error) {
 	if m.githubApp.TokenCommand != "" {
 		bounded, cancel := context.WithTimeout(ctx, installationReadLimit)

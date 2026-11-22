@@ -113,6 +113,9 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
+	if err := configurePackWindows(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
 	if err := configureCloneDefaultRepository(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}

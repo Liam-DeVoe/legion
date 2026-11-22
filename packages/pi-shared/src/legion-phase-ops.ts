@@ -401,8 +401,8 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing, and names in `commit` " +
-    "the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing, and names in " +
+    "`commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
     "current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. ",
   reviewVerdict:
     "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +

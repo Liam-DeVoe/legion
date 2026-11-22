@@ -140,6 +140,7 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 		{"ACME", record.GatedStepsPublish{Project: "ACME", Steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}}},
 		{key, record.ClaimRelease{}},
 		{key, record.DesignGatesPublish{Issue: key, Gates: []record.DesignGateDocument{{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}}}},
+		{key, record.DesignNewsReconcile{}},
 		{key, record.MergeQueueRead{Number: number, Head: head}},
 		{key, record.MergeQueueRemoval{Number: number, Head: head, Unread: true}},
 		{key, record.RoleHoldersPublish{Issue: key}},
