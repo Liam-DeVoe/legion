@@ -261,6 +261,11 @@ With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 liv
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
 
+## daemon_go_tests: report-port.sh: the rig sources it
+
+The Stage 1 proof sources `scripts/e2e/lib/rig.sh`, which sources
+`scripts/e2e/lib/report-port.sh` for `report_port`, so a change to it changes the proof's run.
+
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
 The plugin-pack job: internal/daemon's three tests of PLUGIN_PACK_TESTS
@@ -2353,3 +2358,29 @@ nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filt
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+## test_fixtures: install-jj inputs
+
+The test-fixtures job runs `./.github/actions/install-jj`. That action reads
+`ARG JJ_TOOL` from `packages/daemon/docker/worker.Dockerfile`, so both inputs select the job.
+
+## dispatch_browser: socket-root fixture
+
+`packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`, so the
+browser suite reads the shared fixture sources.
+
+## envoy_infra_go: sockettest
+
+The natslive tests compile `packages/envoy/internal/sockettest` through the listener stack.
+
+## dispatch_two_builds: socket-root fixture
+
+The two-build browser half starts the Dispatch e2e harness, and
+`packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`.
+
+## docs: socket-root fixture
+
+`docs/site/media/harness.ts` imports `packages/dispatch/e2e/harness-start.ts`, which imports
+`@legion/test-fixtures/socket-root`, so the docs site's tools program
+(`docs/site/tsconfig.tools.json`) compiles `packages/test-fixtures/src/socket-root.ts`.
+`docs-pages.yaml`'s `on.push.paths` names it too, since that list equals this filter.

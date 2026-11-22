@@ -502,6 +502,199 @@ case_stack_ports() {
   printf 'PASS: the default ports follow LOADTEST_ROOT, two roots in two blocks share no port, and each LOADTEST_*_PORT overrides its own\n'
 }
 
+# case_holder_names_escaped: a holder's command line is whatever its process gave itself, and a
+# refusal prints it: lock_holders (the lock's descriptor 9), the lock record's command, which a
+# refusal quotes, and stack.sh's port_holder (a listening socket) print each one with a carriage
+# return, a newline, a tab, an escape, a backslash and a byte that is not ASCII written as escapes,
+# so nothing a process names itself reaches a terminal or a log as it is. lock_root's refusal prints
+# a record another writer left with its control characters escaped, and one lock_take wrote, which
+# is escaped already, as it is.
+case_holder_names_escaped() {
+  out=""
+  local dir="${temporary_dir}/escaped" weird want holder listener port line i writer taker
+  mkdir -p "$dir"
+  weird=$'a\rb\nc\td\e[0m\\e\xff'
+  want='a\rb\nc\td\x1b[0m\\e\xff'
+  : >"$dir/lock"
+  # The holder execs sleep under the command line under test (`exec -a`), so its pid, the one
+  # cleanup kills, is the sleep that holds descriptor 9, and no process outlives the test. Its output
+  # goes to /dev/null, as every other background process's here does.
+  bash -c 'exec 9>>"$1"; exec -a "$2" sleep 300' holder "$dir/lock" "$weird" >/dev/null 2>&1 &
+  holder=$!
+  pids+=("$holder")
+  # -ef compares the files, as lock_holders does: readlink gives the resolved path, which is not
+  # $dir/lock as written where TMPDIR has a symlink in it.
+  for ((i = 0; i < 100; i++)); do [ "/proc/$holder/fd/9" -ef "$dir/lock" ] && break; sleep 0.1; done
+  out=$(bash -c 'source "$1"; lock_holders "$2" 10' check "$helper" "$dir/lock")
+  [[ $out == *"pid $holder ($want 300)"* ]] ||
+    { fail "lock_holders did not print the holder's command line escaped"; return; }
+  [[ $out != *[$'\r\n\t\e']* && $out != *$'\xff'* ]] ||
+    { fail "lock_holders printed a control character or a byte that is not ASCII as it is"; return; }
+
+  # The record lock_take writes: one line per field, its command escaped.
+  bash -c 'source "$1"; exec 9>"$2"; lock_take "$2"' taker "$helper" "$dir/record" "$weird"
+  out=$(<"$dir/record")
+  [ "$(wc -l <"$dir/record")" = 5 ] || { fail "lock_take's record is not five lines"; return; }
+  line=$(grep '^command=' "$dir/record")
+  [ "$line" = "command=bash -c source \"\$1\"; exec 9>\"\$2\"; lock_take \"\$2\" taker $helper $dir/record $want" ] ||
+    { fail "lock_take's record does not hold the command line escaped"; return; }
+
+  # A record another writer left, such as an older checkout on a shared LOADTEST_ROOT: written as
+  # it is, its command and its start with control characters in them (none with a newline, which
+  # would end the field), by a process of this PID namespace that holds the lock on descriptor 7
+  # under its own pid. lock_root's refusal names that run and must print those fields escaped. Its
+  # backslash stays as it is: a record lock_take wrote holds only printable ASCII, its escapes
+  # among it, and must print once, as it is (the next row).
+  mkdir -p "$dir/root-foreign"
+  bash -c 'exec 7<>"$1/.run.lock"; flock 7
+printf "pid=%s\npidns=%s\ncommand=%s\nstarted=%s\ntoken=0123456789abcdef0123456789abcdef\n" "$$" "$(readlink /proc/self/ns/pid)" "$2" "$3" >"$1/.run.lock"
+echo ready >"$4"; exec sleep 300' writer "$dir/root-foreign" $'a\rb\tc\e[0m\\e\xff' $'2026-11-17T00:00:00Z\e[2J' \
+    "$dir/foreign-ready" >/dev/null 2>&1 &
+  writer=$!
+  pids+=("$writer")
+  wait_for "$dir/foreign-ready" || { fail "the other writer wrote no record"; return; }
+  try_lock "$dir/root-foreign"
+  ((rc != 0)) || { fail "a caller was admitted to a root another run holds"; return; }
+  [[ $out == *"(pid $writer, started 2026-11-17T00:00:00Z\x1b[2J: a\rb\tc\x1b[0m\e\xff)"* ]] ||
+    { fail "lock_root did not print another writer's record with its control characters escaped"; return; }
+  [[ $out != *[$'\r\t\e']* && $out != *$'\xff'* ]] ||
+    { fail "lock_root printed a control character or a byte that is not ASCII as it is"; return; }
+
+  # A record lock_take wrote, through a lock_root run whose command line holds the line under test.
+  bash -c 'source "$1"; lock_root "$2"; echo ready >"$3"; exec sleep 300' taker "$helper" "$dir/root-taken" \
+    "$dir/taken-ready" "$weird" >/dev/null 2>&1 &
+  taker=$!
+  pids+=("$taker")
+  wait_for "$dir/taken-ready" || { fail "the lock_root run was not admitted"; return; }
+  try_lock "$dir/root-taken"
+  ((rc != 0)) || { fail "a caller was admitted to a root another run holds"; return; }
+  [[ $out == *"(pid $taker, started "*": bash -c "*" taker $helper $dir/root-taken $dir/taken-ready $want)"* ]] ||
+    { fail "lock_root did not print lock_take's record as it is, escaped once"; return; }
+
+  # stack.sh's port_holder, its function as stack.sh defines it, over a listener named the same.
+  # Its proc root holds the network tables and the listener alone: over the host's /proc the look
+  # reads a link of every descriptor of every process. The listener is Python by its own path: a
+  # version manager's python3 shim passes its arguments on as text, the 0xff byte replaced by
+  # U+FFFD, and the listener's command line would no longer be the one under test.
+  # port_holder runs with bash's `read` wrapped in a function that leaves a mark, exported, so the
+  # shell its walk runs in (common.sh's bounded) has it too: a port_holder that read the tables with
+  # `read` again, whose seeks rebuild a /proc table once for each row, would still answer, only
+  # slower, so the mark is what fails the case.
+  "$(python3 -c 'import sys; print(sys.executable)')" -c '
+import os, socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen()
+open(sys.argv[1] + ".tmp", "w").write(str(s.getsockname()[1]))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)
+' "$dir/port" "$weird" >/dev/null 2>&1 &
+  listener=$!
+  pids+=("$listener")
+  wait_for "$dir/port" || { fail "the listener wrote no port"; return; }
+  port=$(<"$dir/port")
+  mkdir -p "$dir/proc/net"
+  ln -s /proc/net/tcp "$dir/proc/net/tcp"
+  ln -s /proc/net/tcp6 "$dir/proc/net/tcp6"
+  ln -s "/proc/$listener" "$dir/proc/$listener"
+  out=$(proc_root="$dir/proc" bash -c 'source "$1"; eval "$(sed -n "/^port_holder() {/,/^}/p;/^port_holder_walk() {/,/^}/p" "$2")"; export mark=$4; read() { : >"$mark"; builtin read "$@"; }; export -f read; port_holder "$3" 10' \
+    check "$helper" "$here/stack.sh" "$port" "$dir/port-holder-read")
+  [[ ! -e $dir/port-holder-read ]] ||
+    { fail "port_holder read a table with bash's read, whose every row seeks the table back and the kernel makes it again"; return; }
+  [[ $out == *"pid $listener ("*" $dir/port $want)"* ]] ||
+    { fail "port_holder did not print the listener's command line escaped"; return; }
+  [[ $out != *[$'\r\n\t\e']* && $out != *$'\xff'* ]] ||
+    { fail "port_holder printed a control character or a byte that is not ASCII as it is"; return; }
+  out=""
+  printf 'PASS: lock_holders, the lock record and port_holder print a command line with its control characters escaped\n'
+}
+
+# Programs that never answer, each a `sleep 600` in its place, as a holder whose command line is a
+# FIFO no writer opens holds its reader, so a look that waits on one unbounded holds its caller's
+# refusal for ten minutes: stuck-tr holds `tr`, which lock_holders reads a holder's command line
+# with, and stuck-links holds `readlink` and `find`, which port_holder reads a descriptor's link
+# with one of. lock_root itself reads its PID namespace with readlink, so its case holds `tr` alone.
+readonly stuck_tr="${temporary_dir}/stuck-tr" stuck_links="${temporary_dir}/stuck-links"
+mkdir -p "$stuck_tr" "$stuck_links"
+for tool in "$stuck_tr/tr" "$stuck_links/readlink" "$stuck_links/find"; do
+  printf '#!/usr/bin/env bash\nexec sleep 600\n' >"$tool"
+  chmod +x "$tool"
+done
+
+# case_holder_look_bounded: lock_root's look for the lock's holders walks every process of the
+# machine and reads each holder's command line, so it is held to lock_root's 3 s wait, and the
+# refusal names that bound when the look ends there. The holder holds the lock on descriptor 9
+# under a complete record whose pid cannot run (one above pid_max), so lock_root looks for it; the
+# caller's `tr` never answers. The caller runs under a 20 s timeout of its own: a look held by the
+# `tr` holds the refusal past it.
+case_holder_look_bounded() {
+  out=""
+  local root="${temporary_dir}/root-bounded" holder ready="${temporary_dir}/bounded-ready" gone status=0
+  mkdir -p "$root"
+  gone=$(($(</proc/sys/kernel/pid_max) + 1))
+  bash -c 'exec 9>>"$1/.run.lock"; flock 9
+printf "pid=%s\npidns=%s\ncommand=a run that has ended\nstarted=2026-11-20T00:00:00Z\ntoken=0123456789abcdef0123456789abcdef\n" "$2" "$(readlink /proc/self/ns/pid)" >"$1/.run.lock"
+echo ready >"$3"; exec sleep 300' holder "$root" "$gone" "$ready" >/dev/null 2>&1 &
+  holder=$!
+  pids+=("$holder")
+  wait_for "$ready" || { fail "the holder wrote no record"; return; }
+  out=$(timeout 20 env -u LOADTEST_LOCK_TOKEN PATH="${stuck_tr}:$PATH" bash -c 'source "$1"; lock_root "$2"; echo ADMITTED' \
+    caller "$helper" "$root" 2>&1 9>&-) || status=$?
+  ((status != 124)) ||
+    { fail "lock_root's refusal did not come within 20 s: its look for the holders waited on a command line that never answers"; return; }
+  [[ $out != *ADMITTED* ]] || { fail "a caller was admitted to a root another run holds"; return; }
+  [[ $out =~ stopped\ at\ its\ [0-9.]+\ s\ bound ]] ||
+    { fail "lock_root's refusal does not name the bound its look for the holders ended at"; return; }
+  out=""
+  printf 'PASS: lock_root'"'"'s look for the holders ends at its bound and the refusal names it\n'
+}
+
+# case_port_look_bounded: port_holder's look for a listener reads a link of every descriptor of
+# every process of its proc root, so check_port holds it to PORT_HOLDER_SECONDS and names that bound
+# when the look ends there. The proc root is a listener's alone, as case_holder_names_escaped's is;
+# `readlink` and `find` never answer. check_port runs from stack.sh with its neighbours stubbed:
+# the port is open and none of the stack's. A 20 s timeout of the case's own catches a look that
+# waits on a link unbounded.
+case_port_look_bounded() {
+  out=""
+  local dir="${temporary_dir}/port-bounded" listener port status=0
+  mkdir -p "$dir/proc/net"
+  "$(python3 -c 'import sys; print(sys.executable)')" -c '
+import os, socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen()
+open(sys.argv[1] + ".tmp", "w").write(str(s.getsockname()[1]))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)
+' "$dir/port" >/dev/null 2>&1 &
+  listener=$!
+  pids+=("$listener")
+  wait_for "$dir/port" || { fail "the listener wrote no port"; return; }
+  port=$(<"$dir/port")
+  ln -s /proc/net/tcp "$dir/proc/net/tcp"
+  ln -s /proc/net/tcp6 "$dir/proc/net/tcp6"
+  ln -s "/proc/$listener" "$dir/proc/$listener"
+  out=$(timeout 20 env proc_root="$dir/proc" PATH="${stuck_links}:$PATH" bash -c 'source "$1"
+eval "$(sed -n "/^port_holder() {/,/^}/p;/^port_holder_walk() {/,/^}/p;/^check_port() {/,/^}/p" "$2")"
+PORT_HOLDER_SECONDS=2
+declare -A PORT_VAR=([proxy]=LOADTEST_PROXY_PORT)
+listened=$3
+port() { echo "$listened"; }
+port_in_ephemeral() { return 1; }
+port_open() { return 0; }
+port_block() { echo 7; }
+default_port() { echo 1; }
+die() { echo "DIE: $*"; exit 1; }
+check_port proxy proxy' check "$helper" "$here/stack.sh" "$port" 2>&1) || status=$?
+  ((status != 124)) ||
+    { fail "check_port did not refuse within 20 s: port_holder waited on a descriptor's link that never answers"; return; }
+  [[ $out == *"stopped at its 2 s bound"* ]] ||
+    { fail "check_port's refusal does not name the bound port_holder's look ended at"; return; }
+  out=""
+  printf 'PASS: port_holder'"'"'s look ends at check_port'"'"'s bound and the refusal names it\n'
+}
+
 # range_file LOW HIGH: a file holding an ephemeral range as /proc/sys/net/ipv4/ip_local_port_range
 # does, for LOADTEST_PORT_RANGE_FILE.
 range_file() {
@@ -555,8 +748,11 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_holder_names_escaped || failed=$((failed + 1))
+case_holder_look_bounded || failed=$((failed + 1))
+case_port_look_bounded || failed=$((failed + 1))
 case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 14 cases failed\n' "$failed" >&2
   exit 1
 fi

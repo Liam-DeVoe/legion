@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { refusingOrigin } from "@legion/test-fixtures/refused-port"
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
@@ -19,7 +20,7 @@ async function runHook(
   preload?: string,
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const preloading = preload === undefined ? [] : ["--preload", preload]
-  const run = Bun.spawn(["bun", ...preloading, hookEntry, "open-asks"], {
+  const run = Bun.spawn([process.execPath, ...preloading, hookEntry, "open-asks"], {
     env: { PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
@@ -102,19 +103,20 @@ test("summarises the session's open asks into context and records the session id
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
-  const closed = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = closed.port
-  closed.stop(true)
+  // A port this row holds bound and never listens on (`refusingOrigin`), so the hook's request is
+  // refused, and no other process can bind it to give an answer of its own.
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `http://127.0.0.1:${port}`,
+      DISPATCH_URL: refusingOrigin(),
       DISPATCH_TOKEN,
     })
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary unavailable: ")
+    // The refusal itself, so any other failure to answer reads as a failure here.
+    expect(result.stdout).toContain("ECONNREFUSED")
     expect(
       await readFile(
         join(scratch, "plugin-data", "sessions", String(process.pid), "session-id"),
