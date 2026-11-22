@@ -466,6 +466,14 @@ Each item below names a script, then what it proves.
   and a first round's `REQUEST_CHANGES` from another review-App session is set aside, leaving the issue in reviewing and no commit recorded.
   No GitHub, no cluster
 
+- `owner-does-step.sh`
+
+  the owner of an issue does a step of its plan, and a task with no pull request ends with no merge, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, as [`owner-steps.sh`](#owner-stepssh) drives them, with three issues of one project:
+  the owner gives `implementer:owner` with `register_plan`, is told the step as one notice `owner-step` with no claim launched for it, and its `complete_step` of step 1 and then of the retro, with a rating, moves the issue to the retro and to merging;
+  an issue given `tester` runs the tester with its task's text, the tester's pass tells the owner its retro, and the owner's `complete_step` of the retro ends the issue at done with no merger launched, `dispatch steps --issue <KEY>` printing step 1 `tester` and the owner's retro, and `dispatch plans --project <PROJECT>` its rating;
+  controls: an issue given `implementer` launches a fresh implementer and tells the owner nothing, and the check of the end of a task with no pull request fails on the issue given `tester` while its retro runs, and on the first issue, which merges.
+  No GitHub, no cluster
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -5368,6 +5376,73 @@ and no agent runs.
 The stand-in answers every other route `404`, so the daemon's own read of the pull request, at its start and after each recorded handoff (`readIssuePullRequest` in `internal/daemon/issue_reads.go`), fails and is logged, and the review reaches the daemon only as its webhook.
 The read of the pull request's reviews that applies a review whose webhook never arrived (`readReviews` in `internal/daemon/review_reads.go`) hands the workflow the same review, which records the reviewed commit in the same step when it is the reviewer's own review of the entry that stands: its footer names the entry the reviewer's phases row stands at (`review` in `internal/workflow/review.go`); this proof does not drive that read.
 `REVIEW_RANGE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## owner-does-step.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/owner-does-step.sh     # → "owner does step e2e: PASS in <n>s", exit 0
+```
+
+The live proof that the owner of an issue does a step of its plan, and that a task with no pull request ends with no merge:
+a step whose key is `owner`, and the retro of a task whose retro is the owner's, are told to the owner, the issue's own architect, as one notice `owner-step` and start no claim;
+the owner reports each with `complete_step` (`POST /legion/v1/steps/complete`);
+and a task whose issue has no pull request is done when its retro ends.
+It runs where [`owner-steps.sh`](#owner-stepssh) runs, with the same inputs and refusals:
+`go`, `git`, `jj` 0.38 or later, `awk`, `bun` (after `bun install` at the checkout's root) and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
+The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
+Two runs on a shared devbox under load (load average about 900 on 288 cores) with a warm Go build cache took 83 s and 249 s: 31 s and 104 s building the driver, and 49 s and 135 s for the proof, whose first 16 s and 7 s build Dispatch.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules` (`require_dispatch_cli`), and the `driver` check builds a test binary of `TestOwnerDoesStepLive` (`internal/daemon/owner_does_step_live_test.go`, `-tags e2e`).
+
+The rig is [`owner-steps.sh`](#owner-stepssh)'s (`newOwnerStepsLive`, in `internal/daemon/owner_steps_live_test.go`):
+the real Dispatch server on a database of its own, the whole daemon booted through `run` with `dispatch_url` at it, and three issues of one project of the run's own (`OS<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request.
+The owner writes each `plan.md` with the real `dispatch artifact` command in the architect's session and gives it with `register_plan` before the issue's gate opens, and the reader of the steps and the plans is the same CLI as the person who set the project up, with their personal token.
+The owner's pane is the architect's claimant:
+the driver reads what the owner is told where Envoy's listener takes it (the package's `noticeListener`, on the owner's role topic `notifications.role.<architect token>`), and the owner reports as its `complete_step` does, in a turn of its own, with a grant minted for its session, and with the `implement` handoff of its implementer step written to Dispatch under that session.
+The check of a step told to the owner counts the launches of the issue's claims before the move into the step, waits for the notice or for a launch after that move, whichever comes first, then watches 3 s for the other:
+an owner's step starts no claim, so a fresh implementer, or the owner's own claim relaunched as the implementer, fails it whether it is launched before the notice or after it.
+The check of a task's end watches 3 s for the launch of the issue's merger before it reads anything else, so a merge started after the retro fails it.
+Each control runs a check over an issue it must fail on, prints `control: FAIL <check> over <KEY>` with what the check said, and fails the run unless the check failed for the reason it names.
+
+| check | driven by | read back as | its control, which must fail the check |
+| :--- | :--- | :--- | :--- |
+| `owner-step` | the first issue given `implementer:owner` and its gate opened; with the pull request open on the issue's branch, the owner's `complete_step` of step 1 naming its commit and its `implement` handoff; then its `complete_step` of the retro (step 0) with the rating 4 and a reason | one `owner-step` on the owner's topic, of the role `implementer` in implementing, whose task says ` Task: a.`, ` Step 1 of 1: implementer:owner.` and the text of the task's block, and no claim of the issue launched; `200 {}` and the issue in retro; a second `owner-step`, of no role in retro, and no claim launched; `200 {}`, the issue in merging and its merger launched | `control-owner-step`: the third issue given `implementer`, whose step is a fresh implementer's: the daemon launches `…-implementer`, the owner is told no `owner-step`, and the check fails naming both |
+| `tester-alone` | the second issue given `tester` and its gate opened; the tester takes its task and passes; the owner's `complete_step` of the retro with the rating 4 and a reason | the tester's task says ` Task: a.`, ` Step 1 of 1: tester.` and the text of the task's block; the issue in retro, one `owner-step` of no role in retro and no claim launched after the tester's pass; after the owner's report, no merger launched within 3 s, the issue in done, `dispatch steps --issue <KEY>` printing the header `<KEY>: 2 steps in 1 tasks`, step 1 `tester` by `…-tester` and the retro by the owner, `…-architect`, each ended `passed`, the retro's record in Dispatch's read naming the rating and its reason, and `dispatch plans --project <PROJECT>` listing the issue closed, its plan `owner (1 tasks: tester)`, `ratings 4/5` with the reason, and `failed steps 0` | the same check over the second issue while its retro runs, inside this check: it fails, the issue standing in retro; and `control-tester-alone`: the same check over the first issue, whose task has a pull request, fails on the launch of its merger |
+
+The controls a person can run make each check fail with the code changed.
+In `packages/daemon/internal/workflow/effects.go`, take the owner's branch out of `start`, so that the start of an owner's step enters the step's role as a worker's start does, by changing its test to:
+
+```go
+	if false && w.Stored && w.PlaceRole(w.Place) == claim.RoleArchitect {
+```
+
+One run with that change printed, after the plan's two lines and the gate's (the task the notice carries cut to `…` here):
+
+```text
+    owner_does_step_live_test.go:88: OS6E31FB-1 launched [legion-os6e31fb-os6e31fb-1-architect as implementer (Resume)] for its step in implementing, and its owner legion-os6e31fb-os6e31fb-1-architect was told 1 notices owner-step [{Kind:owner-step Role:implementer Phase:implementing Reason:…}]; want the owner told its step and no claim launched for it
+FAIL owner-step (1s)
+owner does step e2e: FAIL at proof after 50s (evidence: <dir>)
+```
+
+The owner is still told its step (the start of every run of the owner's tells it, `startStep` in `internal/workflow/steps.go`), and the owner's own claim is relaunched as the implementer: `owner-step` fails on that launch.
+In `packages/daemon/internal/workflow/table.go`, make the guard of the retro's row into merging answer every issue as one with a pull request, so that a task with no pull request waits for a merge, by changing it to:
+
+```go
+func hasPullRequest(s Snapshot) bool { return true }
+```
+
+One run with that change passed `owner-step` and `control-owner-step`, and printed, after the lines of the tester's step and of the owner's retro:
+
+```text
+   control: FAIL tester-alone over OSFCE860-2 before its retro ends: OSFCE860-2 stands in retro, want done
+    owner_does_step_live_test.go:96: OSFCE860-2 launched its merger legion-osfce860-osfce860-2-merger [Spawn], and stands in merging; want no merge of a task with no pull request
+FAIL tester-alone (6s)
+owner does step e2e: FAIL at proof after 68s (evidence: <dir>)
+```
+
+What the proof stands in for is what [`owner-steps.sh`](#owner-stepssh) stands in for: GitHub's REST API (`stepRecordsGitHub`, which lists the first issue's pull request from the owner's report of its step on), the Apps' tokens, Envoy's listener and the panes.
+`OWNER_DOES_STEP_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## owner-steps.sh
 
