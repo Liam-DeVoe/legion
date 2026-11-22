@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,33 +31,40 @@ const (
 // With honoursWait it answers a status read as the broker does a GET /v1/requests/{id}?wait=N:
 // held until the request is granted or N seconds pass, whichever is first; without it, it answers
 // at once, as a broker from before the parameter does. It checks every proof as the broker does
-// (proofKey.verify), so a client that signed its query would be refused. It records each status
-// read (waitRead) and the release, each moment with the time meter counted this process held up
-// by then, so a row can time the client, another process, from the read the grant ended.
+// (proofKey.verify), so a client that signed its query would be refused. It marks (waitMark) each
+// status read's arrival and answer and the release, so a row can time the client, another process,
+// from the read that answered granted.
 type waitBroker struct {
 	*httptest.Server
 	meter     *stallMeter
+	client    chan int // the client's pid, once runWaiting has started it
 	mu        sync.Mutex
 	grantAt   time.Time  // when the request turns granted; zero until its start
 	reads     []waitRead // each status read, in the order they reached the broker
-	released  time.Time  // when POST /v1/grants/{id}/values released its value
-	heldAtRel time.Duration
+	release   waitMark   // POST /v1/grants/{id}/values, zero until it comes
 	badProofs int
 }
 
-// waitRead is one status read: the wait it asked ("" for none), when it reached the broker and
-// when the broker answered it, whether it answered granted, and the time the meter counted this
-// process held up by each of those two moments.
+// waitRead is one status read: the wait it asked ("" for none), its arrival and its answer, and
+// whether it answered granted.
 type waitRead struct {
-	wait                      string
-	reached, answered         time.Time
-	granted                   bool
-	heldAtReach, heldAtAnswer time.Duration
+	wait              string
+	reached, answered waitMark
+	granted           bool
+}
+
+// waitMark is a moment of the fake's: when it came, the time the stall meter had counted this
+// process held up by then, and how long each thread of the client had waited to run by then
+// (clientRunDelays), so a span between two marks can be cleared of both processes' hold-ups.
+type waitMark struct {
+	at     time.Time
+	held   time.Duration
+	client map[string]time.Duration
 }
 
 func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool, grantAfter time.Duration) *waitBroker {
 	t.Helper()
-	b := &waitBroker{meter: startStallMeter(t)}
+	b := &waitBroker{meter: startStallMeter(t), client: make(chan int, 1)}
 	var publicURL string
 	verified := func(w http.ResponseWriter, r *http.Request) bool {
 		if err := key.verify(r, publicURL); err != nil {
@@ -87,11 +99,11 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 		if !verified(w, r) {
 			return
 		}
-		read := waitRead{wait: r.URL.Query().Get("wait"), reached: time.Now(), heldAtReach: b.meter.heldUp()}
+		read := waitRead{wait: r.URL.Query().Get("wait"), reached: b.mark(r)}
 		b.mu.Lock()
 		first := len(b.reads) == 0
 		if first && !afterFirstHold {
-			b.grantAt = read.reached.Add(grantAfter)
+			b.grantAt = read.reached.at.Add(grantAfter)
 		}
 		grantAt := b.grantAt
 		b.mu.Unlock()
@@ -112,7 +124,9 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 			b.grantAt = time.Now().Add(grantAfter)
 		}
 		granted := !time.Now().Before(b.grantAt)
-		read.granted, read.answered, read.heldAtAnswer = granted, time.Now(), b.meter.heldUp()
+		b.mu.Unlock()
+		read.granted, read.answered = granted, b.mark(r)
+		b.mu.Lock()
 		b.reads = append(b.reads, read)
 		b.mu.Unlock()
 		writeJSON(w, state(granted))
@@ -121,8 +135,9 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 		if !verified(w, r) {
 			return
 		}
+		release := b.mark(r)
 		b.mu.Lock()
-		b.released, b.heldAtRel = time.Now(), b.meter.heldUp()
+		b.release = release
 		b.mu.Unlock()
 		writeJSON(w, map[string]any{"values": map[string]string{"WAIT_ME": waitValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
@@ -133,6 +148,67 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	t.Cleanup(b.Close)
 	publicURL = b.URL
 	return b
+}
+
+// mark is the fake's mark of now, for request r. The moment is read first; the client's run delays
+// once runWaiting has named the client, which a request of the client's can only precede by the
+// time runWaiting takes to name it after starting it.
+func (b *waitBroker) mark(r *http.Request) waitMark {
+	m := waitMark{at: time.Now(), held: b.meter.heldUp()}
+	select {
+	case pid := <-b.client:
+		b.client <- pid
+		m.client = clientRunDelays(pid)
+	case <-r.Context().Done():
+	}
+	return m
+}
+
+// clientRunDelays is how long each thread of process pid has waited on a CPU's run queue, runnable
+// but not running, since it started, by its thread id (/proc/<pid>/task/<tid>/schedstat, its second
+// field): the time the machine starved that process, which this process's stall meter cannot see.
+// It is empty where /proc does not say, as on platforms other than Linux, so nothing is cleared.
+func clientRunDelays(pid int) map[string]time.Duration {
+	delays := map[string]time.Duration{}
+	dir := filepath.Join("/proc", strconv.Itoa(pid), "task")
+	tasks, err := os.ReadDir(dir)
+	if err != nil {
+		return delays
+	}
+	for _, task := range tasks {
+		data, err := os.ReadFile(filepath.Join(dir, task.Name(), "schedstat"))
+		if err != nil {
+			continue
+		}
+		if fields := strings.Fields(string(data)); len(fields) >= 2 {
+			if ns, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+				delays[task.Name()] = time.Duration(ns)
+			}
+		}
+	}
+	return delays
+}
+
+// requireClientStep fails t where the client, another process, took from from to to, two of the
+// fake's marks, longer than slack beyond the time either process was held up meanwhile: this
+// process by its stall meter, the client by its threads' run delays (clientRunDelays). It answers
+// how long the step took. what names the step for the failure's text.
+func requireClientStep(t *testing.T, what string, from, to waitMark, slack time.Duration) time.Duration {
+	t.Helper()
+	took := to.at.Sub(from.at)
+	held := to.held - from.held
+	var starved time.Duration
+	for tid, delay := range to.client {
+		starved += delay - from.client[tid]
+	}
+	late := took - held - starved
+	if late > slack {
+		t.Fatalf("%s took %s; this process was held up %s of that and the client starved %s, so the client was %s late on its own, more than %s",
+			what, took.Round(time.Millisecond), held.Round(time.Millisecond), starved.Round(time.Millisecond), late.Round(time.Millisecond), slack)
+	}
+	t.Logf("on time: %s took %s, %s held up here, the client starved %s, %s late on its own (slack %s)",
+		what, took.Round(time.Millisecond), held.Round(time.Millisecond), starved.Round(time.Millisecond), late.Round(time.Millisecond), slack)
+	return took
 }
 
 // waits is each status read's wait parameter, in order. b.mu is held.
@@ -146,58 +222,156 @@ func (b *waitBroker) waits() []string {
 
 // requireReleaseFromTheGrantedRead fails t unless the client released the value straight from the
 // answer of its last status read, the one that answered granted: the release, timed from that
-// answer (spanOnTime), was not late on its own by more than commandLateSlack, the client being
-// another process. Timing from the read's answer rather than from the grant leaves out what the
-// fake itself took to answer, this process's own wake. It answers that read. b.mu is held.
+// answer, was not late on its own (requireClientStep) by more than lateSlack. Timing from the
+// read's answer rather than from the grant leaves out what the fake itself took to answer, this
+// process's own wake. It answers that read. b.mu is held.
 func (b *waitBroker) requireReleaseFromTheGrantedRead(t *testing.T) waitRead {
 	t.Helper()
-	if len(b.reads) == 0 || b.released.IsZero() {
-		t.Fatalf("the broker served %d status reads (waits %q) and released at %v; want reads, then a release", len(b.reads), b.waits(), b.released)
+	if len(b.reads) == 0 || b.release.at.IsZero() {
+		t.Fatalf("the broker served %d status reads (waits %q) and released at %v; want reads, then a release", len(b.reads), b.waits(), b.release.at)
 	}
 	last := b.reads[len(b.reads)-1]
 	if !last.granted {
 		t.Fatalf("the last status read answered pending (waits %q); want the release to follow the read that answered granted", b.waits())
 	}
-	spanOnTime(t, "the release after the read that answered granted", last.answered, b.released, last.heldAtAnswer, b.heldAtRel, 0, commandLateSlack)
+	requireClientStep(t, "the release after the read that answered granted", last.answered, b.release, lateSlack)
 	return last
 }
 
-// runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …` against b, failing t unless the
-// child ran with the granted value.
-func runWaiting(t *testing.T, b *waitBroker, key *proofKey) {
+// backoffLogEnv names the file the build runWaiting makes records each backoff sleep of the exec
+// form in (pollBackoff), one line a sleep, the duration it asked.
+const backoffLogEnv = "AGENT_SECRETS_TEST_BACKOFF_LOG"
+
+// backoffHook is the file runWaiting's build of agent-secrets adds to the package: it makes
+// pollBackoff record each sleep in backoffLogEnv's file before it sleeps. No build of agent-secrets
+// but this test's has it.
+const backoffHook = `package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+)
+
+func init() {
+	path := os.Getenv("` + backoffLogEnv + `")
+	if path == "" {
+		return
+	}
+	sleep := pollBackoff
+	pollBackoff = func(d time.Duration) {
+		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			fmt.Fprintln(f, d)
+			_ = f.Close()
+		}
+		sleep(d)
+	}
+}
+`
+
+// buildRecordingBackoff builds agent-secrets with backoffHook added to its package, through the go
+// build overlay cmdtest passes (ENVOY_TEST_GO_OVERLAY), joined with one already set.
+func buildRecordingBackoff(t *testing.T) string {
 	t.Helper()
-	stdout, stderr, exit := runAgentSecrets(t, buildAgentSecrets(t), b.URL, key.keyDir, nil,
-		"WAIT_ME", "--wait", "1m", "--", "sh", "-c", `test "$WAIT_ME" = `+waitValue+` && echo ran-the-child`)
+	pkg, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	hook := filepath.Join(dir, "backoff_hook.go")
+	if err := os.WriteFile(hook, []byte(backoffHook), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	overlay := struct {
+		Replace map[string]string
+	}{Replace: map[string]string{}}
+	if prior := os.Getenv("ENVOY_TEST_GO_OVERLAY"); prior != "" {
+		data, err := os.ReadFile(prior)
+		if err == nil {
+			err = json.Unmarshal(data, &overlay)
+		}
+		if err != nil {
+			t.Fatalf("reading ENVOY_TEST_GO_OVERLAY %s: %v", prior, err)
+		}
+	}
+	overlay.Replace[filepath.Join(pkg, "zz_test_backoff_hook.go")] = hook
+	data, err := json.Marshal(overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ENVOY_TEST_GO_OVERLAY", path)
+	return buildAgentSecrets(t)
+}
+
+// runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …` against b, built to record its
+// backoff sleeps (buildRecordingBackoff), names it to b, and fails t unless the child ran with the
+// granted value. It answers the backoff sleeps the run asked for, in order.
+func runWaiting(t *testing.T, b *waitBroker, key *proofKey) []string {
+	t.Helper()
+	binary := buildRecordingBackoff(t)
+	backoffs := filepath.Join(t.TempDir(), "backoffs")
+	cmd := exec.Command(binary, "WAIT_ME", "--wait", "1m", "--", "sh", "-c", `test "$WAIT_ME" = `+waitValue+` && echo ran-the-child`)
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+b.URL, "AGENT_SECRETS_KEY_DIR="+key.keyDir, backoffLogEnv+"="+backoffs)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start agent-secrets: %v", err)
+	}
+	b.client <- cmd.Process.Pid
+	err := cmd.Wait()
+	exit := 0
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(err, &exitErr):
+		exit = exitErr.ExitCode()
+	case err != nil:
+		t.Fatalf("run agent-secrets: %v (stderr %q)", err, stderr.String())
+	}
 	b.mu.Lock()
 	badProofs := b.badProofs
 	b.mu.Unlock()
 	if badProofs != 0 {
-		t.Fatalf("the broker refused %d proofs: a proof signs the path alone, never the query (stderr %q)", badProofs, stderr)
+		t.Fatalf("the broker refused %d proofs: a proof signs the path alone, never the query (stderr %q)", badProofs, stderr.String())
 	}
-	if exit != 0 || !strings.Contains(stdout, "ran-the-child") {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want the child run with the granted value", exit, stdout, stderr)
+	if exit != 0 || !strings.Contains(stdout.String(), "ran-the-child") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want the child run with the granted value", exit, stdout.String(), stderr.String())
 	}
+	data, err := os.ReadFile(backoffs)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(data))
 }
 
 // TestExecLearnsOfTheGrantWithinASecond: against a broker that holds each `wait` read, a request
 // granted 3 s after its first status read reached the broker is learnt of from a read the broker
 // held across the grant, the read the grant ended, and its value released straight from that
-// read's answer (R1), in at most 2 status reads, each asking a wait of 1 to
+// read's answer (R1), with no backoff sleep, in at most 2 status reads, each asking a wait of 1 to
 // record.MaxRequestWaitSeconds seconds. The release is timed from that answer, not from the grant
-// on the real clock, so neither the fake's own wake nor a machine that starved the client fails
-// it; the client's own lateness is held to commandLateSlack. The loop before this change read at
-// 2 s and 6 s, without a wait, so it learnt of the grant from a read made after it, which fails
-// the row whatever the timing.
+// on the real clock, and cleared of the time either process was held up (requireClientStep), so
+// neither the fake's own wake nor a machine that starved the client fails it. The loop before this
+// change read at 2 s and 6 s, without a wait, so it learnt of the grant from a read made after it,
+// which fails the row whatever the timing.
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 	const grantAfter = 3 * time.Second
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, false, grantAfter)
-	runWaiting(t, b, key)
+	backoffs := runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(backoffs) != 0 {
+		t.Errorf("the client slept its backoff %q, against a broker that held each read; want no sleep (waits %q)", backoffs, b.waits())
+	}
 	last := b.requireReleaseFromTheGrantedRead(t)
-	if !last.reached.Before(b.grantAt) {
-		t.Errorf("the read that answered granted reached the broker %s after the grant (waits %q); want the read the grant ended, held across it", last.reached.Sub(b.grantAt).Round(time.Millisecond), b.waits())
+	if !last.reached.at.Before(b.grantAt) {
+		t.Errorf("the read that answered granted reached the broker %s after the grant (waits %q); want the read the grant ended, held across it", last.reached.at.Sub(b.grantAt).Round(time.Millisecond), b.waits())
 	}
 	if len(b.reads) > 2 {
 		t.Errorf("the broker served %d status reads (waits %q), want at most 2", len(b.reads), b.waits())
@@ -211,25 +385,26 @@ func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 
 // TestExecLearnsOfAGrantAfterAFullHold: R1's usual case, a person who decides after the first
 // held read has run its whole wait. The fake holds that read for all record.MaxRequestWaitSeconds
-// and grants 300 ms after it answers pending. The client sends its next read with no sleep, so that
-// read reaches the broker no later than lateSlack after the full hold's answer, beyond the time
-// this process was held up meanwhile; a loop that slept its 2 s backoff after every pending answer,
-// a held one too, is twice that late. The value is released straight from the answer of that read,
-// held until the grant or, from a client the machine starved past it, answered at once, in 2
-// status reads, the release timed from that answer (commandLateSlack, the client being another
-// process) rather than from the grant on the real clock.
+// and grants 300 ms after it answers pending. The client sleeps no backoff after a held answer:
+// the build records each sleep its loop asks for (pollBackoff), and any sleep fails the row by
+// name, whatever the machine's load. Its next read follows the full hold's answer, and the value
+// is released straight from the answer of the read that answered granted, each step cleared of the
+// time either process was held up (requireClientStep), in 2 status reads. A loop that slept its 2 s
+// backoff after every pending answer, a held one too, asks for that sleep.
 func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, true, 300*time.Millisecond)
-	runWaiting(t, b, key)
+	backoffs := runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(backoffs) != 0 {
+		t.Errorf("the client slept its backoff %q after a read held for its whole wait; want no sleep after a held answer (waits %q)", backoffs, b.waits())
+	}
 	full := strconv.Itoa(record.MaxRequestWaitSeconds)
 	if len(b.reads) != 2 || b.reads[0].wait != full || b.reads[0].granted {
 		t.Fatalf("the broker served status reads with waits %q; want 2, the first asking %s, the whole wait, and answered pending", b.waits(), full)
 	}
-	hold, next := b.reads[0], b.reads[1]
-	spanOnTime(t, "the read after the full hold, sent with no sleep", hold.answered, next.reached, hold.heldAtAnswer, next.heldAtReach, 0, lateSlack)
+	requireClientStep(t, "the read after the full hold", b.reads[0].answered, b.reads[1].reached, lateSlack)
 	b.requireReleaseFromTheGrantedRead(t)
 }
 
@@ -248,13 +423,17 @@ func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
 // TestExecBacksOffAgainstABrokerThatIgnoresWait: a broker from before the parameter answers each
 // read at once, pending until 9 s after the first status read reached it. The loop does not read
 // it in a tight loop: an answer that is still pending well before the wait it asked has run out
-// makes it sleep its old backoff, so the child runs after at most 6 reads.
+// makes it sleep its old backoff (pollBackoff, which the build records), so the child runs after
+// at most 6 reads.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, false, false, 9*time.Second)
-	runWaiting(t, b, key)
+	backoffs := runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(backoffs) == 0 {
+		t.Errorf("the client slept no backoff against a broker that answered each read at once (waits %q); want its backoff", b.waits())
+	}
 	if len(b.reads) > 6 {
 		t.Errorf("the broker served %d status reads (waits %q), want at most 6: the loop must back off from a broker that answers at once", len(b.reads), b.waits())
 	}
