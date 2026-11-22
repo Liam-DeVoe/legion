@@ -290,8 +290,10 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 // restoreRuns times in all, each after the cut's leftover is gone; a cut on the last run stops the
 // command, naming the bucket and each run's error, with the leftover deleted, so no partial stream
 // stays. A start JetStream refuses to place (a peer still offline after the hold's restart) stores
-// nothing and is sent again within bound (writerhold.RetryPlacement), within the same run.
-// A restored stream whose state is not the archive's stops it too.
+// nothing and is sent again (writerhold.RetryPlacementUntil), the runs sharing one placement limit
+// of bound; the limit passing is UNKNOWN naming the restore and the code, and no cut: no run
+// follows and no leftover is searched for, since the server stored nothing. A restored stream whose
+// state is not the archive's stops it too.
 func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, bound time.Duration) error {
 	stream := "KV_" + bucket
 	js, err := nc.JetStream(nats.Context(ctx))
@@ -301,10 +303,11 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 	if err := js.DeleteStream(stream); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		return fmt.Errorf("delete %s before its restore: %w", stream, err)
 	}
+	placement := time.Now().Add(writerhold.PlacementBound(bound))
 	var errs []error
 	for run := 1; run <= restoreRuns; run++ {
 		var state streamState
-		err := writerhold.RetryPlacement(ctx, bound, "restore "+stream, stdout, func() error {
+		err := writerhold.RetryPlacementUntil(ctx, placement, "restore "+stream, stdout, func() error {
 			var err error
 			state, err = startRestore(ctx, nc, stdout, stream, bucketDir)
 			return err
@@ -315,6 +318,9 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 				break
 			}
 			return nil
+		}
+		if writerhold.PlacementRefused(err) {
+			return fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, err)
 		}
 		errs = append(errs, fmt.Errorf("run %d: %w", run, err))
 		fmt.Fprintf(stdout, "restore of %s: run %d of %d stopped part way: %v\n", bucket, run, restoreRuns, err)

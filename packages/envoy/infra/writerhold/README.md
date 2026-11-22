@@ -214,9 +214,11 @@ offline, and it refuses to place a three-copy stream then (error code 10005, "no
 for placement"). The operator holds no `$SYS` user, so nothing it can read says every peer is back:
 the create's own refusal is the only signal. `buckets create`, `recreate` and `restore` make each
 create again while JetStream answers that code (`RetryPlacement`), every 250 ms and up to the
-restart's limit, printing each retry; `streams update` sends its whole run again when a create or
-raise of its report failed with that code (`streams.Finding.Err`), and the run's changes are those
-of every attempt. Any other error returns at once. JetStream answers the same code for a stream no
+restart's limit, printing each retry; a restore's two runs share one limit, and the limit passing
+is no cut restore, so no run follows and no leftover stream is searched for. `streams update` sends
+its whole run again when a create or raise of its report failed with that code
+(`streams.Finding.Err`), and the run's changes are those of every attempt. Any other error returns
+at once. JetStream answers the same code for a stream no
 retry can place, such as more copies than the cluster has members, so past the limit the command
 is UNKNOWN naming the create, the code and the last refusal's text: a peer still held offline
 reads "no suitable peers for placement, peer offline", and five copies asked of three members

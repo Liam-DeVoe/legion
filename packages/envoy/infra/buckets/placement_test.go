@@ -3,6 +3,8 @@ package buckets
 import (
 	"bytes"
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // signalWriter is a command's stdout that closes seen once a line holds mark.
@@ -77,31 +80,7 @@ func TestHoldACreateJetStreamCannotPlaceIsMadeOncePlacementIsPossible(t *testing
 		t.Fatalf("setup: delete KV_%s: %v", bus.InterestBucket, err)
 	}
 
-	// One member taken out of placement by the exclude tag, until a probe create is refused.
-	member := h.s.Cluster.Servers[len(h.s.Cluster.Servers)-1]
-	config := member.Config(t)
-	if err := member.Reload(t, config+"\nserver_tags: [\"!jetstream\"]\n"); err != nil {
-		t.Fatalf("setup: reload with the exclude tag: %v", err)
-	}
-	planted := false
-	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline) && !planted; {
-		_, err := bus.CreateCopiedBucket(ctx, nc, js, bus.InterestBucket, 3)
-		switch {
-		case err == nil:
-			if err := js.DeleteStream("KV_" + bus.InterestBucket); err != nil {
-				t.Fatalf("setup: delete the probe placed before the tag took: %v", err)
-			}
-			time.Sleep(250 * time.Millisecond)
-		case writerhold.PlacementRefused(err):
-			planted = true
-			t.Logf("setup: a three-copy create is refused: %v", err)
-		default:
-			t.Fatalf("setup: the probe create: %v", err)
-		}
-	}
-	if !planted {
-		t.Fatal("setup: no three-copy create was refused within a minute of the exclude tag")
-	}
+	member, config := excludeOneMember(t, nc, js, h.s.Cluster.Servers)
 
 	stdout := &signalWriter{mark: "JetStream could not place it yet", seen: make(chan struct{})}
 	lifted := make(chan struct{})
@@ -137,3 +116,90 @@ func TestHoldACreateJetStreamCannotPlaceIsMadeOncePlacementIsPossible(t *testing
 		t.Fatalf("KV_%s after the create: %v", bus.InterestBucket, err)
 	}
 }
+
+// excludeOneMember reloads the last of members with the server tag "!jetstream"
+// (jsExcludePlacement), which takes it out of placement, and makes a three-copy create of
+// KV_envoy_interests as the operator on nc until JetStream refuses it with code 10005, so the plant
+// has taken; a create placed before the tag took is deleted again, so the bucket is absent after it.
+// It answers the member and its configuration, for the reload that lifts the tag.
+func excludeOneMember(t *testing.T, nc *natsgo.Conn, js natsgo.JetStreamContext, members []*testnats.Server) (*testnats.Server, string) {
+	t.Helper()
+	member := members[len(members)-1]
+	config := member.Config(t)
+	if err := member.Reload(t, config+"\nserver_tags: [\"!jetstream\"]\n"); err != nil {
+		t.Fatalf("setup: reload with the exclude tag: %v", err)
+	}
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); {
+		_, err := bus.CreateCopiedBucket(context.Background(), nc, js, bus.InterestBucket, 3)
+		switch {
+		case err == nil:
+			if err := js.DeleteStream("KV_" + bus.InterestBucket); err != nil {
+				t.Fatalf("setup: delete the probe placed before the tag took: %v", err)
+			}
+			time.Sleep(250 * time.Millisecond)
+		case writerhold.PlacementRefused(err):
+			t.Logf("setup: a three-copy create is refused: %v", err)
+			return member, config
+		default:
+			t.Fatalf("setup: the probe create: %v", err)
+		}
+	}
+	t.Fatal("setup: no three-copy create was refused within a minute of the exclude tag")
+	return nil, ""
+}
+
+// A restore JetStream never places (one member of three out of placement, never put back) runs
+// against one placement limit across its two runs, and the limit passing is UNKNOWN naming the
+// restore and code 10005: no run is called stopped part way, and no leftover is searched for, since
+// the server stored nothing. With a 4 s limit the call ends within the limit and one attempt. The
+// reviewer's case (round 3's L-2): at 870ce0c500 each run took a full limit and then a 20 s search
+// for a leftover, 48.1 s in all with two "stopped part way" lines. Control: 870ce0c500.
+func TestHoldARestoreJetStreamNeverPlacesStopsAtOneLimit(t *testing.T) {
+	h := newHeldBuckets(t)
+	ctx := context.Background()
+	id := h.s.Prepare(t, holdrecord.WorkflowBucketsRestore)
+	h.s.HoldWithoutTheSteps(t, id)
+	nc, err := h.s.ConnectOperator(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	dir := t.TempDir()
+	if _, err := Backup(ctx, nc, dir, []string{bus.InterestBucket}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("setup: backup: %v", err)
+	}
+	archive, err := readArchive(filepath.Join(dir, bus.InterestBucket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := nc.JetStream(natsgo.MaxWait(10 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, config := excludeOneMember(t, nc, js, h.s.Cluster.Servers)
+	t.Cleanup(func() { _ = member.Reload(t, config) })
+
+	const limit = 4 * time.Second
+	var out bytes.Buffer
+	start := time.Now()
+	err = restoreOne(ctx, nc, &out, bus.InterestBucket, filepath.Join(dir, bus.InterestBucket), archive, limit)
+	took := time.Since(start)
+	t.Logf("restoreOne with a %s limit took %s: %v\n%s", limit, took, err, out.String())
+	var unknown *writerhold.Unknown
+	if !errors.As(err, &unknown) || !strings.Contains(err.Error(), "code 10005") || !strings.Contains(err.Error(), "restore KV_"+bus.InterestBucket) {
+		t.Fatalf("restoreOne past its placement limit = %v, want UNKNOWN naming the restore and code 10005", err)
+	}
+	if strings.Contains(out.String(), "stopped part way") {
+		t.Fatalf("a placement refusal was called a cut restore:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "JetStream could not place it yet (attempt 2)") {
+		t.Fatalf("the restore was not sent again within its limit:\n%s", out.String())
+	}
+	if bound := limit + restoreAttempt; took > bound {
+		t.Fatalf("restoreOne took %s, past its %s limit and one attempt (%s)", took, limit, bound)
+	}
+}
+
+// restoreAttempt bounds one restore start JetStream refuses to place, in the row above: the
+// server's answer to one request, with the stack under load.
+const restoreAttempt = 10 * time.Second
