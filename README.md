@@ -19,15 +19,17 @@ The coordinator: a Go daemon and the `legion` CLI. The daemon works the Dispatch
 `legion`: you label an issue yourself, or ask the controller session the operator starts to label
 it for you, and an agent that finds a problem outside its issue asks you before anything is filed.
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
-only you can answer. Once you approve the spec, the daemon runs the phase workers in turn: planner,
-implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
+only you can answer. Once you approve the spec, the daemon runs the phase workers of the steps the
+architect's plan names, in the order it names them (planner, implementer, tester and reviewer in
+the default steps), and then the merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
 pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
 pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
 and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
-from Todo through In Progress, Testing, Needs Review and Retro to Done. The architect accepts the
-reviewed change, the merger posts `READY` on the issue and submits the merge, the pull request
-merges under the repository's own rules and closes the issue, and the implementer then checks the
-change in production once it is deployed, recording that on the pull request.
+from Todo through the statuses of the steps it runs (In Progress, Testing, Needs Review and Retro
+in the default steps) to Done. The architect accepts the change where its plan has that step, the
+merger merges the pull request itself under the repository's own rules, the merge closes the
+issue, and the role your project's `production_check` names (the tester by default) then checks
+the change in production once it is deployed, recording that on the pull request.
 
 [Legion's documentation](https://cybermonklabs.github.io/legion/legion/) ·
 [a walkthrough video of one issue](https://cybermonklabs.github.io/legion/legion/walkthrough/)

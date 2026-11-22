@@ -1186,7 +1186,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue can keep its pod where it holds no slot — past its review, or while it waits on another
+  issue can keep its pod where it holds no slot — in `accepting`, `retro` or `merging`, or while it waits on another
   issue — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
@@ -1539,16 +1539,16 @@ These arrive as messages on the Dispatch issue:
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
+  branch, `legion/<KEY>`: the issue moves to its task's next step only on an open pull request, or one the
   daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
   waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
   `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
-  the issue to testing. With none, the completion is refused and nothing is recorded: `no open pull
+  the issue to its task's next step. With none, the completion is refused and nothing is recorded: `no open pull
   request on <owner>/<repo> legion/<KEY>; nothing was recorded. Open the pull request and complete
   again.` The implementer opens it and completes again at the same commit. When the record holds
   the issue's pull request closed without merging, the refusal adds `pull request #<n> is closed;
   your architect was told and decides this issue's phase.`: the close already told the architect,
-  and a pull request closed without merging never moves an issue to testing. When
+  and a pull request closed without merging never moves an issue on. When
   GitHub cannot be read (the token mint or the read fails), the completion is applied unread and
   the daemon logs a warning, `api: read the open pull request on a completing implementer's
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
@@ -1743,7 +1743,7 @@ the pull request was closed without merging since. A pull request merged since t
 `pr-merged` instead, and the implementer's completion moves the issue on it. The issue stays in
 `implementing` until a pull request
 is open on the branch: the implementer opens it, and the daemon records it from its webhook or
-from its next read of the issue, and moves the issue to `testing`. When the work should not
+from its next read of the issue, and moves the issue to its task's next step. When the work should not
 go on, the architect decides the issue's phase as for a pull request closed without merging. The
 notice comes once per handoff commit, from whichever read finds it first.
 

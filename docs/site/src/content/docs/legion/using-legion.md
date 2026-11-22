@@ -36,9 +36,10 @@ questions, approve the spec, and review the pull request. Everything happens in
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` for a free slot, in the order the line gives it ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A slot is one issue the daemon has started, a root or a child, so a tree of four issues at work
-holds four of them. An issue keeps its slot through a wait on you or on its review, and its
-agents stay live beside it. A started issue that waits on another issue before its review gives
-its slot back, and nothing of its work stops; past its review an issue holds no slot at all
+holds four of them. An issue keeps its slot through a wait on you or on a review, and its
+agents stay live beside it. A started issue that waits on another issue gives its slot back, and
+nothing of its work stops; in `accepting`, `retro` and `merging` an issue holds no slot at all,
+and a step after `accepting` whose phase keeps a slot waits for one again
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
@@ -149,8 +150,8 @@ your behalf and changes nobody's right to merge.
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
 waits until the last other issue of its tree is done or parked, so no child's finished work is cut
-off, and then it closes. The architect accepted the change before that, when the reviewer approved
-it, with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
+off, and then it closes. Where the issue's task has the architect's acceptance step, the architect
+accepted the change before that (on the default steps, once the reviewer approved it), with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
 its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
 worked, so a parent is accepted after its children. After the close the role your project's
 `production_check` names — the tester, unless the setting is `off` — checks the change in
@@ -196,6 +197,6 @@ you stop the work.
 | `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
-| `needs_review` | the daemon | The change is under review, once the step before passed (on the default steps, the tester): Legion's reviewer reviews it where the task has a reviewer step, and then, where the task has the architect's acceptance step, the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
+| `needs_review` | the daemon | A step that reviews the change runs: Legion's reviewer, or the architect's acceptance, where the task's plan places it. Your GitHub review counts now. |
 | `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
 | `done` | the daemon at the merge, or a person | Finished: the pull request merged. A root whose tree is still running waits in `retro` until the last of it is done or parked, then closes. The production check your project's `production_check` opens — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |

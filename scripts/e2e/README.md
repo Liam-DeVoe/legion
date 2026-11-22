@@ -2706,7 +2706,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   the bot's may still be open there, since the approval does not wait for the implementer's resolution).
   The approval moves the issue to `accepting`, read directly:
   no worker starts (the implementer's claim holds no retro task, `claim_pending_phase`;
-  its state alone says nothing, since it may still be resolving the bot's thread), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there, its work being past its review, while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
+  its state alone says nothing, since it may still be resolving the bot's thread), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there, since `accepting` keeps none, while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
 
 - `children-first-acceptance`
 

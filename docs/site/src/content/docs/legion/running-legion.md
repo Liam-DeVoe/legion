@@ -174,7 +174,7 @@ the next of them:
   the repository itself (not a fork's) that the daemon does not record open is applied as its
   opened webhook would be, a reopen when the record holds the same pull request: the workflow
   records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to testing.
+  completed on to its task's next step.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
@@ -342,9 +342,9 @@ Dispatch read them, delete the files, then install every App from
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
-  the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
-  its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
-  review keeps both, unless it waits on another issue, when it keeps only its pod
+  the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
+  through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
+  waiting in a phase that keeps a slot keeps both, unless it waits on another issue, when it keeps only its pod
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
@@ -660,9 +660,10 @@ What each part is for:
   to, one or more of `implementer`, `tester`, `reviewer`, `planner` and `merger` (`architect` is
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
-  name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases
-  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, and the 18
-  other pairs the daemon counts), or the word `any`, which is also what a hook that leaves the
+  name `moves`, the moves it counts, each written `<from>-<to>` with two different workflow phases
+  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or any other of the
+  42 pairs the daemon counts, such as `testing-reviewing` on a task whose reviewer step comes
+  before its tester step), or the word `any`, which is also what a hook that leaves the
   key out takes. A hook fires when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the

@@ -757,7 +757,7 @@ test("the controller reads every held reason, and a stopped task's phase in its 
   const held = [...admission.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, reason]) => reason);
   expect(held).toEqual([...LEGION_HELD_REASONS]);
   expect(admission).toMatch(
-    /\| `children_before_retro` \|[^|]*without `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
+    /\| `children_before_retro` \|[^|]*last step is not `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
   );
   expect(admission).toMatch(
     /\| `task_stopped` \|[^|]*no step[^|]*\|[^|]*`register_plan`[^|]*root's `todo`[^|]*first step/
@@ -874,7 +874,7 @@ test("the architect's wake table sends each owner-plan notice to where its handl
     ]),
     ...lacks("legion-architect/references/plan-changes.md", [
       /\*\*`task-stopped`:\*\*[^*]*later version that changes the task, or end the work/,
-      /\*\*`retro-held`:\*\*[^*]*no `acceptance:owner` step[^*]*Run each issue it names to done/,
+      /\*\*`retro-held`:\*\*[^*]*last step, which is not your `acceptance:owner` step[^*]*Run each issue it names to done/,
       /\*\*`plan-not-taken`:\*\*[^*]*`stop_task` the task that runs now/,
     ]),
     ...lacks("legion-architect/references/acceptance.md", [

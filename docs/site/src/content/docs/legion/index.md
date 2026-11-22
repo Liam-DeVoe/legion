@@ -15,12 +15,16 @@ plan for the issue picks. The default steps are a planner, an implementer that w
 and opens a pull request, a tester and a reviewer, and a merger follows every plan. Each agent is an
 [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, at
-the head it read, under the repository's own branch protection. The architect
-accepts the reviewed change before that, and the merge closes the issue. The implementer then
-drives the merged change in production, once your deploy carries it, and records what it saw on
+When the plan's steps have passed (in the default steps, the change is tested, reviewed and
+approved), the merger merges the pull request itself, at the head it read, under the repository's
+own branch protection. The architect accepts the change before that, where its plan has that step,
+and the merge closes the issue. The role your project's `production_check` names, the tester by
+default, then drives the merged change in production, once your deploy carries it, and records what it saw on
 the pull request. Every step leaves a record you can read: the spec, the questions and each
 phase's handoff in Dispatch, and the code and the reviews on GitHub.
+
+The diagram follows the default steps: a plan can leave steps out and name the rest in another
+order, with the implementer before each step that reads its pull request.
 
 ```mermaid
 flowchart LR

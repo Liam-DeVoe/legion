@@ -234,16 +234,17 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line in the project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
-architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
-moment the daemon starts it until its work is past its review — `accepting`, `retro` and
-`merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while
-it waits on another issue before that point.
-So it holds its slot through the other waits up to its review: on a person, and on the review
-itself. Past the review the issue writes no more of the change, so its acceptance, its retro and
-its merge run on no slot at all, and an issue there that waits on another issue has no slot to
-give back.
+architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
+stands in a phase that keeps one, from the moment the daemon starts it until it is done or Dispatch
+takes it out of the workflow, except while it waits on another issue there.
+`accepting`, `retro` and `merging` hold none (in the default steps, the phases after the review),
+and a step after `accepting` whose phase keeps a slot waits for one again.
+So an issue holds its slot through the other waits in a phase that keeps one: on a person, and on a
+review. In `accepting`, `retro` and `merging` no phase worker writes the change, so the acceptance,
+the retro and the merge run on no slot at all, and an issue there that waits on another issue has
+no slot to give back.
 
-A wait on another issue before the review is the exception: a started issue that Dispatch shows
+A wait on another issue in a phase that keeps a slot is the exception: a started issue that Dispatch shows
 blocked by an issue that is not `done`, or whose own first phase waits on an open child under
 it, holds no admission slot.
 The daemon takes its slot back and stands it in the
@@ -264,16 +265,17 @@ Legion tree or by none, or an open child the daemon has released into the tree a
 A wait on an open child the architect filed and has not released is not one, because releasing
 that child is the tree's own work.
 
-An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
-its review, which holds none. An issue that holds none and is owed a start, a child an architect
-has just released among them, waits in line while the project stands at the cap.
+An issue holding a slot starts its next phase whatever the cap says, and a start into `accepting`,
+`retro` or `merging`, which hold none, runs at once. An issue that holds none and is owed a start
+into a phase that keeps one, a child an architect has just released or a step after `accepting`
+among them, waits in line while the project stands at the cap.
 A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes, and giving a slot back for a wait stops nothing either — no
 claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
-The worker at work goes on, but every start of a phase worker of the issue up to its review, its
-next phase's or a restart of its current one, waits until the issue holds a slot again; a start of
-a phase past the review (`retro`, `merging`) takes no slot and runs at once.
+The worker at work goes on, but every start of a phase worker of the issue into a phase that keeps
+a slot, its next phase's or a restart of its current one, waits until the issue holds a slot again;
+a start of `retro` or `merging` takes no slot and runs at once.
 `legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
@@ -457,8 +459,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   the base requires a pull request to be current with it; or the daemon could not read the base's
   rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
   records the conflict, and the task's steps go on at that head; an approval of the head ends the
-  review round, and the daemon acts once the issue moves past its review, into `accepting`,
-  `retro` or `merging`.
+  review round, and the daemon acts once the issue moves into `accepting`, `retro` or `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. The
   implementer is asked on its role topic to merge the base forward in the issue workspace and
   push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
@@ -469,8 +470,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
-  phase the issue has already left is recorded as before. Past review, where the task has a
-  reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its
+  phase the issue has already left is recorded as before. In `accepting`, `retro` or `merging`, where
+  the task has a reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its
   SHA, or request changes, and a merger that enters `merging` while that approval is owed merges
   the new head only once the approval is on the pull request. A task with no reviewer step has no
   review to ask, and its merger goes on at the new head.
@@ -585,8 +586,8 @@ left of the issue to develop. A root whose tree still runs, and a child with an 
 still in the workflow, are the issues the merge does not close at once: the daemon records the
 merge, and the issue stays in `merging` with its workers while the issues beneath it reach their
 own merges.
-It stands there on no admission slot, as every phase past the review does, so no wait of it
-changes the cap.
+It stands there on no admission slot, as `accepting` and `retro` do, so no wait of it changes the
+cap.
 Its architect is told once which issues the close waits for,
 and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is
